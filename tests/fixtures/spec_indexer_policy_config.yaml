@@ -1,0 +1,20 @@
+version: 1
+roots:
+  - artifact_id: policy_fixture
+    environment: test
+    source: spec_indexer_policy/source
+    include_globs:
+      - "*.txt"
+      - "*.bin"
+    exclude_globs:
+      - "excluded.txt"
+    max_file_bytes: 16
+    max_total_bytes: 24
+    large_file_policy: manifest_only
+    cache_dir: cache/policy
+    manifest: manifests/policy.json
+    required_artifacts:
+      - relative_path: required.txt
+        expectation: locked
+      - relative_path: missing.txt
+        expectation: needs_confirmation

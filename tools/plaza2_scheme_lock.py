@@ -29,7 +29,6 @@ def main() -> int:
                 {
                     "artifact_id": stable_id(root_name, file_path.relative_to(root_dir).as_posix()),
                     "root_kind": root_name,
-                    "path": str(file_path.resolve()),
                     "relative_path": file_path.relative_to(root_dir).as_posix(),
                     "sha256": sha256_file(file_path),
                     "size": file_path.stat().st_size,
@@ -41,8 +40,8 @@ def main() -> int:
         "retrieved_at": utc_now_iso(),
         "cgate_version": args.cgate_version,
         "p2mqrouter_version": args.p2mqrouter_version,
-        "scheme_dir": str(scheme_dir),
-        "generated_dir": str(generated_dir) if generated_dir else "",
+        "scheme_dir_name": scheme_dir.name,
+        "generated_dir_name": generated_dir.name if generated_dir else "",
         "artifacts": files,
     }
     dump_json(manifest, output_path)

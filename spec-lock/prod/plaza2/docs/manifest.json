@@ -1,13 +1,13 @@
 {
-  "artifact_count": 17,
+  "artifact_count": 5,
   "artifacts": [
     {
       "artifact_id": "plaza_docs_cgate_en_pdf",
       "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/cgate_en.pdf",
       "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/cgate_en.pdf",
+      "relative_cache_path": "spec-lock/prod/plaza2/docs/cache/cgate_en.pdf",
       "relative_path": "cgate_en.pdf",
-      "retrieved_at": "2026-04-18T18:18:35Z",
+      "retrieved_at": "2026-04-18T19:00:14Z",
       "root_artifact_id": "plaza_docs",
       "sha256": "6cbe21a53ed97cdb11206fe4aea5489a15311c76ff7582152c535636dcd8e0aa",
       "size": 480310,
@@ -15,91 +15,14 @@
       "upstream_modified": "11/5/2025  9:44 AM"
     },
     {
-      "artifact_id": "plaza_docs_cgate_ru_pdf",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/cgate_ru.pdf",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/cgate_ru.pdf",
-      "relative_path": "cgate_ru.pdf",
-      "retrieved_at": "2026-04-18T18:18:35Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "35d4101c6b9a768b8df420e1dbaf1c4a2fe3d91f28b7ee9c491fce9b490d9b4c",
-      "size": 525551,
-      "status": "locked",
-      "upstream_modified": "11/5/2025  9:44 AM"
-    },
-    {
-      "artifact_id": "plaza_docs_doc",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/%D0%9A%D0%B0%D0%BB%D0%B5%D0%BD%D0%B4%D0%B0%D1%80%D0%BD%D1%8B%D0%B5%20%D1%81%D0%BF%D1%80%D0%B5%D0%B4%D1%8B%20(%D0%BE%D0%BF%D0%B8%D1%81%D0%B0%D0%BD%D0%B8%D0%B5).doc",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/\u041a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u043d\u044b\u0435 \u0441\u043f\u0440\u0435\u0434\u044b (\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435).doc",
-      "relative_path": "\u041a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u043d\u044b\u0435 \u0441\u043f\u0440\u0435\u0434\u044b (\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435).doc",
-      "retrieved_at": "2026-04-18T18:19:02Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "32af7873a25bba24335b8d4f4f195622560da8f8ee952731673aabe4a1e95d86",
-      "size": 42496,
-      "status": "locked",
-      "upstream_modified": "4/28/2020 12:00 AM"
-    },
-    {
-      "artifact_id": "plaza_docs_gate_plaza2_foux_in_forts_pdf",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/Gate_Plaza2_FOUX_IN_FORTS.pdf",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/Gate_Plaza2_FOUX_IN_FORTS.pdf",
-      "relative_path": "Gate_Plaza2_FOUX_IN_FORTS.pdf",
-      "retrieved_at": "2026-04-18T18:18:39Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "9b3f49619bdfad77d97f0bfe0d231cc7776e5f4ac236f649c44b3e1480b275b0",
-      "size": 412097,
-      "status": "locked",
-      "upstream_modified": "4/28/2020 12:00 AM"
-    },
-    {
-      "artifact_id": "plaza_docs_information_for_backoffice_doc",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/Information_for_backoffice.doc",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/Information_for_backoffice.doc",
-      "relative_path": "Information_for_backoffice.doc",
-      "retrieved_at": "2026-04-18T18:18:40Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "29ea57bb8410af74498451b4150eb8c22a2d2801d4f62e639f6bc45aa45beac1",
-      "size": 113152,
-      "status": "locked",
-      "upstream_modified": "4/28/2020 12:00 AM"
-    },
-    {
-      "artifact_id": "plaza_docs_iqs_t_pdf",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/%D0%90%D0%B4%D1%80%D0%B5%D1%81%D0%B0%20IQS_T.pdf",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/\u0410\u0434\u0440\u0435\u0441\u0430 IQS_T.pdf",
-      "relative_path": "\u0410\u0434\u0440\u0435\u0441\u0430 IQS_T.pdf",
-      "retrieved_at": "2026-04-18T18:19:02Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "40b9468ec93eebf96b63034f1ae3ba52609c71fbb46af31181e52523c0c79e47",
-      "size": 104532,
-      "status": "locked",
-      "upstream_modified": "4/28/2020 12:00 AM"
-    },
-    {
-      "artifact_id": "plaza_docs_meta_info",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/meta.info",
-      "environment": "prod",
-      "error": "HTTP Error 404: Not Found",
-      "local_cache_path": "",
-      "relative_path": "meta.info",
-      "retrieved_at": "2026-04-18T18:18:40Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "",
-      "size": 747,
-      "status": "fetch_error",
-      "upstream_modified": "3/23/2026  9:47 AM"
-    },
-    {
       "artifact_id": "plaza_docs_p2gate_en_html",
       "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/p2gate_en.html",
       "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/p2gate_en.html",
+      "relative_cache_path": "spec-lock/prod/plaza2/docs/cache/p2gate_en.html",
       "relative_path": "p2gate_en.html",
-      "retrieved_at": "2026-04-18T18:18:40Z",
+      "required_artifact": true,
+      "required_expectation": "locked",
+      "retrieved_at": "2026-04-18T19:00:14Z",
       "root_artifact_id": "plaza_docs",
       "sha256": "e77a8b99b0334cedcf0dfc894662efc99ae723970ab8783657df607d9c7c17ab",
       "size": 1895548,
@@ -110,9 +33,11 @@
       "artifact_id": "plaza_docs_p2gate_en_pdf",
       "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/p2gate_en.pdf",
       "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/p2gate_en.pdf",
+      "relative_cache_path": "spec-lock/prod/plaza2/docs/cache/p2gate_en.pdf",
       "relative_path": "p2gate_en.pdf",
-      "retrieved_at": "2026-04-18T18:18:41Z",
+      "required_artifact": true,
+      "required_expectation": "locked",
+      "retrieved_at": "2026-04-18T19:00:14Z",
       "root_artifact_id": "plaza_docs",
       "sha256": "1aa365025542e1c3e415dbaecf271d84132b91903a9290efa489d9d6824c0f82",
       "size": 4181187,
@@ -120,38 +45,12 @@
       "upstream_modified": "3/23/2026  9:47 AM"
     },
     {
-      "artifact_id": "plaza_docs_p2gate_ru_html",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/p2gate_ru.html",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/p2gate_ru.html",
-      "relative_path": "p2gate_ru.html",
-      "retrieved_at": "2026-04-18T18:18:51Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "bc1b8801677b3ad3d656c53cb1356fa13a257101e1bd725ec1158de5506ee69d",
-      "size": 2335472,
-      "status": "locked",
-      "upstream_modified": "3/23/2026  9:47 AM"
-    },
-    {
-      "artifact_id": "plaza_docs_p2gate_ru_pdf",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/p2gate_ru.pdf",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/p2gate_ru.pdf",
-      "relative_path": "p2gate_ru.pdf",
-      "retrieved_at": "2026-04-18T18:18:52Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "ef92da223d84a416092d626f051dfbdde698e38e2e73dab915ec827c12ce8c3e",
-      "size": 4261295,
-      "status": "locked",
-      "upstream_modified": "3/23/2026  9:47 AM"
-    },
-    {
       "artifact_id": "plaza_docs_p2micexgate_en_pdf",
       "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/p2micexgate_en.pdf",
       "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/p2micexgate_en.pdf",
+      "relative_cache_path": "spec-lock/prod/plaza2/docs/cache/p2micexgate_en.pdf",
       "relative_path": "p2micexgate_en.pdf",
-      "retrieved_at": "2026-04-18T18:18:52Z",
+      "retrieved_at": "2026-04-18T19:00:14Z",
       "root_artifact_id": "plaza_docs",
       "sha256": "13eff45f8b1c795965450799b6eec25a388366a0f3d2421e89cef90d9e8b4c3c",
       "size": 190567,
@@ -159,64 +58,12 @@
       "upstream_modified": "4/7/2026  4:15 PM"
     },
     {
-      "artifact_id": "plaza_docs_p2micexgate_ru_pdf",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/p2micexgate_ru.pdf",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/p2micexgate_ru.pdf",
-      "relative_path": "p2micexgate_ru.pdf",
-      "retrieved_at": "2026-04-18T18:18:52Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "bac97ef927664444119f5d2c9ab1fb0a14843af0dd39a8ec5c76ee65a84bdc56",
-      "size": 214538,
-      "status": "locked",
-      "upstream_modified": "4/7/2026  4:15 PM"
-    },
-    {
-      "artifact_id": "plaza_docs_pi_pii_bridge_replstreams_pdf",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/PI-PII_Bridge_ReplStreams.pdf",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/PI-PII_Bridge_ReplStreams.pdf",
-      "relative_path": "PI-PII_Bridge_ReplStreams.pdf",
-      "retrieved_at": "2026-04-18T18:18:52Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "9ccbdfb8f48011efed231f498e63605b28eae6766db694df58484c3695d086dc",
-      "size": 568761,
-      "status": "locked",
-      "upstream_modified": "4/28/2020 12:00 AM"
-    },
-    {
-      "artifact_id": "plaza_docs_sma_eng_der_pdf",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/SMA_ENG_DER.pdf",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/SMA_ENG_DER.pdf",
-      "relative_path": "SMA_ENG_DER.pdf",
-      "retrieved_at": "2026-04-18T18:18:53Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "14883c39d060bf9852633ac9a84de325b8956b866282eb75bbfd7010315bbeab",
-      "size": 441725,
-      "status": "locked",
-      "upstream_modified": "9/14/2018  2:29 PM"
-    },
-    {
-      "artifact_id": "plaza_docs_sma_rus_pdf",
-      "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/SMA_RUS_%D0%A1%D0%A0.pdf",
-      "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/SMA_RUS_\u0421\u0420.pdf",
-      "relative_path": "SMA_RUS_\u0421\u0420.pdf",
-      "retrieved_at": "2026-04-18T18:18:57Z",
-      "root_artifact_id": "plaza_docs",
-      "sha256": "f963cf2f78b4fba39f9fffca0940efa4fd12a7f575c44415d2905c1583b85abc",
-      "size": 386273,
-      "status": "locked",
-      "upstream_modified": "9/14/2018  2:29 PM"
-    },
-    {
       "artifact_id": "plaza_docs_style_css",
       "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/style.css",
       "environment": "prod",
-      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/prod/plaza2/docs/cache/style.css",
+      "relative_cache_path": "spec-lock/prod/plaza2/docs/cache/style.css",
       "relative_path": "style.css",
-      "retrieved_at": "2026-04-18T18:19:02Z",
+      "retrieved_at": "2026-04-18T19:00:14Z",
       "root_artifact_id": "plaza_docs",
       "sha256": "80075883e927953f71fc7c9558db9c1c396e0e180cab8efc0729dca2e7c9fe79",
       "size": 434,
@@ -224,13 +71,37 @@
       "upstream_modified": "9/23/2024  2:28 PM"
     }
   ],
-  "fetch_error_count": 1,
+  "fetch_error_count": 0,
+  "fetched_total_bytes": 6748046,
+  "manifest_only_count": 0,
   "root": {
     "artifact_id": "plaza_docs",
     "cache_dir": "spec-lock/prod/plaza2/docs/cache",
     "environment": "prod",
+    "exclude_globs": [
+      "meta.info"
+    ],
+    "include_globs": [
+      "p2gate_en.html",
+      "p2gate_en.pdf",
+      "cgate_en.pdf",
+      "p2micexgate_en.pdf",
+      "style.css"
+    ],
+    "large_file_policy": "fetch",
     "manifest": "spec-lock/prod/plaza2/docs/manifest.json",
+    "required_artifacts": [
+      {
+        "expectation": "locked",
+        "relative_path": "p2gate_en.html"
+      },
+      {
+        "expectation": "locked",
+        "relative_path": "p2gate_en.pdf"
+      }
+    ],
     "source": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/"
   },
+  "skipped_count": 0,
   "version": 1
 }

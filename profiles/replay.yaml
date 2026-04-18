@@ -1,23 +1,25 @@
-{
-  "version": 1,
-  "profile_id": "replay",
-  "environment": "replay",
-  "armed": false,
-  "profile_neutral_coverage": true,
-  "broker_topology": {
-    "mode": "unknown",
-    "order_path": "unknown",
-    "market_data_path": "unknown",
-    "router_location": "unknown"
-  },
-  "shadow_mode": {
-    "enabled": false,
-    "primary_source": "replay_fixture",
-    "native_connectors_read_only": true
-  },
-  "connectors": {
-    "market_data": ["fast_md", "simba_md", "plaza2_repl"],
-    "orders": ["twime_trade", "fix_trade", "plaza2_trade"],
-    "state": ["plaza2_repl"]
-  }
-}
+version: 1
+profile_id: replay
+environment: replay
+armed: false
+profile_neutral_coverage: true
+broker_topology:
+  mode: unknown
+  order_path: unknown
+  market_data_path: unknown
+  router_location: unknown
+shadow_mode:
+  enabled: false
+  primary_source: replay_fixture
+  native_connectors_read_only: true
+connectors:
+  market_data:
+    - fast_md
+    - simba_md
+    - plaza2_repl
+  orders:
+    - twime_trade
+    - fix_trade
+    - plaza2_trade
+  state:
+    - plaza2_repl

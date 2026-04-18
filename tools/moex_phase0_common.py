@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Iterable
 from urllib.error import HTTPError, URLError
 
+import yaml
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 USER_AGENT = "MoexConnectorPhase0/0.1"
@@ -39,12 +41,23 @@ def utc_now_iso() -> str:
 
 
 def load_json_yaml(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".json":
+        return json.loads(text)
+    return yaml.safe_load(text)
 
 
 def dump_json(data: object, path: Path) -> None:
     ensure_dir(path.parent)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def dump_yaml(data: object, path: Path) -> None:
+    ensure_dir(path.parent)
+    path.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
 
 
 def sha256_file(path: Path) -> str:
@@ -63,6 +76,14 @@ def stable_id(*parts: str) -> str:
     raw = "__".join(part for part in parts if part)
     lowered = raw.lower()
     return re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
+
+
+def path_matches_any_glob(path: str, patterns: list[str]) -> bool:
+    if not patterns:
+        return True
+    import fnmatch
+
+    return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
 
 
 def redact_secrets(value: object) -> object:

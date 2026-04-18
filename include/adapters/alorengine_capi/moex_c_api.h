@@ -11,6 +11,17 @@ extern "C" {
 
 typedef struct MoexHandleTag* MoexConnectorHandle;
 
+typedef enum MoexResult {
+    MOEX_RESULT_OK = 0,
+    MOEX_RESULT_INVALID_ARGUMENT = 1,
+    MOEX_RESULT_NOT_SUPPORTED = 2,
+    MOEX_RESULT_NOT_INITIALIZED = 3,
+    MOEX_RESULT_ALREADY_STARTED = 4,
+    MOEX_RESULT_NOT_STARTED = 5,
+    MOEX_RESULT_OVERFLOW = 6,
+    MOEX_RESULT_INTERNAL_ERROR = 255
+} MoexResult;
+
 typedef enum MoexEventType {
     MOEX_EVENT_UNSPECIFIED = 0,
     MOEX_EVENT_CONNECTOR_STATUS = 1,
@@ -59,11 +70,104 @@ typedef struct MoexBackpressureCounters {
     uint8_t reserved[7];
 } MoexBackpressureCounters;
 
+typedef struct MoexHealthSnapshot {
+    uint32_t struct_size;
+    uint16_t abi_version;
+    uint16_t reserved0;
+    uint32_t connector_state;
+    uint32_t active_profile_kind;
+    uint8_t prod_armed;
+    uint8_t shadow_mode_enabled;
+    uint8_t reserved1[6];
+} MoexHealthSnapshot;
+
+typedef struct MoexConnectorCreateParams {
+    uint32_t struct_size;
+    uint16_t abi_version;
+    uint16_t reserved0;
+    const char* connector_name;
+    const char* instance_id;
+} MoexConnectorCreateParams;
+
+typedef struct MoexProfileLoadParams {
+    uint32_t struct_size;
+    uint16_t abi_version;
+    uint16_t reserved0;
+    const char* profile_path;
+    uint8_t armed;
+    uint8_t reserved1[7];
+} MoexProfileLoadParams;
+
+typedef struct MoexOrderSubmitRequest {
+    uint32_t struct_size;
+    uint16_t abi_version;
+    uint16_t reserved0;
+    const char* profile_id;
+    const char* symbol;
+    const char* account;
+    const char* client_order_id;
+} MoexOrderSubmitRequest;
+
+typedef struct MoexOrderCancelRequest {
+    uint32_t struct_size;
+    uint16_t abi_version;
+    uint16_t reserved0;
+    const char* profile_id;
+    const char* account;
+    const char* server_order_id;
+    const char* client_order_id;
+} MoexOrderCancelRequest;
+
+typedef struct MoexOrderReplaceRequest {
+    uint32_t struct_size;
+    uint16_t abi_version;
+    uint16_t reserved0;
+    const char* profile_id;
+    const char* account;
+    const char* server_order_id;
+    const char* client_order_id;
+} MoexOrderReplaceRequest;
+
+typedef struct MoexMassCancelRequest {
+    uint32_t struct_size;
+    uint16_t abi_version;
+    uint16_t reserved0;
+    const char* profile_id;
+    const char* account;
+    const char* instrument_scope;
+} MoexMassCancelRequest;
+
+typedef struct MoexSubscriptionRequest {
+    uint32_t struct_size;
+    uint16_t abi_version;
+    uint16_t reserved0;
+    const char* profile_id;
+    const char* stream_name;
+    const char* symbol;
+    const char* board;
+} MoexSubscriptionRequest;
+
 typedef void (*MoexLowRateCallback)(const MoexEventHeader* header, const void* payload, void* user_data);
 
 const char* moex_phase0_abi_name(void);
 uint32_t moex_phase0_abi_version(void);
 bool moex_phase0_prod_requires_arm(const char* environment, bool armed);
+MoexResult moex_create_connector(const MoexConnectorCreateParams* params, MoexConnectorHandle* out_handle);
+MoexResult moex_destroy_connector(MoexConnectorHandle handle);
+MoexResult moex_load_profile(MoexConnectorHandle handle, const MoexProfileLoadParams* params);
+MoexResult moex_start_connector(MoexConnectorHandle handle);
+MoexResult moex_stop_connector(MoexConnectorHandle handle);
+MoexResult moex_submit_order_placeholder(MoexConnectorHandle handle, const MoexOrderSubmitRequest* request);
+MoexResult moex_cancel_order_placeholder(MoexConnectorHandle handle, const MoexOrderCancelRequest* request);
+MoexResult moex_replace_order_placeholder(MoexConnectorHandle handle, const MoexOrderReplaceRequest* request);
+MoexResult moex_mass_cancel_placeholder(MoexConnectorHandle handle, const MoexMassCancelRequest* request);
+MoexResult moex_subscribe_placeholder(MoexConnectorHandle handle, const MoexSubscriptionRequest* request);
+MoexResult moex_unsubscribe_placeholder(MoexConnectorHandle handle, const MoexSubscriptionRequest* request);
+MoexResult moex_poll_events(MoexConnectorHandle handle, void* out_events, uint32_t capacity, uint32_t* written);
+MoexResult moex_register_low_rate_callback(MoexConnectorHandle handle, MoexLowRateCallback callback, void* user_data);
+MoexResult moex_get_health(MoexConnectorHandle handle, MoexHealthSnapshot* out_health);
+MoexResult moex_get_backpressure_counters(MoexConnectorHandle handle, MoexBackpressureCounters* out_counters);
+MoexResult moex_flush_recovery_state(MoexConnectorHandle handle);
 
 #ifdef __cplusplus
 }

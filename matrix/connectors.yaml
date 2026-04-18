@@ -1,0 +1,26 @@
+version: 1
+connectors:
+  - connector_id: twime_trade
+    role: trade
+    requires_test_or_replay_coverage: true
+  - connector_id: fix_trade
+    role: trade
+    requires_test_or_replay_coverage: true
+  - connector_id: fast_md
+    role: market_data
+    requires_test_or_replay_coverage: true
+  - connector_id: simba_md
+    role: market_data
+    requires_test_or_replay_coverage: true
+  - connector_id: plaza2_repl
+    role: state_and_market_data
+    requires_test_or_replay_coverage: true
+  - connector_id: plaza2_trade
+    role: trade
+    requires_test_or_replay_coverage: true
+  - connector_id: fix_dropcopy
+    role: reconciliation
+    requires_test_or_replay_coverage: false
+  - connector_id: plaza2
+    role: aggregate_module
+    requires_test_or_replay_coverage: false

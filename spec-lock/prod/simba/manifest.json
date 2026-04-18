@@ -1,0 +1,137 @@
+{
+  "artifact_count": 6,
+  "artifacts": [
+    {
+      "artifact_id": "simba_prod_root_doc_spectra_simba_en_pdf",
+      "canonical_url": "https://ftp.moex.com/pub/SIMBA/Spectra/prod/doc/spectra_simba_en.pdf",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/simba/cache/doc/spectra_simba_en.pdf",
+      "relative_path": "doc/spectra_simba_en.pdf",
+      "required_artifact": true,
+      "required_expectation": "needs_confirmation",
+      "required_notes": "SIMBA lock is intentionally doc/schema/config oriented by default.",
+      "retrieved_at": "2026-04-18T19:00:05Z",
+      "root_artifact_id": "simba_prod_root",
+      "sha256": "40df1a2ced7e473764a6ba3bd1d376eb3cf6940cf2e94606b4266bc6ee399779",
+      "size": 2016067,
+      "status": "locked",
+      "upstream_modified": "1/23/2026  1:55 PM"
+    },
+    {
+      "artifact_id": "simba_prod_root_doc_spectra_simba_ru_pdf",
+      "canonical_url": "https://ftp.moex.com/pub/SIMBA/Spectra/prod/doc/spectra_simba_ru.pdf",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/simba/cache/doc/spectra_simba_ru.pdf",
+      "relative_path": "doc/spectra_simba_ru.pdf",
+      "retrieved_at": "2026-04-18T19:00:05Z",
+      "root_artifact_id": "simba_prod_root",
+      "sha256": "e70ad3530d98f2ac5b4fde1d4160efb7708296bfd7519ea9f955c2e450c86f28",
+      "size": 2043669,
+      "status": "locked",
+      "upstream_modified": "1/23/2026  1:55 PM"
+    },
+    {
+      "artifact_id": "simba_prod_root_primary_configuration_xml",
+      "canonical_url": "https://ftp.moex.com/pub/SIMBA/Spectra/prod/primary/configuration.xml",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/simba/cache/primary/configuration.xml",
+      "relative_path": "primary/configuration.xml",
+      "required_artifact": true,
+      "required_expectation": "needs_confirmation",
+      "retrieved_at": "2026-04-18T19:00:05Z",
+      "root_artifact_id": "simba_prod_root",
+      "sha256": "045acd0b4777f63158020085c442fd8eaa162025e270c2f26ccde39c957d63a2",
+      "size": 3723,
+      "status": "locked",
+      "upstream_modified": "11/11/2021  9:36 AM"
+    },
+    {
+      "artifact_id": "simba_prod_root_sbe_schema_xsl",
+      "canonical_url": "https://ftp.moex.com/pub/SIMBA/Spectra/prod/sbe_schema.xsl",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/simba/cache/sbe_schema.xsl",
+      "relative_path": "sbe_schema.xsl",
+      "retrieved_at": "2026-04-18T19:00:05Z",
+      "root_artifact_id": "simba_prod_root",
+      "sha256": "94a5682e971d4a87803ef653d18d85caef23ec3374bdc5dd758c23fee7142082",
+      "size": 21229,
+      "status": "locked",
+      "upstream_modified": "1/14/2025  2:25 PM"
+    },
+    {
+      "artifact_id": "simba_prod_root_secondary_configuration_xml",
+      "canonical_url": "https://ftp.moex.com/pub/SIMBA/Spectra/prod/secondary/configuration.xml",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/simba/cache/secondary/configuration.xml",
+      "relative_path": "secondary/configuration.xml",
+      "required_artifact": true,
+      "required_expectation": "needs_confirmation",
+      "retrieved_at": "2026-04-18T19:00:05Z",
+      "root_artifact_id": "simba_prod_root",
+      "sha256": "f4f9367c017103a022d8bc0340d59d7e36ccd9c22002955845e6baeb57490bf8",
+      "size": 3721,
+      "status": "locked",
+      "upstream_modified": "11/11/2021  9:37 AM"
+    },
+    {
+      "artifact_id": "simba_prod_root_simba_spectra_8_0_xml",
+      "canonical_url": "https://ftp.moex.com/pub/SIMBA/Spectra/prod/simba_spectra-8.0.xml",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/simba/cache/simba_spectra-8.0.xml",
+      "relative_path": "simba_spectra-8.0.xml",
+      "required_artifact": true,
+      "required_expectation": "needs_confirmation",
+      "retrieved_at": "2026-04-18T19:00:05Z",
+      "root_artifact_id": "simba_prod_root",
+      "sha256": "299cc87b6616dcec6b7c407c1f034839a85b522e416f6670736650c4606b4ec4",
+      "size": 42290,
+      "status": "locked",
+      "upstream_modified": "9/9/2025 12:00 AM"
+    }
+  ],
+  "fetch_error_count": 0,
+  "fetched_total_bytes": 4130699,
+  "manifest_only_count": 0,
+  "root": {
+    "artifact_id": "simba_prod_root",
+    "cache_dir": "spec-lock/prod/simba/cache",
+    "environment": "prod",
+    "exclude_globs": [
+      "backup/**",
+      "pcap/**",
+      "*.zip"
+    ],
+    "include_globs": [
+      "doc/*.pdf",
+      "simba_spectra-8.0.xml",
+      "sbe_schema.xsl",
+      "primary/*.xml",
+      "secondary/*.xml"
+    ],
+    "large_file_policy": "manifest_only",
+    "manifest": "spec-lock/prod/simba/manifest.json",
+    "max_total_bytes": 5000000,
+    "required_artifacts": [
+      {
+        "expectation": "needs_confirmation",
+        "notes": "SIMBA lock is intentionally doc/schema/config oriented by default.",
+        "relative_path": "doc/spectra_simba_en.pdf"
+      },
+      {
+        "expectation": "needs_confirmation",
+        "relative_path": "simba_spectra-8.0.xml"
+      },
+      {
+        "expectation": "needs_confirmation",
+        "relative_path": "primary/configuration.xml"
+      },
+      {
+        "expectation": "needs_confirmation",
+        "relative_path": "secondary/configuration.xml"
+      }
+    ],
+    "source": "https://ftp.moex.com/pub/SIMBA/Spectra/prod/"
+  },
+  "skipped_count": 0,
+  "version": 1
+}

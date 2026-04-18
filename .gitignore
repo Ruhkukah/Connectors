@@ -13,3 +13,12 @@ build/
 
 .idea/
 .vscode/
+
+spec-lock/**/cache/
+spec-lock/**/downloads/
+spec-lock/**/pcap/
+spec-lock/**/*.pcap
+spec-lock/**/*.pcapng
+spec-lock/**/*.tar
+spec-lock/**/*.tar.gz
+spec-lock/**/*.tgz

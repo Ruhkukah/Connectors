@@ -1,13 +1,15 @@
-{
-  "scenario_id": "phase0_stub",
-  "title": "Phase 0 deterministic certification runner stub",
-  "metadata": {
-    "password": "placeholder-secret",
-    "owner": "phase0"
-  },
-  "steps": [
-    {"step_id": "load_profile", "action": "validate profile-neutral config", "expected": "profile parsed"},
-    {"step_id": "load_matrix", "action": "validate referential integrity", "expected": "matrix valid"},
-    {"step_id": "emit_stub_log", "action": "write deterministic certification log", "expected": "stub log written"}
-  ]
-}
+scenario_id: phase0_stub
+title: Phase 0 deterministic certification runner stub
+metadata:
+  password: placeholder-secret
+  owner: phase0
+steps:
+  - step_id: load_profile
+    action: validate profile-neutral config
+    expected: profile parsed
+  - step_id: load_matrix
+    action: validate referential integrity
+    expected: matrix valid
+  - step_id: emit_stub_log
+    action: write deterministic certification log
+    expected: stub log written

@@ -1,0 +1,64 @@
+{
+  "artifact_count": 2,
+  "artifacts": [
+    {
+      "artifact_id": "fast_test_root_backup_spectra_fastgate_en_pdf",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/backup/spectra_fastgate_en.pdf",
+      "environment": "test",
+      "relative_cache_path": "spec-lock/test/fast/cache/backup/spectra_fastgate_en.pdf",
+      "relative_path": "backup/spectra_fastgate_en.pdf",
+      "required_artifact": true,
+      "required_expectation": "needs_confirmation",
+      "required_notes": "FAST test root is intentionally restricted; dedicated T0/T1 and FAST_* roots carry required fetches.",
+      "retrieved_at": "2026-04-18T18:59:44Z",
+      "root_artifact_id": "fast_test_root",
+      "sha256": "6b859e12c879b12dcd5cb2ee290075431b8cd26b31029e4a0011bfc69d0e633b",
+      "size": 553226,
+      "status": "locked",
+      "upstream_modified": "11/19/2025  6:29 PM"
+    },
+    {
+      "artifact_id": "fast_test_root_backup_spectra_fastgate_ru_pdf",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/backup/spectra_fastgate_ru.pdf",
+      "environment": "test",
+      "relative_cache_path": "spec-lock/test/fast/cache/backup/spectra_fastgate_ru.pdf",
+      "relative_path": "backup/spectra_fastgate_ru.pdf",
+      "retrieved_at": "2026-04-18T18:59:44Z",
+      "root_artifact_id": "fast_test_root",
+      "sha256": "27674419e2f58b1e56149690290607f9223d73c1e4c98cbc0640e6d7ff197f9f",
+      "size": 585630,
+      "status": "locked",
+      "upstream_modified": "11/19/2025  6:29 PM"
+    }
+  ],
+  "fetch_error_count": 0,
+  "fetched_total_bytes": 1138856,
+  "manifest_only_count": 0,
+  "root": {
+    "artifact_id": "fast_test_root",
+    "cache_dir": "spec-lock/test/fast/cache",
+    "environment": "test",
+    "exclude_globs": [
+      "**/*.zip",
+      "**/backup/*/",
+      "**/templates*/**",
+      "**/FAST_*/**"
+    ],
+    "include_globs": [
+      "backup/spectra_fastgate_*.pdf"
+    ],
+    "large_file_policy": "manifest_only",
+    "manifest": "spec-lock/test/fast/manifest.json",
+    "max_total_bytes": 2000000,
+    "required_artifacts": [
+      {
+        "expectation": "needs_confirmation",
+        "notes": "FAST test root is intentionally restricted; dedicated T0/T1 and FAST_* roots carry required fetches.",
+        "relative_path": "backup/spectra_fastgate_en.pdf"
+      }
+    ],
+    "source": "https://ftp.moex.com/pub/FAST/Spectra/test/"
+  },
+  "skipped_count": 0,
+  "version": 1
+}

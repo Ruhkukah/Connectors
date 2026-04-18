@@ -1,8 +1,35 @@
 {
   "version": 1,
   "gaps": [
-    {"gap_id": "gap_twime_test_provisioning", "artifact_id": "twime_test_root", "protocol_item_id": "twime_case_sensitive_test_root", "coverage_id": "coverage_twime_spec_lock", "status": "needs_confirmation", "notes": "TWIME test provisioning still needs broker or MOEX confirmation."},
-    {"gap_id": "gap_broker_topology_unknown", "artifact_id": "plaza_docs", "protocol_item_id": "plaza2_twime_profile_neutrality", "coverage_id": "coverage_shadow_mode", "status": "open", "notes": "Broker topology is intentionally unknown in Phase 0."},
-    {"gap_id": "gap_cgate_runtime_not_installed", "artifact_id": "cgate_docs", "protocol_item_id": "plaza2_scheme_lock", "coverage_id": "coverage_plaza2_scheme_lock", "status": "open", "notes": "Local CGate runtime and scheme directories must be locked separately after installation."}
+    {
+      "gap_id": "gap_twime_test_provisioning",
+      "artifact_id": "twime_test_root",
+      "protocol_item_id": "twime_case_sensitive_test_root",
+      "coverage_id": "coverage_twime_spec_lock",
+      "owner": "broker_access",
+      "status": "needs_confirmation",
+      "next_action": "Confirm TWIME test provisioning path with broker or MOEX before Phase 2.",
+      "notes": "TWIME test provisioning still needs broker or MOEX confirmation."
+    },
+    {
+      "gap_id": "gap_broker_topology_unknown",
+      "artifact_id": "plaza_docs",
+      "protocol_item_id": "plaza2_twime_profile_neutrality",
+      "coverage_id": "coverage_shadow_mode",
+      "owner": "deployment_ops",
+      "status": "open",
+      "next_action": "Fill broker_topology answers using the questionnaire before enabling prod profiles.",
+      "notes": "Broker topology is intentionally unknown in Phase 0."
+    },
+    {
+      "gap_id": "gap_cgate_runtime_not_installed",
+      "artifact_id": "cgate_docs",
+      "protocol_item_id": "plaza2_scheme_lock",
+      "coverage_id": "coverage_plaza2_scheme_lock",
+      "owner": "native_runtime",
+      "status": "open",
+      "next_action": "Lock installed CGate scheme files into spec-lock/prod or spec-lock/test after runtime installation.",
+      "notes": "Local CGate runtime and scheme directories must be locked separately after installation."
+    }
   ]
 }

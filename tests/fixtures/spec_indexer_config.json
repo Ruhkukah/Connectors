@@ -4,7 +4,7 @@
     {
       "artifact_id": "fixture_local_root",
       "environment": "test",
-      "source": "/Users/pavel/CSharp/MoexConnector/tests/fixtures/spec_indexer/remote/root",
+      "source": "spec_indexer/remote/root",
       "cache_dir": "cache/spec-indexer-fixture",
       "manifest": "manifests/spec-indexer-fixture.json"
     }

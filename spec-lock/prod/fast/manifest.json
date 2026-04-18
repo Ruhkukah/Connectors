@@ -1,0 +1,115 @@
+{
+  "artifact_count": 5,
+  "artifacts": [
+    {
+      "artifact_id": "fast_prod_root_docs_spectra_fastgate_en_pdf",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/prod/docs/spectra_fastgate_en.pdf",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/fast/cache/docs/spectra_fastgate_en.pdf",
+      "relative_path": "docs/spectra_fastgate_en.pdf",
+      "required_artifact": true,
+      "required_expectation": "needs_confirmation",
+      "required_notes": "FAST prod root is config-limited by default; use specialized locks for templates and docs if broader fetch is needed.",
+      "retrieved_at": "2026-04-18T18:59:29Z",
+      "root_artifact_id": "fast_prod_root",
+      "sha256": "83ffd785418521288a803903ce5cb4def05b5828dd140767c729cd2fac38fd3e",
+      "size": 550088,
+      "status": "locked",
+      "upstream_modified": "3/13/2026  3:37 PM"
+    },
+    {
+      "artifact_id": "fast_prod_root_docs_spectra_fastgate_ru_pdf",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/prod/docs/spectra_fastgate_ru.pdf",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/fast/cache/docs/spectra_fastgate_ru.pdf",
+      "relative_path": "docs/spectra_fastgate_ru.pdf",
+      "retrieved_at": "2026-04-18T18:59:29Z",
+      "root_artifact_id": "fast_prod_root",
+      "sha256": "5c7a3228f60eddfff86fafbf647889d126e7506c1f5b28c201eb3a82f0500c56",
+      "size": 585195,
+      "status": "locked",
+      "upstream_modified": "3/13/2026  3:37 PM"
+    },
+    {
+      "artifact_id": "fast_prod_root_templates_moex_configuration_html_xsl",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/prod/templates/MOEX/configuration_html.xsl",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/fast/cache/templates/MOEX/configuration_html.xsl",
+      "relative_path": "templates/MOEX/configuration_html.xsl",
+      "retrieved_at": "2026-04-18T18:59:43Z",
+      "root_artifact_id": "fast_prod_root",
+      "sha256": "49218d9ef5168f169cd99ef83163c48dcf81edc2c3b14c8d8911beb14c2fe912",
+      "size": 9465,
+      "status": "locked",
+      "upstream_modified": "2/3/2026  2:47 PM"
+    },
+    {
+      "artifact_id": "fast_prod_root_templates_moex_configuration_xml",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/prod/templates/MOEX/configuration.xml",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/fast/cache/templates/MOEX/configuration.xml",
+      "relative_path": "templates/MOEX/configuration.xml",
+      "required_artifact": true,
+      "required_expectation": "needs_confirmation",
+      "retrieved_at": "2026-04-18T18:59:43Z",
+      "root_artifact_id": "fast_prod_root",
+      "sha256": "0a45ce6b310d2edbd4d20ecf79449fc4826bf38aabdda77c230be239170f5450",
+      "size": 12140,
+      "status": "locked",
+      "upstream_modified": "2/3/2026  2:47 PM"
+    },
+    {
+      "artifact_id": "fast_prod_root_templates_moex_templates_xml",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/prod/templates/MOEX/templates.xml",
+      "environment": "prod",
+      "relative_cache_path": "spec-lock/prod/fast/cache/templates/MOEX/templates.xml",
+      "relative_path": "templates/MOEX/templates.xml",
+      "required_artifact": true,
+      "required_expectation": "needs_confirmation",
+      "retrieved_at": "2026-04-18T18:59:43Z",
+      "root_artifact_id": "fast_prod_root",
+      "sha256": "dbd50f1e0becc2b2ebd9dac8e4c6609ba1538566811b610cde9b6dd3e7f66a8e",
+      "size": 28575,
+      "status": "locked",
+      "upstream_modified": "9/9/2025 12:00 AM"
+    }
+  ],
+  "fetch_error_count": 0,
+  "fetched_total_bytes": 1185463,
+  "manifest_only_count": 0,
+  "root": {
+    "artifact_id": "fast_prod_root",
+    "cache_dir": "spec-lock/prod/fast/cache",
+    "environment": "prod",
+    "exclude_globs": [
+      "**/bak/**",
+      "**/FFAST/**"
+    ],
+    "include_globs": [
+      "docs/*.pdf",
+      "templates/MOEX/*.xml",
+      "templates/MOEX/*.xsl"
+    ],
+    "large_file_policy": "manifest_only",
+    "manifest": "spec-lock/prod/fast/manifest.json",
+    "max_total_bytes": 5000000,
+    "required_artifacts": [
+      {
+        "expectation": "needs_confirmation",
+        "notes": "FAST prod root is config-limited by default; use specialized locks for templates and docs if broader fetch is needed.",
+        "relative_path": "docs/spectra_fastgate_en.pdf"
+      },
+      {
+        "expectation": "needs_confirmation",
+        "relative_path": "templates/MOEX/configuration.xml"
+      },
+      {
+        "expectation": "needs_confirmation",
+        "relative_path": "templates/MOEX/templates.xml"
+      }
+    ],
+    "source": "https://ftp.moex.com/pub/FAST/Spectra/prod/"
+  },
+  "skipped_count": 0,
+  "version": 1
+}

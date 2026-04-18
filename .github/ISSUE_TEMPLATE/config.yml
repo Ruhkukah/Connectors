@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Broker topology questionnaire
+    url: https://github.com/Ruhkukah/Connectors/blob/main/docs/broker_questionnaire_ru.md
+    about: Use the broker questionnaire before opening broker topology questions.

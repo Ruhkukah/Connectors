@@ -5,85 +5,313 @@
       "artifact_id": "twime_prod_root",
       "environment": "prod",
       "source": "https://ftp.moex.com/pub/TWIME/Spectra/prod/doc/",
+      "include_globs": [
+        "spectra_twime_*.pdf",
+        "Twime connection guide.pdf",
+        "TWIME FAQ *.pdf",
+        "twime_spectra-*.xml",
+        "langErrs.csv",
+        "sbe_schema.xsl"
+      ],
+      "large_file_policy": "fetch",
       "cache_dir": "spec-lock/prod/twime/cache",
-      "manifest": "spec-lock/prod/twime/manifest.json"
+      "manifest": "spec-lock/prod/twime/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "spectra_twime_en.pdf",
+          "expectation": "locked"
+        },
+        {
+          "relative_path": "twime_spectra-7.7.xml",
+          "expectation": "locked"
+        },
+        {
+          "relative_path": "Twime connection guide.pdf",
+          "expectation": "locked"
+        }
+      ]
     },
     {
       "artifact_id": "twime_test_root",
       "environment": "test",
       "source": "https://ftp.moex.com/pub/TWIME/Spectra/Test/",
+      "include_globs": [
+        "doc/*.pdf",
+        "doc/*.xml",
+        "doc/*.csv",
+        "doc/*.xsl",
+        "samples/WireClient-*.zip",
+        "samples/twime_certification.zip"
+      ],
+      "large_file_policy": "fetch",
       "cache_dir": "spec-lock/test/twime/cache",
-      "manifest": "spec-lock/test/twime/manifest.json"
+      "manifest": "spec-lock/test/twime/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "doc/spectra_twime_en.pdf",
+          "expectation": "locked"
+        },
+        {
+          "relative_path": "doc/twime_spectra-7.7.xml",
+          "expectation": "locked"
+        }
+      ]
     },
     {
       "artifact_id": "fast_prod_root",
       "environment": "prod",
       "source": "https://ftp.moex.com/pub/FAST/Spectra/prod/",
+      "include_globs": [
+        "docs/*.pdf",
+        "templates/MOEX/*.xml",
+        "templates/MOEX/*.xsl"
+      ],
+      "exclude_globs": [
+        "**/bak/**",
+        "**/FFAST/**"
+      ],
+      "max_total_bytes": 5000000,
+      "large_file_policy": "manifest_only",
       "cache_dir": "spec-lock/prod/fast/cache",
-      "manifest": "spec-lock/prod/fast/manifest.json"
+      "manifest": "spec-lock/prod/fast/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "docs/spectra_fastgate_en.pdf",
+          "expectation": "needs_confirmation",
+          "notes": "FAST prod root is config-limited by default; use specialized locks for templates and docs if broader fetch is needed."
+        },
+        {
+          "relative_path": "templates/MOEX/configuration.xml",
+          "expectation": "needs_confirmation"
+        },
+        {
+          "relative_path": "templates/MOEX/templates.xml",
+          "expectation": "needs_confirmation"
+        }
+      ]
     },
     {
       "artifact_id": "fast_test_root",
       "environment": "test",
       "source": "https://ftp.moex.com/pub/FAST/Spectra/test/",
+      "include_globs": [
+        "backup/spectra_fastgate_*.pdf"
+      ],
+      "exclude_globs": [
+        "**/*.zip",
+        "**/backup/*/",
+        "**/templates*/**",
+        "**/FAST_*/**"
+      ],
+      "max_total_bytes": 2000000,
+      "large_file_policy": "manifest_only",
       "cache_dir": "spec-lock/test/fast/cache",
-      "manifest": "spec-lock/test/fast/manifest.json"
+      "manifest": "spec-lock/test/fast/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "backup/spectra_fastgate_en.pdf",
+          "expectation": "needs_confirmation",
+          "notes": "FAST test root is intentionally restricted; dedicated T0/T1 and FAST_* roots carry required fetches."
+        }
+      ]
     },
     {
       "artifact_id": "fast_test_templates_t0",
       "environment": "test",
       "source": "https://ftp.moex.com/pub/FAST/Spectra/test/templatesT0/",
+      "include_globs": [
+        "*.xml",
+        "*.xsl"
+      ],
+      "large_file_policy": "fetch",
       "cache_dir": "spec-lock/test/fast/templatesT0/cache",
-      "manifest": "spec-lock/test/fast/templatesT0/manifest.json"
+      "manifest": "spec-lock/test/fast/templatesT0/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "configuration.xml",
+          "expectation": "locked"
+        },
+        {
+          "relative_path": "templates.xml",
+          "expectation": "locked"
+        }
+      ]
     },
     {
       "artifact_id": "fast_test_templates_t1",
       "environment": "test",
       "source": "https://ftp.moex.com/pub/FAST/Spectra/test/templatesT1/",
+      "include_globs": [
+        "*.xml",
+        "*.xsl"
+      ],
+      "large_file_policy": "fetch",
       "cache_dir": "spec-lock/test/fast/templatesT1/cache",
-      "manifest": "spec-lock/test/fast/templatesT1/manifest.json"
+      "manifest": "spec-lock/test/fast/templatesT1/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "configuration.xml",
+          "expectation": "locked"
+        },
+        {
+          "relative_path": "templates.xml",
+          "expectation": "locked"
+        }
+      ]
     },
     {
       "artifact_id": "fast_test_fast_8_6",
       "environment": "test",
       "source": "https://ftp.moex.com/pub/FAST/Spectra/test/FAST_8.6/",
+      "include_globs": [
+        "spectra_fastgate_*.pdf",
+        "templates.xml"
+      ],
+      "large_file_policy": "fetch",
       "cache_dir": "spec-lock/test/fast/FAST_8.6/cache",
-      "manifest": "spec-lock/test/fast/FAST_8.6/manifest.json"
+      "manifest": "spec-lock/test/fast/FAST_8.6/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "spectra_fastgate_en.pdf",
+          "expectation": "locked"
+        },
+        {
+          "relative_path": "templates.xml",
+          "expectation": "locked"
+        }
+      ]
     },
     {
       "artifact_id": "fast_test_fast_9_0",
       "environment": "test",
       "source": "https://ftp.moex.com/pub/FAST/Spectra/test/FAST_9.0/",
+      "include_globs": [
+        "*.zip",
+        "templates.xml"
+      ],
+      "max_file_bytes": 2000000,
+      "large_file_policy": "fetch",
       "cache_dir": "spec-lock/test/fast/FAST_9.0/cache",
-      "manifest": "spec-lock/test/fast/FAST_9.0/manifest.json"
+      "manifest": "spec-lock/test/fast/FAST_9.0/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "templates.xml",
+          "expectation": "locked"
+        }
+      ]
     },
     {
       "artifact_id": "simba_prod_root",
       "environment": "prod",
       "source": "https://ftp.moex.com/pub/SIMBA/Spectra/prod/",
+      "include_globs": [
+        "doc/*.pdf",
+        "simba_spectra-8.0.xml",
+        "sbe_schema.xsl",
+        "primary/*.xml",
+        "secondary/*.xml"
+      ],
+      "exclude_globs": [
+        "backup/**",
+        "pcap/**",
+        "*.zip"
+      ],
+      "max_total_bytes": 5000000,
+      "large_file_policy": "manifest_only",
       "cache_dir": "spec-lock/prod/simba/cache",
-      "manifest": "spec-lock/prod/simba/manifest.json"
+      "manifest": "spec-lock/prod/simba/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "doc/spectra_simba_en.pdf",
+          "expectation": "needs_confirmation",
+          "notes": "SIMBA lock is intentionally doc/schema/config oriented by default."
+        },
+        {
+          "relative_path": "simba_spectra-8.0.xml",
+          "expectation": "needs_confirmation"
+        },
+        {
+          "relative_path": "primary/configuration.xml",
+          "expectation": "needs_confirmation"
+        },
+        {
+          "relative_path": "secondary/configuration.xml",
+          "expectation": "needs_confirmation"
+        }
+      ]
     },
     {
       "artifact_id": "fix_prod_docs",
       "environment": "prod",
       "source": "https://ftp.moex.com/pub/FIX/Spectra/prod/docs/",
+      "include_globs": [
+        "spectra_fixgate_*.pdf"
+      ],
+      "exclude_globs": [
+        "bak/**",
+        "meta.info"
+      ],
+      "large_file_policy": "fetch",
       "cache_dir": "spec-lock/prod/fix/cache",
-      "manifest": "spec-lock/prod/fix/manifest.json"
+      "manifest": "spec-lock/prod/fix/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "spectra_fixgate_en.pdf",
+          "expectation": "locked"
+        }
+      ]
     },
     {
       "artifact_id": "plaza_docs",
       "environment": "prod",
       "source": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/",
+      "include_globs": [
+        "p2gate_en.html",
+        "p2gate_en.pdf",
+        "cgate_en.pdf",
+        "p2micexgate_en.pdf",
+        "style.css"
+      ],
+      "exclude_globs": [
+        "meta.info"
+      ],
+      "large_file_policy": "fetch",
       "cache_dir": "spec-lock/prod/plaza2/docs/cache",
-      "manifest": "spec-lock/prod/plaza2/docs/manifest.json"
+      "manifest": "spec-lock/prod/plaza2/docs/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "p2gate_en.html",
+          "expectation": "locked"
+        },
+        {
+          "relative_path": "p2gate_en.pdf",
+          "expectation": "locked"
+        }
+      ]
     },
     {
       "artifact_id": "cgate_docs",
       "environment": "prod",
       "source": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/prod/docs/",
+      "include_globs": [
+        "cgate_en.pdf",
+        "p2gate_en.pdf",
+        "p2gate_en.html",
+        "p2micexgate_en.pdf",
+        "style.css"
+      ],
+      "exclude_globs": [
+        "meta.info"
+      ],
+      "large_file_policy": "fetch",
       "cache_dir": "spec-lock/prod/plaza2/cgate_docs/cache",
-      "manifest": "spec-lock/prod/plaza2/cgate_docs/manifest.json"
+      "manifest": "spec-lock/prod/plaza2/cgate_docs/manifest.json",
+      "required_artifacts": [
+        {
+          "relative_path": "cgate_en.pdf",
+          "expectation": "locked"
+        }
+      ]
     }
   ]
 }

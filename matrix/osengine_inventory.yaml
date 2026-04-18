@@ -1,7 +1,8 @@
-{
-  "version": 1,
-  "inventory": [
-    {"inventory_id": "osengine_moex_fixfasttwime_dir", "source_path": "/Users/pavel/Downloads/OsEngine-master/project/OsEngine/Market/Servers/MoexFixFastTwimeFutures", "notes": "Whole directory inventory only; no logic reuse."},
-    {"inventory_id": "osengine_plaza_dir", "source_path": "/Users/pavel/Downloads/OsEngine-master/project/OsEngine/Market/Servers/Plaza", "notes": "Whole directory inventory only; no logic reuse."}
-  ]
-}
+version: 1
+inventory:
+  - inventory_id: osengine_moex_fixfasttwime_dir
+    source_hint: Downloads/OsEngine-master/project/OsEngine/Market/Servers/MoexFixFastTwimeFutures
+    notes: Whole directory inventory only; no logic reuse.
+  - inventory_id: osengine_plaza_dir
+    source_hint: Downloads/OsEngine-master/project/OsEngine/Market/Servers/Plaza
+    notes: Whole directory inventory only; no logic reuse.

@@ -1,23 +1,20 @@
-{
-  "version": 1,
-  "profile_id": "prod_fast_twime",
-  "environment": "prod",
-  "armed": false,
-  "profile_neutral_coverage": true,
-  "broker_topology": {
-    "mode": "unknown",
-    "order_path": "unknown",
-    "market_data_path": "unknown",
-    "router_location": "unknown"
-  },
-  "shadow_mode": {
-    "enabled": false,
-    "primary_source": "native_moex",
-    "native_connectors_read_only": false
-  },
-  "connectors": {
-    "market_data": ["fast_md"],
-    "orders": ["twime_trade"],
-    "state": []
-  }
-}
+version: 1
+profile_id: prod_fast_twime
+environment: prod
+armed: false
+profile_neutral_coverage: true
+broker_topology:
+  mode: unknown
+  order_path: unknown
+  market_data_path: unknown
+  router_location: unknown
+shadow_mode:
+  enabled: false
+  primary_source: native_moex
+  native_connectors_read_only: false
+connectors:
+  market_data:
+    - fast_md
+  orders:
+    - twime_trade
+  state: []

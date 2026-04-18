@@ -21,10 +21,34 @@ set(MOEX_BUILD_ROOT "${CMAKE_CURRENT_BINARY_DIR}")
 set(MOEX_TOOLS_BUILD_DIR "${MOEX_BUILD_ROOT}/tools")
 set(MOEX_APPS_BUILD_DIR "${MOEX_BUILD_ROOT}/apps")
 set(MOEX_TEST_OUTPUT_DIR "${MOEX_BUILD_ROOT}/test-output")
+set(MOEX_PYTHON_DEPS_DIR "${MOEX_BUILD_ROOT}/python-deps")
 
 file(MAKE_DIRECTORY "${MOEX_TOOLS_BUILD_DIR}")
 file(MAKE_DIRECTORY "${MOEX_APPS_BUILD_DIR}")
 file(MAKE_DIRECTORY "${MOEX_TEST_OUTPUT_DIR}")
+file(MAKE_DIRECTORY "${MOEX_PYTHON_DEPS_DIR}")
+
+execute_process(
+    COMMAND
+        "${Python3_EXECUTABLE}" -c
+        "import sys; sys.path.insert(0, r'${MOEX_PYTHON_DEPS_DIR}'); import yaml"
+    RESULT_VARIABLE MOEX_PYYAML_STATUS
+    OUTPUT_QUIET
+    ERROR_QUIET)
+
+if(NOT MOEX_PYYAML_STATUS EQUAL 0)
+    execute_process(
+        COMMAND
+            "${Python3_EXECUTABLE}" -m pip install
+            --disable-pip-version-check
+            --quiet
+            --target "${MOEX_PYTHON_DEPS_DIR}"
+            -r "${CMAKE_CURRENT_SOURCE_DIR}/requirements.txt"
+        RESULT_VARIABLE MOEX_PIP_INSTALL_STATUS)
+    if(NOT MOEX_PIP_INSTALL_STATUS EQUAL 0)
+        message(FATAL_ERROR "Failed to install Python requirements into ${MOEX_PYTHON_DEPS_DIR}")
+    endif()
+endif()
 
 add_library(moex_phase0_core STATIC
     src/phase0_core.cpp)
@@ -53,6 +77,7 @@ function(moex_generate_python_launcher launcher_dir launcher_name script_relativ
     set(LAUNCHER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${script_relative_path}")
     set(LAUNCHER_DEST "${launcher_dir}/${launcher_name}")
     set(LAUNCHER_SCRIPT_PATH "${LAUNCHER_SOURCE}")
+    set(LAUNCHER_PYTHON_DEPS_DIR "${MOEX_PYTHON_DEPS_DIR}")
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/python_launcher.sh.in"
         "${LAUNCHER_DEST}"
@@ -87,6 +112,12 @@ add_test(
         --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/replay.yaml")
 
 add_test(
+    NAME profile_check_prod_with_arm
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/prod_fast_twime.template.yaml"
+        --armed)
+
+add_test(
     NAME profile_check_prod_requires_arm
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
         --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/prod_fast_twime.template.yaml")
@@ -103,6 +134,17 @@ add_test(
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/spec_indexer"
         --config "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/spec_indexer_config.json"
         --workspace "${MOEX_TEST_OUTPUT_DIR}/spec-indexer")
+
+add_test(
+    NAME spec_indexer_policy_fixture
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/spec_indexer"
+        --config "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/spec_indexer_policy_config.yaml"
+        --workspace "${MOEX_TEST_OUTPUT_DIR}/spec-indexer-policy")
+
+add_test(
+    NAME spec_indexer_policy_assert
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_spec_indexer_policy.py"
+        "${MOEX_TEST_OUTPUT_DIR}/spec-indexer-policy/manifests/policy.json")
 
 add_test(
     NAME plaza2_scheme_lock_fixture
