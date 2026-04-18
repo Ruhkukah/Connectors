@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "items": [
+    {"protocol_item_id": "plaza2_router_split", "artifact_id": "plaza_docs", "name": "PLAZA II split into repl/trade/router/scheme", "kind": "architecture"},
+    {"protocol_item_id": "plaza2_scheme_lock", "artifact_id": "cgate_docs", "name": "Installed scheme lock and generated bindings fingerprint", "kind": "artifact_lock"},
+    {"protocol_item_id": "plaza2_twime_profile_neutrality", "artifact_id": "plaza_docs", "name": "Profile-neutral plaza2_twime composition", "kind": "profile"}
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "roots": [
+    {
+      "artifact_id": "twime_prod_root",
+      "environment": "prod",
+      "source": "https://ftp.moex.com/pub/TWIME/Spectra/prod/doc/",
+      "cache_dir": "spec-lock/prod/twime/cache",
+      "manifest": "spec-lock/prod/twime/manifest.json"
+    },
+    {
+      "artifact_id": "twime_test_root",
+      "environment": "test",
+      "source": "https://ftp.moex.com/pub/TWIME/Spectra/Test/",
+      "cache_dir": "spec-lock/test/twime/cache",
+      "manifest": "spec-lock/test/twime/manifest.json"
+    },
+    {
+      "artifact_id": "fast_prod_root",
+      "environment": "prod",
+      "source": "https://ftp.moex.com/pub/FAST/Spectra/prod/",
+      "cache_dir": "spec-lock/prod/fast/cache",
+      "manifest": "spec-lock/prod/fast/manifest.json"
+    },
+    {
+      "artifact_id": "fast_test_root",
+      "environment": "test",
+      "source": "https://ftp.moex.com/pub/FAST/Spectra/test/",
+      "cache_dir": "spec-lock/test/fast/cache",
+      "manifest": "spec-lock/test/fast/manifest.json"
+    },
+    {
+      "artifact_id": "fast_test_templates_t0",
+      "environment": "test",
+      "source": "https://ftp.moex.com/pub/FAST/Spectra/test/templatesT0/",
+      "cache_dir": "spec-lock/test/fast/templatesT0/cache",
+      "manifest": "spec-lock/test/fast/templatesT0/manifest.json"
+    },
+    {
+      "artifact_id": "fast_test_templates_t1",
+      "environment": "test",
+      "source": "https://ftp.moex.com/pub/FAST/Spectra/test/templatesT1/",
+      "cache_dir": "spec-lock/test/fast/templatesT1/cache",
+      "manifest": "spec-lock/test/fast/templatesT1/manifest.json"
+    },
+    {
+      "artifact_id": "fast_test_fast_8_6",
+      "environment": "test",
+      "source": "https://ftp.moex.com/pub/FAST/Spectra/test/FAST_8.6/",
+      "cache_dir": "spec-lock/test/fast/FAST_8.6/cache",
+      "manifest": "spec-lock/test/fast/FAST_8.6/manifest.json"
+    },
+    {
+      "artifact_id": "fast_test_fast_9_0",
+      "environment": "test",
+      "source": "https://ftp.moex.com/pub/FAST/Spectra/test/FAST_9.0/",
+      "cache_dir": "spec-lock/test/fast/FAST_9.0/cache",
+      "manifest": "spec-lock/test/fast/FAST_9.0/manifest.json"
+    },
+    {
+      "artifact_id": "simba_prod_root",
+      "environment": "prod",
+      "source": "https://ftp.moex.com/pub/SIMBA/Spectra/prod/",
+      "cache_dir": "spec-lock/prod/simba/cache",
+      "manifest": "spec-lock/prod/simba/manifest.json"
+    },
+    {
+      "artifact_id": "fix_prod_docs",
+      "environment": "prod",
+      "source": "https://ftp.moex.com/pub/FIX/Spectra/prod/docs/",
+      "cache_dir": "spec-lock/prod/fix/cache",
+      "manifest": "spec-lock/prod/fix/manifest.json"
+    },
+    {
+      "artifact_id": "plaza_docs",
+      "environment": "prod",
+      "source": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/",
+      "cache_dir": "spec-lock/prod/plaza2/docs/cache",
+      "manifest": "spec-lock/prod/plaza2/docs/manifest.json"
+    },
+    {
+      "artifact_id": "cgate_docs",
+      "environment": "prod",
+      "source": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/prod/docs/",
+      "cache_dir": "spec-lock/prod/plaza2/cgate_docs/cache",
+      "manifest": "spec-lock/prod/plaza2/cgate_docs/manifest.json"
+    }
+  ]
+}

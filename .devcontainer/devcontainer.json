@@ -1,0 +1,17 @@
+{
+  "name": "moexconnector-phase0",
+  "build": {
+    "dockerfile": "../docker/Dockerfile.phase0"
+  },
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cmake-tools",
+        "llvm-vs-code-extensions.vscode-clangd",
+        "ms-python.python"
+      ]
+    }
+  },
+  "postCreateCommand": "cmake -S . -B build"
+}

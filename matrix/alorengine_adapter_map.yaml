@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "adapter_map": [
+    {"adapter_map_id": "adapter_trading_request_path", "coverage_id": "coverage_twime_trade_boundary", "alor_surface": "ITradingClientRouter/LiveTradingClient", "native_surface": "alorengine_capi submit/cancel/replace boundary"},
+    {"adapter_map_id": "adapter_order_book_service", "coverage_id": "coverage_plaza2_split", "alor_surface": "IOrderBookService", "native_surface": "batch-polled order book snapshots and updates"},
+    {"adapter_map_id": "adapter_market_data_publisher", "coverage_id": "coverage_fast_test_variants", "alor_surface": "IMarketDataPublisherService", "native_surface": "batch-polled public trades/L1"},
+    {"adapter_map_id": "adapter_instrument_catalog", "coverage_id": "coverage_shadow_mode", "alor_surface": "IInstrumentCatalog", "native_surface": "reference data and shadow-mode instrument comparison"},
+    {"adapter_map_id": "adapter_position_state", "coverage_id": "coverage_plaza2_scheme_lock", "alor_surface": "IPositionBus and DTC position updates", "native_surface": "PLAZA II replication positions/limits"},
+    {"adapter_map_id": "adapter_trade_status", "coverage_id": "coverage_twime_spec_lock", "alor_surface": "IOrderStatusBus and ITradeExecutionBus", "native_surface": "private order status and fills"}
+  ]
+}

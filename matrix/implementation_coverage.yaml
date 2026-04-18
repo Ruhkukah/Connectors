@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "coverage": [
+    {"coverage_id": "coverage_twime_spec_lock", "protocol_item_id": "twime_case_sensitive_test_root", "scenario_id": "scenario_twime_public", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase0_delivered"},
+    {"coverage_id": "coverage_twime_trade_boundary", "protocol_item_id": "twime_order_entry_boundary", "scenario_id": "scenario_twime_public", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase0_documented"},
+    {"coverage_id": "coverage_fast_test_variants", "protocol_item_id": "fast_test_templates_t0_lock", "scenario_id": "scenario_fix_public", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase0_delivered"},
+    {"coverage_id": "coverage_plaza2_scheme_lock", "protocol_item_id": "plaza2_scheme_lock", "scenario_id": "scenario_plaza2_public", "inventory_id": "osengine_plaza_dir", "status": "phase0_delivered"},
+    {"coverage_id": "coverage_plaza2_split", "protocol_item_id": "plaza2_router_split", "scenario_id": "scenario_plaza2_public", "inventory_id": "osengine_plaza_dir", "status": "phase0_documented"},
+    {"coverage_id": "coverage_shadow_mode", "protocol_item_id": "plaza2_twime_profile_neutrality", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_plaza_dir", "status": "phase0_documented"},
+    {"coverage_id": "coverage_simba_scaffold", "protocol_item_id": "simba_scaffold_profile", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase0_scaffolded"}
+  ]
+}

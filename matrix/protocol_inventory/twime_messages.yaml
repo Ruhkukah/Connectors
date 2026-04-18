@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "items": [
+    {"protocol_item_id": "twime_case_sensitive_test_root", "artifact_id": "twime_test_root", "name": "Case-sensitive TWIME test root lock", "kind": "artifact_lock"},
+    {"protocol_item_id": "twime_establish_session", "artifact_id": "twime_prod_root", "name": "FIXP Establish/EstablishmentAck", "kind": "session"},
+    {"protocol_item_id": "twime_order_entry_boundary", "artifact_id": "twime_prod_root", "name": "Trade-only order entry boundary", "kind": "behavior"}
+  ]
+}

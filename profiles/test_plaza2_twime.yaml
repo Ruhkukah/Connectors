@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "profile_id": "test_plaza2_twime",
+  "environment": "test",
+  "armed": false,
+  "profile_neutral_coverage": true,
+  "broker_topology": {
+    "mode": "unknown",
+    "order_path": "broker_proxy",
+    "market_data_path": "broker_router",
+    "router_location": "unknown"
+  },
+  "shadow_mode": {
+    "enabled": true,
+    "primary_source": "alor_api",
+    "native_connectors_read_only": true,
+    "compare": ["order_books", "trades", "positions", "instrument_mapping", "status_transitions"]
+  },
+  "connectors": {
+    "market_data": ["plaza2_repl"],
+    "orders": ["twime_trade"],
+    "state": ["plaza2_repl"]
+  }
+}

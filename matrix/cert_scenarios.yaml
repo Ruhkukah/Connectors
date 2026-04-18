@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "scenarios": [
+    {"scenario_id": "scenario_twime_public", "artifact_id": "moex_cert_procedure", "title": "Public TWIME certification appendix coverage"},
+    {"scenario_id": "scenario_fix_public", "artifact_id": "moex_cert_procedure", "title": "Public FIX certification appendix coverage"},
+    {"scenario_id": "scenario_plaza2_public", "artifact_id": "moex_cert_procedure", "title": "Public CGate/PLAZA II certification behavior coverage"},
+    {"scenario_id": "scenario_shadow_mode", "artifact_id": "moex_test_access", "title": "AlorEngine shadow mode comparison and diff reporting"}
+  ]
+}

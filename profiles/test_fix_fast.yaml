@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "profile_id": "test_fix_fast",
+  "environment": "test",
+  "armed": false,
+  "profile_neutral_coverage": true,
+  "broker_topology": {
+    "mode": "unknown",
+    "order_path": "broker_proxy",
+    "market_data_path": "native_exchange_feed",
+    "router_location": "unknown"
+  },
+  "shadow_mode": {
+    "enabled": false,
+    "primary_source": "native_moex",
+    "native_connectors_read_only": false
+  },
+  "connectors": {
+    "market_data": ["fast_md"],
+    "orders": ["fix_trade"],
+    "state": []
+  }
+}

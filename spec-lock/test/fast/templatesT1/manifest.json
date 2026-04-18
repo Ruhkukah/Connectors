@@ -1,0 +1,53 @@
+{
+  "artifact_count": 3,
+  "artifacts": [
+    {
+      "artifact_id": "fast_test_templates_t1_configuration_html_xsl",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/templatesT1/configuration_html.xsl",
+      "environment": "test",
+      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/test/fast/templatesT1/cache/configuration_html.xsl",
+      "relative_path": "configuration_html.xsl",
+      "retrieved_at": "2026-04-18T18:18:01Z",
+      "root_artifact_id": "fast_test_templates_t1",
+      "sha256": "073f95994b7fb6257a5efb00ae5fb0b5bfad4bb959cfd821eaa8b5ec5a1bea84",
+      "size": 9467,
+      "status": "locked",
+      "upstream_modified": "3/24/2021  6:49 PM"
+    },
+    {
+      "artifact_id": "fast_test_templates_t1_configuration_xml",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/templatesT1/configuration.xml",
+      "environment": "test",
+      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/test/fast/templatesT1/cache/configuration.xml",
+      "relative_path": "configuration.xml",
+      "retrieved_at": "2026-04-18T18:18:01Z",
+      "root_artifact_id": "fast_test_templates_t1",
+      "sha256": "9377bb0dc3d17344ca7243eb7f4618bcfe6c261c6e63cd392767c910ce6bdb57",
+      "size": 12969,
+      "status": "locked",
+      "upstream_modified": "12/18/2023 11:55 AM"
+    },
+    {
+      "artifact_id": "fast_test_templates_t1_templates_xml",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/templatesT1/templates.xml",
+      "environment": "test",
+      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/test/fast/templatesT1/cache/templates.xml",
+      "relative_path": "templates.xml",
+      "retrieved_at": "2026-04-18T18:18:02Z",
+      "root_artifact_id": "fast_test_templates_t1",
+      "sha256": "dbd50f1e0becc2b2ebd9dac8e4c6609ba1538566811b610cde9b6dd3e7f66a8e",
+      "size": 28575,
+      "status": "locked",
+      "upstream_modified": "9/9/2025  1:16 PM"
+    }
+  ],
+  "fetch_error_count": 0,
+  "root": {
+    "artifact_id": "fast_test_templates_t1",
+    "cache_dir": "spec-lock/test/fast/templatesT1/cache",
+    "environment": "test",
+    "manifest": "spec-lock/test/fast/templatesT1/manifest.json",
+    "source": "https://ftp.moex.com/pub/FAST/Spectra/test/templatesT1/"
+  },
+  "version": 1
+}

@@ -1,0 +1,53 @@
+{
+  "artifact_count": 3,
+  "artifacts": [
+    {
+      "artifact_id": "fast_test_fast_8_6_spectra_fastgate_en_pdf",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/FAST_8.6/spectra_fastgate_en.pdf",
+      "environment": "test",
+      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/test/fast/FAST_8.6/cache/spectra_fastgate_en.pdf",
+      "relative_path": "spectra_fastgate_en.pdf",
+      "retrieved_at": "2026-04-18T18:18:02Z",
+      "root_artifact_id": "fast_test_fast_8_6",
+      "sha256": "4efd8cc3754e7e5f32fd963c0b5ef842489603e6c1c8fc13c725b32c497ed1bb",
+      "size": 543150,
+      "status": "locked",
+      "upstream_modified": "6/20/2025  1:23 PM"
+    },
+    {
+      "artifact_id": "fast_test_fast_8_6_spectra_fastgate_ru_pdf",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/FAST_8.6/spectra_fastgate_ru.pdf",
+      "environment": "test",
+      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/test/fast/FAST_8.6/cache/spectra_fastgate_ru.pdf",
+      "relative_path": "spectra_fastgate_ru.pdf",
+      "retrieved_at": "2026-04-18T18:18:02Z",
+      "root_artifact_id": "fast_test_fast_8_6",
+      "sha256": "11fbf6c0f19f438254bbe94b6c0018e9173ed3af3309f5523a16806b89f07c3e",
+      "size": 577601,
+      "status": "locked",
+      "upstream_modified": "6/20/2025  1:23 PM"
+    },
+    {
+      "artifact_id": "fast_test_fast_8_6_templates_xml",
+      "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/FAST_8.6/templates.xml",
+      "environment": "test",
+      "local_cache_path": "/Users/pavel/CSharp/MoexConnector/spec-lock/test/fast/FAST_8.6/cache/templates.xml",
+      "relative_path": "templates.xml",
+      "retrieved_at": "2026-04-18T18:18:02Z",
+      "root_artifact_id": "fast_test_fast_8_6",
+      "sha256": "42181fe29b6e43e19c53d00d6723f67b11741813b9caf7037f91f86b46baeb40",
+      "size": 28605,
+      "status": "locked",
+      "upstream_modified": "6/20/2025 12:59 PM"
+    }
+  ],
+  "fetch_error_count": 0,
+  "root": {
+    "artifact_id": "fast_test_fast_8_6",
+    "cache_dir": "spec-lock/test/fast/FAST_8.6/cache",
+    "environment": "test",
+    "manifest": "spec-lock/test/fast/FAST_8.6/manifest.json",
+    "source": "https://ftp.moex.com/pub/FAST/Spectra/test/FAST_8.6/"
+  },
+  "version": 1
+}

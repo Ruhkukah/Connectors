@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+set -eu
+
+SOURCE_ROOT="@MOEX_SOURCE_ROOT@"
+PYTHON_BIN="@Python3_EXECUTABLE@"
+export PYTHONPATH="${SOURCE_ROOT}/tools${PYTHONPATH+:$PYTHONPATH}"
+
+exec "${PYTHON_BIN}" "@LAUNCHER_SCRIPT_PATH@" "$@"

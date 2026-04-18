@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "event_map": [
+    {"native_event_id": "native_order_status_event", "adapter_map_id": "adapter_trade_status", "alor_bus": "IOrderStatusBus", "dtc_surface": "OrderUpdate"},
+    {"native_event_id": "native_private_trade_event", "adapter_map_id": "adapter_trade_status", "alor_bus": "ITradeExecutionBus", "dtc_surface": "TradeDataUpdate"},
+    {"native_event_id": "native_position_event", "adapter_map_id": "adapter_position_state", "alor_bus": "IPositionBus", "dtc_surface": "PositionUpdate"},
+    {"native_event_id": "native_public_l1_event", "adapter_map_id": "adapter_market_data_publisher", "alor_bus": "IMarketDataPublisherService", "dtc_surface": "MarketDataUpdate"},
+    {"native_event_id": "native_order_book_event", "adapter_map_id": "adapter_order_book_service", "alor_bus": "IOrderBookService", "dtc_surface": "MarketDepthUpdate"},
+    {"native_event_id": "native_instrument_mapping_diff_event", "adapter_map_id": "adapter_instrument_catalog", "alor_bus": "IInstrumentCatalog", "dtc_surface": "GeneralLogMessage"}
+  ]
+}
