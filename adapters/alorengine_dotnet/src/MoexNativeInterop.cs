@@ -85,18 +85,62 @@ internal static class MoexNativeInterop
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    internal struct NativeMoexHealthRequestBuffer
+    internal struct NativeMoexOrderSubmitRequest
     {
         public uint struct_size;
         public ushort abi_version;
         public ushort reserved0;
-        public uint connector_state;
-        public uint active_profile_kind;
-        public byte prod_armed;
-        public byte shadow_mode_enabled;
+        public IntPtr profile_id;
+        public IntPtr symbol;
+        public IntPtr account;
+        public IntPtr client_order_id;
+    }
 
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)]
-        public byte[]? reserved1;
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeMoexOrderCancelRequest
+    {
+        public uint struct_size;
+        public ushort abi_version;
+        public ushort reserved0;
+        public IntPtr profile_id;
+        public IntPtr account;
+        public IntPtr server_order_id;
+        public IntPtr client_order_id;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeMoexOrderReplaceRequest
+    {
+        public uint struct_size;
+        public ushort abi_version;
+        public ushort reserved0;
+        public IntPtr profile_id;
+        public IntPtr account;
+        public IntPtr server_order_id;
+        public IntPtr client_order_id;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeMoexMassCancelRequest
+    {
+        public uint struct_size;
+        public ushort abi_version;
+        public ushort reserved0;
+        public IntPtr profile_id;
+        public IntPtr account;
+        public IntPtr instrument_scope;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeMoexSubscriptionRequest
+    {
+        public uint struct_size;
+        public ushort abi_version;
+        public ushort reserved0;
+        public IntPtr profile_id;
+        public IntPtr stream_name;
+        public IntPtr symbol;
+        public IntPtr board;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -158,10 +202,16 @@ internal static class MoexNativeInterop
     internal delegate uint AbiVersionFn();
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    internal delegate bool ProdRequiresArmFn(IntPtr environment, [MarshalAs(UnmanagedType.I1)] bool armed);
+    internal delegate byte EnvironmentStartAllowedFn(IntPtr environment, byte armed);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate byte ProdRequiresExplicitArmFn();
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate uint SizeofFn();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate uint AlignofFn();
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate MoexResult CreateConnectorFn(ref NativeMoexConnectorCreateParams request, out IntPtr handle);
@@ -182,13 +232,16 @@ internal static class MoexNativeInterop
     internal delegate MoexResult PollEventsFn(IntPtr handle, IntPtr outEvents, uint capacity, out uint written);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate MoexResult PollEventsV2Fn(IntPtr handle, IntPtr outEvents, uint eventStrideBytes, uint capacity, out uint written);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate void NativeLowRateCallbackFn(IntPtr header, IntPtr payload, IntPtr userData);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate MoexResult RegisterLowRateCallbackFn(IntPtr handle, NativeLowRateCallbackFn? callback, IntPtr userData);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    internal delegate MoexResult GetHealthFn(IntPtr handle, ref NativeMoexHealthRequestBuffer buffer);
+    internal delegate MoexResult GetHealthFn(IntPtr handle, ref NativeMoexHealthSnapshot buffer);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate MoexResult GetBackpressureFn(IntPtr handle, out NativeMoexBackpressureCounters counters);

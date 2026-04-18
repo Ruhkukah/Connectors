@@ -195,6 +195,17 @@ if(DOTNET_EXECUTABLE)
         ENVIRONMENT
             "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
 
+    add_test(
+        NAME dotnet_abi_policy
+        COMMAND "${DOTNET_EXECUTABLE}" run
+            --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiPolicy/AbiPolicy.csproj"
+            --framework net10.0
+            -- "$<TARGET_FILE:moex_phase0_abi>"
+               "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt")
+    set_tests_properties(dotnet_abi_policy PROPERTIES
+        ENVIRONMENT
+            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+
     if(EXISTS "${MOEX_ALORENGINE_PROJECT}")
         add_test(
             NAME dotnet_shadow_replay

@@ -24,12 +24,17 @@ if (library.AbiVersion != 1)
     throw new InvalidOperationException($"unexpected ABI version {library.AbiVersion}");
 }
 
-if (!library.RequiresExplicitProdArm("test", false))
+if (!library.ProductionRequiresExplicitArm())
+{
+    throw new InvalidOperationException("prod explicit arm policy should be enabled");
+}
+
+if (!library.IsEnvironmentStartAllowed("test", false))
 {
     throw new InvalidOperationException("test environment should not require an explicit prod arm");
 }
 
-if (library.RequiresExplicitProdArm("prod", false))
+if (library.IsEnvironmentStartAllowed("prod", false))
 {
     throw new InvalidOperationException("prod environment arming gate should reject unarmed startup");
 }

@@ -1,6 +1,6 @@
 # MoexConnector
 
-Phase 1 stub-only repository for a standalone C++20/Linux-first MOEX connector suite.
+Phase 1.1 stub-only repository for a standalone C++20/Linux-first MOEX connector suite.
 
 License: MIT. See [LICENSE](LICENSE).
 
@@ -10,6 +10,7 @@ This repository intentionally stops before protocol implementation. The current 
 
 - buildable monorepo skeleton and C ABI headers
 - deterministic native stub connector with synthetic replay fixtures
+- explicit ABI hardening for environment arming, polling stride, and exported layout checks
 - .NET SafeHandle wrapper and batch polling/low-rate callback tests
 - optional AlorEngine shadow-mode replay harness against the current seam types
 - profile templates with production arming checks
@@ -29,6 +30,12 @@ This repository intentionally stops before protocol implementation. The current 
 - `tools/`: utility scripts copied into `build/tools/`
 - `apps/`: runner stubs copied into `build/apps/`
 
+## Status
+
+- Phase 1 implemented a synthetic native connector, the .NET adapter, and AlorEngine shadow replay.
+- Phase 1.1 hardened the ABI with explicit boolean types, clearer environment-start exports, stride-aware polling, and stronger ABI policy tests.
+- Real MOEX protocol/network logic is still intentionally absent.
+
 ## Definition of Done Commands
 
 ```sh
@@ -40,9 +47,10 @@ build/tools/matrix_validate --matrix-dir matrix
 build/apps/moex_cert_runner --scenario cert/stub/phase0_stub.yaml --output-dir build/cert-runner
 build/tools/profile_check --profile profiles/prod_fast_twime.template.yaml
 dotnet run --project tests/dotnet/AbiSmoke/AbiSmoke.csproj --framework net10.0 -- build/lib/libmoex_phase0_abi.dylib tests/fixtures/shadow_replay/synthetic_replay.txt
+dotnet run --project tests/dotnet/AbiPolicy/AbiPolicy.csproj --framework net10.0 -- build/lib/libmoex_phase0_abi.dylib tests/fixtures/shadow_replay/synthetic_replay.txt
 ```
 
-The last command is expected to fail unless `--armed` is supplied.
+`build/tools/profile_check --profile profiles/prod_fast_twime.template.yaml` is expected to fail unless `--armed` is supplied.
 
 To run the optional AlorEngine shadow replay harness against a local checkout:
 
@@ -55,4 +63,4 @@ ctest --test-dir build --output-on-failure -R dotnet_shadow_replay
 
 - This repository is public and intentionally excludes operational trading data.
 - Do not commit credentials, broker configs, production logs, certification logs, or broker latency/topology information.
-- Phase 1 changes may harden the native stub, managed adapter, shadow replay, CI, docs, and test scaffolding, but do not add MOEX protocol logic.
+- Phase 1 / 1.1 changes may harden the native stub, managed adapter, shadow replay, ABI policy, CI, docs, and test scaffolding, but do not add MOEX protocol logic.

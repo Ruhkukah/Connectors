@@ -182,7 +182,7 @@ internal static class MoexNativeMapper
             (MoexSourceConnector)native.source_connector,
             native.flags);
 
-    public static MoexHealthView Map(MoexNativeInterop.NativeMoexHealthRequestBuffer native) =>
+    public static MoexHealthView Map(MoexNativeInterop.NativeMoexHealthSnapshot native) =>
         new(native.connector_state, native.active_profile_kind, native.prod_armed != 0, native.shadow_mode_enabled != 0);
 
     public static MoexBackpressureSnapshot Map(MoexNativeInterop.NativeMoexBackpressureCounters native) =>

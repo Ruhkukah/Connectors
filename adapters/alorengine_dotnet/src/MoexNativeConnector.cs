@@ -89,45 +89,23 @@ public sealed class MoexNativeConnector : IDisposable
 
     public IReadOnlyList<MoexConnectorEvent> PollEvents(int capacity)
     {
-        ThrowIfDisposed();
-        if (capacity <= 0)
-        {
-            return Array.Empty<MoexConnectorEvent>();
-        }
+        var (events, _, _) = PollEventsInternal(capacity, checked((int)_library.SizeofPolledEvent()), throwOnError: true);
+        return events;
+    }
 
-        var eventSize = checked((int)_library.SizeofPolledEvent());
-        var buffer = Marshal.AllocHGlobal(eventSize * capacity);
-        try
-        {
-            var result = _library.PollEvents(_handle.DangerousGetHandle(), buffer, (uint)capacity, out var written);
-            MoexNativeLibrary.EnsureSuccess("moex_poll_events", result);
-
-            if (written == 0)
-            {
-                return Array.Empty<MoexConnectorEvent>();
-            }
-
-            var output = new List<MoexConnectorEvent>((int)written);
-            for (var index = 0; index < written; index++)
-            {
-                var native = Marshal.PtrToStructure<MoexNativeInterop.NativeMoexPolledEvent>(buffer + (index * eventSize));
-                output.Add(MoexNativeMapper.Map(native));
-            }
-
-            return output;
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-        }
+    public MoexResult PollEventsWithStrideForTest(int eventStrideBytes, int capacity, out uint written)
+    {
+        var (_, result, polled) = PollEventsInternal(capacity, eventStrideBytes, throwOnError: false);
+        written = polled;
+        return result;
     }
 
     public MoexHealthView GetHealth()
     {
         ThrowIfDisposed();
-        var buffer = new MoexNativeInterop.NativeMoexHealthRequestBuffer
+        var buffer = new MoexNativeInterop.NativeMoexHealthSnapshot
         {
-            struct_size = (uint)Marshal.SizeOf<MoexNativeInterop.NativeMoexHealthRequestBuffer>(),
+            struct_size = (uint)Marshal.SizeOf<MoexNativeInterop.NativeMoexHealthSnapshot>(),
             abi_version = MoexNativeInterop.AbiVersion,
             reserved1 = new byte[6]
         };
@@ -154,5 +132,60 @@ public sealed class MoexNativeConnector : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         _library.ThrowIfDisposed();
+    }
+
+    private (IReadOnlyList<MoexConnectorEvent> Events, MoexResult Result, uint Written) PollEventsInternal(
+        int capacity,
+        int eventStrideBytes,
+        bool throwOnError)
+    {
+        ThrowIfDisposed();
+        if (capacity <= 0)
+        {
+            return (Array.Empty<MoexConnectorEvent>(), MoexResult.Ok, 0U);
+        }
+
+        if (eventStrideBytes <= 0)
+        {
+            return (Array.Empty<MoexConnectorEvent>(), MoexResult.InvalidArgument, 0U);
+        }
+
+        var buffer = Marshal.AllocHGlobal(eventStrideBytes * capacity);
+        try
+        {
+            var result = _library.PollEventsV2(
+                _handle.DangerousGetHandle(),
+                buffer,
+                checked((uint)eventStrideBytes),
+                checked((uint)capacity),
+                out var written);
+
+            if (throwOnError)
+            {
+                MoexNativeLibrary.EnsureSuccess("moex_poll_events_v2", result);
+            }
+            else if (result != MoexResult.Ok)
+            {
+                return (Array.Empty<MoexConnectorEvent>(), result, written);
+            }
+
+            if (written == 0)
+            {
+                return (Array.Empty<MoexConnectorEvent>(), result, 0U);
+            }
+
+            var output = new List<MoexConnectorEvent>((int)written);
+            for (var index = 0; index < written; index++)
+            {
+                var native = Marshal.PtrToStructure<MoexNativeInterop.NativeMoexPolledEvent>(buffer + (index * eventStrideBytes));
+                output.Add(MoexNativeMapper.Map(native));
+            }
+
+            return (output, result, written);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
     }
 }

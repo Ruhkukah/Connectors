@@ -3,6 +3,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define MOEX_ABI_DEPRECATED __attribute__((deprecated))
+#elif defined(_MSC_VER)
+#define MOEX_ABI_DEPRECATED __declspec(deprecated)
+#else
+#define MOEX_ABI_DEPRECATED
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -93,7 +101,7 @@ typedef struct MoexBackpressureCounters {
     uint64_t polled;
     uint64_t dropped;
     uint64_t high_watermark;
-    bool overflowed;
+    uint8_t overflowed;
     uint8_t reserved[7];
 } MoexBackpressureCounters;
 
@@ -210,12 +218,31 @@ typedef void (*MoexLowRateCallback)(const MoexEventHeader* header, const void* p
 
 const char* moex_phase0_abi_name(void);
 uint32_t moex_phase0_abi_version(void);
-bool moex_phase0_prod_requires_arm(const char* environment, bool armed);
+uint8_t moex_environment_start_allowed(const char* environment, uint8_t armed);
+uint8_t moex_prod_requires_explicit_arm(void);
+MOEX_ABI_DEPRECATED bool moex_phase0_prod_requires_arm(const char* environment, bool armed);
 uint32_t moex_sizeof_event_header(void);
 uint32_t moex_sizeof_backpressure_counters(void);
 uint32_t moex_sizeof_health_snapshot(void);
 uint32_t moex_sizeof_connector_create_params(void);
+uint32_t moex_sizeof_profile_load_params(void);
+uint32_t moex_sizeof_order_submit_request(void);
+uint32_t moex_sizeof_order_cancel_request(void);
+uint32_t moex_sizeof_order_replace_request(void);
+uint32_t moex_sizeof_mass_cancel_request(void);
+uint32_t moex_sizeof_subscription_request(void);
 uint32_t moex_sizeof_polled_event(void);
+uint32_t moex_alignof_event_header(void);
+uint32_t moex_alignof_backpressure_counters(void);
+uint32_t moex_alignof_health_snapshot(void);
+uint32_t moex_alignof_connector_create_params(void);
+uint32_t moex_alignof_profile_load_params(void);
+uint32_t moex_alignof_order_submit_request(void);
+uint32_t moex_alignof_order_cancel_request(void);
+uint32_t moex_alignof_order_replace_request(void);
+uint32_t moex_alignof_mass_cancel_request(void);
+uint32_t moex_alignof_subscription_request(void);
+uint32_t moex_alignof_polled_event(void);
 MoexResult moex_create_connector(const MoexConnectorCreateParams* params, MoexConnectorHandle* out_handle);
 MoexResult moex_destroy_connector(MoexConnectorHandle handle);
 MoexResult moex_load_profile(MoexConnectorHandle handle, const MoexProfileLoadParams* params);
@@ -228,6 +255,12 @@ MoexResult moex_replace_order_placeholder(MoexConnectorHandle handle, const Moex
 MoexResult moex_mass_cancel_placeholder(MoexConnectorHandle handle, const MoexMassCancelRequest* request);
 MoexResult moex_subscribe_placeholder(MoexConnectorHandle handle, const MoexSubscriptionRequest* request);
 MoexResult moex_unsubscribe_placeholder(MoexConnectorHandle handle, const MoexSubscriptionRequest* request);
+MoexResult moex_poll_events_v2(
+    MoexConnectorHandle handle,
+    void* out_events,
+    uint32_t event_stride_bytes,
+    uint32_t capacity,
+    uint32_t* written);
 MoexResult moex_poll_events(MoexConnectorHandle handle, void* out_events, uint32_t capacity, uint32_t* written);
 MoexResult moex_register_low_rate_callback(MoexConnectorHandle handle, MoexLowRateCallback callback, void* user_data);
 MoexResult moex_get_health(MoexConnectorHandle handle, MoexHealthSnapshot* out_health);

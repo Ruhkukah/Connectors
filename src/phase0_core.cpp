@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -67,6 +68,10 @@ namespace {
 
 constexpr std::int64_t kMonotonicBaseNs = 1'000'000'000LL;
 constexpr std::int64_t kStepNs = 1'000'000LL;
+
+constexpr std::uint8_t to_abi_bool(bool value) {
+    return value ? 1U : 0U;
+}
 
 std::string trim_copy(std::string_view value) {
     std::size_t first = 0;
@@ -356,9 +361,17 @@ uint32_t moex_phase0_abi_version(void) {
     return MOEX_C_ABI_VERSION;
 }
 
-bool moex_phase0_prod_requires_arm(const char* environment, bool armed) {
+uint8_t moex_environment_start_allowed(const char* environment, uint8_t armed) {
     const std::string_view env = environment == nullptr ? std::string_view{} : std::string_view(environment);
-    return moex::phase0::prod_requires_arm(env, armed);
+    return to_abi_bool(moex::phase0::prod_requires_arm(env, armed != 0U));
+}
+
+uint8_t moex_prod_requires_explicit_arm(void) {
+    return 1U;
+}
+
+bool moex_phase0_prod_requires_arm(const char* environment, bool armed) {
+    return moex_environment_start_allowed(environment, to_abi_bool(armed)) != 0U;
 }
 
 uint32_t moex_sizeof_event_header(void) {
@@ -377,8 +390,76 @@ uint32_t moex_sizeof_connector_create_params(void) {
     return static_cast<uint32_t>(sizeof(MoexConnectorCreateParams));
 }
 
+uint32_t moex_sizeof_profile_load_params(void) {
+    return static_cast<uint32_t>(sizeof(MoexProfileLoadParams));
+}
+
+uint32_t moex_sizeof_order_submit_request(void) {
+    return static_cast<uint32_t>(sizeof(MoexOrderSubmitRequest));
+}
+
+uint32_t moex_sizeof_order_cancel_request(void) {
+    return static_cast<uint32_t>(sizeof(MoexOrderCancelRequest));
+}
+
+uint32_t moex_sizeof_order_replace_request(void) {
+    return static_cast<uint32_t>(sizeof(MoexOrderReplaceRequest));
+}
+
+uint32_t moex_sizeof_mass_cancel_request(void) {
+    return static_cast<uint32_t>(sizeof(MoexMassCancelRequest));
+}
+
+uint32_t moex_sizeof_subscription_request(void) {
+    return static_cast<uint32_t>(sizeof(MoexSubscriptionRequest));
+}
+
 uint32_t moex_sizeof_polled_event(void) {
     return static_cast<uint32_t>(sizeof(MoexPolledEvent));
+}
+
+uint32_t moex_alignof_event_header(void) {
+    return static_cast<uint32_t>(alignof(MoexEventHeader));
+}
+
+uint32_t moex_alignof_backpressure_counters(void) {
+    return static_cast<uint32_t>(alignof(MoexBackpressureCounters));
+}
+
+uint32_t moex_alignof_health_snapshot(void) {
+    return static_cast<uint32_t>(alignof(MoexHealthSnapshot));
+}
+
+uint32_t moex_alignof_connector_create_params(void) {
+    return static_cast<uint32_t>(alignof(MoexConnectorCreateParams));
+}
+
+uint32_t moex_alignof_profile_load_params(void) {
+    return static_cast<uint32_t>(alignof(MoexProfileLoadParams));
+}
+
+uint32_t moex_alignof_order_submit_request(void) {
+    return static_cast<uint32_t>(alignof(MoexOrderSubmitRequest));
+}
+
+uint32_t moex_alignof_order_cancel_request(void) {
+    return static_cast<uint32_t>(alignof(MoexOrderCancelRequest));
+}
+
+uint32_t moex_alignof_order_replace_request(void) {
+    return static_cast<uint32_t>(alignof(MoexOrderReplaceRequest));
+}
+
+uint32_t moex_alignof_mass_cancel_request(void) {
+    return static_cast<uint32_t>(alignof(MoexMassCancelRequest));
+}
+
+uint32_t moex_alignof_subscription_request(void) {
+    return static_cast<uint32_t>(alignof(MoexSubscriptionRequest));
+}
+
+uint32_t moex_alignof_polled_event(void) {
+    return static_cast<uint32_t>(alignof(MoexPolledEvent));
 }
 
 MoexResult moex_create_connector(const MoexConnectorCreateParams* params, MoexConnectorHandle* out_handle) {
@@ -398,7 +479,7 @@ MoexResult moex_create_connector(const MoexConnectorCreateParams* params, MoexCo
         handle->counters.polled = seed.polled;
         handle->counters.dropped = seed.dropped;
         handle->counters.high_watermark = seed.high_watermark;
-        handle->counters.overflowed = seed.overflowed;
+        handle->counters.overflowed = to_abi_bool(seed.overflowed);
         *out_handle = handle.release();
         return MOEX_RESULT_OK;
     } catch (...) {
@@ -451,7 +532,7 @@ MoexResult moex_load_synthetic_replay(MoexConnectorHandle handle, const char* re
     handle->counters.polled = 0;
     handle->counters.dropped = 0;
     handle->counters.high_watermark = static_cast<std::uint64_t>(handle->replay_events.size());
-    handle->counters.overflowed = false;
+    handle->counters.overflowed = 0U;
     return MOEX_RESULT_OK;
 }
 
@@ -527,20 +608,29 @@ MoexResult moex_unsubscribe_placeholder(MoexConnectorHandle handle, const MoexSu
     return MOEX_RESULT_NOT_SUPPORTED;
 }
 
-MoexResult moex_poll_events(MoexConnectorHandle handle, void* out_events, uint32_t capacity, uint32_t* written) {
+MoexResult moex_poll_events_v2(
+    MoexConnectorHandle handle,
+    void* out_events,
+    uint32_t event_stride_bytes,
+    uint32_t capacity,
+    uint32_t* written) {
     if (handle == nullptr || written == nullptr || (capacity > 0U && out_events == nullptr)) {
         return MOEX_RESULT_INVALID_ARGUMENT;
     }
     if (!handle->started) {
         return MOEX_RESULT_NOT_STARTED;
     }
+    if (capacity > 0U && event_stride_bytes < sizeof(MoexPolledEvent)) {
+        return MOEX_RESULT_INVALID_ARGUMENT;
+    }
 
-    auto* typed_output = static_cast<MoexPolledEvent*>(out_events);
+    auto* output_bytes = static_cast<std::byte*>(out_events);
     std::uint32_t emitted = 0;
     while (emitted < capacity && handle->next_replay_index < handle->replay_events.size()) {
         auto event = handle->replay_events[handle->next_replay_index++];
         event.header.managed_poll_monotonic_ns = event.header.publish_monotonic_ns + 1'000LL;
-        typed_output[emitted++] = event;
+        std::memcpy(output_bytes + (static_cast<std::size_t>(emitted) * event_stride_bytes), &event, sizeof(event));
+        emitted += 1U;
         handle->counters.polled += 1U;
         if (event.header.event_type == MOEX_EVENT_REPLAY_STATE) {
             dispatch_low_rate_callback(handle, event);
@@ -549,6 +639,10 @@ MoexResult moex_poll_events(MoexConnectorHandle handle, void* out_events, uint32
 
     *written = emitted;
     return MOEX_RESULT_OK;
+}
+
+MoexResult moex_poll_events(MoexConnectorHandle handle, void* out_events, uint32_t capacity, uint32_t* written) {
+    return moex_poll_events_v2(handle, out_events, static_cast<uint32_t>(sizeof(MoexPolledEvent)), capacity, written);
 }
 
 MoexResult moex_register_low_rate_callback(MoexConnectorHandle handle, MoexLowRateCallback callback, void* user_data) {
