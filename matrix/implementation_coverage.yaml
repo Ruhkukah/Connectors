@@ -6,7 +6,9 @@
     {"coverage_id": "coverage_fast_test_variants", "protocol_item_id": "fast_test_templates_t0_lock", "scenario_id": "scenario_fix_public", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase0_delivered"},
     {"coverage_id": "coverage_plaza2_scheme_lock", "protocol_item_id": "plaza2_scheme_lock", "scenario_id": "scenario_plaza2_public", "inventory_id": "osengine_plaza_dir", "status": "phase0_delivered"},
     {"coverage_id": "coverage_plaza2_split", "protocol_item_id": "plaza2_router_split", "scenario_id": "scenario_plaza2_public", "inventory_id": "osengine_plaza_dir", "status": "phase0_documented"},
-    {"coverage_id": "coverage_shadow_mode", "protocol_item_id": "plaza2_twime_profile_neutrality", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_plaza_dir", "status": "phase0_documented"},
+    {"coverage_id": "coverage_shadow_mode", "protocol_item_id": "plaza2_twime_profile_neutrality", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_plaza_dir", "status": "phase1_delivered"},
+    {"coverage_id": "coverage_native_stub_replay", "protocol_item_id": "plaza2_twime_profile_neutrality", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase1_delivered"},
+    {"coverage_id": "coverage_shadow_diff_report", "protocol_item_id": "plaza2_twime_profile_neutrality", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_plaza_dir", "status": "phase1_delivered"},
     {"coverage_id": "coverage_simba_scaffold", "protocol_item_id": "simba_scaffold_profile", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase0_scaffolded"}
   ]
 }

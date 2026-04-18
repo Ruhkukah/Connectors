@@ -31,6 +31,11 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    if (moex_sizeof_polled_event() != sizeof(MoexPolledEvent)) {
+        std::cerr << "polled event size mismatch\n";
+        return EXIT_FAILURE;
+    }
+
     MoexConnectorCreateParams create_params{};
     create_params.struct_size = sizeof(MoexConnectorCreateParams);
     create_params.abi_version = MOEX_C_ABI_VERSION;

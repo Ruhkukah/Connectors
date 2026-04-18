@@ -1,0 +1,176 @@
+{
+  "router": {
+    "current_is_primary": true,
+    "live_is_primary": true,
+    "virtual_trading_enabled": false,
+    "shadow_read_only": true
+  },
+  "low_rate_callbacks": [
+    {
+      "event_type": "ReplayState",
+      "replay_state": "Started",
+      "info_text": "synthetic replay started"
+    },
+    {
+      "event_type": "ReplayState",
+      "replay_state": "Drained",
+      "info_text": "synthetic replay drained"
+    }
+  ],
+  "instruments": [
+    {
+      "symbol": "SBER",
+      "board": "TQBR",
+      "instrument_group": "EQ",
+      "prefer_order_book_l1": true
+    }
+  ],
+  "order_book": {
+    "snapshot": [],
+    "updates": [
+      {
+        "symbol": "SBER",
+        "board": "TQBR",
+        "side": "bid",
+        "level": 0,
+        "price": 250.1,
+        "quantity": 100,
+        "update_type": 3,
+        "sequence": 1,
+        "ts_moex_utc": "2024-04-18T08:00:00.0030000Z"
+      },
+      {
+        "symbol": "SBER",
+        "board": "TQBR",
+        "side": "ask",
+        "level": 0,
+        "price": 250.15,
+        "quantity": 200,
+        "update_type": 3,
+        "sequence": 2,
+        "ts_moex_utc": "2024-04-18T08:00:00.0040000Z"
+      }
+    ]
+  },
+  "market_data": {
+    "snapshot": {
+      "sequence": 3,
+      "feed_available": true,
+      "last_trade": {
+        "trade_id": 1001,
+        "symbol": "SBER",
+        "board": "TQBR",
+        "instrument_group": "EQ",
+        "price": 250.12,
+        "quantity": 5,
+        "aggressor_side": "Buy",
+        "existing": false,
+        "source_kind": "LiveWs",
+        "trade_utc": "2024-04-18T08:00:00.0020000Z",
+        "capture_epoch_id": "shadow-replay",
+        "capture_sequence": 3
+      },
+      "l1": {
+        "symbol": "SBER",
+        "board": "TQBR",
+        "bid_price": 250.1,
+        "bid_quantity": 100,
+        "ask_price": 250.15,
+        "ask_quantity": 200,
+        "timestamp_utc": "2024-04-18T08:00:00.0010000Z",
+        "source": "synthetic-shadow"
+      }
+    },
+    "updates": [
+      {
+        "sequence": 1,
+        "kind": "FeedStatus",
+        "feed_status": "MarketDataFeedAvailable"
+      },
+      {
+        "sequence": 2,
+        "kind": "BidAsk",
+        "l1": {
+          "symbol": "SBER",
+          "board": "TQBR",
+          "bid_price": 250.1,
+          "bid_quantity": 100,
+          "ask_price": 250.15,
+          "ask_quantity": 200,
+          "timestamp_utc": "2024-04-18T08:00:00.0010000Z",
+          "source": "synthetic-shadow"
+        }
+      },
+      {
+        "sequence": 3,
+        "kind": "Trade",
+        "trade": {
+          "trade_id": 1001,
+          "symbol": "SBER",
+          "board": "TQBR",
+          "instrument_group": "EQ",
+          "price": 250.12,
+          "quantity": 5,
+          "aggressor_side": "Buy",
+          "existing": false,
+          "source_kind": "LiveWs",
+          "trade_utc": "2024-04-18T08:00:00.0020000Z",
+          "capture_epoch_id": "shadow-replay",
+          "capture_sequence": 3
+        }
+      }
+    ]
+  },
+  "order_statuses": [
+    {
+      "server_order_id": "ORD-1",
+      "client_order_id": "CL-1",
+      "symbol": "SBER",
+      "status": "New",
+      "filled_quantity": 0,
+      "remaining_quantity": 10,
+      "price": 250.1,
+      "info": "accepted",
+      "transaction_utc": "2024-04-18T08:00:00.0050000Z",
+      "engine_utc": "2024-04-18T08:00:00.0050000Z"
+    }
+  ],
+  "trade_executions": [
+    {
+      "server_order_id": "ORD-1",
+      "client_order_id": "CL-1",
+      "symbol": "SBER",
+      "trade_account": "ACC-1",
+      "executed_quantity": 5,
+      "cumulative_filled_quantity": 5,
+      "execution_price": 250.12,
+      "average_price": 250.12,
+      "execution_utc": "2024-04-18T08:00:00.0060000Z",
+      "info": "fill-1"
+    }
+  ],
+  "positions": [
+    {
+      "portfolio": "PF-1",
+      "symbol": "SBER",
+      "exchange": "MOEX",
+      "quantity": 5,
+      "average_price": 250.12,
+      "open_profit_loss": 12.5,
+      "update_utc": "2024-04-18T08:00:00.0070000Z"
+    }
+  ],
+  "health": {
+    "connector_state": 2,
+    "active_profile_kind": 2,
+    "prod_armed": false,
+    "shadow_mode_enabled": true
+  },
+  "backpressure": {
+    "produced": 9,
+    "polled": 9,
+    "dropped": 0,
+    "high_watermark": 9,
+    "overflowed": false
+  }
+}

@@ -16,6 +16,10 @@ enable_testing()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(DOTNET_EXECUTABLE NAMES dotnet)
+set(MOEX_ALORENGINE_PROJECT "" CACHE FILEPATH "Optional path to AlorEngine.csproj for the shadow replay integration harness")
+if(NOT MOEX_ALORENGINE_PROJECT AND DEFINED ENV{ALORENGINE_PROJECT})
+    set(MOEX_ALORENGINE_PROJECT "$ENV{ALORENGINE_PROJECT}")
+endif()
 
 set(MOEX_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 set(MOEX_BUILD_ROOT "${CMAKE_CURRENT_BINARY_DIR}")
@@ -185,10 +189,30 @@ if(DOTNET_EXECUTABLE)
         COMMAND "${DOTNET_EXECUTABLE}" run
             --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiSmoke/AbiSmoke.csproj"
             --framework net10.0
-            -- "$<TARGET_FILE:moex_phase0_abi>")
+            -- "$<TARGET_FILE:moex_phase0_abi>"
+               "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt")
     set_tests_properties(dotnet_abi_smoke PROPERTIES
         ENVIRONMENT
-            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1")
+            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+
+    if(EXISTS "${MOEX_ALORENGINE_PROJECT}")
+        add_test(
+            NAME dotnet_shadow_replay
+            COMMAND "${DOTNET_EXECUTABLE}" run
+                --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/ShadowReplay/ShadowReplay.csproj"
+                --framework net10.0
+                "-p:AlorEngineProject=${MOEX_ALORENGINE_PROJECT}"
+                "-p:RestorePackagesPath=$ENV{HOME}/.nuget/packages"
+                -- "$<TARGET_FILE:moex_phase0_abi>"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/expected_report.json"
+                   "${MOEX_TEST_OUTPUT_DIR}/shadow-replay/diff.json")
+        set_tests_properties(dotnet_shadow_replay PROPERTIES
+            ENVIRONMENT
+                "DOTNET_CLI_HOME=$ENV{HOME};DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+    else()
+        message(STATUS "MOEX_ALORENGINE_PROJECT not set or not found; skipping dotnet_shadow_replay test")
+    endif()
 else()
     message(STATUS "dotnet executable not found; skipping dotnet_abi_smoke test")
 endif()

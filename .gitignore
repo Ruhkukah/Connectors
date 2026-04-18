@@ -17,6 +17,8 @@ build/
 .DS_Store
 tests/dotnet/**/bin/
 tests/dotnet/**/obj/
+adapters/alorengine_dotnet/bin/
+adapters/alorengine_dotnet/obj/
 
 spec-lock/**/cache/
 spec-lock/**/downloads/

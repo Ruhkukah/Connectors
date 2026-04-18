@@ -1,6 +1,6 @@
 # MoexConnector
 
-Phase 0 repository skeleton for a standalone C++20/Linux-first MOEX connector suite.
+Phase 1 stub-only repository for a standalone C++20/Linux-first MOEX connector suite.
 
 License: MIT. See [LICENSE](LICENSE).
 
@@ -9,6 +9,9 @@ Security policy: do not publish credentials, broker configs, production logs, ce
 This repository intentionally stops before protocol implementation. The current deliverables are:
 
 - buildable monorepo skeleton and C ABI headers
+- deterministic native stub connector with synthetic replay fixtures
+- .NET SafeHandle wrapper and batch polling/low-rate callback tests
+- optional AlorEngine shadow-mode replay harness against the current seam types
 - profile templates with production arming checks
 - machine-readable matrix files with referential integrity
 - artifact lock tooling for MOEX public specs and local CGate schemes
@@ -36,12 +39,20 @@ build/tools/spec_indexer --config spec-lock/lock_roots.json --workspace .
 build/tools/matrix_validate --matrix-dir matrix
 build/apps/moex_cert_runner --scenario cert/stub/phase0_stub.yaml --output-dir build/cert-runner
 build/tools/profile_check --profile profiles/prod_fast_twime.template.yaml
+dotnet run --project tests/dotnet/AbiSmoke/AbiSmoke.csproj --framework net10.0 -- build/lib/libmoex_phase0_abi.dylib tests/fixtures/shadow_replay/synthetic_replay.txt
 ```
 
 The last command is expected to fail unless `--armed` is supplied.
+
+To run the optional AlorEngine shadow replay harness against a local checkout:
+
+```sh
+cmake -S . -B build -DMOEX_ALORENGINE_PROJECT=/path/to/AlorEngine.csproj
+ctest --test-dir build --output-on-failure -R dotnet_shadow_replay
+```
 
 ## Public Repo Boundaries
 
 - This repository is public and intentionally excludes operational trading data.
 - Do not commit credentials, broker configs, production logs, certification logs, or broker latency/topology information.
-- Phase 0.x changes may harden ABI, tooling, CI, docs, and test scaffolding, but do not add MOEX protocol logic.
+- Phase 1 changes may harden the native stub, managed adapter, shadow replay, CI, docs, and test scaffolding, but do not add MOEX protocol logic.

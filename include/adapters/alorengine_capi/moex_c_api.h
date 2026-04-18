@@ -8,6 +8,14 @@ extern "C" {
 #endif
 
 #define MOEX_C_ABI_VERSION 1u
+#define MOEX_SYMBOL_CAPACITY 32u
+#define MOEX_BOARD_CAPACITY 16u
+#define MOEX_EXCHANGE_CAPACITY 16u
+#define MOEX_GROUP_CAPACITY 32u
+#define MOEX_PORTFOLIO_CAPACITY 32u
+#define MOEX_ACCOUNT_CAPACITY 32u
+#define MOEX_ORDER_ID_CAPACITY 40u
+#define MOEX_INFO_CAPACITY 128u
 
 typedef struct MoexHandleTag* MoexConnectorHandle;
 
@@ -31,8 +39,27 @@ typedef enum MoexEventType {
     MOEX_EVENT_PUBLIC_L1 = 5,
     MOEX_EVENT_PUBLIC_DIAGNOSTIC = 6,
     MOEX_EVENT_FULL_ORDER_LOG = 7,
-    MOEX_EVENT_CERT_STEP = 8
+    MOEX_EVENT_CERT_STEP = 8,
+    MOEX_EVENT_ORDER_BOOK = 9,
+    MOEX_EVENT_INSTRUMENT = 10,
+    MOEX_EVENT_REPLAY_STATE = 11,
+    MOEX_EVENT_PUBLIC_TRADE = 12
 } MoexEventType;
+
+typedef enum MoexReplayState {
+    MOEX_REPLAY_STATE_UNSPECIFIED = 0,
+    MOEX_REPLAY_STATE_STARTED = 1,
+    MOEX_REPLAY_STATE_DRAINED = 2
+} MoexReplayState;
+
+typedef enum MoexNativeOrderStatus {
+    MOEX_NATIVE_ORDER_STATUS_UNSPECIFIED = 0,
+    MOEX_NATIVE_ORDER_STATUS_NEW = 1,
+    MOEX_NATIVE_ORDER_STATUS_PARTIAL_FILL = 2,
+    MOEX_NATIVE_ORDER_STATUS_FILLED = 3,
+    MOEX_NATIVE_ORDER_STATUS_CANCELED = 4,
+    MOEX_NATIVE_ORDER_STATUS_REJECTED = 5
+} MoexNativeOrderStatus;
 
 typedef enum MoexSourceConnector {
     MOEX_SOURCE_UNKNOWN = 0,
@@ -147,6 +174,38 @@ typedef struct MoexSubscriptionRequest {
     const char* board;
 } MoexSubscriptionRequest;
 
+typedef struct MoexPolledEvent {
+    MoexEventHeader header;
+    uint32_t payload_size;
+    uint16_t payload_version;
+    uint16_t replay_state;
+    int32_t status;
+    int32_t side;
+    int32_t level;
+    int32_t update_type;
+    double price;
+    double quantity;
+    double secondary_price;
+    double secondary_quantity;
+    double cumulative_quantity;
+    double remaining_quantity;
+    double average_price;
+    double open_profit_loss;
+    uint8_t prefer_order_book_l1;
+    uint8_t existing;
+    uint8_t read_only_shadow;
+    uint8_t reserved0;
+    char symbol[MOEX_SYMBOL_CAPACITY];
+    char board[MOEX_BOARD_CAPACITY];
+    char exchange[MOEX_EXCHANGE_CAPACITY];
+    char instrument_group[MOEX_GROUP_CAPACITY];
+    char portfolio[MOEX_PORTFOLIO_CAPACITY];
+    char trade_account[MOEX_ACCOUNT_CAPACITY];
+    char server_order_id[MOEX_ORDER_ID_CAPACITY];
+    char client_order_id[MOEX_ORDER_ID_CAPACITY];
+    char info_text[MOEX_INFO_CAPACITY];
+} MoexPolledEvent;
+
 typedef void (*MoexLowRateCallback)(const MoexEventHeader* header, const void* payload, void* user_data);
 
 const char* moex_phase0_abi_name(void);
@@ -156,9 +215,11 @@ uint32_t moex_sizeof_event_header(void);
 uint32_t moex_sizeof_backpressure_counters(void);
 uint32_t moex_sizeof_health_snapshot(void);
 uint32_t moex_sizeof_connector_create_params(void);
+uint32_t moex_sizeof_polled_event(void);
 MoexResult moex_create_connector(const MoexConnectorCreateParams* params, MoexConnectorHandle* out_handle);
 MoexResult moex_destroy_connector(MoexConnectorHandle handle);
 MoexResult moex_load_profile(MoexConnectorHandle handle, const MoexProfileLoadParams* params);
+MoexResult moex_load_synthetic_replay(MoexConnectorHandle handle, const char* replay_path);
 MoexResult moex_start_connector(MoexConnectorHandle handle);
 MoexResult moex_stop_connector(MoexConnectorHandle handle);
 MoexResult moex_submit_order_placeholder(MoexConnectorHandle handle, const MoexOrderSubmitRequest* request);
