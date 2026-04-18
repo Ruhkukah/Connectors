@@ -15,6 +15,7 @@ include(CTest)
 enable_testing()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_program(DOTNET_EXECUTABLE NAMES dotnet)
 
 set(MOEX_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 set(MOEX_BUILD_ROOT "${CMAKE_CURRENT_BINARY_DIR}")
@@ -53,16 +54,35 @@ endif()
 add_library(moex_phase0_core STATIC
     src/phase0_core.cpp)
 
+add_library(moex_phase0_abi SHARED
+    src/phase0_core.cpp)
+
 target_include_directories(moex_phase0_core
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+target_include_directories(moex_phase0_abi
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
 target_compile_features(moex_phase0_core PUBLIC cxx_std_20)
+target_compile_features(moex_phase0_abi PUBLIC cxx_std_20)
 
 target_compile_definitions(moex_phase0_core
     PRIVATE
         MOEX_PHASE0_PROJECT_VERSION="${PROJECT_VERSION}"
         MOEX_PHASE0_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
+
+target_compile_definitions(moex_phase0_abi
+    PRIVATE
+        MOEX_PHASE0_PROJECT_VERSION="${PROJECT_VERSION}"
+        MOEX_PHASE0_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
+
+set_target_properties(moex_phase0_abi PROPERTIES
+    OUTPUT_NAME "moex_phase0_abi"
+    LIBRARY_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/lib"
+    RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/lib"
+    ARCHIVE_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/lib")
 
 add_executable(moex_phase0_selfcheck
     tests/phase0_selfcheck.cpp)
@@ -158,3 +178,17 @@ add_test(
         --root "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/osengine/MoexFixFastTwimeFutures"
         --root "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/osengine/Plaza"
         --output "${MOEX_TEST_OUTPUT_DIR}/osengine-inventory/inventory.json")
+
+if(DOTNET_EXECUTABLE)
+    add_test(
+        NAME dotnet_abi_smoke
+        COMMAND "${DOTNET_EXECUTABLE}" run
+            --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiSmoke/AbiSmoke.csproj"
+            --framework net10.0
+            -- "$<TARGET_FILE:moex_phase0_abi>")
+    set_tests_properties(dotnet_abi_smoke PROPERTIES
+        ENVIRONMENT
+            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1")
+else()
+    message(STATUS "dotnet executable not found; skipping dotnet_abi_smoke test")
+endif()

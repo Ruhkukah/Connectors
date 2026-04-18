@@ -2,6 +2,10 @@
 
 Phase 0 repository skeleton for a standalone C++20/Linux-first MOEX connector suite.
 
+License: MIT. See [LICENSE](LICENSE).
+
+Security policy: do not publish credentials, broker configs, production logs, certification logs, or broker latency/topology data. See [SECURITY.md](SECURITY.md).
+
 This repository intentionally stops before protocol implementation. The current deliverables are:
 
 - buildable monorepo skeleton and C ABI headers
@@ -35,3 +39,9 @@ build/tools/profile_check --profile profiles/prod_fast_twime.template.yaml
 ```
 
 The last command is expected to fail unless `--armed` is supplied.
+
+## Public Repo Boundaries
+
+- This repository is public and intentionally excludes operational trading data.
+- Do not commit credentials, broker configs, production logs, certification logs, or broker latency/topology information.
+- Phase 0.x changes may harden ABI, tooling, CI, docs, and test scaffolding, but do not add MOEX protocol logic.

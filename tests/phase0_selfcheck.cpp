@@ -26,5 +26,27 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    if (moex_sizeof_event_header() != sizeof(MoexEventHeader)) {
+        std::cerr << "event header size mismatch\n";
+        return EXIT_FAILURE;
+    }
+
+    MoexConnectorCreateParams create_params{};
+    create_params.struct_size = sizeof(MoexConnectorCreateParams);
+    create_params.abi_version = MOEX_C_ABI_VERSION;
+    create_params.connector_name = "selfcheck";
+    create_params.instance_id = "phase0";
+
+    MoexConnectorHandle handle = nullptr;
+    if (moex_create_connector(&create_params, &handle) != MOEX_RESULT_OK || handle == nullptr) {
+        std::cerr << "create connector failed\n";
+        return EXIT_FAILURE;
+    }
+
+    if (moex_destroy_connector(handle) != MOEX_RESULT_OK) {
+        std::cerr << "destroy connector failed\n";
+        return EXIT_FAILURE;
+    }
+
     return EXIT_SUCCESS;
 }

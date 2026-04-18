@@ -53,10 +53,10 @@ typedef struct MoexEventHeader {
     int64_t monotonic_time_ns;
     int64_t exchange_time_utc_ns;
     int64_t source_time_utc_ns;
-    int64_t socket_receive_utc_ns;
-    int64_t decode_utc_ns;
-    int64_t publish_utc_ns;
-    int64_t managed_poll_utc_ns;
+    int64_t socket_receive_monotonic_ns;
+    int64_t decode_monotonic_ns;
+    int64_t publish_monotonic_ns;
+    int64_t managed_poll_monotonic_ns;
     uint32_t source_connector;
     uint32_t flags;
 } MoexEventHeader;
@@ -152,6 +152,10 @@ typedef void (*MoexLowRateCallback)(const MoexEventHeader* header, const void* p
 const char* moex_phase0_abi_name(void);
 uint32_t moex_phase0_abi_version(void);
 bool moex_phase0_prod_requires_arm(const char* environment, bool armed);
+uint32_t moex_sizeof_event_header(void);
+uint32_t moex_sizeof_backpressure_counters(void);
+uint32_t moex_sizeof_health_snapshot(void);
+uint32_t moex_sizeof_connector_create_params(void);
 MoexResult moex_create_connector(const MoexConnectorCreateParams* params, MoexConnectorHandle* out_handle);
 MoexResult moex_destroy_connector(MoexConnectorHandle handle);
 MoexResult moex_load_profile(MoexConnectorHandle handle, const MoexProfileLoadParams* params);
