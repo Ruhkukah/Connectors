@@ -55,6 +55,31 @@ coverage:
     scenario_id: scenario_twime_test_3_recovery_service
     inventory_id: osengine_moex_fixfasttwime_dir
     status: metadata_generated
+  - coverage_id: coverage_twime_strict_enum_validation
+    protocol_item_id: twime_message_5008_sessionreject
+    scenario_id: scenario_twime_public
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: codec_roundtrip_tested
+  - coverage_id: coverage_twime_strict_set_validation
+    protocol_item_id: twime_message_6004_ordermasscancelrequest
+    scenario_id: scenario_twime_public
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: codec_roundtrip_tested
+  - coverage_id: coverage_twime_fixture_golden_integrity
+    protocol_item_id: twime_message_7019_executionsinglereport
+    scenario_id: scenario_twime_public
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: cert_log_format_tested
+  - coverage_id: coverage_twime_metadata_invariants
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_public
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: metadata_generated
+  - coverage_id: coverage_twime_frame_hardening
+    protocol_item_id: twime_message_5006_sequence
+    scenario_id: scenario_twime_public
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: codec_roundtrip_tested
   - coverage_id: coverage_fast_test_variants
     protocol_item_id: fast_test_templates_t0_lock
     scenario_id: scenario_fix_public

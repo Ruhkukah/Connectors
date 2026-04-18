@@ -1,3 +1,5 @@
+# Reviewed manually against the ExecutionSingleReport response field order and fixed-width flags/price fields.
+# Expected hex is stable because the report is a fixed-layout schema 7 message with no transport/session behavior involved.
 message: ExecutionSingleReport
 template_id: 7019
 schema_id: 19781

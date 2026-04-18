@@ -2,7 +2,7 @@
 
 ## Scope
 
-Phase 2A adds an **offline-only** TWIME SBE schema inventory and binary codec layer. It does **not** add any live MOEX transport or session behavior.
+Phase 2A adds an **offline-only** TWIME SBE schema inventory and binary codec layer. Phase 2A.1 hardens that layer with stricter fixture validation, explicit null/string policy, and stronger metadata/frame invariants. It does **not** add any live MOEX transport or session behavior.
 
 Implemented in Phase 2A:
 
@@ -16,6 +16,10 @@ Implemented in Phase 2A:
 - byte-stream frame assembler for fragmented/batched offline buffers
 - certification-style decoded text formatter for offline fixtures
 - matrix coverage updates for TWIME certification scenarios at the schema/codec level
+- strict enum and set-token validation for fixtures and decoded messages
+- committed golden fixture integrity checking
+- metadata invariant checks against the pinned schema
+- bounded frame-assembler error handling with explicit buffered-state reset after fatal header errors
 
 Explicitly **not** implemented in Phase 2A:
 
@@ -29,6 +33,14 @@ Explicitly **not** implemented in Phase 2A:
 - order submission through the public C ABI
 - AlorEngine live trading path changes
 - broker/MOEX credentials or endpoint profiles
+
+Phase 2A.1 keeps the same non-goals. There is still:
+
+- no TCP
+- no session FSM
+- no recovery cache
+- no live credentials
+- no order routing
 
 ## Active Schema
 
@@ -54,6 +66,90 @@ That means:
 - `Decimal5` uses the XML composite definition: encoded `mantissa`, constant exponent `-5`
 
 If a PDF narrative or old certification example disagrees with the XML for binary layout, the XML wins. Any discrepancy should be tracked as documentation-only `needs_confirmation` in `matrix/gaps.yaml`.
+
+## Fixture Policy
+
+Golden TWIME fixtures are committed inputs and outputs:
+
+- source fixtures: `tests/fixtures/twime_sbe/*.yaml`
+- expected binary outputs: `tests/fixtures/twime_sbe/expected/*.hex`
+- expected certification-style logs: `tests/fixtures/twime_sbe/expected/*.certlog`
+
+Normal test runs and CI must treat the committed `.hex` and `.certlog` files as read-only goldens. They are verified with:
+
+```sh
+build/tools/twime_fixture_check --fixtures tests/fixtures/twime_sbe --check
+```
+
+If a schema-driven change legitimately requires a golden update, regenerate intentionally with:
+
+```sh
+build/tools/twime_fixture_check --fixtures tests/fixtures/twime_sbe --write
+```
+
+At least six fixtures contain manual-review comments describing why the expected hex is stable:
+
+- `Establish`
+- `Sequence`
+- `NewOrderSingle`
+- `OrderCancelRequest`
+- `OrderReplaceRequest`
+- `ExecutionSingleReport`
+
+Those reviewed goldens are additionally asserted by an independent Python check so that expected values are not derived only from the same C++ encoder under test.
+
+## Null, Decimal, and String Policy
+
+Optional field handling comes from the pinned XML schema:
+
+- omitted nullable fields encode their XML-defined null value
+- omitted required fields fail with `TwimeDecodeError::InvalidFieldValue`
+- `TimeStamp` null is encoded as `uint64 max`
+- `Decimal5` carries an `int64` mantissa only; the exponent is a constant `-5` and is not encoded separately
+- nullable `Decimal5` fields use the XML null mantissa where applicable
+
+Fixed string policy at the wire edge:
+
+- fixed-size char arrays are encoded without heap allocation
+- short values are padded with `0x00`
+- trailing `0x00` and space bytes are trimmed on decode
+- embedded `0x00` bytes inside the retained decoded range are preserved
+- control bytes other than embedded `0x00` are rejected as `TwimeDecodeError::InvalidStringEncoding`
+- overlength strings fail instead of truncating silently
+
+Enum and bitset/set policy:
+
+- unknown enum token names fail with `TwimeDecodeError::InvalidEnumValue`
+- unknown set token names fail with `TwimeDecodeError::InvalidSetValue`
+- mixed valid and invalid set-token lists fail
+- raw set masks with unknown bits fail
+
+## Error Policy
+
+Phase 2A.1 classifies codec and framing errors precisely but still does **not** attach runtime session decisions to them.
+
+Errors currently distinguished include:
+
+- `NeedMoreData`
+- `BufferTooSmall`
+- `InvalidBlockLength`
+- `UnsupportedSchemaId`
+- `UnsupportedVersion`
+- `UnknownTemplateId`
+- `InvalidEnumValue`
+- `InvalidSetValue`
+- `InvalidStringEncoding`
+- `InvalidFieldValue`
+- `TrailingBytes`
+
+The frame assembler is intentionally bounded:
+
+- invalid headers do not leave corrupted buffered state behind
+- invalid schema/version/block length clears partial buffered bytes
+- `max_frame_size` is enforced before allocation growth
+- ready frames already assembled remain available in order
+
+Whether any of these should later map to `Terminate`, `SessionReject`, disconnect, or retransmit behavior belongs to Phase 2B, not Phase 2A.
 
 ## Code Generation
 
@@ -83,6 +179,13 @@ build/tools/twime_codegen \
   --check
 ```
 
+Generated output policy:
+
+- generated C++ must stay deterministic and readable
+- committed generated files must never contain timestamps or local absolute paths
+- CI verifies the checked-in output with `--check`
+- if generation changes intentionally, regenerate locally and commit both the generator change and the updated generated files in the same reviewable diff
+
 ## Fixtures And Tests
 
 Fixture roots:
@@ -110,6 +213,14 @@ Run the TWIME offline test set:
 ctest --test-dir build --output-on-failure -R twime_
 ```
 
+Additional hardening checks:
+
+```sh
+ctest --test-dir build --output-on-failure -R "twime_|source_style_check"
+python3 tests/assert_twime_metadata_invariants.py
+python3 tests/assert_twime_reviewed_fixtures.py
+```
+
 ## Certification Log Formatting
 
 Phase 2A only formats **offline decoded messages** into a certification-style text line:
@@ -133,3 +244,16 @@ Phase 2B is where fake transport/session behavior should start:
 - synthetic cert-runner TWIME scenarios
 
 Until then, the module remains a standalone offline C++20 codec library.
+
+## Phase 2A.1 Status
+
+Phase 2A.1 hardens the offline codec before merge to `main`:
+
+- strict validation of enum and bitset tokens
+- explicit optional/null/default coverage
+- explicit fixed-string policy tests
+- independent golden-fixture review checks
+- metadata invariant checks against XML-derived inventory
+- safer frame assembly under malformed input
+
+It is still offline-only and still not suitable for live trading or certification execution.

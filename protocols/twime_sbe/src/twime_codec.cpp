@@ -7,6 +7,7 @@
 #include <bit>
 #include <cctype>
 #include <cstring>
+#include <optional>
 #include <sstream>
 
 namespace moex::twime_sbe {
@@ -118,20 +119,28 @@ const TwimeEnumValueMetadata* find_enum_value_by_wire(const TwimeEnumMetadata& m
     return nullptr;
 }
 
-std::uint64_t parse_set_names(const TwimeSetMetadata& metadata, std::string_view names) {
+std::optional<std::uint64_t> parse_set_names(const TwimeSetMetadata& metadata, std::string_view names) {
     if (names.empty()) {
-        return 0;
+        return std::uint64_t{0};
     }
     std::uint64_t mask = 0;
     std::size_t start = 0;
     while (start <= names.size()) {
         const auto next = names.find('|', start);
         const auto token = trim_copy(names.substr(start, next == std::string_view::npos ? names.size() - start : next - start));
+        if (token.empty()) {
+            return std::nullopt;
+        }
+        bool matched = false;
         for (std::size_t index = 0; index < metadata.choice_count; ++index) {
             if (metadata.choices[index].name == token) {
                 mask |= (static_cast<std::uint64_t>(1) << metadata.choices[index].bit_index);
+                matched = true;
                 break;
             }
+        }
+        if (!matched) {
+            return std::nullopt;
         }
         if (next == std::string_view::npos) {
             break;
@@ -139,6 +148,65 @@ std::uint64_t parse_set_names(const TwimeSetMetadata& metadata, std::string_view
         start = next + 1;
     }
     return mask;
+}
+
+bool is_allowed_set_mask(const TwimeSetMetadata& metadata, std::uint64_t mask) {
+    std::uint64_t allowed_mask = 0;
+    for (std::size_t index = 0; index < metadata.choice_count; ++index) {
+        allowed_mask |= (static_cast<std::uint64_t>(1) << metadata.choices[index].bit_index);
+    }
+    return (mask & ~allowed_mask) == 0;
+}
+
+TwimeFieldValue decode_string_value(
+    const TwimeTypeMetadata& type,
+    std::span<const std::byte> bytes,
+    TwimeDecodeError& error) {
+    TwimeFieldValue value = TwimeFieldValue::string({});
+    value.string_length = static_cast<std::uint8_t>(std::min<std::size_t>(type.fixed_length, value.string_bytes.size()));
+    std::size_t logical_end = 0;
+    for (std::size_t index = 0; index < value.string_length; ++index) {
+        const auto ch = static_cast<unsigned char>(std::to_integer<unsigned char>(bytes[index]));
+        value.string_bytes[index] = static_cast<char>(ch);
+        if (ch == 0U || ch == static_cast<unsigned char>(' ')) {
+            continue;
+        }
+        if (ch < 0x20U || ch == 0x7FU) {
+            error = TwimeDecodeError::InvalidStringEncoding;
+            return {};
+        }
+        logical_end = index + 1;
+    }
+    while (logical_end > 0 &&
+           (value.string_bytes[logical_end - 1] == '\0' || value.string_bytes[logical_end - 1] == ' ')) {
+        --logical_end;
+    }
+    value.string_length = static_cast<std::uint8_t>(logical_end);
+    return value;
+}
+
+std::optional<TwimeFieldValue> make_null_value(const TwimeFieldMetadata& field) {
+    if (!field.nullable || !field.has_null_value) {
+        return std::nullopt;
+    }
+
+    const auto& type = *field.type;
+    switch (type.kind) {
+        case TwimeFieldKind::Primitive:
+        case TwimeFieldKind::Enum:
+        case TwimeFieldKind::Set:
+            return TwimeFieldValue::unsigned_integer(field.null_value);
+        case TwimeFieldKind::DeltaMillisecs:
+            return TwimeFieldValue::delta_millisecs(static_cast<std::uint32_t>(field.null_value));
+        case TwimeFieldKind::TimeStamp:
+            return TwimeFieldValue::timestamp(field.null_value);
+        case TwimeFieldKind::String:
+            return TwimeFieldValue::string({});
+        case TwimeFieldKind::Decimal5:
+        case TwimeFieldKind::Composite:
+        default:
+            return std::nullopt;
+    }
 }
 
 TwimeFieldValue decode_field_value(
@@ -178,19 +246,8 @@ TwimeFieldValue decode_field_value(
             return TwimeFieldValue::timestamp(load_le<std::uint64_t>(bytes));
         case TwimeFieldKind::Decimal5:
             return TwimeFieldValue::decimal(load_le<std::int64_t>(bytes));
-        case TwimeFieldKind::String: {
-            TwimeFieldValue value = TwimeFieldValue::string({});
-            value.string_length = static_cast<std::uint8_t>(std::min<std::size_t>(type.fixed_length, value.string_bytes.size()));
-            for (std::size_t index = 0; index < value.string_length; ++index) {
-                value.string_bytes[index] = static_cast<char>(std::to_integer<unsigned char>(bytes[index]));
-            }
-            while (value.string_length > 0 &&
-                   (value.string_bytes[value.string_length - 1] == '\0' ||
-                    value.string_bytes[value.string_length - 1] == ' ')) {
-                --value.string_length;
-            }
-            return value;
-        }
+        case TwimeFieldKind::String:
+            return decode_string_value(type, bytes, error);
         case TwimeFieldKind::Enum: {
             std::int64_t wire_value = 0;
             switch (type.primitive_type) {
@@ -222,6 +279,10 @@ TwimeFieldValue decode_field_value(
                 default:
                     error = TwimeDecodeError::InvalidFieldValue;
                     return {};
+            }
+            if (type.set_metadata == nullptr || !is_allowed_set_mask(*type.set_metadata, wire_value)) {
+                error = TwimeDecodeError::InvalidSetValue;
+                return {};
             }
             return TwimeFieldValue::unsigned_integer(wire_value);
         }
@@ -303,8 +364,15 @@ TwimeDecodeError encode_field_value(
             if (value.kind != TwimeValueKind::String) {
                 return TwimeDecodeError::InvalidStringEncoding;
             }
+            if (value.string_length > type.fixed_length) {
+                return TwimeDecodeError::InvalidStringEncoding;
+            }
             std::fill(out_bytes.begin(), out_bytes.end(), std::byte{0});
-            for (std::size_t index = 0; index < std::min<std::size_t>(type.fixed_length, value.string_length); ++index) {
+            for (std::size_t index = 0; index < value.string_length; ++index) {
+                const auto ch = static_cast<unsigned char>(value.string_bytes[index]);
+                if (ch != 0U && (ch < 0x20U || ch == 0x7FU)) {
+                    return TwimeDecodeError::InvalidStringEncoding;
+                }
                 out_bytes[index] = static_cast<std::byte>(value.string_bytes[index]);
             }
             return TwimeDecodeError::Ok;
@@ -347,11 +415,18 @@ TwimeDecodeError encode_field_value(
                 if (type.set_metadata == nullptr) {
                     return TwimeDecodeError::InvalidFieldValue;
                 }
-                mask = parse_set_names(*type.set_metadata, value.string_view());
+                const auto parsed_mask = parse_set_names(*type.set_metadata, value.string_view());
+                if (!parsed_mask.has_value()) {
+                    return TwimeDecodeError::InvalidSetValue;
+                }
+                mask = *parsed_mask;
             } else if (value.kind == TwimeValueKind::Unsigned) {
                 mask = value.unsigned_value;
             } else {
                 return TwimeDecodeError::InvalidFieldValue;
+            }
+            if (type.set_metadata == nullptr || !is_allowed_set_mask(*type.set_metadata, mask)) {
+                return TwimeDecodeError::InvalidSetValue;
             }
             switch (type.primitive_type) {
                 case TwimePrimitiveType::UInt8:
@@ -399,12 +474,21 @@ TwimeDecodeError TwimeCodec::encode_message(
     for (std::size_t index = 0; index < metadata->field_count; ++index) {
         const auto& field = metadata->fields[index];
         const auto* input = find_input_field(request, field.name);
+        const TwimeFieldValue* field_value = nullptr;
+        TwimeFieldValue default_value{};
         if (input == nullptr) {
-            return TwimeDecodeError::InvalidFieldValue;
+            const auto null_value = make_null_value(field);
+            if (!null_value.has_value()) {
+                return TwimeDecodeError::InvalidFieldValue;
+            }
+            default_value = *null_value;
+            field_value = &default_value;
+        } else {
+            field_value = &input->value;
         }
         auto result = encode_field_value(
             field,
-            input->value,
+            *field_value,
             std::span<std::byte>(out_bytes.data() + kTwimeMessageHeaderSize + field.offset, field.encoded_size));
         if (result != TwimeDecodeError::Ok) {
             return result;

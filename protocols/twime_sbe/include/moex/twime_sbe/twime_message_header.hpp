@@ -17,6 +17,7 @@ enum class TwimeDecodeError {
     UnsupportedVersion,
     UnknownTemplateId,
     InvalidEnumValue,
+    InvalidSetValue,
     InvalidStringEncoding,
     InvalidFieldValue,
     TrailingBytes,

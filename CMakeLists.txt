@@ -123,6 +123,7 @@ moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "profile_check" "tools/p
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "twime_schema_materialize" "tools/twime_schema_materialize.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "twime_schema_indexer" "tools/twime_schema_indexer.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "twime_codegen" "tools/twime_codegen.py")
+moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "source_style_check" "tools/source_style_check.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_cert_runner" "apps/moex_cert_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_replay_tool" "apps/moex_replay_tool.py")
 
@@ -161,6 +162,8 @@ moex_add_twime_test(twime_message_roundtrip_test tests/twime_sbe/twime_message_r
 moex_add_twime_test(twime_frame_assembler_test tests/twime_sbe/twime_frame_assembler_test.cpp)
 moex_add_twime_test(twime_decode_error_test tests/twime_sbe/twime_decode_error_test.cpp)
 moex_add_twime_test(twime_cert_log_formatter_test tests/twime_sbe/twime_cert_log_formatter_test.cpp)
+moex_add_twime_test(twime_enum_set_validation_test tests/twime_sbe/twime_enum_set_validation_test.cpp)
+moex_add_twime_test(twime_optional_string_policy_test tests/twime_sbe/twime_optional_string_policy_test.cpp)
 
 add_custom_target(twime_codegen_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/twime_codegen"
@@ -168,6 +171,15 @@ add_custom_target(twime_codegen_check
         --out "${CMAKE_CURRENT_SOURCE_DIR}/protocols/twime_sbe/generated"
         --check
     COMMENT "Verify deterministic TWIME generated metadata")
+
+add_executable(twime_fixture_check_tool
+    tools/twime_fixture_check.cpp)
+target_link_libraries(twime_fixture_check_tool
+    PRIVATE
+        twime_test_support)
+target_compile_features(twime_fixture_check_tool PRIVATE cxx_std_20)
+set_property(TARGET twime_fixture_check_tool PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_TOOLS_BUILD_DIR}")
+set_target_properties(twime_fixture_check_tool PROPERTIES OUTPUT_NAME "twime_fixture_check")
 
 add_test(
     NAME phase0_selfcheck
@@ -242,6 +254,34 @@ add_test(
     NAME twime_schema_manifest_check
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_twime_schema_manifest.py"
         "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_test(
+    NAME twime_metadata_invariants_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_twime_metadata_invariants.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(twime_metadata_invariants_check PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
+
+add_test(
+    NAME twime_reviewed_fixtures_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_twime_reviewed_fixtures.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_test(
+    NAME twime_fixture_golden_check
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/twime_fixture_check"
+        --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/twime_sbe"
+        --check)
+
+add_test(
+    NAME source_style_check
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/source_style_check"
+        "${CMAKE_CURRENT_SOURCE_DIR}/protocols/twime_sbe"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_sbe"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_codegen.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_schema_common.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_schema_indexer.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_schema_materialize.py")
 
 if(DOTNET_EXECUTABLE)
     add_test(

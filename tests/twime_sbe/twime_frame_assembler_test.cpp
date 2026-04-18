@@ -37,10 +37,12 @@ int main() {
         assembler.reset();
         result = assembler.feed(std::span<const std::byte>(one_message.data(), 4));
         moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::NeedMoreData, "incomplete header not reported");
+        moex::twime_sbe::test::require(result.buffered_bytes == 4, "incomplete header buffering mismatch");
 
         assembler.reset();
         result = assembler.feed(std::span<const std::byte>(one_message.data(), 10));
         moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::NeedMoreData, "incomplete body not reported");
+        moex::twime_sbe::test::require(result.buffered_bytes == 10, "incomplete body buffering mismatch");
 
         assembler.reset();
         auto invalid_schema = one_message;
@@ -48,6 +50,11 @@ int main() {
         invalid_schema[5] = std::byte{0x00};
         result = assembler.feed(invalid_schema);
         moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::UnsupportedSchemaId, "invalid schema id not rejected");
+        moex::twime_sbe::test::require(result.buffered_bytes == 0, "invalid schema left buffered bytes behind");
+        result = assembler.feed(one_message);
+        moex::twime_sbe::test::require(result.frames_ready == 1, "assembler did not recover after invalid schema");
+        const auto recovered_frame = assembler.pop_frame();
+        moex::twime_sbe::test::require(recovered_frame.bytes == one_message, "recovered frame mismatch");
 
         assembler.reset();
         auto invalid_version = one_message;
@@ -55,10 +62,34 @@ int main() {
         invalid_version[7] = std::byte{0x00};
         result = assembler.feed(invalid_version);
         moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::UnsupportedVersion, "invalid version not rejected");
+        moex::twime_sbe::test::require(result.buffered_bytes == 0, "invalid version left buffered bytes behind");
+
+        assembler.reset();
+        auto invalid_block_length = one_message;
+        invalid_block_length[0] = std::byte{0x00};
+        invalid_block_length[1] = std::byte{0x00};
+        result = assembler.feed(invalid_block_length);
+        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::InvalidBlockLength, "invalid block length not rejected");
+        moex::twime_sbe::test::require(result.buffered_bytes == 0, "invalid block length left buffered bytes behind");
 
         moex::twime_sbe::TwimeFrameAssembler small_assembler(8);
         result = small_assembler.feed(one_message);
         moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::BufferTooSmall, "oversized frame not rejected");
+        moex::twime_sbe::test::require(result.buffered_bytes == 0, "oversized frame left buffered bytes behind");
+
+        assembler.reset();
+        std::vector<std::byte> two_and_half = one_message;
+        two_and_half.insert(two_and_half.end(), one_message.begin(), one_message.end());
+        two_and_half.insert(two_and_half.end(), one_message.begin(), one_message.begin() + 5);
+        result = assembler.feed(two_and_half);
+        moex::twime_sbe::test::require(result.frames_ready == 2, "two complete frames were not assembled");
+        moex::twime_sbe::test::require(result.buffered_bytes == 5, "partial third frame buffering mismatch");
+        moex::twime_sbe::test::require(assembler.pop_frame().bytes == one_message, "first frame order mismatch");
+        moex::twime_sbe::test::require(assembler.pop_frame().bytes == one_message, "second frame order mismatch");
+        assembler.reset();
+        moex::twime_sbe::test::require(!assembler.has_frame(), "reset did not clear ready frames");
+        result = assembler.feed(std::span<const std::byte>(one_message.data(), one_message.size()));
+        moex::twime_sbe::test::require(result.frames_ready == 1, "assembler did not recover after reset");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

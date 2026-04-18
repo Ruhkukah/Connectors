@@ -36,6 +36,7 @@ This repository still stops before live protocol/session implementation. The cur
 - Phase 1 implemented a synthetic native connector, the .NET adapter, and AlorEngine shadow replay.
 - Phase 1.1 hardened the ABI with explicit boolean types, clearer environment-start exports, stride-aware polling, and stronger ABI policy tests.
 - Phase 2A adds an offline-only TWIME SBE schema inventory and deterministic codec generated from the pinned `twime_spectra-7.7.xml` schema.
+- Phase 2A.1 hardens that offline TWIME layer with strict enum/set validation, golden fixture checks, metadata invariants, and bounded frame-assembler behavior.
 - Real MOEX protocol/network/session logic is still intentionally absent.
 
 ## Phase 2A
@@ -45,6 +46,7 @@ This repository still stops before live protocol/session implementation. The cur
 - `tools/twime_schema_indexer.py` emits XML-derived inventory into `matrix/protocol_inventory/`.
 - `tools/twime_codegen.py` emits deterministic generated metadata into `protocols/twime_sbe/generated/`.
 - Offline fixtures cover header/primitive/message round-trips, fragmented/batched frame assembly, and certification-style decoded logs.
+- Phase 2A.1 adds strict validation for enum/set tokens, optional/null/default handling, committed golden fixture checks, metadata invariant checks, and malformed-frame hardening.
 - This is **not** certification-ready and **not** suitable for live trading.
 
 ## Definition of Done Commands

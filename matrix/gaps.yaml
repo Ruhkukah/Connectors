@@ -32,3 +32,43 @@ gaps:
     status: open
     next_action: Lock installed CGate scheme files into spec-lock/prod or spec-lock/test after runtime installation.
     notes: Local CGate runtime and scheme directories must be locked separately after installation.
+  - gap_id: gap_twime_phase2a_no_tcp
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5000_establish
+    coverage_id: coverage_twime_session_init_offline
+    owner: phase2b_transport
+    status: open
+    next_action: Add offline-to-transport integration only in Phase 2B; keep Phase 2A merge-safe and socket-free.
+    notes: Phase 2A.1 remains offline only and intentionally does not implement TCP connectivity.
+  - gap_id: gap_twime_phase2a_no_session_fsm
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5001_establishmentack
+    coverage_id: coverage_twime_session_init_offline
+    owner: phase2b_session
+    status: open
+    next_action: Implement session-state behavior in Phase 2B after the offline codec is merged.
+    notes: No Establish or Terminate runtime state machine exists in Phase 2A.1.
+  - gap_id: gap_twime_phase2a_no_recovery_cache
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5005_retransmission
+    coverage_id: coverage_twime_retransmission_metadata
+    owner: phase2b_recovery
+    status: open
+    next_action: Add retransmission cache and durable recovery scaffolding in a later phase.
+    notes: Retransmission coverage in Phase 2A.1 is metadata/fixture-only.
+  - gap_id: gap_twime_phase2a_no_live_credentials
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5000_establish
+    coverage_id: coverage_twime_session_init_offline
+    owner: deployment_ops
+    status: open
+    next_action: Keep credentials and endpoint handling out of the public repo and Phase 2A merge scope.
+    notes: Phase 2A.1 uses only pinned schema artifacts and offline fixtures.
+  - gap_id: gap_twime_phase2a_no_order_routing
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_6000_newordersingle
+    coverage_id: coverage_twime_new_order_day_offline
+    owner: phase2c_connector
+    status: open
+    next_action: Delay C ABI order-routing integration until a later connector phase after transport and session behavior exist.
+    notes: Phase 2A.1 tests message encoding/decoding only and does not route orders anywhere.

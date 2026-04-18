@@ -1,3 +1,5 @@
+# Reviewed manually against the NewOrderSingle field order, offsets, and null ExpireDate sentinel.
+# Expected hex is stable because blockLength, enum values, and Decimal5 mantissa come from pinned schema 7 metadata.
 message: NewOrderSingle
 template_id: 6000
 schema_id: 19781
