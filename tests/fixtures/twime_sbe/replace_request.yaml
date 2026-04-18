@@ -1,0 +1,16 @@
+message: OrderReplaceRequest
+template_id: 6007
+schema_id: 19781
+version: 7
+fields:
+  ClOrdID: 203
+  OrderID: 9001001
+  Price:
+    mantissa: 101500
+  OrderQty: 8
+  ClOrdLinkID: 7895426
+  SecurityID: 347990
+  ComplianceID: Algorithm
+  Mode: ChangeOrderQty
+  ClientFlags: 0
+  Account: "AAAA"

@@ -1,0 +1,1 @@
+OrderMassCancelRequest (blockLength=50, templateId=6004, schemaId=19781, version=7, ClOrdID=302, ClOrdLinkID=7895428, SecurityID=347991, SecurityType=Option, Side=AllOrders, Account="AAAA", SecurityGroup="Si")

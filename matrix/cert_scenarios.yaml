@@ -3,6 +3,33 @@ scenarios:
   - scenario_id: scenario_twime_public
     artifact_id: moex_cert_procedure
     title: Public TWIME certification appendix coverage
+  - scenario_id: scenario_twime_test_1_1_session_initialization
+    artifact_id: moex_cert_procedure
+    title: TWIME Test 1-1 session initialization
+  - scenario_id: scenario_twime_test_1_2_logout
+    artifact_id: moex_cert_procedure
+    title: TWIME Test 1-2 logout
+  - scenario_id: scenario_twime_test_2_1_new_futures_day_order
+    artifact_id: moex_cert_procedure
+    title: TWIME Test 2-1 new futures day order
+  - scenario_id: scenario_twime_test_2_2_new_gtd_futures_order
+    artifact_id: moex_cert_procedure
+    title: TWIME Test 2-2 new GTD futures order
+  - scenario_id: scenario_twime_test_2_3_cancel
+    artifact_id: moex_cert_procedure
+    title: TWIME Test 2-3 cancel
+  - scenario_id: scenario_twime_test_2_5_replace
+    artifact_id: moex_cert_procedure
+    title: TWIME Test 2-5 replace
+  - scenario_id: scenario_twime_test_2_7_mass_cancel
+    artifact_id: moex_cert_procedure
+    title: TWIME Test 2-7 mass cancel futures and options
+  - scenario_id: scenario_twime_test_2_8_retransmit_last5
+    artifact_id: moex_cert_procedure
+    title: TWIME Test 2-8 retransmit last 5
+  - scenario_id: scenario_twime_test_3_recovery_service
+    artifact_id: moex_cert_procedure
+    title: TWIME Test 3 recovery-service retransmission metadata
   - scenario_id: scenario_fix_public
     artifact_id: moex_cert_procedure
     title: Public FIX certification appendix coverage

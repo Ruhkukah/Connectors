@@ -1,0 +1,12 @@
+message: OrderMassCancelRequest
+template_id: 6004
+schema_id: 19781
+version: 7
+fields:
+  ClOrdID: 302
+  ClOrdLinkID: 7895428
+  SecurityID: 347991
+  SecurityType: Option
+  Side: AllOrders
+  Account: "AAAA"
+  SecurityGroup: "Si"

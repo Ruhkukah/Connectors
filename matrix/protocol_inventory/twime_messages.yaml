@@ -1,8 +1,1794 @@
-{
-  "version": 1,
-  "items": [
-    {"protocol_item_id": "twime_case_sensitive_test_root", "artifact_id": "twime_test_root", "name": "Case-sensitive TWIME test root lock", "kind": "artifact_lock"},
-    {"protocol_item_id": "twime_establish_session", "artifact_id": "twime_prod_root", "name": "FIXP Establish/EstablishmentAck", "kind": "session"},
-    {"protocol_item_id": "twime_order_entry_boundary", "artifact_id": "twime_prod_root", "name": "Trade-only order entry boundary", "kind": "behavior"}
-  ]
-}
+version: 1
+items:
+- protocol_item_id: twime_message_5000_establish
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 5000
+  message_name: Establish
+  layer: session
+  direction: client_to_server
+  block_length: 32
+  fields:
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20205
+    name: KeepaliveInterval
+    type: DeltaMillisecs
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 8
+    nullable: false
+    null_value: null
+  - tag: 20206
+    name: Credentials
+    type: String20
+    primitive_type: char
+    encoded_size: 20
+    offset: 12
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_5001_establishmentack
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 5001
+  message_name: EstablishmentAck
+  layer: session
+  direction: server_to_client
+  block_length: 20
+  fields:
+  - tag: 20207
+    name: RequestTimestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20205
+    name: KeepaliveInterval
+    type: DeltaMillisecs
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 8
+    nullable: false
+    null_value: null
+  - tag: 20208
+    name: NextSeqNo
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 12
+    nullable: true
+    null_value: 18446744073709551615
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_5002_establishmentreject
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 5002
+  message_name: EstablishmentReject
+  layer: session
+  direction: server_to_client
+  block_length: 9
+  fields:
+  - tag: 20207
+    name: RequestTimestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20209
+    name: EstablishmentRejectCode
+    type: EstablishmentRejectCodeEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 8
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_5003_terminate
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 5003
+  message_name: Terminate
+  layer: session
+  direction: bidirectional
+  block_length: 1
+  fields:
+  - tag: 20210
+    name: TerminationCode
+    type: TerminationCodeEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 0
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_5004_retransmitrequest
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 5004
+  message_name: RetransmitRequest
+  layer: session
+  direction: client_to_server
+  block_length: 20
+  fields:
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20211
+    name: FromSeqNo
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20212
+    name: Count
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 16
+    nullable: true
+    null_value: 4294967295
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_5005_retransmission
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 5005
+  message_name: Retransmission
+  layer: session
+  direction: server_to_client
+  block_length: 20
+  fields:
+  - tag: 20208
+    name: NextSeqNo
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20207
+    name: RequestTimestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20212
+    name: Count
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 16
+    nullable: true
+    null_value: 4294967295
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_5006_sequence
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 5006
+  message_name: Sequence
+  layer: session
+  direction: bidirectional
+  block_length: 8
+  fields:
+  - tag: 20208
+    name: NextSeqNo
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_5007_floodreject
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 5007
+  message_name: FloodReject
+  layer: session
+  direction: server_to_client
+  block_length: 16
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20213
+    name: QueueSize
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 8
+    nullable: true
+    null_value: 4294967295
+  - tag: 20214
+    name: PenaltyRemain
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 12
+    nullable: true
+    null_value: 4294967295
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_5008_sessionreject
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 5008
+  message_name: SessionReject
+  layer: session
+  direction: server_to_client
+  block_length: 13
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 371
+    name: RefTagID
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 8
+    nullable: true
+    null_value: 4294967295
+  - tag: 373
+    name: SessionRejectReason
+    type: SessionRejectReasonEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 12
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_5009_businessmessagereject
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 5009
+  message_name: BusinessMessageReject
+  layer: session
+  direction: server_to_client
+  block_length: 20
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 103
+    name: OrdRejReason
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 16
+    nullable: true
+    null_value: 2147483647
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_6000_newordersingle
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 6000
+  message_name: NewOrderSingle
+  layer: application
+  direction: client_to_server
+  block_length: 47
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 432
+    name: ExpireDate
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 44
+    name: Price
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 16
+    nullable: false
+    null_value: null
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 24
+    nullable: true
+    null_value: 2147483647
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 28
+    nullable: true
+    null_value: 2147483647
+  - tag: 38
+    name: OrderQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 32
+    nullable: true
+    null_value: 4294967295
+  - tag: 376
+    name: ComplianceID
+    type: ComplianceIDEnum
+    primitive_type: char
+    encoded_size: 1
+    offset: 36
+    nullable: false
+    null_value: null
+  - tag: 59
+    name: TimeInForce
+    type: TimeInForceEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 37
+    nullable: false
+    null_value: null
+  - tag: 54
+    name: Side
+    type: SideEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 38
+    nullable: false
+    null_value: null
+  - tag: 20218
+    name: ClientFlags
+    type: ClientFlagsSet
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 39
+    nullable: false
+    null_value: null
+  - tag: 1
+    name: Account
+    type: String7
+    primitive_type: char
+    encoded_size: 7
+    offset: 40
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_6008_newordericeberg
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 6008
+  message_name: NewOrderIceberg
+  layer: application
+  direction: client_to_server
+  block_length: 54
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 432
+    name: ExpireDate
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 44
+    name: Price
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 16
+    nullable: false
+    null_value: null
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 24
+    nullable: true
+    null_value: 2147483647
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 28
+    nullable: true
+    null_value: 2147483647
+  - tag: 1138
+    name: DisplayQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 32
+    nullable: true
+    null_value: 4294967295
+  - tag: 20036
+    name: DisplayVarianceQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 36
+    nullable: true
+    null_value: 4294967295
+  - tag: 38
+    name: OrderQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 40
+    nullable: true
+    null_value: 4294967295
+  - tag: 376
+    name: ComplianceID
+    type: ComplianceIDEnum
+    primitive_type: char
+    encoded_size: 1
+    offset: 44
+    nullable: false
+    null_value: null
+  - tag: 54
+    name: Side
+    type: SideEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 45
+    nullable: false
+    null_value: null
+  - tag: 20218
+    name: ClientFlags
+    type: ClientFlagsSet
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 46
+    nullable: false
+    null_value: null
+  - tag: 1
+    name: Account
+    type: String7
+    primitive_type: char
+    encoded_size: 7
+    offset: 47
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_6011_newordericebergx
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 6011
+  message_name: NewOrderIcebergX
+  layer: application
+  direction: client_to_server
+  block_length: 55
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 432
+    name: ExpireDate
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 44
+    name: Price
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 16
+    nullable: false
+    null_value: null
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 24
+    nullable: true
+    null_value: 2147483647
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 28
+    nullable: true
+    null_value: 2147483647
+  - tag: 1138
+    name: DisplayQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 32
+    nullable: true
+    null_value: 4294967295
+  - tag: 20036
+    name: DisplayVarianceQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 36
+    nullable: true
+    null_value: 4294967295
+  - tag: 38
+    name: OrderQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 40
+    nullable: true
+    null_value: 4294967295
+  - tag: 376
+    name: ComplianceID
+    type: ComplianceIDEnum
+    primitive_type: char
+    encoded_size: 1
+    offset: 44
+    nullable: false
+    null_value: null
+  - tag: 59
+    name: TimeInForce
+    type: TimeInForceEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 45
+    nullable: false
+    null_value: null
+  - tag: 54
+    name: Side
+    type: SideEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 46
+    nullable: false
+    null_value: null
+  - tag: 20218
+    name: ClientFlags
+    type: ClientFlagsSet
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 47
+    nullable: false
+    null_value: null
+  - tag: 1
+    name: Account
+    type: String7
+    primitive_type: char
+    encoded_size: 7
+    offset: 48
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_6006_ordercancelrequest
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 6006
+  message_name: OrderCancelRequest
+  layer: application
+  direction: client_to_server
+  block_length: 28
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 37
+    name: OrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 16
+    nullable: true
+    null_value: 2147483647
+  - tag: 20218
+    name: ClientFlags
+    type: ClientFlagsSet
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 20
+    nullable: false
+    null_value: null
+  - tag: 1
+    name: Account
+    type: String7
+    primitive_type: char
+    encoded_size: 7
+    offset: 21
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_6009_ordericebergcancelrequest
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 6009
+  message_name: OrderIcebergCancelRequest
+  layer: application
+  direction: client_to_server
+  block_length: 28
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 37
+    name: OrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 16
+    nullable: true
+    null_value: 2147483647
+  - tag: 20218
+    name: ClientFlags
+    type: ClientFlagsSet
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 20
+    nullable: false
+    null_value: null
+  - tag: 1
+    name: Account
+    type: String7
+    primitive_type: char
+    encoded_size: 7
+    offset: 21
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_6007_orderreplacerequest
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 6007
+  message_name: OrderReplaceRequest
+  layer: application
+  direction: client_to_server
+  block_length: 46
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 37
+    name: OrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 44
+    name: Price
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 16
+    nullable: false
+    null_value: null
+  - tag: 38
+    name: OrderQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 24
+    nullable: true
+    null_value: 4294967295
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 28
+    nullable: true
+    null_value: 2147483647
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 32
+    nullable: true
+    null_value: 2147483647
+  - tag: 376
+    name: ComplianceID
+    type: ComplianceIDEnum
+    primitive_type: char
+    encoded_size: 1
+    offset: 36
+    nullable: false
+    null_value: null
+  - tag: 20019
+    name: Mode
+    type: ModeEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 37
+    nullable: false
+    null_value: null
+  - tag: 20218
+    name: ClientFlags
+    type: ClientFlagsSet
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 38
+    nullable: false
+    null_value: null
+  - tag: 1
+    name: Account
+    type: String7
+    primitive_type: char
+    encoded_size: 7
+    offset: 39
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_6010_ordericebergreplacerequest
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 6010
+  message_name: OrderIcebergReplaceRequest
+  layer: application
+  direction: client_to_server
+  block_length: 41
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 37
+    name: OrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 44
+    name: Price
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 16
+    nullable: false
+    null_value: null
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 24
+    nullable: true
+    null_value: 2147483647
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 28
+    nullable: true
+    null_value: 2147483647
+  - tag: 376
+    name: ComplianceID
+    type: ComplianceIDEnum
+    primitive_type: char
+    encoded_size: 1
+    offset: 32
+    nullable: false
+    null_value: null
+  - tag: 20218
+    name: ClientFlags
+    type: ClientFlagsSet
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 33
+    nullable: false
+    null_value: null
+  - tag: 1
+    name: Account
+    type: String7
+    primitive_type: char
+    encoded_size: 7
+    offset: 34
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_6004_ordermasscancelrequest
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 6004
+  message_name: OrderMassCancelRequest
+  layer: application
+  direction: client_to_server
+  block_length: 50
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 8
+    nullable: true
+    null_value: 2147483647
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 12
+    nullable: true
+    null_value: 2147483647
+  - tag: 167
+    name: SecurityType
+    type: SecurityTypeSet
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 16
+    nullable: false
+    null_value: null
+  - tag: 54
+    name: Side
+    type: SideEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 17
+    nullable: false
+    null_value: null
+  - tag: 1
+    name: Account
+    type: String7
+    primitive_type: char
+    encoded_size: 7
+    offset: 18
+    nullable: false
+    null_value: null
+  - tag: 1151
+    name: SecurityGroup
+    type: String25
+    primitive_type: char
+    encoded_size: 25
+    offset: 25
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_6005_ordermasscancelbybflimitrequest
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 6005
+  message_name: OrderMassCancelByBFLimitRequest
+  layer: application
+  direction: client_to_server
+  block_length: 15
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 1
+    name: Account
+    type: String7
+    primitive_type: char
+    encoded_size: 7
+    offset: 8
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_7015_newordersingleresponse
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 7015
+  message_name: NewOrderSingleResponse
+  layer: application
+  direction: server_to_client
+  block_length: 74
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 432
+    name: ExpireDate
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 16
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 37
+    name: OrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 24
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 20215
+    name: Flags
+    type: FlagsSet
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 32
+    nullable: false
+    null_value: null
+  - tag: 20051
+    name: Flags2
+    type: Flags2Set
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 40
+    nullable: false
+    null_value: null
+  - tag: 44
+    name: Price
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 48
+    nullable: false
+    null_value: null
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 56
+    nullable: true
+    null_value: 2147483647
+  - tag: 38
+    name: OrderQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 60
+    nullable: true
+    null_value: 4294967295
+  - tag: 336
+    name: TradingSessionID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 64
+    nullable: true
+    null_value: 2147483647
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 68
+    nullable: true
+    null_value: 2147483647
+  - tag: 54
+    name: Side
+    type: SideEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 72
+    nullable: false
+    null_value: null
+  - tag: 376
+    name: ComplianceID
+    type: ComplianceIDEnum
+    primitive_type: char
+    encoded_size: 1
+    offset: 73
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_7016_newordericebergresponse
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 7016
+  message_name: NewOrderIcebergResponse
+  layer: application
+  direction: server_to_client
+  block_length: 90
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 432
+    name: ExpireDate
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 16
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 37
+    name: OrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 24
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 20037
+    name: DisplayOrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 32
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 20215
+    name: Flags
+    type: FlagsSet
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 40
+    nullable: false
+    null_value: null
+  - tag: 20051
+    name: Flags2
+    type: Flags2Set
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 48
+    nullable: false
+    null_value: null
+  - tag: 44
+    name: Price
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 56
+    nullable: false
+    null_value: null
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 64
+    nullable: true
+    null_value: 2147483647
+  - tag: 38
+    name: OrderQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 68
+    nullable: true
+    null_value: 4294967295
+  - tag: 1138
+    name: DisplayQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 72
+    nullable: true
+    null_value: 4294967295
+  - tag: 20036
+    name: DisplayVarianceQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 76
+    nullable: true
+    null_value: 4294967295
+  - tag: 336
+    name: TradingSessionID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 80
+    nullable: true
+    null_value: 2147483647
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 84
+    nullable: true
+    null_value: 2147483647
+  - tag: 54
+    name: Side
+    type: SideEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 88
+    nullable: false
+    null_value: null
+  - tag: 376
+    name: ComplianceID
+    type: ComplianceIDEnum
+    primitive_type: char
+    encoded_size: 1
+    offset: 89
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_7017_ordercancelresponse
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 7017
+  message_name: OrderCancelResponse
+  layer: application
+  direction: server_to_client
+  block_length: 52
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 37
+    name: OrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 16
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 20215
+    name: Flags
+    type: FlagsSet
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 24
+    nullable: false
+    null_value: null
+  - tag: 20051
+    name: Flags2
+    type: Flags2Set
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 32
+    nullable: false
+    null_value: null
+  - tag: 38
+    name: OrderQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 40
+    nullable: true
+    null_value: 4294967295
+  - tag: 336
+    name: TradingSessionID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 44
+    nullable: true
+    null_value: 2147483647
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 48
+    nullable: true
+    null_value: 2147483647
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_7018_orderreplaceresponse
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 7018
+  message_name: OrderReplaceResponse
+  layer: application
+  direction: server_to_client
+  block_length: 69
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 37
+    name: OrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 16
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 20216
+    name: PrevOrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 24
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 20215
+    name: Flags
+    type: FlagsSet
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 32
+    nullable: false
+    null_value: null
+  - tag: 20051
+    name: Flags2
+    type: Flags2Set
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 40
+    nullable: false
+    null_value: null
+  - tag: 44
+    name: Price
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 48
+    nullable: false
+    null_value: null
+  - tag: 38
+    name: OrderQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 56
+    nullable: true
+    null_value: 4294967295
+  - tag: 336
+    name: TradingSessionID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 60
+    nullable: true
+    null_value: 2147483647
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 64
+    nullable: true
+    null_value: 2147483647
+  - tag: 376
+    name: ComplianceID
+    type: ComplianceIDEnum
+    primitive_type: char
+    encoded_size: 1
+    offset: 68
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_7007_ordermasscancelresponse
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 7007
+  message_name: OrderMassCancelResponse
+  layer: application
+  direction: server_to_client
+  block_length: 20
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 533
+    name: TotalAffectedOrders
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 16
+    nullable: true
+    null_value: 2147483647
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_7019_executionsinglereport
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 7019
+  message_name: ExecutionSingleReport
+  layer: application
+  direction: server_to_client
+  block_length: 77
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 37
+    name: OrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 16
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 880
+    name: TrdMatchID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 24
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 20215
+    name: Flags
+    type: FlagsSet
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 32
+    nullable: false
+    null_value: null
+  - tag: 20051
+    name: Flags2
+    type: Flags2Set
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 40
+    nullable: false
+    null_value: null
+  - tag: 31
+    name: LastPx
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 48
+    nullable: false
+    null_value: null
+  - tag: 32
+    name: LastQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 56
+    nullable: true
+    null_value: 4294967295
+  - tag: 38
+    name: OrderQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 60
+    nullable: true
+    null_value: 4294967295
+  - tag: 336
+    name: TradingSessionID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 64
+    nullable: true
+    null_value: 2147483647
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 68
+    nullable: true
+    null_value: 2147483647
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 72
+    nullable: true
+    null_value: 2147483647
+  - tag: 54
+    name: Side
+    type: SideEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 76
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_7020_executionmultilegreport
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 7020
+  message_name: ExecutionMultilegReport
+  layer: application
+  direction: server_to_client
+  block_length: 85
+  fields:
+  - tag: 11
+    name: ClOrdID
+    type: UInt64
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 37
+    name: OrderID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 16
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 880
+    name: TrdMatchID
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 24
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 20215
+    name: Flags
+    type: FlagsSet
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 32
+    nullable: false
+    null_value: null
+  - tag: 20051
+    name: Flags2
+    type: Flags2Set
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 40
+    nullable: false
+    null_value: null
+  - tag: 31
+    name: LastPx
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 48
+    nullable: false
+    null_value: null
+  - tag: 566
+    name: LegPrice
+    type: Decimal5
+    primitive_type: composite
+    encoded_size: 8
+    offset: 56
+    nullable: false
+    null_value: null
+  - tag: 32
+    name: LastQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 64
+    nullable: true
+    null_value: 4294967295
+  - tag: 38
+    name: OrderQty
+    type: UInt32
+    primitive_type: uint32
+    encoded_size: 4
+    offset: 68
+    nullable: true
+    null_value: 4294967295
+  - tag: 336
+    name: TradingSessionID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 72
+    nullable: true
+    null_value: 2147483647
+  - tag: 583
+    name: ClOrdLinkID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 76
+    nullable: true
+    null_value: 2147483647
+  - tag: 48
+    name: SecurityID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 80
+    nullable: true
+    null_value: 2147483647
+  - tag: 54
+    name: Side
+    type: SideEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 84
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_7010_emptybook
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 7010
+  message_name: EmptyBook
+  layer: application
+  direction: server_to_client
+  block_length: 12
+  fields:
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 336
+    name: TradingSessionID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 8
+    nullable: true
+    null_value: 2147483647
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_message_7014_systemevent
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  template_id: 7014
+  message_name: SystemEvent
+  layer: application
+  direction: server_to_client
+  block_length: 21
+  fields:
+  - tag: 20204
+    name: Timestamp
+    type: TimeStamp
+    primitive_type: uint64
+    encoded_size: 8
+    offset: 0
+    nullable: true
+    null_value: 18446744073709551615
+  - tag: 20220
+    name: EventId
+    type: Int64
+    primitive_type: int64
+    encoded_size: 8
+    offset: 8
+    nullable: true
+    null_value: 9223372036854775807
+  - tag: 336
+    name: TradingSessionID
+    type: Int32
+    primitive_type: int32
+    encoded_size: 4
+    offset: 16
+    nullable: true
+    null_value: 2147483647
+  - tag: 1368
+    name: TradSesEvent
+    type: TradSesEventEnum
+    primitive_type: uint8
+    encoded_size: 1
+    offset: 20
+    nullable: false
+    null_value: null
+  implementation_status: metadata_generated
+  notes: ''

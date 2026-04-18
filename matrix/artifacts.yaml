@@ -1,19 +1,47 @@
-{
-  "version": 1,
-  "artifacts": [
-    {"artifact_id": "twime_prod_root", "environment": "prod", "canonical_url": "https://ftp.moex.com/pub/TWIME/Spectra/prod/doc/"},
-    {"artifact_id": "twime_test_root", "environment": "test", "canonical_url": "https://ftp.moex.com/pub/TWIME/Spectra/Test/"},
-    {"artifact_id": "fast_prod_root", "environment": "prod", "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/prod/"},
-    {"artifact_id": "fast_test_root", "environment": "test", "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/"},
-    {"artifact_id": "fast_test_templates_t0", "environment": "test", "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/templatesT0/"},
-    {"artifact_id": "fast_test_templates_t1", "environment": "test", "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/templatesT1/"},
-    {"artifact_id": "fast_test_fast_8_6", "environment": "test", "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/FAST_8.6/"},
-    {"artifact_id": "fast_test_fast_9_0", "environment": "test", "canonical_url": "https://ftp.moex.com/pub/FAST/Spectra/test/FAST_9.0/"},
-    {"artifact_id": "simba_prod_root", "environment": "prod", "canonical_url": "https://ftp.moex.com/pub/SIMBA/Spectra/prod/"},
-    {"artifact_id": "fix_prod_docs", "environment": "prod", "canonical_url": "https://ftp.moex.com/pub/FIX/Spectra/prod/docs/"},
-    {"artifact_id": "plaza_docs", "environment": "prod", "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/"},
-    {"artifact_id": "cgate_docs", "environment": "prod", "canonical_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/prod/docs/"},
-    {"artifact_id": "moex_cert_procedure", "environment": "prod", "canonical_url": "https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e"},
-    {"artifact_id": "moex_test_access", "environment": "test", "canonical_url": "https://www.moex.com/a1566"}
-  ]
-}
+version: 1
+artifacts:
+  - artifact_id: twime_prod_root
+    environment: prod
+    canonical_url: https://ftp.moex.com/pub/TWIME/Spectra/prod/doc/
+  - artifact_id: twime_prod_root_twime_spectra_7_7_xml
+    environment: prod
+    canonical_url: https://ftp.moex.com/pub/TWIME/Spectra/prod/doc/twime_spectra-7.7.xml
+  - artifact_id: twime_test_root
+    environment: test
+    canonical_url: https://ftp.moex.com/pub/TWIME/Spectra/Test/
+  - artifact_id: fast_prod_root
+    environment: prod
+    canonical_url: https://ftp.moex.com/pub/FAST/Spectra/prod/
+  - artifact_id: fast_test_root
+    environment: test
+    canonical_url: https://ftp.moex.com/pub/FAST/Spectra/test/
+  - artifact_id: fast_test_templates_t0
+    environment: test
+    canonical_url: https://ftp.moex.com/pub/FAST/Spectra/test/templatesT0/
+  - artifact_id: fast_test_templates_t1
+    environment: test
+    canonical_url: https://ftp.moex.com/pub/FAST/Spectra/test/templatesT1/
+  - artifact_id: fast_test_fast_8_6
+    environment: test
+    canonical_url: https://ftp.moex.com/pub/FAST/Spectra/test/FAST_8.6/
+  - artifact_id: fast_test_fast_9_0
+    environment: test
+    canonical_url: https://ftp.moex.com/pub/FAST/Spectra/test/FAST_9.0/
+  - artifact_id: simba_prod_root
+    environment: prod
+    canonical_url: https://ftp.moex.com/pub/SIMBA/Spectra/prod/
+  - artifact_id: fix_prod_docs
+    environment: prod
+    canonical_url: https://ftp.moex.com/pub/FIX/Spectra/prod/docs/
+  - artifact_id: plaza_docs
+    environment: prod
+    canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/
+  - artifact_id: cgate_docs
+    environment: prod
+    canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/prod/docs/
+  - artifact_id: moex_cert_procedure
+    environment: prod
+    canonical_url: https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e
+  - artifact_id: moex_test_access
+    environment: test
+    canonical_url: https://www.moex.com/a1566

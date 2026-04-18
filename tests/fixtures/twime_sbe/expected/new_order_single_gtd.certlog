@@ -1,0 +1,1 @@
+NewOrderSingle (blockLength=47, templateId=6000, schemaId=19781, version=7, ClOrdID=103, ExpireDate=1715600000000000000, Price=101250e-5, SecurityID=347990, ClOrdLinkID=7895425, OrderQty=7, ComplianceID=Algorithm, TimeInForce=GTD, Side=Buy, ClientFlags=0, Account="AAAA")

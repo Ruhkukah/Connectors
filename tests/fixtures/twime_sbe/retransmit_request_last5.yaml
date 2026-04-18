@@ -1,0 +1,8 @@
+message: RetransmitRequest
+template_id: 5004
+schema_id: 19781
+version: 7
+fields:
+  Timestamp: 1715000000000000500
+  FromSeqNo: 21
+  Count: 5

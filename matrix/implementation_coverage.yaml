@@ -1,14 +1,92 @@
-{
-  "version": 1,
-  "coverage": [
-    {"coverage_id": "coverage_twime_spec_lock", "protocol_item_id": "twime_case_sensitive_test_root", "scenario_id": "scenario_twime_public", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase0_delivered"},
-    {"coverage_id": "coverage_twime_trade_boundary", "protocol_item_id": "twime_order_entry_boundary", "scenario_id": "scenario_twime_public", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase0_documented"},
-    {"coverage_id": "coverage_fast_test_variants", "protocol_item_id": "fast_test_templates_t0_lock", "scenario_id": "scenario_fix_public", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase0_delivered"},
-    {"coverage_id": "coverage_plaza2_scheme_lock", "protocol_item_id": "plaza2_scheme_lock", "scenario_id": "scenario_plaza2_public", "inventory_id": "osengine_plaza_dir", "status": "phase0_delivered"},
-    {"coverage_id": "coverage_plaza2_split", "protocol_item_id": "plaza2_router_split", "scenario_id": "scenario_plaza2_public", "inventory_id": "osengine_plaza_dir", "status": "phase0_documented"},
-    {"coverage_id": "coverage_shadow_mode", "protocol_item_id": "plaza2_twime_profile_neutrality", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_plaza_dir", "status": "phase1_delivered"},
-    {"coverage_id": "coverage_native_stub_replay", "protocol_item_id": "plaza2_twime_profile_neutrality", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase1_delivered"},
-    {"coverage_id": "coverage_shadow_diff_report", "protocol_item_id": "plaza2_twime_profile_neutrality", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_plaza_dir", "status": "phase1_delivered"},
-    {"coverage_id": "coverage_simba_scaffold", "protocol_item_id": "simba_scaffold_profile", "scenario_id": "scenario_shadow_mode", "inventory_id": "osengine_moex_fixfasttwime_dir", "status": "phase0_scaffolded"}
-  ]
-}
+version: 1
+coverage:
+  - coverage_id: coverage_twime_schema_inventory
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_public
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: metadata_generated
+  - coverage_id: coverage_twime_execution_report_offline
+    protocol_item_id: twime_message_7019_executionsinglereport
+    scenario_id: scenario_twime_public
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: cert_log_format_tested
+  - coverage_id: coverage_twime_session_init_offline
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_test_1_1_session_initialization
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: codec_roundtrip_tested
+  - coverage_id: coverage_twime_logout_offline
+    protocol_item_id: twime_message_5003_terminate
+    scenario_id: scenario_twime_test_1_2_logout
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: codec_roundtrip_tested
+  - coverage_id: coverage_twime_new_order_day_offline
+    protocol_item_id: twime_message_6000_newordersingle
+    scenario_id: scenario_twime_test_2_1_new_futures_day_order
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: cert_log_format_tested
+  - coverage_id: coverage_twime_new_order_gtd_offline
+    protocol_item_id: twime_message_6000_newordersingle
+    scenario_id: scenario_twime_test_2_2_new_gtd_futures_order
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: cert_log_format_tested
+  - coverage_id: coverage_twime_cancel_offline
+    protocol_item_id: twime_message_6006_ordercancelrequest
+    scenario_id: scenario_twime_test_2_3_cancel
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: codec_roundtrip_tested
+  - coverage_id: coverage_twime_replace_offline
+    protocol_item_id: twime_message_6007_orderreplacerequest
+    scenario_id: scenario_twime_test_2_5_replace
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: codec_roundtrip_tested
+  - coverage_id: coverage_twime_mass_cancel_offline
+    protocol_item_id: twime_message_6004_ordermasscancelrequest
+    scenario_id: scenario_twime_test_2_7_mass_cancel
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: codec_roundtrip_tested
+  - coverage_id: coverage_twime_retransmit_offline
+    protocol_item_id: twime_message_5004_retransmitrequest
+    scenario_id: scenario_twime_test_2_8_retransmit_last5
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: cert_log_format_tested
+  - coverage_id: coverage_twime_retransmission_metadata
+    protocol_item_id: twime_message_5005_retransmission
+    scenario_id: scenario_twime_test_3_recovery_service
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: metadata_generated
+  - coverage_id: coverage_fast_test_variants
+    protocol_item_id: fast_test_templates_t0_lock
+    scenario_id: scenario_fix_public
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: phase0_delivered
+  - coverage_id: coverage_plaza2_scheme_lock
+    protocol_item_id: plaza2_scheme_lock
+    scenario_id: scenario_plaza2_public
+    inventory_id: osengine_plaza_dir
+    status: phase0_delivered
+  - coverage_id: coverage_plaza2_split
+    protocol_item_id: plaza2_router_split
+    scenario_id: scenario_plaza2_public
+    inventory_id: osengine_plaza_dir
+    status: phase0_documented
+  - coverage_id: coverage_shadow_mode
+    protocol_item_id: plaza2_twime_profile_neutrality
+    scenario_id: scenario_shadow_mode
+    inventory_id: osengine_plaza_dir
+    status: phase1_delivered
+  - coverage_id: coverage_native_stub_replay
+    protocol_item_id: plaza2_twime_profile_neutrality
+    scenario_id: scenario_shadow_mode
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: phase1_delivered
+  - coverage_id: coverage_shadow_diff_report
+    protocol_item_id: plaza2_twime_profile_neutrality
+    scenario_id: scenario_shadow_mode
+    inventory_id: osengine_plaza_dir
+    status: phase1_delivered
+  - coverage_id: coverage_simba_scaffold
+    protocol_item_id: simba_scaffold_profile
+    scenario_id: scenario_shadow_mode
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: phase0_scaffolded

@@ -1,0 +1,8 @@
+message: Establish
+template_id: 5000
+schema_id: 19781
+version: 7
+fields:
+  Timestamp: 1715000000000000000
+  KeepaliveInterval: 1000
+  Credentials: "LOGIN"

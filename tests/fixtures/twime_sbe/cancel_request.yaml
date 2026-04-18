@@ -1,0 +1,10 @@
+message: OrderCancelRequest
+template_id: 6006
+schema_id: 19781
+version: 7
+fields:
+  ClOrdID: 202
+  OrderID: 9001001
+  SecurityID: 347990
+  ClientFlags: 0
+  Account: "AAAA"

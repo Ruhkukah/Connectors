@@ -1,0 +1,18 @@
+#pragma once
+
+#include "moex/twime_sbe/twime_schema.hpp"
+
+namespace moex::twime_sbe::generated {
+
+const TwimeSchemaInfo& schema_info() noexcept;
+std::span<const TwimeTypeMetadata> types() noexcept;
+std::span<const TwimeEnumMetadata> enums() noexcept;
+std::span<const TwimeSetMetadata> sets() noexcept;
+std::span<const TwimeMessageMetadata> messages() noexcept;
+const TwimeTypeMetadata* find_type(std::string_view name) noexcept;
+const TwimeEnumMetadata* find_enum(std::string_view name) noexcept;
+const TwimeSetMetadata* find_set(std::string_view name) noexcept;
+const TwimeMessageMetadata* find_message_by_name(std::string_view name) noexcept;
+const TwimeMessageMetadata* find_message_by_template_id(std::uint16_t template_id) noexcept;
+
+}  // namespace moex::twime_sbe::generated

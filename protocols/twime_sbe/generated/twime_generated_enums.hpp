@@ -1,0 +1,125 @@
+        #pragma once
+
+        #include <cstdint>
+
+        namespace moex::twime_sbe {
+
+        enum class TerminationCodeEnum : std::uint8_t {
+    Finished = 0,
+    UnspecifiedError = 1,
+    ReRequestOutOfBounds = 2,
+    ReRequestInProgress = 3,
+    TooFastClient = 4,
+    TooSlowClient = 5,
+    MissedHeartbeat = 6,
+    InvalidMessage = 7,
+    TCPFailure = 8,
+    InvalidSequenceNumber = 9,
+    ServerShutdown = 10,
+    SequenceReset = 11,
+};
+
+enum class EstablishmentRejectCodeEnum : std::uint8_t {
+    Unnegotiated = 0,
+    AlreadyEstablished = 1,
+    SessionBlocked = 2,
+    KeepaliveInterval = 3,
+    Credentials = 4,
+    Unspecified = 5,
+    TooFastReconnect = 6,
+};
+
+enum class SessionRejectReasonEnum : std::uint8_t {
+    ValueIsIncorrect = 5,
+    Other = 99,
+    SystemIsUnavailable = 100,
+    ClOrdIdIsNotUnique = 101,
+};
+
+enum class TimeInForceEnum : std::uint8_t {
+    Day = 0,
+    IOC = 3,
+    FOK = 4,
+    GTD = 6,
+    BOC = 122,
+};
+
+enum class SideEnum : std::uint8_t {
+    Buy = 1,
+    Sell = 2,
+    AllOrders = 89,
+};
+
+enum class ModeEnum : std::uint8_t {
+    DontChangeOrderQty = 0,
+    ChangeOrderQty = 1,
+    CheckOrderQtyAndCancelOrder = 2,
+    FixStyleReplace = 3,
+};
+
+enum class TradSesEventEnum : std::uint8_t {
+    SessionDataReady = 101,
+    ClearingStarted = 105,
+    ExtensionOfLimitsFinished = 106,
+    BrokerRecalcFinished = 108,
+    AuctionFinished = 122,
+    AuctionCollectOrderStarted = 123,
+    AuctionCollectOrderFinished = 124,
+};
+
+enum class ComplianceIDEnum : char {
+    NotAvailable = 0,
+    Manual = 77,
+    StopLoss = 83,
+    Algorithm = 82,
+    Autofollow = 65,
+    MarginCall = 68,
+};
+
+namespace SecurityTypeSetMask {
+inline constexpr std::uint8_t Future = static_cast<std::uint8_t>(1u << 0);
+inline constexpr std::uint8_t Option = static_cast<std::uint8_t>(1u << 1);
+inline constexpr std::uint8_t Multileg = static_cast<std::uint8_t>(1u << 2);
+}  // namespace
+
+namespace FlagsSetMask {
+inline constexpr std::uint64_t Day = static_cast<std::uint64_t>(1u << 0);
+inline constexpr std::uint64_t IOC = static_cast<std::uint64_t>(1u << 1);
+inline constexpr std::uint64_t OTC = static_cast<std::uint64_t>(1u << 2);
+inline constexpr std::uint64_t PosTransfer = static_cast<std::uint64_t>(1u << 3);
+inline constexpr std::uint64_t Collateral = static_cast<std::uint64_t>(1u << 4);
+inline constexpr std::uint64_t DontCheckLimits = static_cast<std::uint64_t>(1u << 9);
+inline constexpr std::uint64_t DueToCrossCancel = static_cast<std::uint64_t>(1u << 13);
+inline constexpr std::uint64_t FOK = static_cast<std::uint64_t>(1u << 19);
+inline constexpr std::uint64_t Replace = static_cast<std::uint64_t>(1u << 20);
+inline constexpr std::uint64_t Cancel = static_cast<std::uint64_t>(1u << 21);
+inline constexpr std::uint64_t MassCancel = static_cast<std::uint64_t>(1u << 22);
+inline constexpr std::uint64_t Clearing = static_cast<std::uint64_t>(1u << 25);
+inline constexpr std::uint64_t Negotiated = static_cast<std::uint64_t>(1u << 26);
+inline constexpr std::uint64_t MultiLeg = static_cast<std::uint64_t>(1u << 27);
+inline constexpr std::uint64_t CrossTrade = static_cast<std::uint64_t>(1u << 29);
+inline constexpr std::uint64_t NegotiatedMatchByRef = static_cast<std::uint64_t>(1u << 31);
+inline constexpr std::uint64_t COD = static_cast<std::uint64_t>(1u << 32);
+inline constexpr std::uint64_t UKS = static_cast<std::uint64_t>(1u << 37);
+inline constexpr std::uint64_t NCCRequest = static_cast<std::uint64_t>(1u << 38);
+inline constexpr std::uint64_t NCC = static_cast<std::uint64_t>(1u << 39);
+inline constexpr std::uint64_t LiqNettingRF = static_cast<std::uint64_t>(1u << 40);
+inline constexpr std::uint64_t ActiveSide = static_cast<std::uint64_t>(1u << 41);
+inline constexpr std::uint64_t PassiveSide = static_cast<std::uint64_t>(1u << 42);
+inline constexpr std::uint64_t Synthetic = static_cast<std::uint64_t>(1u << 45);
+inline constexpr std::uint64_t Iceberg = static_cast<std::uint64_t>(1u << 47);
+inline constexpr std::uint64_t DisclosedIceberg = static_cast<std::uint64_t>(1u << 53);
+inline constexpr std::uint64_t BOC = static_cast<std::uint64_t>(1u << 60);
+inline constexpr std::uint64_t DuringDiscreteAuction = static_cast<std::uint64_t>(1u << 62);
+}  // namespace
+
+namespace Flags2SetMask {
+inline constexpr std::uint64_t Zero = static_cast<std::uint64_t>(1u << 0);
+}  // namespace
+
+namespace ClientFlagsSetMask {
+inline constexpr std::uint8_t DontCheckLimits = static_cast<std::uint8_t>(1u << 0);
+inline constexpr std::uint8_t NccRequest = static_cast<std::uint8_t>(1u << 1);
+}  // namespace
+
+        }  // namespace moex::twime_sbe

@@ -1,0 +1,6 @@
+message: Sequence
+template_id: 5006
+schema_id: 19781
+version: 7
+fields:
+  NextSeqNo: 26

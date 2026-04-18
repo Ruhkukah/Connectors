@@ -1,0 +1,1 @@
+OrderReplaceRequest (blockLength=46, templateId=6007, schemaId=19781, version=7, ClOrdID=203, OrderID=9001001, Price=101500e-5, OrderQty=8, ClOrdLinkID=7895426, SecurityID=347990, ComplianceID=Algorithm, Mode=ChangeOrderQty, ClientFlags=0, Account="AAAA")

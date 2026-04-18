@@ -1,0 +1,569 @@
+#include "moex/twime_sbe/twime_schema.hpp"
+#include "twime_generated_metadata.hpp"
+
+#include <array>
+#include <limits>
+
+using namespace std::literals;
+
+namespace moex::twime_sbe::generated {
+namespace {
+
+constexpr std::array<TwimeEnumValueMetadata, 12> kEnumValues_TerminationCodeEnum{{
+    {"Finished", 0, "0"},
+    {"UnspecifiedError", 1, "1"},
+    {"ReRequestOutOfBounds", 2, "2"},
+    {"ReRequestInProgress", 3, "3"},
+    {"TooFastClient", 4, "4"},
+    {"TooSlowClient", 5, "5"},
+    {"MissedHeartbeat", 6, "6"},
+    {"InvalidMessage", 7, "7"},
+    {"TCPFailure", 8, "8"},
+    {"InvalidSequenceNumber", 9, "9"},
+    {"ServerShutdown", 10, "10"},
+    {"SequenceReset", 11, "11"},
+}};
+constexpr TwimeEnumMetadata kEnum_TerminationCodeEnum{"TerminationCodeEnum", TwimePrimitiveType::UInt8, 1, kEnumValues_TerminationCodeEnum.data(), kEnumValues_TerminationCodeEnum.size()};
+
+constexpr std::array<TwimeEnumValueMetadata, 7> kEnumValues_EstablishmentRejectCodeEnum{{
+    {"Unnegotiated", 0, "0"},
+    {"AlreadyEstablished", 1, "1"},
+    {"SessionBlocked", 2, "2"},
+    {"KeepaliveInterval", 3, "3"},
+    {"Credentials", 4, "4"},
+    {"Unspecified", 5, "5"},
+    {"TooFastReconnect", 6, "6"},
+}};
+constexpr TwimeEnumMetadata kEnum_EstablishmentRejectCodeEnum{"EstablishmentRejectCodeEnum", TwimePrimitiveType::UInt8, 1, kEnumValues_EstablishmentRejectCodeEnum.data(), kEnumValues_EstablishmentRejectCodeEnum.size()};
+
+constexpr std::array<TwimeEnumValueMetadata, 4> kEnumValues_SessionRejectReasonEnum{{
+    {"ValueIsIncorrect", 5, "5"},
+    {"Other", 99, "99"},
+    {"SystemIsUnavailable", 100, "100"},
+    {"ClOrdIdIsNotUnique", 101, "101"},
+}};
+constexpr TwimeEnumMetadata kEnum_SessionRejectReasonEnum{"SessionRejectReasonEnum", TwimePrimitiveType::UInt8, 1, kEnumValues_SessionRejectReasonEnum.data(), kEnumValues_SessionRejectReasonEnum.size()};
+
+constexpr std::array<TwimeEnumValueMetadata, 5> kEnumValues_TimeInForceEnum{{
+    {"Day", 0, "0"},
+    {"IOC", 3, "3"},
+    {"FOK", 4, "4"},
+    {"GTD", 6, "6"},
+    {"BOC", 122, "122"},
+}};
+constexpr TwimeEnumMetadata kEnum_TimeInForceEnum{"TimeInForceEnum", TwimePrimitiveType::UInt8, 1, kEnumValues_TimeInForceEnum.data(), kEnumValues_TimeInForceEnum.size()};
+
+constexpr std::array<TwimeEnumValueMetadata, 3> kEnumValues_SideEnum{{
+    {"Buy", 1, "1"},
+    {"Sell", 2, "2"},
+    {"AllOrders", 89, "89"},
+}};
+constexpr TwimeEnumMetadata kEnum_SideEnum{"SideEnum", TwimePrimitiveType::UInt8, 1, kEnumValues_SideEnum.data(), kEnumValues_SideEnum.size()};
+
+constexpr std::array<TwimeEnumValueMetadata, 4> kEnumValues_ModeEnum{{
+    {"DontChangeOrderQty", 0, "0"},
+    {"ChangeOrderQty", 1, "1"},
+    {"CheckOrderQtyAndCancelOrder", 2, "2"},
+    {"FixStyleReplace", 3, "3"},
+}};
+constexpr TwimeEnumMetadata kEnum_ModeEnum{"ModeEnum", TwimePrimitiveType::UInt8, 1, kEnumValues_ModeEnum.data(), kEnumValues_ModeEnum.size()};
+
+constexpr std::array<TwimeSetChoiceMetadata, 3> kSetChoices_SecurityTypeSet{{
+    {"Future", 0, "Futures"},
+    {"Option", 1, "Options"},
+    {"Multileg", 2, "Multileg instuments"},
+}};
+constexpr TwimeSetMetadata kSet_SecurityTypeSet{"SecurityTypeSet", TwimePrimitiveType::UInt8, 1, kSetChoices_SecurityTypeSet.data(), kSetChoices_SecurityTypeSet.size()};
+
+constexpr std::array<TwimeEnumValueMetadata, 7> kEnumValues_TradSesEventEnum{{
+    {"SessionDataReady", 101, "101"},
+    {"ClearingStarted", 105, "105"},
+    {"ExtensionOfLimitsFinished", 106, "106"},
+    {"BrokerRecalcFinished", 108, "108"},
+    {"AuctionFinished", 122, "122"},
+    {"AuctionCollectOrderStarted", 123, "123"},
+    {"AuctionCollectOrderFinished", 124, "124"},
+}};
+constexpr TwimeEnumMetadata kEnum_TradSesEventEnum{"TradSesEventEnum", TwimePrimitiveType::UInt8, 1, kEnumValues_TradSesEventEnum.data(), kEnumValues_TradSesEventEnum.size()};
+
+constexpr std::array<TwimeEnumValueMetadata, 6> kEnumValues_ComplianceIDEnum{{
+    {"NotAvailable", 0, ""},
+    {"Manual", 77, "M"},
+    {"StopLoss", 83, "S"},
+    {"Algorithm", 82, "R"},
+    {"Autofollow", 65, "A"},
+    {"MarginCall", 68, "D"},
+}};
+constexpr TwimeEnumMetadata kEnum_ComplianceIDEnum{"ComplianceIDEnum", TwimePrimitiveType::Char, 1, kEnumValues_ComplianceIDEnum.data(), kEnumValues_ComplianceIDEnum.size()};
+
+constexpr std::array<TwimeSetChoiceMetadata, 28> kSetChoices_FlagsSet{{
+    {"Day", 0, "Orders and Trades: Day order"},
+    {"IOC", 1, "Orders and Trades: Immediate or Cancel order"},
+    {"OTC", 2, "Orders and Trades: OTC order or OTC trade"},
+    {"PosTransfer", 3, "Trades: Position transfer trade"},
+    {"Collateral", 4, "Orders: Client collateral was not checked while adding order"},
+    {"DontCheckLimits", 9, "Orders: Do not check limits for options"},
+    {"DueToCrossCancel", 13, "Orders: The record results from cancelling the order due to cross"},
+    {"FOK", 19, "Orders: Fill or Kill order"},
+    {"Replace", 20, "Orders: The record results from replacing the order"},
+    {"Cancel", 21, "Orders: The record results from cancelling the order"},
+    {"MassCancel", 22, "Orders: The record results from mass cancelling"},
+    {"Clearing", 25, "Trades: Clearing session trade"},
+    {"Negotiated", 26, "Trades: Negotiated trade"},
+    {"MultiLeg", 27, "Trades: Multi leg trade"},
+    {"CrossTrade", 29, "Orders: Flag of cancelling the left balance of the order because of a cross-trade"},
+    {"NegotiatedMatchByRef", 31, "Trades: Negotiated trade matched by reference"},
+    {"COD", 32, "Orders: The record results from cancelling an order via 'Cancel on Disconnect' service"},
+    {"UKS", 37, "Orders: The record results from cancelling an order via 'User Kill Switch' service"},
+    {"NCCRequest", 38, "Orders and Trades: National Clearing Center request"},
+    {"NCC", 39, "Orders: The record results from cancelling an order via 'OrderMassCancelByBFLimitRequest'"},
+    {"LiqNettingRF", 40, "Orders and Trades: The record formed in the process of liquidation netting"},
+    {"ActiveSide", 41, "Trades: Flag of aggressive side"},
+    {"PassiveSide", 42, "Trades: Flag of passive side"},
+    {"Synthetic", 45, "Orders: Flag of the synthetic order"},
+    {"Iceberg", 47, "Orders and Trades: Iceberg order"},
+    {"DisclosedIceberg", 53, "Orders: The record results from disclosing of Iceberg order"},
+    {"BOC", 60, "Orders and Trades: Book or Cancel order"},
+    {"DuringDiscreteAuction", 62, "Orders and Trades: The record formed in the process of discrete auction"},
+}};
+constexpr TwimeSetMetadata kSet_FlagsSet{"FlagsSet", TwimePrimitiveType::UInt64, 8, kSetChoices_FlagsSet.data(), kSetChoices_FlagsSet.size()};
+
+constexpr std::array<TwimeSetChoiceMetadata, 1> kSetChoices_Flags2Set{{
+    {"Zero", 0, "Empty set"},
+}};
+constexpr TwimeSetMetadata kSet_Flags2Set{"Flags2Set", TwimePrimitiveType::UInt64, 8, kSetChoices_Flags2Set.data(), kSetChoices_Flags2Set.size()};
+
+constexpr std::array<TwimeSetChoiceMetadata, 2> kSetChoices_ClientFlagsSet{{
+    {"DontCheckLimits", 0, "Do not check limits for options"},
+    {"NccRequest", 1, "National Clearing Center request"},
+}};
+constexpr TwimeSetMetadata kSet_ClientFlagsSet{"ClientFlagsSet", TwimePrimitiveType::UInt8, 1, kSetChoices_ClientFlagsSet.data(), kSetChoices_ClientFlagsSet.size()};
+
+constexpr std::array<TwimeTypeMetadata, 27> kTypes{{
+    {"Int8", TwimeFieldKind::Primitive, TwimePrimitiveType::Int8, 1, true, static_cast<std::uint64_t>(127), true, 0, 0, nullptr, nullptr, ""},
+    {"Int16", TwimeFieldKind::Primitive, TwimePrimitiveType::Int16, 2, true, static_cast<std::uint64_t>(32767), true, 0, 0, nullptr, nullptr, ""},
+    {"Int32", TwimeFieldKind::Primitive, TwimePrimitiveType::Int32, 4, true, static_cast<std::uint64_t>(2147483647), true, 0, 0, nullptr, nullptr, ""},
+    {"Int64", TwimeFieldKind::Primitive, TwimePrimitiveType::Int64, 8, true, static_cast<std::uint64_t>(9223372036854775807), true, 0, 0, nullptr, nullptr, ""},
+    {"UInt8", TwimeFieldKind::Primitive, TwimePrimitiveType::UInt8, 1, true, static_cast<std::uint64_t>(255), true, 0, 0, nullptr, nullptr, ""},
+    {"UInt16", TwimeFieldKind::Primitive, TwimePrimitiveType::UInt16, 2, true, static_cast<std::uint64_t>(65535), true, 0, 0, nullptr, nullptr, ""},
+    {"UInt32", TwimeFieldKind::Primitive, TwimePrimitiveType::UInt32, 4, true, static_cast<std::uint64_t>(4294967295), true, 0, 0, nullptr, nullptr, ""},
+    {"UInt64", TwimeFieldKind::Primitive, TwimePrimitiveType::UInt64, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true, 0, 0, nullptr, nullptr, ""},
+    {"String7", TwimeFieldKind::String, TwimePrimitiveType::Char, 7, false, static_cast<std::uint64_t>(0), false, 7, 0, nullptr, nullptr, ""},
+    {"String20", TwimeFieldKind::String, TwimePrimitiveType::Char, 20, false, static_cast<std::uint64_t>(0), false, 20, 0, nullptr, nullptr, ""},
+    {"String25", TwimeFieldKind::String, TwimePrimitiveType::Char, 25, false, static_cast<std::uint64_t>(0), false, 25, 0, nullptr, nullptr, ""},
+    {"DeltaMillisecs", TwimeFieldKind::DeltaMillisecs, TwimePrimitiveType::UInt32, 4, false, static_cast<std::uint64_t>(0), false, 0, 0, nullptr, nullptr, ""},
+    {"TimeStamp", TwimeFieldKind::TimeStamp, TwimePrimitiveType::UInt64, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true, 0, 0, nullptr, nullptr, "Time in number of nanoseconds since Unix epoch, UTC timezone"},
+    {"TerminationCodeEnum", TwimeFieldKind::Enum, TwimePrimitiveType::UInt8, 1, false, static_cast<std::uint64_t>(0), false, 0, 0, &kEnum_TerminationCodeEnum, nullptr, ""},
+    {"EstablishmentRejectCodeEnum", TwimeFieldKind::Enum, TwimePrimitiveType::UInt8, 1, false, static_cast<std::uint64_t>(0), false, 0, 0, &kEnum_EstablishmentRejectCodeEnum, nullptr, ""},
+    {"SessionRejectReasonEnum", TwimeFieldKind::Enum, TwimePrimitiveType::UInt8, 1, false, static_cast<std::uint64_t>(0), false, 0, 0, &kEnum_SessionRejectReasonEnum, nullptr, ""},
+    {"TimeInForceEnum", TwimeFieldKind::Enum, TwimePrimitiveType::UInt8, 1, false, static_cast<std::uint64_t>(0), false, 0, 0, &kEnum_TimeInForceEnum, nullptr, ""},
+    {"SideEnum", TwimeFieldKind::Enum, TwimePrimitiveType::UInt8, 1, false, static_cast<std::uint64_t>(0), false, 0, 0, &kEnum_SideEnum, nullptr, ""},
+    {"ModeEnum", TwimeFieldKind::Enum, TwimePrimitiveType::UInt8, 1, false, static_cast<std::uint64_t>(0), false, 0, 0, &kEnum_ModeEnum, nullptr, ""},
+    {"SecurityTypeSet", TwimeFieldKind::Set, TwimePrimitiveType::UInt8, 1, false, static_cast<std::uint64_t>(0), false, 0, 0, nullptr, &kSet_SecurityTypeSet, ""},
+    {"TradSesEventEnum", TwimeFieldKind::Enum, TwimePrimitiveType::UInt8, 1, false, static_cast<std::uint64_t>(0), false, 0, 0, &kEnum_TradSesEventEnum, nullptr, ""},
+    {"ComplianceIDEnum", TwimeFieldKind::Enum, TwimePrimitiveType::Char, 1, false, static_cast<std::uint64_t>(0), false, 0, 0, &kEnum_ComplianceIDEnum, nullptr, ""},
+    {"FlagsSet", TwimeFieldKind::Set, TwimePrimitiveType::UInt64, 8, false, static_cast<std::uint64_t>(0), false, 0, 0, nullptr, &kSet_FlagsSet, ""},
+    {"Flags2Set", TwimeFieldKind::Set, TwimePrimitiveType::UInt64, 8, false, static_cast<std::uint64_t>(0), false, 0, 0, nullptr, &kSet_Flags2Set, ""},
+    {"ClientFlagsSet", TwimeFieldKind::Set, TwimePrimitiveType::UInt8, 1, false, static_cast<std::uint64_t>(0), false, 0, 0, nullptr, &kSet_ClientFlagsSet, ""},
+    {"Decimal5", TwimeFieldKind::Decimal5, TwimePrimitiveType::None, 8, false, static_cast<std::uint64_t>(0), false, 0, -5, nullptr, nullptr, "Decimal"},
+    {"messageHeader", TwimeFieldKind::Composite, TwimePrimitiveType::None, 8, false, static_cast<std::uint64_t>(0), false, 0, 0, nullptr, nullptr, "Template ID and length of message root"},
+}};
+
+constexpr std::array<TwimeFieldMetadata, 3> kFields_Establish{{
+    {"Timestamp", 20204, &kTypes[12], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"KeepaliveInterval", 20205, &kTypes[11], 4, 8, false, static_cast<std::uint64_t>(0), false},
+    {"Credentials", 20206, &kTypes[9], 20, 12, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_Establish{"Establish", 5000, TwimeLayer::Session, TwimeDirection::ClientToServer, 32, kFields_Establish.data(), kFields_Establish.size()};
+
+constexpr std::array<TwimeFieldMetadata, 3> kFields_EstablishmentAck{{
+    {"RequestTimestamp", 20207, &kTypes[12], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"KeepaliveInterval", 20205, &kTypes[11], 4, 8, false, static_cast<std::uint64_t>(0), false},
+    {"NextSeqNo", 20208, &kTypes[7], 8, 12, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+}};
+constexpr TwimeMessageMetadata kMessage_EstablishmentAck{"EstablishmentAck", 5001, TwimeLayer::Session, TwimeDirection::ServerToClient, 20, kFields_EstablishmentAck.data(), kFields_EstablishmentAck.size()};
+
+constexpr std::array<TwimeFieldMetadata, 2> kFields_EstablishmentReject{{
+    {"RequestTimestamp", 20207, &kTypes[12], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"EstablishmentRejectCode", 20209, &kTypes[14], 1, 8, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_EstablishmentReject{"EstablishmentReject", 5002, TwimeLayer::Session, TwimeDirection::ServerToClient, 9, kFields_EstablishmentReject.data(), kFields_EstablishmentReject.size()};
+
+constexpr std::array<TwimeFieldMetadata, 1> kFields_Terminate{{
+    {"TerminationCode", 20210, &kTypes[13], 1, 0, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_Terminate{"Terminate", 5003, TwimeLayer::Session, TwimeDirection::Bidirectional, 1, kFields_Terminate.data(), kFields_Terminate.size()};
+
+constexpr std::array<TwimeFieldMetadata, 3> kFields_RetransmitRequest{{
+    {"Timestamp", 20204, &kTypes[12], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"FromSeqNo", 20211, &kTypes[7], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Count", 20212, &kTypes[6], 4, 16, true, static_cast<std::uint64_t>(4294967295), true},
+}};
+constexpr TwimeMessageMetadata kMessage_RetransmitRequest{"RetransmitRequest", 5004, TwimeLayer::Session, TwimeDirection::ClientToServer, 20, kFields_RetransmitRequest.data(), kFields_RetransmitRequest.size()};
+
+constexpr std::array<TwimeFieldMetadata, 3> kFields_Retransmission{{
+    {"NextSeqNo", 20208, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"RequestTimestamp", 20207, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Count", 20212, &kTypes[6], 4, 16, true, static_cast<std::uint64_t>(4294967295), true},
+}};
+constexpr TwimeMessageMetadata kMessage_Retransmission{"Retransmission", 5005, TwimeLayer::Session, TwimeDirection::ServerToClient, 20, kFields_Retransmission.data(), kFields_Retransmission.size()};
+
+constexpr std::array<TwimeFieldMetadata, 1> kFields_Sequence{{
+    {"NextSeqNo", 20208, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+}};
+constexpr TwimeMessageMetadata kMessage_Sequence{"Sequence", 5006, TwimeLayer::Session, TwimeDirection::Bidirectional, 8, kFields_Sequence.data(), kFields_Sequence.size()};
+
+constexpr std::array<TwimeFieldMetadata, 3> kFields_FloodReject{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"QueueSize", 20213, &kTypes[6], 4, 8, true, static_cast<std::uint64_t>(4294967295), true},
+    {"PenaltyRemain", 20214, &kTypes[6], 4, 12, true, static_cast<std::uint64_t>(4294967295), true},
+}};
+constexpr TwimeMessageMetadata kMessage_FloodReject{"FloodReject", 5007, TwimeLayer::Session, TwimeDirection::ServerToClient, 16, kFields_FloodReject.data(), kFields_FloodReject.size()};
+
+constexpr std::array<TwimeFieldMetadata, 3> kFields_SessionReject{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"RefTagID", 371, &kTypes[6], 4, 8, true, static_cast<std::uint64_t>(4294967295), true},
+    {"SessionRejectReason", 373, &kTypes[15], 1, 12, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_SessionReject{"SessionReject", 5008, TwimeLayer::Session, TwimeDirection::ServerToClient, 13, kFields_SessionReject.data(), kFields_SessionReject.size()};
+
+constexpr std::array<TwimeFieldMetadata, 3> kFields_BusinessMessageReject{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Timestamp", 20204, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrdRejReason", 103, &kTypes[2], 4, 16, true, static_cast<std::uint64_t>(2147483647), true},
+}};
+constexpr TwimeMessageMetadata kMessage_BusinessMessageReject{"BusinessMessageReject", 5009, TwimeLayer::Session, TwimeDirection::ServerToClient, 20, kFields_BusinessMessageReject.data(), kFields_BusinessMessageReject.size()};
+
+constexpr std::array<TwimeFieldMetadata, 11> kFields_NewOrderSingle{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"ExpireDate", 432, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Price", 44, &kTypes[25], 8, 16, false, static_cast<std::uint64_t>(0), false},
+    {"SecurityID", 48, &kTypes[2], 4, 24, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 28, true, static_cast<std::uint64_t>(2147483647), true},
+    {"OrderQty", 38, &kTypes[6], 4, 32, true, static_cast<std::uint64_t>(4294967295), true},
+    {"ComplianceID", 376, &kTypes[21], 1, 36, false, static_cast<std::uint64_t>(0), false},
+    {"TimeInForce", 59, &kTypes[16], 1, 37, false, static_cast<std::uint64_t>(0), false},
+    {"Side", 54, &kTypes[17], 1, 38, false, static_cast<std::uint64_t>(0), false},
+    {"ClientFlags", 20218, &kTypes[24], 1, 39, false, static_cast<std::uint64_t>(0), false},
+    {"Account", 1, &kTypes[8], 7, 40, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_NewOrderSingle{"NewOrderSingle", 6000, TwimeLayer::Application, TwimeDirection::ClientToServer, 47, kFields_NewOrderSingle.data(), kFields_NewOrderSingle.size()};
+
+constexpr std::array<TwimeFieldMetadata, 12> kFields_NewOrderIceberg{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"ExpireDate", 432, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Price", 44, &kTypes[25], 8, 16, false, static_cast<std::uint64_t>(0), false},
+    {"SecurityID", 48, &kTypes[2], 4, 24, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 28, true, static_cast<std::uint64_t>(2147483647), true},
+    {"DisplayQty", 1138, &kTypes[6], 4, 32, true, static_cast<std::uint64_t>(4294967295), true},
+    {"DisplayVarianceQty", 20036, &kTypes[6], 4, 36, true, static_cast<std::uint64_t>(4294967295), true},
+    {"OrderQty", 38, &kTypes[6], 4, 40, true, static_cast<std::uint64_t>(4294967295), true},
+    {"ComplianceID", 376, &kTypes[21], 1, 44, false, static_cast<std::uint64_t>(0), false},
+    {"Side", 54, &kTypes[17], 1, 45, false, static_cast<std::uint64_t>(0), false},
+    {"ClientFlags", 20218, &kTypes[24], 1, 46, false, static_cast<std::uint64_t>(0), false},
+    {"Account", 1, &kTypes[8], 7, 47, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_NewOrderIceberg{"NewOrderIceberg", 6008, TwimeLayer::Application, TwimeDirection::ClientToServer, 54, kFields_NewOrderIceberg.data(), kFields_NewOrderIceberg.size()};
+
+constexpr std::array<TwimeFieldMetadata, 13> kFields_NewOrderIcebergX{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"ExpireDate", 432, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Price", 44, &kTypes[25], 8, 16, false, static_cast<std::uint64_t>(0), false},
+    {"SecurityID", 48, &kTypes[2], 4, 24, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 28, true, static_cast<std::uint64_t>(2147483647), true},
+    {"DisplayQty", 1138, &kTypes[6], 4, 32, true, static_cast<std::uint64_t>(4294967295), true},
+    {"DisplayVarianceQty", 20036, &kTypes[6], 4, 36, true, static_cast<std::uint64_t>(4294967295), true},
+    {"OrderQty", 38, &kTypes[6], 4, 40, true, static_cast<std::uint64_t>(4294967295), true},
+    {"ComplianceID", 376, &kTypes[21], 1, 44, false, static_cast<std::uint64_t>(0), false},
+    {"TimeInForce", 59, &kTypes[16], 1, 45, false, static_cast<std::uint64_t>(0), false},
+    {"Side", 54, &kTypes[17], 1, 46, false, static_cast<std::uint64_t>(0), false},
+    {"ClientFlags", 20218, &kTypes[24], 1, 47, false, static_cast<std::uint64_t>(0), false},
+    {"Account", 1, &kTypes[8], 7, 48, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_NewOrderIcebergX{"NewOrderIcebergX", 6011, TwimeLayer::Application, TwimeDirection::ClientToServer, 55, kFields_NewOrderIcebergX.data(), kFields_NewOrderIcebergX.size()};
+
+constexpr std::array<TwimeFieldMetadata, 5> kFields_OrderCancelRequest{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrderID", 37, &kTypes[3], 8, 8, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"SecurityID", 48, &kTypes[2], 4, 16, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClientFlags", 20218, &kTypes[24], 1, 20, false, static_cast<std::uint64_t>(0), false},
+    {"Account", 1, &kTypes[8], 7, 21, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_OrderCancelRequest{"OrderCancelRequest", 6006, TwimeLayer::Application, TwimeDirection::ClientToServer, 28, kFields_OrderCancelRequest.data(), kFields_OrderCancelRequest.size()};
+
+constexpr std::array<TwimeFieldMetadata, 5> kFields_OrderIcebergCancelRequest{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrderID", 37, &kTypes[3], 8, 8, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"SecurityID", 48, &kTypes[2], 4, 16, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClientFlags", 20218, &kTypes[24], 1, 20, false, static_cast<std::uint64_t>(0), false},
+    {"Account", 1, &kTypes[8], 7, 21, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_OrderIcebergCancelRequest{"OrderIcebergCancelRequest", 6009, TwimeLayer::Application, TwimeDirection::ClientToServer, 28, kFields_OrderIcebergCancelRequest.data(), kFields_OrderIcebergCancelRequest.size()};
+
+constexpr std::array<TwimeFieldMetadata, 10> kFields_OrderReplaceRequest{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrderID", 37, &kTypes[3], 8, 8, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"Price", 44, &kTypes[25], 8, 16, false, static_cast<std::uint64_t>(0), false},
+    {"OrderQty", 38, &kTypes[6], 4, 24, true, static_cast<std::uint64_t>(4294967295), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 28, true, static_cast<std::uint64_t>(2147483647), true},
+    {"SecurityID", 48, &kTypes[2], 4, 32, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ComplianceID", 376, &kTypes[21], 1, 36, false, static_cast<std::uint64_t>(0), false},
+    {"Mode", 20019, &kTypes[18], 1, 37, false, static_cast<std::uint64_t>(0), false},
+    {"ClientFlags", 20218, &kTypes[24], 1, 38, false, static_cast<std::uint64_t>(0), false},
+    {"Account", 1, &kTypes[8], 7, 39, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_OrderReplaceRequest{"OrderReplaceRequest", 6007, TwimeLayer::Application, TwimeDirection::ClientToServer, 46, kFields_OrderReplaceRequest.data(), kFields_OrderReplaceRequest.size()};
+
+constexpr std::array<TwimeFieldMetadata, 8> kFields_OrderIcebergReplaceRequest{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrderID", 37, &kTypes[3], 8, 8, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"Price", 44, &kTypes[25], 8, 16, false, static_cast<std::uint64_t>(0), false},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 24, true, static_cast<std::uint64_t>(2147483647), true},
+    {"SecurityID", 48, &kTypes[2], 4, 28, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ComplianceID", 376, &kTypes[21], 1, 32, false, static_cast<std::uint64_t>(0), false},
+    {"ClientFlags", 20218, &kTypes[24], 1, 33, false, static_cast<std::uint64_t>(0), false},
+    {"Account", 1, &kTypes[8], 7, 34, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_OrderIcebergReplaceRequest{"OrderIcebergReplaceRequest", 6010, TwimeLayer::Application, TwimeDirection::ClientToServer, 41, kFields_OrderIcebergReplaceRequest.data(), kFields_OrderIcebergReplaceRequest.size()};
+
+constexpr std::array<TwimeFieldMetadata, 7> kFields_OrderMassCancelRequest{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 8, true, static_cast<std::uint64_t>(2147483647), true},
+    {"SecurityID", 48, &kTypes[2], 4, 12, true, static_cast<std::uint64_t>(2147483647), true},
+    {"SecurityType", 167, &kTypes[19], 1, 16, false, static_cast<std::uint64_t>(0), false},
+    {"Side", 54, &kTypes[17], 1, 17, false, static_cast<std::uint64_t>(0), false},
+    {"Account", 1, &kTypes[8], 7, 18, false, static_cast<std::uint64_t>(0), false},
+    {"SecurityGroup", 1151, &kTypes[10], 25, 25, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_OrderMassCancelRequest{"OrderMassCancelRequest", 6004, TwimeLayer::Application, TwimeDirection::ClientToServer, 50, kFields_OrderMassCancelRequest.data(), kFields_OrderMassCancelRequest.size()};
+
+constexpr std::array<TwimeFieldMetadata, 2> kFields_OrderMassCancelByBFLimitRequest{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Account", 1, &kTypes[8], 7, 8, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_OrderMassCancelByBFLimitRequest{"OrderMassCancelByBFLimitRequest", 6005, TwimeLayer::Application, TwimeDirection::ClientToServer, 15, kFields_OrderMassCancelByBFLimitRequest.data(), kFields_OrderMassCancelByBFLimitRequest.size()};
+
+constexpr std::array<TwimeFieldMetadata, 13> kFields_NewOrderSingleResponse{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Timestamp", 20204, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"ExpireDate", 432, &kTypes[12], 8, 16, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrderID", 37, &kTypes[3], 8, 24, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"Flags", 20215, &kTypes[22], 8, 32, false, static_cast<std::uint64_t>(0), false},
+    {"Flags2", 20051, &kTypes[23], 8, 40, false, static_cast<std::uint64_t>(0), false},
+    {"Price", 44, &kTypes[25], 8, 48, false, static_cast<std::uint64_t>(0), false},
+    {"SecurityID", 48, &kTypes[2], 4, 56, true, static_cast<std::uint64_t>(2147483647), true},
+    {"OrderQty", 38, &kTypes[6], 4, 60, true, static_cast<std::uint64_t>(4294967295), true},
+    {"TradingSessionID", 336, &kTypes[2], 4, 64, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 68, true, static_cast<std::uint64_t>(2147483647), true},
+    {"Side", 54, &kTypes[17], 1, 72, false, static_cast<std::uint64_t>(0), false},
+    {"ComplianceID", 376, &kTypes[21], 1, 73, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_NewOrderSingleResponse{"NewOrderSingleResponse", 7015, TwimeLayer::Application, TwimeDirection::ServerToClient, 74, kFields_NewOrderSingleResponse.data(), kFields_NewOrderSingleResponse.size()};
+
+constexpr std::array<TwimeFieldMetadata, 16> kFields_NewOrderIcebergResponse{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Timestamp", 20204, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"ExpireDate", 432, &kTypes[12], 8, 16, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrderID", 37, &kTypes[3], 8, 24, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"DisplayOrderID", 20037, &kTypes[3], 8, 32, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"Flags", 20215, &kTypes[22], 8, 40, false, static_cast<std::uint64_t>(0), false},
+    {"Flags2", 20051, &kTypes[23], 8, 48, false, static_cast<std::uint64_t>(0), false},
+    {"Price", 44, &kTypes[25], 8, 56, false, static_cast<std::uint64_t>(0), false},
+    {"SecurityID", 48, &kTypes[2], 4, 64, true, static_cast<std::uint64_t>(2147483647), true},
+    {"OrderQty", 38, &kTypes[6], 4, 68, true, static_cast<std::uint64_t>(4294967295), true},
+    {"DisplayQty", 1138, &kTypes[6], 4, 72, true, static_cast<std::uint64_t>(4294967295), true},
+    {"DisplayVarianceQty", 20036, &kTypes[6], 4, 76, true, static_cast<std::uint64_t>(4294967295), true},
+    {"TradingSessionID", 336, &kTypes[2], 4, 80, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 84, true, static_cast<std::uint64_t>(2147483647), true},
+    {"Side", 54, &kTypes[17], 1, 88, false, static_cast<std::uint64_t>(0), false},
+    {"ComplianceID", 376, &kTypes[21], 1, 89, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_NewOrderIcebergResponse{"NewOrderIcebergResponse", 7016, TwimeLayer::Application, TwimeDirection::ServerToClient, 90, kFields_NewOrderIcebergResponse.data(), kFields_NewOrderIcebergResponse.size()};
+
+constexpr std::array<TwimeFieldMetadata, 8> kFields_OrderCancelResponse{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Timestamp", 20204, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrderID", 37, &kTypes[3], 8, 16, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"Flags", 20215, &kTypes[22], 8, 24, false, static_cast<std::uint64_t>(0), false},
+    {"Flags2", 20051, &kTypes[23], 8, 32, false, static_cast<std::uint64_t>(0), false},
+    {"OrderQty", 38, &kTypes[6], 4, 40, true, static_cast<std::uint64_t>(4294967295), true},
+    {"TradingSessionID", 336, &kTypes[2], 4, 44, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 48, true, static_cast<std::uint64_t>(2147483647), true},
+}};
+constexpr TwimeMessageMetadata kMessage_OrderCancelResponse{"OrderCancelResponse", 7017, TwimeLayer::Application, TwimeDirection::ServerToClient, 52, kFields_OrderCancelResponse.data(), kFields_OrderCancelResponse.size()};
+
+constexpr std::array<TwimeFieldMetadata, 11> kFields_OrderReplaceResponse{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Timestamp", 20204, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrderID", 37, &kTypes[3], 8, 16, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"PrevOrderID", 20216, &kTypes[3], 8, 24, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"Flags", 20215, &kTypes[22], 8, 32, false, static_cast<std::uint64_t>(0), false},
+    {"Flags2", 20051, &kTypes[23], 8, 40, false, static_cast<std::uint64_t>(0), false},
+    {"Price", 44, &kTypes[25], 8, 48, false, static_cast<std::uint64_t>(0), false},
+    {"OrderQty", 38, &kTypes[6], 4, 56, true, static_cast<std::uint64_t>(4294967295), true},
+    {"TradingSessionID", 336, &kTypes[2], 4, 60, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 64, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ComplianceID", 376, &kTypes[21], 1, 68, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_OrderReplaceResponse{"OrderReplaceResponse", 7018, TwimeLayer::Application, TwimeDirection::ServerToClient, 69, kFields_OrderReplaceResponse.data(), kFields_OrderReplaceResponse.size()};
+
+constexpr std::array<TwimeFieldMetadata, 3> kFields_OrderMassCancelResponse{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Timestamp", 20204, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"TotalAffectedOrders", 533, &kTypes[2], 4, 16, true, static_cast<std::uint64_t>(2147483647), true},
+}};
+constexpr TwimeMessageMetadata kMessage_OrderMassCancelResponse{"OrderMassCancelResponse", 7007, TwimeLayer::Application, TwimeDirection::ServerToClient, 20, kFields_OrderMassCancelResponse.data(), kFields_OrderMassCancelResponse.size()};
+
+constexpr std::array<TwimeFieldMetadata, 13> kFields_ExecutionSingleReport{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Timestamp", 20204, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrderID", 37, &kTypes[3], 8, 16, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"TrdMatchID", 880, &kTypes[3], 8, 24, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"Flags", 20215, &kTypes[22], 8, 32, false, static_cast<std::uint64_t>(0), false},
+    {"Flags2", 20051, &kTypes[23], 8, 40, false, static_cast<std::uint64_t>(0), false},
+    {"LastPx", 31, &kTypes[25], 8, 48, false, static_cast<std::uint64_t>(0), false},
+    {"LastQty", 32, &kTypes[6], 4, 56, true, static_cast<std::uint64_t>(4294967295), true},
+    {"OrderQty", 38, &kTypes[6], 4, 60, true, static_cast<std::uint64_t>(4294967295), true},
+    {"TradingSessionID", 336, &kTypes[2], 4, 64, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 68, true, static_cast<std::uint64_t>(2147483647), true},
+    {"SecurityID", 48, &kTypes[2], 4, 72, true, static_cast<std::uint64_t>(2147483647), true},
+    {"Side", 54, &kTypes[17], 1, 76, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_ExecutionSingleReport{"ExecutionSingleReport", 7019, TwimeLayer::Application, TwimeDirection::ServerToClient, 77, kFields_ExecutionSingleReport.data(), kFields_ExecutionSingleReport.size()};
+
+constexpr std::array<TwimeFieldMetadata, 14> kFields_ExecutionMultilegReport{{
+    {"ClOrdID", 11, &kTypes[7], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"Timestamp", 20204, &kTypes[12], 8, 8, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"OrderID", 37, &kTypes[3], 8, 16, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"TrdMatchID", 880, &kTypes[3], 8, 24, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"Flags", 20215, &kTypes[22], 8, 32, false, static_cast<std::uint64_t>(0), false},
+    {"Flags2", 20051, &kTypes[23], 8, 40, false, static_cast<std::uint64_t>(0), false},
+    {"LastPx", 31, &kTypes[25], 8, 48, false, static_cast<std::uint64_t>(0), false},
+    {"LegPrice", 566, &kTypes[25], 8, 56, false, static_cast<std::uint64_t>(0), false},
+    {"LastQty", 32, &kTypes[6], 4, 64, true, static_cast<std::uint64_t>(4294967295), true},
+    {"OrderQty", 38, &kTypes[6], 4, 68, true, static_cast<std::uint64_t>(4294967295), true},
+    {"TradingSessionID", 336, &kTypes[2], 4, 72, true, static_cast<std::uint64_t>(2147483647), true},
+    {"ClOrdLinkID", 583, &kTypes[2], 4, 76, true, static_cast<std::uint64_t>(2147483647), true},
+    {"SecurityID", 48, &kTypes[2], 4, 80, true, static_cast<std::uint64_t>(2147483647), true},
+    {"Side", 54, &kTypes[17], 1, 84, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_ExecutionMultilegReport{"ExecutionMultilegReport", 7020, TwimeLayer::Application, TwimeDirection::ServerToClient, 85, kFields_ExecutionMultilegReport.data(), kFields_ExecutionMultilegReport.size()};
+
+constexpr std::array<TwimeFieldMetadata, 2> kFields_EmptyBook{{
+    {"Timestamp", 20204, &kTypes[12], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"TradingSessionID", 336, &kTypes[2], 4, 8, true, static_cast<std::uint64_t>(2147483647), true},
+}};
+constexpr TwimeMessageMetadata kMessage_EmptyBook{"EmptyBook", 7010, TwimeLayer::Application, TwimeDirection::ServerToClient, 12, kFields_EmptyBook.data(), kFields_EmptyBook.size()};
+
+constexpr std::array<TwimeFieldMetadata, 4> kFields_SystemEvent{{
+    {"Timestamp", 20204, &kTypes[12], 8, 0, true, static_cast<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()), true},
+    {"EventId", 20220, &kTypes[3], 8, 8, true, static_cast<std::uint64_t>(9223372036854775807), true},
+    {"TradingSessionID", 336, &kTypes[2], 4, 16, true, static_cast<std::uint64_t>(2147483647), true},
+    {"TradSesEvent", 1368, &kTypes[20], 1, 20, false, static_cast<std::uint64_t>(0), false},
+}};
+constexpr TwimeMessageMetadata kMessage_SystemEvent{"SystemEvent", 7014, TwimeLayer::Application, TwimeDirection::ServerToClient, 21, kFields_SystemEvent.data(), kFields_SystemEvent.size()};
+
+constexpr std::array<TwimeMessageMetadata, 28> kMessages{{
+    kMessage_Establish,
+    kMessage_EstablishmentAck,
+    kMessage_EstablishmentReject,
+    kMessage_Terminate,
+    kMessage_RetransmitRequest,
+    kMessage_Retransmission,
+    kMessage_Sequence,
+    kMessage_FloodReject,
+    kMessage_SessionReject,
+    kMessage_BusinessMessageReject,
+    kMessage_NewOrderSingle,
+    kMessage_NewOrderIceberg,
+    kMessage_NewOrderIcebergX,
+    kMessage_OrderCancelRequest,
+    kMessage_OrderIcebergCancelRequest,
+    kMessage_OrderReplaceRequest,
+    kMessage_OrderIcebergReplaceRequest,
+    kMessage_OrderMassCancelRequest,
+    kMessage_OrderMassCancelByBFLimitRequest,
+    kMessage_NewOrderSingleResponse,
+    kMessage_NewOrderIcebergResponse,
+    kMessage_OrderCancelResponse,
+    kMessage_OrderReplaceResponse,
+    kMessage_OrderMassCancelResponse,
+    kMessage_ExecutionSingleReport,
+    kMessage_ExecutionMultilegReport,
+    kMessage_EmptyBook,
+    kMessage_SystemEvent,
+}};
+
+constexpr std::array<TwimeEnumMetadata, 8> kAllEnums{{
+    kEnum_TerminationCodeEnum,
+    kEnum_EstablishmentRejectCodeEnum,
+    kEnum_SessionRejectReasonEnum,
+    kEnum_TimeInForceEnum,
+    kEnum_SideEnum,
+    kEnum_ModeEnum,
+    kEnum_TradSesEventEnum,
+    kEnum_ComplianceIDEnum,
+}};
+
+constexpr std::array<TwimeSetMetadata, 4> kAllSets{{
+    kSet_SecurityTypeSet,
+    kSet_FlagsSet,
+    kSet_Flags2Set,
+    kSet_ClientFlagsSet,
+}};
+
+constexpr TwimeSchemaInfo kSchemaInfo{"moex_spectra_twime", 19781, 7, "littleEndian", "807db471ef09186444d87135667a94c57bc3c07f4ea47834e0106c08a2aee21b"};
+
+}  // namespace
+
+const TwimeSchemaInfo& schema_info() noexcept { return kSchemaInfo; }
+std::span<const TwimeTypeMetadata> types() noexcept { return kTypes; }
+std::span<const TwimeEnumMetadata> enums() noexcept { return kAllEnums; }
+std::span<const TwimeSetMetadata> sets() noexcept { return kAllSets; }
+std::span<const TwimeMessageMetadata> messages() noexcept { return kMessages; }
+const TwimeTypeMetadata* find_type(std::string_view key) noexcept {
+    for (const auto& item : kTypes) {
+        if (item.name == key) {
+            return &item;
+        }
+    }
+    return nullptr;
+}
+
+const TwimeEnumMetadata* find_enum(std::string_view key) noexcept {
+    for (const auto& item : enums()) {
+        if (item.name == key) {
+            return &item;
+        }
+    }
+    return nullptr;
+}
+
+const TwimeSetMetadata* find_set(std::string_view key) noexcept {
+    for (const auto& item : sets()) {
+        if (item.name == key) {
+            return &item;
+        }
+    }
+    return nullptr;
+}
+
+const TwimeMessageMetadata* find_message_by_name(std::string_view key) noexcept {
+    for (const auto& item : kMessages) {
+        if (item.name == key) {
+            return &item;
+        }
+    }
+    return nullptr;
+}
+
+const TwimeMessageMetadata* find_message_by_template_id(std::uint16_t template_id) noexcept {
+    for (const auto& item : kMessages) {
+        if (item.template_id == template_id) {
+            return &item;
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace moex::twime_sbe::generated

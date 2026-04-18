@@ -40,6 +40,12 @@ jobs:
       - name: Validate matrix
         run: build/tools/matrix_validate --matrix-dir matrix
 
+      - name: Rebuild TWIME schema inventory
+        run: build/tools/twime_schema_indexer --schema protocols/twime_sbe/schema/twime_spectra-7.7.xml --out matrix/protocol_inventory
+
+      - name: Verify TWIME code generation
+        run: build/tools/twime_codegen --schema protocols/twime_sbe/schema/twime_spectra-7.7.xml --out protocols/twime_sbe/generated --check
+
       - name: Run cert runner stub
         run: build/apps/moex_cert_runner --scenario cert/stub/phase0_stub.yaml --output-dir build/ci-cert-runner
 
