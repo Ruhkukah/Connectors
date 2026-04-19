@@ -1,0 +1,407 @@
+version: 1
+items:
+- protocol_item_id: twime_enum_terminationcodeenum
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: TerminationCodeEnum
+  encoding_type: uint8
+  encoded_size: 1
+  values:
+  - name: Finished
+    wire_text: '0'
+    wire_value: 0
+  - name: UnspecifiedError
+    wire_text: '1'
+    wire_value: 1
+  - name: ReRequestOutOfBounds
+    wire_text: '2'
+    wire_value: 2
+  - name: ReRequestInProgress
+    wire_text: '3'
+    wire_value: 3
+  - name: TooFastClient
+    wire_text: '4'
+    wire_value: 4
+  - name: TooSlowClient
+    wire_text: '5'
+    wire_value: 5
+  - name: MissedHeartbeat
+    wire_text: '6'
+    wire_value: 6
+  - name: InvalidMessage
+    wire_text: '7'
+    wire_value: 7
+  - name: TCPFailure
+    wire_text: '8'
+    wire_value: 8
+  - name: InvalidSequenceNumber
+    wire_text: '9'
+    wire_value: 9
+  - name: ServerShutdown
+    wire_text: '10'
+    wire_value: 10
+  - name: SequenceReset
+    wire_text: '11'
+    wire_value: 11
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_enum_establishmentrejectcodeenum
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: EstablishmentRejectCodeEnum
+  encoding_type: uint8
+  encoded_size: 1
+  values:
+  - name: Unnegotiated
+    wire_text: '0'
+    wire_value: 0
+  - name: AlreadyEstablished
+    wire_text: '1'
+    wire_value: 1
+  - name: SessionBlocked
+    wire_text: '2'
+    wire_value: 2
+  - name: KeepaliveInterval
+    wire_text: '3'
+    wire_value: 3
+  - name: Credentials
+    wire_text: '4'
+    wire_value: 4
+  - name: Unspecified
+    wire_text: '5'
+    wire_value: 5
+  - name: TooFastReconnect
+    wire_text: '6'
+    wire_value: 6
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_enum_sessionrejectreasonenum
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: SessionRejectReasonEnum
+  encoding_type: uint8
+  encoded_size: 1
+  values:
+  - name: ValueIsIncorrect
+    wire_text: '5'
+    wire_value: 5
+  - name: Other
+    wire_text: '99'
+    wire_value: 99
+  - name: SystemIsUnavailable
+    wire_text: '100'
+    wire_value: 100
+  - name: ClOrdIdIsNotUnique
+    wire_text: '101'
+    wire_value: 101
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_enum_timeinforceenum
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: TimeInForceEnum
+  encoding_type: uint8
+  encoded_size: 1
+  values:
+  - name: Day
+    wire_text: '0'
+    wire_value: 0
+  - name: IOC
+    wire_text: '3'
+    wire_value: 3
+  - name: FOK
+    wire_text: '4'
+    wire_value: 4
+  - name: GTD
+    wire_text: '6'
+    wire_value: 6
+  - name: BOC
+    wire_text: '122'
+    wire_value: 122
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_enum_sideenum
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: SideEnum
+  encoding_type: uint8
+  encoded_size: 1
+  values:
+  - name: Buy
+    wire_text: '1'
+    wire_value: 1
+  - name: Sell
+    wire_text: '2'
+    wire_value: 2
+  - name: AllOrders
+    wire_text: '89'
+    wire_value: 89
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_enum_modeenum
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: ModeEnum
+  encoding_type: uint8
+  encoded_size: 1
+  values:
+  - name: DontChangeOrderQty
+    wire_text: '0'
+    wire_value: 0
+  - name: ChangeOrderQty
+    wire_text: '1'
+    wire_value: 1
+  - name: CheckOrderQtyAndCancelOrder
+    wire_text: '2'
+    wire_value: 2
+  - name: FixStyleReplace
+    wire_text: '3'
+    wire_value: 3
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_set_securitytypeset
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: SecurityTypeSet
+  encoding_type: uint8
+  encoded_size: 1
+  values:
+  - name: Future
+    bit_index: 0
+    mask: '1'
+    description: Futures
+  - name: Option
+    bit_index: 1
+    mask: '2'
+    description: Options
+  - name: Multileg
+    bit_index: 2
+    mask: '4'
+    description: Multileg instuments
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_enum_tradseseventenum
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: TradSesEventEnum
+  encoding_type: uint8
+  encoded_size: 1
+  values:
+  - name: SessionDataReady
+    wire_text: '101'
+    wire_value: 101
+  - name: ClearingStarted
+    wire_text: '105'
+    wire_value: 105
+  - name: ExtensionOfLimitsFinished
+    wire_text: '106'
+    wire_value: 106
+  - name: BrokerRecalcFinished
+    wire_text: '108'
+    wire_value: 108
+  - name: AuctionFinished
+    wire_text: '122'
+    wire_value: 122
+  - name: AuctionCollectOrderStarted
+    wire_text: '123'
+    wire_value: 123
+  - name: AuctionCollectOrderFinished
+    wire_text: '124'
+    wire_value: 124
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_enum_complianceidenum
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: ComplianceIDEnum
+  encoding_type: char
+  encoded_size: 1
+  values:
+  - name: NotAvailable
+    wire_text: ''
+    wire_value: 0
+  - name: Manual
+    wire_text: M
+    wire_value: 77
+  - name: StopLoss
+    wire_text: S
+    wire_value: 83
+  - name: Algorithm
+    wire_text: R
+    wire_value: 82
+  - name: Autofollow
+    wire_text: A
+    wire_value: 65
+  - name: MarginCall
+    wire_text: D
+    wire_value: 68
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_set_flagsset
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: FlagsSet
+  encoding_type: uint64
+  encoded_size: 8
+  values:
+  - name: Day
+    bit_index: 0
+    mask: '1'
+    description: 'Orders and Trades: Day order'
+  - name: IOC
+    bit_index: 1
+    mask: '2'
+    description: 'Orders and Trades: Immediate or Cancel order'
+  - name: OTC
+    bit_index: 2
+    mask: '4'
+    description: 'Orders and Trades: OTC order or OTC trade'
+  - name: PosTransfer
+    bit_index: 3
+    mask: '8'
+    description: 'Trades: Position transfer trade'
+  - name: Collateral
+    bit_index: 4
+    mask: '16'
+    description: 'Orders: Client collateral was not checked while adding order'
+  - name: DontCheckLimits
+    bit_index: 9
+    mask: '512'
+    description: 'Orders: Do not check limits for options'
+  - name: DueToCrossCancel
+    bit_index: 13
+    mask: '8192'
+    description: 'Orders: The record results from cancelling the order due to cross'
+  - name: FOK
+    bit_index: 19
+    mask: '524288'
+    description: 'Orders: Fill or Kill order'
+  - name: Replace
+    bit_index: 20
+    mask: '1048576'
+    description: 'Orders: The record results from replacing the order'
+  - name: Cancel
+    bit_index: 21
+    mask: '2097152'
+    description: 'Orders: The record results from cancelling the order'
+  - name: MassCancel
+    bit_index: 22
+    mask: '4194304'
+    description: 'Orders: The record results from mass cancelling'
+  - name: Clearing
+    bit_index: 25
+    mask: '33554432'
+    description: 'Trades: Clearing session trade'
+  - name: Negotiated
+    bit_index: 26
+    mask: '67108864'
+    description: 'Trades: Negotiated trade'
+  - name: MultiLeg
+    bit_index: 27
+    mask: '134217728'
+    description: 'Trades: Multi leg trade'
+  - name: CrossTrade
+    bit_index: 29
+    mask: '536870912'
+    description: 'Orders: Flag of cancelling the left balance of the order because
+      of a cross-trade'
+  - name: NegotiatedMatchByRef
+    bit_index: 31
+    mask: '2147483648'
+    description: 'Trades: Negotiated trade matched by reference'
+  - name: COD
+    bit_index: 32
+    mask: '4294967296'
+    description: 'Orders: The record results from cancelling an order via ''Cancel
+      on Disconnect'' service'
+  - name: UKS
+    bit_index: 37
+    mask: '137438953472'
+    description: 'Orders: The record results from cancelling an order via ''User Kill
+      Switch'' service'
+  - name: NCCRequest
+    bit_index: 38
+    mask: '274877906944'
+    description: 'Orders and Trades: National Clearing Center request'
+  - name: NCC
+    bit_index: 39
+    mask: '549755813888'
+    description: 'Orders: The record results from cancelling an order via ''OrderMassCancelByBFLimitRequest'''
+  - name: LiqNettingRF
+    bit_index: 40
+    mask: '1099511627776'
+    description: 'Orders and Trades: The record formed in the process of liquidation
+      netting'
+  - name: ActiveSide
+    bit_index: 41
+    mask: '2199023255552'
+    description: 'Trades: Flag of aggressive side'
+  - name: PassiveSide
+    bit_index: 42
+    mask: '4398046511104'
+    description: 'Trades: Flag of passive side'
+  - name: Synthetic
+    bit_index: 45
+    mask: '35184372088832'
+    description: 'Orders: Flag of the synthetic order'
+  - name: Iceberg
+    bit_index: 47
+    mask: '140737488355328'
+    description: 'Orders and Trades: Iceberg order'
+  - name: DisclosedIceberg
+    bit_index: 53
+    mask: '9007199254740992'
+    description: 'Orders: The record results from disclosing of Iceberg order'
+  - name: BOC
+    bit_index: 60
+    mask: '1152921504606846976'
+    description: 'Orders and Trades: Book or Cancel order'
+  - name: DuringDiscreteAuction
+    bit_index: 62
+    mask: '4611686018427387904'
+    description: 'Orders and Trades: The record formed in the process of discrete
+      auction'
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_set_flags2set
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: Flags2Set
+  encoding_type: uint64
+  encoded_size: 8
+  values:
+  - name: Zero
+    bit_index: 0
+    mask: '1'
+    description: Empty set
+  implementation_status: metadata_generated
+  notes: ''
+- protocol_item_id: twime_set_clientflagsset
+  artifact_id: twime_prod_root_twime_spectra_7_7_xml
+  schema_id: 19781
+  schema_version: 7
+  enum_name: ClientFlagsSet
+  encoding_type: uint8
+  encoded_size: 1
+  values:
+  - name: DontCheckLimits
+    bit_index: 0
+    mask: '1'
+    description: Do not check limits for options
+  - name: NccRequest
+    bit_index: 1
+    mask: '2'
+    description: National Clearing Center request
+  implementation_status: metadata_generated
+  notes: ''

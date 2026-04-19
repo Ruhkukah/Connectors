@@ -1,0 +1,9 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+AllowShortFunctionsOnASingleLine: Empty
+BreakBeforeBraces: Attach
+SortIncludes: Never
+PointerAlignment: Left
+SpaceBeforeParens: ControlStatements
+Cpp11BracedListStyle: true

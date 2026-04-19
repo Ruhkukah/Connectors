@@ -1,0 +1,18 @@
+# Reviewed manually against the OrderReplaceRequest offsets, enum values, and Decimal5 mantissa encoding.
+# Expected hex is stable because the fixed-layout template is derived directly from twime_spectra-7.7.xml.
+message: OrderReplaceRequest
+template_id: 6007
+schema_id: 19781
+version: 7
+fields:
+  ClOrdID: 203
+  OrderID: 9001001
+  Price:
+    mantissa: 101500
+  OrderQty: 8
+  ClOrdLinkID: 7895426
+  SecurityID: 347990
+  ComplianceID: Algorithm
+  Mode: ChangeOrderQty
+  ClientFlags: 0
+  Account: "AAAA"

@@ -33,3 +33,10 @@
 - the AlorEngine shadow adapter is an integration harness, not a trading gateway
 - placeholder order-entry ABI calls still return `MOEX_RESULT_NOT_SUPPORTED`
 - no part of Phase 1 / 1.1 is suitable for certification or production trading
+
+## Phase 2A Status
+
+- TWIME now has an offline schema inventory and deterministic SBE codec layer
+- the active binary layout is generated from pinned `twime_spectra-7.7.xml`
+- certification-style decoded log output exists for offline fixtures only
+- no exchange connection, no session state machine, and no live trading path were added

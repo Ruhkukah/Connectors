@@ -1,0 +1,8 @@
+message: BusinessMessageReject
+template_id: 5009
+schema_id: 19781
+version: 7
+fields:
+  ClOrdID: 404
+  Timestamp: 1715000000000003500
+  OrdRejReason: -12

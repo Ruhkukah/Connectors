@@ -1,0 +1,12 @@
+# Reviewed manually against the OrderCancelRequest template and little-endian Int64 OrderID encoding.
+# Expected hex is stable because every wire field is fixed-size and schema 7 does not use variable-length groups here.
+message: OrderCancelRequest
+template_id: 6006
+schema_id: 19781
+version: 7
+fields:
+  ClOrdID: 202
+  OrderID: 9001001
+  SecurityID: 347990
+  ClientFlags: 0
+  Account: "AAAA"

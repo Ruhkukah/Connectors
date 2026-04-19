@@ -1,0 +1,10 @@
+# Reviewed manually against the TWIME 7.7 header and fixed field sizes.
+# Expected hex is stable because the message is fixed-layout and uses only current schema 7 wire fields.
+message: Establish
+template_id: 5000
+schema_id: 19781
+version: 7
+fields:
+  Timestamp: 1715000000000000000
+  KeepaliveInterval: 1000
+  Credentials: "LOGIN"

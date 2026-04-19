@@ -1,0 +1,8 @@
+# Reviewed manually against the current Sequence template and 8-byte header.
+# Expected hex is stable because NextSeqNo is the only body field and the schema/version are pinned.
+message: Sequence
+template_id: 5006
+schema_id: 19781
+version: 7
+fields:
+  NextSeqNo: 26

@@ -1,0 +1,17 @@
+message: NewOrderSingle
+template_id: 6000
+schema_id: 19781
+version: 7
+fields:
+  ClOrdID: 103
+  ExpireDate: 1715600000000000000
+  Price:
+    mantissa: 101250
+  SecurityID: 347990
+  ClOrdLinkID: 7895425
+  OrderQty: 7
+  ComplianceID: Algorithm
+  TimeInForce: GTD
+  Side: Buy
+  ClientFlags: 0
+  Account: "AAAA"

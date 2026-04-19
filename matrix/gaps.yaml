@@ -1,35 +1,74 @@
-{
-  "version": 1,
-  "gaps": [
-    {
-      "gap_id": "gap_twime_test_provisioning",
-      "artifact_id": "twime_test_root",
-      "protocol_item_id": "twime_case_sensitive_test_root",
-      "coverage_id": "coverage_twime_spec_lock",
-      "owner": "broker_access",
-      "status": "needs_confirmation",
-      "next_action": "Confirm TWIME test provisioning path with broker or MOEX before Phase 2.",
-      "notes": "TWIME test provisioning still needs broker or MOEX confirmation."
-    },
-    {
-      "gap_id": "gap_broker_topology_unknown",
-      "artifact_id": "plaza_docs",
-      "protocol_item_id": "plaza2_twime_profile_neutrality",
-      "coverage_id": "coverage_shadow_mode",
-      "owner": "deployment_ops",
-      "status": "open",
-      "next_action": "Fill broker_topology answers using the questionnaire before enabling prod profiles.",
-      "notes": "Broker topology is intentionally unknown in Phase 0."
-    },
-    {
-      "gap_id": "gap_cgate_runtime_not_installed",
-      "artifact_id": "cgate_docs",
-      "protocol_item_id": "plaza2_scheme_lock",
-      "coverage_id": "coverage_plaza2_scheme_lock",
-      "owner": "native_runtime",
-      "status": "open",
-      "next_action": "Lock installed CGate scheme files into spec-lock/prod or spec-lock/test after runtime installation.",
-      "notes": "Local CGate runtime and scheme directories must be locked separately after installation."
-    }
-  ]
-}
+version: 1
+gaps:
+  - gap_id: gap_twime_test_provisioning
+    artifact_id: twime_test_root
+    protocol_item_id: twime_message_5000_establish
+    coverage_id: coverage_twime_session_init_offline
+    owner: broker_access
+    status: needs_confirmation
+    next_action: Confirm TWIME test provisioning path with broker or MOEX before Phase 2B transport/session work.
+    notes: Public certification materials include TWIME scenarios, but test provisioning still needs broker or MOEX confirmation.
+  - gap_id: gap_twime_legacy_cert_sample
+    artifact_id: moex_cert_procedure
+    protocol_item_id: twime_message_6000_newordersingle
+    coverage_id: coverage_twime_new_order_day_offline
+    owner: protocol_docs
+    status: needs_confirmation
+    next_action: Keep twime_spectra-7.7.xml as the binary source of truth and record any old certification sample layout discrepancies as documentation-only.
+    notes: The public certification procedure contains an old TWIME sample with version=2 and blockLength=46; the active offline codec follows schema version 7 from twime_spectra-7.7.xml.
+  - gap_id: gap_broker_topology_unknown
+    artifact_id: plaza_docs
+    protocol_item_id: plaza2_twime_profile_neutrality
+    coverage_id: coverage_shadow_mode
+    owner: deployment_ops
+    status: open
+    next_action: Fill broker_topology answers using the questionnaire before enabling prod profiles.
+    notes: Broker topology is intentionally unknown in Phase 0 and Phase 2A.
+  - gap_id: gap_cgate_runtime_not_installed
+    artifact_id: cgate_docs
+    protocol_item_id: plaza2_scheme_lock
+    coverage_id: coverage_plaza2_scheme_lock
+    owner: native_runtime
+    status: open
+    next_action: Lock installed CGate scheme files into spec-lock/prod or spec-lock/test after runtime installation.
+    notes: Local CGate runtime and scheme directories must be locked separately after installation.
+  - gap_id: gap_twime_phase2a_no_tcp
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5000_establish
+    coverage_id: coverage_twime_session_init_offline
+    owner: phase2b_transport
+    status: open
+    next_action: Add offline-to-transport integration only in Phase 2B; keep Phase 2A merge-safe and socket-free.
+    notes: Phase 2A.1 remains offline only and intentionally does not implement TCP connectivity.
+  - gap_id: gap_twime_phase2a_no_session_fsm
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5001_establishmentack
+    coverage_id: coverage_twime_session_init_offline
+    owner: phase2b_session
+    status: open
+    next_action: Implement session-state behavior in Phase 2B after the offline codec is merged.
+    notes: No Establish or Terminate runtime state machine exists in Phase 2A.1.
+  - gap_id: gap_twime_phase2a_no_recovery_cache
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5005_retransmission
+    coverage_id: coverage_twime_retransmission_metadata
+    owner: phase2b_recovery
+    status: open
+    next_action: Add retransmission cache and durable recovery scaffolding in a later phase.
+    notes: Retransmission coverage in Phase 2A.1 is metadata/fixture-only.
+  - gap_id: gap_twime_phase2a_no_live_credentials
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5000_establish
+    coverage_id: coverage_twime_session_init_offline
+    owner: deployment_ops
+    status: open
+    next_action: Keep credentials and endpoint handling out of the public repo and Phase 2A merge scope.
+    notes: Phase 2A.1 uses only pinned schema artifacts and offline fixtures.
+  - gap_id: gap_twime_phase2a_no_order_routing
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_6000_newordersingle
+    coverage_id: coverage_twime_new_order_day_offline
+    owner: phase2c_connector
+    status: open
+    next_action: Delay C ABI order-routing integration until a later connector phase after transport and session behavior exist.
+    notes: Phase 2A.1 tests message encoding/decoding only and does not route orders anywhere.

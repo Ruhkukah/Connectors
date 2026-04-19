@@ -1,0 +1,12 @@
+{
+  "active_schema": true,
+  "byte_order": "littleEndian",
+  "canonical_url": "https://ftp.moex.com/pub/TWIME/Spectra/prod/doc/twime_spectra-7.7.xml",
+  "package": "moex_spectra_twime",
+  "retrieved_at": "2026-04-18T18:59:29Z",
+  "schema_id": 19781,
+  "schema_version": 7,
+  "sha256": "807db471ef09186444d87135667a94c57bc3c07f4ea47834e0106c08a2aee21b",
+  "size": 30492,
+  "source_artifact_id": "twime_prod_root_twime_spectra_7_7_xml"
+}

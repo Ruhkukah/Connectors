@@ -1,0 +1,9 @@
+message: SystemEvent
+template_id: 7014
+schema_id: 19781
+version: 7
+fields:
+  Timestamp: 1715000000000004500
+  EventId: 7001
+  TradingSessionID: 1200
+  TradSesEvent: SessionDataReady
