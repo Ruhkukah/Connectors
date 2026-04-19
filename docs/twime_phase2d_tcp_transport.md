@@ -6,7 +6,7 @@ Phase 2D adds a real OS-level TCP byte transport for TWIME tests, but only in
 the narrowest possible form:
 
 - nonblocking POSIX TCP sockets
-- localhost-only endpoint validation by default
+- hard localhost-only endpoint validation in the transport itself
 - local loopback TCP server support for tests
 - reconnect/backoff gating for explicit reconnect attempts
 - transport metrics and deterministic transport events
@@ -45,16 +45,30 @@ results for:
 
 ## Local-Only Safety Model
 
-Phase 2D keeps transport targets local-only by default.
+Phase 2D keeps transport targets hard local-only in the transport itself.
 
-- checked-in TCP profiles use only `127.0.0.1`, `::1`, or `localhost`
-- non-loopback targets are rejected unless explicit overrides are set
-- hosts that look like MOEX or broker targets are blocked in profile
-  validation
+- `TwimeTcpTransport` accepts only these exact hosts:
+  - `127.0.0.1`
+  - `::1`
+  - `localhost`
+- checked-in TCP profiles use only those loopback values
+- any other host is rejected with a local-only violation, even if
+  `allow_non_loopback=true` or `allow_non_localhost_dns=true`
+- the forward-compatible override flags stay in config structs, but they are
+  intentionally inert in Phase 2D and are reserved for later phases
 - `TwimeTcpTransport` rejects non-test environments
 
 This means the transport skeleton can be exercised in CI and local development
 without risking accidental exchange or broker connectivity.
+
+The exact-host rule is intentionally strict in this phase. For example:
+
+- `127.0.0.2` is blocked
+- `::ffff:127.0.0.1` is blocked
+- `example.com` is blocked
+- `foo.local` is blocked
+
+Real non-loopback endpoint support is deferred to Phase 2E.
 
 ## Loopback TCP Server Model
 
@@ -129,4 +143,5 @@ The repo still excludes:
 - production profiles
 - live order routing
 
-Real exchange-facing transport remains deferred to a later phase.
+Real exchange-facing transport remains deferred to a later phase. Phase 2D does
+not contain any MOEX or broker endpoint support, even behind config overrides.

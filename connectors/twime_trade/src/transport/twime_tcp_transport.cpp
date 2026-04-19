@@ -490,21 +490,7 @@ TwimeTransportResult TwimeTcpTransport::validate_open_request() const {
     }
 
     const bool explicit_loopback = twime_is_explicit_loopback_host(config_.endpoint.host);
-    if (!explicit_loopback && !config_.endpoint.allow_non_loopback) {
-        return {
-            .status = TwimeTransportStatus::Fault,
-            .event = TwimeTransportEvent::OpenFailed,
-            .error_code = TwimeTransportErrorCode::LocalOnlyViolation,
-        };
-    }
-    if (!explicit_loopback && !config_.endpoint.allow_non_localhost_dns) {
-        return {
-            .status = TwimeTransportStatus::Fault,
-            .event = TwimeTransportEvent::OpenFailed,
-            .error_code = TwimeTransportErrorCode::ResolveBlocked,
-        };
-    }
-    if (twime_host_looks_production_like(config_.endpoint.host)) {
+    if (!explicit_loopback) {
         return {
             .status = TwimeTransportStatus::Fault,
             .event = TwimeTransportEvent::OpenFailed,

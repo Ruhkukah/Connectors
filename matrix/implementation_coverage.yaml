@@ -219,7 +219,12 @@ coverage:
     protocol_item_id: twime_message_5000_establish
     scenario_id: scenario_twime_tcp_local_loopback
     inventory_id: osengine_moex_fixfasttwime_dir
-    status: non_loopback_endpoints_blocked
+    status: local_only_transport_hard_enforced
+  - coverage_id: coverage_twime_non_loopback_override_rejected
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_tcp_local_loopback
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: non_loopback_override_rejected
   - coverage_id: coverage_fast_test_variants
     protocol_item_id: fast_test_templates_t0_lock
     scenario_id: scenario_fix_public

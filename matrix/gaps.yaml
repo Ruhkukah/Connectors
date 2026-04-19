@@ -114,11 +114,12 @@ gaps:
     protocol_item_id: twime_message_5000_establish
     coverage_id: coverage_twime_non_loopback_block
     owner: phase2d_transport
-    status: non_loopback_endpoints_blocked
+    status: real_endpoint_support_deferred_phase2e
     next_action: >-
-      Keep non-loopback endpoints blocked in code and profile validation
-      until a later phase explicitly introduces guarded exchange/broker
-      connectivity.
+      Keep non-loopback endpoints blocked in both transport code and profile
+      validation until Phase 2E introduces guarded test-environment endpoint
+      support.
     notes: >-
-      Phase 2D transport defaults are localhost-only and reject hosts that
-      look like MOEX or broker targets.
+      Phase 2D transport is hard localhost-only. The forward-compatible
+      non-loopback override flags remain in config structs but are rejected
+      in this phase and do not permit real endpoints.
