@@ -7,8 +7,8 @@
 namespace moex::twime_sbe {
 
 class TwimeCertLogFormatter {
-public:
+  public:
     [[nodiscard]] std::string format(const DecodedTwimeMessage& message) const;
 };
 
-}  // namespace moex::twime_sbe
+} // namespace moex::twime_sbe

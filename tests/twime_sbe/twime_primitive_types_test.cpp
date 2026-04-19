@@ -12,9 +12,8 @@ int main() {
         moex::twime_sbe::test::require(account.trimmed_view() == "AAAA", "String7 trimming failed");
 
         auto timestamp = moex::twime_sbe::TwimeFieldValue::timestamp(moex::twime_sbe::kTwimeTimestampNull);
-        moex::twime_sbe::test::require(
-            timestamp.unsigned_value == moex::twime_sbe::kTwimeTimestampNull,
-            "TimeStamp null round-trip failed");
+        moex::twime_sbe::test::require(timestamp.unsigned_value == moex::twime_sbe::kTwimeTimestampNull,
+                                       "TimeStamp null round-trip failed");
 
         auto decimal = moex::twime_sbe::TwimeFieldValue::decimal(100000);
         moex::twime_sbe::test::require(decimal.decimal5.mantissa == 100000, "Decimal5 mantissa mismatch");
@@ -29,9 +28,8 @@ int main() {
 
         std::vector<std::byte> bytes;
         auto encode_error = codec.encode_message(request, bytes);
-        moex::twime_sbe::test::require(
-            encode_error == moex::twime_sbe::TwimeDecodeError::InvalidEnumValue,
-            "invalid enum was not rejected");
+        moex::twime_sbe::test::require(encode_error == moex::twime_sbe::TwimeDecodeError::InvalidEnumValue,
+                                       "invalid enum was not rejected");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

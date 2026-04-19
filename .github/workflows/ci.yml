@@ -24,12 +24,28 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang-format
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "10.0.x"
 
       - name: Install Python requirements
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      - name: Guard hidden Unicode
+        run: |
+          python3 tools/unicode_guard.py \
+            .github \
+            CMakeLists.txt \
+            include \
+            src \
+            protocols \
+            connectors \
+            tools \
+            tests \
+            matrix \
+            profiles \
+            cert \
+            docs
 
       - name: Configure
         run: cmake -S . -B build

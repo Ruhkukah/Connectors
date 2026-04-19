@@ -216,37 +216,37 @@ TwimeFieldValue sample_value_for_field(const TwimeFieldMetadata& field) {
     }
 
     switch (type.kind) {
-        case TwimeFieldKind::Primitive:
-            if (type.primitive_type == TwimePrimitiveType::Int8 || type.primitive_type == TwimePrimitiveType::Int16 ||
-                type.primitive_type == TwimePrimitiveType::Int32 || type.primitive_type == TwimePrimitiveType::Int64) {
-                return TwimeFieldValue::signed_integer(1);
-            }
-            return TwimeFieldValue::unsigned_integer(1);
-        case TwimeFieldKind::String:
-            return TwimeFieldValue::string("X");
-        case TwimeFieldKind::TimeStamp:
-            return TwimeFieldValue::timestamp(1'715'000'000'000'000'000ULL);
-        case TwimeFieldKind::DeltaMillisecs:
-            return TwimeFieldValue::delta_millisecs(1000);
-        case TwimeFieldKind::Decimal5:
-            return TwimeFieldValue::decimal(100000);
-        case TwimeFieldKind::Enum:
-            if (type.enum_metadata != nullptr && type.enum_metadata->value_count > 0) {
-                return TwimeFieldValue::enum_name(type.enum_metadata->values[0].name);
-            }
-            return TwimeFieldValue::unsigned_integer(0);
-        case TwimeFieldKind::Set:
-            if (type.set_metadata != nullptr && type.set_metadata->choice_count > 0) {
-                return TwimeFieldValue::set_name(type.set_metadata->choices[0].name);
-            }
-            return TwimeFieldValue::unsigned_integer(0);
-        case TwimeFieldKind::Composite:
-        default:
-            return TwimeFieldValue::unsigned_integer(0);
+    case TwimeFieldKind::Primitive:
+        if (type.primitive_type == TwimePrimitiveType::Int8 || type.primitive_type == TwimePrimitiveType::Int16 ||
+            type.primitive_type == TwimePrimitiveType::Int32 || type.primitive_type == TwimePrimitiveType::Int64) {
+            return TwimeFieldValue::signed_integer(1);
+        }
+        return TwimeFieldValue::unsigned_integer(1);
+    case TwimeFieldKind::String:
+        return TwimeFieldValue::string("X");
+    case TwimeFieldKind::TimeStamp:
+        return TwimeFieldValue::timestamp(1'715'000'000'000'000'000ULL);
+    case TwimeFieldKind::DeltaMillisecs:
+        return TwimeFieldValue::delta_millisecs(1000);
+    case TwimeFieldKind::Decimal5:
+        return TwimeFieldValue::decimal(100000);
+    case TwimeFieldKind::Enum:
+        if (type.enum_metadata != nullptr && type.enum_metadata->value_count > 0) {
+            return TwimeFieldValue::enum_name(type.enum_metadata->values[0].name);
+        }
+        return TwimeFieldValue::unsigned_integer(0);
+    case TwimeFieldKind::Set:
+        if (type.set_metadata != nullptr && type.set_metadata->choice_count > 0) {
+            return TwimeFieldValue::set_name(type.set_metadata->choices[0].name);
+        }
+        return TwimeFieldValue::unsigned_integer(0);
+    case TwimeFieldKind::Composite:
+    default:
+        return TwimeFieldValue::unsigned_integer(0);
     }
 }
 
-}  // namespace
+} // namespace
 
 std::filesystem::path project_root() {
     return std::filesystem::path(MOEX_SOURCE_ROOT);
@@ -365,39 +365,37 @@ TwimeEncodeRequest build_encode_request(const FixtureSpec& fixture) {
         const auto& type = *field_metadata->type;
         TwimeFieldValue value;
         switch (type.kind) {
-            case TwimeFieldKind::Primitive:
-                if (type.primitive_type == TwimePrimitiveType::Int8 || type.primitive_type == TwimePrimitiveType::Int16 ||
-                    type.primitive_type == TwimePrimitiveType::Int32 || type.primitive_type == TwimePrimitiveType::Int64) {
-                    value = TwimeFieldValue::signed_integer(parse_signed(field.scalar));
-                } else {
-                    value = TwimeFieldValue::unsigned_integer(parse_unsigned(field.scalar));
-                }
-                break;
-            case TwimeFieldKind::DeltaMillisecs:
-                value = TwimeFieldValue::delta_millisecs(static_cast<std::uint32_t>(parse_unsigned(field.scalar)));
-                break;
-            case TwimeFieldKind::TimeStamp:
-                value = TwimeFieldValue::timestamp(parse_unsigned(field.scalar));
-                break;
-            case TwimeFieldKind::Decimal5:
-                value = TwimeFieldValue::decimal(field.decimal_mantissa);
-                break;
-            case TwimeFieldKind::String:
-                value = TwimeFieldValue::string(field.scalar);
-                break;
-            case TwimeFieldKind::Enum:
-                value = is_integer_text(field.scalar)
-                    ? TwimeFieldValue::unsigned_integer(parse_unsigned(field.scalar))
-                    : TwimeFieldValue::enum_name(field.scalar);
-                break;
-            case TwimeFieldKind::Set:
-                value = is_integer_text(field.scalar)
-                    ? TwimeFieldValue::unsigned_integer(parse_unsigned(field.scalar))
-                    : TwimeFieldValue::set_name(field.scalar);
-                break;
-            case TwimeFieldKind::Composite:
-            default:
-                throw std::runtime_error("unsupported fixture field kind for " + field.name);
+        case TwimeFieldKind::Primitive:
+            if (type.primitive_type == TwimePrimitiveType::Int8 || type.primitive_type == TwimePrimitiveType::Int16 ||
+                type.primitive_type == TwimePrimitiveType::Int32 || type.primitive_type == TwimePrimitiveType::Int64) {
+                value = TwimeFieldValue::signed_integer(parse_signed(field.scalar));
+            } else {
+                value = TwimeFieldValue::unsigned_integer(parse_unsigned(field.scalar));
+            }
+            break;
+        case TwimeFieldKind::DeltaMillisecs:
+            value = TwimeFieldValue::delta_millisecs(static_cast<std::uint32_t>(parse_unsigned(field.scalar)));
+            break;
+        case TwimeFieldKind::TimeStamp:
+            value = TwimeFieldValue::timestamp(parse_unsigned(field.scalar));
+            break;
+        case TwimeFieldKind::Decimal5:
+            value = TwimeFieldValue::decimal(field.decimal_mantissa);
+            break;
+        case TwimeFieldKind::String:
+            value = TwimeFieldValue::string(field.scalar);
+            break;
+        case TwimeFieldKind::Enum:
+            value = is_integer_text(field.scalar) ? TwimeFieldValue::unsigned_integer(parse_unsigned(field.scalar))
+                                                  : TwimeFieldValue::enum_name(field.scalar);
+            break;
+        case TwimeFieldKind::Set:
+            value = is_integer_text(field.scalar) ? TwimeFieldValue::unsigned_integer(parse_unsigned(field.scalar))
+                                                  : TwimeFieldValue::set_name(field.scalar);
+            break;
+        case TwimeFieldKind::Composite:
+        default:
+            throw std::runtime_error("unsupported fixture field kind for " + field.name);
         }
         request.fields.push_back(TwimeFieldInput{field.name, value});
     }
@@ -409,8 +407,7 @@ bool fixture_matches_message(const FixtureSpec& fixture, const DecodedTwimeMessa
     if (message.metadata == nullptr || message.metadata->name != fixture.message_name) {
         return false;
     }
-    if (message.header.template_id != fixture.template_id ||
-        message.header.schema_id != fixture.schema_id ||
+    if (message.header.template_id != fixture.template_id || message.header.schema_id != fixture.schema_id ||
         message.header.version != fixture.version) {
         return false;
     }
@@ -422,74 +419,74 @@ bool fixture_matches_message(const FixtureSpec& fixture, const DecodedTwimeMessa
         }
         const auto& type = *decoded_field->metadata->type;
         switch (type.kind) {
-            case TwimeFieldKind::Primitive:
-                if (type.primitive_type == TwimePrimitiveType::Int8 || type.primitive_type == TwimePrimitiveType::Int16 ||
-                    type.primitive_type == TwimePrimitiveType::Int32 || type.primitive_type == TwimePrimitiveType::Int64) {
-                    if (decoded_field->value.signed_value != parse_signed(expected_field.scalar)) {
-                        return false;
-                    }
-                } else if (decoded_field->value.unsigned_value != parse_unsigned(expected_field.scalar)) {
+        case TwimeFieldKind::Primitive:
+            if (type.primitive_type == TwimePrimitiveType::Int8 || type.primitive_type == TwimePrimitiveType::Int16 ||
+                type.primitive_type == TwimePrimitiveType::Int32 || type.primitive_type == TwimePrimitiveType::Int64) {
+                if (decoded_field->value.signed_value != parse_signed(expected_field.scalar)) {
                     return false;
                 }
-                break;
-            case TwimeFieldKind::DeltaMillisecs:
-            case TwimeFieldKind::TimeStamp:
-            case TwimeFieldKind::Set:
-            case TwimeFieldKind::Enum:
-                if (is_integer_text(expected_field.scalar)) {
-                    if (decoded_field->value.unsigned_value != parse_unsigned(expected_field.scalar)) {
-                        return false;
-                    }
-                } else if (type.kind == TwimeFieldKind::Enum) {
-                    if (type.enum_metadata == nullptr) {
-                        return false;
-                    }
-                    const auto* expected_value = find_enum_by_name(*type.enum_metadata, expected_field.scalar);
-                    if (expected_value == nullptr ||
-                        decoded_field->value.unsigned_value != static_cast<std::uint64_t>(expected_value->wire_value)) {
-                        return false;
-                    }
-                } else if (type.kind == TwimeFieldKind::Set) {
-                    if (type.set_metadata == nullptr) {
-                        return false;
-                    }
-                    std::uint64_t expected_mask = 0;
-                    std::size_t start = 0;
-                    const std::string_view names = expected_field.scalar;
-                    while (start <= names.size()) {
-                        const auto next = names.find('|', start);
-                        const auto token = trim_copy(names.substr(
-                            start,
-                            next == std::string_view::npos ? names.size() - start : next - start));
-                        for (std::size_t index = 0; index < type.set_metadata->choice_count; ++index) {
-                            if (type.set_metadata->choices[index].name == token) {
-                                expected_mask |= (static_cast<std::uint64_t>(1) << type.set_metadata->choices[index].bit_index);
-                            }
-                        }
-                        if (next == std::string_view::npos) {
-                            break;
-                        }
-                        start = next + 1;
-                    }
-                    if (decoded_field->value.unsigned_value != expected_mask) {
-                        return false;
-                    }
-                }
-                break;
-            case TwimeFieldKind::Decimal5:
-                if (!expected_field.has_decimal_mantissa ||
-                    decoded_field->value.decimal5.mantissa != expected_field.decimal_mantissa) {
-                    return false;
-                }
-                break;
-            case TwimeFieldKind::String:
-                if (decoded_field->value.string_view() != expected_field.scalar) {
-                    return false;
-                }
-                break;
-            case TwimeFieldKind::Composite:
-            default:
+            } else if (decoded_field->value.unsigned_value != parse_unsigned(expected_field.scalar)) {
                 return false;
+            }
+            break;
+        case TwimeFieldKind::DeltaMillisecs:
+        case TwimeFieldKind::TimeStamp:
+        case TwimeFieldKind::Set:
+        case TwimeFieldKind::Enum:
+            if (is_integer_text(expected_field.scalar)) {
+                if (decoded_field->value.unsigned_value != parse_unsigned(expected_field.scalar)) {
+                    return false;
+                }
+            } else if (type.kind == TwimeFieldKind::Enum) {
+                if (type.enum_metadata == nullptr) {
+                    return false;
+                }
+                const auto* expected_value = find_enum_by_name(*type.enum_metadata, expected_field.scalar);
+                if (expected_value == nullptr ||
+                    decoded_field->value.unsigned_value != static_cast<std::uint64_t>(expected_value->wire_value)) {
+                    return false;
+                }
+            } else if (type.kind == TwimeFieldKind::Set) {
+                if (type.set_metadata == nullptr) {
+                    return false;
+                }
+                std::uint64_t expected_mask = 0;
+                std::size_t start = 0;
+                const std::string_view names = expected_field.scalar;
+                while (start <= names.size()) {
+                    const auto next = names.find('|', start);
+                    const auto token = trim_copy(
+                        names.substr(start, next == std::string_view::npos ? names.size() - start : next - start));
+                    for (std::size_t index = 0; index < type.set_metadata->choice_count; ++index) {
+                        if (type.set_metadata->choices[index].name == token) {
+                            expected_mask |=
+                                (static_cast<std::uint64_t>(1) << type.set_metadata->choices[index].bit_index);
+                        }
+                    }
+                    if (next == std::string_view::npos) {
+                        break;
+                    }
+                    start = next + 1;
+                }
+                if (decoded_field->value.unsigned_value != expected_mask) {
+                    return false;
+                }
+            }
+            break;
+        case TwimeFieldKind::Decimal5:
+            if (!expected_field.has_decimal_mantissa ||
+                decoded_field->value.decimal5.mantissa != expected_field.decimal_mantissa) {
+                return false;
+            }
+            break;
+        case TwimeFieldKind::String:
+            if (decoded_field->value.string_view() != expected_field.scalar) {
+                return false;
+            }
+            break;
+        case TwimeFieldKind::Composite:
+        default:
+            return false;
         }
     }
 
@@ -518,4 +515,4 @@ void require(bool condition, const std::string& message) {
     }
 }
 
-}  // namespace moex::twime_sbe::test
+} // namespace moex::twime_sbe::test

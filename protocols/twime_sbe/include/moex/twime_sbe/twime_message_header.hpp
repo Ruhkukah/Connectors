@@ -48,9 +48,8 @@ inline constexpr void store_u16_le(std::uint16_t value, std::span<std::byte, 2> 
     bytes[1] = static_cast<std::byte>((value >> 8U) & 0xFFU);
 }
 
-inline constexpr TwimeDecodeError decode_twime_message_header(
-    std::span<const std::byte> bytes,
-    TwimeMessageHeader& header) noexcept {
+inline constexpr TwimeDecodeError decode_twime_message_header(std::span<const std::byte> bytes,
+                                                              TwimeMessageHeader& header) noexcept {
     if (bytes.size() != kTwimeMessageHeaderSize) {
         return TwimeDecodeError::InvalidHeaderSize;
     }
@@ -62,8 +61,8 @@ inline constexpr TwimeDecodeError decode_twime_message_header(
     return TwimeDecodeError::Ok;
 }
 
-inline constexpr std::array<std::byte, kTwimeMessageHeaderSize> encode_twime_message_header(
-    const TwimeMessageHeader& header) noexcept {
+inline constexpr std::array<std::byte, kTwimeMessageHeaderSize>
+encode_twime_message_header(const TwimeMessageHeader& header) noexcept {
     std::array<std::byte, kTwimeMessageHeaderSize> bytes{};
     store_u16_le(header.block_length, std::span<std::byte, 2>(bytes.data(), 2));
     store_u16_le(header.template_id, std::span<std::byte, 2>(bytes.data() + 2, 2));
@@ -72,4 +71,4 @@ inline constexpr std::array<std::byte, kTwimeMessageHeaderSize> encode_twime_mes
     return bytes;
 }
 
-}  // namespace moex::twime_sbe
+} // namespace moex::twime_sbe

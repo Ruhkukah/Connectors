@@ -20,7 +20,7 @@ struct TwimeFrameFeedResult {
 };
 
 class TwimeFrameAssembler {
-public:
+  public:
     explicit TwimeFrameAssembler(std::size_t max_frame_size);
 
     [[nodiscard]] TwimeFrameFeedResult feed(std::span<const std::byte> bytes);
@@ -28,10 +28,10 @@ public:
     [[nodiscard]] TwimeFrameView pop_frame();
     void reset();
 
-private:
+  private:
     std::size_t max_frame_size_;
     std::vector<std::byte> buffer_;
     std::deque<std::vector<std::byte>> ready_frames_;
 };
 
-}  // namespace moex::twime_sbe
+} // namespace moex::twime_sbe

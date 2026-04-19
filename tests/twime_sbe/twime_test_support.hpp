@@ -34,4 +34,4 @@ struct FixtureSpec {
 [[nodiscard]] TwimeEncodeRequest make_sample_request(std::string_view message_name);
 void require(bool condition, const std::string& message);
 
-}  // namespace moex::twime_sbe::test
+} // namespace moex::twime_sbe::test

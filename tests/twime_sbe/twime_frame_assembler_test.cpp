@@ -10,9 +10,9 @@ int main() {
         moex::twime_sbe::TwimeCodec codec;
         auto request = moex::twime_sbe::test::make_sample_request("Sequence");
         std::vector<std::byte> one_message;
-        moex::twime_sbe::test::require(
-            codec.encode_message(request, one_message) == moex::twime_sbe::TwimeDecodeError::Ok,
-            "failed to encode base sequence message");
+        moex::twime_sbe::test::require(codec.encode_message(request, one_message) ==
+                                           moex::twime_sbe::TwimeDecodeError::Ok,
+                                       "failed to encode base sequence message");
 
         moex::twime_sbe::TwimeFrameAssembler assembler(256);
         auto result = assembler.feed(one_message);
@@ -36,12 +36,14 @@ int main() {
 
         assembler.reset();
         result = assembler.feed(std::span<const std::byte>(one_message.data(), 4));
-        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::NeedMoreData, "incomplete header not reported");
+        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::NeedMoreData,
+                                       "incomplete header not reported");
         moex::twime_sbe::test::require(result.buffered_bytes == 4, "incomplete header buffering mismatch");
 
         assembler.reset();
         result = assembler.feed(std::span<const std::byte>(one_message.data(), 10));
-        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::NeedMoreData, "incomplete body not reported");
+        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::NeedMoreData,
+                                       "incomplete body not reported");
         moex::twime_sbe::test::require(result.buffered_bytes == 10, "incomplete body buffering mismatch");
 
         assembler.reset();
@@ -49,7 +51,8 @@ int main() {
         invalid_schema[4] = std::byte{0x00};
         invalid_schema[5] = std::byte{0x00};
         result = assembler.feed(invalid_schema);
-        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::UnsupportedSchemaId, "invalid schema id not rejected");
+        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::UnsupportedSchemaId,
+                                       "invalid schema id not rejected");
         moex::twime_sbe::test::require(result.buffered_bytes == 0, "invalid schema left buffered bytes behind");
         result = assembler.feed(one_message);
         moex::twime_sbe::test::require(result.frames_ready == 1, "assembler did not recover after invalid schema");
@@ -61,7 +64,8 @@ int main() {
         invalid_version[6] = std::byte{0x01};
         invalid_version[7] = std::byte{0x00};
         result = assembler.feed(invalid_version);
-        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::UnsupportedVersion, "invalid version not rejected");
+        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::UnsupportedVersion,
+                                       "invalid version not rejected");
         moex::twime_sbe::test::require(result.buffered_bytes == 0, "invalid version left buffered bytes behind");
 
         assembler.reset();
@@ -69,12 +73,14 @@ int main() {
         invalid_block_length[0] = std::byte{0x00};
         invalid_block_length[1] = std::byte{0x00};
         result = assembler.feed(invalid_block_length);
-        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::InvalidBlockLength, "invalid block length not rejected");
+        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::InvalidBlockLength,
+                                       "invalid block length not rejected");
         moex::twime_sbe::test::require(result.buffered_bytes == 0, "invalid block length left buffered bytes behind");
 
         moex::twime_sbe::TwimeFrameAssembler small_assembler(8);
         result = small_assembler.feed(one_message);
-        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::BufferTooSmall, "oversized frame not rejected");
+        moex::twime_sbe::test::require(result.error == moex::twime_sbe::TwimeDecodeError::BufferTooSmall,
+                                       "oversized frame not rejected");
         moex::twime_sbe::test::require(result.buffered_bytes == 0, "oversized frame left buffered bytes behind");
 
         assembler.reset();

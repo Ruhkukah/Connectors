@@ -20,8 +20,7 @@ struct TwimeDecimal5 {
     static constexpr std::int8_t exponent = -5;
 };
 
-template <std::size_t Length>
-struct TwimeFixedString {
+template <std::size_t Length> struct TwimeFixedString {
     std::array<char, Length> bytes{};
 
     void assign(std::string_view value) noexcept {
@@ -156,4 +155,4 @@ inline TwimeFieldValue TwimeFieldValue::set_name(std::string_view value) noexcep
     return out;
 }
 
-}  // namespace moex::twime_sbe
+} // namespace moex::twime_sbe

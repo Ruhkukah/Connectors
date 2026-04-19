@@ -126,17 +126,33 @@ const TwimeEnumMetadata* find_enum(std::string_view name) noexcept;
 const TwimeSetMetadata* find_set(std::string_view name) noexcept;
 const TwimeMessageMetadata* find_message_by_name(std::string_view name) noexcept;
 const TwimeMessageMetadata* find_message_by_template_id(std::uint16_t template_id) noexcept;
-}  // namespace generated
+} // namespace generated
 
 struct TwimeSchemaView {
-    static const TwimeSchemaInfo& info() noexcept { return generated::schema_info(); }
-    static std::span<const TwimeTypeMetadata> types() noexcept { return generated::types(); }
-    static std::span<const TwimeEnumMetadata> enums() noexcept { return generated::enums(); }
-    static std::span<const TwimeSetMetadata> sets() noexcept { return generated::sets(); }
-    static std::span<const TwimeMessageMetadata> messages() noexcept { return generated::messages(); }
-    static const TwimeTypeMetadata* find_type(std::string_view name) noexcept { return generated::find_type(name); }
-    static const TwimeEnumMetadata* find_enum(std::string_view name) noexcept { return generated::find_enum(name); }
-    static const TwimeSetMetadata* find_set(std::string_view name) noexcept { return generated::find_set(name); }
+    static const TwimeSchemaInfo& info() noexcept {
+        return generated::schema_info();
+    }
+    static std::span<const TwimeTypeMetadata> types() noexcept {
+        return generated::types();
+    }
+    static std::span<const TwimeEnumMetadata> enums() noexcept {
+        return generated::enums();
+    }
+    static std::span<const TwimeSetMetadata> sets() noexcept {
+        return generated::sets();
+    }
+    static std::span<const TwimeMessageMetadata> messages() noexcept {
+        return generated::messages();
+    }
+    static const TwimeTypeMetadata* find_type(std::string_view name) noexcept {
+        return generated::find_type(name);
+    }
+    static const TwimeEnumMetadata* find_enum(std::string_view name) noexcept {
+        return generated::find_enum(name);
+    }
+    static const TwimeSetMetadata* find_set(std::string_view name) noexcept {
+        return generated::find_set(name);
+    }
     static const TwimeMessageMetadata* find_message_by_name(std::string_view name) noexcept {
         return generated::find_message_by_name(name);
     }
@@ -145,4 +161,4 @@ struct TwimeSchemaView {
     }
 };
 
-}  // namespace moex::twime_sbe
+} // namespace moex::twime_sbe

@@ -15,9 +15,8 @@ int main() {
 
         const auto manifest_text = moex::twime_sbe::test::read_text_file(
             moex::twime_sbe::test::project_root() / "protocols/twime_sbe/schema/schema.manifest.json");
-        moex::twime_sbe::test::require(
-            manifest_text.find(std::string(schema.sha256)) != std::string::npos,
-            "schema hash missing from schema.manifest.json");
+        moex::twime_sbe::test::require(manifest_text.find(std::string(schema.sha256)) != std::string::npos,
+                                       "schema hash missing from schema.manifest.json");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

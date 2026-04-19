@@ -50,7 +50,11 @@ def main() -> int:
     if args.require_clang_format and clang_format is None:
         failures.append("clang-format is required but not installed")
     if clang_format is not None:
-        cpp_files = [str(path) for path in source_files if path.suffix in {".cpp", ".hpp"}]
+        cpp_files = [
+            str(path)
+            for path in source_files
+            if path.suffix in {".cpp", ".hpp"} and "generated" not in path.parts
+        ]
         if cpp_files:
             result = subprocess.run(
                 [clang_format, "--dry-run", "--Werror", *cpp_files],

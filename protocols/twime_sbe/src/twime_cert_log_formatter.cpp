@@ -43,42 +43,42 @@ std::string format_set(const TwimeSetMetadata& metadata, std::uint64_t mask) {
 std::string format_field(const DecodedTwimeField& field) {
     const auto& type = *field.metadata->type;
     switch (type.kind) {
-        case TwimeFieldKind::Primitive:
-            if (type.primitive_type == TwimePrimitiveType::Int8 || type.primitive_type == TwimePrimitiveType::Int16 ||
-                type.primitive_type == TwimePrimitiveType::Int32 || type.primitive_type == TwimePrimitiveType::Int64) {
-                return std::to_string(field.value.signed_value);
-            }
-            return std::to_string(field.value.unsigned_value);
-        case TwimeFieldKind::DeltaMillisecs:
-            return std::to_string(field.value.unsigned_value);
-        case TwimeFieldKind::TimeStamp:
-            if (field.value.unsigned_value == kTwimeTimestampNull) {
-                return "null";
-            }
-            return std::to_string(field.value.unsigned_value);
-        case TwimeFieldKind::Decimal5:
-            return std::to_string(field.value.decimal5.mantissa) + "e-5";
-        case TwimeFieldKind::String:
-            return "\"" + std::string(field.value.string_view()) + "\"";
-        case TwimeFieldKind::Enum: {
-            if (type.enum_metadata == nullptr) {
-                return std::to_string(field.value.unsigned_value);
-            }
-            const auto* value = find_enum_value(*type.enum_metadata, field.value.unsigned_value);
-            return value == nullptr ? std::to_string(field.value.unsigned_value) : std::string(value->name);
+    case TwimeFieldKind::Primitive:
+        if (type.primitive_type == TwimePrimitiveType::Int8 || type.primitive_type == TwimePrimitiveType::Int16 ||
+            type.primitive_type == TwimePrimitiveType::Int32 || type.primitive_type == TwimePrimitiveType::Int64) {
+            return std::to_string(field.value.signed_value);
         }
-        case TwimeFieldKind::Set:
-            if (type.set_metadata == nullptr) {
-                return std::to_string(field.value.unsigned_value);
-            }
-            return format_set(*type.set_metadata, field.value.unsigned_value);
-        case TwimeFieldKind::Composite:
-        default:
-            return "<unsupported>";
+        return std::to_string(field.value.unsigned_value);
+    case TwimeFieldKind::DeltaMillisecs:
+        return std::to_string(field.value.unsigned_value);
+    case TwimeFieldKind::TimeStamp:
+        if (field.value.unsigned_value == kTwimeTimestampNull) {
+            return "null";
+        }
+        return std::to_string(field.value.unsigned_value);
+    case TwimeFieldKind::Decimal5:
+        return std::to_string(field.value.decimal5.mantissa) + "e-5";
+    case TwimeFieldKind::String:
+        return "\"" + std::string(field.value.string_view()) + "\"";
+    case TwimeFieldKind::Enum: {
+        if (type.enum_metadata == nullptr) {
+            return std::to_string(field.value.unsigned_value);
+        }
+        const auto* value = find_enum_value(*type.enum_metadata, field.value.unsigned_value);
+        return value == nullptr ? std::to_string(field.value.unsigned_value) : std::string(value->name);
+    }
+    case TwimeFieldKind::Set:
+        if (type.set_metadata == nullptr) {
+            return std::to_string(field.value.unsigned_value);
+        }
+        return format_set(*type.set_metadata, field.value.unsigned_value);
+    case TwimeFieldKind::Composite:
+    default:
+        return "<unsupported>";
     }
 }
 
-}  // namespace
+} // namespace
 
 std::string TwimeCertLogFormatter::format(const DecodedTwimeMessage& message) const {
     std::ostringstream output;
@@ -92,4 +92,4 @@ std::string TwimeCertLogFormatter::format(const DecodedTwimeMessage& message) co
     return output.str();
 }
 
-}  // namespace moex::twime_sbe
+} // namespace moex::twime_sbe

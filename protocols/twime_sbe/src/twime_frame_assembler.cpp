@@ -8,10 +8,8 @@ namespace moex::twime_sbe {
 
 namespace {
 
-TwimeDecodeError validate_header(
-    const TwimeMessageHeader& header,
-    std::size_t max_frame_size,
-    std::size_t& out_frame_size) {
+TwimeDecodeError validate_header(const TwimeMessageHeader& header, std::size_t max_frame_size,
+                                 std::size_t& out_frame_size) {
     if (header.schema_id != TwimeSchemaView::info().schema_id) {
         return TwimeDecodeError::UnsupportedSchemaId;
     }
@@ -38,10 +36,9 @@ void clear_partial_state(std::vector<std::byte>& buffer) {
     buffer.clear();
 }
 
-}  // namespace
+} // namespace
 
-TwimeFrameAssembler::TwimeFrameAssembler(std::size_t max_frame_size)
-    : max_frame_size_(max_frame_size) {}
+TwimeFrameAssembler::TwimeFrameAssembler(std::size_t max_frame_size) : max_frame_size_(max_frame_size) {}
 
 TwimeFrameFeedResult TwimeFrameAssembler::feed(std::span<const std::byte> bytes) {
     TwimeFrameFeedResult result{};
@@ -75,7 +72,8 @@ TwimeFrameFeedResult TwimeFrameAssembler::feed(std::span<const std::byte> bytes)
             }
 
             if (remaining.size() >= frame_size) {
-                ready_frames_.emplace_back(remaining.begin(), remaining.begin() + static_cast<std::ptrdiff_t>(frame_size));
+                ready_frames_.emplace_back(remaining.begin(),
+                                           remaining.begin() + static_cast<std::ptrdiff_t>(frame_size));
                 offset += frame_size;
                 ++result.frames_ready;
                 continue;
@@ -99,9 +97,8 @@ TwimeFrameFeedResult TwimeFrameAssembler::feed(std::span<const std::byte> bytes)
         }
 
         TwimeMessageHeader header{};
-        const auto header_error = decode_twime_message_header(
-            std::span<const std::byte>(buffer_.data(), kTwimeMessageHeaderSize),
-            header);
+        const auto header_error =
+            decode_twime_message_header(std::span<const std::byte>(buffer_.data(), kTwimeMessageHeaderSize), header);
         if (header_error != TwimeDecodeError::Ok) {
             result.error = header_error;
             clear_partial_state(buffer_);
@@ -120,10 +117,8 @@ TwimeFrameFeedResult TwimeFrameAssembler::feed(std::span<const std::byte> bytes)
 
         const auto missing = frame_size - buffer_.size();
         const auto to_copy = std::min<std::size_t>(missing, bytes.size() - offset);
-        buffer_.insert(
-            buffer_.end(),
-            bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-            bytes.begin() + static_cast<std::ptrdiff_t>(offset + to_copy));
+        buffer_.insert(buffer_.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                       bytes.begin() + static_cast<std::ptrdiff_t>(offset + to_copy));
         offset += to_copy;
 
         if (buffer_.size() < frame_size) {
@@ -158,4 +153,4 @@ void TwimeFrameAssembler::reset() {
     ready_frames_.clear();
 }
 
-}  // namespace moex::twime_sbe
+} // namespace moex::twime_sbe

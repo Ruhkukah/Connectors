@@ -124,6 +124,7 @@ moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "twime_schema_materializ
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "twime_schema_indexer" "tools/twime_schema_indexer.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "twime_codegen" "tools/twime_codegen.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "source_style_check" "tools/source_style_check.py")
+moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "unicode_guard" "tools/unicode_guard.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_cert_runner" "apps/moex_cert_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_replay_tool" "apps/moex_replay_tool.py")
 
@@ -189,6 +190,22 @@ add_test(
     NAME matrix_validate_repo
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/matrix_validate"
         --matrix-dir "${CMAKE_CURRENT_SOURCE_DIR}/matrix")
+
+add_test(
+    NAME unicode_guard_check
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/unicode_guard"
+        .github
+        CMakeLists.txt
+        include
+        src
+        protocols
+        connectors
+        tools
+        tests
+        matrix
+        profiles
+        cert
+        docs)
 
 add_test(
     NAME profile_check_replay
