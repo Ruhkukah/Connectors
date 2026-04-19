@@ -2,7 +2,10 @@
 
 ## Scope
 
-Phase 2A adds an **offline-only** TWIME SBE schema inventory and binary codec layer. Phase 2A.1 hardens that layer with stricter fixture validation, explicit null/string policy, and stronger metadata/frame invariants. It does **not** add any live MOEX transport or session behavior.
+Phase 2A adds an **offline-only** TWIME SBE schema inventory and binary codec
+layer. Phase 2A.1 hardens that layer with stricter fixture validation,
+explicit null/string policy, and stronger metadata/frame invariants. It does
+**not** add any live MOEX transport or session behavior.
 
 Implemented in Phase 2A:
 

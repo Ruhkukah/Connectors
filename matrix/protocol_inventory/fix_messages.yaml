@@ -1,7 +1,10 @@
-{
-  "version": 1,
-  "items": [
-    {"protocol_item_id": "fix_admin_surface", "artifact_id": "fix_prod_docs", "name": "FIX admin/session surface", "kind": "session"},
-    {"protocol_item_id": "fix_order_entry_boundary", "artifact_id": "fix_prod_docs", "name": "FIX trade-only order-entry path", "kind": "behavior"}
-  ]
-}
+version: 1
+items:
+  - protocol_item_id: fix_admin_surface
+    artifact_id: fix_prod_docs
+    name: FIX admin/session surface
+    kind: session
+  - protocol_item_id: fix_order_entry_boundary
+    artifact_id: fix_prod_docs
+    name: FIX trade-only order-entry path
+    kind: behavior

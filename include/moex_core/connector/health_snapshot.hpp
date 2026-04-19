@@ -12,4 +12,4 @@ struct HealthSnapshot {
     bool shadow_mode_enabled = false;
 };
 
-}  // namespace moex::connector
+} // namespace moex::connector

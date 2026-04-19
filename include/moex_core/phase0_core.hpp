@@ -19,10 +19,7 @@ struct BackpressureCounters {
     bool overflowed = false;
 };
 
-enum class EventLossPolicy {
-    Lossless,
-    DropOldest
-};
+enum class EventLossPolicy { Lossless, DropOldest };
 
 BuildInfo build_info();
 
@@ -30,4 +27,4 @@ bool prod_requires_arm(std::string_view environment, bool armed);
 
 BackpressureCounters make_seed_counters(EventLossPolicy policy);
 
-}  // namespace moex::phase0
+} // namespace moex::phase0

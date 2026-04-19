@@ -12,4 +12,4 @@ struct BackpressurePolicy {
     moex::phase0::EventLossPolicy diagnostics_policy = moex::phase0::EventLossPolicy::DropOldest;
 };
 
-}  // namespace moex::connector
+} // namespace moex::connector

@@ -10,4 +10,4 @@ struct CertLogPolicy {
     std::string textual_format = "message_like_text";
 };
 
-}  // namespace moex::cert
+} // namespace moex::cert

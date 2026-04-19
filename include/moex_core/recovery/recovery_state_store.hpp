@@ -16,4 +16,4 @@ struct RecoveryStateStoreSpec {
     bool crash_safe_append_only = true;
 };
 
-}  // namespace moex::recovery
+} // namespace moex::recovery
