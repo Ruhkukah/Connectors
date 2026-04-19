@@ -17,6 +17,8 @@ struct TwimeTransportMetrics {
     std::size_t write_would_block_events{0};
     std::size_t remote_close_events{0};
     std::size_t fault_events{0};
+    std::size_t max_read_buffer_depth{0};
+    std::size_t max_write_buffer_depth{0};
 };
 
 } // namespace moex::twime_trade::transport

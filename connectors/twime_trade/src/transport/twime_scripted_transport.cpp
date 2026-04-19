@@ -1,6 +1,7 @@
 #include "moex/twime_trade/transport/twime_scripted_transport.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace moex::twime_trade::transport {
 
@@ -47,9 +48,16 @@ TwimeTransportResult TwimeScriptedTransport::write(std::span<const std::byte> by
         return {.status = TwimeTransportStatus::Ok, .event = TwimeTransportEvent::BytesWritten};
     }
 
-    const auto accepted = std::min(bytes.size(), max_write_size_);
+    const auto write_capacity =
+        max_buffered_bytes_ > written_bytes_.size() ? max_buffered_bytes_ - written_bytes_.size() : 0;
+    const auto accepted = std::min({bytes.size(), max_write_size_, write_capacity});
+    if (accepted == 0) {
+        ++metrics_.write_would_block_events;
+        return {.status = TwimeTransportStatus::WouldBlock, .event = TwimeTransportEvent::WriteWouldBlock};
+    }
     written_bytes_.insert(written_bytes_.end(), bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(accepted));
     metrics_.bytes_written += accepted;
+    metrics_.max_write_buffer_depth = std::max(metrics_.max_write_buffer_depth, written_bytes_.size());
     if (accepted < bytes.size()) {
         ++metrics_.partial_write_events;
         return {.status = TwimeTransportStatus::Ok,
@@ -98,6 +106,7 @@ TwimeTransportPollResult TwimeScriptedTransport::poll_read(std::span<std::byte> 
     const auto readable = std::min({remaining, out.size(), action.max_chunk_size});
     std::copy_n(action.bytes.data() + static_cast<std::ptrdiff_t>(action.offset), readable, out.data());
     action.offset += readable;
+    queued_read_bytes_ -= readable;
     metrics_.bytes_read += readable;
     if (action.offset == action.bytes.size()) {
         read_actions_.pop_front();
@@ -122,12 +131,21 @@ void TwimeScriptedTransport::set_max_write_size(std::size_t max_write_size) noex
     max_write_size_ = max_write_size == 0 ? 1 : max_write_size;
 }
 
+void TwimeScriptedTransport::set_max_buffered_bytes(std::size_t max_buffered_bytes) noexcept {
+    max_buffered_bytes_ = max_buffered_bytes == 0 ? 1 : max_buffered_bytes;
+}
+
 void TwimeScriptedTransport::queue_read_bytes(std::span<const std::byte> bytes, std::size_t max_chunk_size) {
+    if (bytes.size() > max_buffered_bytes_ - std::min(max_buffered_bytes_, queued_read_bytes_)) {
+        throw std::runtime_error("queue_read_bytes exceeds scripted transport buffered-byte limit");
+    }
     ReadAction action;
     action.kind = ReadActionKind::Bytes;
     action.bytes.assign(bytes.begin(), bytes.end());
     action.max_chunk_size = max_chunk_size == 0 ? 1 : max_chunk_size;
     read_actions_.push_back(std::move(action));
+    queued_read_bytes_ += bytes.size();
+    metrics_.max_read_buffer_depth = std::max(metrics_.max_read_buffer_depth, queued_read_bytes_);
 }
 
 void TwimeScriptedTransport::queue_read_would_block() {

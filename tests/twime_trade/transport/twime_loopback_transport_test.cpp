@@ -37,6 +37,17 @@ int main() {
                                        "first decoded frame mismatch");
         moex::twime_sbe::test::require(decoded_messages[1].metadata->name == "Sequence",
                                        "second decoded frame mismatch");
+
+        const auto metrics = transport.metrics();
+        moex::twime_sbe::test::require(metrics.write_calls == 1, "loopback transport write_calls mismatch");
+        moex::twime_sbe::test::require(metrics.read_calls == 1, "loopback transport read_calls mismatch");
+        moex::twime_sbe::test::require(metrics.bytes_written == written.size(),
+                                       "loopback transport bytes_written mismatch");
+        moex::twime_sbe::test::require(metrics.bytes_read == written.size(), "loopback transport bytes_read mismatch");
+        moex::twime_sbe::test::require(metrics.max_read_buffer_depth == written.size(),
+                                       "loopback transport read-buffer high watermark mismatch");
+        moex::twime_sbe::test::require(metrics.max_write_buffer_depth == written.size(),
+                                       "loopback transport write-buffer high watermark mismatch");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

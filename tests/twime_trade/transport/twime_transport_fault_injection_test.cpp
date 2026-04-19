@@ -21,6 +21,8 @@ int main() {
             moex::twime_sbe::test::require(transport.state() ==
                                                moex::twime_trade::transport::TwimeTransportState::Faulted,
                                            "write-fault injection did not fault the transport");
+            moex::twime_sbe::test::require(transport.metrics().fault_events == 1,
+                                           "write-fault injection fault_events mismatch");
         }
 
         {
@@ -37,6 +39,8 @@ int main() {
             moex::twime_sbe::test::require(transport.state() ==
                                                moex::twime_trade::transport::TwimeTransportState::Faulted,
                                            "read-fault injection did not fault the transport");
+            moex::twime_sbe::test::require(transport.metrics().fault_events == 1,
+                                           "read-fault injection fault_events mismatch");
         }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -46,6 +46,22 @@ int main() {
         }
 
         moex::twime_sbe::test::require(received == establish, "partial-write loopback read bytes mismatch");
+
+        {
+            moex::twime_trade::transport::TwimeLoopbackTransport bounded_transport;
+            bounded_transport.set_max_buffered_bytes(4);
+            moex::twime_sbe::test::require(bounded_transport.open().status ==
+                                               moex::twime_trade::transport::TwimeTransportStatus::Ok,
+                                           "bounded loopback transport failed to open");
+
+            const auto first_write = bounded_transport.write(std::span<const std::byte>(establish).first(4));
+            moex::twime_sbe::test::require(first_write.status == moex::twime_trade::transport::TwimeTransportStatus::Ok,
+                                           "bounded loopback transport first write failed");
+            const auto second_write = bounded_transport.write(std::span<const std::byte>(establish).subspan(4));
+            moex::twime_sbe::test::require(second_write.status ==
+                                               moex::twime_trade::transport::TwimeTransportStatus::WouldBlock,
+                                           "bounded loopback transport must backpressure instead of growing unbounded");
+        }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

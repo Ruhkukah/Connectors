@@ -4,6 +4,7 @@
 #include "twime_trade_test_support.hpp"
 
 #include <iostream>
+#include <stdexcept>
 
 int main() {
     try {
@@ -30,6 +31,21 @@ int main() {
                                                "fragmented byte-stream EstablishmentAck did not assemble");
         moex::twime_sbe::test::require(session.sequence_state().next_expected_inbound_seq() == 11,
                                        "fragmented EstablishmentAck did not set expected inbound sequence");
+        moex::twime_sbe::test::require(transport.metrics().partial_read_events > 0,
+                                       "fragmented byte-stream path did not record partial reads");
+
+        {
+            moex::twime_trade::transport::TwimeScriptedTransport bounded_transport;
+            bounded_transport.set_max_buffered_bytes(4);
+            bool threw = false;
+            try {
+                bounded_transport.queue_read_bytes(moex::twime_trade::test::encode_bytes(ack));
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            moex::twime_sbe::test::require(threw,
+                                           "scripted transport must reject queued reads that exceed the buffer limit");
+        }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

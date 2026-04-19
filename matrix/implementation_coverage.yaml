@@ -180,6 +180,26 @@ coverage:
     scenario_id: scenario_twime_public
     inventory_id: osengine_moex_fixfasttwime_dir
     status: codec_roundtrip_tested
+  - coverage_id: coverage_twime_transport_abstraction_fake
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_fake_byte_transport
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_transport_abstraction_fake_tested
+  - coverage_id: coverage_twime_loopback_transport
+    protocol_item_id: twime_message_5001_establishmentack
+    scenario_id: scenario_twime_fake_byte_transport
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_loopback_transport_tested
+  - coverage_id: coverage_twime_scripted_transport
+    protocol_item_id: twime_message_5006_sequence
+    scenario_id: scenario_twime_fake_byte_transport
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_scripted_transport_tested
+  - coverage_id: coverage_twime_byte_stream_session_path
+    protocol_item_id: twime_message_5001_establishmentack
+    scenario_id: scenario_twime_fake_byte_transport
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: byte_stream_session_path_tested
   - coverage_id: coverage_fast_test_variants
     protocol_item_id: fast_test_templates_t0_lock
     scenario_id: scenario_fix_public

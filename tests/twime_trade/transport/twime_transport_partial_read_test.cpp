@@ -36,6 +36,8 @@ int main() {
         const auto metrics = transport.metrics();
         moex::twime_sbe::test::require(metrics.partial_read_events > 0,
                                        "partial-read transport did not record partial reads");
+        moex::twime_sbe::test::require(metrics.max_read_buffer_depth == payload.size(),
+                                       "partial-read transport high watermark mismatch");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

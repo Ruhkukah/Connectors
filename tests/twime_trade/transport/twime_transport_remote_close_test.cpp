@@ -29,6 +29,26 @@ int main() {
                                        "remote-close transport did not report remote close");
         moex::twime_sbe::test::require(transport.state() == moex::twime_trade::transport::TwimeTransportState::Closed,
                                        "remote-close transport did not enter Closed state");
+        moex::twime_sbe::test::require(transport.metrics().remote_close_events == 1,
+                                       "remote-close transport remote_close_events mismatch");
+
+        {
+            moex::twime_trade::transport::TwimeLoopbackTransport local_close_transport;
+            moex::twime_sbe::test::require(local_close_transport.open().status ==
+                                               moex::twime_trade::transport::TwimeTransportStatus::Ok,
+                                           "local-close transport failed to open");
+            const auto close_result = local_close_transport.close();
+            moex::twime_sbe::test::require(close_result.status ==
+                                               moex::twime_trade::transport::TwimeTransportStatus::Ok,
+                                           "local close did not return success");
+            moex::twime_sbe::test::require(local_close_transport.state() ==
+                                               moex::twime_trade::transport::TwimeTransportState::Closed,
+                                           "local close did not enter Closed state");
+            const auto write_after_close = local_close_transport.write(ack);
+            moex::twime_sbe::test::require(write_after_close.status ==
+                                               moex::twime_trade::transport::TwimeTransportStatus::InvalidState,
+                                           "local close must reject writes after close");
+        }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

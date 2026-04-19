@@ -75,6 +75,9 @@ scenarios:
   - scenario_id: scenario_twime_fake_business_reject_non_recoverable
     artifact_id: moex_cert_procedure
     title: Synthetic TWIME fake-transport BusinessMessageReject non-recoverable handling
+  - scenario_id: scenario_twime_fake_byte_transport
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake byte-stream transport fragmentation, batching, and fault handling
   - scenario_id: scenario_fix_public
     artifact_id: moex_cert_procedure
     title: Public FIX certification appendix coverage

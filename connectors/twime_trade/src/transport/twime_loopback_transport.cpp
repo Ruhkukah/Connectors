@@ -1,6 +1,7 @@
 #include "moex/twime_trade/transport/twime_loopback_transport.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace moex::twime_trade::transport {
 
@@ -42,10 +43,20 @@ TwimeTransportResult TwimeLoopbackTransport::write(std::span<const std::byte> by
         return {.status = TwimeTransportStatus::Ok, .event = TwimeTransportEvent::BytesWritten};
     }
 
-    const auto accepted = std::min(bytes.size(), max_write_size_);
+    const auto readable_capacity =
+        max_buffered_bytes_ > readable_bytes_.size() ? max_buffered_bytes_ - readable_bytes_.size() : 0;
+    const auto write_capacity =
+        max_buffered_bytes_ > written_bytes_.size() ? max_buffered_bytes_ - written_bytes_.size() : 0;
+    const auto accepted = std::min({bytes.size(), max_write_size_, readable_capacity, write_capacity});
+    if (accepted == 0) {
+        ++metrics_.write_would_block_events;
+        return {.status = TwimeTransportStatus::WouldBlock, .event = TwimeTransportEvent::WriteWouldBlock};
+    }
     written_bytes_.insert(written_bytes_.end(), bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(accepted));
     readable_bytes_.insert(readable_bytes_.end(), bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(accepted));
     metrics_.bytes_written += accepted;
+    metrics_.max_read_buffer_depth = std::max(metrics_.max_read_buffer_depth, readable_bytes_.size());
+    metrics_.max_write_buffer_depth = std::max(metrics_.max_write_buffer_depth, written_bytes_.size());
     if (accepted < bytes.size()) {
         ++metrics_.partial_write_events;
         return {
@@ -122,6 +133,10 @@ void TwimeLoopbackTransport::set_max_write_size(std::size_t max_write_size) noex
     max_write_size_ = max_write_size == 0 ? 1 : max_write_size;
 }
 
+void TwimeLoopbackTransport::set_max_buffered_bytes(std::size_t max_buffered_bytes) noexcept {
+    max_buffered_bytes_ = max_buffered_bytes == 0 ? 1 : max_buffered_bytes;
+}
+
 void TwimeLoopbackTransport::inject_next_read_fault() noexcept {
     next_read_fault_ = true;
 }
@@ -135,7 +150,11 @@ void TwimeLoopbackTransport::script_remote_close() noexcept {
 }
 
 void TwimeLoopbackTransport::queue_inbound_bytes(std::span<const std::byte> bytes) {
+    if (bytes.size() > max_buffered_bytes_ - std::min(max_buffered_bytes_, readable_bytes_.size())) {
+        throw std::runtime_error("queue_inbound_bytes exceeds loopback buffered-byte limit");
+    }
     readable_bytes_.insert(readable_bytes_.end(), bytes.begin(), bytes.end());
+    metrics_.max_read_buffer_depth = std::max(metrics_.max_read_buffer_depth, readable_bytes_.size());
 }
 
 const std::vector<std::byte>& TwimeLoopbackTransport::written_bytes() const noexcept {

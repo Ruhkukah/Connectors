@@ -60,6 +60,8 @@ This repository still stops before live protocol/session implementation. The cur
   byte-stream loopback/scripted transports for deterministic
   transport/session integration tests. This exercises the frame assembler
   through the session path without introducing sockets.
+- See [docs/twime_phase2c_transport.md](docs/twime_phase2c_transport.md)
+  for the fake byte-stream transport model and its explicit non-goals.
 - Phase 2B.1 corrects client `Sequence` heartbeats to encode
   `NextSeqNo=null`, treats `EstablishmentAck.NextSeqNo` as inbound state,
   requires inbound `Terminate(Finished)` for clean shutdown, validates

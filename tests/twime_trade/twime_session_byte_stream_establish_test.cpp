@@ -42,6 +42,11 @@ int main() {
                                                    "byte-stream session did not become Active");
             moex::twime_sbe::test::require(session.sequence_state().next_expected_inbound_seq() == 11,
                                            "byte-stream EstablishmentAck did not initialize inbound sequence");
+            const auto metrics = transport.metrics();
+            moex::twime_sbe::test::require(metrics.partial_write_events > 0,
+                                           "scripted transport partial-write path was not exercised");
+            moex::twime_sbe::test::require(metrics.write_calls > 1,
+                                           "scripted transport partial-write path did not require multiple writes");
         }
 
         {
@@ -91,6 +96,8 @@ int main() {
 
             moex::twime_trade::test::require_state(session.state(), moex::twime_trade::TwimeSessionState::Faulted,
                                                    "byte-stream read fault must fault session");
+            moex::twime_sbe::test::require(transport.metrics().fault_events == 1,
+                                           "scripted transport read fault metrics mismatch");
         }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
