@@ -169,6 +169,15 @@ void TwimeSession::apply_command(const TwimeSessionCommand& command) {
     }
 }
 
+void TwimeSession::force_fault(std::string summary) {
+    append_event(TwimeSessionEvent{
+        .type = TwimeSessionEventType::Faulted,
+        .state = state_,
+        .summary = summary,
+    });
+    transition_to(TwimeSessionState::Faulted, std::move(summary));
+}
+
 void TwimeSession::on_timer_tick() {
     if (state_ != TwimeSessionState::Active) {
         return;

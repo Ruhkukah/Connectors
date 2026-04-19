@@ -250,11 +250,56 @@ coverage:
     scenario_id: scenario_twime_tcp_external_gated
     inventory_id: osengine_moex_fixfasttwime_dir
     status: external_test_endpoint_support_gated
+  - coverage_id: coverage_twime_test_session_bringup
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_live_test_session_establish
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_test_session_bringup_tested
+  - coverage_id: coverage_twime_test_session_reject
+    protocol_item_id: twime_message_5002_establishmentreject
+    scenario_id: scenario_twime_live_test_session_reject
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_test_session_bringup_tested
+  - coverage_id: coverage_twime_test_session_establish_deadline
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_live_test_session_establish
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_establish_deadline_tested
+  - coverage_id: coverage_twime_test_session_health_snapshot
+    protocol_item_id: twime_message_5001_establishmentack
+    scenario_id: scenario_twime_live_test_session_heartbeat
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_test_session_health_snapshot_tested
+  - coverage_id: coverage_twime_test_session_persistence
+    protocol_item_id: twime_message_5003_terminate
+    scenario_id: scenario_twime_live_test_session_terminate
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_test_session_persistence_tested
+  - coverage_id: coverage_twime_test_session_reconnect_disabled
+    protocol_item_id: twime_message_5003_terminate
+    scenario_id: scenario_twime_live_test_session_reconnect_disabled
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_test_session_bringup_tested
+  - coverage_id: coverage_twime_test_session_reconnect_enabled
+    protocol_item_id: twime_message_5003_terminate
+    scenario_id: scenario_twime_live_test_session_reconnect_enabled
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_test_session_bringup_tested
+  - coverage_id: coverage_twime_test_network_and_session_arm
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_live_test_session_establish
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_test_network_and_session_arming_required
   - coverage_id: coverage_twime_live_order_routing_default_disabled
     protocol_item_id: twime_message_6000_newordersingle
     scenario_id: scenario_twime_tcp_external_gated
     inventory_id: osengine_moex_fixfasttwime_dir
     status: live_order_routing_still_disabled_by_default
+  - coverage_id: coverage_twime_live_order_flow_deferred
+    protocol_item_id: twime_message_6000_newordersingle
+    scenario_id: scenario_twime_live_test_session_establish
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_live_order_flow_deferred
   - coverage_id: coverage_fast_test_variants
     protocol_item_id: fast_test_templates_t0_lock
     scenario_id: scenario_fix_public

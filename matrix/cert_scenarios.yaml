@@ -84,6 +84,24 @@ scenarios:
   - scenario_id: scenario_twime_tcp_external_gated
     artifact_id: moex_cert_procedure
     title: Gated TWIME external test-endpoint validation and credential handling
+  - scenario_id: scenario_twime_live_test_session_establish
+    artifact_id: moex_cert_procedure
+    title: External TEST TWIME session bring-up with Establish and Ack
+  - scenario_id: scenario_twime_live_test_session_reject
+    artifact_id: moex_cert_procedure
+    title: External TEST TWIME session bring-up with EstablishmentReject
+  - scenario_id: scenario_twime_live_test_session_heartbeat
+    artifact_id: moex_cert_procedure
+    title: External TEST TWIME session heartbeat and liveness handling
+  - scenario_id: scenario_twime_live_test_session_terminate
+    artifact_id: moex_cert_procedure
+    title: External TEST TWIME session graceful Terminate flow
+  - scenario_id: scenario_twime_live_test_session_reconnect_disabled
+    artifact_id: moex_cert_procedure
+    title: External TEST TWIME session reconnect disabled behavior
+  - scenario_id: scenario_twime_live_test_session_reconnect_enabled
+    artifact_id: moex_cert_procedure
+    title: External TEST TWIME session bounded reconnect behavior
   - scenario_id: scenario_fix_public
     artifact_id: moex_cert_procedure
     title: Public FIX certification appendix coverage

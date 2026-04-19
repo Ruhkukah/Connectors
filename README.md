@@ -1,6 +1,6 @@
 # MoexConnector
 
-Phase 2E repository for a standalone C++20/Linux-first MOEX connector suite.
+Phase 2F repository for a standalone C++20/Linux-first MOEX connector suite.
 
 License: MIT. See [LICENSE](LICENSE).
 
@@ -16,6 +16,7 @@ This repository still stops before live protocol/session implementation. The cur
 - offline TWIME schema inventory, deterministic metadata generation, binary codec, frame assembler, and cert-log formatter
 - deterministic TWIME fake-transport session FSM with synthetic certification scenarios
 - TWIME test-endpoint gating, local env/file credential loading, and redacted test-runner plumbing
+- TWIME external TEST session bring-up, health snapshots, persistence, and manual operator gating
 - profile templates with production arming checks
 - machine-readable matrix files with referential integrity
 - artifact lock tooling for MOEX public specs and local CGate schemes
@@ -53,6 +54,11 @@ This repository still stops before live protocol/session implementation. The cur
   explicitly armed non-loopback **test** endpoints. Localhost remains the
   default, production connectivity is still blocked, and live order routing
   remains disabled by default.
+- Phase 2F adds explicitly armed external **test-session** bring-up for the
+  TWIME session layer only: TCP open, Establish, EstablishmentAck or
+  EstablishmentReject, Sequence heartbeat, bounded reconnect, Terminate, and
+  health or persistence reporting. Live application order flow remains
+  disabled by default.
 - Real MOEX protocol/network logic is still intentionally absent.
 
 ## Phase 2A / 2B
@@ -78,6 +84,11 @@ This repository still stops before live protocol/session implementation. The cur
   endpoints, plus local env/file credential loading and redaction. See
   [docs/twime_phase2e_test_endpoint_gating.md](docs/twime_phase2e_test_endpoint_gating.md)
   and [docs/secrets_and_redaction.md](docs/secrets_and_redaction.md).
+- Phase 2F adds a second operator arm for actual external **test-session**
+  bring-up and exposes session health, persistence, and reconnect
+  observability. See
+  [docs/twime_phase2f_test_session_bringup.md](docs/twime_phase2f_test_session_bringup.md)
+  and [docs/twime_operator_runbook.md](docs/twime_operator_runbook.md).
 - Phase 2B.1 corrects client `Sequence` heartbeats to encode
   `NextSeqNo=null`, treats `EstablishmentAck.NextSeqNo` as inbound state,
   requires inbound `Terminate(Finished)` for clean shutdown, validates
@@ -100,6 +111,7 @@ build/apps/moex_cert_runner --scenario cert/scenarios/twime/session_establish.ya
 build/apps/moex_cert_runner --scenario cert/scenarios/twime/client_sequence_heartbeat_null_nextseqno.yaml --output-dir build/twime-cert-runner
 build/apps/moex_cert_runner --scenario cert/scenarios/twime/terminate_requires_inbound_terminate.yaml --output-dir build/twime-cert-runner
 build/apps/moex_cert_runner --profile profiles/test_twime_tcp_external_local.example.yaml --output-dir build/twime-test-gate --validate-only
+build/apps/moex_cert_runner --profile profiles/test_twime_live_session_local.example.yaml --scenario cert/scenarios/twime/live_test_session_establish.yaml --output-dir build/twime-live-session --validate-only
 build/tools/profile_check --profile profiles/prod_fast_twime.template.yaml
 dotnet run --project tests/dotnet/AbiSmoke/AbiSmoke.csproj --framework net10.0 -- build/lib/libmoex_phase0_abi.dylib tests/fixtures/shadow_replay/synthetic_replay.txt
 dotnet run --project tests/dotnet/AbiPolicy/AbiPolicy.csproj --framework net10.0 -- build/lib/libmoex_phase0_abi.dylib tests/fixtures/shadow_replay/synthetic_replay.txt
@@ -125,4 +137,8 @@ ctest --test-dir build --output-on-failure -R dotnet_shadow_replay
 - Phase 2E adds only gated test-endpoint validation and local credential
   plumbing. It still does not add production connectivity, broker
   production connectivity, checked-in credentials, or live order routing by
+  default.
+- Phase 2F adds only explicitly armed external **test-session** bring-up and
+  observability. It still does not add production connectivity, checked-in
+  credentials, broker production routing, or live application order flow by
   default.

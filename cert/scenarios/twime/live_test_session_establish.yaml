@@ -1,0 +1,15 @@
+scenario_id: twime_live_test_session_establish
+title: TWIME live test-session establish
+metadata:
+  owner: phase2f
+  mode: live_test_session
+steps:
+  - step_id: preflight
+    action: validate operator gates, credentials, and endpoint
+    expected: external session start permitted only when explicitly armed
+  - step_id: connect
+    action: connect TCP transport and send Establish
+    expected: session enters Establishing
+  - step_id: ack
+    action: receive EstablishmentAck
+    expected: session enters Active

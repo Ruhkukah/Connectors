@@ -1,0 +1,12 @@
+scenario_id: twime_live_test_session_heartbeat
+title: TWIME live test-session heartbeat
+metadata:
+  owner: phase2f
+  mode: live_test_session
+steps:
+  - step_id: establish
+    action: connect and receive EstablishmentAck
+    expected: session enters Active
+  - step_id: heartbeat
+    action: exchange Sequence heartbeats
+    expected: session liveness is visible in logs and health snapshot

@@ -139,6 +139,7 @@ class TwimeSession {
     [[nodiscard]] std::uint32_t active_keepalive_interval_ms() const noexcept;
 
     void apply_command(const TwimeSessionCommand& command);
+    void force_fault(std::string summary);
     void on_timer_tick();
     void poll_transport();
     [[nodiscard]] std::vector<TwimeSessionEvent> drain_events();

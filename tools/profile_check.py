@@ -21,6 +21,10 @@ def _looks_banned_host(host: str) -> bool:
     return any(token in normalized for token in ("moex", "spectra", "alor", "broker"))
 
 
+def _contains_inline_credentials(credentials: dict) -> bool:
+    return any(key in credentials for key in ("value", "credentials", "secret", "password"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate checked-in profile templates, production arming rules, and Phase 2E TWIME test-endpoint safety."
@@ -43,27 +47,34 @@ def main() -> int:
         twime_tcp = profile.get("twime_tcp")
         if isinstance(twime_tcp, dict):
             if environment != "test":
-                raise SystemExit("twime_tcp profiles are Phase 2D test-only and must use environment=test")
+                raise SystemExit("twime_tcp profiles are Phase 2F test-only and must use environment=test")
 
             endpoint = twime_tcp.get("endpoint") or {}
             host = str(endpoint.get("host", "127.0.0.1"))
             if _looks_banned_host(host):
-                raise SystemExit("twime_tcp endpoint host looks like a live MOEX/broker target and is blocked in Phase 2E")
+                raise SystemExit("twime_tcp endpoint host looks like a live MOEX/broker target and is blocked in Phase 2F")
 
             test_network_gate = twime_tcp.get("test_network_gate") or {}
             external_enabled = bool(test_network_gate.get("external_test_endpoint_enabled", False))
+            credentials = twime_tcp.get("credentials") or {}
+            if _contains_inline_credentials(credentials):
+                raise SystemExit("tracked twime_tcp profiles must not contain inline credentials")
 
             if _looks_non_loopback(host):
                 if _looks_placeholder(host):
                     if not external_enabled:
                         raise SystemExit(
-                            "twime_tcp placeholder host requires external_test_endpoint_enabled=true in Phase 2E"
+                            "twime_tcp placeholder host requires external_test_endpoint_enabled=true in Phase 2F"
                         )
                 else:
                     raise SystemExit(
-                        "tracked twime_tcp profiles must not contain real non-loopback hosts in Phase 2E; "
+                        "tracked twime_tcp profiles must not contain real non-loopback hosts in Phase 2F; "
                         "use an untracked local override plus --armed-test-network"
                     )
+
+        twime_live_session = profile.get("twime_live_session")
+        if isinstance(twime_live_session, dict) and environment != "test":
+            raise SystemExit("twime_live_session profiles are Phase 2F test-only and must use environment=test")
 
         print(f"profile {profile['profile_id']} validated")
     return 0

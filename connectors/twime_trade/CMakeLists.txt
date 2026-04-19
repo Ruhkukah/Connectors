@@ -1,9 +1,14 @@
 add_library(moex_twime_trade STATIC
     src/twime_cert_scenario_runner.cpp
     src/twime_fake_transport.cpp
+    src/twime_live_session_runner.cpp
+    src/twime_manual_operator_gate.cpp
     src/twime_rate_limit_model.cpp
     src/twime_recovery_state.cpp
     src/twime_sequence_state.cpp
+    src/twime_session_health.cpp
+    src/twime_session_metrics.cpp
+    src/twime_session_persistence.cpp
     src/twime_session.cpp
     src/transport/twime_loopback_transport.cpp
     src/transport/twime_credential_provider.cpp

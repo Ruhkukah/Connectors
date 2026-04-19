@@ -1,0 +1,12 @@
+scenario_id: twime_live_test_session_reject
+title: TWIME live test-session reject
+metadata:
+  owner: phase2f
+  mode: live_test_session
+steps:
+  - step_id: connect
+    action: connect TCP transport and send Establish
+    expected: session enters Establishing
+  - step_id: reject
+    action: receive EstablishmentReject
+    expected: session enters Rejected

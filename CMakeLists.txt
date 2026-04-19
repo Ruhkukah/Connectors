@@ -285,6 +285,19 @@ moex_add_twime_trade_test(twime_session_tcp_terminate_flow_test
     tests/twime_trade/twime_session_tcp_terminate_flow_test.cpp)
 moex_add_twime_trade_test(twime_session_tcp_external_establish_test
     tests/twime_trade/twime_session_tcp_external_establish_test.cpp)
+moex_add_twime_trade_test(twime_manual_operator_gate_test tests/twime_trade/twime_manual_operator_gate_test.cpp)
+moex_add_twime_trade_test(twime_external_session_validation_test
+    tests/twime_trade/twime_external_session_validation_test.cpp)
+moex_add_twime_trade_test(twime_session_health_test tests/twime_trade/twime_session_health_test.cpp)
+moex_add_twime_trade_test(twime_session_persistence_test tests/twime_trade/twime_session_persistence_test.cpp)
+moex_add_twime_trade_test(twime_live_session_runner_test tests/twime_trade/twime_live_session_runner_test.cpp)
+moex_add_twime_trade_test(twime_live_session_reject_test tests/twime_trade/twime_live_session_reject_test.cpp)
+moex_add_twime_trade_test(twime_live_session_establish_timeout_test
+    tests/twime_trade/twime_live_session_establish_timeout_test.cpp)
+moex_add_twime_trade_test(twime_live_session_reconnect_disabled_test
+    tests/twime_trade/twime_live_session_reconnect_disabled_test.cpp)
+moex_add_twime_trade_test(twime_live_session_reconnect_enabled_test
+    tests/twime_trade/twime_live_session_reconnect_enabled_test.cpp)
 
 add_custom_target(twime_codegen_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/twime_codegen"
@@ -374,13 +387,26 @@ add_test(
 add_test(
     NAME profile_check_twime_tcp_external_local_example
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
-        --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_tcp_external_local.example.yaml")
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_tcp_external_local.example.yaml")
+add_test(
+    NAME profile_check_twime_live_session_template
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_live_session.template.yaml")
+add_test(
+    NAME profile_check_twime_live_session_local_example
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_live_session_local.example.yaml")
 
 add_test(
     NAME profile_check_twime_tcp_external_fixture_real_host_fails
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
         --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/twime_external_nonloopback_fixture.yaml")
 set_tests_properties(profile_check_twime_tcp_external_fixture_real_host_fails PROPERTIES WILL_FAIL TRUE)
+add_test(
+    NAME profile_check_twime_live_session_fixture_real_host_fails
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/twime_live_session_nonloopback_fixture.yaml")
+set_tests_properties(profile_check_twime_live_session_fixture_real_host_fails PROPERTIES WILL_FAIL TRUE)
 
 add_test(
     NAME profile_check_prod_with_arm
@@ -448,6 +474,23 @@ add_test(
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/twime_external_nonloopback_fixture.yaml"
         "${MOEX_TEST_OUTPUT_DIR}/twime-external-runner-redaction"
         "MOEX_TWIME_TEST_CREDENTIALS")
+add_test(
+    NAME twime_cert_runner_requires_test_session_arm_for_external_endpoint
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/twime_live_session_nonloopback_fixture.yaml"
+        --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/live_test_session_establish.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-live-session-runner"
+        --armed-test-network)
+set_tests_properties(twime_cert_runner_requires_test_session_arm_for_external_endpoint PROPERTIES WILL_FAIL TRUE)
+add_test(
+    NAME twime_cert_runner_requires_credentials_for_live_external_endpoint
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/twime_live_session_nonloopback_fixture.yaml"
+        --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/live_test_session_establish.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-live-session-runner"
+        --armed-test-network
+        --armed-test-session)
+set_tests_properties(twime_cert_runner_requires_credentials_for_live_external_endpoint PROPERTIES WILL_FAIL TRUE)
 
 add_test(
     NAME spec_indexer_local_fixture
