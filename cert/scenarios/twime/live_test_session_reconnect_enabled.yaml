@@ -1,0 +1,12 @@
+scenario_id: twime_live_test_session_reconnect_enabled
+title: TWIME live test-session reconnect enabled
+metadata:
+  owner: phase2f
+  mode: live_test_session
+steps:
+  - step_id: establish
+    action: connect and receive EstablishmentAck
+    expected: session enters Active
+  - step_id: drop
+    action: peer closes transport
+    expected: reconnect is scheduled with bounded backoff and attempt count

@@ -23,6 +23,7 @@ struct TwimeTcpBufferPolicy {
 struct TwimeRuntimeArmState {
     bool prod_armed{false};
     bool test_network_armed{false};
+    bool test_session_armed{false};
 };
 
 struct TwimeTestNetworkGateConfig {

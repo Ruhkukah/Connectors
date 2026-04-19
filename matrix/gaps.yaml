@@ -125,3 +125,44 @@ gaps:
       Phase 2E allows external test endpoints only behind explicit runtime
       arming, credential loading, and test-only validation. Production
       endpoint support remains deferred.
+  - gap_id: gap_twime_phase2f_production_connectivity_deferred
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5000_establish
+    coverage_id: coverage_twime_test_session_bringup
+    owner: phase2f_session
+    status: production_connectivity_deferred
+    next_action: >-
+      Keep external session bring-up limited to explicitly armed TEST
+      endpoints until a later phase introduces production endpoint approval,
+      credentials, and operational controls.
+    notes: >-
+      Phase 2F allows real TCP session bring-up only for TEST endpoints and
+      still blocks production connectivity in tracked profiles, runtime
+      defaults, and CI.
+  - gap_id: gap_twime_phase2f_live_order_flow_deferred
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_6000_newordersingle
+    coverage_id: coverage_twime_live_order_flow_deferred
+    owner: phase2f_session
+    status: twime_live_order_flow_deferred
+    next_action: >-
+      Keep live application order flow disabled by default until a later
+      phase adds explicit operator controls, protocol safety checks, and C
+      ABI integration.
+    notes: >-
+      Phase 2F reaches only session-level TEST bring-up with Establish,
+      Ack/Reject, Sequence, Terminate, reconnect, and observability. It does
+      not enable live application order routing.
+  - gap_id: gap_twime_phase2f_test_network_and_session_arm
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5000_establish
+    coverage_id: coverage_twime_test_network_and_session_arm
+    owner: phase2f_session
+    status: twime_test_network_and_session_arming_required
+    next_action: >-
+      Preserve both explicit arm gates for any external TEST session:
+      test-network arming for transport and test-session arming for actual
+      Establish or session bring-up.
+    notes: >-
+      Localhost remains safe by default. External TEST sessions require both
+      runtime arm flags and locally supplied credentials.

@@ -1,0 +1,12 @@
+scenario_id: twime_live_test_session_terminate
+title: TWIME live test-session terminate
+metadata:
+  owner: phase2f
+  mode: live_test_session
+steps:
+  - step_id: establish
+    action: connect and receive EstablishmentAck
+    expected: session enters Active
+  - step_id: terminate
+    action: operator requests stop and receives Terminate(Finished)
+    expected: session terminates cleanly

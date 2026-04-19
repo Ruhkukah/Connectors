@@ -14,15 +14,18 @@ def main() -> int:
     parser.add_argument("--profile")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--armed-test-network", action="store_true")
+    parser.add_argument("--armed-test-session", action="store_true")
     parser.add_argument("--credentials-env")
     parser.add_argument("--credentials-file")
+    parser.add_argument("--connect-timeout-ms", type=int)
+    parser.add_argument("--terminate-timeout-ms", type=int)
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()
 
     output_dir = ensure_dir(Path(args.output_dir).resolve())
 
-    if bool(args.scenario) == bool(args.profile):
-        raise SystemExit("provide exactly one of --scenario or --profile")
+    if not args.scenario and not args.profile:
+        raise SystemExit("provide --scenario and/or --profile")
 
     if args.profile:
         profile_path = Path(args.profile).resolve()
@@ -31,6 +34,7 @@ def main() -> int:
         endpoint = twime_tcp.get("endpoint") or {}
         gate = twime_tcp.get("test_network_gate") or {}
         credentials = twime_tcp.get("credentials") or {}
+        live_session = profile.get("twime_live_session") or {}
 
         candidates = [
             Path.cwd() / "apps" / "moex_twime_cert_runner",
@@ -44,6 +48,10 @@ def main() -> int:
         credentials_source = str(credentials.get("source", "none"))
         env_var = args.credentials_env or str(credentials.get("env_var", ""))
         file_path = args.credentials_file or str(credentials.get("credentials_file", credentials.get("file_path", "")))
+        scenario_id = None
+        if args.scenario:
+            scenario = load_json_yaml(Path(args.scenario).resolve())
+            scenario_id = scenario["scenario_id"]
 
         command = [
             str(runner),
@@ -65,16 +73,32 @@ def main() -> int:
             "1" if bool(gate.get("block_private_nonlocal_networks_by_default", False)) else "0",
             "--credentials-source",
             credentials_source,
+            "--reconnect-enabled",
+            "1" if bool(live_session.get("reconnect_enabled", False)) else "0",
+            "--max-reconnect-attempts",
+            str(live_session.get("max_reconnect_attempts", 3)),
+            "--establish-deadline-ms",
+            str(live_session.get("establish_deadline_ms", 10000)),
+            "--graceful-terminate-timeout-ms",
+            str(live_session.get("graceful_terminate_timeout_ms", 3000)),
         ]
 
+        if scenario_id:
+            command.extend(["--scenario-id", scenario_id])
         if args.armed_test_network:
             command.append("--armed-test-network")
+        if args.armed_test_session:
+            command.append("--armed-test-session")
         if args.validate_only:
             command.append("--validate-only")
         if env_var:
             command.extend(["--credentials-env-var", env_var])
         if file_path:
             command.extend(["--credentials-file", file_path])
+        if args.connect_timeout_ms is not None:
+            command.extend(["--connect-timeout-ms", str(args.connect_timeout_ms)])
+        if args.terminate_timeout_ms is not None:
+            command.extend(["--terminate-timeout-ms", str(args.terminate_timeout_ms)])
 
         subprocess.run(command, check=True)
         return 0
@@ -82,6 +106,9 @@ def main() -> int:
     scenario_path = Path(args.scenario).resolve()
     scenario = load_json_yaml(scenario_path)
     scenario_id = scenario["scenario_id"]
+
+    if scenario_id.startswith("twime_live_test_session_"):
+        raise SystemExit("live TWIME test-session scenarios require --profile")
 
     if scenario_id.startswith("twime_"):
         candidates = [
