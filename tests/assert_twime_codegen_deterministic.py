@@ -7,10 +7,27 @@ from pathlib import Path
 import os
 
 
+def compose_pythonpath(project_root: Path) -> str:
+    parts: list[str] = []
+    existing = os.environ.get("PYTHONPATH", "")
+    if existing:
+        parts.extend([item for item in existing.split(os.pathsep) if item])
+
+    fallback = project_root / "build" / "python-deps"
+    if fallback.exists():
+        fallback_text = str(fallback)
+        if fallback_text not in parts:
+            parts.append(fallback_text)
+
+    return os.pathsep.join(parts)
+
+
 def main() -> int:
     project_root = Path(sys.argv[1]).resolve()
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(project_root / "build" / "python-deps")
+    pythonpath = compose_pythonpath(project_root)
+    if pythonpath:
+        env["PYTHONPATH"] = pythonpath
     subprocess.run(
         [
             sys.executable,
