@@ -81,6 +81,9 @@ scenarios:
   - scenario_id: scenario_twime_tcp_local_loopback
     artifact_id: moex_cert_procedure
     title: Local-only TWIME TCP loopback transport and session integration
+  - scenario_id: scenario_twime_tcp_external_gated
+    artifact_id: moex_cert_procedure
+    title: Gated TWIME external test-endpoint validation and credential handling
   - scenario_id: scenario_fix_public
     artifact_id: moex_cert_procedure
     title: Public FIX certification appendix coverage

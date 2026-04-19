@@ -12,13 +12,19 @@ def _looks_non_loopback(host: str) -> bool:
     return normalized not in {"127.0.0.1", "::1", "localhost"}
 
 
+def _looks_placeholder(host: str) -> bool:
+    return "placeholder" in host.strip().lower()
+
+
 def _looks_banned_host(host: str) -> bool:
     normalized = host.strip().lower()
     return any(token in normalized for token in ("moex", "spectra", "alor", "broker"))
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate Phase 0 profile templates and production arming rules.")
+    parser = argparse.ArgumentParser(
+        description="Validate checked-in profile templates, production arming rules, and Phase 2E TWIME test-endpoint safety."
+    )
     parser.add_argument("--profile", required=True, nargs="+")
     parser.add_argument("--armed", action="store_true")
     args = parser.parse_args()
@@ -41,15 +47,23 @@ def main() -> int:
 
             endpoint = twime_tcp.get("endpoint") or {}
             host = str(endpoint.get("host", "127.0.0.1"))
-            allow_non_loopback = bool(endpoint.get("allow_non_loopback", False))
-            allow_non_localhost_dns = bool(endpoint.get("allow_non_localhost_dns", False))
-
-            if _looks_non_loopback(host) and not allow_non_loopback:
-                raise SystemExit("twime_tcp endpoint host must remain loopback unless allow_non_loopback=true")
-            if _looks_non_loopback(host) and not allow_non_localhost_dns:
-                raise SystemExit("twime_tcp non-loopback host requires allow_non_localhost_dns=true")
             if _looks_banned_host(host):
-                raise SystemExit("twime_tcp endpoint host looks like a live MOEX/broker target and is blocked in Phase 2D")
+                raise SystemExit("twime_tcp endpoint host looks like a live MOEX/broker target and is blocked in Phase 2E")
+
+            test_network_gate = twime_tcp.get("test_network_gate") or {}
+            external_enabled = bool(test_network_gate.get("external_test_endpoint_enabled", False))
+
+            if _looks_non_loopback(host):
+                if _looks_placeholder(host):
+                    if not external_enabled:
+                        raise SystemExit(
+                            "twime_tcp placeholder host requires external_test_endpoint_enabled=true in Phase 2E"
+                        )
+                else:
+                    raise SystemExit(
+                        "tracked twime_tcp profiles must not contain real non-loopback hosts in Phase 2E; "
+                        "use an untracked local override plus --armed-test-network"
+                    )
 
         print(f"profile {profile['profile_id']} validated")
     return 0

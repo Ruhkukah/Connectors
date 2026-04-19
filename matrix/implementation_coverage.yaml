@@ -225,6 +225,36 @@ coverage:
     scenario_id: scenario_twime_tcp_local_loopback
     inventory_id: osengine_moex_fixfasttwime_dir
     status: non_loopback_override_rejected
+  - coverage_id: coverage_twime_test_endpoint_validation
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_tcp_external_gated
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_test_endpoint_validation_tested
+  - coverage_id: coverage_twime_test_network_arm_gate
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_tcp_external_gated
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_test_network_arm_required
+  - coverage_id: coverage_twime_credential_provider
+    protocol_item_id: twime_field_establish_credentials
+    scenario_id: scenario_twime_tcp_external_gated
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_credential_provider_tested
+  - coverage_id: coverage_twime_credential_redaction
+    protocol_item_id: twime_field_establish_credentials
+    scenario_id: scenario_twime_tcp_external_gated
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_credential_redaction_tested
+  - coverage_id: coverage_twime_external_test_endpoint_support
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_tcp_external_gated
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: external_test_endpoint_support_gated
+  - coverage_id: coverage_twime_live_order_routing_default_disabled
+    protocol_item_id: twime_message_6000_newordersingle
+    scenario_id: scenario_twime_tcp_external_gated
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: live_order_routing_still_disabled_by_default
   - coverage_id: coverage_fast_test_variants
     protocol_item_id: fast_test_templates_t0_lock
     scenario_id: scenario_fix_public

@@ -1,5 +1,8 @@
 #include "moex/twime_trade/transport/twime_tcp_transport.hpp"
 
+#include "moex/twime_trade/transport/twime_endpoint_resolver.hpp"
+#include "moex/twime_trade/transport/twime_test_network_gate.hpp"
+
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
@@ -8,9 +11,6 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
 
 namespace moex::twime_trade::transport {
 
@@ -104,7 +104,12 @@ TwimeTransportResult TwimeTcpTransport::open() {
     has_last_open_attempt_ = true;
     last_open_attempt_ = now_value;
 
-    const int family = config_.endpoint.host == "::1" ? AF_INET6 : AF_INET;
+    const auto resolved_endpoint = resolve_twime_endpoint(config_.endpoint);
+    if (!resolved_endpoint.endpoint.has_value()) {
+        return fail_open(resolved_endpoint.error_code, 0);
+    }
+
+    const int family = resolved_endpoint.endpoint->family;
     const int native_handle = ::socket(family, SOCK_STREAM, 0);
     if (native_handle < 0) {
         return fail_open(TwimeTransportErrorCode::SocketCreateFailed, errno);
@@ -126,32 +131,11 @@ TwimeTransportResult TwimeTcpTransport::open() {
     socket_.reset(native_handle);
     state_ = TwimeTransportState::Opening;
 
-    if (family == AF_INET6) {
-        sockaddr_in6 address{};
-        address.sin6_family = AF_INET6;
-        address.sin6_port = htons(config_.endpoint.port);
-        if (::inet_pton(AF_INET6, config_.endpoint.host.c_str(), &address.sin6_addr) != 1) {
-            return fail_open(TwimeTransportErrorCode::InvalidConfiguration, 0);
-        }
-        if (::connect(native_handle, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0) {
-            state_ = TwimeTransportState::Open;
-            ++metrics_.successful_open_events;
-            return {.status = TwimeTransportStatus::Ok, .event = TwimeTransportEvent::OpenSucceeded};
-        }
-    } else {
-        sockaddr_in address{};
-        address.sin_family = AF_INET;
-        address.sin_port = htons(config_.endpoint.port);
-        const std::string connect_host =
-            config_.endpoint.host == "localhost" ? std::string("127.0.0.1") : config_.endpoint.host;
-        if (::inet_pton(AF_INET, connect_host.c_str(), &address.sin_addr) != 1) {
-            return fail_open(TwimeTransportErrorCode::InvalidConfiguration, 0);
-        }
-        if (::connect(native_handle, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0) {
-            state_ = TwimeTransportState::Open;
-            ++metrics_.successful_open_events;
-            return {.status = TwimeTransportStatus::Ok, .event = TwimeTransportEvent::OpenSucceeded};
-        }
+    if (::connect(native_handle, reinterpret_cast<const sockaddr*>(&resolved_endpoint.endpoint->address),
+                  resolved_endpoint.endpoint->address_size) == 0) {
+        state_ = TwimeTransportState::Open;
+        ++metrics_.successful_open_events;
+        return {.status = TwimeTransportStatus::Ok, .event = TwimeTransportEvent::OpenSucceeded};
     }
 
     const int connect_errno = errno;
@@ -474,27 +458,12 @@ TwimeTransportResult TwimeTcpTransport::fail_open(TwimeTransportErrorCode error_
 }
 
 TwimeTransportResult TwimeTcpTransport::validate_open_request() const {
-    if (config_.environment != TwimeTcpEnvironment::Test) {
+    const auto validation = TwimeTestNetworkGate(config_.runtime_arm_state, config_).validate_before_open();
+    if (!validation.allowed) {
         return {
             .status = TwimeTransportStatus::Fault,
-            .event = TwimeTransportEvent::OpenFailed,
-            .error_code = TwimeTransportErrorCode::EnvironmentBlocked,
-        };
-    }
-    if (config_.endpoint.port == 0) {
-        return {
-            .status = TwimeTransportStatus::Fault,
-            .event = TwimeTransportEvent::OpenFailed,
-            .error_code = TwimeTransportErrorCode::InvalidConfiguration,
-        };
-    }
-
-    const bool explicit_loopback = twime_is_explicit_loopback_host(config_.endpoint.host);
-    if (!explicit_loopback) {
-        return {
-            .status = TwimeTransportStatus::Fault,
-            .event = TwimeTransportEvent::OpenFailed,
-            .error_code = TwimeTransportErrorCode::LocalOnlyViolation,
+            .event = validation.event,
+            .error_code = validation.error_code,
         };
     }
 

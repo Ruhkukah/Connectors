@@ -103,4 +103,12 @@ inline moex::twime_trade::transport::TwimeTcpConfig make_local_tcp_config(std::u
     return config;
 }
 
+inline moex::twime_trade::transport::TwimeTcpConfig make_external_test_tcp_config(std::string_view host,
+                                                                                  std::uint16_t port) {
+    auto config = make_local_tcp_config(port);
+    config.endpoint.host = std::string(host);
+    config.test_network_gate.external_test_endpoint_enabled = true;
+    return config;
+}
+
 } // namespace moex::twime_trade::test
