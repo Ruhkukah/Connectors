@@ -21,6 +21,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 USER_AGENT = "MoexConnectorPhase0/0.1"
 SENSITIVE_KEYS = {
+    "credentials",
     "password",
     "refresh_token",
     "session_secret",

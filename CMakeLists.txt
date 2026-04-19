@@ -261,6 +261,18 @@ moex_add_twime_trade_test(twime_tcp_transport_reconnect_policy_test
     tests/twime_trade/transport/twime_tcp_transport_reconnect_policy_test.cpp)
 moex_add_twime_trade_test(twime_tcp_transport_loopback_server_test
     tests/twime_trade/transport/twime_tcp_transport_loopback_server_test.cpp)
+moex_add_twime_trade_test(twime_endpoint_resolver_test
+    tests/twime_trade/transport/twime_endpoint_resolver_test.cpp)
+moex_add_twime_trade_test(twime_test_network_gate_test
+    tests/twime_trade/transport/twime_test_network_gate_test.cpp)
+moex_add_twime_trade_test(twime_credential_provider_test
+    tests/twime_trade/transport/twime_credential_provider_test.cpp)
+moex_add_twime_trade_test(twime_external_profile_validation_test
+    tests/twime_trade/transport/twime_external_profile_validation_test.cpp)
+moex_add_twime_trade_test(twime_external_endpoint_blocking_test
+    tests/twime_trade/transport/twime_external_endpoint_blocking_test.cpp)
+moex_add_twime_trade_test(twime_external_endpoint_allow_test
+    tests/twime_trade/transport/twime_external_endpoint_allow_test.cpp)
 moex_add_twime_trade_test(twime_session_tcp_establish_test
     tests/twime_trade/twime_session_tcp_establish_test.cpp)
 moex_add_twime_trade_test(twime_session_tcp_fragmentation_test
@@ -271,6 +283,8 @@ moex_add_twime_trade_test(twime_session_tcp_remote_close_test
     tests/twime_trade/twime_session_tcp_remote_close_test.cpp)
 moex_add_twime_trade_test(twime_session_tcp_terminate_flow_test
     tests/twime_trade/twime_session_tcp_terminate_flow_test.cpp)
+moex_add_twime_trade_test(twime_session_tcp_external_establish_test
+    tests/twime_trade/twime_session_tcp_external_establish_test.cpp)
 
 add_custom_target(twime_codegen_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/twime_codegen"
@@ -353,6 +367,22 @@ add_test(
         --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_tcp_remote_close.yaml")
 
 add_test(
+    NAME profile_check_twime_tcp_external_template
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_tcp_external.template.yaml")
+
+add_test(
+    NAME profile_check_twime_tcp_external_local_example
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_tcp_external_local.example.yaml")
+
+add_test(
+    NAME profile_check_twime_tcp_external_fixture_real_host_fails
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/twime_external_nonloopback_fixture.yaml")
+set_tests_properties(profile_check_twime_tcp_external_fixture_real_host_fails PROPERTIES WILL_FAIL TRUE)
+
+add_test(
     NAME profile_check_prod_with_arm
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
         --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/prod_fast_twime.template.yaml"
@@ -393,6 +423,31 @@ add_test(
     COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
         --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/message_counter_reset.yaml"
         --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
+
+add_test(
+    NAME twime_cert_runner_requires_test_network_arm_for_external_endpoint
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/twime_external_nonloopback_fixture.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-external-runner"
+        --validate-only)
+set_tests_properties(twime_cert_runner_requires_test_network_arm_for_external_endpoint PROPERTIES WILL_FAIL TRUE)
+
+add_test(
+    NAME twime_cert_runner_requires_credentials_for_external_endpoint
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/twime_external_nonloopback_fixture.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-external-runner"
+        --armed-test-network
+        --validate-only)
+set_tests_properties(twime_cert_runner_requires_credentials_for_external_endpoint PROPERTIES WILL_FAIL TRUE)
+
+add_test(
+    NAME twime_cert_runner_redacts_credentials_in_output
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_twime_cert_runner_redaction.py"
+        "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/twime_external_nonloopback_fixture.yaml"
+        "${MOEX_TEST_OUTPUT_DIR}/twime-external-runner-redaction"
+        "MOEX_TWIME_TEST_CREDENTIALS")
 
 add_test(
     NAME spec_indexer_local_fixture

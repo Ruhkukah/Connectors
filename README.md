@@ -1,6 +1,6 @@
 # MoexConnector
 
-Phase 2D repository for a standalone C++20/Linux-first MOEX connector suite.
+Phase 2E repository for a standalone C++20/Linux-first MOEX connector suite.
 
 License: MIT. See [LICENSE](LICENSE).
 
@@ -15,6 +15,7 @@ This repository still stops before live protocol/session implementation. The cur
 - optional AlorEngine shadow-mode replay harness against the current seam types
 - offline TWIME schema inventory, deterministic metadata generation, binary codec, frame assembler, and cert-log formatter
 - deterministic TWIME fake-transport session FSM with synthetic certification scenarios
+- TWIME test-endpoint gating, local env/file credential loading, and redacted test-runner plumbing
 - profile templates with production arming checks
 - machine-readable matrix files with referential integrity
 - artifact lock tooling for MOEX public specs and local CGate schemes
@@ -47,8 +48,11 @@ This repository still stops before live protocol/session implementation. The cur
   sockets remain deferred.
 - Phase 2D adds a local-only nonblocking TCP transport skeleton for TWIME,
   a loopback test server, reconnect/backoff gating, and TCP-backed session
-  tests. It still blocks non-loopback targets and does not connect to MOEX
-  or any broker.
+  tests.
+- Phase 2E adds test-endpoint gating and local-only credential plumbing for
+  explicitly armed non-loopback **test** endpoints. Localhost remains the
+  default, production connectivity is still blocked, and live order routing
+  remains disabled by default.
 - Real MOEX protocol/network logic is still intentionally absent.
 
 ## Phase 2A / 2B
@@ -70,6 +74,10 @@ This repository still stops before live protocol/session implementation. The cur
   keeps it behind the same session/frame-assembler path. See
   [docs/twime_phase2d_tcp_transport.md](docs/twime_phase2d_tcp_transport.md)
   for the local-only TCP model and its explicit safety restrictions.
+- Phase 2E adds a second gated path for explicitly armed external **test**
+  endpoints, plus local env/file credential loading and redaction. See
+  [docs/twime_phase2e_test_endpoint_gating.md](docs/twime_phase2e_test_endpoint_gating.md)
+  and [docs/secrets_and_redaction.md](docs/secrets_and_redaction.md).
 - Phase 2B.1 corrects client `Sequence` heartbeats to encode
   `NextSeqNo=null`, treats `EstablishmentAck.NextSeqNo` as inbound state,
   requires inbound `Terminate(Finished)` for clean shutdown, validates
@@ -91,6 +99,7 @@ build/apps/moex_cert_runner --scenario cert/stub/phase0_stub.yaml --output-dir b
 build/apps/moex_cert_runner --scenario cert/scenarios/twime/session_establish.yaml --output-dir build/twime-cert-runner
 build/apps/moex_cert_runner --scenario cert/scenarios/twime/client_sequence_heartbeat_null_nextseqno.yaml --output-dir build/twime-cert-runner
 build/apps/moex_cert_runner --scenario cert/scenarios/twime/terminate_requires_inbound_terminate.yaml --output-dir build/twime-cert-runner
+build/apps/moex_cert_runner --profile profiles/test_twime_tcp_external_local.example.yaml --output-dir build/twime-test-gate --validate-only
 build/tools/profile_check --profile profiles/prod_fast_twime.template.yaml
 dotnet run --project tests/dotnet/AbiSmoke/AbiSmoke.csproj --framework net10.0 -- build/lib/libmoex_phase0_abi.dylib tests/fixtures/shadow_replay/synthetic_replay.txt
 dotnet run --project tests/dotnet/AbiPolicy/AbiPolicy.csproj --framework net10.0 -- build/lib/libmoex_phase0_abi.dylib tests/fixtures/shadow_replay/synthetic_replay.txt
@@ -112,6 +121,8 @@ ctest --test-dir build --output-on-failure -R dotnet_shadow_replay
 - Phase 1 / 1.1 changes may harden the native stub, managed adapter, shadow replay, ABI policy, CI, docs, and test scaffolding, but do not add MOEX protocol logic.
 - Phase 2A adds only offline TWIME schema/codec logic.
 - Phase 2B adds only fake-transport TWIME session logic. It does not add real sockets, credentials, or live order routing.
-- Phase 2D adds only local loopback TCP transport. It still does not add
-  MOEX connectivity, broker connectivity, credentials, or live order
-  routing.
+- Phase 2D adds only local loopback TCP transport.
+- Phase 2E adds only gated test-endpoint validation and local credential
+  plumbing. It still does not add production connectivity, broker
+  production connectivity, checked-in credentials, or live order routing by
+  default.

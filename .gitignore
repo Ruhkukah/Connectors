@@ -28,3 +28,6 @@ spec-lock/**/*.pcapng
 spec-lock/**/*.tar
 spec-lock/**/*.tar.gz
 spec-lock/**/*.tgz
+profiles/*.local.yaml
+secrets/
+*.secrets.yaml

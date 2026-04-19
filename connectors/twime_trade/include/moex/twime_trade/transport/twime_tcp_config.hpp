@@ -20,11 +20,25 @@ struct TwimeTcpBufferPolicy {
     std::size_t write_chunk_bytes{64U << 10};
 };
 
+struct TwimeRuntimeArmState {
+    bool prod_armed{false};
+    bool test_network_armed{false};
+};
+
+struct TwimeTestNetworkGateConfig {
+    bool external_test_endpoint_enabled{false};
+    bool require_explicit_runtime_arm{true};
+    bool block_production_like_hostnames{true};
+    bool block_private_nonlocal_networks_by_default{false};
+};
+
 struct TwimeTcpConfig {
     TwimeTcpEnvironment environment{TwimeTcpEnvironment::Test};
     TwimeTcpEndpoint endpoint{};
     TwimeReconnectPolicy reconnect_policy{};
     TwimeTcpBufferPolicy buffer_policy{};
+    TwimeTestNetworkGateConfig test_network_gate{};
+    TwimeRuntimeArmState runtime_arm_state{};
 };
 
 } // namespace moex::twime_trade::transport

@@ -50,19 +50,21 @@ gaps:
     protocol_item_id: twime_message_5000_establish
     coverage_id: coverage_twime_tcp_transport_local
     owner: phase2d_transport
-    status: real_moex_connectivity_deferred
+    status: production_endpoint_support_deferred
     next_action: >-
-      Keep TCP transport limited to local loopback test servers until a
-      later phase explicitly adds exchange-facing connectivity controls.
+      Keep TCP transport limited to loopback by default and gated external
+      test endpoints only until a later phase explicitly adds production
+      endpoint controls.
     notes: >-
-      Phase 2D adds only a nonblocking local-only TCP transport skeleton.
-      There are still no MOEX or broker endpoints in code, profiles, or CI.
+      Phase 2E adds test-only endpoint gating and credential plumbing, but
+      there are still no production endpoints or default non-loopback
+      connectivity in code, profiles, or CI.
   - gap_id: gap_twime_phase2a_no_session_fsm
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5001_establishmentack
     coverage_id: coverage_twime_session_tcp_loopback
     owner: phase2d_network
-    status: real_moex_connectivity_deferred
+    status: production_endpoint_support_deferred
     next_action: >-
       Keep live exchange session mode deferred; Phase 2D only wires the
       existing session FSM to local-only TCP loopback servers through the
@@ -88,19 +90,19 @@ gaps:
   - gap_id: gap_twime_phase2a_no_live_credentials
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5000_establish
-    coverage_id: coverage_twime_tcp_transport_local
+    coverage_id: coverage_twime_credential_provider
     owner: deployment_ops
     status: credentials_deferred
     next_action: >-
-      Keep credentials and endpoint handling out of the public repo and any
-      pre-production transport phases.
+      Keep credentials out of the public repo and continue loading them only
+      from local env or file sources in test-only runs.
     notes: >-
-      Phase 2D still uses only dummy local endpoints and synthetic config
-      values; no live credentials exist anywhere in the repo.
+      Phase 2E adds local env/file credential providers and redaction, but
+      no credentials are checked in anywhere in the repo.
   - gap_id: gap_twime_phase2a_no_order_routing
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_6000_newordersingle
-    coverage_id: coverage_twime_new_order_day_offline
+    coverage_id: coverage_twime_live_order_routing_default_disabled
     owner: phase2d_connector
     status: live_order_routing_deferred
     next_action: >-
@@ -112,14 +114,14 @@ gaps:
   - gap_id: gap_twime_non_loopback_endpoints_blocked
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5000_establish
-    coverage_id: coverage_twime_non_loopback_block
+    coverage_id: coverage_twime_external_test_endpoint_support
     owner: phase2d_transport
     status: real_endpoint_support_deferred_phase2e
     next_action: >-
-      Keep non-loopback endpoints blocked in both transport code and profile
-      validation until Phase 2E introduces guarded test-environment endpoint
-      support.
+      Keep all non-loopback endpoints behind explicit test-network arming
+      until a later phase introduces stricter exchange-facing endpoint
+      approval and production separation.
     notes: >-
-      Phase 2D transport is hard localhost-only. The forward-compatible
-      non-loopback override flags remain in config structs but are rejected
-      in this phase and do not permit real endpoints.
+      Phase 2E allows external test endpoints only behind explicit runtime
+      arming, credential loading, and test-only validation. Production
+      endpoint support remains deferred.

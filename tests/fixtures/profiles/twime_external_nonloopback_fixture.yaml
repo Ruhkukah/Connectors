@@ -1,0 +1,34 @@
+version: 1
+profile_id: test_twime_tcp_external_fixture
+environment: test
+armed: false
+test_network_armed_required: true
+profile_neutral_coverage: true
+broker_topology:
+  mode: unknown
+  order_path: unknown
+  market_data_path: unknown
+  router_location: unknown
+shadow_mode:
+  enabled: false
+  primary_source: native_moex
+  native_connectors_read_only: true
+connectors:
+  market_data: []
+  orders:
+    - twime_trade
+  state: []
+twime_tcp:
+  enabled: true
+  endpoint:
+    host: 198.51.100.10
+    port: 19050
+    allow_non_loopback: false
+    allow_non_localhost_dns: false
+  test_network_gate:
+    external_test_endpoint_enabled: true
+    require_explicit_runtime_arm: true
+    block_production_like_hostnames: true
+  credentials:
+    source: env
+    env_var: MOEX_TWIME_TEST_CREDENTIALS

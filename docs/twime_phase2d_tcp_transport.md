@@ -68,7 +68,9 @@ The exact-host rule is intentionally strict in this phase. For example:
 - `example.com` is blocked
 - `foo.local` is blocked
 
-Real non-loopback endpoint support is deferred to Phase 2E.
+Phase 2E later added a separate gated path for explicitly armed external test
+endpoints. See `docs/twime_phase2e_test_endpoint_gating.md` for that safety
+model. The Phase 2D document still describes the original local-only baseline.
 
 ## Loopback TCP Server Model
 
