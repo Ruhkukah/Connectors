@@ -1,0 +1,15 @@
+scenario_id: twime_message_counter_reset
+title: Synthetic TWIME message counter reset
+metadata:
+  owner: phase2b
+  mode: fake_transport
+steps:
+  - step_id: preload_dirty_snapshot
+    action: preload dirty recovery state with expected inbound seq 21
+    expected: fake session starts from persisted inbound state
+  - step_id: connect
+    action: connect fake transport
+    expected: session emits Establish
+  - step_id: ack_lower_next_seq
+    action: inject EstablishmentAck with NextSeqNo 11
+    expected: message counter reset event emitted and inbound expected seq reset to 11

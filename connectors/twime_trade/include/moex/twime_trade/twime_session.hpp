@@ -51,9 +51,11 @@ enum class TwimeSessionEventType {
     InboundMessage,
     HeartbeatSent,
     HeartbeatReceived,
+    MessageCounterResetDetected,
     SequenceGapDetected,
     RetransmitRequested,
     RetransmissionReceived,
+    RetransmissionProtocolViolation,
     FloodRejectReceived,
     SessionRejectReceived,
     BusinessRejectReceived,
@@ -62,6 +64,7 @@ enum class TwimeSessionEventType {
     KeepaliveIntervalRejected,
     HeartbeatRateViolation,
     RetransmitLimitViolation,
+    ReconnectTooFast,
     PeerClosed,
     PeerClosedCleanAfterTerminateResponse,
     PeerClosedUnexpectedWhileTerminating,
@@ -150,6 +153,13 @@ class TwimeSession {
     [[nodiscard]] bool is_recoverable_message(const moex::twime_sbe::DecodedTwimeMessage& message) const noexcept;
     [[nodiscard]] bool consumes_inbound_sequence(const moex::twime_sbe::DecodedTwimeMessage& message) const noexcept;
     [[nodiscard]] std::uint32_t max_retransmit_request_count() const noexcept;
+    [[nodiscard]] bool is_reconnect_too_fast() const noexcept;
+    void mark_connect_attempt() noexcept;
+    void start_pending_retransmission(std::uint64_t from_seq_no, std::uint32_t count);
+    void clear_pending_retransmission() noexcept;
+    [[nodiscard]] bool validate_retransmission_window(std::uint64_t next_seq_no, std::uint32_t count,
+                                                      const moex::twime_sbe::DecodedTwimeMessage& message,
+                                                      const TwimeFakeTransportFrame& frame);
 
     void transition_to(TwimeSessionState new_state, std::string summary);
     void append_event(TwimeSessionEvent event);
@@ -172,11 +182,24 @@ class TwimeSession {
     TwimeInboundJournal inbound_journal_;
     TwimeRateLimitModel rate_limit_model_;
     TwimeSessionState state_{TwimeSessionState::Created};
+
+    struct TwimePendingRetransmissionWindow {
+        bool active{false};
+        bool metadata_received{false};
+        std::uint64_t requested_from_seq{0};
+        std::uint32_t requested_count{0};
+        std::uint32_t received_retransmit_count{0};
+        std::uint64_t expected_next_seq{0};
+        std::uint64_t expected_final_next_seq{0};
+    };
+
     std::uint32_t active_keepalive_interval_ms_{1000};
     std::uint64_t heartbeat_due_ms_{0};
+    std::uint64_t last_connect_attempt_ms_{0};
     bool recovering_from_dirty_snapshot_{false};
     bool terminate_response_received_{false};
     std::optional<std::int64_t> last_reject_code_;
+    TwimePendingRetransmissionWindow pending_retransmission_{};
     std::vector<TwimeSessionEvent> pending_events_;
     std::vector<std::string> cert_log_lines_;
 };

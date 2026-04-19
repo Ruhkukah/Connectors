@@ -2,6 +2,8 @@
 
 #include "moex/twime_sbe/twime_schema.hpp"
 
+#include <limits>
+
 namespace moex::twime_trade {
 
 namespace {
@@ -78,6 +80,14 @@ TwimeEncodeRequest build_request(std::string_view message_name, std::uint16_t te
     request.template_id = template_id;
     request.fields.assign(fields.begin(), fields.end());
     return request;
+}
+
+bool try_add_u64(std::uint64_t left, std::uint64_t right, std::uint64_t& out) {
+    if (left > std::numeric_limits<std::uint64_t>::max() - right) {
+        return false;
+    }
+    out = left + right;
+    return true;
 }
 
 } // namespace
@@ -167,10 +177,22 @@ std::vector<TwimeSessionEvent> TwimeSession::drain_events() {
 }
 
 void TwimeSession::connect_fake() {
+    if (is_reconnect_too_fast()) {
+        append_event(TwimeSessionEvent{
+            .type = TwimeSessionEventType::ReconnectTooFast,
+            .state = state_,
+            .summary = "ConnectFake attempted less than 1000ms after previous Establish attempt",
+        });
+        return;
+    }
+
     if (state_ != TwimeSessionState::Created && state_ != TwimeSessionState::Terminated &&
         state_ != TwimeSessionState::Rejected) {
         return;
     }
+
+    mark_connect_attempt();
+    clear_pending_retransmission();
 
     if (const auto snapshot = recovery_store_.load(config_.session_id)) {
         recovery_state_ = *snapshot;
@@ -241,25 +263,40 @@ void TwimeSession::send_retransmit_request(std::uint64_t from_seq_no, std::uint3
     if (count == 0) {
         return;
     }
+
+    std::uint64_t gap_to = 0;
+    if (!try_add_u64(from_seq_no, static_cast<std::uint64_t>(count - 1), gap_to)) {
+        append_event(TwimeSessionEvent{
+            .type = TwimeSessionEventType::RetransmitLimitViolation,
+            .state = state_,
+            .gap_from = from_seq_no,
+            .summary = "RetransmitRequest range overflows uint64",
+        });
+        transition_to(TwimeSessionState::Faulted, "RetransmitRequest range overflows uint64");
+        return;
+    }
+
     if (count > max_retransmit_request_count()) {
         append_event(TwimeSessionEvent{
             .type = TwimeSessionEventType::RetransmitLimitViolation,
             .state = state_,
             .gap_from = from_seq_no,
-            .gap_to = from_seq_no + count - 1,
+            .gap_to = gap_to,
             .summary = "RetransmitRequest exceeds fake-mode limit",
         });
         transition_to(TwimeSessionState::Faulted, "RetransmitRequest exceeds fake-mode limit");
         return;
     }
 
-    send_message(build_request("RetransmitRequest", kTemplateRetransmitRequest,
-                               {
-                                   {"Timestamp", TwimeFieldValue::timestamp(clock_.now_ns())},
-                                   {"FromSeqNo", TwimeFieldValue::unsigned_integer(from_seq_no)},
-                                   {"Count", TwimeFieldValue::unsigned_integer(count)},
-                               }),
-                 TwimeSessionEventType::RetransmitRequested, "RetransmitRequest sent");
+    if (send_message(build_request("RetransmitRequest", kTemplateRetransmitRequest,
+                                   {
+                                       {"Timestamp", TwimeFieldValue::timestamp(clock_.now_ns())},
+                                       {"FromSeqNo", TwimeFieldValue::unsigned_integer(from_seq_no)},
+                                       {"Count", TwimeFieldValue::unsigned_integer(count)},
+                                   }),
+                     TwimeSessionEventType::RetransmitRequested, "RetransmitRequest sent")) {
+        start_pending_retransmission(from_seq_no, count);
+    }
 }
 
 void TwimeSession::process_transport_event(const TwimeFakeTransportEvent& event) {
@@ -316,6 +353,7 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
     }
 
     const bool inbound_consumes_sequence = consumes_inbound_sequence(decoded);
+    const auto expected_inbound_before = sequence_state_.next_expected_inbound_seq();
     if (inbound_consumes_sequence && frame.sequence_number == 0) {
         transition_to(TwimeSessionState::Faulted, "fake application message missing sequence number");
         append_event(TwimeSessionEvent{
@@ -348,6 +386,45 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
             if (config_.auto_request_retransmit_on_gap) {
                 request_missing_messages(observation.gap->from_seq_no, observation.gap->to_seq_no,
                                          "inbound sequence gap detected");
+            }
+        }
+
+        if (pending_retransmission_.active && observation.accepted) {
+            if (!pending_retransmission_.metadata_received) {
+                append_event(TwimeSessionEvent{
+                    .type = TwimeSessionEventType::RetransmissionProtocolViolation,
+                    .state = state_,
+                    .template_id = decoded.header.template_id,
+                    .sequence_number = frame.sequence_number,
+                    .message_name = std::string(decoded.metadata->name),
+                    .summary = "retransmitted application message arrived before Retransmission metadata",
+                });
+                transition_to(TwimeSessionState::Faulted,
+                              "retransmitted application message arrived before Retransmission metadata");
+                return;
+            } else if (expected_inbound_before != pending_retransmission_.expected_next_seq) {
+                append_event(TwimeSessionEvent{
+                    .type = TwimeSessionEventType::RetransmissionProtocolViolation,
+                    .state = state_,
+                    .template_id = decoded.header.template_id,
+                    .sequence_number = frame.sequence_number,
+                    .message_name = std::string(decoded.metadata->name),
+                    .summary = "retransmitted application message sequence does not match pending window",
+                });
+                transition_to(TwimeSessionState::Faulted,
+                              "retransmitted application message sequence does not match pending window");
+                return;
+            } else {
+                ++pending_retransmission_.received_retransmit_count;
+                ++pending_retransmission_.expected_next_seq;
+                if (pending_retransmission_.metadata_received &&
+                    pending_retransmission_.received_retransmit_count == pending_retransmission_.requested_count) {
+                    clear_pending_retransmission();
+                    if (state_ == TwimeSessionState::Recovering) {
+                        transition_to(TwimeSessionState::Active,
+                                      "expected retransmitted application messages processed");
+                    }
+                }
             }
         }
     }
@@ -402,26 +479,35 @@ void TwimeSession::process_inbound_message(const DecodedTwimeMessage& message, c
         const auto ack_next_seq = field_unsigned(message, "NextSeqNo").value_or(expected_before);
         bool waiting_for_retransmission = false;
 
-        if (recovering_from_dirty_snapshot_) {
-            if (ack_next_seq > expected_before) {
-                transition_to(TwimeSessionState::Recovering, "EstablishmentAck indicates missing inbound messages");
-                append_event(TwimeSessionEvent{
-                    .type = TwimeSessionEventType::SequenceGapDetected,
-                    .state = state_,
-                    .template_id = message.header.template_id,
-                    .gap_from = expected_before,
-                    .gap_to = ack_next_seq - 1,
-                    .message_name = std::string(message.metadata->name),
-                    .summary = "EstablishmentAck NextSeqNo indicates missing inbound messages",
-                    .cert_log_line = formatter_.format(message),
-                });
-                waiting_for_retransmission =
-                    request_missing_messages(expected_before, ack_next_seq - 1, "EstablishmentAck gap reconciliation");
-            } else {
-                sequence_state_.restore_expected_inbound_next(expected_before);
-                recovery_state_.next_expected_inbound_seq = sequence_state_.next_expected_inbound_seq();
-                persist_recovery_state();
-            }
+        if (ack_next_seq < expected_before) {
+            sequence_state_.restore_expected_inbound_next(ack_next_seq);
+            recovery_state_.next_expected_inbound_seq = ack_next_seq;
+            persist_recovery_state();
+            append_event(TwimeSessionEvent{
+                .type = TwimeSessionEventType::MessageCounterResetDetected,
+                .state = state_,
+                .template_id = message.header.template_id,
+                .sequence_number = frame.sequence_number,
+                .gap_from = expected_before,
+                .gap_to = ack_next_seq,
+                .message_name = std::string(message.metadata->name),
+                .summary = "EstablishmentAck NextSeqNo indicates message counter reset",
+                .cert_log_line = formatter_.format(message),
+            });
+        } else if (recovering_from_dirty_snapshot_ && ack_next_seq > expected_before) {
+            transition_to(TwimeSessionState::Recovering, "EstablishmentAck indicates missing inbound messages");
+            append_event(TwimeSessionEvent{
+                .type = TwimeSessionEventType::SequenceGapDetected,
+                .state = state_,
+                .template_id = message.header.template_id,
+                .gap_from = expected_before,
+                .gap_to = ack_next_seq - 1,
+                .message_name = std::string(message.metadata->name),
+                .summary = "EstablishmentAck NextSeqNo indicates missing inbound messages",
+                .cert_log_line = formatter_.format(message),
+            });
+            waiting_for_retransmission =
+                request_missing_messages(expected_before, ack_next_seq - 1, "EstablishmentAck gap reconciliation");
         } else {
             sequence_state_.restore_expected_inbound_next(ack_next_seq);
             recovery_state_.next_expected_inbound_seq = sequence_state_.next_expected_inbound_seq();
@@ -512,14 +598,14 @@ void TwimeSession::process_inbound_message(const DecodedTwimeMessage& message, c
             .summary = "Retransmission metadata received",
             .cert_log_line = formatter_.format(message),
         });
-        if (const auto next_seq = field_unsigned(message, "NextSeqNo")) {
-            sequence_state_.restore_expected_inbound_next(*next_seq);
-            recovery_state_.next_expected_inbound_seq = *next_seq;
-            persist_recovery_state();
+        const auto next_seq = field_unsigned(message, "NextSeqNo");
+        const auto count = field_unsigned(message, "Count");
+        if (!next_seq.has_value() || !count.has_value() ||
+            *count > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) ||
+            !validate_retransmission_window(*next_seq, static_cast<std::uint32_t>(*count), message, frame)) {
+            return;
         }
-        if (state_ == TwimeSessionState::Recovering) {
-            transition_to(TwimeSessionState::Active, "Retransmission received");
-        }
+        pending_retransmission_.metadata_received = true;
         break;
     }
     case kTemplateFloodReject: {
@@ -570,9 +656,32 @@ void TwimeSession::process_inbound_message(const DecodedTwimeMessage& message, c
 bool TwimeSession::request_missing_messages(std::uint64_t from_seq_no, std::uint64_t to_seq_no,
                                             std::string /*summary*/) {
     if (to_seq_no < from_seq_no) {
+        append_event(TwimeSessionEvent{
+            .type = TwimeSessionEventType::RetransmitLimitViolation,
+            .state = state_,
+            .gap_from = from_seq_no,
+            .gap_to = to_seq_no,
+            .summary = "invalid retransmission range",
+        });
+        transition_to(TwimeSessionState::Faulted, "invalid retransmission range");
         return false;
     }
-    send_retransmit_request(from_seq_no, static_cast<std::uint32_t>(to_seq_no - from_seq_no + 1));
+
+    const auto count64 = (to_seq_no - from_seq_no) + 1ULL;
+    if (count64 > static_cast<std::uint64_t>(max_retransmit_request_count()) ||
+        count64 > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        append_event(TwimeSessionEvent{
+            .type = TwimeSessionEventType::RetransmitLimitViolation,
+            .state = state_,
+            .gap_from = from_seq_no,
+            .gap_to = to_seq_no,
+            .summary = "retransmission range exceeds supported fake-session limits",
+        });
+        transition_to(TwimeSessionState::Faulted, "retransmission range exceeds supported fake-session limits");
+        return false;
+    }
+
+    send_retransmit_request(from_seq_no, static_cast<std::uint32_t>(count64));
     return state_ != TwimeSessionState::Faulted;
 }
 
@@ -598,6 +707,79 @@ std::uint32_t TwimeSession::max_retransmit_request_count() const noexcept {
         return 1000;
     }
     return 10;
+}
+
+bool TwimeSession::is_reconnect_too_fast() const noexcept {
+    return last_connect_attempt_ms_ != 0 && clock_.now_ms() < last_connect_attempt_ms_ + 1000;
+}
+
+void TwimeSession::mark_connect_attempt() noexcept {
+    last_connect_attempt_ms_ = clock_.now_ms();
+}
+
+void TwimeSession::start_pending_retransmission(std::uint64_t from_seq_no, std::uint32_t count) {
+    std::uint64_t expected_final_next_seq = 0;
+    if (!try_add_u64(from_seq_no, static_cast<std::uint64_t>(count), expected_final_next_seq)) {
+        append_event(TwimeSessionEvent{
+            .type = TwimeSessionEventType::RetransmitLimitViolation,
+            .state = state_,
+            .gap_from = from_seq_no,
+            .summary = "pending retransmission window overflowed uint64",
+        });
+        transition_to(TwimeSessionState::Faulted, "pending retransmission window overflowed uint64");
+        return;
+    }
+
+    pending_retransmission_ = TwimePendingRetransmissionWindow{
+        .active = true,
+        .metadata_received = false,
+        .requested_from_seq = from_seq_no,
+        .requested_count = count,
+        .received_retransmit_count = 0,
+        .expected_next_seq = from_seq_no,
+        .expected_final_next_seq = expected_final_next_seq,
+    };
+}
+
+void TwimeSession::clear_pending_retransmission() noexcept {
+    pending_retransmission_ = TwimePendingRetransmissionWindow{};
+}
+
+bool TwimeSession::validate_retransmission_window(std::uint64_t next_seq_no, std::uint32_t count,
+                                                  const DecodedTwimeMessage& message,
+                                                  const TwimeFakeTransportFrame& frame) {
+    if (!pending_retransmission_.active) {
+        append_event(TwimeSessionEvent{
+            .type = TwimeSessionEventType::RetransmissionProtocolViolation,
+            .state = state_,
+            .template_id = message.header.template_id,
+            .sequence_number = frame.sequence_number,
+            .message_name = std::string(message.metadata->name),
+            .summary = "Retransmission metadata received without a pending request",
+            .cert_log_line = formatter_.format(message),
+        });
+        transition_to(TwimeSessionState::Faulted, "Retransmission metadata received without a pending request");
+        return false;
+    }
+
+    if (count != pending_retransmission_.requested_count ||
+        next_seq_no != pending_retransmission_.expected_final_next_seq) {
+        append_event(TwimeSessionEvent{
+            .type = TwimeSessionEventType::RetransmissionProtocolViolation,
+            .state = state_,
+            .template_id = message.header.template_id,
+            .sequence_number = frame.sequence_number,
+            .gap_from = pending_retransmission_.requested_from_seq,
+            .gap_to = pending_retransmission_.expected_final_next_seq,
+            .message_name = std::string(message.metadata->name),
+            .summary = "Retransmission metadata does not match pending request",
+            .cert_log_line = formatter_.format(message),
+        });
+        transition_to(TwimeSessionState::Faulted, "Retransmission metadata does not match pending request");
+        return false;
+    }
+
+    return true;
 }
 
 void TwimeSession::transition_to(TwimeSessionState new_state, std::string summary) {

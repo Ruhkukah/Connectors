@@ -15,6 +15,11 @@ int main() {
 
         session.apply_command({moex::twime_trade::TwimeSessionCommandType::ConnectFake});
         auto ack = moex::twime_trade::test::make_request("EstablishmentAck");
+        for (auto& field : ack.fields) {
+            if (field.name == "NextSeqNo") {
+                field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(11);
+            }
+        }
         moex::twime_trade::test::script_message(transport, ack);
         session.poll_transport();
         static_cast<void>(session.drain_events());
@@ -33,8 +38,21 @@ int main() {
             events, moex::twime_trade::TwimeSessionEventType::BusinessRejectReceived);
         moex::twime_sbe::test::require(event != nullptr, "BusinessMessageReject event missing");
         moex::twime_sbe::test::require(event->reason_code == -12, "BusinessMessageReject reason code mismatch");
-        moex::twime_sbe::test::require(!session.inbound_journal().last_n(1).front().recoverable,
+        const auto inbound_entry = session.inbound_journal().last_n(1).front();
+        moex::twime_sbe::test::require(inbound_entry.message_name == "BusinessMessageReject",
+                                       "BusinessMessageReject journal entry missing");
+        const auto decoded = moex::twime_trade::test::decode_bytes(inbound_entry.bytes);
+        const auto* ord_rej_reason = moex::twime_trade::test::find_field(decoded, "OrdRejReason");
+        moex::twime_sbe::test::require(ord_rej_reason != nullptr,
+                                       "OrdRejReason field missing from active schema decode");
+        moex::twime_sbe::test::require(ord_rej_reason->value.signed_value == -12,
+                                       "OrdRejReason value mismatch in active schema decode");
+        moex::twime_sbe::test::require(inbound_entry.sequence_number == 0,
+                                       "BusinessMessageReject must not consume inbound application sequence");
+        moex::twime_sbe::test::require(!inbound_entry.recoverable,
                                        "BusinessMessageReject must not be marked recoverable");
+        moex::twime_sbe::test::require(session.sequence_state().next_expected_inbound_seq() == 11,
+                                       "BusinessMessageReject must not advance expected inbound sequence");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

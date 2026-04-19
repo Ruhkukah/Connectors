@@ -2,7 +2,7 @@
 
 ## Scope
 
-Phase 2B adds a deterministic TWIME session/state-machine layer on top of the Phase 2A offline codec. Phase 2B.1 is the correctness hardening pass over that fake-session layer. It is still synthetic-only.
+Phase 2B adds a deterministic TWIME session/state-machine layer on top of the Phase 2A offline codec. Phase 2B.1 and 2B.2 are correctness hardening passes over that fake-session layer. It is still synthetic-only.
 
 Implemented in Phase 2B:
 
@@ -27,6 +27,7 @@ Implemented in Phase 2B:
 - deterministic certification-style decoded logs for all inbound/outbound session traffic
 - synthetic TWIME certification scenarios runnable through `apps/moex_cert_runner`
 - fake-session correctness rules for keepalive range, heartbeat frequency, retransmit count, clean terminate flow, and recoverability metadata
+- fake-session correctness rules for message-counter reset detection, overflow-safe retransmit arithmetic, pending retransmission windows, and reconnect backoff modeling
 
 Explicit non-goals remain:
 
@@ -70,6 +71,7 @@ Modeled behavior:
 - outbound client `Sequence` heartbeats encode `NextSeqNo=null`
 - inbound server `Sequence` may carry `NextSeqNo` and can trigger synthetic gap detection
 - `EstablishmentAck.NextSeqNo` initializes or reconciles the next expected inbound application message number
+- `EstablishmentAck.NextSeqNo` lower than persisted inbound state is modeled as a message-counter reset and resets the expected inbound counter to the acknowledged value
 - `EstablishmentAck` does not overwrite outbound client sequence state
 - acknowledged `KeepaliveInterval` must be in the `1000..60000 ms` range and becomes the active heartbeat interval
 - `EstablishmentReject` transitions the session to `Rejected` and records the reject code
@@ -82,9 +84,12 @@ Modeled behavior:
 - `RetransmitRequest` can be generated from explicit commands or scripted gaps
 - normal fake session recovery limits `RetransmitRequest.Count` to `10`
 - fake full-recovery mode limits `RetransmitRequest.Count` to `1000`
-- `Retransmission` metadata can be accepted from fake transport and logged
+- retransmit gap arithmetic is checked before narrowing to `uint32_t`, so huge gaps and overflowed ranges fault instead of wrapping
+- `Retransmission` metadata opens or validates a pending retransmission window, but metadata alone does not return the session to `Active`
+- fake recovery returns to `Active` only after the expected retransmitted application messages have been processed
 - `FloodReject`, `SessionReject`, and `BusinessMessageReject` are surfaced as deterministic session/application events
 - `BusinessMessageReject` is surfaced but marked non-recoverable in journal metadata
+- repeated `ConnectFake` attempts are rejected for `1000 ms` after the previous establish attempt in the fake clock model
 
 ## Fake Clock and Timers
 
@@ -120,6 +125,7 @@ Current scenario coverage:
 
 - `session_establish.yaml`
 - `session_establish_ack_sets_inbound_counter.yaml`
+- `message_counter_reset.yaml`
 - `session_reject.yaml`
 - `heartbeat_sequence.yaml`
 - `client_sequence_heartbeat_null_nextseqno.yaml`
@@ -161,6 +167,7 @@ Phase 2B adds:
 - `twime_keepalive_ack_test`
 - `twime_heartbeat_fake_clock_test`
 - `twime_heartbeat_rate_limit_test`
+- `twime_reconnect_timing_test`
 - `twime_terminate_test`
 - `twime_sequence_gap_test`
 - `twime_message_layer_rules_test`

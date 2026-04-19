@@ -35,6 +35,7 @@ struct TwimeCertScenario {
     std::string scenario_id;
     std::string title;
     TwimeSessionConfig config{};
+    std::optional<TwimeRecoveryState> initial_recovery_state;
     std::vector<TwimeCertScenarioAction> actions;
     std::optional<TwimeSessionState> expected_final_state;
 };

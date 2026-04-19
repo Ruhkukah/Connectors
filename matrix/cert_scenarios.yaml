@@ -42,6 +42,9 @@ scenarios:
   - scenario_id: scenario_twime_fake_ack_sets_inbound_counter
     artifact_id: moex_cert_procedure
     title: Synthetic TWIME fake-transport EstablishmentAck inbound-counter reconciliation
+  - scenario_id: scenario_twime_fake_message_counter_reset
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport message-counter reset detection
   - scenario_id: scenario_twime_fake_client_sequence_null_nextseqno
     artifact_id: moex_cert_procedure
     title: Synthetic TWIME fake-transport client Sequence heartbeat uses null NextSeqNo

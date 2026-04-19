@@ -55,7 +55,7 @@ gaps:
     owner: phase2b_recovery
     status: network_deferred_phase2c
     next_action: Replace the in-memory bounded journals with durable recovery/cache plumbing in a later transport phase.
-    notes: Phase 2B.1 persists only in-memory fake recovery state and bounded journals for deterministic tests.
+    notes: Phase 2B.2 now models pending retransmission windows and completion rules, but persists only in-memory fake recovery state and bounded journals for deterministic tests.
   - gap_id: gap_twime_phase2a_no_live_credentials
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5000_establish
@@ -63,7 +63,7 @@ gaps:
     owner: deployment_ops
     status: live_credentials_deferred
     next_action: Keep credentials and endpoint handling out of the public repo and Phase 2C merge scope.
-    notes: Phase 2B.1 still uses only synthetic config values and fake transport; no live credentials exist anywhere in the repo.
+    notes: Phase 2B.2 still uses only synthetic config values and fake transport; no live credentials exist anywhere in the repo.
   - gap_id: gap_twime_phase2a_no_order_routing
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_6000_newordersingle
@@ -71,4 +71,4 @@ gaps:
     owner: phase2c_connector
     status: order_routing_deferred
     next_action: Delay C ABI order-routing integration until a later connector phase after transport and session behavior exist.
-    notes: Phase 2B.1 still does not route live or fake TWIME orders through the public C ABI or AlorEngine runtime path.
+    notes: Phase 2B.2 still does not route live or fake TWIME orders through the public C ABI or AlorEngine runtime path.

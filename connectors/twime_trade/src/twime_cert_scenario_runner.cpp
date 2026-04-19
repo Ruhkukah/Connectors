@@ -1,12 +1,18 @@
 #include "moex/twime_trade/twime_cert_scenario_runner.hpp"
 
+#include "moex/twime_sbe/twime_schema.hpp"
+
 namespace moex::twime_trade {
 
 namespace {
 
 using moex::twime_sbe::TwimeEncodeRequest;
 using moex::twime_sbe::TwimeFieldInput;
+using moex::twime_sbe::TwimeFieldKind;
+using moex::twime_sbe::TwimeFieldMetadata;
 using moex::twime_sbe::TwimeFieldValue;
+using moex::twime_sbe::TwimePrimitiveType;
+using moex::twime_sbe::TwimeSchemaView;
 
 TwimeEncodeRequest request(std::string_view name, std::uint16_t template_id,
                            std::initializer_list<TwimeFieldInput> fields = {}) {
@@ -14,6 +20,129 @@ TwimeEncodeRequest request(std::string_view name, std::uint16_t template_id,
     out.message_name = std::string(name);
     out.template_id = template_id;
     out.fields.assign(fields.begin(), fields.end());
+    return out;
+}
+
+TwimeFieldValue sample_value_for_field(const TwimeFieldMetadata& field) {
+    if (field.name == "ClOrdID") {
+        return TwimeFieldValue::unsigned_integer(102);
+    }
+    if (field.name == "ExpireDate") {
+        return TwimeFieldValue::timestamp(moex::twime_sbe::kTwimeTimestampNull);
+    }
+    if (field.name == "Timestamp" || field.name == "RequestTimestamp") {
+        return TwimeFieldValue::timestamp(1'715'000'000'000'000'000ULL);
+    }
+    if (field.name == "KeepaliveInterval") {
+        return TwimeFieldValue::delta_millisecs(1000);
+    }
+    if (field.name == "Credentials") {
+        return TwimeFieldValue::string("LOGIN");
+    }
+    if (field.name == "Price" || field.name == "LastPx" || field.name == "LegPrice") {
+        return TwimeFieldValue::decimal(100000);
+    }
+    if (field.name == "SecurityID") {
+        return TwimeFieldValue::signed_integer(347990);
+    }
+    if (field.name == "ClOrdLinkID") {
+        return TwimeFieldValue::signed_integer(7895424);
+    }
+    if (field.name == "OrderQty") {
+        return TwimeFieldValue::unsigned_integer(5);
+    }
+    if (field.name == "ComplianceID") {
+        return TwimeFieldValue::enum_name("Algorithm");
+    }
+    if (field.name == "TimeInForce") {
+        return TwimeFieldValue::enum_name("Day");
+    }
+    if (field.name == "Side") {
+        return TwimeFieldValue::enum_name("Buy");
+    }
+    if (field.name == "ClientFlags" || field.name == "Flags" || field.name == "Flags2") {
+        return TwimeFieldValue::unsigned_integer(0);
+    }
+    if (field.name == "Account") {
+        return TwimeFieldValue::string("AAAA");
+    }
+    if (field.name == "OrderID") {
+        return TwimeFieldValue::signed_integer(9001001);
+    }
+    if (field.name == "TradingSessionID") {
+        return TwimeFieldValue::signed_integer(1200);
+    }
+    if (field.name == "FromSeqNo") {
+        return TwimeFieldValue::unsigned_integer(21);
+    }
+    if (field.name == "NextSeqNo") {
+        return TwimeFieldValue::unsigned_integer(26);
+    }
+    if (field.name == "Count") {
+        return TwimeFieldValue::unsigned_integer(5);
+    }
+    if (field.name == "TerminationCode") {
+        return TwimeFieldValue::enum_name("Finished");
+    }
+    if (field.name == "EstablishmentRejectCode") {
+        return TwimeFieldValue::enum_name("Credentials");
+    }
+    if (field.name == "QueueSize") {
+        return TwimeFieldValue::unsigned_integer(2);
+    }
+    if (field.name == "PenaltyRemain") {
+        return TwimeFieldValue::unsigned_integer(1000);
+    }
+    if (field.name == "SessionRejectReason") {
+        return TwimeFieldValue::enum_name("Other");
+    }
+    if (field.name == "OrdRejReason") {
+        return TwimeFieldValue::signed_integer(-12);
+    }
+
+    const auto& type = *field.type;
+    switch (type.kind) {
+    case TwimeFieldKind::Primitive:
+        if (type.primitive_type == TwimePrimitiveType::Int8 || type.primitive_type == TwimePrimitiveType::Int16 ||
+            type.primitive_type == TwimePrimitiveType::Int32 || type.primitive_type == TwimePrimitiveType::Int64) {
+            return TwimeFieldValue::signed_integer(1);
+        }
+        return TwimeFieldValue::unsigned_integer(1);
+    case TwimeFieldKind::String:
+        return TwimeFieldValue::string("X");
+    case TwimeFieldKind::TimeStamp:
+        return TwimeFieldValue::timestamp(1'715'000'000'000'000'000ULL);
+    case TwimeFieldKind::DeltaMillisecs:
+        return TwimeFieldValue::delta_millisecs(1000);
+    case TwimeFieldKind::Decimal5:
+        return TwimeFieldValue::decimal(100000);
+    case TwimeFieldKind::Enum:
+        return TwimeFieldValue::enum_name(type.enum_metadata->values[0].name);
+    case TwimeFieldKind::Set:
+        return TwimeFieldValue::set_name(type.set_metadata->choices[0].name);
+    case TwimeFieldKind::Composite:
+    default:
+        return TwimeFieldValue::unsigned_integer(0);
+    }
+}
+
+TwimeEncodeRequest request_with_defaults(std::string_view name, std::uint16_t template_id) {
+    const auto* metadata = TwimeSchemaView::find_message_by_name(name);
+    if (metadata == nullptr) {
+        return request(name, template_id);
+    }
+
+    std::vector<TwimeFieldInput> fields;
+    fields.reserve(metadata->field_count);
+    for (std::size_t index = 0; index < metadata->field_count; ++index) {
+        const auto& field = metadata->fields[index];
+        fields.push_back({std::string(field.name), sample_value_for_field(field)});
+    }
+
+    TwimeEncodeRequest out;
+    out.message_name = std::string(name);
+    out.template_id = template_id;
+    out.fields = std::move(fields);
     return out;
 }
 
@@ -181,6 +310,55 @@ TwimeCertScenario retransmit_last5() {
                                     {"Count", TwimeFieldValue::unsigned_integer(5)},
                                 }),
                 },
+                {
+                    .kind = TwimeCertScenarioActionKind::InjectInboundMessage,
+                    .message = request_with_defaults("NewOrderSingleResponse", 7015),
+                    .sequence_number = 11,
+                },
+                {
+                    .kind = TwimeCertScenarioActionKind::InjectInboundMessage,
+                    .message = request_with_defaults("NewOrderSingleResponse", 7015),
+                    .sequence_number = 12,
+                },
+                {
+                    .kind = TwimeCertScenarioActionKind::InjectInboundMessage,
+                    .message = request_with_defaults("NewOrderSingleResponse", 7015),
+                    .sequence_number = 13,
+                },
+                {
+                    .kind = TwimeCertScenarioActionKind::InjectInboundMessage,
+                    .message = request_with_defaults("NewOrderSingleResponse", 7015),
+                    .sequence_number = 14,
+                },
+                {
+                    .kind = TwimeCertScenarioActionKind::InjectInboundMessage,
+                    .message = request_with_defaults("NewOrderSingleResponse", 7015),
+                    .sequence_number = 15,
+                },
+            },
+        .expected_final_state = TwimeSessionState::Active,
+    };
+}
+
+TwimeCertScenario message_counter_reset() {
+    auto config = default_config();
+    config.session_id = "twime_phase2b_message_counter_reset";
+    return {
+        .scenario_id = "twime_message_counter_reset",
+        .title = "Synthetic TWIME message counter reset",
+        .config = config,
+        .initial_recovery_state =
+            TwimeRecoveryState{
+                .next_outbound_seq = 12,
+                .next_expected_inbound_seq = 21,
+                .last_establishment_id = 1'715'000'000'000'000'003ULL,
+                .recovery_epoch = 5,
+                .last_clean_shutdown = false,
+            },
+        .actions =
+            {
+                {.kind = TwimeCertScenarioActionKind::Connect},
+                establish_ack_action(11, 1000),
             },
         .expected_final_state = TwimeSessionState::Active,
     };
@@ -317,6 +495,9 @@ TwimeCertScenarioResult TwimeCertScenarioRunner::run(const TwimeCertScenario& sc
     TwimeFakeClock clock(1'715'000'000);
     TwimeFakeTransport transport;
     TwimeInMemoryRecoveryStateStore recovery_store;
+    if (scenario.initial_recovery_state.has_value()) {
+        recovery_store.save(scenario.config.session_id, *scenario.initial_recovery_state);
+    }
     TwimeSession session(scenario.config, transport, recovery_store, clock);
     moex::twime_sbe::TwimeCodec codec;
 
@@ -417,6 +598,9 @@ std::optional<TwimeCertScenario> TwimeCertScenarioRunner::builtin(std::string_vi
     }
     if (scenario_id == "twime_heartbeat_rate_violation") {
         return heartbeat_rate_violation();
+    }
+    if (scenario_id == "twime_message_counter_reset") {
+        return message_counter_reset();
     }
     if (scenario_id == "twime_flood_reject") {
         return flood_reject();

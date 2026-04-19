@@ -40,6 +40,7 @@ This repository still stops before live protocol/session implementation. The cur
 - Phase 2A.1 hardens that offline TWIME layer with strict enum/set validation, golden fixture checks, metadata invariants, and bounded frame-assembler behavior.
 - Phase 2B adds a fake-transport TWIME session state machine with deterministic journals, fake-clock heartbeat scheduling, and synthetic cert-runner scenarios.
 - Phase 2B.1 hardens that fake-session layer so `Sequence`, `EstablishmentAck.NextSeqNo`, `Terminate`, keepalive handling, retransmit limits, and heartbeat-rate rules follow the current TWIME spec more closely.
+- Phase 2B.2 adds message-counter reset handling, overflow-safe retransmit arithmetic, pending retransmission completion rules, reconnect timing guards, and PR-diff Unicode checks.
 - Real MOEX protocol/network logic is still intentionally absent.
 
 ## Phase 2A / 2B

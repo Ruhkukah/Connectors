@@ -85,6 +85,11 @@ coverage:
     scenario_id: scenario_twime_fake_ack_sets_inbound_counter
     inventory_id: osengine_moex_fixfasttwime_dir
     status: sequence_model_fake_tested
+  - coverage_id: coverage_twime_fake_message_counter_reset
+    protocol_item_id: twime_message_5001_establishmentack
+    scenario_id: scenario_twime_fake_message_counter_reset
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: sequence_model_fake_tested
   - coverage_id: coverage_twime_fake_establishment_reject
     protocol_item_id: twime_message_5002_establishmentreject
     scenario_id: scenario_twime_fake_session_reject
@@ -116,6 +121,11 @@ coverage:
     inventory_id: osengine_moex_fixfasttwime_dir
     status: retransmit_model_fake_tested
   - coverage_id: coverage_twime_fake_retransmission
+    protocol_item_id: twime_message_5005_retransmission
+    scenario_id: scenario_twime_fake_retransmit_last5
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: retransmit_model_fake_tested
+  - coverage_id: coverage_twime_fake_retransmission_window
     protocol_item_id: twime_message_5005_retransmission
     scenario_id: scenario_twime_fake_retransmit_last5
     inventory_id: osengine_moex_fixfasttwime_dir

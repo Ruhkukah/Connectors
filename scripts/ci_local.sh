@@ -37,6 +37,11 @@ python3 tools/unicode_guard.py \
   cert \
   docs
 
+if git rev-parse --verify origin/main >/dev/null 2>&1; then
+  git diff origin/main...HEAD > /tmp/moex_pr.diff
+  python3 tools/unicode_guard.py /tmp/moex_pr.diff
+fi
+
 cmake -S . -B "$BUILD_DIR"
 cmake --build "$BUILD_DIR"
 ctest --test-dir "$BUILD_DIR" --output-on-failure

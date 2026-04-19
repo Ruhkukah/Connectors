@@ -8,6 +8,7 @@ import subprocess
 
 
 SOURCE_SUFFIXES = {".cpp", ".hpp", ".py"}
+HANDWRITTEN_CPP_SUFFIXES = {".cpp", ".hpp"}
 
 
 def find_clang_format() -> str | None:
@@ -51,13 +52,35 @@ def main() -> int:
     failures: list[str] = []
     source_files = iter_source_files([Path(item).resolve() for item in args.paths])
     for path in source_files:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            failures.append(f"{path}: utf-8 decode error: {error}")
+            continue
         lines = text.splitlines()
         nonempty = [line for line in lines if line.strip()]
         if len(nonempty) <= 2 and any(len(line) > 200 for line in nonempty):
             failures.append(f"{path}: appears minified")
         if any("\t" in line for line in lines):
             failures.append(f"{path}: contains tab indentation")
+
+        if b"\r" in raw.replace(b"\r\n", b""):
+            failures.append(f"{path}: contains CR-only line endings")
+
+        if path.suffix in HANDWRITTEN_CPP_SUFFIXES and "generated" not in path.parts:
+            blank_lines = len(lines) - len(nonempty)
+            if blank_lines > max(20, len(nonempty) // 2):
+                failures.append(f"{path}: excessive blank-line ratio")
+            consecutive_blank = 0
+            for line in lines:
+                if line.strip():
+                    consecutive_blank = 0
+                    continue
+                consecutive_blank += 1
+                if consecutive_blank >= 3:
+                    failures.append(f"{path}: contains 3 or more consecutive blank lines")
+                    break
 
         max_length = 320 if "generated" in path.parts else 160
         for index, line in enumerate(lines, start=1):

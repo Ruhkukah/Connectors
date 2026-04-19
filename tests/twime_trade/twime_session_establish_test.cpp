@@ -91,6 +91,78 @@ int main() {
             moex::twime_sbe::test::require(last.cert_log_line.find("Count=3") != std::string::npos,
                                            "retransmission request count mismatch after EstablishmentAck");
         }
+
+        {
+            moex::twime_trade::TwimeSessionConfig config;
+            config.session_id = "dirty_recovery_equal_ack_test";
+            moex::twime_trade::TwimeFakeTransport transport;
+            moex::twime_trade::TwimeInMemoryRecoveryStateStore recovery_store;
+            recovery_store.save(config.session_id, {
+                                                       .next_outbound_seq = 9,
+                                                       .next_expected_inbound_seq = 11,
+                                                       .last_establishment_id = 1'715'000'000'000'000'002ULL,
+                                                       .recovery_epoch = 4,
+                                                       .last_clean_shutdown = false,
+                                                   });
+            moex::twime_trade::TwimeFakeClock clock(1'715'000'000);
+            moex::twime_trade::TwimeSession session(config, transport, recovery_store, clock);
+
+            session.apply_command({moex::twime_trade::TwimeSessionCommandType::ConnectFake});
+
+            auto ack = moex::twime_trade::test::make_request("EstablishmentAck");
+            for (auto& field : ack.fields) {
+                if (field.name == "NextSeqNo") {
+                    field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(11);
+                }
+            }
+            moex::twime_trade::test::script_message(transport, ack);
+            session.poll_transport();
+
+            moex::twime_trade::test::require_state(session.state(), moex::twime_trade::TwimeSessionState::Active,
+                                                   "equal EstablishmentAck.NextSeqNo should resume Active");
+            moex::twime_sbe::test::require(session.sequence_state().next_expected_inbound_seq() == 11,
+                                           "equal EstablishmentAck.NextSeqNo must keep expected inbound sequence");
+            moex::twime_sbe::test::require(session.outbound_journal().last_n(1).front().message_name == "Establish",
+                                           "equal EstablishmentAck.NextSeqNo must not send RetransmitRequest");
+        }
+
+        {
+            moex::twime_trade::TwimeSessionConfig config;
+            config.session_id = "dirty_recovery_counter_reset_test";
+            moex::twime_trade::TwimeFakeTransport transport;
+            moex::twime_trade::TwimeInMemoryRecoveryStateStore recovery_store;
+            recovery_store.save(config.session_id, {
+                                                       .next_outbound_seq = 12,
+                                                       .next_expected_inbound_seq = 21,
+                                                       .last_establishment_id = 1'715'000'000'000'000'003ULL,
+                                                       .recovery_epoch = 5,
+                                                       .last_clean_shutdown = false,
+                                                   });
+            moex::twime_trade::TwimeFakeClock clock(1'715'000'000);
+            moex::twime_trade::TwimeSession session(config, transport, recovery_store, clock);
+
+            session.apply_command({moex::twime_trade::TwimeSessionCommandType::ConnectFake});
+
+            auto ack = moex::twime_trade::test::make_request("EstablishmentAck");
+            for (auto& field : ack.fields) {
+                if (field.name == "NextSeqNo") {
+                    field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(11);
+                }
+            }
+            moex::twime_trade::test::script_message(transport, ack);
+            session.poll_transport();
+
+            moex::twime_trade::test::require_state(session.state(), moex::twime_trade::TwimeSessionState::Active,
+                                                   "counter reset EstablishmentAck should resume Active");
+            moex::twime_sbe::test::require(session.sequence_state().next_expected_inbound_seq() == 11,
+                                           "counter reset must reset expected inbound sequence");
+            const auto events = session.drain_events();
+            const auto* reset_event = moex::twime_trade::test::find_last_event(
+                events, moex::twime_trade::TwimeSessionEventType::MessageCounterResetDetected);
+            moex::twime_sbe::test::require(reset_event != nullptr, "message counter reset event missing");
+            moex::twime_sbe::test::require(reset_event->gap_from == 21 && reset_event->gap_to == 11,
+                                           "message counter reset event did not capture old/new counters");
+        }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

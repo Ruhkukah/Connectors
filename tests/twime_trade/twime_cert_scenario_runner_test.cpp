@@ -10,7 +10,8 @@ int main() {
                                         "twime_client_sequence_heartbeat_null_nextseqno", "twime_terminate",
                                         "twime_terminate_requires_inbound_terminate", "twime_retransmit_last5",
                                         "twime_normal_retransmit_limit_10", "twime_full_recovery_retransmit_limit_1000",
-                                        "twime_heartbeat_rate_violation", "twime_business_reject_non_recoverable"}) {
+                                        "twime_heartbeat_rate_violation", "twime_message_counter_reset",
+                                        "twime_business_reject_non_recoverable"}) {
             const auto scenario = moex::twime_trade::TwimeCertScenarioRunner::builtin(scenario_id);
             moex::twime_sbe::test::require(scenario.has_value(), "builtin TWIME scenario missing");
             const auto result = moex::twime_trade::TwimeCertScenarioRunner{}.run(*scenario);
@@ -35,6 +36,14 @@ int main() {
         moex::twime_sbe::test::require(terminate_requires_result.final_state ==
                                            moex::twime_trade::TwimeSessionState::Faulted,
                                        "terminate_requires_inbound_terminate should finish Faulted");
+
+        const auto message_counter_reset =
+            moex::twime_trade::TwimeCertScenarioRunner::builtin("twime_message_counter_reset");
+        const auto message_counter_reset_result =
+            moex::twime_trade::TwimeCertScenarioRunner{}.run(*message_counter_reset);
+        moex::twime_sbe::test::require(message_counter_reset_result.final_state ==
+                                           moex::twime_trade::TwimeSessionState::Active,
+                                       "message_counter_reset should finish Active");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

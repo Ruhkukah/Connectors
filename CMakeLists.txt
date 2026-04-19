@@ -211,6 +211,7 @@ moex_add_twime_trade_test(twime_session_reject_test tests/twime_trade/twime_sess
 moex_add_twime_trade_test(twime_keepalive_ack_test tests/twime_trade/twime_keepalive_ack_test.cpp)
 moex_add_twime_trade_test(twime_heartbeat_fake_clock_test tests/twime_trade/twime_heartbeat_fake_clock_test.cpp)
 moex_add_twime_trade_test(twime_heartbeat_rate_limit_test tests/twime_trade/twime_heartbeat_rate_limit_test.cpp)
+moex_add_twime_trade_test(twime_reconnect_timing_test tests/twime_trade/twime_reconnect_timing_test.cpp)
 moex_add_twime_trade_test(twime_terminate_test tests/twime_trade/twime_terminate_test.cpp)
 moex_add_twime_trade_test(twime_sequence_gap_test tests/twime_trade/twime_sequence_gap_test.cpp)
 moex_add_twime_trade_test(twime_message_layer_rules_test tests/twime_trade/twime_message_layer_rules_test.cpp)
@@ -261,6 +262,8 @@ add_test(
         profiles
         cert
         docs)
+set_tests_properties(unicode_guard_check PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_test(
     NAME profile_check_replay
@@ -301,6 +304,12 @@ add_test(
     NAME twime_cert_runner_terminate_requires_inbound
     COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
         --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/terminate_requires_inbound_terminate.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
+
+add_test(
+    NAME twime_cert_runner_message_counter_reset
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/message_counter_reset.yaml"
         --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
 
 add_test(
