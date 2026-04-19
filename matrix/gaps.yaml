@@ -48,28 +48,30 @@ gaps:
   - gap_id: gap_twime_phase2a_no_tcp
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5000_establish
-    coverage_id: coverage_twime_transport_abstraction_fake
+    coverage_id: coverage_twime_tcp_transport_local
     owner: phase2d_transport
-    status: real_tcp_deferred_phase2d
+    status: real_moex_connectivity_deferred
     next_action: >-
-      Add real TCP transport and endpoint integration in Phase 2D while
-      keeping the current loopback/scripted byte transport fake-only.
+      Keep TCP transport limited to local loopback test servers until a
+      later phase explicitly adds exchange-facing connectivity controls.
     notes: >-
-      Phase 2C adds only fake byte-stream transports. There are still no real
-      sockets or MOEX connections.
+      Phase 2D adds only a nonblocking local-only TCP transport skeleton.
+      There are still no MOEX or broker endpoints in code, profiles, or CI.
   - gap_id: gap_twime_phase2a_no_session_fsm
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5001_establishmentack
-    coverage_id: coverage_twime_byte_stream_session_path
+    coverage_id: coverage_twime_session_tcp_loopback
     owner: phase2d_network
-    status: real_tcp_deferred_phase2d
+    status: real_moex_connectivity_deferred
     next_action: >-
-      Keep live transport/session mode deferred; Phase 2C only wires the
-      existing fake FSM to fake byte transports through the frame assembler.
+      Keep live exchange session mode deferred; Phase 2D only wires the
+      existing session FSM to local-only TCP loopback servers through the
+      frame assembler.
     notes: >-
-      Establish/Ack/Reject/Terminate/Sequence behavior now follows
-      fake session semantics over fake frame and fake byte transports, but
-      there is still no live transport or production session mode.
+      Establish/Ack/Reject/Terminate/Sequence behavior now runs over fake
+      frame transports, fake byte transports, and local-only TCP loopback
+      sockets, but there is still no live exchange transport or production
+      session mode.
   - gap_id: gap_twime_phase2a_no_recovery_cache
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5005_retransmission
@@ -86,15 +88,15 @@ gaps:
   - gap_id: gap_twime_phase2a_no_live_credentials
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5000_establish
-    coverage_id: coverage_twime_fake_session_establish
+    coverage_id: coverage_twime_tcp_transport_local
     owner: deployment_ops
-    status: live_credentials_deferred
+    status: credentials_deferred
     next_action: >-
-      Keep credentials and endpoint handling out of the public repo and
-      Phase 2C merge scope.
+      Keep credentials and endpoint handling out of the public repo and any
+      pre-production transport phases.
     notes: >-
-      Phase 2B.2 still uses only synthetic config values and fake transport;
-      no live credentials exist anywhere in the repo.
+      Phase 2D still uses only dummy local endpoints and synthetic config
+      values; no live credentials exist anywhere in the repo.
   - gap_id: gap_twime_phase2a_no_order_routing
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_6000_newordersingle
@@ -103,7 +105,21 @@ gaps:
     status: live_order_routing_deferred
     next_action: >-
       Delay C ABI order-routing integration until a later connector phase
-      after transport and session behavior exist.
+      after local-only TCP transport and session behavior are completed.
     notes: >-
-      Phase 2C still does not route live or fake TWIME orders through the
+      Phase 2D still does not route live or fake TWIME orders through the
       public C ABI or AlorEngine runtime path.
+  - gap_id: gap_twime_non_loopback_endpoints_blocked
+    artifact_id: twime_prod_root
+    protocol_item_id: twime_message_5000_establish
+    coverage_id: coverage_twime_non_loopback_block
+    owner: phase2d_transport
+    status: real_endpoint_support_deferred_phase2e
+    next_action: >-
+      Keep non-loopback endpoints blocked in both transport code and profile
+      validation until Phase 2E introduces guarded test-environment endpoint
+      support.
+    notes: >-
+      Phase 2D transport is hard localhost-only. The forward-compatible
+      non-loopback override flags remain in config structs but are rejected
+      in this phase and do not permit real endpoints.

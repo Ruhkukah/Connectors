@@ -198,15 +198,33 @@ void TwimeSession::poll_byte_transport() {
         return;
     }
 
+    if (byte_transport_->state() == transport::TwimeTransportState::Open && !flush_pending_outbound_bytes()) {
+        return;
+    }
+
     while (true) {
         const auto result = byte_transport_->poll_read(transport_read_buffer_);
         switch (result.status) {
         case transport::TwimeTransportStatus::WouldBlock:
+            if (result.event == transport::TwimeTransportEvent::ReconnectSuppressed) {
+                append_event(TwimeSessionEvent{
+                    .type = TwimeSessionEventType::ReconnectTooFast,
+                    .state = state_,
+                    .summary = "byte-stream transport suppressed reconnect attempt before 1000ms",
+                });
+            }
             return;
         case transport::TwimeTransportStatus::RemoteClosed:
             handle_peer_close("byte-stream transport remote close");
             return;
         case transport::TwimeTransportStatus::Ok:
+            if (result.event == transport::TwimeTransportEvent::OpenSucceeded && result.bytes_transferred == 0) {
+                on_byte_transport_opened("byte-stream transport connected");
+                if (state_ == TwimeSessionState::Faulted || !flush_pending_outbound_bytes()) {
+                    return;
+                }
+                continue;
+            }
             if (result.bytes_transferred == 0) {
                 append_event(TwimeSessionEvent{
                     .type = TwimeSessionEventType::Faulted,
@@ -255,6 +273,19 @@ void TwimeSession::poll_byte_transport() {
             }
         }
     }
+}
+
+void TwimeSession::on_byte_transport_opened(std::string summary) {
+    transition_to(TwimeSessionState::ConnectingFake, std::move(summary));
+    transition_to(TwimeSessionState::Establishing, "emitting Establish");
+    send_message(
+        build_request("Establish", kTemplateEstablish,
+                      {
+                          {"Timestamp", TwimeFieldValue::timestamp(recovery_state_.last_establishment_id)},
+                          {"KeepaliveInterval", TwimeFieldValue::delta_millisecs(config_.keepalive_interval_ms)},
+                          {"Credentials", TwimeFieldValue::string(config_.credentials)},
+                      }),
+        TwimeSessionEventType::OutboundMessage, "Establish sent");
 }
 
 std::vector<TwimeSessionEvent> TwimeSession::drain_events() {
@@ -306,7 +337,11 @@ void TwimeSession::connect_fake() {
         transition_to(TwimeSessionState::ConnectingFake, "fake transport connected");
     } else if (byte_transport_ != nullptr) {
         const auto open_result = byte_transport_->open();
-        if (open_result.status != transport::TwimeTransportStatus::Ok) {
+        if (open_result.status == transport::TwimeTransportStatus::Fault ||
+            open_result.status == transport::TwimeTransportStatus::InvalidState ||
+            open_result.status == transport::TwimeTransportStatus::BufferTooSmall ||
+            open_result.status == transport::TwimeTransportStatus::Closed ||
+            open_result.status == transport::TwimeTransportStatus::RemoteClosed) {
             append_event(TwimeSessionEvent{
                 .type = TwimeSessionEventType::Faulted,
                 .state = state_,
@@ -315,7 +350,15 @@ void TwimeSession::connect_fake() {
             transition_to(TwimeSessionState::Faulted, "byte-stream transport open failed");
             return;
         }
-        transition_to(TwimeSessionState::ConnectingFake, "byte-stream fake transport opened");
+        if (open_result.event == transport::TwimeTransportEvent::ReconnectSuppressed) {
+            append_event(TwimeSessionEvent{
+                .type = TwimeSessionEventType::ReconnectTooFast,
+                .state = state_,
+                .summary = "byte-stream transport suppressed reconnect attempt before 1000ms",
+            });
+            return;
+        }
+        transition_to(TwimeSessionState::ConnectingFake, "byte-stream transport opening");
     }
 
     active_keepalive_interval_ms_ = config_.keepalive_interval_ms;
@@ -324,15 +367,19 @@ void TwimeSession::connect_fake() {
     terminate_response_received_ = false;
     persist_recovery_state();
 
-    transition_to(TwimeSessionState::Establishing, "emitting Establish");
-    send_message(
-        build_request("Establish", kTemplateEstablish,
-                      {
-                          {"Timestamp", TwimeFieldValue::timestamp(recovery_state_.last_establishment_id)},
-                          {"KeepaliveInterval", TwimeFieldValue::delta_millisecs(config_.keepalive_interval_ms)},
-                          {"Credentials", TwimeFieldValue::string(config_.credentials)},
-                      }),
-        TwimeSessionEventType::OutboundMessage, "Establish sent");
+    if (fake_transport_ != nullptr) {
+        transition_to(TwimeSessionState::Establishing, "emitting Establish");
+        send_message(
+            build_request("Establish", kTemplateEstablish,
+                          {
+                              {"Timestamp", TwimeFieldValue::timestamp(recovery_state_.last_establishment_id)},
+                              {"KeepaliveInterval", TwimeFieldValue::delta_millisecs(config_.keepalive_interval_ms)},
+                              {"Credentials", TwimeFieldValue::string(config_.credentials)},
+                          }),
+            TwimeSessionEventType::OutboundMessage, "Establish sent");
+    } else if (byte_transport_ != nullptr && byte_transport_->state() == transport::TwimeTransportState::Open) {
+        on_byte_transport_opened("byte-stream transport connected");
+    }
 }
 
 void TwimeSession::send_terminate() {
@@ -462,7 +509,11 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
 
     const bool inbound_consumes_sequence = consumes_inbound_sequence(decoded);
     const auto expected_inbound_before = sequence_state_.next_expected_inbound_seq();
-    if (inbound_consumes_sequence && frame.sequence_number == 0) {
+    std::uint64_t inbound_sequence_number = frame.sequence_number;
+    if (inbound_consumes_sequence && inbound_sequence_number == 0 && byte_transport_ != nullptr) {
+        inbound_sequence_number = expected_inbound_before;
+    }
+    if (inbound_consumes_sequence && inbound_sequence_number == 0) {
         transition_to(TwimeSessionState::Faulted, "fake application message missing sequence number");
         append_event(TwimeSessionEvent{
             .type = TwimeSessionEventType::Faulted,
@@ -475,7 +526,7 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
     }
 
     if (inbound_consumes_sequence) {
-        const auto observation = sequence_state_.observe_inbound(frame.sequence_number, true);
+        const auto observation = sequence_state_.observe_inbound(inbound_sequence_number, true);
         recovery_state_.next_expected_inbound_seq = sequence_state_.next_expected_inbound_seq();
         persist_recovery_state();
 
@@ -485,7 +536,7 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
                 .type = TwimeSessionEventType::SequenceGapDetected,
                 .state = state_,
                 .template_id = decoded.header.template_id,
-                .sequence_number = frame.sequence_number,
+                .sequence_number = inbound_sequence_number,
                 .gap_from = observation.gap->from_seq_no,
                 .gap_to = observation.gap->to_seq_no,
                 .message_name = std::string(decoded.metadata->name),
@@ -503,7 +554,7 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
                     .type = TwimeSessionEventType::RetransmissionProtocolViolation,
                     .state = state_,
                     .template_id = decoded.header.template_id,
-                    .sequence_number = frame.sequence_number,
+                    .sequence_number = inbound_sequence_number,
                     .message_name = std::string(decoded.metadata->name),
                     .summary = "retransmitted application message arrived before Retransmission metadata",
                 });
@@ -515,7 +566,7 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
                     .type = TwimeSessionEventType::RetransmissionProtocolViolation,
                     .state = state_,
                     .template_id = decoded.header.template_id,
-                    .sequence_number = frame.sequence_number,
+                    .sequence_number = inbound_sequence_number,
                     .message_name = std::string(decoded.metadata->name),
                     .summary = "retransmitted application message sequence does not match pending window",
                 });
@@ -539,7 +590,7 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
 
     const auto formatted = formatter_.format(decoded);
     inbound_journal_.append(TwimeJournalEntry{
-        .sequence_number = frame.sequence_number,
+        .sequence_number = inbound_sequence_number,
         .consumes_sequence = inbound_consumes_sequence,
         .recoverable = is_recoverable_message(decoded),
         .template_id = decoded.header.template_id,
@@ -552,7 +603,7 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
         .type = TwimeSessionEventType::InboundMessage,
         .state = state_,
         .template_id = decoded.header.template_id,
-        .sequence_number = frame.sequence_number,
+        .sequence_number = inbound_sequence_number,
         .message_name = std::string(decoded.metadata->name),
         .summary = "inbound message received",
         .cert_log_line = formatted,
@@ -921,9 +972,23 @@ bool TwimeSession::write_outbound_bytes(std::span<const std::byte> bytes) {
         return true;
     }
 
-    std::size_t offset = 0;
-    while (offset < bytes.size()) {
-        const auto result = byte_transport_->write(bytes.subspan(offset));
+    if (!bytes.empty()) {
+        pending_outbound_bytes_.insert(pending_outbound_bytes_.end(), bytes.begin(), bytes.end());
+    }
+    return flush_pending_outbound_bytes();
+}
+
+bool TwimeSession::flush_pending_outbound_bytes() {
+    if (byte_transport_ == nullptr) {
+        pending_outbound_bytes_.clear();
+        pending_outbound_offset_ = 0;
+        return true;
+    }
+
+    while (pending_outbound_offset_ < pending_outbound_bytes_.size()) {
+        const auto result = byte_transport_->write(std::span<const std::byte>(
+            pending_outbound_bytes_.data() + static_cast<std::ptrdiff_t>(pending_outbound_offset_),
+            pending_outbound_bytes_.size() - pending_outbound_offset_));
         switch (result.status) {
         case transport::TwimeTransportStatus::Ok:
             if (result.bytes_transferred == 0) {
@@ -935,18 +1000,14 @@ bool TwimeSession::write_outbound_bytes(std::span<const std::byte> bytes) {
                 });
                 return false;
             }
-            offset += result.bytes_transferred;
+            pending_outbound_offset_ += result.bytes_transferred;
             break;
         case transport::TwimeTransportStatus::WouldBlock:
-            transition_to(TwimeSessionState::Faulted, "byte-stream transport write would block");
-            append_event(TwimeSessionEvent{
-                .type = TwimeSessionEventType::Faulted,
-                .state = state_,
-                .summary = "byte-stream transport write would block",
-            });
+            return true;
+        case transport::TwimeTransportStatus::RemoteClosed:
+            handle_peer_close("byte-stream transport remote close during write");
             return false;
         case transport::TwimeTransportStatus::Closed:
-        case transport::TwimeTransportStatus::RemoteClosed:
         case transport::TwimeTransportStatus::Fault:
         case transport::TwimeTransportStatus::InvalidState:
         case transport::TwimeTransportStatus::BufferTooSmall:
@@ -960,6 +1021,8 @@ bool TwimeSession::write_outbound_bytes(std::span<const std::byte> bytes) {
         }
     }
 
+    pending_outbound_bytes_.clear();
+    pending_outbound_offset_ = 0;
     return true;
 }
 

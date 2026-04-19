@@ -8,30 +8,36 @@ namespace moex::twime_trade::transport {
 TwimeTransportResult TwimeScriptedTransport::open() {
     ++metrics_.open_calls;
     if (state_ == TwimeTransportState::Open) {
-        return {.status = TwimeTransportStatus::InvalidState, .event = TwimeTransportEvent::Fault};
+        return {.status = TwimeTransportStatus::InvalidState,
+                .event = TwimeTransportEvent::Fault,
+                .error_code = TwimeTransportErrorCode::InvalidState};
     }
 
     state_ = TwimeTransportState::Opening;
     state_ = TwimeTransportState::Open;
-    return {.status = TwimeTransportStatus::Ok, .event = TwimeTransportEvent::Opened};
+    ++metrics_.successful_open_events;
+    return {.status = TwimeTransportStatus::Ok, .event = TwimeTransportEvent::OpenSucceeded};
 }
 
 TwimeTransportResult TwimeScriptedTransport::close() {
     ++metrics_.close_calls;
     if (state_ == TwimeTransportState::Closed || state_ == TwimeTransportState::Created) {
         state_ = TwimeTransportState::Closed;
-        return {.status = TwimeTransportStatus::Closed, .event = TwimeTransportEvent::Closed};
+        return {.status = TwimeTransportStatus::Closed, .event = TwimeTransportEvent::LocalClose};
     }
 
     state_ = TwimeTransportState::Closing;
     state_ = TwimeTransportState::Closed;
-    return {.status = TwimeTransportStatus::Ok, .event = TwimeTransportEvent::Closed};
+    ++metrics_.local_close_events;
+    return {.status = TwimeTransportStatus::Ok, .event = TwimeTransportEvent::LocalClose};
 }
 
 TwimeTransportResult TwimeScriptedTransport::write(std::span<const std::byte> bytes) {
     ++metrics_.write_calls;
     if (state_ != TwimeTransportState::Open) {
-        return {.status = TwimeTransportStatus::InvalidState, .event = TwimeTransportEvent::Fault};
+        return {.status = TwimeTransportStatus::InvalidState,
+                .event = TwimeTransportEvent::Fault,
+                .error_code = TwimeTransportErrorCode::InvalidState};
     }
     if (!write_actions_.empty()) {
         const auto action = write_actions_.front();
@@ -39,10 +45,14 @@ TwimeTransportResult TwimeScriptedTransport::write(std::span<const std::byte> by
         if (action == WriteActionKind::Fault) {
             state_ = TwimeTransportState::Faulted;
             ++metrics_.fault_events;
-            return {.status = TwimeTransportStatus::Fault, .event = TwimeTransportEvent::Fault};
+            return {.status = TwimeTransportStatus::Fault,
+                    .event = TwimeTransportEvent::Fault,
+                    .error_code = TwimeTransportErrorCode::WriteFault};
         }
         ++metrics_.write_would_block_events;
-        return {.status = TwimeTransportStatus::WouldBlock, .event = TwimeTransportEvent::WriteWouldBlock};
+        return {.status = TwimeTransportStatus::WouldBlock,
+                .event = TwimeTransportEvent::WriteWouldBlock,
+                .error_code = TwimeTransportErrorCode::None};
     }
     if (bytes.empty()) {
         return {.status = TwimeTransportStatus::Ok, .event = TwimeTransportEvent::BytesWritten};
@@ -53,7 +63,9 @@ TwimeTransportResult TwimeScriptedTransport::write(std::span<const std::byte> by
     const auto accepted = std::min({bytes.size(), max_write_size_, write_capacity});
     if (accepted == 0) {
         ++metrics_.write_would_block_events;
-        return {.status = TwimeTransportStatus::WouldBlock, .event = TwimeTransportEvent::WriteWouldBlock};
+        return {.status = TwimeTransportStatus::WouldBlock,
+                .event = TwimeTransportEvent::WriteWouldBlock,
+                .error_code = TwimeTransportErrorCode::BufferLimitExceeded};
     }
     written_bytes_.insert(written_bytes_.end(), bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(accepted));
     metrics_.bytes_written += accepted;
@@ -72,10 +84,14 @@ TwimeTransportResult TwimeScriptedTransport::write(std::span<const std::byte> by
 TwimeTransportPollResult TwimeScriptedTransport::poll_read(std::span<std::byte> out) {
     ++metrics_.read_calls;
     if (state_ != TwimeTransportState::Open) {
-        return {.status = TwimeTransportStatus::InvalidState, .event = TwimeTransportEvent::Fault};
+        return {.status = TwimeTransportStatus::InvalidState,
+                .event = TwimeTransportEvent::Fault,
+                .error_code = TwimeTransportErrorCode::InvalidState};
     }
     if (out.empty()) {
-        return {.status = TwimeTransportStatus::BufferTooSmall, .event = TwimeTransportEvent::Fault};
+        return {.status = TwimeTransportStatus::BufferTooSmall,
+                .event = TwimeTransportEvent::Fault,
+                .error_code = TwimeTransportErrorCode::BufferLimitExceeded};
     }
     if (read_actions_.empty()) {
         ++metrics_.read_would_block_events;
@@ -87,17 +103,23 @@ TwimeTransportPollResult TwimeScriptedTransport::poll_read(std::span<std::byte> 
     case ReadActionKind::WouldBlock:
         read_actions_.pop_front();
         ++metrics_.read_would_block_events;
-        return {.status = TwimeTransportStatus::WouldBlock, .event = TwimeTransportEvent::ReadWouldBlock};
+        return {.status = TwimeTransportStatus::WouldBlock,
+                .event = TwimeTransportEvent::ReadWouldBlock,
+                .error_code = TwimeTransportErrorCode::None};
     case ReadActionKind::RemoteClose:
         read_actions_.pop_front();
         state_ = TwimeTransportState::Closed;
         ++metrics_.remote_close_events;
-        return {.status = TwimeTransportStatus::RemoteClosed, .event = TwimeTransportEvent::RemoteClose};
+        return {.status = TwimeTransportStatus::RemoteClosed,
+                .event = TwimeTransportEvent::RemoteClose,
+                .error_code = TwimeTransportErrorCode::RemoteClosed};
     case ReadActionKind::Fault:
         read_actions_.pop_front();
         state_ = TwimeTransportState::Faulted;
         ++metrics_.fault_events;
-        return {.status = TwimeTransportStatus::Fault, .event = TwimeTransportEvent::Fault};
+        return {.status = TwimeTransportStatus::Fault,
+                .event = TwimeTransportEvent::Fault,
+                .error_code = TwimeTransportErrorCode::ReadFault};
     case ReadActionKind::Bytes:
         break;
     }

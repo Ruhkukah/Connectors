@@ -1,0 +1,26 @@
+version: 1
+profile_id: test_twime_tcp_remote_close
+environment: test
+armed: false
+profile_neutral_coverage: true
+broker_topology:
+  mode: unknown
+  order_path: unknown
+  market_data_path: unknown
+  router_location: unknown
+shadow_mode:
+  enabled: false
+  primary_source: native_moex
+  native_connectors_read_only: true
+connectors:
+  market_data: []
+  orders:
+    - twime_trade
+  state: []
+twime_tcp:
+  enabled: true
+  endpoint:
+    host: ::1
+    port: 19002
+    allow_non_loopback: false
+    allow_non_localhost_dns: false

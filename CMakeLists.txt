@@ -162,6 +162,13 @@ target_compile_definitions(twime_test_support
     PRIVATE
         MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
 
+add_library(local_tcp_server_support STATIC
+    tests/support/local_tcp_server.cpp)
+target_compile_features(local_tcp_server_support PUBLIC cxx_std_20)
+target_include_directories(local_tcp_server_support
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/support")
+
 function(moex_add_twime_test target_name source_file)
     add_executable(${target_name} "${source_file}")
     target_link_libraries(${target_name}
@@ -182,9 +189,11 @@ function(moex_add_twime_trade_test target_name source_file)
     target_link_libraries(${target_name}
         PRIVATE
             moex_twime_trade
+            local_tcp_server_support
             twime_test_support)
     target_include_directories(${target_name}
         PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/support"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_trade"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_sbe")
     target_compile_features(${target_name} PRIVATE cxx_std_20)
@@ -238,6 +247,30 @@ moex_add_twime_trade_test(twime_session_byte_stream_fragmentation_test
     tests/twime_trade/twime_session_byte_stream_fragmentation_test.cpp)
 moex_add_twime_trade_test(twime_session_byte_stream_batched_frames_test
     tests/twime_trade/twime_session_byte_stream_batched_frames_test.cpp)
+moex_add_twime_trade_test(twime_tcp_transport_connect_test
+    tests/twime_trade/transport/twime_tcp_transport_connect_test.cpp)
+moex_add_twime_trade_test(twime_tcp_transport_partial_read_test
+    tests/twime_trade/transport/twime_tcp_transport_partial_read_test.cpp)
+moex_add_twime_trade_test(twime_tcp_transport_partial_write_test
+    tests/twime_trade/transport/twime_tcp_transport_partial_write_test.cpp)
+moex_add_twime_trade_test(twime_tcp_transport_remote_close_test
+    tests/twime_trade/transport/twime_tcp_transport_remote_close_test.cpp)
+moex_add_twime_trade_test(twime_tcp_transport_fault_test
+    tests/twime_trade/transport/twime_tcp_transport_fault_test.cpp)
+moex_add_twime_trade_test(twime_tcp_transport_reconnect_policy_test
+    tests/twime_trade/transport/twime_tcp_transport_reconnect_policy_test.cpp)
+moex_add_twime_trade_test(twime_tcp_transport_loopback_server_test
+    tests/twime_trade/transport/twime_tcp_transport_loopback_server_test.cpp)
+moex_add_twime_trade_test(twime_session_tcp_establish_test
+    tests/twime_trade/twime_session_tcp_establish_test.cpp)
+moex_add_twime_trade_test(twime_session_tcp_fragmentation_test
+    tests/twime_trade/twime_session_tcp_fragmentation_test.cpp)
+moex_add_twime_trade_test(twime_session_tcp_batched_frames_test
+    tests/twime_trade/twime_session_tcp_batched_frames_test.cpp)
+moex_add_twime_trade_test(twime_session_tcp_remote_close_test
+    tests/twime_trade/twime_session_tcp_remote_close_test.cpp)
+moex_add_twime_trade_test(twime_session_tcp_terminate_flow_test
+    tests/twime_trade/twime_session_tcp_terminate_flow_test.cpp)
 
 add_custom_target(twime_codegen_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/twime_codegen"
@@ -303,6 +336,21 @@ add_test(
     NAME profile_check_replay
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
         --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/replay.yaml")
+
+add_test(
+    NAME profile_check_twime_tcp_loopback
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_tcp_loopback.yaml")
+
+add_test(
+    NAME profile_check_twime_tcp_fragmentation
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_tcp_fragmentation.yaml")
+
+add_test(
+    NAME profile_check_twime_tcp_remote_close
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_tcp_remote_close.yaml")
 
 add_test(
     NAME profile_check_prod_with_arm

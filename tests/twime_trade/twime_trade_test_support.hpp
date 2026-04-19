@@ -1,6 +1,7 @@
 #pragma once
 
 #include "moex/twime_trade/twime_session.hpp"
+#include "moex/twime_trade/transport/twime_tcp_config.hpp"
 
 #include "twime_test_support.hpp"
 
@@ -90,6 +91,16 @@ inline std::vector<moex::twime_sbe::DecodedTwimeMessage> decode_streamed_frames(
         decoded_messages.push_back(decode_bytes(assembler.pop_frame().bytes));
     }
     return decoded_messages;
+}
+
+inline moex::twime_trade::transport::TwimeTcpConfig make_local_tcp_config(std::uint16_t port) {
+    moex::twime_trade::transport::TwimeTcpConfig config;
+    config.environment = moex::twime_trade::transport::TwimeTcpEnvironment::Test;
+    config.endpoint.host = "127.0.0.1";
+    config.endpoint.port = port;
+    config.endpoint.allow_non_loopback = false;
+    config.endpoint.allow_non_localhost_dns = false;
+    return config;
 }
 
 } // namespace moex::twime_trade::test

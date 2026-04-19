@@ -151,6 +151,7 @@ class TwimeSession {
 
     void poll_fake_transport();
     void poll_byte_transport();
+    void on_byte_transport_opened(std::string summary);
     void process_transport_event(const TwimeFakeTransportEvent& event);
     void process_inbound_frame(const TwimeFakeTransportFrame& frame);
     void process_inbound_message(const moex::twime_sbe::DecodedTwimeMessage& message,
@@ -175,6 +176,7 @@ class TwimeSession {
     void persist_recovery_state();
 
     bool write_outbound_bytes(std::span<const std::byte> bytes);
+    bool flush_pending_outbound_bytes();
     bool send_message(const moex::twime_sbe::TwimeEncodeRequest& request, TwimeSessionEventType event_type,
                       std::string summary);
     [[nodiscard]] std::uint64_t next_heartbeat_due_ms() const noexcept;
@@ -214,6 +216,8 @@ class TwimeSession {
     std::vector<TwimeSessionEvent> pending_events_;
     std::vector<std::string> cert_log_lines_;
     std::vector<std::byte> transport_read_buffer_;
+    std::vector<std::byte> pending_outbound_bytes_;
+    std::size_t pending_outbound_offset_{0};
 };
 
 } // namespace moex::twime_trade
