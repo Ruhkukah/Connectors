@@ -15,6 +15,11 @@ int main() {
 
         session.apply_command({moex::twime_trade::TwimeSessionCommandType::ConnectFake});
         auto ack = moex::twime_trade::test::make_request("EstablishmentAck");
+        for (auto& field : ack.fields) {
+            if (field.name == "NextSeqNo") {
+                field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(11);
+            }
+        }
         moex::twime_trade::test::script_message(transport, ack);
         session.poll_transport();
         static_cast<void>(session.drain_events());
@@ -22,7 +27,7 @@ int main() {
         auto sequence = moex::twime_trade::test::make_request("Sequence");
         for (auto& field : sequence.fields) {
             if (field.name == "NextSeqNo") {
-                field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(6);
+                field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(16);
             }
         }
         moex::twime_trade::test::script_message(transport, sequence);
@@ -32,7 +37,7 @@ int main() {
         auto retransmission = moex::twime_trade::test::make_request("Retransmission");
         for (auto& field : retransmission.fields) {
             if (field.name == "NextSeqNo") {
-                field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(6);
+                field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(16);
             }
             if (field.name == "Count") {
                 field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(5);
@@ -44,11 +49,14 @@ int main() {
         moex::twime_trade::test::require_state(session.state(), moex::twime_trade::TwimeSessionState::Active,
                                                "Retransmission did not restore Active state");
         auto events = session.drain_events();
-        moex::twime_sbe::test::require(
-            moex::twime_trade::test::find_last_event(events, moex::twime_trade::TwimeSessionEventType::RetransmissionReceived) != nullptr,
-            "Retransmission event missing");
-        moex::twime_sbe::test::require(session.sequence_state().next_expected_inbound_seq() == 6,
+        moex::twime_sbe::test::require(moex::twime_trade::test::find_last_event(
+                                           events, moex::twime_trade::TwimeSessionEventType::RetransmissionReceived) !=
+                                           nullptr,
+                                       "Retransmission event missing");
+        moex::twime_sbe::test::require(session.sequence_state().next_expected_inbound_seq() == 16,
                                        "retransmission did not restore expected inbound sequence");
+        moex::twime_sbe::test::require(!session.inbound_journal().last_n(1).front().recoverable,
+                                       "Retransmission metadata must not be marked recoverable");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

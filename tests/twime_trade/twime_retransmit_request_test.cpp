@@ -22,15 +22,17 @@ int main() {
         session.apply_command({
             .type = moex::twime_trade::TwimeSessionCommandType::RequestRetransmit,
             .from_seq_no = 21,
-            .count = 5,
+            .count = 10,
         });
 
         const auto last = session.outbound_journal().last_n(1).front();
         moex::twime_sbe::test::require(last.message_name == "RetransmitRequest", "wrong outbound message");
         moex::twime_sbe::test::require(last.cert_log_line.find("FromSeqNo=21") != std::string::npos,
                                        "RetransmitRequest cert log missing FromSeqNo");
-        moex::twime_sbe::test::require(last.cert_log_line.find("Count=5") != std::string::npos,
+        moex::twime_sbe::test::require(last.cert_log_line.find("Count=10") != std::string::npos,
                                        "RetransmitRequest cert log missing Count");
+        moex::twime_sbe::test::require(session.state() == moex::twime_trade::TwimeSessionState::Active,
+                                       "valid normal retransmit request should keep session Active");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

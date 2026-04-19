@@ -39,6 +39,7 @@ This repository still stops before live protocol/session implementation. The cur
 - Phase 2A adds an offline-only TWIME SBE schema inventory and deterministic codec generated from the pinned `twime_spectra-7.7.xml` schema.
 - Phase 2A.1 hardens that offline TWIME layer with strict enum/set validation, golden fixture checks, metadata invariants, and bounded frame-assembler behavior.
 - Phase 2B adds a fake-transport TWIME session state machine with deterministic journals, fake-clock heartbeat scheduling, and synthetic cert-runner scenarios.
+- Phase 2B.1 hardens that fake-session layer so `Sequence`, `EstablishmentAck.NextSeqNo`, `Terminate`, keepalive handling, retransmit limits, and heartbeat-rate rules follow the current TWIME spec more closely.
 - Real MOEX protocol/network logic is still intentionally absent.
 
 ## Phase 2A / 2B
@@ -50,6 +51,7 @@ This repository still stops before live protocol/session implementation. The cur
 - Offline fixtures cover header/primitive/message round-trips, fragmented/batched frame assembly, and certification-style decoded logs.
 - Phase 2A.1 adds strict validation for enum/set tokens, optional/null/default handling, committed golden fixture checks, metadata invariant checks, and malformed-frame hardening.
 - `connectors/twime_trade/` now adds a fake-transport TWIME session FSM, in-memory recovery/journals, synthetic gap/retransmit handling, and synthetic cert-runner scenarios.
+- Phase 2B.1 corrects client `Sequence` heartbeats to encode `NextSeqNo=null`, treats `EstablishmentAck.NextSeqNo` as inbound state, requires inbound `Terminate(Finished)` for clean shutdown, validates acknowledged keepalive, enforces fake retransmit limits, and separates trading-rate vs total-rate modeling.
 - This is **not** certification-ready and **not** suitable for live trading.
 
 ## Definition of Done Commands
@@ -64,6 +66,8 @@ build/tools/twime_schema_indexer --schema protocols/twime_sbe/schema/twime_spect
 build/tools/twime_codegen --schema protocols/twime_sbe/schema/twime_spectra-7.7.xml --out protocols/twime_sbe/generated --check
 build/apps/moex_cert_runner --scenario cert/stub/phase0_stub.yaml --output-dir build/cert-runner
 build/apps/moex_cert_runner --scenario cert/scenarios/twime/session_establish.yaml --output-dir build/twime-cert-runner
+build/apps/moex_cert_runner --scenario cert/scenarios/twime/client_sequence_heartbeat_null_nextseqno.yaml --output-dir build/twime-cert-runner
+build/apps/moex_cert_runner --scenario cert/scenarios/twime/terminate_requires_inbound_terminate.yaml --output-dir build/twime-cert-runner
 build/tools/profile_check --profile profiles/prod_fast_twime.template.yaml
 dotnet run --project tests/dotnet/AbiSmoke/AbiSmoke.csproj --framework net10.0 -- build/lib/libmoex_phase0_abi.dylib tests/fixtures/shadow_replay/synthetic_replay.txt
 dotnet run --project tests/dotnet/AbiPolicy/AbiPolicy.csproj --framework net10.0 -- build/lib/libmoex_phase0_abi.dylib tests/fixtures/shadow_replay/synthetic_replay.txt

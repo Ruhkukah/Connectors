@@ -29,10 +29,12 @@ int main() {
         session.poll_transport();
 
         auto events = session.drain_events();
-        const auto* event =
-            moex::twime_trade::test::find_last_event(events, moex::twime_trade::TwimeSessionEventType::BusinessRejectReceived);
+        const auto* event = moex::twime_trade::test::find_last_event(
+            events, moex::twime_trade::TwimeSessionEventType::BusinessRejectReceived);
         moex::twime_sbe::test::require(event != nullptr, "BusinessMessageReject event missing");
         moex::twime_sbe::test::require(event->reason_code == -12, "BusinessMessageReject reason code mismatch");
+        moex::twime_sbe::test::require(!session.inbound_journal().last_n(1).front().recoverable,
+                                       "BusinessMessageReject must not be marked recoverable");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

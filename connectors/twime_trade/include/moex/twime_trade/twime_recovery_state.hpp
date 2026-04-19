@@ -40,6 +40,7 @@ class TwimeInMemoryRecoveryStateStore final : public TwimeRecoveryStateStore {
 struct TwimeJournalEntry {
     std::uint64_t sequence_number{0};
     bool consumes_sequence{false};
+    bool recoverable{false};
     std::uint16_t template_id{0};
     std::string message_name;
     std::vector<std::byte> bytes;
@@ -65,4 +66,4 @@ class TwimeBoundedJournal {
 using TwimeOutboundJournal = TwimeBoundedJournal;
 using TwimeInboundJournal = TwimeBoundedJournal;
 
-}  // namespace moex::twime_trade
+} // namespace moex::twime_trade

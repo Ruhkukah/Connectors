@@ -1,0 +1,15 @@
+scenario_id: twime_session_establish_ack_sets_inbound_counter
+title: Synthetic TWIME EstablishmentAck sets inbound counter
+metadata:
+  owner: phase2b1
+  mode: fake_transport
+steps:
+  - step_id: connect_fake
+    action: issue ConnectFake command
+    expected: Establish emitted and session enters Establishing
+  - step_id: inject_ack
+    action: inject EstablishmentAck with NextSeqNo=11
+    expected: expected inbound application sequence becomes 11
+  - step_id: inject_report
+    action: inject ExecutionSingleReport with fake sequence number 11
+    expected: application message is accepted and increments expected inbound sequence

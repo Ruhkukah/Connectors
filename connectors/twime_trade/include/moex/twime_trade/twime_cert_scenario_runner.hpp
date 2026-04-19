@@ -16,6 +16,7 @@ enum class TwimeCertScenarioActionKind {
     TimerTick,
     InjectInboundMessage,
     InjectPeerClose,
+    CommandHeartbeat,
     CommandTerminate,
     CommandRetransmit,
 };
@@ -35,6 +36,7 @@ struct TwimeCertScenario {
     std::string title;
     TwimeSessionConfig config{};
     std::vector<TwimeCertScenarioAction> actions;
+    std::optional<TwimeSessionState> expected_final_state;
 };
 
 struct TwimeCertScenarioResult {
@@ -43,6 +45,7 @@ struct TwimeCertScenarioResult {
     TwimeSessionState final_state{TwimeSessionState::Created};
     std::vector<TwimeSessionEvent> events;
     std::vector<std::string> cert_log_lines;
+    std::string error_message;
 };
 
 class TwimeCertScenarioRunner {
@@ -51,4 +54,4 @@ class TwimeCertScenarioRunner {
     [[nodiscard]] static std::optional<TwimeCertScenario> builtin(std::string_view scenario_id);
 };
 
-}  // namespace moex::twime_trade
+} // namespace moex::twime_trade

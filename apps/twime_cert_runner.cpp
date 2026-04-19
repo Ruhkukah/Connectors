@@ -57,7 +57,7 @@ std::string state_name(moex::twime_trade::TwimeSessionState state) {
     return "Unknown";
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     std::string scenario_id;
@@ -89,6 +89,10 @@ int main(int argc, char** argv) {
     }
 
     const auto result = moex::twime_trade::TwimeCertScenarioRunner{}.run(*scenario);
+    if (!result.error_message.empty()) {
+        std::cerr << "scenario failed: " << result.error_message << '\n';
+        return 1;
+    }
     fs::create_directories(output_dir);
 
     const auto log_path = output_dir / (scenario_id + ".cert.log");

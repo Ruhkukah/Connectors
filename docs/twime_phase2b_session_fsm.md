@@ -2,7 +2,7 @@
 
 ## Scope
 
-Phase 2B adds a deterministic TWIME session/state-machine layer on top of the Phase 2A offline codec. It is still synthetic-only.
+Phase 2B adds a deterministic TWIME session/state-machine layer on top of the Phase 2A offline codec. Phase 2B.1 is the correctness hardening pass over that fake-session layer. It is still synthetic-only.
 
 Implemented in Phase 2B:
 
@@ -21,10 +21,12 @@ Implemented in Phase 2B:
 - fake-clock driven heartbeat scheduling through `on_timer_tick()`
 - sequence tracking for outbound next sequence and expected inbound sequence
 - scripted sequence-gap detection and synthetic `RetransmitRequest` generation
+- current-schema-aware session/application message classification through generated TWIME metadata
 - bounded in-memory inbound/outbound journals
 - in-memory recovery-state persistence for deterministic tests
 - deterministic certification-style decoded logs for all inbound/outbound session traffic
 - synthetic TWIME certification scenarios runnable through `apps/moex_cert_runner`
+- fake-session correctness rules for keepalive range, heartbeat frequency, retransmit count, clean terminate flow, and recoverability metadata
 
 Explicit non-goals remain:
 
@@ -65,15 +67,24 @@ Phase 2B currently models these session-level messages:
 Modeled behavior:
 
 - `ConnectFake` emits `Establish` from config and enters `Establishing`
-- `EstablishmentAck` transitions the session to `Active`
+- outbound client `Sequence` heartbeats encode `NextSeqNo=null`
+- inbound server `Sequence` may carry `NextSeqNo` and can trigger synthetic gap detection
+- `EstablishmentAck.NextSeqNo` initializes or reconciles the next expected inbound application message number
+- `EstablishmentAck` does not overwrite outbound client sequence state
+- acknowledged `KeepaliveInterval` must be in the `1000..60000 ms` range and becomes the active heartbeat interval
 - `EstablishmentReject` transitions the session to `Rejected` and records the reject code
 - `SendTerminate` emits `Terminate` and enters `Terminating`
-- fake peer close during termination transitions to `Terminated`
-- `Sequence` can be sent from the fake clock and received from the fake peer
-- sequence gaps move the session into `Recovering`
+- clean termination requires inbound `Terminate(Finished)`; peer close before that is not a clean shutdown
+- fake-clock heartbeats are scheduled from the active keepalive interval rather than an independent wall-clock timer
+- the fake model prevents more than three client heartbeats per second; the TWIME-recommended `600 ms` spacing is documented but not hard-enforced separately
+- only inbound application-layer messages consume the inbound application sequence counter
+- session-layer messages such as `EstablishmentAck`, `Sequence`, `Retransmission`, `FloodReject`, `SessionReject`, and `BusinessMessageReject` do not consume the inbound application sequence counter
 - `RetransmitRequest` can be generated from explicit commands or scripted gaps
+- normal fake session recovery limits `RetransmitRequest.Count` to `10`
+- fake full-recovery mode limits `RetransmitRequest.Count` to `1000`
 - `Retransmission` metadata can be accepted from fake transport and logged
 - `FloodReject`, `SessionReject`, and `BusinessMessageReject` are surfaced as deterministic session/application events
+- `BusinessMessageReject` is surfaced but marked non-recoverable in journal metadata
 
 ## Fake Clock and Timers
 
@@ -99,7 +110,7 @@ Phase 2B adds durable-state interfaces but uses only in-memory/test implementati
 - `recovery_epoch`
 - `last_clean_shutdown`
 
-Bounded journals store deterministic copies of inbound and outbound encoded frames together with their decoded certification log lines. They are designed for tests and scenario replay, not for performance.
+Bounded journals store deterministic copies of inbound and outbound encoded frames together with their decoded certification log lines. Each entry also carries synthetic recoverability metadata so fake-session tests can distinguish recoverable application messages from non-recoverable session messages and rejects.
 
 ## Synthetic Certification Scenarios
 
@@ -108,12 +119,19 @@ Synthetic TWIME scenarios live under `cert/scenarios/twime/` and are executed by
 Current scenario coverage:
 
 - `session_establish.yaml`
+- `session_establish_ack_sets_inbound_counter.yaml`
 - `session_reject.yaml`
 - `heartbeat_sequence.yaml`
+- `client_sequence_heartbeat_null_nextseqno.yaml`
 - `terminate.yaml`
+- `terminate_requires_inbound_terminate.yaml`
 - `retransmit_last5.yaml`
+- `normal_retransmit_limit_10.yaml`
+- `full_recovery_retransmit_limit_1000.yaml`
+- `heartbeat_rate_violation.yaml`
 - `flood_reject.yaml`
 - `business_reject.yaml`
+- `business_reject_non_recoverable.yaml`
 
 Run one directly:
 
@@ -140,10 +158,14 @@ Phase 2B adds:
 
 - `twime_session_establish_test`
 - `twime_session_reject_test`
+- `twime_keepalive_ack_test`
 - `twime_heartbeat_fake_clock_test`
+- `twime_heartbeat_rate_limit_test`
 - `twime_terminate_test`
 - `twime_sequence_gap_test`
+- `twime_message_layer_rules_test`
 - `twime_retransmit_request_test`
+- `twime_retransmit_limit_test`
 - `twime_retransmission_test`
 - `twime_flood_reject_test`
 - `twime_business_reject_test`

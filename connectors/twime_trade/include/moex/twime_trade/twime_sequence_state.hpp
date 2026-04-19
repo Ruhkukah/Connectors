@@ -39,4 +39,4 @@ class TwimeSequenceState {
     std::uint64_t last_peer_next_seq_no_{0};
 };
 
-}  // namespace moex::twime_trade
+} // namespace moex::twime_trade

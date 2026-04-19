@@ -45,4 +45,4 @@ std::size_t TwimeBoundedJournal::capacity() const noexcept {
     return capacity_;
 }
 
-}  // namespace moex::twime_trade
+} // namespace moex::twime_trade

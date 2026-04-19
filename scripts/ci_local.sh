@@ -45,7 +45,9 @@ ctest --test-dir "$BUILD_DIR" --output-on-failure
 "$BUILD_DIR"/tools/twime_codegen --schema protocols/twime_sbe/schema/twime_spectra-7.7.xml --out protocols/twime_sbe/generated --check
 "$BUILD_DIR"/tools/twime_fixture_check --fixtures tests/fixtures/twime_sbe --check
 "$BUILD_DIR"/tools/source_style_check --require-clang-format \
+  connectors/twime_trade \
   protocols/twime_sbe \
+  tests/twime_trade \
   tests/twime_sbe \
   tools/twime_codegen.py \
   tools/twime_schema_common.py \

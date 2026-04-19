@@ -23,7 +23,8 @@ int main() {
                                                    "EstablishmentReject did not transition session to Rejected");
             auto events = session.drain_events();
             moex::twime_sbe::test::require(
-                moex::twime_trade::test::find_last_event(events, moex::twime_trade::TwimeSessionEventType::EstablishmentRejected) != nullptr,
+                moex::twime_trade::test::find_last_event(
+                    events, moex::twime_trade::TwimeSessionEventType::EstablishmentRejected) != nullptr,
                 "EstablishmentRejected event missing");
         }
 
@@ -37,6 +38,11 @@ int main() {
             session.apply_command({moex::twime_trade::TwimeSessionCommandType::ConnectFake});
 
             auto ack = moex::twime_trade::test::make_request("EstablishmentAck");
+            for (auto& field : ack.fields) {
+                if (field.name == "NextSeqNo") {
+                    field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(11);
+                }
+            }
             moex::twime_trade::test::script_message(transport, ack);
             session.poll_transport();
 
@@ -46,10 +52,15 @@ int main() {
 
             auto events = session.drain_events();
             moex::twime_sbe::test::require(
-                moex::twime_trade::test::find_last_event(events, moex::twime_trade::TwimeSessionEventType::SessionRejectReceived) != nullptr,
+                moex::twime_trade::test::find_last_event(
+                    events, moex::twime_trade::TwimeSessionEventType::SessionRejectReceived) != nullptr,
                 "SessionReject event missing");
             moex::twime_sbe::test::require(session.state() == moex::twime_trade::TwimeSessionState::Active,
                                            "SessionReject should not change state away from Active");
+            moex::twime_sbe::test::require(session.sequence_state().next_expected_inbound_seq() == 11,
+                                           "SessionReject must not consume application sequence state");
+            moex::twime_sbe::test::require(!session.inbound_journal().last_n(1).front().recoverable,
+                                           "SessionReject must not be marked recoverable");
         }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

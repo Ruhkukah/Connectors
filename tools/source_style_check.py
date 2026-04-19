@@ -10,6 +10,25 @@ import subprocess
 SOURCE_SUFFIXES = {".cpp", ".hpp", ".py"}
 
 
+def find_clang_format() -> str | None:
+    clang_format = shutil.which("clang-format")
+    if clang_format is not None:
+        return clang_format
+    xcrun = shutil.which("xcrun")
+    if xcrun is None:
+        return None
+    result = subprocess.run(
+        [xcrun, "--find", "clang-format"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    candidate = result.stdout.strip()
+    return candidate or None
+
+
 def iter_source_files(paths: list[Path]) -> list[Path]:
     discovered: list[Path] = []
     for path in paths:
@@ -46,7 +65,7 @@ def main() -> int:
                 failures.append(f"{path}:{index}: line exceeds {max_length} characters")
                 break
 
-    clang_format = shutil.which("clang-format")
+    clang_format = find_clang_format()
     if args.require_clang_format and clang_format is None:
         failures.append("clang-format is required but not installed")
     if clang_format is not None:

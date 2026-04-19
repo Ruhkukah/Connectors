@@ -28,6 +28,15 @@ set(MOEX_APPS_BUILD_DIR "${MOEX_BUILD_ROOT}/apps")
 set(MOEX_TEST_OUTPUT_DIR "${MOEX_BUILD_ROOT}/test-output")
 set(MOEX_PYTHON_DEPS_DIR "${MOEX_BUILD_ROOT}/python-deps")
 
+set(MOEX_ALL_SANITIZER_FLAGS
+    "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} ${CMAKE_EXE_LINKER_FLAGS} ${CMAKE_SHARED_LINKER_FLAGS}")
+string(FIND "${MOEX_ALL_SANITIZER_FLAGS}" "-fsanitize=" MOEX_SANITIZER_FLAGS_INDEX)
+if(MOEX_SANITIZER_FLAGS_INDEX GREATER -1)
+    set(MOEX_SANITIZERS_ENABLED TRUE)
+else()
+    set(MOEX_SANITIZERS_ENABLED FALSE)
+endif()
+
 file(MAKE_DIRECTORY "${MOEX_TOOLS_BUILD_DIR}")
 file(MAKE_DIRECTORY "${MOEX_APPS_BUILD_DIR}")
 file(MAKE_DIRECTORY "${MOEX_TEST_OUTPUT_DIR}")
@@ -199,10 +208,14 @@ moex_add_twime_test(twime_optional_string_policy_test tests/twime_sbe/twime_opti
 
 moex_add_twime_trade_test(twime_session_establish_test tests/twime_trade/twime_session_establish_test.cpp)
 moex_add_twime_trade_test(twime_session_reject_test tests/twime_trade/twime_session_reject_test.cpp)
+moex_add_twime_trade_test(twime_keepalive_ack_test tests/twime_trade/twime_keepalive_ack_test.cpp)
 moex_add_twime_trade_test(twime_heartbeat_fake_clock_test tests/twime_trade/twime_heartbeat_fake_clock_test.cpp)
+moex_add_twime_trade_test(twime_heartbeat_rate_limit_test tests/twime_trade/twime_heartbeat_rate_limit_test.cpp)
 moex_add_twime_trade_test(twime_terminate_test tests/twime_trade/twime_terminate_test.cpp)
 moex_add_twime_trade_test(twime_sequence_gap_test tests/twime_trade/twime_sequence_gap_test.cpp)
+moex_add_twime_trade_test(twime_message_layer_rules_test tests/twime_trade/twime_message_layer_rules_test.cpp)
 moex_add_twime_trade_test(twime_retransmit_request_test tests/twime_trade/twime_retransmit_request_test.cpp)
+moex_add_twime_trade_test(twime_retransmit_limit_test tests/twime_trade/twime_retransmit_limit_test.cpp)
 moex_add_twime_trade_test(twime_retransmission_test tests/twime_trade/twime_retransmission_test.cpp)
 moex_add_twime_trade_test(twime_flood_reject_test tests/twime_trade/twime_flood_reject_test.cpp)
 moex_add_twime_trade_test(twime_business_reject_test tests/twime_trade/twime_business_reject_test.cpp)
@@ -279,6 +292,18 @@ add_test(
         --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
 
 add_test(
+    NAME twime_cert_runner_client_sequence_heartbeat
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/client_sequence_heartbeat_null_nextseqno.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
+
+add_test(
+    NAME twime_cert_runner_terminate_requires_inbound
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/terminate_requires_inbound_terminate.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
+
+add_test(
     NAME spec_indexer_local_fixture
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/spec_indexer"
         --config "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/spec_indexer_config.json"
@@ -341,7 +366,10 @@ add_test(
 add_test(
     NAME source_style_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/source_style_check"
+        --require-clang-format
+        "${CMAKE_CURRENT_SOURCE_DIR}/connectors/twime_trade"
         "${CMAKE_CURRENT_SOURCE_DIR}/protocols/twime_sbe"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_trade"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_sbe"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_codegen.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_schema_common.py"
@@ -349,45 +377,49 @@ add_test(
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_schema_materialize.py")
 
 if(DOTNET_EXECUTABLE)
-    add_test(
-        NAME dotnet_abi_smoke
-        COMMAND "${DOTNET_EXECUTABLE}" run
-            --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiSmoke/AbiSmoke.csproj"
-            --framework net10.0
-            -- "$<TARGET_FILE:moex_phase0_abi>"
-               "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt")
-    set_tests_properties(dotnet_abi_smoke PROPERTIES
-        ENVIRONMENT
-            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
-
-    add_test(
-        NAME dotnet_abi_policy
-        COMMAND "${DOTNET_EXECUTABLE}" run
-            --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiPolicy/AbiPolicy.csproj"
-            --framework net10.0
-            -- "$<TARGET_FILE:moex_phase0_abi>"
-               "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt")
-    set_tests_properties(dotnet_abi_policy PROPERTIES
-        ENVIRONMENT
-            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
-
-    if(EXISTS "${MOEX_ALORENGINE_PROJECT}")
-        add_test(
-            NAME dotnet_shadow_replay
-            COMMAND "${DOTNET_EXECUTABLE}" run
-                --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/ShadowReplay/ShadowReplay.csproj"
-                --framework net10.0
-                "-p:AlorEngineProject=${MOEX_ALORENGINE_PROJECT}"
-                "-p:RestorePackagesPath=$ENV{HOME}/.nuget/packages"
-                -- "$<TARGET_FILE:moex_phase0_abi>"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/expected_report.json"
-                   "${MOEX_TEST_OUTPUT_DIR}/shadow-replay/diff.json")
-        set_tests_properties(dotnet_shadow_replay PROPERTIES
-            ENVIRONMENT
-                "DOTNET_CLI_HOME=$ENV{HOME};DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+    if(MOEX_SANITIZERS_ENABLED)
+        message(STATUS "Sanitizer flags detected; skipping dotnet ABI tests because dotnet cannot reliably load sanitized native libraries across hosts.")
     else()
-        message(STATUS "MOEX_ALORENGINE_PROJECT not set or not found; skipping dotnet_shadow_replay test")
+        add_test(
+            NAME dotnet_abi_smoke
+            COMMAND "${DOTNET_EXECUTABLE}" run
+                --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiSmoke/AbiSmoke.csproj"
+                --framework net10.0
+                -- "$<TARGET_FILE:moex_phase0_abi>"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt")
+        set_tests_properties(dotnet_abi_smoke PROPERTIES
+            ENVIRONMENT
+                "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+
+        add_test(
+            NAME dotnet_abi_policy
+            COMMAND "${DOTNET_EXECUTABLE}" run
+                --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiPolicy/AbiPolicy.csproj"
+                --framework net10.0
+                -- "$<TARGET_FILE:moex_phase0_abi>"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt")
+        set_tests_properties(dotnet_abi_policy PROPERTIES
+            ENVIRONMENT
+                "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+
+        if(EXISTS "${MOEX_ALORENGINE_PROJECT}")
+            add_test(
+                NAME dotnet_shadow_replay
+                COMMAND "${DOTNET_EXECUTABLE}" run
+                    --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/ShadowReplay/ShadowReplay.csproj"
+                    --framework net10.0
+                    "-p:AlorEngineProject=${MOEX_ALORENGINE_PROJECT}"
+                    "-p:RestorePackagesPath=$ENV{HOME}/.nuget/packages"
+                    -- "$<TARGET_FILE:moex_phase0_abi>"
+                       "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt"
+                       "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/expected_report.json"
+                       "${MOEX_TEST_OUTPUT_DIR}/shadow-replay/diff.json")
+            set_tests_properties(dotnet_shadow_replay PROPERTIES
+                ENVIRONMENT
+                    "DOTNET_CLI_HOME=$ENV{HOME};DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+        else()
+            message(STATUS "MOEX_ALORENGINE_PROJECT not set or not found; skipping dotnet_shadow_replay test")
+        endif()
     endif()
 else()
     message(STATUS "dotnet executable not found; skipping dotnet_abi_smoke test")

@@ -14,6 +14,11 @@
 
 namespace moex::twime_trade {
 
+enum class TwimeRecoveryMode {
+    NormalSessionRecovery,
+    FullRecoveryService,
+};
+
 enum class TwimeSessionState {
     Created,
     ConnectingFake,
@@ -53,7 +58,13 @@ enum class TwimeSessionEventType {
     SessionRejectReceived,
     BusinessRejectReceived,
     EstablishmentRejected,
+    TerminateReceived,
+    KeepaliveIntervalRejected,
+    HeartbeatRateViolation,
+    RetransmitLimitViolation,
     PeerClosed,
+    PeerClosedCleanAfterTerminateResponse,
+    PeerClosedUnexpectedWhileTerminating,
     Faulted,
 };
 
@@ -74,13 +85,15 @@ struct TwimeSessionConfig {
     std::string session_id{"twime_fake_session"};
     std::string credentials{"LOGIN"};
     std::uint32_t keepalive_interval_ms{1000};
-    std::uint32_t heartbeat_interval_ms{1000};
     std::size_t journal_capacity{64};
     std::size_t max_frame_size{4096};
     std::uint32_t rate_limit_window_ms{1000};
-    std::uint32_t max_messages_per_window{1024};
+    std::uint32_t max_total_messages_per_window{1024};
+    std::uint32_t max_trading_messages_per_window{1024};
+    std::uint32_t max_heartbeats_per_second{3};
     bool auto_request_retransmit_on_gap{true};
     std::uint64_t initial_recovery_epoch{1};
+    TwimeRecoveryMode recovery_mode{TwimeRecoveryMode::NormalSessionRecovery};
 };
 
 class TwimeFakeClock {
@@ -115,6 +128,7 @@ class TwimeSession {
     [[nodiscard]] const TwimeOutboundJournal& outbound_journal() const noexcept;
     [[nodiscard]] const TwimeInboundJournal& inbound_journal() const noexcept;
     [[nodiscard]] const std::vector<std::string>& cert_log_lines() const noexcept;
+    [[nodiscard]] std::uint32_t active_keepalive_interval_ms() const noexcept;
 
     void apply_command(const TwimeSessionCommand& command);
     void on_timer_tick();
@@ -131,14 +145,19 @@ class TwimeSession {
     void process_inbound_frame(const TwimeFakeTransportFrame& frame);
     void process_inbound_message(const moex::twime_sbe::DecodedTwimeMessage& message,
                                  const TwimeFakeTransportFrame& frame);
+    bool request_missing_messages(std::uint64_t from_seq_no, std::uint64_t to_seq_no, std::string summary);
+    [[nodiscard]] bool validate_keepalive_interval(std::uint64_t value);
+    [[nodiscard]] bool is_recoverable_message(const moex::twime_sbe::DecodedTwimeMessage& message) const noexcept;
+    [[nodiscard]] bool consumes_inbound_sequence(const moex::twime_sbe::DecodedTwimeMessage& message) const noexcept;
+    [[nodiscard]] std::uint32_t max_retransmit_request_count() const noexcept;
 
     void transition_to(TwimeSessionState new_state, std::string summary);
     void append_event(TwimeSessionEvent event);
     void append_cert_log(const std::string& direction, const std::string& formatted_message);
     void persist_recovery_state();
 
-    bool send_message(const moex::twime_sbe::TwimeEncodeRequest& request, bool consumes_sequence,
-                      TwimeSessionEventType event_type, std::string summary);
+    bool send_message(const moex::twime_sbe::TwimeEncodeRequest& request, TwimeSessionEventType event_type,
+                      std::string summary);
     [[nodiscard]] std::uint64_t next_heartbeat_due_ms() const noexcept;
 
     TwimeSessionConfig config_;
@@ -153,10 +172,13 @@ class TwimeSession {
     TwimeInboundJournal inbound_journal_;
     TwimeRateLimitModel rate_limit_model_;
     TwimeSessionState state_{TwimeSessionState::Created};
+    std::uint32_t active_keepalive_interval_ms_{1000};
     std::uint64_t heartbeat_due_ms_{0};
+    bool recovering_from_dirty_snapshot_{false};
+    bool terminate_response_received_{false};
     std::optional<std::int64_t> last_reject_code_;
     std::vector<TwimeSessionEvent> pending_events_;
     std::vector<std::string> cert_log_lines_;
 };
 
-}  // namespace moex::twime_trade
+} // namespace moex::twime_trade

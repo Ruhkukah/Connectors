@@ -8,5 +8,5 @@ steps:
     action: connect and inject EstablishmentAck
     expected: session becomes Active
   - step_id: terminate
-    action: send Terminate and close fake peer
-    expected: session becomes Terminated
+    action: send Terminate, receive inbound Terminate(Finished), then close fake peer
+    expected: session becomes Terminated cleanly

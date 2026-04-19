@@ -2,20 +2,20 @@
 
 #include "moex/twime_sbe/twime_schema.hpp"
 
-#include <sstream>
-
 namespace moex::twime_trade {
 
 namespace {
 
 using moex::twime_sbe::DecodedTwimeField;
 using moex::twime_sbe::DecodedTwimeMessage;
+using moex::twime_sbe::kTwimeTimestampNull;
 using moex::twime_sbe::TwimeDecodeError;
+using moex::twime_sbe::TwimeDirection;
 using moex::twime_sbe::TwimeEncodeRequest;
 using moex::twime_sbe::TwimeFieldInput;
 using moex::twime_sbe::TwimeFieldKind;
 using moex::twime_sbe::TwimeFieldValue;
-using moex::twime_sbe::kTwimeTimestampNull;
+using moex::twime_sbe::TwimeLayer;
 
 constexpr std::uint16_t kTemplateEstablish = 5000;
 constexpr std::uint16_t kTemplateEstablishmentAck = 5001;
@@ -42,10 +42,12 @@ std::optional<std::uint64_t> field_unsigned(const DecodedTwimeMessage& message, 
     if (field == nullptr) {
         return std::nullopt;
     }
+
     const auto& type = *field->metadata->type;
     if (type.kind == TwimeFieldKind::TimeStamp && field->value.unsigned_value == kTwimeTimestampNull) {
         return std::nullopt;
     }
+
     if (field->metadata->nullable && field->metadata->has_null_value &&
         field->value.unsigned_value == field->metadata->null_value) {
         return std::nullopt;
@@ -58,43 +60,19 @@ std::optional<std::int64_t> field_signed(const DecodedTwimeMessage& message, std
     if (field == nullptr) {
         return std::nullopt;
     }
+
     const auto& type = *field->metadata->type;
-    if (type.kind == TwimeFieldKind::Primitive &&
-        (type.primitive_type == moex::twime_sbe::TwimePrimitiveType::Int8 ||
-         type.primitive_type == moex::twime_sbe::TwimePrimitiveType::Int16 ||
-         type.primitive_type == moex::twime_sbe::TwimePrimitiveType::Int32 ||
-         type.primitive_type == moex::twime_sbe::TwimePrimitiveType::Int64)) {
+    if (type.kind == TwimeFieldKind::Primitive && (type.primitive_type == moex::twime_sbe::TwimePrimitiveType::Int8 ||
+                                                   type.primitive_type == moex::twime_sbe::TwimePrimitiveType::Int16 ||
+                                                   type.primitive_type == moex::twime_sbe::TwimePrimitiveType::Int32 ||
+                                                   type.primitive_type == moex::twime_sbe::TwimePrimitiveType::Int64)) {
         return field->value.signed_value;
     }
     return static_cast<std::int64_t>(field->value.unsigned_value);
 }
 
-std::string state_name(TwimeSessionState state) {
-    switch (state) {
-    case TwimeSessionState::Created:
-        return "Created";
-    case TwimeSessionState::ConnectingFake:
-        return "ConnectingFake";
-    case TwimeSessionState::Establishing:
-        return "Establishing";
-    case TwimeSessionState::Active:
-        return "Active";
-    case TwimeSessionState::Terminating:
-        return "Terminating";
-    case TwimeSessionState::Terminated:
-        return "Terminated";
-    case TwimeSessionState::Rejected:
-        return "Rejected";
-    case TwimeSessionState::Faulted:
-        return "Faulted";
-    case TwimeSessionState::Recovering:
-        return "Recovering";
-    }
-    return "Unknown";
-}
-
 TwimeEncodeRequest build_request(std::string_view message_name, std::uint16_t template_id,
-                                 std::initializer_list<TwimeFieldInput> fields) {
+                                 std::initializer_list<TwimeFieldInput> fields = {}) {
     TwimeEncodeRequest request;
     request.message_name = std::string(message_name);
     request.template_id = template_id;
@@ -102,22 +80,16 @@ TwimeEncodeRequest build_request(std::string_view message_name, std::uint16_t te
     return request;
 }
 
-bool template_counts_toward_sequence(std::uint16_t template_id) {
-    return template_id >= 6000 || template_id >= 7000;
-}
-
-}  // namespace
+} // namespace
 
 TwimeSession::TwimeSession(TwimeSessionConfig config, TwimeFakeTransport& transport,
                            TwimeRecoveryStateStore& recovery_store, TwimeFakeClock& clock)
-    : config_(std::move(config)),
-      transport_(transport),
-      recovery_store_(recovery_store),
-      clock_(clock),
-      outbound_journal_(config_.journal_capacity),
-      inbound_journal_(config_.journal_capacity),
-      rate_limit_model_(config_.max_messages_per_window, config_.rate_limit_window_ms) {
+    : config_(std::move(config)), transport_(transport), recovery_store_(recovery_store), clock_(clock),
+      outbound_journal_(config_.journal_capacity), inbound_journal_(config_.journal_capacity),
+      rate_limit_model_(config_.max_total_messages_per_window, config_.max_trading_messages_per_window,
+                        config_.max_heartbeats_per_second, config_.rate_limit_window_ms) {
     recovery_state_.recovery_epoch = config_.initial_recovery_epoch;
+    active_keepalive_interval_ms_ = config_.keepalive_interval_ms;
 }
 
 TwimeSessionState TwimeSession::state() const noexcept {
@@ -146,6 +118,10 @@ const TwimeInboundJournal& TwimeSession::inbound_journal() const noexcept {
 
 const std::vector<std::string>& TwimeSession::cert_log_lines() const noexcept {
     return cert_log_lines_;
+}
+
+std::uint32_t TwimeSession::active_keepalive_interval_ms() const noexcept {
+    return active_keepalive_interval_ms_;
 }
 
 void TwimeSession::apply_command(const TwimeSessionCommand& command) {
@@ -199,7 +175,8 @@ void TwimeSession::connect_fake() {
     if (const auto snapshot = recovery_store_.load(config_.session_id)) {
         recovery_state_ = *snapshot;
         sequence_state_.reset(recovery_state_.next_outbound_seq, recovery_state_.next_expected_inbound_seq);
-        if (!recovery_state_.last_clean_shutdown) {
+        recovering_from_dirty_snapshot_ = !recovery_state_.last_clean_shutdown;
+        if (recovering_from_dirty_snapshot_) {
             ++recovery_state_.recovery_epoch;
             transition_to(TwimeSessionState::Recovering, "dirty shutdown snapshot loaded");
         }
@@ -212,13 +189,16 @@ void TwimeSession::connect_fake() {
             .last_clean_shutdown = true,
         };
         sequence_state_.reset();
+        recovering_from_dirty_snapshot_ = false;
     }
 
     transport_.connect();
     transition_to(TwimeSessionState::ConnectingFake, "fake transport connected");
 
+    active_keepalive_interval_ms_ = config_.keepalive_interval_ms;
     recovery_state_.last_clean_shutdown = false;
     recovery_state_.last_establishment_id = clock_.now_ns();
+    terminate_response_received_ = false;
     persist_recovery_state();
 
     transition_to(TwimeSessionState::Establishing, "emitting Establish");
@@ -229,7 +209,7 @@ void TwimeSession::connect_fake() {
                           {"KeepaliveInterval", TwimeFieldValue::delta_millisecs(config_.keepalive_interval_ms)},
                           {"Credentials", TwimeFieldValue::string(config_.credentials)},
                       }),
-        false, TwimeSessionEventType::OutboundMessage, "Establish sent");
+        TwimeSessionEventType::OutboundMessage, "Establish sent");
 }
 
 void TwimeSession::send_terminate() {
@@ -237,53 +217,78 @@ void TwimeSession::send_terminate() {
         state_ != TwimeSessionState::Establishing) {
         return;
     }
-    send_message(build_request("Terminate", kTemplateTerminate, {{"TerminationCode", TwimeFieldValue::enum_name("Finished")}}),
-                 false, TwimeSessionEventType::OutboundMessage, "Terminate sent");
-    transition_to(TwimeSessionState::Terminating, "awaiting fake peer close");
+    if (!send_message(build_request("Terminate", kTemplateTerminate,
+                                    {{"TerminationCode", TwimeFieldValue::enum_name("Finished")}}),
+                      TwimeSessionEventType::OutboundMessage, "Terminate sent")) {
+        return;
+    }
+    terminate_response_received_ = false;
+    transition_to(TwimeSessionState::Terminating, "awaiting inbound Terminate(Finished)");
 }
 
 void TwimeSession::send_heartbeat() {
     if (state_ != TwimeSessionState::Active) {
         return;
     }
-    if (!send_message(build_request("Sequence", kTemplateSequence,
-                                    {{"NextSeqNo", TwimeFieldValue::unsigned_integer(sequence_state_.next_outbound_seq())}}),
-                      false, TwimeSessionEventType::HeartbeatSent, "Sequence heartbeat sent")) {
+    if (!send_message(build_request("Sequence", kTemplateSequence), TwimeSessionEventType::HeartbeatSent,
+                      "Sequence heartbeat sent")) {
         return;
     }
-    heartbeat_due_ms_ = clock_.now_ms() + config_.heartbeat_interval_ms;
+    heartbeat_due_ms_ = clock_.now_ms() + active_keepalive_interval_ms_;
 }
 
 void TwimeSession::send_retransmit_request(std::uint64_t from_seq_no, std::uint32_t count) {
     if (count == 0) {
         return;
     }
+    if (count > max_retransmit_request_count()) {
+        append_event(TwimeSessionEvent{
+            .type = TwimeSessionEventType::RetransmitLimitViolation,
+            .state = state_,
+            .gap_from = from_seq_no,
+            .gap_to = from_seq_no + count - 1,
+            .summary = "RetransmitRequest exceeds fake-mode limit",
+        });
+        transition_to(TwimeSessionState::Faulted, "RetransmitRequest exceeds fake-mode limit");
+        return;
+    }
+
     send_message(build_request("RetransmitRequest", kTemplateRetransmitRequest,
                                {
                                    {"Timestamp", TwimeFieldValue::timestamp(clock_.now_ns())},
                                    {"FromSeqNo", TwimeFieldValue::unsigned_integer(from_seq_no)},
                                    {"Count", TwimeFieldValue::unsigned_integer(count)},
                                }),
-                 false, TwimeSessionEventType::RetransmitRequested, "RetransmitRequest sent");
+                 TwimeSessionEventType::RetransmitRequested, "RetransmitRequest sent");
 }
 
 void TwimeSession::process_transport_event(const TwimeFakeTransportEvent& event) {
     if (event.kind == TwimeFakeTransportEventKind::PeerClosed) {
         transport_.disconnect();
-        append_event(TwimeSessionEvent{
-            .type = TwimeSessionEventType::PeerClosed,
-            .state = state_,
-            .summary = "fake peer closed transport",
-        });
-        if (state_ == TwimeSessionState::Terminating) {
-            recovery_state_.last_clean_shutdown = true;
-            persist_recovery_state();
-            transition_to(TwimeSessionState::Terminated, "fake peer close after Terminate");
+        if (state_ == TwimeSessionState::Terminated && terminate_response_received_) {
+            append_event(TwimeSessionEvent{
+                .type = TwimeSessionEventType::PeerClosedCleanAfterTerminateResponse,
+                .state = state_,
+                .summary = "fake peer closed after inbound Terminate(Finished)",
+            });
+        } else if (state_ == TwimeSessionState::Terminating) {
+            append_event(TwimeSessionEvent{
+                .type = TwimeSessionEventType::PeerClosedUnexpectedWhileTerminating,
+                .state = state_,
+                .summary = "fake peer closed before inbound Terminate(Finished)",
+            });
+            transition_to(TwimeSessionState::Faulted, "peer close while Terminating without Terminate(Finished)");
         } else {
+            append_event(TwimeSessionEvent{
+                .type = TwimeSessionEventType::PeerClosed,
+                .state = state_,
+                .summary = "fake peer closed transport",
+            });
             transition_to(TwimeSessionState::Faulted, "unexpected peer close");
         }
         return;
     }
+
     process_inbound_frame(event.frame);
 }
 
@@ -310,10 +315,24 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
         return;
     }
 
-    if (frame.consumes_sequence) {
+    const bool inbound_consumes_sequence = consumes_inbound_sequence(decoded);
+    if (inbound_consumes_sequence && frame.sequence_number == 0) {
+        transition_to(TwimeSessionState::Faulted, "fake application message missing sequence number");
+        append_event(TwimeSessionEvent{
+            .type = TwimeSessionEventType::Faulted,
+            .state = state_,
+            .template_id = decoded.header.template_id,
+            .message_name = std::string(decoded.metadata->name),
+            .summary = "fake application message missing sequence number",
+        });
+        return;
+    }
+
+    if (inbound_consumes_sequence) {
         const auto observation = sequence_state_.observe_inbound(frame.sequence_number, true);
         recovery_state_.next_expected_inbound_seq = sequence_state_.next_expected_inbound_seq();
         persist_recovery_state();
+
         if (observation.gap.has_value()) {
             transition_to(TwimeSessionState::Recovering, "inbound sequence gap detected");
             append_event(TwimeSessionEvent{
@@ -327,9 +346,8 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
                 .summary = "inbound sequence gap detected",
             });
             if (config_.auto_request_retransmit_on_gap) {
-                send_retransmit_request(observation.gap->from_seq_no,
-                                        static_cast<std::uint32_t>(observation.gap->to_seq_no -
-                                                                   observation.gap->from_seq_no + 1));
+                request_missing_messages(observation.gap->from_seq_no, observation.gap->to_seq_no,
+                                         "inbound sequence gap detected");
             }
         }
     }
@@ -337,7 +355,8 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
     const auto formatted = formatter_.format(decoded);
     inbound_journal_.append(TwimeJournalEntry{
         .sequence_number = frame.sequence_number,
-        .consumes_sequence = frame.consumes_sequence,
+        .consumes_sequence = inbound_consumes_sequence,
+        .recoverable = is_recoverable_message(decoded),
         .template_id = decoded.header.template_id,
         .message_name = std::string(decoded.metadata->name),
         .bytes = frame.bytes,
@@ -360,13 +379,59 @@ void TwimeSession::process_inbound_frame(const TwimeFakeTransportFrame& frame) {
 void TwimeSession::process_inbound_message(const DecodedTwimeMessage& message, const TwimeFakeTransportFrame& frame) {
     switch (message.header.template_id) {
     case kTemplateEstablishmentAck: {
-        if (const auto next_seq = field_unsigned(message, "NextSeqNo")) {
-            sequence_state_.restore_outbound_next(*next_seq);
-            recovery_state_.next_outbound_seq = *next_seq;
+        const auto keepalive = field_unsigned(message, "KeepaliveInterval").value_or(0);
+        if (!validate_keepalive_interval(keepalive)) {
+            append_event(TwimeSessionEvent{
+                .type = TwimeSessionEventType::KeepaliveIntervalRejected,
+                .state = state_,
+                .template_id = message.header.template_id,
+                .sequence_number = frame.sequence_number,
+                .reason_code = static_cast<std::int64_t>(keepalive),
+                .message_name = std::string(message.metadata->name),
+                .summary = "EstablishmentAck KeepaliveInterval out of range",
+                .cert_log_line = formatter_.format(message),
+            });
+            transition_to(TwimeSessionState::Faulted, "EstablishmentAck KeepaliveInterval out of range");
+            return;
+        }
+
+        active_keepalive_interval_ms_ = static_cast<std::uint32_t>(keepalive);
+        heartbeat_due_ms_ = clock_.now_ms() + active_keepalive_interval_ms_;
+
+        const auto expected_before = sequence_state_.next_expected_inbound_seq();
+        const auto ack_next_seq = field_unsigned(message, "NextSeqNo").value_or(expected_before);
+        bool waiting_for_retransmission = false;
+
+        if (recovering_from_dirty_snapshot_) {
+            if (ack_next_seq > expected_before) {
+                transition_to(TwimeSessionState::Recovering, "EstablishmentAck indicates missing inbound messages");
+                append_event(TwimeSessionEvent{
+                    .type = TwimeSessionEventType::SequenceGapDetected,
+                    .state = state_,
+                    .template_id = message.header.template_id,
+                    .gap_from = expected_before,
+                    .gap_to = ack_next_seq - 1,
+                    .message_name = std::string(message.metadata->name),
+                    .summary = "EstablishmentAck NextSeqNo indicates missing inbound messages",
+                    .cert_log_line = formatter_.format(message),
+                });
+                waiting_for_retransmission =
+                    request_missing_messages(expected_before, ack_next_seq - 1, "EstablishmentAck gap reconciliation");
+            } else {
+                sequence_state_.restore_expected_inbound_next(expected_before);
+                recovery_state_.next_expected_inbound_seq = sequence_state_.next_expected_inbound_seq();
+                persist_recovery_state();
+            }
+        } else {
+            sequence_state_.restore_expected_inbound_next(ack_next_seq);
+            recovery_state_.next_expected_inbound_seq = sequence_state_.next_expected_inbound_seq();
             persist_recovery_state();
         }
-        heartbeat_due_ms_ = clock_.now_ms() + config_.heartbeat_interval_ms;
-        transition_to(TwimeSessionState::Active, "EstablishmentAck received");
+
+        recovering_from_dirty_snapshot_ = false;
+        if (state_ != TwimeSessionState::Faulted && !waiting_for_retransmission) {
+            transition_to(TwimeSessionState::Active, "EstablishmentAck received");
+        }
         break;
     }
     case kTemplateEstablishmentReject: {
@@ -384,6 +449,28 @@ void TwimeSession::process_inbound_message(const DecodedTwimeMessage& message, c
         transition_to(TwimeSessionState::Rejected, "EstablishmentReject received");
         break;
     }
+    case kTemplateTerminate: {
+        const auto termination_code = field_unsigned(message, "TerminationCode").value_or(255);
+        append_event(TwimeSessionEvent{
+            .type = TwimeSessionEventType::TerminateReceived,
+            .state = state_,
+            .template_id = message.header.template_id,
+            .sequence_number = frame.sequence_number,
+            .reason_code = static_cast<std::int64_t>(termination_code),
+            .message_name = std::string(message.metadata->name),
+            .summary = "Terminate received",
+            .cert_log_line = formatter_.format(message),
+        });
+        if (termination_code == 0) {
+            terminate_response_received_ = true;
+            recovery_state_.last_clean_shutdown = true;
+            persist_recovery_state();
+            transition_to(TwimeSessionState::Terminated, "inbound Terminate(Finished) received");
+        } else {
+            transition_to(TwimeSessionState::Faulted, "inbound Terminate has non-Finished code");
+        }
+        break;
+    }
     case kTemplateSequence: {
         append_event(TwimeSessionEvent{
             .type = TwimeSessionEventType::HeartbeatReceived,
@@ -394,6 +481,7 @@ void TwimeSession::process_inbound_message(const DecodedTwimeMessage& message, c
             .summary = "Sequence heartbeat received",
             .cert_log_line = formatter_.format(message),
         });
+
         if (const auto next_seq = field_unsigned(message, "NextSeqNo")) {
             if (const auto gap = sequence_state_.observe_peer_next_seq(*next_seq)) {
                 transition_to(TwimeSessionState::Recovering, "peer NextSeqNo indicates a gap");
@@ -408,8 +496,7 @@ void TwimeSession::process_inbound_message(const DecodedTwimeMessage& message, c
                     .cert_log_line = formatter_.format(message),
                 });
                 if (config_.auto_request_retransmit_on_gap) {
-                    send_retransmit_request(gap->from_seq_no,
-                                            static_cast<std::uint32_t>(gap->to_seq_no - gap->from_seq_no + 1));
+                    request_missing_messages(gap->from_seq_no, gap->to_seq_no, "peer NextSeqNo indicates a gap");
                 }
             }
         }
@@ -480,6 +567,39 @@ void TwimeSession::process_inbound_message(const DecodedTwimeMessage& message, c
     }
 }
 
+bool TwimeSession::request_missing_messages(std::uint64_t from_seq_no, std::uint64_t to_seq_no,
+                                            std::string /*summary*/) {
+    if (to_seq_no < from_seq_no) {
+        return false;
+    }
+    send_retransmit_request(from_seq_no, static_cast<std::uint32_t>(to_seq_no - from_seq_no + 1));
+    return state_ != TwimeSessionState::Faulted;
+}
+
+bool TwimeSession::validate_keepalive_interval(std::uint64_t value) {
+    return value >= 1000 && value <= 60000;
+}
+
+bool TwimeSession::is_recoverable_message(const DecodedTwimeMessage& message) const noexcept {
+    return message.metadata != nullptr && message.metadata->layer == TwimeLayer::Application &&
+           message.header.template_id != kTemplateBusinessReject;
+}
+
+bool TwimeSession::consumes_inbound_sequence(const DecodedTwimeMessage& message) const noexcept {
+    return message.metadata != nullptr && message.metadata->layer == TwimeLayer::Application &&
+           message.metadata->direction != TwimeDirection::ClientToServer;
+}
+
+std::uint32_t TwimeSession::max_retransmit_request_count() const noexcept {
+    switch (config_.recovery_mode) {
+    case TwimeRecoveryMode::NormalSessionRecovery:
+        return 10;
+    case TwimeRecoveryMode::FullRecoveryService:
+        return 1000;
+    }
+    return 10;
+}
+
 void TwimeSession::transition_to(TwimeSessionState new_state, std::string summary) {
     state_ = new_state;
     append_event(TwimeSessionEvent{
@@ -506,18 +626,8 @@ void TwimeSession::persist_recovery_state() {
     recovery_store_.save(config_.session_id, recovery_state_);
 }
 
-bool TwimeSession::send_message(const TwimeEncodeRequest& request, bool consumes_sequence, TwimeSessionEventType event_type,
+bool TwimeSession::send_message(const TwimeEncodeRequest& request, TwimeSessionEventType event_type,
                                 std::string summary) {
-    const auto rate_limit_decision = rate_limit_model_.observe_send(clock_.now_ms());
-    if (!rate_limit_decision.allowed) {
-        append_event(TwimeSessionEvent{
-            .type = TwimeSessionEventType::Faulted,
-            .state = state_,
-            .summary = "rate-limit model rejected outbound message",
-        });
-        return false;
-    }
-
     std::vector<std::byte> bytes;
     const auto encode_error = codec_.encode_message(request, bytes);
     if (encode_error != TwimeDecodeError::Ok) {
@@ -531,7 +641,36 @@ bool TwimeSession::send_message(const TwimeEncodeRequest& request, bool consumes
         return false;
     }
 
-    const auto transport_sequence = sequence_state_.reserve_outbound_sequence(consumes_sequence);
+    const auto classification = classify_outbound_message(*decoded.metadata);
+    const auto rate_limit_decision = rate_limit_model_.observe_send(clock_.now_ms(), classification);
+    if (!rate_limit_decision.allowed) {
+        if (rate_limit_decision.heartbeat_rate_violation) {
+            append_event(TwimeSessionEvent{
+                .type = TwimeSessionEventType::HeartbeatRateViolation,
+                .state = state_,
+                .template_id = decoded.header.template_id,
+                .message_name = std::string(decoded.metadata->name),
+                .summary = "more than three heartbeat messages per second in fake model",
+                .cert_log_line = formatter_.format(decoded),
+            });
+            transition_to(TwimeSessionState::Faulted, "heartbeat rate violation");
+        } else {
+            append_event(TwimeSessionEvent{
+                .type = TwimeSessionEventType::Faulted,
+                .state = state_,
+                .template_id = decoded.header.template_id,
+                .message_name = std::string(decoded.metadata->name),
+                .summary = "rate-limit model rejected outbound message",
+                .cert_log_line = formatter_.format(decoded),
+            });
+            transition_to(TwimeSessionState::Faulted, "rate-limit model rejected outbound message");
+        }
+        return false;
+    }
+
+    const bool consumes_sequence = decoded.metadata->layer == TwimeLayer::Application &&
+                                   decoded.metadata->direction == TwimeDirection::ClientToServer;
+    const auto transport_sequence = consumes_sequence ? sequence_state_.reserve_outbound_sequence(true) : 0;
     persist_recovery_state();
 
     const auto formatted = formatter_.format(decoded);
@@ -543,6 +682,7 @@ bool TwimeSession::send_message(const TwimeEncodeRequest& request, bool consumes
     outbound_journal_.append(TwimeJournalEntry{
         .sequence_number = transport_sequence,
         .consumes_sequence = consumes_sequence,
+        .recoverable = false,
         .template_id = decoded.header.template_id,
         .message_name = std::string(decoded.metadata->name),
         .bytes = bytes,
@@ -565,4 +705,4 @@ std::uint64_t TwimeSession::next_heartbeat_due_ms() const noexcept {
     return heartbeat_due_ms_;
 }
 
-}  // namespace moex::twime_trade
+} // namespace moex::twime_trade

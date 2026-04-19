@@ -68,4 +68,4 @@ void TwimeSequenceState::restore_expected_inbound_next(std::uint64_t value) noex
     next_expected_inbound_seq_ = value == 0 ? 1 : value;
 }
 
-}  // namespace moex::twime_trade
+} // namespace moex::twime_trade

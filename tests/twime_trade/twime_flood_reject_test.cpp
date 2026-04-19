@@ -24,8 +24,8 @@ int main() {
         session.poll_transport();
 
         auto events = session.drain_events();
-        const auto* event =
-            moex::twime_trade::test::find_last_event(events, moex::twime_trade::TwimeSessionEventType::FloodRejectReceived);
+        const auto* event = moex::twime_trade::test::find_last_event(
+            events, moex::twime_trade::TwimeSessionEventType::FloodRejectReceived);
         moex::twime_sbe::test::require(event != nullptr, "FloodReject event missing");
         moex::twime_sbe::test::require(event->cert_log_line.find("FloodReject") != std::string::npos,
                                        "FloodReject cert log missing");
