@@ -89,6 +89,7 @@ set_target_properties(moex_phase0_abi PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/lib")
 
 add_subdirectory(protocols/twime_sbe)
+add_subdirectory(connectors/twime_trade)
 
 add_executable(moex_phase0_selfcheck
     tests/phase0_selfcheck.cpp)
@@ -128,6 +129,16 @@ moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "unicode_guard" "tools/u
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_cert_runner" "apps/moex_cert_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_replay_tool" "apps/moex_replay_tool.py")
 
+add_executable(moex_twime_cert_runner
+    apps/twime_cert_runner.cpp)
+target_link_libraries(moex_twime_cert_runner
+    PRIVATE
+        moex_twime_trade)
+target_compile_features(moex_twime_cert_runner PRIVATE cxx_std_20)
+set_target_properties(moex_twime_cert_runner PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
+    OUTPUT_NAME "moex_twime_cert_runner")
+
 add_library(twime_test_support STATIC
     tests/twime_sbe/twime_test_support.cpp)
 target_link_libraries(twime_test_support
@@ -156,6 +167,26 @@ function(moex_add_twime_test target_name source_file)
         COMMAND "${MOEX_BUILD_ROOT}/tests/${target_name}")
 endfunction()
 
+function(moex_add_twime_trade_test target_name source_file)
+    add_executable(${target_name} "${source_file}")
+    target_link_libraries(${target_name}
+        PRIVATE
+            moex_twime_trade
+            twime_test_support)
+    target_include_directories(${target_name}
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_trade"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_sbe")
+    target_compile_features(${target_name} PRIVATE cxx_std_20)
+    target_compile_definitions(${target_name}
+        PRIVATE
+            MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
+    set_property(TARGET ${target_name} PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+    add_test(
+        NAME ${target_name}
+        COMMAND "${MOEX_BUILD_ROOT}/tests/${target_name}")
+endfunction()
+
 moex_add_twime_test(twime_schema_inventory_test tests/twime_sbe/twime_schema_inventory_test.cpp)
 moex_add_twime_test(twime_header_codec_test tests/twime_sbe/twime_header_codec_test.cpp)
 moex_add_twime_test(twime_primitive_types_test tests/twime_sbe/twime_primitive_types_test.cpp)
@@ -165,6 +196,17 @@ moex_add_twime_test(twime_decode_error_test tests/twime_sbe/twime_decode_error_t
 moex_add_twime_test(twime_cert_log_formatter_test tests/twime_sbe/twime_cert_log_formatter_test.cpp)
 moex_add_twime_test(twime_enum_set_validation_test tests/twime_sbe/twime_enum_set_validation_test.cpp)
 moex_add_twime_test(twime_optional_string_policy_test tests/twime_sbe/twime_optional_string_policy_test.cpp)
+
+moex_add_twime_trade_test(twime_session_establish_test tests/twime_trade/twime_session_establish_test.cpp)
+moex_add_twime_trade_test(twime_session_reject_test tests/twime_trade/twime_session_reject_test.cpp)
+moex_add_twime_trade_test(twime_heartbeat_fake_clock_test tests/twime_trade/twime_heartbeat_fake_clock_test.cpp)
+moex_add_twime_trade_test(twime_terminate_test tests/twime_trade/twime_terminate_test.cpp)
+moex_add_twime_trade_test(twime_sequence_gap_test tests/twime_trade/twime_sequence_gap_test.cpp)
+moex_add_twime_trade_test(twime_retransmit_request_test tests/twime_trade/twime_retransmit_request_test.cpp)
+moex_add_twime_trade_test(twime_retransmission_test tests/twime_trade/twime_retransmission_test.cpp)
+moex_add_twime_trade_test(twime_flood_reject_test tests/twime_trade/twime_flood_reject_test.cpp)
+moex_add_twime_trade_test(twime_business_reject_test tests/twime_trade/twime_business_reject_test.cpp)
+moex_add_twime_trade_test(twime_cert_scenario_runner_test tests/twime_trade/twime_cert_scenario_runner_test.cpp)
 
 add_custom_target(twime_codegen_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/twime_codegen"
@@ -229,6 +271,12 @@ add_test(
     COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
         --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/stub/phase0_stub.yaml"
         --output-dir "${MOEX_TEST_OUTPUT_DIR}/cert-runner")
+
+add_test(
+    NAME twime_cert_runner_session_establish
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/session_establish.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
 
 add_test(
     NAME spec_indexer_local_fixture

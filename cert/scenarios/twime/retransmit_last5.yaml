@@ -1,0 +1,15 @@
+scenario_id: twime_retransmit_last5
+title: Synthetic TWIME retransmit last 5
+metadata:
+  owner: phase2b
+  mode: fake_transport
+steps:
+  - step_id: establish
+    action: connect and inject EstablishmentAck
+    expected: session becomes Active
+  - step_id: gap
+    action: inject Sequence with NextSeqNo=6
+    expected: RetransmitRequest for the last 5 messages is emitted
+  - step_id: retransmission
+    action: inject Retransmission metadata
+    expected: session returns to Active

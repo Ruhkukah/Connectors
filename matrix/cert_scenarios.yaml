@@ -30,6 +30,27 @@ scenarios:
   - scenario_id: scenario_twime_test_3_recovery_service
     artifact_id: moex_cert_procedure
     title: TWIME Test 3 recovery-service retransmission metadata
+  - scenario_id: scenario_twime_fake_session_establish
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport session establish
+  - scenario_id: scenario_twime_fake_session_reject
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport establishment reject
+  - scenario_id: scenario_twime_fake_heartbeat_sequence
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport heartbeat and Sequence handling
+  - scenario_id: scenario_twime_fake_terminate
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport terminate and peer close
+  - scenario_id: scenario_twime_fake_retransmit_last5
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport retransmit last 5 handling
+  - scenario_id: scenario_twime_fake_flood_reject
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport FloodReject handling
+  - scenario_id: scenario_twime_fake_business_reject
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport BusinessMessageReject handling
   - scenario_id: scenario_fix_public
     artifact_id: moex_cert_procedure
     title: Public FIX certification appendix coverage

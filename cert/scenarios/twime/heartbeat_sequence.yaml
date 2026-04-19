@@ -1,0 +1,12 @@
+scenario_id: twime_heartbeat_sequence
+title: Synthetic TWIME heartbeat sequence
+metadata:
+  owner: phase2b
+  mode: fake_transport
+steps:
+  - step_id: establish
+    action: connect and inject EstablishmentAck
+    expected: session becomes Active
+  - step_id: tick
+    action: advance fake clock and call on_timer_tick
+    expected: Sequence heartbeat emitted

@@ -1,0 +1,12 @@
+scenario_id: twime_session_establish
+title: Synthetic TWIME session establish
+metadata:
+  owner: phase2b
+  mode: fake_transport
+steps:
+  - step_id: connect_fake
+    action: issue ConnectFake command
+    expected: Establish emitted and session enters Establishing
+  - step_id: inject_ack
+    action: inject EstablishmentAck through fake transport
+    expected: session enters Active

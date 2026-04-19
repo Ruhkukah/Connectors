@@ -1,0 +1,12 @@
+scenario_id: twime_flood_reject
+title: Synthetic TWIME flood reject
+metadata:
+  owner: phase2b
+  mode: fake_transport
+steps:
+  - step_id: establish
+    action: connect and inject EstablishmentAck
+    expected: session becomes Active
+  - step_id: flood_reject
+    action: inject FloodReject
+    expected: session-level FloodReject event is logged
