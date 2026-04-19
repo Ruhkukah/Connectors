@@ -1,6 +1,6 @@
 # MoexConnector
 
-Phase 2B repository for a standalone C++20/Linux-first MOEX connector suite.
+Phase 2D repository for a standalone C++20/Linux-first MOEX connector suite.
 
 License: MIT. See [LICENSE](LICENSE).
 
@@ -45,6 +45,10 @@ This repository still stops before live protocol/session implementation. The cur
   byte-stream transports. `TwimeSession` can now consume fragmented and
   batched inbound byte streams through `TwimeFrameAssembler`, while real
   sockets remain deferred.
+- Phase 2D adds a local-only nonblocking TCP transport skeleton for TWIME,
+  a loopback test server, reconnect/backoff gating, and TCP-backed session
+  tests. It still blocks non-loopback targets and does not connect to MOEX
+  or any broker.
 - Real MOEX protocol/network logic is still intentionally absent.
 
 ## Phase 2A / 2B
@@ -62,6 +66,10 @@ This repository still stops before live protocol/session implementation. The cur
   through the session path without introducing sockets.
 - See [docs/twime_phase2c_transport.md](docs/twime_phase2c_transport.md)
   for the fake byte-stream transport model and its explicit non-goals.
+- Phase 2D adds `TwimeTcpTransport` for local loopback testing only and
+  keeps it behind the same session/frame-assembler path. See
+  [docs/twime_phase2d_tcp_transport.md](docs/twime_phase2d_tcp_transport.md)
+  for the local-only TCP model and its explicit safety restrictions.
 - Phase 2B.1 corrects client `Sequence` heartbeats to encode
   `NextSeqNo=null`, treats `EstablishmentAck.NextSeqNo` as inbound state,
   requires inbound `Terminate(Finished)` for clean shutdown, validates
@@ -104,3 +112,6 @@ ctest --test-dir build --output-on-failure -R dotnet_shadow_replay
 - Phase 1 / 1.1 changes may harden the native stub, managed adapter, shadow replay, ABI policy, CI, docs, and test scaffolding, but do not add MOEX protocol logic.
 - Phase 2A adds only offline TWIME schema/codec logic.
 - Phase 2B adds only fake-transport TWIME session logic. It does not add real sockets, credentials, or live order routing.
+- Phase 2D adds only local loopback TCP transport. It still does not add
+  MOEX connectivity, broker connectivity, credentials, or live order
+  routing.

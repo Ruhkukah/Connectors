@@ -200,6 +200,26 @@ coverage:
     scenario_id: scenario_twime_fake_byte_transport
     inventory_id: osengine_moex_fixfasttwime_dir
     status: byte_stream_session_path_tested
+  - coverage_id: coverage_twime_tcp_transport_local
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_tcp_local_loopback
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_tcp_transport_local_tested
+  - coverage_id: coverage_twime_tcp_reconnect_policy
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_tcp_local_loopback
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_transport_reconnect_policy_tested
+  - coverage_id: coverage_twime_session_tcp_loopback
+    protocol_item_id: twime_message_5001_establishmentack
+    scenario_id: scenario_twime_tcp_local_loopback
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: twime_session_tcp_loopback_tested
+  - coverage_id: coverage_twime_non_loopback_block
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_tcp_local_loopback
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: non_loopback_endpoints_blocked
   - coverage_id: coverage_fast_test_variants
     protocol_item_id: fast_test_templates_t0_lock
     scenario_id: scenario_fix_public

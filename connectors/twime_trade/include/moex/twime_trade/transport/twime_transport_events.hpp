@@ -1,5 +1,7 @@
 #pragma once
 
+#include "moex/twime_trade/transport/twime_transport_errors.hpp"
+
 #include <cstddef>
 
 namespace moex::twime_trade::transport {
@@ -11,10 +13,13 @@ enum class TwimeTransportState {
     Closing,
     Closed,
     Faulted,
+    ReconnectBackoff,
 };
 
 enum class TwimeTransportEvent {
-    Opened,
+    OpenStarted,
+    OpenSucceeded,
+    OpenFailed,
     Closed,
     BytesWritten,
     BytesRead,
@@ -23,6 +28,9 @@ enum class TwimeTransportEvent {
     ReadWouldBlock,
     WriteWouldBlock,
     RemoteClose,
+    LocalClose,
+    ReconnectScheduled,
+    ReconnectSuppressed,
     Fault,
 };
 
@@ -38,8 +46,10 @@ enum class TwimeTransportStatus {
 
 struct TwimeTransportResult {
     TwimeTransportStatus status{TwimeTransportStatus::Ok};
-    TwimeTransportEvent event{TwimeTransportEvent::Opened};
+    TwimeTransportEvent event{TwimeTransportEvent::OpenSucceeded};
     std::size_t bytes_transferred{0};
+    TwimeTransportErrorCode error_code{TwimeTransportErrorCode::None};
+    int os_error{0};
 };
 
 using TwimeTransportPollResult = TwimeTransportResult;
