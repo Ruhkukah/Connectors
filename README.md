@@ -41,6 +41,10 @@ This repository still stops before live protocol/session implementation. The cur
 - Phase 2B adds a fake-transport TWIME session state machine with deterministic journals, fake-clock heartbeat scheduling, and synthetic cert-runner scenarios.
 - Phase 2B.1 hardens that fake-session layer so `Sequence`, `EstablishmentAck.NextSeqNo`, `Terminate`, keepalive handling, retransmit limits, and heartbeat-rate rules follow the current TWIME spec more closely.
 - Phase 2B.2 adds message-counter reset handling, overflow-safe retransmit arithmetic, pending retransmission completion rules, reconnect timing guards, and PR-diff Unicode checks.
+- Phase 2C adds a TWIME byte-transport abstraction plus loopback/scripted
+  byte-stream transports. `TwimeSession` can now consume fragmented and
+  batched inbound byte streams through `TwimeFrameAssembler`, while real
+  sockets remain deferred.
 - Real MOEX protocol/network logic is still intentionally absent.
 
 ## Phase 2A / 2B
@@ -52,6 +56,10 @@ This repository still stops before live protocol/session implementation. The cur
 - Offline fixtures cover header/primitive/message round-trips, fragmented/batched frame assembly, and certification-style decoded logs.
 - Phase 2A.1 adds strict validation for enum/set tokens, optional/null/default handling, committed golden fixture checks, metadata invariant checks, and malformed-frame hardening.
 - `connectors/twime_trade/` now adds a fake-transport TWIME session FSM, in-memory recovery/journals, synthetic gap/retransmit handling, and synthetic cert-runner scenarios.
+- Phase 2C keeps `TwimeFakeTransport` for high-level FSM tests and adds
+  byte-stream loopback/scripted transports for deterministic
+  transport/session integration tests. This exercises the frame assembler
+  through the session path without introducing sockets.
 - Phase 2B.1 corrects client `Sequence` heartbeats to encode
   `NextSeqNo=null`, treats `EstablishmentAck.NextSeqNo` as inbound state,
   requires inbound `Terminate(Finished)` for clean shutdown, validates
