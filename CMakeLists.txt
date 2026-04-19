@@ -222,6 +222,22 @@ moex_add_twime_trade_test(twime_retransmission_test tests/twime_trade/twime_retr
 moex_add_twime_trade_test(twime_flood_reject_test tests/twime_trade/twime_flood_reject_test.cpp)
 moex_add_twime_trade_test(twime_business_reject_test tests/twime_trade/twime_business_reject_test.cpp)
 moex_add_twime_trade_test(twime_cert_scenario_runner_test tests/twime_trade/twime_cert_scenario_runner_test.cpp)
+moex_add_twime_trade_test(twime_loopback_transport_test
+    tests/twime_trade/transport/twime_loopback_transport_test.cpp)
+moex_add_twime_trade_test(twime_transport_partial_read_test
+    tests/twime_trade/transport/twime_transport_partial_read_test.cpp)
+moex_add_twime_trade_test(twime_transport_partial_write_test
+    tests/twime_trade/transport/twime_transport_partial_write_test.cpp)
+moex_add_twime_trade_test(twime_transport_remote_close_test
+    tests/twime_trade/transport/twime_transport_remote_close_test.cpp)
+moex_add_twime_trade_test(twime_transport_fault_injection_test
+    tests/twime_trade/transport/twime_transport_fault_injection_test.cpp)
+moex_add_twime_trade_test(twime_session_byte_stream_establish_test
+    tests/twime_trade/twime_session_byte_stream_establish_test.cpp)
+moex_add_twime_trade_test(twime_session_byte_stream_fragmentation_test
+    tests/twime_trade/twime_session_byte_stream_fragmentation_test.cpp)
+moex_add_twime_trade_test(twime_session_byte_stream_batched_frames_test
+    tests/twime_trade/twime_session_byte_stream_batched_frames_test.cpp)
 
 add_custom_target(twime_codegen_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/twime_codegen"

@@ -4,7 +4,9 @@ add_library(moex_twime_trade STATIC
     src/twime_rate_limit_model.cpp
     src/twime_recovery_state.cpp
     src/twime_sequence_state.cpp
-    src/twime_session.cpp)
+    src/twime_session.cpp
+    src/transport/twime_loopback_transport.cpp
+    src/transport/twime_scripted_transport.cpp)
 
 target_include_directories(moex_twime_trade
     PUBLIC

@@ -3,6 +3,7 @@
 ## Scope
 
 Phase 2B adds a deterministic TWIME session/state-machine layer on top of the Phase 2A offline codec. Phase 2B.1 and 2B.2 are correctness hardening passes over that fake-session layer. It is still synthetic-only.
+Phase 2C adds a byte-transport abstraction and deterministic loopback/scripted byte-stream transports underneath the same fake session logic. It is still synthetic-only and does not add sockets.
 
 Implemented in Phase 2B:
 
@@ -28,6 +29,8 @@ Implemented in Phase 2B:
 - synthetic TWIME certification scenarios runnable through `apps/moex_cert_runner`
 - fake-session correctness rules for keepalive range, heartbeat frequency, retransmit count, clean terminate flow, and recoverability metadata
 - fake-session correctness rules for message-counter reset detection, overflow-safe retransmit arithmetic, pending retransmission windows, and reconnect backoff modeling
+- byte-stream transport integration through `TwimeFrameAssembler`, exercised with fragmented and batched inbound reads in tests
+- deterministic loopback/scripted byte transports for partial read, partial write, remote close, and fault-injection coverage
 
 Explicit non-goals remain:
 
@@ -43,12 +46,29 @@ Explicit non-goals remain:
 
 - `connectors/twime_trade/include/moex/twime_trade/twime_session.hpp`
 - `connectors/twime_trade/include/moex/twime_trade/twime_fake_transport.hpp`
+- `connectors/twime_trade/include/moex/twime_trade/transport/itwime_byte_transport.hpp`
+- `connectors/twime_trade/include/moex/twime_trade/transport/twime_loopback_transport.hpp`
+- `connectors/twime_trade/include/moex/twime_trade/transport/twime_scripted_transport.hpp`
 - `connectors/twime_trade/include/moex/twime_trade/twime_sequence_state.hpp`
 - `connectors/twime_trade/include/moex/twime_trade/twime_recovery_state.hpp`
 - `connectors/twime_trade/include/moex/twime_trade/twime_rate_limit_model.hpp`
 - `connectors/twime_trade/include/moex/twime_trade/twime_cert_scenario_runner.hpp`
 
 The library target is `moex_twime_trade`. It depends on `moex_twime_sbe` only. It does not depend on sockets, CGate, the managed adapter, or the public C ABI.
+
+## Fake Transport vs Byte Transport
+
+Two fake transport layers now coexist on purpose:
+
+- `TwimeFakeTransport`: high-level frame/event transport for focused FSM tests
+- `ITwimeByteTransport`: byte-stream abstraction for transport/session integration tests
+
+Phase 2C provides two `ITwimeByteTransport` implementations:
+
+- `TwimeLoopbackTransport`: byte-perfect echo transport with deterministic partial read/write, remote close, and fault injection controls
+- `TwimeScriptedTransport`: scripted read/write behavior used by session tests to queue fragmented or batched inbound byte streams without sockets
+
+`TwimeSession` now uses `TwimeFrameAssembler` internally when constructed with an `ITwimeByteTransport`, so frame assembly is exercised through the real session path rather than only in standalone codec tests.
 
 ## Session Behavior
 
@@ -181,6 +201,14 @@ Phase 2B adds:
 - `twime_flood_reject_test`
 - `twime_business_reject_test`
 - `twime_cert_scenario_runner_test`
+- `twime_loopback_transport_test`
+- `twime_transport_partial_read_test`
+- `twime_transport_partial_write_test`
+- `twime_transport_remote_close_test`
+- `twime_transport_fault_injection_test`
+- `twime_session_byte_stream_establish_test`
+- `twime_session_byte_stream_fragmentation_test`
+- `twime_session_byte_stream_batched_frames_test`
 
 Run the Phase 2B subset:
 

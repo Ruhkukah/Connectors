@@ -4,18 +4,27 @@
 
 #include "twime_test_support.hpp"
 
+#include "moex/twime_sbe/twime_frame_assembler.hpp"
+
+#include <span>
+
 namespace moex::twime_trade::test {
 
 inline moex::twime_sbe::TwimeEncodeRequest make_request(std::string_view message_name) {
     return moex::twime_sbe::test::make_sample_request(message_name);
 }
 
-inline void script_message(TwimeFakeTransport& transport, const moex::twime_sbe::TwimeEncodeRequest& request,
-                           std::uint64_t sequence_number = 0, bool consumes_sequence = false) {
+inline std::vector<std::byte> encode_bytes(const moex::twime_sbe::TwimeEncodeRequest& request) {
     moex::twime_sbe::TwimeCodec codec;
     std::vector<std::byte> bytes;
     moex::twime_sbe::test::require(codec.encode_message(request, bytes) == moex::twime_sbe::TwimeDecodeError::Ok,
-                                   "failed to encode fake-transport message");
+                                   "failed to encode TWIME message");
+    return bytes;
+}
+
+inline void script_message(TwimeFakeTransport& transport, const moex::twime_sbe::TwimeEncodeRequest& request,
+                           std::uint64_t sequence_number = 0, bool consumes_sequence = false) {
+    const auto bytes = encode_bytes(request);
     transport.script_inbound_frame(TwimeFakeTransportFrame{
         .bytes = bytes,
         .sequence_number = sequence_number,
@@ -53,6 +62,34 @@ inline const TwimeSessionEvent* find_last_event(const std::vector<TwimeSessionEv
 
 inline void require_state(TwimeSessionState actual, TwimeSessionState expected, const std::string& message) {
     moex::twime_sbe::test::require(actual == expected, message);
+}
+
+inline std::vector<std::byte> concatenate_frames(const std::vector<std::vector<std::byte>>& frames) {
+    std::size_t total_size = 0;
+    for (const auto& frame : frames) {
+        total_size += frame.size();
+    }
+
+    std::vector<std::byte> bytes;
+    bytes.reserve(total_size);
+    for (const auto& frame : frames) {
+        bytes.insert(bytes.end(), frame.begin(), frame.end());
+    }
+    return bytes;
+}
+
+inline std::vector<moex::twime_sbe::DecodedTwimeMessage> decode_streamed_frames(std::span<const std::byte> bytes,
+                                                                                std::size_t max_frame_size = 4096) {
+    moex::twime_sbe::TwimeFrameAssembler assembler(max_frame_size);
+    const auto feed_result = assembler.feed(bytes);
+    moex::twime_sbe::test::require(feed_result.error == moex::twime_sbe::TwimeDecodeError::Ok,
+                                   "failed to assemble TWIME frames from byte stream");
+
+    std::vector<moex::twime_sbe::DecodedTwimeMessage> decoded_messages;
+    while (assembler.has_frame()) {
+        decoded_messages.push_back(decode_bytes(assembler.pop_frame().bytes));
+    }
+    return decoded_messages;
 }
 
 } // namespace moex::twime_trade::test

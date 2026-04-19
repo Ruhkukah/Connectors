@@ -4,9 +4,12 @@
 #include "moex/twime_trade/twime_rate_limit_model.hpp"
 #include "moex/twime_trade/twime_recovery_state.hpp"
 #include "moex/twime_trade/twime_sequence_state.hpp"
+#include "moex/twime_trade/transport/itwime_byte_transport.hpp"
 #include "moex/twime_sbe/twime_cert_log_formatter.hpp"
 #include "moex/twime_sbe/twime_codec.hpp"
+#include "moex/twime_sbe/twime_frame_assembler.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -123,6 +126,8 @@ class TwimeSession {
   public:
     TwimeSession(TwimeSessionConfig config, TwimeFakeTransport& transport, TwimeRecoveryStateStore& recovery_store,
                  TwimeFakeClock& clock);
+    TwimeSession(TwimeSessionConfig config, transport::ITwimeByteTransport& transport,
+                 TwimeRecoveryStateStore& recovery_store, TwimeFakeClock& clock);
 
     [[nodiscard]] TwimeSessionState state() const noexcept;
     [[nodiscard]] std::optional<std::int64_t> last_reject_code() const noexcept;
@@ -144,10 +149,13 @@ class TwimeSession {
     void send_heartbeat();
     void send_retransmit_request(std::uint64_t from_seq_no, std::uint32_t count);
 
+    void poll_fake_transport();
+    void poll_byte_transport();
     void process_transport_event(const TwimeFakeTransportEvent& event);
     void process_inbound_frame(const TwimeFakeTransportFrame& frame);
     void process_inbound_message(const moex::twime_sbe::DecodedTwimeMessage& message,
                                  const TwimeFakeTransportFrame& frame);
+    void handle_peer_close(std::string peer_summary);
     bool request_missing_messages(std::uint64_t from_seq_no, std::uint64_t to_seq_no, std::string summary);
     [[nodiscard]] bool validate_keepalive_interval(std::uint64_t value);
     [[nodiscard]] bool is_recoverable_message(const moex::twime_sbe::DecodedTwimeMessage& message) const noexcept;
@@ -166,16 +174,19 @@ class TwimeSession {
     void append_cert_log(const std::string& direction, const std::string& formatted_message);
     void persist_recovery_state();
 
+    bool write_outbound_bytes(std::span<const std::byte> bytes);
     bool send_message(const moex::twime_sbe::TwimeEncodeRequest& request, TwimeSessionEventType event_type,
                       std::string summary);
     [[nodiscard]] std::uint64_t next_heartbeat_due_ms() const noexcept;
 
     TwimeSessionConfig config_;
-    TwimeFakeTransport& transport_;
+    TwimeFakeTransport* fake_transport_{nullptr};
+    transport::ITwimeByteTransport* byte_transport_{nullptr};
     TwimeRecoveryStateStore& recovery_store_;
     TwimeFakeClock& clock_;
     moex::twime_sbe::TwimeCodec codec_;
     moex::twime_sbe::TwimeCertLogFormatter formatter_;
+    moex::twime_sbe::TwimeFrameAssembler frame_assembler_;
     TwimeSequenceState sequence_state_{};
     TwimeRecoveryState recovery_state_{};
     TwimeOutboundJournal outbound_journal_;
@@ -202,6 +213,7 @@ class TwimeSession {
     TwimePendingRetransmissionWindow pending_retransmission_{};
     std::vector<TwimeSessionEvent> pending_events_;
     std::vector<std::string> cert_log_lines_;
+    std::vector<std::byte> transport_read_buffer_;
 };
 
 } // namespace moex::twime_trade
