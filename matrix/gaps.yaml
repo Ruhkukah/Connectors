@@ -35,40 +35,40 @@ gaps:
   - gap_id: gap_twime_phase2a_no_tcp
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5000_establish
-    coverage_id: coverage_twime_session_init_offline
+    coverage_id: coverage_twime_fake_session_establish
     owner: phase2b_transport
-    status: open
-    next_action: Add offline-to-transport integration only in Phase 2B; keep Phase 2A merge-safe and socket-free.
-    notes: Phase 2A.1 remains offline only and intentionally does not implement TCP connectivity.
+    status: network_deferred_phase2c
+    next_action: Keep real TCP transport and endpoint integration deferred to Phase 2C while fake transport remains the only session transport.
+    notes: Phase 2B adds a fake-transport TWIME session model only; there are still no real sockets or MOEX connections.
   - gap_id: gap_twime_phase2a_no_session_fsm
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5001_establishmentack
-    coverage_id: coverage_twime_session_init_offline
+    coverage_id: coverage_twime_fake_establishment_ack
     owner: phase2b_session
-    status: open
-    next_action: Implement session-state behavior in Phase 2B after the offline codec is merged.
-    notes: No Establish or Terminate runtime state machine exists in Phase 2A.1.
+    status: network_deferred_phase2c
+    next_action: Keep live transport/session mode deferred; Phase 2B only models a deterministic fake-transport FSM with fake clock scheduling.
+    notes: Establish/Ack/Reject/Terminate/Sequence behavior now exists only in scripted fake-transport tests and cert scenarios.
   - gap_id: gap_twime_phase2a_no_recovery_cache
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5005_retransmission
-    coverage_id: coverage_twime_retransmission_metadata
+    coverage_id: coverage_twime_fake_retransmission
     owner: phase2b_recovery
-    status: open
-    next_action: Add retransmission cache and durable recovery scaffolding in a later phase.
-    notes: Retransmission coverage in Phase 2A.1 is metadata/fixture-only.
+    status: network_deferred_phase2c
+    next_action: Replace the in-memory bounded journals with durable recovery/cache plumbing in a later transport phase.
+    notes: Phase 2B persists only in-memory fake recovery state and bounded journals for deterministic tests.
   - gap_id: gap_twime_phase2a_no_live_credentials
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5000_establish
-    coverage_id: coverage_twime_session_init_offline
+    coverage_id: coverage_twime_fake_session_establish
     owner: deployment_ops
-    status: open
-    next_action: Keep credentials and endpoint handling out of the public repo and Phase 2A merge scope.
-    notes: Phase 2A.1 uses only pinned schema artifacts and offline fixtures.
+    status: live_credentials_deferred
+    next_action: Keep credentials and endpoint handling out of the public repo and Phase 2C merge scope.
+    notes: Phase 2B still uses only synthetic config values and fake transport; no live credentials exist anywhere in the repo.
   - gap_id: gap_twime_phase2a_no_order_routing
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_6000_newordersingle
     coverage_id: coverage_twime_new_order_day_offline
     owner: phase2c_connector
-    status: open
+    status: order_routing_deferred
     next_action: Delay C ABI order-routing integration until a later connector phase after transport and session behavior exist.
-    notes: Phase 2A.1 tests message encoding/decoding only and does not route orders anywhere.
+    notes: Phase 2B still does not route live or fake TWIME orders through the public C ABI or AlorEngine runtime path.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 from pathlib import Path
 
 from moex_phase0_common import dump_json, ensure_dir, load_json_yaml, redact_secrets
@@ -17,6 +18,21 @@ def main() -> int:
     output_dir = ensure_dir(Path(args.output_dir).resolve())
     scenario = load_json_yaml(scenario_path)
     scenario_id = scenario["scenario_id"]
+
+    if scenario_id.startswith("twime_"):
+        candidates = [
+            Path.cwd() / "apps" / "moex_twime_cert_runner",
+            Path.cwd() / "build" / "apps" / "moex_twime_cert_runner",
+            Path(__file__).resolve().parents[1] / "build" / "apps" / "moex_twime_cert_runner",
+        ]
+        runner = next((path for path in candidates if path.exists()), None)
+        if runner is None:
+            raise SystemExit("missing built moex_twime_cert_runner executable for synthetic TWIME scenarios")
+        subprocess.run(
+            [str(runner), "--scenario-id", scenario_id, "--output-dir", str(output_dir)],
+            check=True,
+        )
+        return 0
 
     lines = [f"scenario={scenario_id}", f"title={scenario['title']}"]
     for step in scenario["steps"]:

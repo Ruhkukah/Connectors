@@ -40,3 +40,10 @@
 - the active binary layout is generated from pinned `twime_spectra-7.7.xml`
 - certification-style decoded log output exists for offline fixtures only
 - no exchange connection, no session state machine, and no live trading path were added
+
+## Phase 2B Status
+
+- TWIME now also has a deterministic fake-transport session FSM layered on the offline codec
+- fake-clock heartbeat scheduling, sequence tracking, retransmit modeling, and in-memory recovery state exist for tests only
+- synthetic TWIME cert scenarios can be executed through `apps/moex_cert_runner`
+- there are still no real sockets, credentials, broker endpoints, or live order-routing paths

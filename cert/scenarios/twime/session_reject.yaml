@@ -1,0 +1,12 @@
+scenario_id: twime_session_reject
+title: Synthetic TWIME session reject
+metadata:
+  owner: phase2b
+  mode: fake_transport
+steps:
+  - step_id: connect_fake
+    action: issue ConnectFake command
+    expected: Establish emitted
+  - step_id: inject_reject
+    action: inject EstablishmentReject through fake transport
+    expected: session enters Rejected

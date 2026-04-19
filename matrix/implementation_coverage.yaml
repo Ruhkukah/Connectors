@@ -70,6 +70,51 @@ coverage:
     scenario_id: scenario_twime_public
     inventory_id: osengine_moex_fixfasttwime_dir
     status: cert_log_format_tested
+  - coverage_id: coverage_twime_fake_session_establish
+    protocol_item_id: twime_message_5000_establish
+    scenario_id: scenario_twime_fake_session_establish
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: session_fsm_fake_transport_tested
+  - coverage_id: coverage_twime_fake_establishment_ack
+    protocol_item_id: twime_message_5001_establishmentack
+    scenario_id: scenario_twime_fake_session_establish
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: session_fsm_fake_transport_tested
+  - coverage_id: coverage_twime_fake_establishment_reject
+    protocol_item_id: twime_message_5002_establishmentreject
+    scenario_id: scenario_twime_fake_session_reject
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: session_fsm_fake_transport_tested
+  - coverage_id: coverage_twime_fake_terminate
+    protocol_item_id: twime_message_5003_terminate
+    scenario_id: scenario_twime_fake_terminate
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: session_fsm_fake_transport_tested
+  - coverage_id: coverage_twime_fake_retransmit_request
+    protocol_item_id: twime_message_5004_retransmitrequest
+    scenario_id: scenario_twime_fake_retransmit_last5
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: retransmit_model_fake_tested
+  - coverage_id: coverage_twime_fake_retransmission
+    protocol_item_id: twime_message_5005_retransmission
+    scenario_id: scenario_twime_fake_retransmit_last5
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: retransmit_model_fake_tested
+  - coverage_id: coverage_twime_fake_sequence_heartbeat
+    protocol_item_id: twime_message_5006_sequence
+    scenario_id: scenario_twime_fake_heartbeat_sequence
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: sequence_model_fake_tested
+  - coverage_id: coverage_twime_fake_flood_reject
+    protocol_item_id: twime_message_5007_floodreject
+    scenario_id: scenario_twime_fake_flood_reject
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: cert_scenario_fake_tested
+  - coverage_id: coverage_twime_fake_business_reject
+    protocol_item_id: twime_message_5009_businessmessagereject
+    scenario_id: scenario_twime_fake_business_reject
+    inventory_id: osengine_moex_fixfasttwime_dir
+    status: cert_scenario_fake_tested
   - coverage_id: coverage_twime_metadata_invariants
     protocol_item_id: twime_message_5000_establish
     scenario_id: scenario_twime_public
