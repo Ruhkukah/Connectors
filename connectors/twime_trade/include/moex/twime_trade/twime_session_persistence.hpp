@@ -60,6 +60,6 @@ class TwimePersistentRecoveryStateStore final : public TwimeRecoveryStateStore {
 };
 
 TwimeSessionPersistenceSnapshot make_twime_session_persistence_snapshot(const TwimeSessionHealthSnapshot& health,
-                                                                       const TwimeRecoveryState& recovery_state);
+                                                                        const TwimeRecoveryState& recovery_state);
 
 } // namespace moex::twime_trade

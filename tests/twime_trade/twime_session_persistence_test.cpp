@@ -26,8 +26,7 @@ int main() {
 
         const auto loaded = store.load("phase2f_persist");
         moex::twime_sbe::test::require(loaded.has_value(), "persistence store must reload saved snapshot");
-        moex::twime_sbe::test::require(loaded->recovery_state.last_clean_shutdown,
-                                       "clean shutdown flag must persist");
+        moex::twime_sbe::test::require(loaded->recovery_state.last_clean_shutdown, "clean shutdown flag must persist");
         moex::twime_sbe::test::require(loaded->last_reject_code == 7, "reject code must persist");
         moex::twime_sbe::test::require(loaded->recovery_state.next_expected_inbound_seq == 21,
                                        "sequence state must persist");

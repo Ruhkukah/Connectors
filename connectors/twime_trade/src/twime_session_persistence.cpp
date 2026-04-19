@@ -27,7 +27,7 @@ std::uint64_t parse_u64(const std::unordered_map<std::string, std::string>& valu
 }
 
 std::int64_t parse_i64(const std::unordered_map<std::string, std::string>& values, const char* key,
-                      std::int64_t fallback = 0) {
+                       std::int64_t fallback = 0) {
     const auto found = values.find(key);
     if (found == values.end()) {
         return fallback;
@@ -130,7 +130,7 @@ void TwimePersistentRecoveryStateStore::save(std::string_view session_id, const 
 }
 
 TwimeSessionPersistenceSnapshot make_twime_session_persistence_snapshot(const TwimeSessionHealthSnapshot& health,
-                                                                       const TwimeRecoveryState& recovery_state) {
+                                                                        const TwimeRecoveryState& recovery_state) {
     TwimeSessionPersistenceSnapshot snapshot;
     snapshot.recovery_state = recovery_state;
     snapshot.reject_seen = health.reject_seen;

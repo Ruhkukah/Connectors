@@ -15,10 +15,10 @@ struct TwimeManualOperatorGateResult {
 
 class TwimeManualOperatorGate {
   public:
-    static TwimeManualOperatorGateResult validate_transport_connect(
-        const transport::TwimeTcpConfig& config, const transport::TwimeRuntimeArmState& arm_state);
-    static TwimeManualOperatorGateResult validate_session_start(
-        const transport::TwimeTcpConfig& config, const transport::TwimeRuntimeArmState& arm_state);
+    static TwimeManualOperatorGateResult validate_transport_connect(const transport::TwimeTcpConfig& config,
+                                                                    const transport::TwimeRuntimeArmState& arm_state);
+    static TwimeManualOperatorGateResult validate_session_start(const transport::TwimeTcpConfig& config,
+                                                                const transport::TwimeRuntimeArmState& arm_state);
 };
 
 } // namespace moex::twime_trade

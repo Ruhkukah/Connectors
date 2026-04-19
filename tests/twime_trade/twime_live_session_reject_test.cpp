@@ -36,10 +36,9 @@ int main() {
         });
 
         moex::twime_sbe::test::require(runner.start().ok, "runner start must succeed");
-        moex::twime_trade::test::pump_runner_until(
-            runner, runner_clock, [](const TwimeLiveSessionRunner& candidate) {
-                return candidate.health_snapshot().state == TwimeSessionState::Rejected;
-            });
+        moex::twime_trade::test::pump_runner_until(runner, runner_clock, [](const TwimeLiveSessionRunner& candidate) {
+            return candidate.health_snapshot().state == TwimeSessionState::Rejected;
+        });
         server.close_client();
         server_thread.join();
         if (server_error) {

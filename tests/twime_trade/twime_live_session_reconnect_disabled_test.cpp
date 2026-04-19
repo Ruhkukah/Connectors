@@ -55,14 +55,15 @@ int main() {
         };
         struct JoinGuard {
             decltype(join_server)& fn;
-            ~JoinGuard() { fn(); }
+            ~JoinGuard() {
+                fn();
+            }
         } join_guard{join_server};
 
         moex::twime_sbe::test::require(runner.start().ok, "runner start must succeed");
-        moex::twime_trade::test::pump_runner_until(
-            runner, runner_clock, [](const TwimeLiveSessionRunner& candidate) {
-                return candidate.health_snapshot().state == TwimeSessionState::Active;
-            });
+        moex::twime_trade::test::pump_runner_until(runner, runner_clock, [](const TwimeLiveSessionRunner& candidate) {
+            return candidate.health_snapshot().state == TwimeSessionState::Active;
+        });
         active_seen.store(true);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         for (int i = 0; i < 16; ++i) {

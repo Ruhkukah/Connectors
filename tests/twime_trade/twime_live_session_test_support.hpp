@@ -52,8 +52,9 @@ struct ManualRunnerClock {
     }
 };
 
-inline TwimeLiveSessionConfig make_live_session_config(std::uint16_t port, std::string session_id = "twime_live_test",
-                                                       std::string credentials_env_var = "MOEX_TWIME_TEST_CREDENTIALS") {
+inline TwimeLiveSessionConfig
+make_live_session_config(std::uint16_t port, std::string session_id = "twime_live_test",
+                         std::string credentials_env_var = "MOEX_TWIME_TEST_CREDENTIALS") {
     TwimeLiveSessionConfig config;
     config.session.session_id = std::move(session_id);
     config.session.keepalive_interval_ms = 1000;
@@ -68,8 +69,8 @@ inline TwimeLiveSessionConfig make_live_session_config(std::uint16_t port, std::
 }
 
 inline void pump_runner_until(TwimeLiveSessionRunner& runner, ManualRunnerClock& clock,
-                              const std::function<bool(const TwimeLiveSessionRunner&)>& predicate,
-                              int max_polls = 256, std::uint64_t step_ms = 25) {
+                              const std::function<bool(const TwimeLiveSessionRunner&)>& predicate, int max_polls = 256,
+                              std::uint64_t step_ms = 25) {
     for (int attempt = 0; attempt < max_polls; ++attempt) {
         if (predicate(runner)) {
             return;

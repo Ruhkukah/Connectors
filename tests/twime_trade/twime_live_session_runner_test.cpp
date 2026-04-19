@@ -52,18 +52,16 @@ int main() {
         const auto start = runner.start();
         moex::twime_sbe::test::require(start.ok, "live session runner start must succeed for localhost");
 
-        moex::twime_trade::test::pump_runner_until(
-            runner, runner_clock, [](const TwimeLiveSessionRunner& candidate) {
-                return candidate.health_snapshot().state == TwimeSessionState::Active;
-            });
+        moex::twime_trade::test::pump_runner_until(runner, runner_clock, [](const TwimeLiveSessionRunner& candidate) {
+            return candidate.health_snapshot().state == TwimeSessionState::Active;
+        });
 
         const auto stop = runner.request_stop();
         moex::twime_sbe::test::require(stop.ok, "runner stop request must succeed");
-        moex::twime_trade::test::pump_runner_until(
-            runner, runner_clock, [](const TwimeLiveSessionRunner& candidate) {
-                return candidate.health_snapshot().state == TwimeSessionState::Terminated ||
-                       candidate.health_snapshot().state == TwimeSessionState::Faulted;
-            });
+        moex::twime_trade::test::pump_runner_until(runner, runner_clock, [](const TwimeLiveSessionRunner& candidate) {
+            return candidate.health_snapshot().state == TwimeSessionState::Terminated ||
+                   candidate.health_snapshot().state == TwimeSessionState::Faulted;
+        });
         (void)runner.stop_if_needed();
         server_thread.join();
         if (server_error) {

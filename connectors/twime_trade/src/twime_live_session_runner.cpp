@@ -44,7 +44,8 @@ TwimeLiveSessionRunner::TwimeLiveSessionRunner(TwimeLiveSessionConfig config,
                                                TwimeSessionPersistenceStore& persistence_store,
                                                TwimeFakeClock& session_clock)
     : config_(std::move(config)), persistence_store_(persistence_store), recovery_store_(persistence_store_),
-      session_clock_(session_clock), transport_(config_.tcp), session_(config_.session, transport_, recovery_store_, session_clock_) {
+      session_clock_(session_clock), transport_(config_.tcp),
+      session_(config_.session, transport_, recovery_store_, session_clock_) {
     health_ = make_twime_session_health_snapshot(session_, false, transport_.metrics(), metrics_);
 }
 
@@ -77,10 +78,9 @@ TwimeLiveSessionRunResult TwimeLiveSessionRunner::start() {
     }
     append_operator_log("endpoint=" + config_.tcp.endpoint.host + ":" + std::to_string(config_.tcp.endpoint.port));
     append_operator_log("credentials_source=" +
-                        std::string(config_.credentials.source == transport::TwimeCredentialSource::Env
-                                        ? "env"
-                                        : config_.credentials.source == transport::TwimeCredentialSource::File ? "file"
-                                                                                                                : "none"));
+                        std::string(config_.credentials.source == transport::TwimeCredentialSource::Env    ? "env"
+                                    : config_.credentials.source == transport::TwimeCredentialSource::File ? "file"
+                                                                                                           : "none"));
 
     ++metrics_.reconnect_attempts;
     started_ = true;

@@ -28,7 +28,7 @@ struct TwimeSessionHealthSnapshot {
 };
 
 TwimeSessionHealthSnapshot make_twime_session_health_snapshot(const TwimeSession& session, bool transport_open,
-                                                             const transport::TwimeTransportMetrics& transport_metrics,
-                                                             const TwimeSessionMetrics& session_metrics);
+                                                              const transport::TwimeTransportMetrics& transport_metrics,
+                                                              const TwimeSessionMetrics& session_metrics);
 
 } // namespace moex::twime_trade
