@@ -52,7 +52,11 @@ This repository still stops before live protocol/session implementation. The cur
 - Offline fixtures cover header/primitive/message round-trips, fragmented/batched frame assembly, and certification-style decoded logs.
 - Phase 2A.1 adds strict validation for enum/set tokens, optional/null/default handling, committed golden fixture checks, metadata invariant checks, and malformed-frame hardening.
 - `connectors/twime_trade/` now adds a fake-transport TWIME session FSM, in-memory recovery/journals, synthetic gap/retransmit handling, and synthetic cert-runner scenarios.
-- Phase 2B.1 corrects client `Sequence` heartbeats to encode `NextSeqNo=null`, treats `EstablishmentAck.NextSeqNo` as inbound state, requires inbound `Terminate(Finished)` for clean shutdown, validates acknowledged keepalive, enforces fake retransmit limits, and separates trading-rate vs total-rate modeling.
+- Phase 2B.1 corrects client `Sequence` heartbeats to encode
+  `NextSeqNo=null`, treats `EstablishmentAck.NextSeqNo` as inbound state,
+  requires inbound `Terminate(Finished)` for clean shutdown, validates
+  acknowledged keepalive, enforces fake retransmit limits, and separates
+  trading-rate vs total-rate modeling.
 - This is **not** certification-ready and **not** suitable for live trading.
 
 ## Definition of Done Commands

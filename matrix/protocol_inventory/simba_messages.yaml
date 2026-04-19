@@ -1,7 +1,10 @@
-{
-  "version": 1,
-  "items": [
-    {"protocol_item_id": "simba_prod_root_lock", "artifact_id": "simba_prod_root", "name": "SIMBA prod root recursive lock", "kind": "artifact_lock"},
-    {"protocol_item_id": "simba_scaffold_profile", "artifact_id": "simba_prod_root", "name": "SIMBA scaffold profile reservation", "kind": "profile"}
-  ]
-}
+version: 1
+items:
+  - protocol_item_id: simba_prod_root_lock
+    artifact_id: simba_prod_root
+    name: SIMBA prod root recursive lock
+    kind: artifact_lock
+  - protocol_item_id: simba_scaffold_profile
+    artifact_id: simba_prod_root
+    name: SIMBA scaffold profile reservation
+    kind: profile

@@ -4,14 +4,7 @@
 
 namespace moex::logging {
 
-enum class SecretKind {
-    Password,
-    RefreshToken,
-    SessionSecret,
-    PrivateKey,
-    AuthorizationHeader,
-    AccountIdentifier
-};
+enum class SecretKind { Password, RefreshToken, SessionSecret, PrivateKey, AuthorizationHeader, AccountIdentifier };
 
 struct RedactionRule {
     SecretKind kind;
@@ -21,4 +14,4 @@ struct RedactionRule {
 
 std::string redact_value(SecretKind kind, const std::string& value);
 
-}  // namespace moex::logging
+} // namespace moex::logging

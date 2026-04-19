@@ -255,12 +255,8 @@ MoexResult moex_replace_order_placeholder(MoexConnectorHandle handle, const Moex
 MoexResult moex_mass_cancel_placeholder(MoexConnectorHandle handle, const MoexMassCancelRequest* request);
 MoexResult moex_subscribe_placeholder(MoexConnectorHandle handle, const MoexSubscriptionRequest* request);
 MoexResult moex_unsubscribe_placeholder(MoexConnectorHandle handle, const MoexSubscriptionRequest* request);
-MoexResult moex_poll_events_v2(
-    MoexConnectorHandle handle,
-    void* out_events,
-    uint32_t event_stride_bytes,
-    uint32_t capacity,
-    uint32_t* written);
+MoexResult moex_poll_events_v2(MoexConnectorHandle handle, void* out_events, uint32_t event_stride_bytes,
+                               uint32_t capacity, uint32_t* written);
 MoexResult moex_poll_events(MoexConnectorHandle handle, void* out_events, uint32_t capacity, uint32_t* written);
 MoexResult moex_register_low_rate_callback(MoexConnectorHandle handle, MoexLowRateCallback callback, void* user_data);
 MoexResult moex_get_health(MoexConnectorHandle handle, MoexHealthSnapshot* out_health);

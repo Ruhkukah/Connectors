@@ -73,7 +73,7 @@ int run_check(const fs::path& fixtures_dir, bool write_expected) {
     return 0;
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     fs::path fixtures_dir;

@@ -19,4 +19,4 @@ struct ProfileSpec {
     ShadowModeSpec shadow_mode{};
 };
 
-}  // namespace moex::config
+} // namespace moex::config

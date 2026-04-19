@@ -5,11 +5,7 @@
 
 namespace moex::reconciliation {
 
-enum class SourcePriority : std::uint8_t {
-    Primary = 1,
-    Secondary = 2,
-    Fallback = 3
-};
+enum class SourcePriority : std::uint8_t { Primary = 1, Secondary = 2, Fallback = 3 };
 
 struct CorrelationKey {
     std::string cl_ord_id;
@@ -22,4 +18,4 @@ struct CorrelationKey {
     std::string recovery_epoch;
 };
 
-}  // namespace moex::reconciliation
+} // namespace moex::reconciliation

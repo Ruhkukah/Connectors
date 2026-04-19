@@ -20,13 +20,12 @@ namespace {
 
 std::string to_lower(std::string_view value) {
     std::string lowered(value);
-    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lowered;
 }
 
-}  // namespace
+} // namespace
 
 BuildInfo build_info() {
     return BuildInfo{
@@ -46,7 +45,7 @@ BackpressureCounters make_seed_counters(EventLossPolicy policy) {
     return counters;
 }
 
-}  // namespace moex::phase0
+} // namespace moex::phase0
 
 namespace moex::logging {
 
@@ -62,7 +61,7 @@ std::string redact_value(SecretKind kind, const std::string& value) {
     return "[REDACTED]";
 }
 
-}  // namespace moex::logging
+} // namespace moex::logging
 
 namespace {
 
@@ -167,11 +166,8 @@ std::int64_t ms_to_ns(std::int64_t value) {
     return value <= 0 ? 0 : value * 1'000'000LL;
 }
 
-MoexPolledEvent make_event(
-    MoexEventType event_type,
-    std::uint64_t sequence,
-    std::int64_t event_time_ms,
-    bool read_only_shadow) {
+MoexPolledEvent make_event(MoexEventType event_type, std::uint64_t sequence, std::int64_t event_time_ms,
+                           bool read_only_shadow) {
     MoexPolledEvent event{};
     event.header.struct_size = static_cast<std::uint32_t>(sizeof(MoexEventHeader));
     event.header.abi_version = MOEX_C_ABI_VERSION;
@@ -194,11 +190,9 @@ MoexPolledEvent make_event(
 }
 
 MoexPolledEvent make_status_event(std::uint64_t sequence, std::string_view info_text, MoexReplayState replay_state) {
-    auto event = make_event(
-        replay_state == MOEX_REPLAY_STATE_UNSPECIFIED ? MOEX_EVENT_CONNECTOR_STATUS : MOEX_EVENT_REPLAY_STATE,
-        sequence,
-        0,
-        true);
+    auto event = make_event(replay_state == MOEX_REPLAY_STATE_UNSPECIFIED ? MOEX_EVENT_CONNECTOR_STATUS
+                                                                          : MOEX_EVENT_REPLAY_STATE,
+                            sequence, 0, true);
     event.replay_state = static_cast<std::uint16_t>(replay_state);
     copy_fixed(info_text, event.info_text, MOEX_INFO_CAPACITY);
     return event;
@@ -324,7 +318,7 @@ bool parse_replay_file(const std::string& path, std::vector<MoexPolledEvent>& ev
     return true;
 }
 
-}  // namespace
+} // namespace
 
 struct MoexHandleTag {
     std::string connector_name;
@@ -608,12 +602,8 @@ MoexResult moex_unsubscribe_placeholder(MoexConnectorHandle handle, const MoexSu
     return MOEX_RESULT_NOT_SUPPORTED;
 }
 
-MoexResult moex_poll_events_v2(
-    MoexConnectorHandle handle,
-    void* out_events,
-    uint32_t event_stride_bytes,
-    uint32_t capacity,
-    uint32_t* written) {
+MoexResult moex_poll_events_v2(MoexConnectorHandle handle, void* out_events, uint32_t event_stride_bytes,
+                               uint32_t capacity, uint32_t* written) {
     if (handle == nullptr || written == nullptr || (capacity > 0U && out_events == nullptr)) {
         return MOEX_RESULT_INVALID_ARGUMENT;
     }
@@ -687,4 +677,4 @@ MoexResult moex_flush_recovery_state(MoexConnectorHandle handle) {
     return MOEX_RESULT_OK;
 }
 
-}  // extern "C"
+} // extern "C"

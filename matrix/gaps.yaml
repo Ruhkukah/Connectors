@@ -6,16 +6,25 @@ gaps:
     coverage_id: coverage_twime_session_init_offline
     owner: broker_access
     status: needs_confirmation
-    next_action: Confirm TWIME test provisioning path with broker or MOEX before Phase 2B transport/session work.
-    notes: Public certification materials include TWIME scenarios, but test provisioning still needs broker or MOEX confirmation.
+    next_action: >-
+      Confirm TWIME test provisioning path with broker or MOEX before
+      Phase 2B transport/session work.
+    notes: >-
+      Public certification materials include TWIME scenarios, but test
+      provisioning still needs broker or MOEX confirmation.
   - gap_id: gap_twime_legacy_cert_sample
     artifact_id: moex_cert_procedure
     protocol_item_id: twime_message_6000_newordersingle
     coverage_id: coverage_twime_new_order_day_offline
     owner: protocol_docs
     status: needs_confirmation
-    next_action: Keep twime_spectra-7.7.xml as the binary source of truth and record any old certification sample layout discrepancies as documentation-only.
-    notes: The public certification procedure contains an old TWIME sample with version=2 and blockLength=46; the active offline codec follows schema version 7 from twime_spectra-7.7.xml.
+    next_action: >-
+      Keep twime_spectra-7.7.xml as the binary source of truth and record
+      any old certification sample layout discrepancies as documentation-only.
+    notes: >-
+      The public certification procedure contains an old TWIME sample with
+      version=2 and blockLength=46; the active offline codec follows schema
+      version 7 from twime_spectra-7.7.xml.
   - gap_id: gap_broker_topology_unknown
     artifact_id: plaza_docs
     protocol_item_id: plaza2_twime_profile_neutrality
@@ -30,45 +39,71 @@ gaps:
     coverage_id: coverage_plaza2_scheme_lock
     owner: native_runtime
     status: open
-    next_action: Lock installed CGate scheme files into spec-lock/prod or spec-lock/test after runtime installation.
-    notes: Local CGate runtime and scheme directories must be locked separately after installation.
+    next_action: >-
+      Lock installed CGate scheme files into spec-lock/prod or spec-lock/test
+      after runtime installation.
+    notes: >-
+      Local CGate runtime and scheme directories must be locked separately
+      after installation.
   - gap_id: gap_twime_phase2a_no_tcp
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5000_establish
     coverage_id: coverage_twime_fake_session_establish
     owner: phase2c_transport
     status: network_deferred_phase2c
-    next_action: Keep real TCP transport and endpoint integration deferred to Phase 2C while fake transport remains the only session transport.
-    notes: Phase 2B adds a fake-transport TWIME session model only; there are still no real sockets or MOEX connections.
+    next_action: >-
+      Keep real TCP transport and endpoint integration deferred to Phase 2C
+      while fake transport remains the only session transport.
+    notes: >-
+      Phase 2B adds a fake-transport TWIME session model only; there are still
+      no real sockets or MOEX connections.
   - gap_id: gap_twime_phase2a_no_session_fsm
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5001_establishmentack
     coverage_id: coverage_twime_fake_establishment_ack
     owner: phase2c_network
     status: network_deferred_phase2c
-    next_action: Keep live transport/session mode deferred; Phase 2B.1 only models a deterministic fake-transport FSM with fake clock scheduling.
-    notes: Establish/Ack/Reject/Terminate/Sequence behavior now follows fake-transport session semantics, but there is still no live transport or production session mode.
+    next_action: >-
+      Keep live transport/session mode deferred; Phase 2B.1 only models a
+      deterministic fake-transport FSM with fake clock scheduling.
+    notes: >-
+      Establish/Ack/Reject/Terminate/Sequence behavior now follows
+      fake-transport session semantics, but there is still no live transport
+      or production session mode.
   - gap_id: gap_twime_phase2a_no_recovery_cache
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5005_retransmission
     coverage_id: coverage_twime_fake_retransmission
     owner: phase2b_recovery
     status: network_deferred_phase2c
-    next_action: Replace the in-memory bounded journals with durable recovery/cache plumbing in a later transport phase.
-    notes: Phase 2B.2 now models pending retransmission windows and completion rules, but persists only in-memory fake recovery state and bounded journals for deterministic tests.
+    next_action: >-
+      Replace the in-memory bounded journals with durable recovery/cache
+      plumbing in a later transport phase.
+    notes: >-
+      Phase 2B.2 now models pending retransmission windows and completion
+      rules, but persists only in-memory fake recovery state and bounded
+      journals for deterministic tests.
   - gap_id: gap_twime_phase2a_no_live_credentials
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_5000_establish
     coverage_id: coverage_twime_fake_session_establish
     owner: deployment_ops
     status: live_credentials_deferred
-    next_action: Keep credentials and endpoint handling out of the public repo and Phase 2C merge scope.
-    notes: Phase 2B.2 still uses only synthetic config values and fake transport; no live credentials exist anywhere in the repo.
+    next_action: >-
+      Keep credentials and endpoint handling out of the public repo and
+      Phase 2C merge scope.
+    notes: >-
+      Phase 2B.2 still uses only synthetic config values and fake transport;
+      no live credentials exist anywhere in the repo.
   - gap_id: gap_twime_phase2a_no_order_routing
     artifact_id: twime_prod_root
     protocol_item_id: twime_message_6000_newordersingle
     coverage_id: coverage_twime_new_order_day_offline
     owner: phase2c_connector
     status: order_routing_deferred
-    next_action: Delay C ABI order-routing integration until a later connector phase after transport and session behavior exist.
-    notes: Phase 2B.2 still does not route live or fake TWIME orders through the public C ABI or AlorEngine runtime path.
+    next_action: >-
+      Delay C ABI order-routing integration until a later connector phase
+      after transport and session behavior exist.
+    notes: >-
+      Phase 2B.2 still does not route live or fake TWIME orders through the
+      public C ABI or AlorEngine runtime path.

@@ -134,6 +134,7 @@ moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "twime_schema_materializ
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "twime_schema_indexer" "tools/twime_schema_indexer.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "twime_codegen" "tools/twime_codegen.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "source_style_check" "tools/source_style_check.py")
+moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "repo_style_check" "tools/repo_style_check.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "unicode_guard" "tools/unicode_guard.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_cert_runner" "apps/moex_cert_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_replay_tool" "apps/moex_replay_tool.py")
@@ -261,9 +262,26 @@ add_test(
         matrix
         profiles
         cert
-        docs)
+        docs
+        scripts
+        apps)
 set_tests_properties(unicode_guard_check PROPERTIES
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_test(
+    NAME repo_style_check
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/repo_style_check")
+set_tests_properties(repo_style_check PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_test(
+    NAME repo_style_check_fixture_minified
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/repo_style_check"
+        --paths tests/fixtures/repo_style/minified_source.py
+        --include-excluded)
+set_tests_properties(repo_style_check_fixture_minified PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    WILL_FAIL TRUE)
 
 add_test(
     NAME profile_check_replay
@@ -376,14 +394,22 @@ add_test(
     NAME source_style_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/source_style_check"
         --require-clang-format
-        "${CMAKE_CURRENT_SOURCE_DIR}/connectors/twime_trade"
-        "${CMAKE_CURRENT_SOURCE_DIR}/protocols/twime_sbe"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_trade"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_sbe"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_codegen.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_schema_common.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_schema_indexer.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_schema_materialize.py")
+        "${CMAKE_CURRENT_SOURCE_DIR}/.github"
+        "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/protocols"
+        "${CMAKE_CURRENT_SOURCE_DIR}/connectors"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+        "${CMAKE_CURRENT_SOURCE_DIR}/matrix"
+        "${CMAKE_CURRENT_SOURCE_DIR}/profiles"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cert"
+        "${CMAKE_CURRENT_SOURCE_DIR}/docs"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+        "${CMAKE_CURRENT_SOURCE_DIR}/apps")
+set_tests_properties(source_style_check PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 if(DOTNET_EXECUTABLE)
     if(MOEX_SANITIZERS_ENABLED)

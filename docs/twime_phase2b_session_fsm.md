@@ -115,7 +115,11 @@ Phase 2B adds durable-state interfaces but uses only in-memory/test implementati
 - `recovery_epoch`
 - `last_clean_shutdown`
 
-Bounded journals store deterministic copies of inbound and outbound encoded frames together with their decoded certification log lines. Each entry also carries synthetic recoverability metadata so fake-session tests can distinguish recoverable application messages from non-recoverable session messages and rejects.
+Bounded journals store deterministic copies of inbound and outbound encoded
+frames together with their decoded certification log lines. Each entry also
+carries synthetic recoverability metadata so fake-session tests can
+distinguish recoverable application messages from non-recoverable session
+messages and rejects.
 
 ## Synthetic Certification Scenarios
 

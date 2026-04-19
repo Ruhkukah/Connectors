@@ -5,16 +5,16 @@
 #include <iostream>
 #include <string>
 
-#define CHECK_SIZE_AND_ALIGN(name, type)                                  \
-    do {                                                                  \
-        if (moex_sizeof_##name() != sizeof(type)) {                       \
-            std::cerr << #type " size mismatch\n";                        \
-            return EXIT_FAILURE;                                          \
-        }                                                                 \
-        if (moex_alignof_##name() != alignof(type)) {                     \
-            std::cerr << #type " alignment mismatch\n";                   \
-            return EXIT_FAILURE;                                          \
-        }                                                                 \
+#define CHECK_SIZE_AND_ALIGN(name, type)                                                                               \
+    do {                                                                                                               \
+        if (moex_sizeof_##name() != sizeof(type)) {                                                                    \
+            std::cerr << #type " size mismatch\n";                                                                     \
+            return EXIT_FAILURE;                                                                                       \
+        }                                                                                                              \
+        if (moex_alignof_##name() != alignof(type)) {                                                                  \
+            std::cerr << #type " alignment mismatch\n";                                                                \
+            return EXIT_FAILURE;                                                                                       \
+        }                                                                                                              \
     } while (false)
 
 int main() {

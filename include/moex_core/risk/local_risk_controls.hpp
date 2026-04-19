@@ -23,4 +23,4 @@ struct BrokerTopology {
     std::string order_path = "unknown";
 };
 
-}  // namespace moex::risk
+} // namespace moex::risk

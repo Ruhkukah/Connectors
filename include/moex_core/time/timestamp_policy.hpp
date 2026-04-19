@@ -14,4 +14,4 @@ struct EventTimestamps {
     std::int64_t managed_poll_monotonic_ns = 0;
 };
 
-}  // namespace moex::time
+} // namespace moex::time
