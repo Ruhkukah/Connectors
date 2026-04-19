@@ -28,6 +28,15 @@ set(MOEX_APPS_BUILD_DIR "${MOEX_BUILD_ROOT}/apps")
 set(MOEX_TEST_OUTPUT_DIR "${MOEX_BUILD_ROOT}/test-output")
 set(MOEX_PYTHON_DEPS_DIR "${MOEX_BUILD_ROOT}/python-deps")
 
+set(MOEX_ALL_SANITIZER_FLAGS
+    "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} ${CMAKE_EXE_LINKER_FLAGS} ${CMAKE_SHARED_LINKER_FLAGS}")
+string(FIND "${MOEX_ALL_SANITIZER_FLAGS}" "-fsanitize=" MOEX_SANITIZER_FLAGS_INDEX)
+if(MOEX_SANITIZER_FLAGS_INDEX GREATER -1)
+    set(MOEX_SANITIZERS_ENABLED TRUE)
+else()
+    set(MOEX_SANITIZERS_ENABLED FALSE)
+endif()
+
 file(MAKE_DIRECTORY "${MOEX_TOOLS_BUILD_DIR}")
 file(MAKE_DIRECTORY "${MOEX_APPS_BUILD_DIR}")
 file(MAKE_DIRECTORY "${MOEX_TEST_OUTPUT_DIR}")
@@ -89,6 +98,7 @@ set_target_properties(moex_phase0_abi PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/lib")
 
 add_subdirectory(protocols/twime_sbe)
+add_subdirectory(connectors/twime_trade)
 
 add_executable(moex_phase0_selfcheck
     tests/phase0_selfcheck.cpp)
@@ -128,6 +138,16 @@ moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "unicode_guard" "tools/u
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_cert_runner" "apps/moex_cert_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_replay_tool" "apps/moex_replay_tool.py")
 
+add_executable(moex_twime_cert_runner
+    apps/twime_cert_runner.cpp)
+target_link_libraries(moex_twime_cert_runner
+    PRIVATE
+        moex_twime_trade)
+target_compile_features(moex_twime_cert_runner PRIVATE cxx_std_20)
+set_target_properties(moex_twime_cert_runner PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
+    OUTPUT_NAME "moex_twime_cert_runner")
+
 add_library(twime_test_support STATIC
     tests/twime_sbe/twime_test_support.cpp)
 target_link_libraries(twime_test_support
@@ -156,6 +176,26 @@ function(moex_add_twime_test target_name source_file)
         COMMAND "${MOEX_BUILD_ROOT}/tests/${target_name}")
 endfunction()
 
+function(moex_add_twime_trade_test target_name source_file)
+    add_executable(${target_name} "${source_file}")
+    target_link_libraries(${target_name}
+        PRIVATE
+            moex_twime_trade
+            twime_test_support)
+    target_include_directories(${target_name}
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_trade"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_sbe")
+    target_compile_features(${target_name} PRIVATE cxx_std_20)
+    target_compile_definitions(${target_name}
+        PRIVATE
+            MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
+    set_property(TARGET ${target_name} PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+    add_test(
+        NAME ${target_name}
+        COMMAND "${MOEX_BUILD_ROOT}/tests/${target_name}")
+endfunction()
+
 moex_add_twime_test(twime_schema_inventory_test tests/twime_sbe/twime_schema_inventory_test.cpp)
 moex_add_twime_test(twime_header_codec_test tests/twime_sbe/twime_header_codec_test.cpp)
 moex_add_twime_test(twime_primitive_types_test tests/twime_sbe/twime_primitive_types_test.cpp)
@@ -165,6 +205,22 @@ moex_add_twime_test(twime_decode_error_test tests/twime_sbe/twime_decode_error_t
 moex_add_twime_test(twime_cert_log_formatter_test tests/twime_sbe/twime_cert_log_formatter_test.cpp)
 moex_add_twime_test(twime_enum_set_validation_test tests/twime_sbe/twime_enum_set_validation_test.cpp)
 moex_add_twime_test(twime_optional_string_policy_test tests/twime_sbe/twime_optional_string_policy_test.cpp)
+
+moex_add_twime_trade_test(twime_session_establish_test tests/twime_trade/twime_session_establish_test.cpp)
+moex_add_twime_trade_test(twime_session_reject_test tests/twime_trade/twime_session_reject_test.cpp)
+moex_add_twime_trade_test(twime_keepalive_ack_test tests/twime_trade/twime_keepalive_ack_test.cpp)
+moex_add_twime_trade_test(twime_heartbeat_fake_clock_test tests/twime_trade/twime_heartbeat_fake_clock_test.cpp)
+moex_add_twime_trade_test(twime_heartbeat_rate_limit_test tests/twime_trade/twime_heartbeat_rate_limit_test.cpp)
+moex_add_twime_trade_test(twime_reconnect_timing_test tests/twime_trade/twime_reconnect_timing_test.cpp)
+moex_add_twime_trade_test(twime_terminate_test tests/twime_trade/twime_terminate_test.cpp)
+moex_add_twime_trade_test(twime_sequence_gap_test tests/twime_trade/twime_sequence_gap_test.cpp)
+moex_add_twime_trade_test(twime_message_layer_rules_test tests/twime_trade/twime_message_layer_rules_test.cpp)
+moex_add_twime_trade_test(twime_retransmit_request_test tests/twime_trade/twime_retransmit_request_test.cpp)
+moex_add_twime_trade_test(twime_retransmit_limit_test tests/twime_trade/twime_retransmit_limit_test.cpp)
+moex_add_twime_trade_test(twime_retransmission_test tests/twime_trade/twime_retransmission_test.cpp)
+moex_add_twime_trade_test(twime_flood_reject_test tests/twime_trade/twime_flood_reject_test.cpp)
+moex_add_twime_trade_test(twime_business_reject_test tests/twime_trade/twime_business_reject_test.cpp)
+moex_add_twime_trade_test(twime_cert_scenario_runner_test tests/twime_trade/twime_cert_scenario_runner_test.cpp)
 
 add_custom_target(twime_codegen_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/twime_codegen"
@@ -206,6 +262,8 @@ add_test(
         profiles
         cert
         docs)
+set_tests_properties(unicode_guard_check PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_test(
     NAME profile_check_replay
@@ -229,6 +287,30 @@ add_test(
     COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
         --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/stub/phase0_stub.yaml"
         --output-dir "${MOEX_TEST_OUTPUT_DIR}/cert-runner")
+
+add_test(
+    NAME twime_cert_runner_session_establish
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/session_establish.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
+
+add_test(
+    NAME twime_cert_runner_client_sequence_heartbeat
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/client_sequence_heartbeat_null_nextseqno.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
+
+add_test(
+    NAME twime_cert_runner_terminate_requires_inbound
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/terminate_requires_inbound_terminate.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
+
+add_test(
+    NAME twime_cert_runner_message_counter_reset
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
+        --scenario "${CMAKE_CURRENT_SOURCE_DIR}/cert/scenarios/twime/message_counter_reset.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/twime-cert-runner")
 
 add_test(
     NAME spec_indexer_local_fixture
@@ -293,7 +375,10 @@ add_test(
 add_test(
     NAME source_style_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/source_style_check"
+        --require-clang-format
+        "${CMAKE_CURRENT_SOURCE_DIR}/connectors/twime_trade"
         "${CMAKE_CURRENT_SOURCE_DIR}/protocols/twime_sbe"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_trade"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_sbe"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_codegen.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_schema_common.py"
@@ -301,45 +386,49 @@ add_test(
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/twime_schema_materialize.py")
 
 if(DOTNET_EXECUTABLE)
-    add_test(
-        NAME dotnet_abi_smoke
-        COMMAND "${DOTNET_EXECUTABLE}" run
-            --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiSmoke/AbiSmoke.csproj"
-            --framework net10.0
-            -- "$<TARGET_FILE:moex_phase0_abi>"
-               "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt")
-    set_tests_properties(dotnet_abi_smoke PROPERTIES
-        ENVIRONMENT
-            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
-
-    add_test(
-        NAME dotnet_abi_policy
-        COMMAND "${DOTNET_EXECUTABLE}" run
-            --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiPolicy/AbiPolicy.csproj"
-            --framework net10.0
-            -- "$<TARGET_FILE:moex_phase0_abi>"
-               "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt")
-    set_tests_properties(dotnet_abi_policy PROPERTIES
-        ENVIRONMENT
-            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
-
-    if(EXISTS "${MOEX_ALORENGINE_PROJECT}")
-        add_test(
-            NAME dotnet_shadow_replay
-            COMMAND "${DOTNET_EXECUTABLE}" run
-                --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/ShadowReplay/ShadowReplay.csproj"
-                --framework net10.0
-                "-p:AlorEngineProject=${MOEX_ALORENGINE_PROJECT}"
-                "-p:RestorePackagesPath=$ENV{HOME}/.nuget/packages"
-                -- "$<TARGET_FILE:moex_phase0_abi>"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/expected_report.json"
-                   "${MOEX_TEST_OUTPUT_DIR}/shadow-replay/diff.json")
-        set_tests_properties(dotnet_shadow_replay PROPERTIES
-            ENVIRONMENT
-                "DOTNET_CLI_HOME=$ENV{HOME};DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+    if(MOEX_SANITIZERS_ENABLED)
+        message(STATUS "Sanitizer flags detected; skipping dotnet ABI tests because dotnet cannot reliably load sanitized native libraries across hosts.")
     else()
-        message(STATUS "MOEX_ALORENGINE_PROJECT not set or not found; skipping dotnet_shadow_replay test")
+        add_test(
+            NAME dotnet_abi_smoke
+            COMMAND "${DOTNET_EXECUTABLE}" run
+                --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiSmoke/AbiSmoke.csproj"
+                --framework net10.0
+                -- "$<TARGET_FILE:moex_phase0_abi>"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt")
+        set_tests_properties(dotnet_abi_smoke PROPERTIES
+            ENVIRONMENT
+                "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+
+        add_test(
+            NAME dotnet_abi_policy
+            COMMAND "${DOTNET_EXECUTABLE}" run
+                --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/AbiPolicy/AbiPolicy.csproj"
+                --framework net10.0
+                -- "$<TARGET_FILE:moex_phase0_abi>"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt")
+        set_tests_properties(dotnet_abi_policy PROPERTIES
+            ENVIRONMENT
+                "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+
+        if(EXISTS "${MOEX_ALORENGINE_PROJECT}")
+            add_test(
+                NAME dotnet_shadow_replay
+                COMMAND "${DOTNET_EXECUTABLE}" run
+                    --project "${CMAKE_CURRENT_SOURCE_DIR}/tests/dotnet/ShadowReplay/ShadowReplay.csproj"
+                    --framework net10.0
+                    "-p:AlorEngineProject=${MOEX_ALORENGINE_PROJECT}"
+                    "-p:RestorePackagesPath=$ENV{HOME}/.nuget/packages"
+                    -- "$<TARGET_FILE:moex_phase0_abi>"
+                       "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/synthetic_replay.txt"
+                       "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shadow_replay/expected_report.json"
+                       "${MOEX_TEST_OUTPUT_DIR}/shadow-replay/diff.json")
+            set_tests_properties(dotnet_shadow_replay PROPERTIES
+                ENVIRONMENT
+                    "DOTNET_CLI_HOME=$ENV{HOME};DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+        else()
+            message(STATUS "MOEX_ALORENGINE_PROJECT not set or not found; skipping dotnet_shadow_replay test")
+        endif()
     endif()
 else()
     message(STATUS "dotnet executable not found; skipping dotnet_abi_smoke test")

@@ -1,0 +1,12 @@
+scenario_id: twime_normal_retransmit_limit_10
+title: Synthetic TWIME normal retransmit limit 10
+metadata:
+  owner: phase2b1
+  mode: fake_transport
+steps:
+  - step_id: establish
+    action: connect and inject EstablishmentAck
+    expected: session becomes Active
+  - step_id: request_retransmit
+    action: send RetransmitRequest with Count=10 in normal session recovery mode
+    expected: request is accepted

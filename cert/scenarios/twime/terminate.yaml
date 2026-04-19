@@ -1,0 +1,12 @@
+scenario_id: twime_terminate
+title: Synthetic TWIME terminate
+metadata:
+  owner: phase2b
+  mode: fake_transport
+steps:
+  - step_id: establish
+    action: connect and inject EstablishmentAck
+    expected: session becomes Active
+  - step_id: terminate
+    action: send Terminate, receive inbound Terminate(Finished), then close fake peer
+    expected: session becomes Terminated cleanly

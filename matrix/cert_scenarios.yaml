@@ -30,6 +30,51 @@ scenarios:
   - scenario_id: scenario_twime_test_3_recovery_service
     artifact_id: moex_cert_procedure
     title: TWIME Test 3 recovery-service retransmission metadata
+  - scenario_id: scenario_twime_fake_session_establish
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport session establish
+  - scenario_id: scenario_twime_fake_session_reject
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport establishment reject
+  - scenario_id: scenario_twime_fake_heartbeat_sequence
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport heartbeat and Sequence handling
+  - scenario_id: scenario_twime_fake_ack_sets_inbound_counter
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport EstablishmentAck inbound-counter reconciliation
+  - scenario_id: scenario_twime_fake_message_counter_reset
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport message-counter reset detection
+  - scenario_id: scenario_twime_fake_client_sequence_null_nextseqno
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport client Sequence heartbeat uses null NextSeqNo
+  - scenario_id: scenario_twime_fake_terminate
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport terminate and peer close
+  - scenario_id: scenario_twime_fake_terminate_requires_inbound_terminate
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport terminate requires inbound Terminate(Finished)
+  - scenario_id: scenario_twime_fake_retransmit_last5
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport retransmit last 5 handling
+  - scenario_id: scenario_twime_fake_normal_retransmit_limit_10
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport normal retransmit limit 10
+  - scenario_id: scenario_twime_fake_full_recovery_retransmit_limit_1000
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport full recovery retransmit limit 1000
+  - scenario_id: scenario_twime_fake_heartbeat_rate_violation
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport heartbeat rate violation
+  - scenario_id: scenario_twime_fake_flood_reject
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport FloodReject handling
+  - scenario_id: scenario_twime_fake_business_reject
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport BusinessMessageReject handling
+  - scenario_id: scenario_twime_fake_business_reject_non_recoverable
+    artifact_id: moex_cert_procedure
+    title: Synthetic TWIME fake-transport BusinessMessageReject non-recoverable handling
   - scenario_id: scenario_fix_public
     artifact_id: moex_cert_procedure
     title: Public FIX certification appendix coverage

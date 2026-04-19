@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -47,6 +49,13 @@ jobs:
             cert \
             docs
 
+      - name: Guard hidden Unicode in PR diff
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          git diff "origin/${{ github.base_ref }}...HEAD" > /tmp/moex_pr.diff
+          python3 tools/unicode_guard.py /tmp/moex_pr.diff
+
       - name: Configure
         run: cmake -S . -B build
 
@@ -71,7 +80,9 @@ jobs:
       - name: Verify TWIME source formatting
         run: |
           build/tools/source_style_check --require-clang-format \
+            connectors/twime_trade \
             protocols/twime_sbe \
+            tests/twime_trade \
             tests/twime_sbe \
             tools/twime_codegen.py \
             tools/twime_schema_common.py \
@@ -97,6 +108,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
