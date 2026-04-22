@@ -127,6 +127,7 @@ endfunction()
 
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "spec_indexer" "tools/spec_indexer.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_scheme_lock" "tools/plaza2_scheme_lock.py")
+moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_phase3a_materialize" "tools/plaza2_phase3a_materialize.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "osengine_inventory" "tools/osengine_inventory.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "matrix_validate" "tools/matrix_validate.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "profile_check" "tools/profile_check.py")
@@ -514,6 +515,12 @@ add_test(
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/plaza2_scheme_lock"
         --scheme-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/plaza2/scheme"
         --output "${MOEX_TEST_OUTPUT_DIR}/plaza2-scheme-lock/manifest.json")
+
+add_test(
+    NAME plaza2_phase3a_check
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/plaza2_phase3a_materialize"
+        --project-root "${CMAKE_CURRENT_SOURCE_DIR}"
+        --check)
 
 add_test(
     NAME osengine_inventory_fixture

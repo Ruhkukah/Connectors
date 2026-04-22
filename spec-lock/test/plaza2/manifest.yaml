@@ -1,0 +1,235 @@
+version: 1
+phase: phase3a_plaza2_repl_spec_lock
+environment: test
+protocol: plaza2_repl
+transport: cgate
+documentation_artifacts:
+- artifact_id: plaza_docs_cgate_en_pdf
+  root_artifact_id: plaza_docs
+  source_manifest: spec-lock/prod/plaza2/docs/manifest.json
+  relative_path: cgate_en.pdf
+  canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/cgate_en.pdf
+  sha256: 6cbe21a53ed97cdb11206fe4aea5489a15311c76ff7582152c535636dcd8e0aa
+  size: 480310
+  upstream_modified: 11/5/2025  9:44 AM
+  display_name: CGate API reference PDF
+  role: runtime_api_reference
+  version_marker: manifest_locked
+- artifact_id: plaza_docs_p2gate_en_html
+  root_artifact_id: plaza_docs
+  source_manifest: spec-lock/prod/plaza2/docs/manifest.json
+  relative_path: p2gate_en.html
+  canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/p2gate_en.html
+  sha256: e77a8b99b0334cedcf0dfc894662efc99ae723970ab8783657df607d9c7c17ab
+  size: 1895548
+  upstream_modified: 3/23/2026  9:47 AM
+  display_name: PLAZA II gateway HTML reference
+  role: primary_repl_spec
+  version_marker: PLAZA II gateway version 9.3
+- artifact_id: plaza_docs_p2gate_en_pdf
+  root_artifact_id: plaza_docs
+  source_manifest: spec-lock/prod/plaza2/docs/manifest.json
+  relative_path: p2gate_en.pdf
+  canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/p2gate_en.pdf
+  sha256: 1aa365025542e1c3e415dbaecf271d84132b91903a9290efa489d9d6824c0f82
+  size: 4181187
+  upstream_modified: 3/23/2026  9:47 AM
+  display_name: PLAZA II gateway PDF reference
+  role: portable_repl_spec
+  version_marker: PLAZA II gateway version 9.3
+- artifact_id: plaza_docs_p2micexgate_en_pdf
+  root_artifact_id: plaza_docs
+  source_manifest: spec-lock/prod/plaza2/docs/manifest.json
+  relative_path: p2micexgate_en.pdf
+  canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/p2micexgate_en.pdf
+  sha256: 13eff45f8b1c795965450799b6eec25a388366a0f3d2421e89cef90d9e8b4c3c
+  size: 190567
+  upstream_modified: 4/7/2026  4:15 PM
+  display_name: P2MICEX gateway PDF reference
+  role: gateway_topology_reference
+  version_marker: manifest_locked
+- artifact_id: plaza_docs_style_css
+  root_artifact_id: plaza_docs
+  source_manifest: spec-lock/prod/plaza2/docs/manifest.json
+  relative_path: style.css
+  canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/Docs/style.css
+  sha256: 80075883e927953f71fc7c9558db9c1c396e0e180cab8efc0729dca2e7c9fe79
+  size: 434
+  upstream_modified: 9/23/2024  2:28 PM
+  display_name: PLAZA II HTML stylesheet
+  role: support_asset
+  version_marker: not_applicable
+- artifact_id: cgate_docs_cgate_en_pdf
+  root_artifact_id: cgate_docs
+  source_manifest: spec-lock/prod/plaza2/cgate_docs/manifest.json
+  relative_path: cgate_en.pdf
+  canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/prod/docs/cgate_en.pdf
+  sha256: 39b27b26eaabde88f80908b5c86a31c994714c1cd048cda454f30189feff2ce9
+  size: 480203
+  upstream_modified: 4/7/2026  1:59 PM
+  display_name: CGate API reference PDF
+  role: runtime_api_reference
+  version_marker: manifest_locked
+- artifact_id: cgate_docs_p2gate_en_html
+  root_artifact_id: cgate_docs
+  source_manifest: spec-lock/prod/plaza2/cgate_docs/manifest.json
+  relative_path: p2gate_en.html
+  canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/prod/docs/p2gate_en.html
+  sha256: e77a8b99b0334cedcf0dfc894662efc99ae723970ab8783657df607d9c7c17ab
+  size: 1895548
+  upstream_modified: 3/21/2026  1:46 AM
+  display_name: PLAZA II gateway HTML reference
+  role: primary_repl_spec
+  version_marker: PLAZA II gateway version 9.3
+- artifact_id: cgate_docs_p2gate_en_pdf
+  root_artifact_id: cgate_docs
+  source_manifest: spec-lock/prod/plaza2/cgate_docs/manifest.json
+  relative_path: p2gate_en.pdf
+  canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/prod/docs/p2gate_en.pdf
+  sha256: 72263de3f3d6d41be408eacea6cf6da9882080dd35d0a4f798a15319a35a5a4e
+  size: 4181187
+  upstream_modified: 4/7/2026  1:59 PM
+  display_name: PLAZA II gateway PDF reference
+  role: portable_repl_spec
+  version_marker: PLAZA II gateway version 9.3
+- artifact_id: cgate_docs_p2micexgate_en_pdf
+  root_artifact_id: cgate_docs
+  source_manifest: spec-lock/prod/plaza2/cgate_docs/manifest.json
+  relative_path: p2micexgate_en.pdf
+  canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/prod/docs/p2micexgate_en.pdf
+  sha256: 1733c4ac08a4139e5fb2ae4f0f6b05eb138c1d8f457e73f59850832c4b1c7a9e
+  size: 190590
+  upstream_modified: 4/7/2026  1:59 PM
+  display_name: P2MICEX gateway PDF reference
+  role: gateway_topology_reference
+  version_marker: manifest_locked
+- artifact_id: cgate_docs_style_css
+  root_artifact_id: cgate_docs
+  source_manifest: spec-lock/prod/plaza2/cgate_docs/manifest.json
+  relative_path: style.css
+  canonical_url: https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/prod/docs/style.css
+  sha256: 80075883e927953f71fc7c9558db9c1c396e0e180cab8efc0729dca2e7c9fe79
+  size: 434
+  upstream_modified: 9/23/2024  2:28 PM
+  display_name: PLAZA II HTML stylesheet
+  role: support_asset
+  version_marker: not_applicable
+scheme_and_runtime_expectations:
+- filename: forts_scheme.ini
+  role: local_cgate_scheme
+  committed: false
+  hash_state: pending_local_lock
+  expected_lock_manifest: spec-lock/test/plaza2/scheme/manifest.json
+  required_stream_protocol_item_ids:
+  - plaza2_stream_forts_aggr_repl
+  - plaza2_stream_forts_common_repl
+  - plaza2_stream_forts_deals_repl
+  - plaza2_stream_forts_info_repl
+  - plaza2_stream_forts_instrumentstate_repl
+  - plaza2_stream_forts_ordbook_repl
+  - plaza2_stream_forts_ordlog_repl
+  - plaza2_stream_forts_part_repl
+  - plaza2_stream_forts_pos_repl
+  - plaza2_stream_forts_refdata_repl
+  - plaza2_stream_forts_securitygroupstate_repl
+  - plaza2_stream_forts_sessionstate_repl
+  - plaza2_stream_forts_trade_repl
+  - plaza2_stream_forts_userorderbook_repl
+- filename: links_public.t0.ini
+  role: test_t0_public_link_profile
+  committed: false
+  hash_state: pending_local_lock
+- filename: links_public.t1.ini
+  role: test_t1_public_link_profile
+  committed: false
+  hash_state: pending_local_lock
+- filename: links_public.game.ini
+  role: game_public_link_profile
+  committed: false
+  hash_state: pending_local_lock
+- filename: links_public.custom.ini
+  role: custom_public_link_profile
+  committed: false
+  hash_state: pending_local_lock
+- filename: t0.ini
+  role: test_t0_auth_profile
+  committed: false
+  hash_state: pending_local_lock
+- filename: t1.ini
+  role: test_t1_auth_profile
+  committed: false
+  hash_state: pending_local_lock
+- filename: game.ini
+  role: game_auth_profile
+  committed: false
+  hash_state: pending_local_lock
+- filename: auth_client.ini
+  role: client_credentials_overlay
+  committed: false
+  hash_state: pending_local_lock
+- filename: client_router.ini
+  role: client_router_binding
+  committed: false
+  hash_state: pending_local_lock
+- filename: router.ini
+  role: local_router_config
+  committed: false
+  hash_state: pending_local_lock
+inventory_outputs:
+- matrix/protocol_inventory/plaza2_streams.yaml
+- matrix/protocol_inventory/plaza2_tables.yaml
+- matrix/protocol_inventory/plaza2_messages.yaml
+profiles:
+- profile_id: plaza2_private_offline
+  mode: offline_only
+  required_stream_protocol_item_ids:
+  - plaza2_stream_forts_info_repl
+  - plaza2_stream_forts_instrumentstate_repl
+  - plaza2_stream_forts_part_repl
+  - plaza2_stream_forts_pos_repl
+  - plaza2_stream_forts_refdata_repl
+  - plaza2_stream_forts_securitygroupstate_repl
+  - plaza2_stream_forts_sessionstate_repl
+  - plaza2_stream_forts_trade_repl
+  - plaza2_stream_forts_userorderbook_repl
+  candidate_stream_protocol_item_ids:
+  - plaza2_stream_forts_clr_repl
+  - plaza2_stream_forts_feerate_repl
+  - plaza2_stream_forts_forecastim_repl
+  - plaza2_stream_forts_prohibition_repl
+  - plaza2_stream_forts_rejectedorders_repl
+  - plaza2_stream_forts_rmt_repl
+  - plaza2_stream_forts_user_repl
+  - plaza2_stream_forts_vm_repl
+  external_runtime_required: false
+- profile_id: plaza2_private_test
+  mode: external_test_gated
+  required_stream_protocol_item_ids:
+  - plaza2_stream_forts_info_repl
+  - plaza2_stream_forts_instrumentstate_repl
+  - plaza2_stream_forts_part_repl
+  - plaza2_stream_forts_pos_repl
+  - plaza2_stream_forts_refdata_repl
+  - plaza2_stream_forts_securitygroupstate_repl
+  - plaza2_stream_forts_sessionstate_repl
+  - plaza2_stream_forts_trade_repl
+  - plaza2_stream_forts_userorderbook_repl
+  candidate_stream_protocol_item_ids:
+  - plaza2_stream_forts_clr_repl
+  - plaza2_stream_forts_feerate_repl
+  - plaza2_stream_forts_forecastim_repl
+  - plaza2_stream_forts_prohibition_repl
+  - plaza2_stream_forts_rejectedorders_repl
+  - plaza2_stream_forts_rmt_repl
+  - plaza2_stream_forts_user_repl
+  - plaza2_stream_forts_vm_repl
+  external_runtime_required: true
+  arming_flags_planned:
+  - --armed-test-network
+  - --armed-test-session
+  - --armed-test-plaza2
+notes:
+- Vendor cache payloads remain gitignored; this phase locks manifest rows, filenames,
+  hashes, and derived inventory only.
+- Installed CGate runtime .ini files are intentionally not committed and remain pending
+  local lock manifests.

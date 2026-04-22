@@ -1,14 +1,521 @@
 version: 1
 items:
-  - protocol_item_id: plaza2_router_split
-    artifact_id: plaza_docs
-    name: PLAZA II split into repl/trade/router/scheme
-    kind: architecture
-  - protocol_item_id: plaza2_scheme_lock
-    artifact_id: cgate_docs
-    name: Installed scheme lock and generated bindings fingerprint
-    kind: artifact_lock
-  - protocol_item_id: plaza2_twime_profile_neutrality
-    artifact_id: plaza_docs
-    name: Profile-neutral plaza2_twime composition
-    kind: profile
+- protocol_item_id: plaza2_router_split
+  artifact_id: plaza_docs
+  name: PLAZA II split into repl/trade/router/scheme
+  kind: architecture
+- protocol_item_id: plaza2_scheme_lock
+  artifact_id: cgate_docs
+  name: Installed scheme lock and generated bindings fingerprint
+  kind: artifact_lock
+- protocol_item_id: plaza2_twime_profile_neutrality
+  artifact_id: plaza_docs
+  name: Profile-neutral plaza2_twime composition
+  kind: profile
+- protocol_item_id: plaza2_stream_forts_trade_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_TRADE_REPL
+  stream_anchor_name: FORTS_TRADE_REPL
+  stream_type: R
+  title: User's orders and trades
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_TRADE_REPL
+  scope_bucket: private_core
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_ordlog_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_ORDLOG_REPL
+  stream_anchor_name: FORTS_ORDLOG_REPL
+  stream_type: R
+  title: anonymous orders
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_ORDLOG_REPL
+  scope_bucket: public_ordlog
+  login_subtypes:
+  - main
+  - viewing
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_deals_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_DEALS_REPL
+  stream_anchor_name: FORTS_DEALS_REPL
+  stream_type: R
+  title: anonymous trades
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_DEALS_REPL
+  scope_bucket: public_common
+  login_subtypes:
+  - main
+  - viewing
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_fee_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_FEE_REPL
+  stream_anchor_name: FORTS_FEE_REPL
+  stream_type: AR
+  title: exchange fees and penalties
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_FEE_REPL
+  scope_bucket: deferred
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_feerate_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_FEERATE_REPL
+  stream_anchor_name: FORTS_FEERATE_REPL
+  stream_type: AR
+  title: Precise Exchange fee rates
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_FEERATE_REPL
+  scope_bucket: private_auxiliary
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_broker_fee_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_BROKER_FEE_REPL
+  stream_anchor_name: FORTS_BROKER_FEE_REPL
+  stream_type: I
+  title: Brokerage fees
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_BROKER_FEE_REPL
+  scope_bucket: deferred
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_broker_fee_params_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_BROKER_FEE_PARAMS_REPL
+  stream_anchor_name: FORTS_BROKER_FEE_PARAMS_REPL
+  stream_type: I
+  title: Parameters for calculating the brokerage fee
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_BROKER_FEE_PARAMS_REPL
+  scope_bucket: deferred
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_userorderbook_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_USERORDERBOOK_REPL
+  stream_anchor_name: FORTS_USERORDERBOOK_REPL
+  stream_type: R
+  title: 'User orders: order-book snapshot'
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_USERORDERBOOK_REPL
+  scope_bucket: private_core
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_ordbook_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_ORDBOOK_REPL
+  stream_anchor_name: FORTS_ORDBOOK_REPL
+  stream_type: R
+  title: Depersonalized order-book snapshot
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_ORDBOOK_REPL
+  scope_bucket: public_ordlog
+  login_subtypes:
+  - main
+  - viewing
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_common_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_COMMON_REPL
+  stream_anchor_name: FORTS_COMMON_REPL
+  stream_type: I
+  title: Market fundamentals
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_COMMON_REPL
+  scope_bucket: public_common
+  login_subtypes:
+  - main
+  - viewing
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_aggr_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_AGGR##_REPL
+  stream_anchor_name: FORTS_AGGR_REPL
+  stream_type: I
+  title: Aggregated order-book streams
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_AGGR##_REPL
+  scope_bucket: public_aggr
+  login_subtypes:
+  - main
+  - viewing
+  matching_partitioned: true
+  notes: ''
+  stream_variants:
+  - FORTS_AGGR5_REPL
+  - FORTS_AGGR20_REPL
+  - FORTS_AGGR50_REPL
+  default_variant: FORTS_AGGR20_REPL
+- protocol_item_id: plaza2_stream_forts_pos_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_POS_REPL
+  stream_anchor_name: FORTS_POS_REPL
+  stream_type: I
+  title: information on positions
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_POS_REPL
+  scope_bucket: private_core
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_part_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_PART_REPL
+  stream_anchor_name: FORTS_PART_REPL
+  stream_type: I
+  title: Information about limits
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_PART_REPL
+  scope_bucket: private_core
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_prohibition_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_PROHIBITION_REPL
+  stream_anchor_name: FORTS_PROHIBITION_REPL
+  stream_type: R
+  title: Prohibitions
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_PROHIBITION_REPL
+  scope_bucket: private_auxiliary
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_refdata_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_REFDATA_REPL
+  stream_anchor_name: FORTS_REFDATA_REPL
+  stream_type: R
+  title: Reference and session information
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_REFDATA_REPL
+  scope_bucket: private_core
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_mm_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_MM_REPL
+  stream_anchor_name: FORTS_MM_REPL
+  stream_type: I
+  title: information on MM's obligations
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_MM_REPL
+  scope_bucket: deferred
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_clr_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_CLR_REPL
+  stream_anchor_name: FORTS_CLR_REPL
+  stream_type: AR
+  title: clearing information
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_CLR_REPL
+  scope_bucket: private_auxiliary
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_rts_index_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: RTS_INDEX_REPL
+  stream_anchor_name: RTS_INDEX_REPL
+  stream_type: R
+  title: online indices
+  scheme_filename: forts_scheme.ini
+  scheme_section: RTS_INDEX_REPL
+  scope_bucket: deferred
+  login_subtypes:
+  - main
+  - viewing
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_vm_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_VM_REPL
+  stream_anchor_name: FORTS_VM_REPL
+  stream_type: I
+  title: Variation margin and premium
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_VM_REPL
+  scope_bucket: private_auxiliary
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_volat_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_VOLAT_REPL
+  stream_anchor_name: FORTS_VOLAT_REPL
+  stream_type: I
+  title: online volatility information
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_VOLAT_REPL
+  scope_bucket: deferred
+  login_subtypes:
+  - main
+  - viewing
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_riskinfoblack_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_RISKINFOBLACK_REPL
+  stream_anchor_name: FORTS_RISKINFOBLACK_REPL
+  stream_type: I
+  title: Risk parameters for Black-Scholes model
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_RISKINFOBLACK_REPL
+  scope_bucket: deferred
+  login_subtypes:
+  - main
+  - viewing
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_riskinfobach_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_RISKINFOBACH_REPL
+  stream_anchor_name: FORTS_RISKINFOBACH_REPL
+  stream_type: I
+  title: Risk parameters for Bachelier model
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_RISKINFOBACH_REPL
+  scope_bucket: deferred
+  login_subtypes:
+  - main
+  - viewing
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_info_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_INFO_REPL
+  stream_anchor_name: FORTS_INFO_REPL
+  stream_type: R
+  title: additional reference information
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_INFO_REPL
+  scope_bucket: private_core
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_tnpenalty_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_TNPENALTY_REPL
+  stream_anchor_name: FORTS_TNPENALTY_REPL
+  stream_type: I
+  title: information about Transaction fees
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_TNPENALTY_REPL
+  scope_bucket: deferred
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_moex_rates_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: MOEX_RATES_REPL
+  stream_anchor_name: MOEX_RATES_REPL
+  stream_type: I
+  title: online currency rates
+  scheme_filename: forts_scheme.ini
+  scheme_section: MOEX_RATES_REPL
+  scope_bucket: deferred
+  login_subtypes:
+  - main
+  - viewing
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_forecastim_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_FORECASTIM_REPL
+  stream_anchor_name: FORTS_FORECASTIM_REPL
+  stream_type: I
+  title: Risk forecast after limits extension
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_FORECASTIM_REPL
+  scope_bucket: private_auxiliary
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: true
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_user_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_USER_REPL
+  stream_anchor_name: FORTS_USER_REPL
+  stream_type: R
+  title: Users
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_USER_REPL
+  scope_bucket: private_auxiliary
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_rejectedorders_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_REJECTEDORDERS_REPL
+  stream_anchor_name: FORTS_REJECTEDORDERS_REPL
+  stream_type: R
+  title: Register of orders rejected during the clearing
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_REJECTEDORDERS_REPL
+  scope_bucket: private_auxiliary
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_rmt_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_RMT_REPL
+  stream_anchor_name: FORTS_RMT_REPL
+  stream_type: I
+  title: Collateral without orders and current operational risk
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_RMT_REPL
+  scope_bucket: private_auxiliary
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_sessionstate_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_SESSIONSTATE_REPL
+  stream_anchor_name: FORTS_SESSIONSTATE_REPL
+  stream_type: I
+  title: Current trading day status
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_SESSIONSTATE_REPL
+  scope_bucket: private_core
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_instrumentstate_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_INSTRUMENTSTATE_REPL
+  stream_anchor_name: FORTS_INSTRUMENTSTATE_REPL
+  stream_type: I
+  title: Statuses of instruments for the current trading day
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_INSTRUMENTSTATE_REPL
+  scope_bucket: private_core
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
+- protocol_item_id: plaza2_stream_forts_securitygroupstate_repl
+  artifact_id: plaza_docs
+  kind: stream
+  stream_name: FORTS_SECURITYGROUPSTATE_REPL
+  stream_anchor_name: FORTS_SECURITYGROUPSTATE_REPL
+  stream_type: I
+  title: Group status of instruments for the current trading day
+  scheme_filename: forts_scheme.ini
+  scheme_section: FORTS_SECURITYGROUPSTATE_REPL
+  scope_bucket: private_core
+  login_subtypes:
+  - main
+  - viewing
+  - transactional
+  matching_partitioned: false
+  notes: ''
