@@ -295,11 +295,12 @@ def main() -> int:
     if html_manifest_row is None:
         raise SystemExit("spec-lock/prod/plaza2/docs/manifest.json is missing p2gate_en.html")
 
+    if args.check:
+        verify_tracked_outputs(output_root, html_manifest_row)
+        return 0
+
     html_path = project_root / html_manifest_row["relative_cache_path"]
     if not html_path.exists():
-        if args.check:
-            verify_tracked_outputs(output_root, html_manifest_row)
-            return 0
         raise SystemExit(
             "locked PLAZA II doc cache is missing at "
             f"{html_path}; populate spec-lock/prod/plaza2/docs/cache or run with --check "

@@ -539,6 +539,12 @@ add_test(
         --check)
 
 add_test(
+    NAME plaza2_schema_materialize_missing_cache_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_plaza2_schema_materialize_missing_cache.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${MOEX_TOOLS_BUILD_DIR}/plaza2_schema_materialize")
+
+add_test(
     NAME plaza2_codegen_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/plaza2_codegen"
         --schema "${CMAKE_CURRENT_SOURCE_DIR}/protocols/plaza2_cgate/schema/plaza2_forts_reviewed.ini"
@@ -569,6 +575,44 @@ set_property(TARGET plaza2_generated_metadata_test PROPERTY RUNTIME_OUTPUT_DIREC
 add_test(
     NAME plaza2_generated_metadata_test
     COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_generated_metadata_test")
+
+add_library(plaza2_runtime_test_support STATIC
+    tests/plaza2_cgate/plaza2_runtime_test_support.cpp)
+target_link_libraries(plaza2_runtime_test_support
+    PUBLIC
+        moex_plaza2_cgate_runtime)
+target_include_directories(plaza2_runtime_test_support
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/plaza2_cgate")
+target_compile_features(plaza2_runtime_test_support PUBLIC cxx_std_20)
+target_compile_definitions(plaza2_runtime_test_support
+    PRIVATE
+        MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
+
+add_library(plaza2_fake_cgate_runtime SHARED
+    tests/plaza2_cgate/fake_cgate_runtime.cpp)
+target_compile_features(plaza2_fake_cgate_runtime PUBLIC cxx_std_20)
+set_target_properties(plaza2_fake_cgate_runtime PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests"
+    RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests"
+    OUTPUT_NAME "plaza2_fake_cgate_runtime")
+
+function(moex_add_plaza2_cgate_test target_name source_file)
+    add_executable(${target_name} "${source_file}")
+    add_dependencies(${target_name} plaza2_fake_cgate_runtime)
+    target_link_libraries(${target_name}
+        PRIVATE
+            plaza2_runtime_test_support)
+    target_compile_features(${target_name} PRIVATE cxx_std_20)
+    set_property(TARGET ${target_name} PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+    add_test(
+        NAME ${target_name}
+        COMMAND "${MOEX_BUILD_ROOT}/tests/${target_name}" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+endfunction()
+
+moex_add_plaza2_cgate_test(plaza2_runtime_probe_test tests/plaza2_cgate/plaza2_runtime_probe_test.cpp)
+moex_add_plaza2_cgate_test(plaza2_scheme_drift_test tests/plaza2_cgate/plaza2_scheme_drift_test.cpp)
+moex_add_plaza2_cgate_test(plaza2_runtime_adapter_test tests/plaza2_cgate/plaza2_runtime_adapter_test.cpp)
 
 add_test(
     NAME osengine_inventory_fixture
