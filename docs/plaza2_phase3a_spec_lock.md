@@ -48,6 +48,15 @@ mode. It uses:
 This keeps CI offline-safe. No standard test needs the vendor cache payloads
 from `spec-lock/**/cache/`.
 
+The test manifest intentionally reuses the prod documentation manifests because
+the locked doc surface is shared across environments. Only the runtime, auth,
+router, and link-file expectations remain environment-specific.
+
+`matrix/protocol_inventory/plaza2_streams.yaml` intentionally keeps a few
+legacy non-stream protocol items so existing matrix references remain stable.
+In Phase 3A it acts as the broader PLAZA II protocol inventory, not only a
+pure stream list.
+
 ## State Model
 
 Phase 3A does not implement runtime state. It locks the state-bearing surfaces
@@ -63,10 +72,21 @@ needed for later phases:
 - replication/runtime signals:
   - `CG_MSG_P2REPL_CLEARDELETED`
   - `CG_MSG_P2REPL_LIFENUM`
+  - `CG_MSG_P2REPL_REPLSTATE`
+  - `CG_MSG_TN_BEGIN`
+  - `CG_MSG_TN_COMMIT`
   - `ONLINE`
   - `mode=snapshot+online`
   - resume `lifenum` / `rev.<table>` parameters
   - `_MATCH${id}` stream partition suffix
+
+These extra message surfaces are included intentionally:
+
+- `CG_MSG_P2REPL_REPLSTATE` is part of restart/resume state and belongs in the
+  locked read-side replication surface before any live adapter work begins.
+- `CG_MSG_TN_BEGIN` and `CG_MSG_TN_COMMIT` define the consistency boundary for
+  replicated data blocks. Later phases must treat replicated updates as
+  transactional and publish outward state only on safe commit boundaries.
 
 ## Safety Model
 

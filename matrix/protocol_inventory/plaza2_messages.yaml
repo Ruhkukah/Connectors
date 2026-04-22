@@ -23,6 +23,31 @@ items:
   first_phase: phase3d_fake_engine
   notes: Stream-scoped reset notification; clients must clear all stream state and
     rebuild.
+- protocol_item_id: plaza2_message_cg_msg_p2repl_replstate
+  artifact_id: cgate_docs
+  surface_kind: replication_resume_state_notification
+  message_name: CG_MSG_P2REPL_REPLSTATE
+  source_reference: CGate listener callback surface and repl_resume example
+  first_phase: phase3d_fake_engine
+  notes: Resume-state callback surface used to persist and restore replication position
+    across reconnects and restart-safe resumes.
+- protocol_item_id: plaza2_message_cg_msg_tn_begin
+  artifact_id: cgate_docs
+  surface_kind: transaction_boundary_begin
+  message_name: CG_MSG_TN_BEGIN
+  source_reference: CGate listener callback transactional boundaries
+  first_phase: phase3d_fake_engine
+  notes: Begin marker for a replicated transactional block; downstream state must
+    not be published as committed before the matching commit.
+- protocol_item_id: plaza2_message_cg_msg_tn_commit
+  artifact_id: cgate_docs
+  surface_kind: transaction_boundary_commit
+  message_name: CG_MSG_TN_COMMIT
+  source_reference: CGate listener callback transactional boundaries and repl_resume
+    example
+  first_phase: phase3d_fake_engine
+  notes: Commit marker for a replicated transactional block and the stable restart/resume
+    checkpoint referenced by repl_resume.
 - protocol_item_id: plaza2_signal_stream_state_online
   artifact_id: plaza_docs
   surface_kind: stream_state_transition
