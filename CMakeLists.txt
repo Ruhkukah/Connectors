@@ -98,6 +98,7 @@ set_target_properties(moex_phase0_abi PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/lib")
 
 add_subdirectory(protocols/twime_sbe)
+add_subdirectory(protocols/plaza2_cgate)
 add_subdirectory(connectors/twime_trade)
 
 add_executable(moex_phase0_selfcheck
@@ -128,6 +129,8 @@ endfunction()
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "spec_indexer" "tools/spec_indexer.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_scheme_lock" "tools/plaza2_scheme_lock.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_phase3a_materialize" "tools/plaza2_phase3a_materialize.py")
+moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_schema_materialize" "tools/plaza2_schema_materialize.py")
+moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_codegen" "tools/plaza2_codegen.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "osengine_inventory" "tools/osengine_inventory.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "matrix_validate" "tools/matrix_validate.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "profile_check" "tools/profile_check.py")
@@ -306,6 +309,13 @@ add_custom_target(twime_codegen_check
         --out "${CMAKE_CURRENT_SOURCE_DIR}/protocols/twime_sbe/generated"
         --check
     COMMENT "Verify deterministic TWIME generated metadata")
+
+add_custom_target(plaza2_codegen_check
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/plaza2_codegen"
+        --schema "${CMAKE_CURRENT_SOURCE_DIR}/protocols/plaza2_cgate/schema/plaza2_forts_reviewed.ini"
+        --out "${CMAKE_CURRENT_SOURCE_DIR}/protocols/plaza2_cgate/generated"
+        --check
+    COMMENT "Verify deterministic PLAZA II generated metadata")
 
 add_executable(twime_fixture_check_tool
     tools/twime_fixture_check.cpp)
@@ -521,6 +531,44 @@ add_test(
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/plaza2_phase3a_materialize"
         --project-root "${CMAKE_CURRENT_SOURCE_DIR}"
         --check)
+
+add_test(
+    NAME plaza2_schema_materialize_check
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/plaza2_schema_materialize"
+        --project-root "${CMAKE_CURRENT_SOURCE_DIR}"
+        --check)
+
+add_test(
+    NAME plaza2_codegen_check
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/plaza2_codegen"
+        --schema "${CMAKE_CURRENT_SOURCE_DIR}/protocols/plaza2_cgate/schema/plaza2_forts_reviewed.ini"
+        --out "${CMAKE_CURRENT_SOURCE_DIR}/protocols/plaza2_cgate/generated"
+        --check)
+
+add_test(
+    NAME plaza2_scheme_parser_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_plaza2_scheme_parser.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(plaza2_scheme_parser_check PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
+
+add_test(
+    NAME plaza2_metadata_invariants_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_plaza2_metadata_invariants.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(plaza2_metadata_invariants_check PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
+
+add_executable(plaza2_generated_metadata_test
+    tests/plaza2_cgate/plaza2_generated_metadata_test.cpp)
+target_link_libraries(plaza2_generated_metadata_test
+    PRIVATE
+        moex_plaza2_cgate_metadata)
+target_compile_features(plaza2_generated_metadata_test PRIVATE cxx_std_20)
+set_property(TARGET plaza2_generated_metadata_test PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME plaza2_generated_metadata_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_generated_metadata_test")
 
 add_test(
     NAME osengine_inventory_fixture

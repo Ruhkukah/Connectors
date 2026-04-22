@@ -1,0 +1,14 @@
+{
+  "field_count": 1972,
+  "output_relative_path": "protocols/plaza2_cgate/schema/plaza2_forts_reviewed.ini",
+  "schema_kind": "plaza2_reviewed_ini",
+  "source_artifact_id": "plaza_docs_p2gate_en_html",
+  "source_relative_path": "spec-lock/prod/plaza2/docs/cache/p2gate_en.html",
+  "source_sha256": "e77a8b99b0334cedcf0dfc894662efc99ae723970ab8783657df607d9c7c17ab",
+  "source_upstream_modified": "3/23/2026  9:47 AM",
+  "stream_count": 32,
+  "streams_inventory_path": "matrix/protocol_inventory/plaza2_streams.yaml",
+  "table_count": 137,
+  "tables_inventory_path": "matrix/protocol_inventory/plaza2_tables.yaml",
+  "version": 1
+}
