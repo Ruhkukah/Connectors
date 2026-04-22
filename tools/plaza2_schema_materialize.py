@@ -9,7 +9,7 @@ import re
 import tempfile
 
 from moex_phase0_common import dump_json, load_json_yaml
-from plaza2_schema_common import normalize_type_token
+from plaza2_schema_common import normalize_type_token, parse_reviewed_scheme
 
 
 ANCHOR_RE = re.compile(r'<a name="(?P<name>[^"]+)"></a>')
@@ -21,6 +21,9 @@ ROW_RE = re.compile(r"<tr>(?P<body>.*?)</tr>", re.DOTALL)
 CELL_RE = re.compile(r"<td[^>]*>(?P<body>.*?)</td>", re.DOTALL)
 TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
+REVIEWED_SCHEMA_NAME = "plaza2_phase3b_reviewed"
+STREAMS_INVENTORY_PATH = "matrix/protocol_inventory/plaza2_streams.yaml"
+TABLES_INVENTORY_PATH = "matrix/protocol_inventory/plaza2_tables.yaml"
 
 
 def clean_html(fragment: str) -> str:
@@ -116,6 +119,11 @@ def write_if_different(destination: Path, text: str, check: bool) -> None:
     destination.write_text(text, encoding="utf-8")
 
 
+def assert_equal(label: str, actual: object, expected: object) -> None:
+    if actual != expected:
+        raise SystemExit(f"{label} mismatch: expected {expected!r}, got {actual!r}")
+
+
 def build_reviewed_ini(
     streams: list[dict],
     tables: list[dict],
@@ -125,12 +133,12 @@ def build_reviewed_ini(
     lines = [
         "[meta]",
         "version = 1",
-        "schema_name = plaza2_phase3b_reviewed",
+        f"schema_name = {REVIEWED_SCHEMA_NAME}",
         f"source_artifact_id = {manifest_row['artifact_id']}",
         f"source_relative_path = {manifest_row['relative_cache_path']}",
         f"source_sha256 = {manifest_row['sha256']}",
-        "streams_inventory_path = matrix/protocol_inventory/plaza2_streams.yaml",
-        "tables_inventory_path = matrix/protocol_inventory/plaza2_tables.yaml",
+        f"streams_inventory_path = {STREAMS_INVENTORY_PATH}",
+        f"tables_inventory_path = {TABLES_INVENTORY_PATH}",
         "",
     ]
 
@@ -207,8 +215,8 @@ def build_manifest(
         "source_relative_path": manifest_row["relative_cache_path"],
         "source_sha256": manifest_row["sha256"],
         "source_upstream_modified": manifest_row["upstream_modified"],
-        "streams_inventory_path": "matrix/protocol_inventory/plaza2_streams.yaml",
-        "tables_inventory_path": "matrix/protocol_inventory/plaza2_tables.yaml",
+        "streams_inventory_path": STREAMS_INVENTORY_PATH,
+        "tables_inventory_path": TABLES_INVENTORY_PATH,
         "output_relative_path": output_relative_path,
         "stream_count": len(streams),
         "table_count": len(tables),
@@ -216,8 +224,62 @@ def build_manifest(
     }
 
 
+def verify_tracked_outputs(output_root: Path, manifest_row: dict) -> None:
+    reviewed_ini_path = output_root / "protocols" / "plaza2_cgate" / "schema" / "plaza2_forts_reviewed.ini"
+    manifest_path = output_root / "protocols" / "plaza2_cgate" / "schema" / "schema.manifest.json"
+    if not reviewed_ini_path.exists():
+        raise SystemExit(f"reviewed PLAZA II scheme fixture is missing: {reviewed_ini_path}")
+    if not manifest_path.exists():
+        raise SystemExit(f"PLAZA II reviewed schema manifest is missing: {manifest_path}")
+
+    parsed = parse_reviewed_scheme(reviewed_ini_path)
+    schema = parsed["schema"]
+    committed_manifest = load_json_yaml(manifest_path)
+
+    assert_equal("reviewed schema_name", schema["schema_name"], REVIEWED_SCHEMA_NAME)
+    assert_equal("reviewed source_artifact_id", schema["source_artifact_id"], manifest_row["artifact_id"])
+    assert_equal(
+        "reviewed source_relative_path",
+        schema["source_relative_path"],
+        manifest_row["relative_cache_path"],
+    )
+    assert_equal("reviewed source_sha256", schema["source_sha256"], manifest_row["sha256"])
+    assert_equal(
+        "reviewed streams_inventory_path",
+        schema["streams_inventory_path"],
+        STREAMS_INVENTORY_PATH,
+    )
+    assert_equal(
+        "reviewed tables_inventory_path",
+        schema["tables_inventory_path"],
+        TABLES_INVENTORY_PATH,
+    )
+
+    expected_manifest = {
+        "version": 1,
+        "schema_kind": "plaza2_reviewed_ini",
+        "source_artifact_id": manifest_row["artifact_id"],
+        "source_relative_path": manifest_row["relative_cache_path"],
+        "source_sha256": manifest_row["sha256"],
+        "source_upstream_modified": manifest_row["upstream_modified"],
+        "streams_inventory_path": STREAMS_INVENTORY_PATH,
+        "tables_inventory_path": TABLES_INVENTORY_PATH,
+        "output_relative_path": reviewed_ini_path.relative_to(output_root).as_posix(),
+        "stream_count": schema["stream_count"],
+        "table_count": schema["table_count"],
+        "field_count": schema["field_count"],
+    }
+    if committed_manifest != expected_manifest:
+        raise SystemExit(
+            "tracked PLAZA II reviewed schema manifest is stale: "
+            f"expected {expected_manifest!r}, got {committed_manifest!r}"
+        )
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Materialize the reviewed Phase 3B PLAZA II scheme fixture from the locked docs.")
+    parser = argparse.ArgumentParser(
+        description="Materialize the reviewed Phase 3B PLAZA II scheme fixture from the locked docs."
+    )
     parser.add_argument("--project-root", required=True)
     parser.add_argument("--out-dir")
     parser.add_argument("--check", action="store_true")
@@ -234,14 +296,28 @@ def main() -> int:
         raise SystemExit("spec-lock/prod/plaza2/docs/manifest.json is missing p2gate_en.html")
 
     html_path = project_root / html_manifest_row["relative_cache_path"]
+    if not html_path.exists():
+        if args.check:
+            verify_tracked_outputs(output_root, html_manifest_row)
+            return 0
+        raise SystemExit(
+            "locked PLAZA II doc cache is missing at "
+            f"{html_path}; populate spec-lock/prod/plaza2/docs/cache or run with --check "
+            "against the tracked reviewed fixture"
+        )
+
     html_text = html_path.read_text(encoding="utf-8", errors="replace")
     anchor_positions = {
         match.group("name").lower(): match.start()
         for match in ANCHOR_RE.finditer(html_text)
     }
 
-    streams_inventory = load_json_yaml(project_root / "matrix" / "protocol_inventory" / "plaza2_streams.yaml")["items"]
-    tables_inventory = load_json_yaml(project_root / "matrix" / "protocol_inventory" / "plaza2_tables.yaml")["items"]
+    streams_inventory = load_json_yaml(
+        project_root / "matrix" / "protocol_inventory" / "plaza2_streams.yaml"
+    )["items"]
+    tables_inventory = load_json_yaml(
+        project_root / "matrix" / "protocol_inventory" / "plaza2_tables.yaml"
+    )["items"]
     streams = [item for item in streams_inventory if item.get("kind") == "stream"]
     stream_anchor_by_name = {item["stream_name"]: item["stream_anchor_name"] for item in streams}
 
@@ -260,7 +336,12 @@ def main() -> int:
         )
         field_rows_by_table[(stream_name, table_name)] = rows
 
-    reviewed_ini_text = build_reviewed_ini(streams, tables_inventory, html_manifest_row, field_rows_by_table)
+    reviewed_ini_text = build_reviewed_ini(
+        streams,
+        tables_inventory,
+        html_manifest_row,
+        field_rows_by_table,
+    )
     reviewed_ini_path = output_root / "protocols" / "plaza2_cgate" / "schema" / "plaza2_forts_reviewed.ini"
     write_if_different(reviewed_ini_path, reviewed_ini_text, args.check)
 
