@@ -31,13 +31,19 @@ def assert_unique(name: str, values: list[int]) -> None:
 def main() -> int:
     project_root = Path(sys.argv[1]).resolve()
 
-    metadata = load_json_yaml(project_root / "protocols" / "plaza2_cgate" / "generated" / "plaza2_generated_metadata.json")
+    metadata = load_json_yaml(
+        project_root / "protocols" / "plaza2_cgate" / "generated" / "plaza2_generated_metadata.json"
+    )
     streams_inventory = load_json_yaml(project_root / "matrix" / "protocol_inventory" / "plaza2_streams.yaml")["items"]
     tables_inventory = load_json_yaml(project_root / "matrix" / "protocol_inventory" / "plaza2_tables.yaml")["items"]
     docs_manifest = load_json_yaml(project_root / "spec-lock" / "prod" / "plaza2" / "docs" / "manifest.json")
     docs_rows = {row["relative_path"]: row for row in docs_manifest["artifacts"]}
 
-    expected_streams = [item for item in streams_inventory if item.get("kind") == "stream" and item.get("scheme_filename") == "forts_scheme.ini"]
+    expected_streams = [
+        item
+        for item in streams_inventory
+        if item.get("kind") == "stream" and item.get("scheme_filename") == "forts_scheme.ini"
+    ]
     expected_tables = [item for item in tables_inventory if item.get("kind") == "table"]
 
     generated_streams = metadata["streams"]
@@ -49,16 +55,28 @@ def main() -> int:
         raise SystemExit("generated metadata source sha256 drifted from locked p2gate_en.html")
 
     stream_protocol_ids = {row["protocol_item_id"] for row in generated_streams}
-    missing_streams = sorted(item["protocol_item_id"] for item in expected_streams if item["protocol_item_id"] not in stream_protocol_ids)
+    missing_streams = sorted(
+        item["protocol_item_id"]
+        for item in expected_streams
+        if item["protocol_item_id"] not in stream_protocol_ids
+    )
     if missing_streams:
         raise SystemExit(f"generated stream metadata is missing locked Phase 3A streams: {missing_streams}")
 
     table_protocol_ids = {row["protocol_item_id"] for row in generated_tables}
-    missing_tables = sorted(item["protocol_item_id"] for item in expected_tables if item["protocol_item_id"] not in table_protocol_ids)
+    missing_tables = sorted(
+        item["protocol_item_id"]
+        for item in expected_tables
+        if item["protocol_item_id"] not in table_protocol_ids
+    )
     if missing_tables:
         raise SystemExit(f"generated table metadata is missing locked Phase 3A tables: {missing_tables}")
 
-    private_streams = {row["stream_name"] for row in generated_streams if row["scope_bucket"] in {"private_core", "private_auxiliary"}}
+    private_streams = {
+        row["stream_name"]
+        for row in generated_streams
+        if row["scope_bucket"] in {"private_core", "private_auxiliary"}
+    }
     missing_private_streams = sorted(REQUIRED_PRIVATE_STREAMS - private_streams)
     if missing_private_streams:
         raise SystemExit(f"required private-state streams are missing from generated metadata: {missing_private_streams}")

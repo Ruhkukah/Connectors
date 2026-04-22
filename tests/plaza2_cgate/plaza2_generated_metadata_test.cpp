@@ -5,7 +5,8 @@
 int main() {
     using namespace moex::plaza2::generated;
 
-    if (TypeDescriptors().empty() || StreamDescriptors().empty() || TableDescriptors().empty() || FieldDescriptors().empty()) {
+    if (TypeDescriptors().empty() || StreamDescriptors().empty() || TableDescriptors().empty() ||
+        FieldDescriptors().empty()) {
         std::cerr << "generated metadata arrays must not be empty\n";
         return 1;
     }
