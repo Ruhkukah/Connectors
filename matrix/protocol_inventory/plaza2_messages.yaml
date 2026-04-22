@@ -1,0 +1,62 @@
+version: 1
+items:
+- protocol_item_id: plaza2_message_cg_msg_p2mq_timeout
+  artifact_id: plaza_docs
+  surface_kind: response_code
+  message_name: CG_MSG_P2MQ_TIMEOUT
+  source_reference: heartbeat no-reply rule
+  first_phase: phase3c_runtime_adapter
+  notes: Heartbeat over p2mq must not request reply; otherwise the gateway reports
+    CG_MSG_P2MQ_TIMEOUT.
+- protocol_item_id: plaza2_message_cg_msg_p2repl_cleardeleted
+  artifact_id: plaza_docs
+  surface_kind: replication_cleanup_notification
+  message_name: CG_MSG_P2REPL_CLEARDELETED
+  source_reference: data cleanup by streams
+  first_phase: phase3d_fake_engine
+  notes: Table-scoped cleanup by replRev threshold; MAX(int64) means full table replay.
+- protocol_item_id: plaza2_message_cg_msg_p2repl_lifenum
+  artifact_id: plaza_docs
+  surface_kind: replication_life_number_reset
+  message_name: CG_MSG_P2REPL_LIFENUM
+  source_reference: data cleanup by streams
+  first_phase: phase3d_fake_engine
+  notes: Stream-scoped reset notification; clients must clear all stream state and
+    rebuild.
+- protocol_item_id: plaza2_signal_stream_state_online
+  artifact_id: plaza_docs
+  surface_kind: stream_state_transition
+  message_name: ONLINE
+  source_reference: late start and recovery sections
+  first_phase: phase3d_fake_engine
+  notes: ONLINE indicates snapshot catch-up is complete and subsequent data is live.
+- protocol_item_id: plaza2_signal_listener_mode_snapshot_online
+  artifact_id: plaza_docs
+  surface_kind: listener_open_mode
+  message_name: mode=snapshot+online
+  source_reference: order-book resume example
+  first_phase: phase3c_runtime_adapter
+  notes: Phase 3C listeners must support snapshot+online opens for restart-safe recovery.
+- protocol_item_id: plaza2_signal_listener_resume_lifenum_rev
+  artifact_id: plaza_docs
+  surface_kind: listener_resume_parameters
+  message_name: lifenum and rev.<table> resume parameters
+  source_reference: order-book resume example
+  first_phase: phase3e_private_state
+  notes: Persisted lifenum and per-table rev values are part of safe restart and resume.
+- protocol_item_id: plaza2_signal_stream_partition_suffix
+  artifact_id: plaza_docs
+  surface_kind: stream_name_rule
+  message_name: _MATCH${id}
+  source_reference: matching partitioning
+  first_phase: phase3h_public_ordlog
+  notes: Matching-partitioned stream names must be resolved dynamically; no single-partition
+    assumption is allowed.
+- protocol_item_id: plaza2_signal_aggr20_default_variant
+  artifact_id: plaza_docs
+  surface_kind: stream_variant_rule
+  message_name: FORTS_AGGR20_REPL
+  source_reference: aggregated order-book streams
+  first_phase: phase3g_public_aggr
+  notes: AGGR20 is the default lightweight aggregated-book target for the approved
+    public profile.

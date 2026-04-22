@@ -1,0 +1,1240 @@
+version: 1
+items:
+- protocol_item_id: plaza2_table_forts_trade_repl_orders_log
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_trade_repl
+  stream_name: FORTS_TRADE_REPL
+  table_name: orders_log
+  title: Log of operations with orders
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_trade_repl_multileg_orders_log
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_trade_repl
+  stream_name: FORTS_TRADE_REPL
+  table_name: multileg_orders_log
+  title: Log of operations with multileg orders
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_trade_repl_user_deal
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_trade_repl
+  stream_name: FORTS_TRADE_REPL
+  table_name: user_deal
+  title: User trades
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_trade_repl_user_multileg_deal
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_trade_repl
+  stream_name: FORTS_TRADE_REPL
+  table_name: user_multileg_deal
+  title: User's multileg orders trades
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_trade_repl_heartbeat
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_trade_repl
+  stream_name: FORTS_TRADE_REPL
+  table_name: heartbeat
+  title: Server times table
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_trade_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_trade_repl
+  stream_name: FORTS_TRADE_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_ordlog_repl_orders_log
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_ordlog_repl
+  stream_name: FORTS_ORDLOG_REPL
+  table_name: orders_log
+  title: Log of operations with orders
+  scope_bucket: public_ordlog
+  notes: ''
+- protocol_item_id: plaza2_table_forts_ordlog_repl_multileg_orders_log
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_ordlog_repl
+  stream_name: FORTS_ORDLOG_REPL
+  table_name: multileg_orders_log
+  title: Log of operations with multileg orders
+  scope_bucket: public_ordlog
+  notes: ''
+- protocol_item_id: plaza2_table_forts_ordlog_repl_heartbeat
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_ordlog_repl
+  stream_name: FORTS_ORDLOG_REPL
+  table_name: heartbeat
+  title: Server times table
+  scope_bucket: public_ordlog
+  notes: ''
+- protocol_item_id: plaza2_table_forts_ordlog_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_ordlog_repl
+  stream_name: FORTS_ORDLOG_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: public_ordlog
+  notes: ''
+- protocol_item_id: plaza2_table_forts_deals_repl_deal
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_deals_repl
+  stream_name: FORTS_DEALS_REPL
+  table_name: deal
+  title: Trades
+  scope_bucket: public_common
+  notes: ''
+- protocol_item_id: plaza2_table_forts_deals_repl_multileg_deal
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_deals_repl
+  stream_name: FORTS_DEALS_REPL
+  table_name: multileg_deal
+  title: Multileg trades
+  scope_bucket: public_common
+  notes: ''
+- protocol_item_id: plaza2_table_forts_deals_repl_heartbeat
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_deals_repl
+  stream_name: FORTS_DEALS_REPL
+  table_name: heartbeat
+  title: Server times table
+  scope_bucket: public_common
+  notes: ''
+- protocol_item_id: plaza2_table_forts_deals_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_deals_repl
+  stream_name: FORTS_DEALS_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: public_common
+  notes: ''
+- protocol_item_id: plaza2_table_forts_fee_repl_adjusted_fee
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_fee_repl
+  stream_name: FORTS_FEE_REPL
+  table_name: adjusted_fee
+  title: exchange fees
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_fee_repl_penalty
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_fee_repl
+  stream_name: FORTS_FEE_REPL
+  table_name: penalty
+  title: penalties
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_fee_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_fee_repl
+  stream_name: FORTS_FEE_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_feerate_repl_futures_rate
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_feerate_repl
+  stream_name: FORTS_FEERATE_REPL
+  table_name: futures_rate
+  title: fee rates on futures and multi-leg instruments
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_feerate_repl_option_rate
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_feerate_repl
+  stream_name: FORTS_FEERATE_REPL
+  table_name: option_rate
+  title: fee rates on option contracts
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_feerate_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_feerate_repl
+  stream_name: FORTS_FEERATE_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_broker_fee_repl_broker_fee
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_broker_fee_repl
+  stream_name: FORTS_BROKER_FEE_REPL
+  table_name: broker_fee
+  title: brokerage fee
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_broker_fee_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_broker_fee_repl
+  stream_name: FORTS_BROKER_FEE_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_broker_fee_params_repl_broker_fee_params
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_broker_fee_params_repl
+  stream_name: FORTS_BROKER_FEE_PARAMS_REPL
+  table_name: broker_fee_params
+  title: Parameters for calculating the brokerage fee
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_broker_fee_params_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_broker_fee_params_repl
+  stream_name: FORTS_BROKER_FEE_PARAMS_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_userorderbook_repl_orders
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_userorderbook_repl
+  stream_name: FORTS_USERORDERBOOK_REPL
+  table_name: orders
+  title: Current futures and options order-book
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_userorderbook_repl_multileg_orders
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_userorderbook_repl
+  stream_name: FORTS_USERORDERBOOK_REPL
+  table_name: multileg_orders
+  title: Table of active multileg orders
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_userorderbook_repl_info
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_userorderbook_repl
+  stream_name: FORTS_USERORDERBOOK_REPL
+  table_name: info
+  title: Order-book snapshots information
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_userorderbook_repl_orders_currentday
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_userorderbook_repl
+  stream_name: FORTS_USERORDERBOOK_REPL
+  table_name: orders_currentday
+  title: Snapshot of active user orders at the start of the current day
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_userorderbook_repl_multileg_orders_currentday
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_userorderbook_repl
+  stream_name: FORTS_USERORDERBOOK_REPL
+  table_name: multileg_orders_currentday
+  title: Snapshot of active user multileg orders at the start of the current day
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_userorderbook_repl_info_currentday
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_userorderbook_repl
+  stream_name: FORTS_USERORDERBOOK_REPL
+  table_name: info_currentday
+  title: Snapshot information
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_ordbook_repl_orders
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_ordbook_repl
+  stream_name: FORTS_ORDBOOK_REPL
+  table_name: orders
+  title: Current order-book
+  scope_bucket: public_ordlog
+  notes: ''
+- protocol_item_id: plaza2_table_forts_ordbook_repl_multileg_orders
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_ordbook_repl
+  stream_name: FORTS_ORDBOOK_REPL
+  table_name: multileg_orders
+  title: Table of active multileg orders
+  scope_bucket: public_ordlog
+  notes: ''
+- protocol_item_id: plaza2_table_forts_ordbook_repl_info
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_ordbook_repl
+  stream_name: FORTS_ORDBOOK_REPL
+  table_name: info
+  title: Order-book snapshots information
+  scope_bucket: public_ordlog
+  notes: ''
+- protocol_item_id: plaza2_table_forts_ordbook_repl_orders_currentday
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_ordbook_repl
+  stream_name: FORTS_ORDBOOK_REPL
+  table_name: orders_currentday
+  title: Snapshot of active orders at the start of the current day
+  scope_bucket: public_ordlog
+  notes: ''
+- protocol_item_id: plaza2_table_forts_ordbook_repl_multileg_orders_currentday
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_ordbook_repl
+  stream_name: FORTS_ORDBOOK_REPL
+  table_name: multileg_orders_currentday
+  title: Snapshot of active multileg orders at the start of the current day
+  scope_bucket: public_ordlog
+  notes: ''
+- protocol_item_id: plaza2_table_forts_ordbook_repl_info_currentday
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_ordbook_repl
+  stream_name: FORTS_ORDBOOK_REPL
+  table_name: info_currentday
+  title: Snapshot information
+  scope_bucket: public_ordlog
+  notes: ''
+- protocol_item_id: plaza2_table_forts_common_repl_common
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_common_repl
+  stream_name: FORTS_COMMON_REPL
+  table_name: common
+  title: Market fundamentals
+  scope_bucket: public_common
+  notes: ''
+- protocol_item_id: plaza2_table_forts_common_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_common_repl
+  stream_name: FORTS_COMMON_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: public_common
+  notes: ''
+- protocol_item_id: plaza2_table_forts_aggr_repl_orders_aggr
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_aggr_repl
+  stream_name: FORTS_AGGR##_REPL
+  table_name: orders_aggr
+  title: Aggregated order-books
+  scope_bucket: public_aggr
+  notes: ''
+- protocol_item_id: plaza2_table_forts_aggr_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_aggr_repl
+  stream_name: FORTS_AGGR##_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: public_aggr
+  notes: ''
+- protocol_item_id: plaza2_table_forts_pos_repl_position
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_pos_repl
+  stream_name: FORTS_POS_REPL
+  table_name: position
+  title: Client positions
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_pos_repl_position_sa
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_pos_repl
+  stream_name: FORTS_POS_REPL
+  table_name: position_sa
+  title: Settlement Account positions
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_pos_repl_info
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_pos_repl
+  stream_name: FORTS_POS_REPL
+  table_name: info
+  title: Snapshot information
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_pos_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_pos_repl
+  stream_name: FORTS_POS_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_part_repl_part
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_part_repl
+  stream_name: FORTS_PART_REPL
+  table_name: part
+  title: Limits on clients and brokerage firms
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_part_repl_part_sa
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_part_repl
+  stream_name: FORTS_PART_REPL
+  table_name: part_sa
+  title: Limits by Settlement Account
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_part_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_part_repl
+  stream_name: FORTS_PART_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_prohibition_repl_prohibition
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_prohibition_repl
+  stream_name: FORTS_PROHIBITION_REPL
+  table_name: prohibition
+  title: Prohibitions
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_prohibition_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_prohibition_repl
+  stream_name: FORTS_PROHIBITION_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_rates
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: rates
+  title: Currency rates dictionary
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_sess_contents
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_sess_contents
+  title: Traded instruments directory (futures)
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_vcb
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_vcb
+  title: Traded assets directory (futures)
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_instruments
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_instruments
+  title: Instruments dictionary
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_bond_registry
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_bond_registry
+  title: Spot asset parameters directory
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_dealer
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: dealer
+  title: Companies directory
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_sys_messages
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: sys_messages
+  title: Trading system messages
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_opt_sess_contents
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: opt_sess_contents
+  title: Traded instruments directory (options)
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_opt_vcb
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: opt_vcb
+  title: Traded assets directory (options)
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_multileg_dict
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: multileg_dict
+  title: Multileg instruments dictionary
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_intercl_info
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_intercl_info
+  title: Information on the variation margin on futures, calculated based on the results
+    of intraday clearing
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_opt_intercl_info
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: opt_intercl_info
+  title: Information on variation margin and premium on options calculated based on
+    the results of intraday clearing
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_opt_exp_orders
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: opt_exp_orders
+  title: Register of requests for exercise of option
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_bond_nkd
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_bond_nkd
+  title: Accrued interest as of the bond futures contract expiration date
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_bond_nominal
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_bond_nominal
+  title: Payment of bonds' face value
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_bond_isin
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_bond_isin
+  title: Directory of compliance of instruments with spot assets
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_user
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: user
+  title: System users
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_sess_option_series
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: sess_option_series
+  title: Option series
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_investor
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: investor
+  title: Clients directory
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_margin_type
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_margin_type
+  title: Type of margining
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_settlement_account
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_settlement_account
+  title: Settlement Account
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_sma_master
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: sma_master
+  title: SMA login binding to MASTER login
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_sma_pre_trade_check
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: sma_pre_trade_check
+  title: SMA login pre-trade verification settings
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_clearing_members
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: clearing_members
+  title: Clearing Members
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_instr2matching_map
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: instr2matching_map
+  title: Instrument binding to Matching ID
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_fut_exec_orders
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: fut_exec_orders
+  title: Exercise requests of daily futures contracts with auto-prolongation
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_discrete_auction
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: discrete_auction
+  title: Parameters of assigned opening auctions
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_discrete_auction_base_contract
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: discrete_auction_base_contract
+  title: Underlying contracts assigned to the opening auction
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_trade_periods
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: trade_periods
+  title: Trading period parameters
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_session
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: session
+  title: Information about a trading day
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_brokers_base_contracts_params
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: brokers_base_contracts_params
+  title: Individual coefficient of IM in the context of the underlying contract and
+    BF
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_refdata_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_refdata_repl
+  stream_name: FORTS_REFDATA_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_mm_repl_mm_agreement_filter
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_mm_repl
+  stream_name: FORTS_MM_REPL
+  table_name: mm_agreement_filter
+  title: Table numbers and types of contracts for the provision of market-making services
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_mm_repl_fut_mm_info
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_mm_repl
+  stream_name: FORTS_MM_REPL
+  table_name: fut_MM_info
+  title: MM's obligations in futures
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_mm_repl_opt_mm_info
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_mm_repl
+  stream_name: FORTS_MM_REPL
+  table_name: opt_MM_info
+  title: MM's obligations in options
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_mm_repl_cs_mm_rule
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_mm_repl
+  stream_name: FORTS_MM_REPL
+  table_name: cs_mm_rule
+  title: Instruments for recalculating the central strike price.
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_money_clearing
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: money_clearing
+  title: Balances for clients and brokerage firms
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_money_clearing_sa
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: money_clearing_sa
+  title: Balances by Settlement Account
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_clr_rate
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: clr_rate
+  title: Currency and Index rates
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_fut_pos
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: fut_pos
+  title: Positional state in futures as a result of clearing session
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_opt_pos
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: opt_pos
+  title: Positional state in options as a result of clearing session
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_fut_sess_settl
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: fut_sess_settl
+  title: Futures settlement prices
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_opt_sess_settl
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: opt_sess_settl
+  title: Options settlement prices
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_pledge_details
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: pledge_details
+  title: Pledgs details table
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_fut_pos_sa
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: fut_pos_sa
+  title: Positional state of SA on futures as a result of clearing session
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_opt_pos_sa
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: opt_pos_sa
+  title: Positional state of SA on options as a result of clearing session
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_option_series_settl
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: option_series_settl
+  title: Settlement prices for option series
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_clr_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_clr_repl
+  stream_name: FORTS_CLR_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_rts_index_repl_rts_index
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_rts_index_repl
+  stream_name: RTS_INDEX_REPL
+  table_name: rts_index
+  title: Indices
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_vm_repl_fut_vm
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_vm_repl
+  stream_name: FORTS_VM_REPL
+  table_name: fut_vm
+  title: Variation margin on futures by positions of clients
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_vm_repl_opt_vm
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_vm_repl
+  stream_name: FORTS_VM_REPL
+  table_name: opt_vm
+  title: Variation margin and premium on options in the context of client positions
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_vm_repl_fut_vm_sa
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_vm_repl
+  stream_name: FORTS_VM_REPL
+  table_name: fut_vm_sa
+  title: Variation margin on futures in the context of SA positions
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_vm_repl_opt_vm_sa
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_vm_repl
+  stream_name: FORTS_VM_REPL
+  table_name: opt_vm_sa
+  title: Variation margin for options
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_vm_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_vm_repl
+  stream_name: FORTS_VM_REPL
+  table_name: sys_events
+  title: Table of events
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_volat_repl_volat
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_volat_repl
+  stream_name: FORTS_VOLAT_REPL
+  table_name: volat
+  title: Volatility
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_volat_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_volat_repl
+  stream_name: FORTS_VOLAT_REPL
+  table_name: sys_events
+  title: Table of events
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_riskinfoblack_repl_volat_coeff
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_riskinfoblack_repl
+  stream_name: FORTS_RISKINFOBLACK_REPL
+  table_name: volat_coeff
+  title: Risk parameters for Black-Scholes model
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_riskinfobach_repl_volat_coeff
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_riskinfobach_repl
+  stream_name: FORTS_RISKINFOBACH_REPL
+  table_name: volat_coeff
+  title: Risk parameters for Bachelier model
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_currency_params
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: currency_params
+  title: FX parameters
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_base_contracts_params
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: base_contracts_params
+  title: Base contracts parameters
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_futures_params
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: futures_params
+  title: Futures parameters
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_option_series_params
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: option_series_params
+  title: Parameters for series of options
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_options_params
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: options_params
+  title: Options parameters
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_investor
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: investor
+  title: Clients directory
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_dealer
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: dealer
+  title: Companies directory
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_multileg_dictionary
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: multileg_dictionary
+  title: Multileg instruments dictionary
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_common_params
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: common_params
+  title: Collateral calculation parameters
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_brokers_base_contracts_params
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: brokers_base_contracts_params
+  title: Individual coefficient of IM in the context of the underlying contract and
+    BF
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_info_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_info_repl
+  stream_name: FORTS_INFO_REPL
+  table_name: sys_events
+  title: Table of events
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_tnpenalty_repl_fee_tn
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_tnpenalty_repl
+  stream_name: FORTS_TNPENALTY_REPL
+  table_name: fee_tn
+  title: Detailed information on the number of incorrect transaction
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_tnpenalty_repl_fee_all
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_tnpenalty_repl
+  stream_name: FORTS_TNPENALTY_REPL
+  table_name: fee_all
+  title: Information on the number of points accrued
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_tnpenalty_repl_heartbeat
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_tnpenalty_repl
+  stream_name: FORTS_TNPENALTY_REPL
+  table_name: heartbeat
+  title: Server times table
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_moex_rates_repl_curr_online
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_moex_rates_repl
+  stream_name: MOEX_RATES_REPL
+  table_name: curr_online
+  title: Currency rates values
+  scope_bucket: deferred
+  notes: ''
+- protocol_item_id: plaza2_table_forts_forecastim_repl_part_sa_forecast
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_forecastim_repl
+  stream_name: FORTS_FORECASTIM_REPL
+  table_name: part_sa_forecast
+  title: Free funds for SA volume forecast
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_forecastim_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_forecastim_repl
+  stream_name: FORTS_FORECASTIM_REPL
+  table_name: sys_events
+  title: Table of events
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_user_repl_user
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_user_repl
+  stream_name: FORTS_USER_REPL
+  table_name: user
+  title: System users
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_user_repl_sma_master
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_user_repl
+  stream_name: FORTS_USER_REPL
+  table_name: sma_master
+  title: SMA login binding to MASTER login
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_user_repl_sma_pre_trade_check
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_user_repl
+  stream_name: FORTS_USER_REPL
+  table_name: sma_pre_trade_check
+  title: SMA login pre-trade verification settings
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_user_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_user_repl
+  stream_name: FORTS_USER_REPL
+  table_name: sys_events
+  title: Table of events
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_rejectedorders_repl_rejected_orders
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_rejectedorders_repl
+  stream_name: FORTS_REJECTEDORDERS_REPL
+  table_name: rejected_orders
+  title: Register of orders rejected during the clearing
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_rmt_repl_rmt_im
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_rmt_repl
+  stream_name: FORTS_RMT_REPL
+  table_name: rmt_im
+  title: Collateral without orders and current operational risk in the context of
+    clients
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_rmt_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_rmt_repl
+  stream_name: FORTS_RMT_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_auxiliary
+  notes: ''
+- protocol_item_id: plaza2_table_forts_sessionstate_repl_session_state
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_sessionstate_repl
+  stream_name: FORTS_SESSIONSTATE_REPL
+  table_name: session_state
+  title: Current trading day status
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_sessionstate_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_sessionstate_repl
+  stream_name: FORTS_SESSIONSTATE_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_instrumentstate_repl_instrument_state
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_instrumentstate_repl
+  stream_name: FORTS_INSTRUMENTSTATE_REPL
+  table_name: instrument_state
+  title: Statuses of instruments for the current trading day
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_instrumentstate_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_instrumentstate_repl
+  stream_name: FORTS_INSTRUMENTSTATE_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_securitygroupstate_repl_security_group_state
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_securitygroupstate_repl
+  stream_name: FORTS_SECURITYGROUPSTATE_REPL
+  table_name: security_group_state
+  title: Group status of instruments for the current trading day
+  scope_bucket: private_core
+  notes: ''
+- protocol_item_id: plaza2_table_forts_securitygroupstate_repl_sys_events
+  artifact_id: plaza_docs
+  kind: table
+  stream_protocol_item_id: plaza2_stream_forts_securitygroupstate_repl
+  stream_name: FORTS_SECURITYGROUPSTATE_REPL
+  table_name: sys_events
+  title: table of events
+  scope_bucket: private_core
+  notes: ''
