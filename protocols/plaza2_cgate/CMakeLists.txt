@@ -18,6 +18,23 @@ add_library(moex_plaza2_cgate_metadata STATIC
 
 target_include_directories(moex_plaza2_cgate_metadata
     PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 
 target_compile_features(moex_plaza2_cgate_metadata PUBLIC cxx_std_20)
+
+add_library(moex_plaza2_cgate_runtime STATIC
+    src/plaza2_runtime.cpp)
+
+target_link_libraries(moex_plaza2_cgate_runtime
+    PUBLIC
+        moex_plaza2_cgate_metadata
+    PRIVATE
+        ${CMAKE_DL_LIBS})
+
+target_include_directories(moex_plaza2_cgate_runtime
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+
+target_compile_features(moex_plaza2_cgate_runtime PUBLIC cxx_std_20)
