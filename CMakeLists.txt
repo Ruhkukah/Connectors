@@ -539,6 +539,12 @@ add_test(
         --check)
 
 add_test(
+    NAME plaza2_schema_materialize_missing_cache_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_plaza2_schema_materialize_missing_cache.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${MOEX_TOOLS_BUILD_DIR}/plaza2_schema_materialize")
+
+add_test(
     NAME plaza2_codegen_check
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/plaza2_codegen"
         --schema "${CMAKE_CURRENT_SOURCE_DIR}/protocols/plaza2_cgate/schema/plaza2_forts_reviewed.ini"
@@ -579,6 +585,9 @@ target_include_directories(plaza2_runtime_test_support
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/plaza2_cgate")
 target_compile_features(plaza2_runtime_test_support PUBLIC cxx_std_20)
+target_compile_definitions(plaza2_runtime_test_support
+    PRIVATE
+        MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
 
 add_library(plaza2_fake_cgate_runtime SHARED
     tests/plaza2_cgate/fake_cgate_runtime.cpp)

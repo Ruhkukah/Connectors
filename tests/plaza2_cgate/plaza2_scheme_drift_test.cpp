@@ -3,17 +3,7 @@
 #include "plaza2_runtime_test_support.hpp"
 
 #include <filesystem>
-#include <fstream>
 #include <iostream>
-
-namespace {
-
-void write_text_file(const std::filesystem::path& path, std::string_view text) {
-    std::ofstream output(path);
-    output << text;
-}
-
-} // namespace
 
 int main(int argc, char** argv) {
     try {
@@ -36,7 +26,8 @@ int main(int argc, char** argv) {
         scheme_text.erase(removed_pos, removed_field.size());
         scheme_text += "[table:EXTRA:unexpected_table]\nfield=replID,i8\nfield=replRev,i8\n";
 
-        const auto fixture = materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
+        const auto fixture =
+            materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
 
         Plaza2Settings settings;
         settings.environment = Plaza2Environment::Test;
@@ -56,7 +47,8 @@ int main(int argc, char** argv) {
             found_signature_drift = found_signature_drift ||
                                     issue.code == Plaza2ProbeIssueCode::ReviewedTableSignatureMismatch ||
                                     issue.code == Plaza2ProbeIssueCode::ReviewedTableMissing;
-            found_unexpected_table = found_unexpected_table || issue.code == Plaza2ProbeIssueCode::RuntimeTableUnexpected;
+            found_unexpected_table =
+                found_unexpected_table || issue.code == Plaza2ProbeIssueCode::RuntimeTableUnexpected;
         }
 
         require(found_hash, "scheme hash mismatch should be reported");

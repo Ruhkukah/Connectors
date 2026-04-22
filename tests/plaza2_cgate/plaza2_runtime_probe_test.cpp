@@ -3,17 +3,7 @@
 #include "plaza2_runtime_test_support.hpp"
 
 #include <filesystem>
-#include <fstream>
 #include <iostream>
-
-namespace {
-
-void write_text_file(const std::filesystem::path& path, std::string_view text) {
-    std::ofstream output(path);
-    output << text;
-}
-
-} // namespace
 
 int main(int argc, char** argv) {
     try {
@@ -30,7 +20,8 @@ int main(int argc, char** argv) {
         const auto cleanup = [&]() { remove_tree(fixture_root); };
 
         const auto scheme_text = build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test");
-        const auto fixture = materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
+        const auto fixture =
+            materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
 
         Plaza2Settings settings;
         settings.environment = Plaza2Environment::Test;

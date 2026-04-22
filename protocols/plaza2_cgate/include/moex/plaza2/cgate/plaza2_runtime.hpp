@@ -122,8 +122,7 @@ struct Plaza2RuntimeProbeReport {
 };
 
 [[nodiscard]] Plaza2Error validate_plaza2_settings(const Plaza2Settings& settings);
-[[nodiscard]] std::string make_plaza2_application_name(std::string_view prefix,
-                                                       std::string_view scope,
+[[nodiscard]] std::string make_plaza2_application_name(std::string_view prefix, std::string_view scope,
                                                        std::uint32_t instance);
 [[nodiscard]] Plaza2Error translate_plaza2_result(std::string_view operation, std::uint32_t runtime_code);
 

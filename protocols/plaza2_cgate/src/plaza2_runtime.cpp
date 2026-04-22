@@ -39,12 +39,8 @@ constexpr std::uint32_t kCgErrIncorrectState = kCgRangeBegin + 5;
 
 constexpr std::string_view kSchemeFilename = "forts_scheme.ini";
 constexpr std::array<std::string_view, 6> kProdConfigFiles = {
-    "links_public.prod.ini",
-    "links_public.rezerv.ini",
-    "prod.ini",
-    "auth_client.ini",
-    "client_router.ini",
-    "router.ini",
+    "links_public.prod.ini", "links_public.rezerv.ini", "prod.ini",
+    "auth_client.ini",       "client_router.ini",       "router.ini",
 };
 constexpr std::array<std::string_view, 10> kTestConfigFiles = {
     "links_public.t0.ini",
@@ -59,19 +55,9 @@ constexpr std::array<std::string_view, 10> kTestConfigFiles = {
     "router.ini",
 };
 constexpr std::array<std::string_view, 13> kRequiredSymbols = {
-    "cg_env_open",
-    "cg_env_close",
-    "cg_conn_new",
-    "cg_conn_destroy",
-    "cg_conn_open",
-    "cg_conn_close",
-    "cg_conn_process",
-    "cg_conn_getstate",
-    "cg_lsn_new",
-    "cg_lsn_destroy",
-    "cg_lsn_open",
-    "cg_lsn_close",
-    "cg_lsn_getstate",
+    "cg_env_open",   "cg_env_close",    "cg_conn_new",      "cg_conn_destroy", "cg_conn_open",
+    "cg_conn_close", "cg_conn_process", "cg_conn_getstate", "cg_lsn_new",      "cg_lsn_destroy",
+    "cg_lsn_open",   "cg_lsn_close",    "cg_lsn_getstate",
 };
 
 constexpr std::array<std::string_view, 4> kLibraryFilenameCandidates = {
@@ -97,7 +83,8 @@ struct RuntimeApi {
     CgResult (*conn_close)(void* conn){nullptr};
     CgResult (*conn_process)(void* conn, std::uint32_t timeout, void* reserved){nullptr};
     CgResult (*conn_getstate)(void* conn, std::uint32_t* state){nullptr};
-    CgResult (*lsn_new)(void* conn, const char* settings, CgListenerCallback callback, void* data, void** lsnptr){nullptr};
+    CgResult (*lsn_new)(void* conn, const char* settings, CgListenerCallback callback, void* data,
+                        void** lsnptr){nullptr};
     CgResult (*lsn_destroy)(void* listener){nullptr};
     CgResult (*lsn_open)(void* listener, const char* settings){nullptr};
     CgResult (*lsn_close)(void* listener){nullptr};
@@ -201,8 +188,8 @@ struct RuntimeSignatureEntry {
     return root / value;
 }
 
-[[nodiscard]] std::optional<std::filesystem::path> first_existing_directory(
-    const std::vector<std::filesystem::path>& candidates) {
+[[nodiscard]] std::optional<std::filesystem::path>
+first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
     for (const auto& candidate : candidates) {
         if (std::filesystem::is_directory(candidate)) {
             return candidate;
@@ -293,9 +280,8 @@ struct RuntimeSignatureEntry {
     return out.str();
 }
 
-[[nodiscard]] bool parse_runtime_scheme(const std::filesystem::path& scheme_path,
-                                       ParsedRuntimeScheme& out_scheme,
-                                       std::string& error_message) {
+[[nodiscard]] bool parse_runtime_scheme(const std::filesystem::path& scheme_path, ParsedRuntimeScheme& out_scheme,
+                                        std::string& error_message) {
     out_scheme = {};
     RuntimeSchemeTable* current_table = nullptr;
     std::string current_section;
@@ -380,14 +366,7 @@ struct RuntimeSignatureEntry {
 
 struct Sha256State {
     std::array<std::uint32_t, 8> hash{
-        0x6A09E667u,
-        0xBB67AE85u,
-        0x3C6EF372u,
-        0xA54FF53Au,
-        0x510E527Fu,
-        0x9B05688Cu,
-        0x1F83D9ABu,
-        0x5BE0CD19u,
+        0x6A09E667u, 0xBB67AE85u, 0x3C6EF372u, 0xA54FF53Au, 0x510E527Fu, 0x9B05688Cu, 0x1F83D9ABu, 0x5BE0CD19u,
     };
     std::uint64_t total_bits{0};
     std::array<std::byte, 64> buffer{};
@@ -526,10 +505,7 @@ void sha256_update(Sha256State& state, std::span<const std::byte> bytes) {
     return Plaza2Compatibility::Unknown;
 }
 
-void push_issue(std::vector<Plaza2ProbeIssue>& issues,
-                Plaza2ProbeIssueCode code,
-                bool fatal,
-                std::string subject,
+void push_issue(std::vector<Plaza2ProbeIssue>& issues, Plaza2ProbeIssueCode code, bool fatal, std::string subject,
                 std::string message) {
     issues.push_back({
         .code = code,
@@ -548,16 +524,13 @@ void push_issue(std::vector<Plaza2ProbeIssue>& issues,
     return issues.empty() ? Plaza2Compatibility::Compatible : Plaza2Compatibility::Unknown;
 }
 
-[[nodiscard]] std::unique_ptr<RuntimeApi, RuntimeLibraryCloser> load_runtime_api(const std::filesystem::path& library_path,
-                                                                                 std::vector<std::string>* resolved_symbols,
-                                                                                 std::vector<Plaza2ProbeIssue>* issues) {
+[[nodiscard]] std::unique_ptr<RuntimeApi, RuntimeLibraryCloser>
+load_runtime_api(const std::filesystem::path& library_path, std::vector<std::string>* resolved_symbols,
+                 std::vector<Plaza2ProbeIssue>* issues) {
     const auto* handle = ::dlopen(library_path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (handle == nullptr) {
         if (issues != nullptr) {
-            push_issue(*issues,
-                       Plaza2ProbeIssueCode::MissingLibrary,
-                       true,
-                       library_path.string(),
+            push_issue(*issues, Plaza2ProbeIssueCode::MissingLibrary, true, library_path.string(),
                        std::string("failed to load CGate runtime library: ") + ::dlerror());
         }
         return {};
@@ -569,10 +542,7 @@ void push_issue(std::vector<Plaza2ProbeIssue>& issues,
         void* symbol = ::dlsym(api->library_handle, name);
         if (symbol == nullptr) {
             if (issues != nullptr) {
-                push_issue(*issues,
-                           Plaza2ProbeIssueCode::MissingSymbol,
-                           true,
-                           name,
+                push_issue(*issues, Plaza2ProbeIssueCode::MissingSymbol, true, name,
                            std::string("required CGate symbol is missing from runtime library: ") + name);
             }
             return false;
@@ -618,10 +588,7 @@ void push_issue(std::vector<Plaza2ProbeIssue>& issues,
     ParsedRuntimeScheme parsed;
     std::string parse_error;
     if (!parse_runtime_scheme(scheme_path, parsed, parse_error)) {
-        push_issue(report.issues,
-                   Plaza2ProbeIssueCode::RuntimeSchemeParseFailed,
-                   true,
-                   scheme_path.filename().string(),
+        push_issue(report.issues, Plaza2ProbeIssueCode::RuntimeSchemeParseFailed, true, scheme_path.filename().string(),
                    "failed to parse runtime forts_scheme.ini: " + parse_error);
         report.compatibility = Plaza2Compatibility::Incompatible;
         return report;
@@ -651,18 +618,13 @@ void push_issue(std::vector<Plaza2ProbeIssue>& issues,
     }
 
     if (!settings.expected_scheme_sha256.empty() && report.runtime_scheme_sha256 != settings.expected_scheme_sha256) {
-        push_issue(report.issues,
-                   Plaza2ProbeIssueCode::FileHashMismatch,
-                   true,
-                   scheme_path.filename().string(),
+        push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, true, scheme_path.filename().string(),
                    "runtime scheme hash mismatch: expected " + settings.expected_scheme_sha256 + ", got " +
                        report.runtime_scheme_sha256);
     }
-    if (!settings.expected_spectra_release.empty() && parsed.markers.spectra_release != settings.expected_spectra_release) {
-        push_issue(report.issues,
-                   Plaza2ProbeIssueCode::UnsupportedVersion,
-                   true,
-                   scheme_path.filename().string(),
+    if (!settings.expected_spectra_release.empty() &&
+        parsed.markers.spectra_release != settings.expected_spectra_release) {
+        push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedVersion, true, scheme_path.filename().string(),
                    "runtime spectra release mismatch: expected " + settings.expected_spectra_release + ", got " +
                        parsed.markers.spectra_release);
     }
@@ -679,17 +641,12 @@ void push_issue(std::vector<Plaza2ProbeIssue>& issues,
         const auto reviewed_it = reviewed_by_name.find(table_name);
         const auto runtime_it = runtime_by_name.find(table_name);
         if (reviewed_it == reviewed_by_name.end()) {
-            push_issue(report.issues,
-                       Plaza2ProbeIssueCode::RuntimeTableUnexpected,
-                       true,
-                       table_name,
+            push_issue(report.issues, Plaza2ProbeIssueCode::RuntimeTableUnexpected, true, table_name,
                        "runtime scheme exposes unexpected table name not present in Phase 3B baseline");
             continue;
         }
         if (runtime_it == runtime_by_name.end()) {
-            push_issue(report.issues,
-                       Plaza2ProbeIssueCode::ReviewedTableMissing,
-                       true,
+            push_issue(report.issues, Plaza2ProbeIssueCode::ReviewedTableMissing, true,
                        reviewed_it->second.begin()->second.example_name,
                        "runtime scheme is missing reviewed table family '" + table_name + "'");
             continue;
@@ -720,17 +677,13 @@ void push_issue(std::vector<Plaza2ProbeIssue>& issues,
                 push_issue(report.issues,
                            runtime_count == 0 ? Plaza2ProbeIssueCode::ReviewedTableMissing
                                               : Plaza2ProbeIssueCode::ReviewedTableSignatureMismatch,
-                           true,
-                           subject,
+                           true, subject,
                            "runtime scheme diverged from reviewed table signature for '" + table_name + "'");
             } else {
                 const auto subject = runtime_signature_it == runtime_it->second.end()
                                          ? table_name
                                          : runtime_signature_it->second.example_name;
-                push_issue(report.issues,
-                           Plaza2ProbeIssueCode::RuntimeTableUnexpected,
-                           true,
-                           subject,
+                push_issue(report.issues, Plaza2ProbeIssueCode::RuntimeTableUnexpected, true, subject,
                            "runtime scheme exposes an unexpected table signature for '" + table_name + "'");
             }
         }
@@ -821,21 +774,14 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
 
     const auto validation_error = validate_plaza2_settings(settings);
     if (validation_error) {
-        push_issue(report.issues,
-                   Plaza2ProbeIssueCode::UnsupportedLayout,
-                   true,
-                   "settings",
-                   validation_error.message);
+        push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedLayout, true, "settings", validation_error.message);
         report.compatibility = Plaza2Compatibility::Incompatible;
         return report;
     }
 
     report.runtime_root_present = std::filesystem::exists(settings.runtime_root);
     if (!report.runtime_root_present) {
-        push_issue(report.issues,
-                   Plaza2ProbeIssueCode::MissingRuntimeRoot,
-                   true,
-                   settings.runtime_root.string(),
+        push_issue(report.issues, Plaza2ProbeIssueCode::MissingRuntimeRoot, true, settings.runtime_root.string(),
                    "runtime root does not exist");
         report.compatibility = Plaza2Compatibility::Incompatible;
         return report;
@@ -843,10 +789,7 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
 
     const auto library_path = resolve_library_path(settings);
     if (!library_path.has_value()) {
-        push_issue(report.issues,
-                   Plaza2ProbeIssueCode::MissingLibrary,
-                   true,
-                   settings.runtime_root.string(),
+        push_issue(report.issues, Plaza2ProbeIssueCode::MissingLibrary, true, settings.runtime_root.string(),
                    "CGate runtime library was not found under runtime_root/bin, runtime_root/lib, or runtime_root");
     } else {
         report.layout.library_path = *library_path;
@@ -861,20 +804,15 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
 
     const auto scheme_dir = resolve_scheme_dir(settings);
     if (!scheme_dir.has_value()) {
-        push_issue(report.issues,
-                   Plaza2ProbeIssueCode::MissingSchemeDirectory,
-                   true,
-                   settings.runtime_root.string(),
-                   "scheme directory was not found under runtime_root/scheme, runtime_root/Scheme, runtime_root/ini, or runtime_root");
+        push_issue(report.issues, Plaza2ProbeIssueCode::MissingSchemeDirectory, true, settings.runtime_root.string(),
+                   "scheme directory was not found under runtime_root/scheme, runtime_root/Scheme, runtime_root/ini, "
+                   "or runtime_root");
     } else {
         report.layout.scheme_dir = *scheme_dir;
         report.layout.scheme_path = *scheme_dir / kSchemeFilename;
         report.scheme_file_present = std::filesystem::exists(report.layout.scheme_path);
         if (!report.scheme_file_present) {
-            push_issue(report.issues,
-                       Plaza2ProbeIssueCode::MissingSchemeFile,
-                       true,
-                       report.layout.scheme_path.string(),
+            push_issue(report.issues, Plaza2ProbeIssueCode::MissingSchemeFile, true, report.layout.scheme_path.string(),
                        "expected runtime scheme file is missing");
         } else {
             auto parsed_scheme = ParsedRuntimeScheme{};
@@ -883,19 +821,16 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
                 report.layout.version_markers = parsed_scheme.markers;
             }
             report.scheme_drift = compare_runtime_scheme(report.layout.scheme_path, settings);
-            report.issues.insert(report.issues.end(),
-                                 report.scheme_drift.issues.begin(),
+            report.issues.insert(report.issues.end(), report.scheme_drift.issues.begin(),
                                  report.scheme_drift.issues.end());
         }
     }
 
     const auto config_dir = resolve_config_dir(settings);
     if (!config_dir.has_value()) {
-        push_issue(report.issues,
-                   Plaza2ProbeIssueCode::MissingConfigDirectory,
-                   true,
-                   settings.runtime_root.string(),
-                   "config directory was not found under runtime_root/config, runtime_root/cfg, runtime_root/ini, or runtime_root");
+        push_issue(report.issues, Plaza2ProbeIssueCode::MissingConfigDirectory, true, settings.runtime_root.string(),
+                   "config directory was not found under runtime_root/config, runtime_root/cfg, runtime_root/ini, or "
+                   "runtime_root");
     } else {
         report.layout.config_dir = *config_dir;
         report.config_dir_present = true;
@@ -906,19 +841,13 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
                                             report.layout.present_config_files.end());
         for (const auto& expected_name : expected) {
             if (!present.contains(expected_name)) {
-                push_issue(report.issues,
-                           Plaza2ProbeIssueCode::MissingConfigFile,
-                           true,
-                           expected_name,
+                push_issue(report.issues, Plaza2ProbeIssueCode::MissingConfigFile, true, expected_name,
                            "expected config file is missing from resolved config directory");
             }
         }
         for (const auto& present_name : present) {
             if (!expected.contains(present_name)) {
-                push_issue(report.issues,
-                           Plaza2ProbeIssueCode::UnexpectedConfigFile,
-                           false,
-                           present_name,
+                push_issue(report.issues, Plaza2ProbeIssueCode::UnexpectedConfigFile, false, present_name,
                            "unexpected config file is present in resolved config directory");
             }
         }
@@ -1147,8 +1076,8 @@ Plaza2Error Plaza2Listener::create(Plaza2Connection& connection, std::string_vie
     shared_ = connection.shared_;
     void* raw_handle = nullptr;
     const std::string copied_settings(settings);
-    const auto result =
-        shared_->api->lsn_new(connection.handle_, copied_settings.c_str(), &noop_listener_callback, nullptr, &raw_handle);
+    const auto result = shared_->api->lsn_new(connection.handle_, copied_settings.c_str(), &noop_listener_callback,
+                                              nullptr, &raw_handle);
     const auto translated = translate_plaza2_result("cg_lsn_new", result);
     if (translated) {
         shared_.reset();
@@ -1167,8 +1096,8 @@ Plaza2Error Plaza2Listener::open(std::string_view settings) {
         };
     }
     const std::string copied_settings(settings);
-    return translate_plaza2_result("cg_lsn_open",
-                                   shared_->api->lsn_open(handle_, copied_settings.empty() ? nullptr : copied_settings.c_str()));
+    return translate_plaza2_result(
+        "cg_lsn_open", shared_->api->lsn_open(handle_, copied_settings.empty() ? nullptr : copied_settings.c_str()));
 }
 
 Plaza2Error Plaza2Listener::close() {

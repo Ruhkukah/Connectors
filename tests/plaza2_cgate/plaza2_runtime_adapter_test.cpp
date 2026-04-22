@@ -20,7 +20,8 @@ int main(int argc, char** argv) {
         const auto cleanup = [&]() { remove_tree(fixture_root); };
 
         const auto scheme_text = build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test");
-        const auto fixture = materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
+        const auto fixture =
+            materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
 
         Plaza2Settings settings;
         settings.environment = Plaza2Environment::Test;
