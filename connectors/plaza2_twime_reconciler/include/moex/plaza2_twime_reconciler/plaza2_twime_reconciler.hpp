@@ -399,6 +399,8 @@ class Plaza2TwimeReconciler {
     Plaza2TwimeReconciler(Plaza2TwimeReconciler&&) noexcept;
     Plaza2TwimeReconciler& operator=(Plaza2TwimeReconciler&&) noexcept;
 
+    [[nodiscard]] Plaza2TwimeReconciler clone() const;
+
     void reset();
     void set_stale_after_steps(std::uint64_t stale_after_steps);
     void advance_steps(std::uint64_t steps = 1);

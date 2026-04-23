@@ -217,6 +217,8 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     Plaza2PrivateStateProjector(Plaza2PrivateStateProjector&&) noexcept;
     Plaza2PrivateStateProjector& operator=(Plaza2PrivateStateProjector&&) noexcept;
 
+    [[nodiscard]] Plaza2PrivateStateProjector clone() const;
+
     void reset();
 
     [[nodiscard]] const ConnectorHealthSnapshot& connector_health() const;

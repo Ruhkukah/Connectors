@@ -1,0 +1,84 @@
+version: 1
+profile_id: test_plaza2_twime_integrated_nonloopback_fixture
+environment: test
+armed: false
+test_network_armed_required: true
+test_session_armed_required: true
+test_plaza2_armed_required: true
+test_reconcile_armed_required: true
+profile_neutral_coverage: true
+broker_topology:
+  mode: broker_router
+  order_path: twime_trade
+  market_data_path: broker_router
+  router_location: colocated_vps
+shadow_mode:
+  enabled: false
+  primary_source: native_moex
+  native_connectors_read_only: true
+connectors:
+  market_data: []
+  orders:
+    - twime_trade
+  state:
+    - plaza2_repl
+    - plaza2_twime_reconciler
+twime_tcp:
+  enabled: true
+  endpoint:
+    host: 198.51.100.20
+    port: 19000
+    allow_non_loopback: false
+    allow_non_localhost_dns: false
+  test_network_gate:
+    external_test_endpoint_enabled: true
+    require_explicit_runtime_arm: true
+    block_production_like_hostnames: true
+  credentials:
+    source: env
+    env_var: MOEX_TWIME_TEST_CREDENTIALS
+twime_live_session:
+  reconnect_enabled: false
+  max_reconnect_attempts: 3
+  establish_deadline_ms: 10000
+  graceful_terminate_timeout_ms: 3000
+plaza2_repl_test:
+  enabled: true
+  endpoint:
+    host: 198.51.100.10
+    port: 4001
+  runtime:
+    root: PLAZA2_RUNTIME_ROOT_PLACEHOLDER
+    library_path: ""
+    scheme_dir: ""
+    config_dir: ""
+    env_open_settings: ini=config/t1.ini;key=${PLAZA2_TEST_CREDENTIALS}
+    expected_spectra_release: SPECTRA93
+    expected_scheme_sha256: ""
+  credentials:
+    source: env
+    env_var: MOEX_PLAZA2_TEST_CREDENTIALS
+  session:
+    connection_settings: p2tcp://198.51.100.10:4001;app_name=connectors_phase4c_plaza2
+    connection_open_settings: ""
+    process_timeout_ms: 50
+  listeners:
+    FORTS_TRADE_REPL:
+      settings: p2repl://FORTS_TRADE_REPL;scheme=|FILE|scheme/forts_scheme.ini|FORTS_TRADE_REPL
+      open_settings: ""
+    FORTS_USERORDERBOOK_REPL:
+      settings: p2repl://FORTS_USERORDERBOOK_REPL;scheme=|FILE|scheme/forts_scheme.ini|FORTS_USERORDERBOOK_REPL
+      open_settings: ""
+    FORTS_POS_REPL:
+      settings: p2repl://FORTS_POS_REPL;scheme=|FILE|scheme/forts_scheme.ini|FORTS_POS_REPL
+      open_settings: ""
+    FORTS_PART_REPL:
+      settings: p2repl://FORTS_PART_REPL;scheme=|FILE|scheme/forts_scheme.ini|FORTS_PART_REPL
+      open_settings: ""
+    FORTS_REFDATA_REPL:
+      settings: p2repl://FORTS_REFDATA_REPL;scheme=|FILE|scheme/forts_scheme.ini|FORTS_REFDATA_REPL
+      open_settings: ""
+plaza2_twime_integrated_test:
+  enabled: true
+  reconciler_stale_after_steps: 4
+  max_polls: 16

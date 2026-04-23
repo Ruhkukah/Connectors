@@ -15,6 +15,9 @@ connectors:
   - connector_id: plaza2_repl
     role: state_and_market_data
     requires_test_or_replay_coverage: true
+  - connector_id: plaza2_twime_reconciler
+    role: reconciliation
+    requires_test_or_replay_coverage: true
   - connector_id: plaza2_trade
     role: trade
     requires_test_or_replay_coverage: true
