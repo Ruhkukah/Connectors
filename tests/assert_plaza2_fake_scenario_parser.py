@@ -85,9 +85,21 @@ def main() -> int:
         if len(parsed["events"]) != 4:
             raise SystemExit("valid parser fixture should contain four events")
 
-        expect_failure(write_fixture(temp_dir, "invalid_event_type.yaml", INVALID_EVENT_TYPE), metadata_index, "unsupported event type")
-        expect_failure(write_fixture(temp_dir, "invalid_unknown_field.yaml", INVALID_UNKNOWN_FIELD), metadata_index, "unknown field")
-        expect_failure(write_fixture(temp_dir, "invalid_missing_replid.yaml", INVALID_MISSING_REPLID), metadata_index, "missing required field")
+        expect_failure(
+            write_fixture(temp_dir, "invalid_event_type.yaml", INVALID_EVENT_TYPE),
+            metadata_index,
+            "unsupported event type",
+        )
+        expect_failure(
+            write_fixture(temp_dir, "invalid_unknown_field.yaml", INVALID_UNKNOWN_FIELD),
+            metadata_index,
+            "unknown field",
+        )
+        expect_failure(
+            write_fixture(temp_dir, "invalid_missing_replid.yaml", INVALID_MISSING_REPLID),
+            metadata_index,
+            "missing required field",
+        )
         expect_failure(
             write_fixture(temp_dir, "invalid_stream_data_outside_tx.yaml", INVALID_STREAM_DATA_OUTSIDE_TX),
             metadata_index,

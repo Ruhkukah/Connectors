@@ -146,7 +146,9 @@ struct EngineError {
     EngineErrorCode code{EngineErrorCode::kNone};
     std::string message;
 
-    explicit operator bool() const { return code != EngineErrorCode::kNone; }
+    explicit operator bool() const {
+        return code != EngineErrorCode::kNone;
+    }
 };
 
 struct RunResult {

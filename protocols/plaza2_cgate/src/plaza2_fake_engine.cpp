@@ -19,12 +19,10 @@ std::vector<StreamState> initialize_stream_states(std::span<const generated::Str
     out.reserve(streams.size());
     for (const auto stream_code : streams) {
         const auto* descriptor = generated::FindStreamByCode(stream_code);
-        out.push_back(
-            {
-                .stream_code = stream_code,
-                .stream_name = descriptor != nullptr ? descriptor->stream_name : std::string_view{},
-            }
-        );
+        out.push_back({
+            .stream_code = stream_code,
+            .stream_name = descriptor != nullptr ? descriptor->stream_name : std::string_view{},
+        });
     }
     return out;
 }
@@ -36,7 +34,8 @@ std::size_t require_stream_index(const EngineState& state, generated::StreamCode
         }
     }
     if (error != nullptr) {
-        *error = make_error(EngineErrorCode::kStreamNotDeclared, "scenario event references a stream that was not declared");
+        *error =
+            make_error(EngineErrorCode::kStreamNotDeclared, "scenario event references a stream that was not declared");
     }
     return state.streams.size();
 }
@@ -51,7 +50,8 @@ bool rows_for_event(const ScenarioDataView& view, const EventSpec& event, std::s
     const auto count = static_cast<std::size_t>(event.row_count);
     if (first > view.rows.size() || count > view.rows.size() - first) {
         if (error != nullptr) {
-            *error = make_error(EngineErrorCode::kMalformedScenario, "event row span is outside the scenario row table");
+            *error =
+                make_error(EngineErrorCode::kMalformedScenario, "event row span is outside the scenario row table");
         }
         return false;
     }
@@ -71,7 +71,8 @@ bool fields_for_row(const ScenarioDataView& view, const RowSpec& row, std::span<
     const auto count = static_cast<std::size_t>(row.field_count);
     if (first > view.fields.size() || count > view.fields.size() - first) {
         if (error != nullptr) {
-            *error = make_error(EngineErrorCode::kMalformedScenario, "row field span is outside the scenario field table");
+            *error =
+                make_error(EngineErrorCode::kMalformedScenario, "row field span is outside the scenario field table");
         }
         return false;
     }
@@ -93,49 +94,40 @@ bool check_invariants(const ScenarioDataView& view, const EngineState& state, En
         switch (invariant.kind) {
         case InvariantKind::kCommitCount:
             if (state.commit_count != invariant.numeric_value) {
-                *error = make_error(
-                    EngineErrorCode::kInvariantFailed,
-                    "commit_count invariant failed for scenario " + std::string(view.scenario.scenario_id)
-                );
+                *error = make_error(EngineErrorCode::kInvariantFailed, "commit_count invariant failed for scenario " +
+                                                                           std::string(view.scenario.scenario_id));
                 return false;
             }
             break;
         case InvariantKind::kLastLifenum:
             if (!state.has_lifenum || state.last_lifenum != invariant.numeric_value) {
-                *error = make_error(
-                    EngineErrorCode::kInvariantFailed,
-                    "last_lifenum invariant failed for scenario " + std::string(view.scenario.scenario_id)
-                );
+                *error = make_error(EngineErrorCode::kInvariantFailed, "last_lifenum invariant failed for scenario " +
+                                                                           std::string(view.scenario.scenario_id));
                 return false;
             }
             break;
         case InvariantKind::kStreamOnline: {
             const auto* stream = Plaza2FakeEngine::find_stream_state(state, invariant.stream_code);
             if (stream == nullptr || stream->online != invariant.bool_value) {
-                *error = make_error(
-                    EngineErrorCode::kInvariantFailed,
-                    "stream_online invariant failed for scenario " + std::string(view.scenario.scenario_id)
-                );
+                *error = make_error(EngineErrorCode::kInvariantFailed, "stream_online invariant failed for scenario " +
+                                                                           std::string(view.scenario.scenario_id));
                 return false;
             }
             break;
         }
         case InvariantKind::kLastReplstate:
             if (state.last_replstate != invariant.text_value) {
-                *error = make_error(
-                    EngineErrorCode::kInvariantFailed,
-                    "last_replstate invariant failed for scenario " + std::string(view.scenario.scenario_id)
-                );
+                *error = make_error(EngineErrorCode::kInvariantFailed, "last_replstate invariant failed for scenario " +
+                                                                           std::string(view.scenario.scenario_id));
                 return false;
             }
             break;
         case InvariantKind::kClearDeletedCount: {
             const auto* stream = Plaza2FakeEngine::find_stream_state(state, invariant.stream_code);
             if (stream == nullptr || stream->clear_deleted_count != invariant.numeric_value) {
-                *error = make_error(
-                    EngineErrorCode::kInvariantFailed,
-                    "clear_deleted_count invariant failed for scenario " + std::string(view.scenario.scenario_id)
-                );
+                *error =
+                    make_error(EngineErrorCode::kInvariantFailed, "clear_deleted_count invariant failed for scenario " +
+                                                                      std::string(view.scenario.scenario_id));
                 return false;
             }
             break;
@@ -172,7 +164,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             if (result.state.transaction_open) {
-                result.error = make_error(EngineErrorCode::kTransactionAlreadyOpen, "CLOSE is invalid while a transaction is open");
+                result.error = make_error(EngineErrorCode::kTransactionAlreadyOpen,
+                                          "CLOSE is invalid while a transaction is open");
                 return result;
             }
             result.state.closed = true;
@@ -196,10 +189,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             if (result.state.transaction_open) {
-                result.error = make_error(
-                    EngineErrorCode::kTransactionAlreadyOpen,
-                    "SNAPSHOT_BEGIN is invalid while a transaction is open"
-                );
+                result.error = make_error(EngineErrorCode::kTransactionAlreadyOpen,
+                                          "SNAPSHOT_BEGIN is invalid while a transaction is open");
                 return result;
             }
             result.state.snapshot_active = true;
@@ -211,10 +202,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             if (result.state.transaction_open) {
-                result.error = make_error(
-                    EngineErrorCode::kTransactionAlreadyOpen,
-                    "SNAPSHOT_END is invalid while a transaction is open"
-                );
+                result.error = make_error(EngineErrorCode::kTransactionAlreadyOpen,
+                                          "SNAPSHOT_END is invalid while a transaction is open");
                 return result;
             }
             result.state.snapshot_active = false;
@@ -233,7 +222,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             if (result.state.snapshot_active) {
-                result.error = make_error(EngineErrorCode::kOnlineBeforeSnapshotEnd, "ONLINE requires SNAPSHOT_END first");
+                result.error =
+                    make_error(EngineErrorCode::kOnlineBeforeSnapshotEnd, "ONLINE requires SNAPSHOT_END first");
                 return result;
             }
             result.state.online = true;
@@ -283,10 +273,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
 
         case EventKind::kStreamData: {
             if (!result.state.transaction_open) {
-                result.error = make_error(
-                    EngineErrorCode::kStreamDataOutsideTransaction,
-                    "STREAM_DATA requires TN_BEGIN before it"
-                );
+                result.error = make_error(EngineErrorCode::kStreamDataOutsideTransaction,
+                                          "STREAM_DATA requires TN_BEGIN before it");
                 return result;
             }
             std::span<const RowSpec> row_span;
@@ -301,10 +289,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
             }
             for (const auto& row : row_span) {
                 if (row.stream_code != event.stream_code || row.table_code != event.table_code) {
-                    result.error = make_error(
-                        EngineErrorCode::kMalformedScenario,
-                        "STREAM_DATA row metadata does not match its parent event"
-                    );
+                    result.error = make_error(EngineErrorCode::kMalformedScenario,
+                                              "STREAM_DATA row metadata does not match its parent event");
                     return result;
                 }
                 std::span<const FieldValueSpec> field_span;
@@ -312,10 +298,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                     return result;
                 }
                 if (field_span.empty()) {
-                    result.error = make_error(
-                        EngineErrorCode::kMalformedScenario,
-                        "STREAM_DATA row resolved to an empty field span"
-                    );
+                    result.error = make_error(EngineErrorCode::kMalformedScenario,
+                                              "STREAM_DATA row resolved to an empty field span");
                     return result;
                 }
                 pending_row_deltas[stream_index] += 1;
@@ -329,10 +313,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             if (result.state.transaction_open) {
-                result.error = make_error(
-                    EngineErrorCode::kTransactionAlreadyOpen,
-                    "P2REPL_REPLSTATE is invalid while a transaction is open"
-                );
+                result.error = make_error(EngineErrorCode::kTransactionAlreadyOpen,
+                                          "P2REPL_REPLSTATE is invalid while a transaction is open");
                 return result;
             }
             result.state.last_replstate.assign(event.text_value);
@@ -344,10 +326,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             if (result.state.transaction_open) {
-                result.error = make_error(
-                    EngineErrorCode::kTransactionAlreadyOpen,
-                    "P2REPL_LIFENUM is invalid while a transaction is open"
-                );
+                result.error = make_error(EngineErrorCode::kTransactionAlreadyOpen,
+                                          "P2REPL_LIFENUM is invalid while a transaction is open");
                 return result;
             }
             if (result.state.has_lifenum && result.state.last_lifenum != event.numeric_value) {
@@ -363,10 +343,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             if (result.state.transaction_open) {
-                result.error = make_error(
-                    EngineErrorCode::kTransactionAlreadyOpen,
-                    "P2REPL_CLEARDELETED is invalid while a transaction is open"
-                );
+                result.error = make_error(EngineErrorCode::kTransactionAlreadyOpen,
+                                          "P2REPL_CLEARDELETED is invalid while a transaction is open");
                 return result;
             }
             EngineError stream_error;
@@ -382,10 +360,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
     }
 
     if (result.state.transaction_open) {
-        result.error = make_error(
-            EngineErrorCode::kScenarioEndedWithOpenTransaction,
-            "scenario ended with an open transaction"
-        );
+        result.error =
+            make_error(EngineErrorCode::kScenarioEndedWithOpenTransaction, "scenario ended with an open transaction");
         return result;
     }
 

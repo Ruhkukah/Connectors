@@ -105,28 +105,23 @@ int main() {
 
         Plaza2FakeEngine engine;
 
-        const auto outside_tx = engine.run(
-            ScenarioDataView{make_scenario(2), streams, outside_tx_events, rows, fields, no_invariants}
-        );
+        const auto outside_tx =
+            engine.run(ScenarioDataView{make_scenario(2), streams, outside_tx_events, rows, fields, no_invariants});
         require(outside_tx.error.code == EngineErrorCode::kStreamDataOutsideTransaction,
                 "STREAM_DATA outside TN_BEGIN should fail");
 
-        const auto nested_tx = engine.run(
-            ScenarioDataView{make_scenario(3), streams, nested_tx_events, rows, fields, no_invariants}
-        );
+        const auto nested_tx =
+            engine.run(ScenarioDataView{make_scenario(3), streams, nested_tx_events, rows, fields, no_invariants});
         require(nested_tx.error.code == EngineErrorCode::kTransactionAlreadyOpen, "nested TN_BEGIN should fail");
 
         const auto commit_without_begin = engine.run(
-            ScenarioDataView{make_scenario(2), streams, commit_without_begin_events, rows, fields, no_invariants}
-        );
+            ScenarioDataView{make_scenario(2), streams, commit_without_begin_events, rows, fields, no_invariants});
         require(commit_without_begin.error.code == EngineErrorCode::kTransactionNotOpen,
                 "TN_COMMIT without TN_BEGIN should fail");
 
         ThrowingCommitListener listener;
         const auto callback_result = engine.run(
-            ScenarioDataView{make_scenario(4), streams, callback_events, rows, fields, no_invariants},
-            &listener
-        );
+            ScenarioDataView{make_scenario(4), streams, callback_events, rows, fields, no_invariants}, &listener);
         require(!callback_result.error, "callback errors must be contained");
         require(callback_result.state.commit_count == 1, "commit should still be recorded");
         require(callback_result.state.callback_error_count == 1, "callback error count should increment");
