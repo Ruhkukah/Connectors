@@ -77,6 +77,9 @@ target_compile_features(moex_plaza2_cgate_fake_scenarios PUBLIC cxx_std_20)
 add_library(moex_plaza2_cgate_private_state STATIC
     src/plaza2_private_state.cpp)
 
+set_target_properties(moex_plaza2_cgate_private_state PROPERTIES
+    POSITION_INDEPENDENT_CODE ON)
+
 target_link_libraries(moex_plaza2_cgate_private_state
     PUBLIC
         moex_plaza2_cgate_fake_engine)

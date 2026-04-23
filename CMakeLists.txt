@@ -102,6 +102,16 @@ add_subdirectory(protocols/plaza2_cgate)
 add_subdirectory(connectors/twime_trade)
 add_subdirectory(connectors/plaza2_twime_reconciler)
 
+target_link_libraries(moex_phase0_core
+    PUBLIC
+        moex_plaza2_cgate_private_state
+        moex_plaza2_twime_reconciler)
+
+target_link_libraries(moex_phase0_abi
+    PUBLIC
+        moex_plaza2_cgate_private_state
+        moex_plaza2_twime_reconciler)
+
 add_executable(moex_phase0_selfcheck
     tests/phase0_selfcheck.cpp)
 
@@ -110,6 +120,29 @@ target_link_libraries(moex_phase0_selfcheck
         moex_phase0_core)
 
 set_property(TARGET moex_phase0_selfcheck PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+
+add_executable(moex_phase4b_capi_read_side_test
+    tests/phase4b_capi_read_side_test.cpp)
+target_link_libraries(moex_phase4b_capi_read_side_test
+    PRIVATE
+        moex_phase0_core
+        moex_plaza2_cgate_fake_scenarios
+        twime_test_support)
+target_include_directories(moex_phase4b_capi_read_side_test
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/support"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_sbe"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_trade"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/plaza2_twime_reconciler")
+target_compile_features(moex_phase4b_capi_read_side_test PRIVATE cxx_std_20)
+target_compile_definitions(moex_phase4b_capi_read_side_test
+    PRIVATE
+        MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
+set_property(TARGET moex_phase4b_capi_read_side_test PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME moex_phase4b_capi_read_side_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/moex_phase4b_capi_read_side_test")
 
 function(moex_generate_python_launcher launcher_dir launcher_name script_relative_path)
     set(LAUNCHER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${script_relative_path}")

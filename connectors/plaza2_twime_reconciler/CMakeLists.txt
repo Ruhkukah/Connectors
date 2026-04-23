@@ -1,6 +1,9 @@
 add_library(moex_plaza2_twime_reconciler STATIC
     src/plaza2_twime_reconciler.cpp)
 
+set_target_properties(moex_plaza2_twime_reconciler PROPERTIES
+    POSITION_INDEPENDENT_CODE ON)
+
 target_link_libraries(moex_plaza2_twime_reconciler
     PUBLIC
         moex_plaza2_cgate_private_state
