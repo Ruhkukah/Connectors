@@ -11,6 +11,9 @@ add_library(moex_twime_sbe STATIC
     src/twime_cert_log_formatter.cpp
     generated/twime_generated_metadata.cpp)
 
+set_target_properties(moex_twime_sbe PROPERTIES
+    POSITION_INDEPENDENT_CODE ON)
+
 target_include_directories(moex_twime_sbe
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include"

@@ -21,6 +21,9 @@ add_library(moex_twime_trade STATIC
     src/transport/twime_test_network_gate.cpp
     src/transport/twime_tcp_transport.cpp)
 
+set_target_properties(moex_twime_trade PROPERTIES
+    POSITION_INDEPENDENT_CODE ON)
+
 target_include_directories(moex_twime_trade
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
