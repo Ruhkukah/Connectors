@@ -87,3 +87,21 @@ target_include_directories(moex_plaza2_cgate_private_state
         "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 
 target_compile_features(moex_plaza2_cgate_private_state PUBLIC cxx_std_20)
+
+add_library(moex_plaza2_cgate_live_session STATIC
+    src/plaza2_credential_provider.cpp
+    src/plaza2_manual_operator_gate.cpp
+    src/plaza2_live_session_runner.cpp)
+
+target_link_libraries(moex_plaza2_cgate_live_session
+    PUBLIC
+        moex_phase0_core
+        moex_plaza2_cgate_private_state
+        moex_plaza2_cgate_runtime)
+
+target_include_directories(moex_plaza2_cgate_live_session
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+
+target_compile_features(moex_plaza2_cgate_live_session PUBLIC cxx_std_20)
