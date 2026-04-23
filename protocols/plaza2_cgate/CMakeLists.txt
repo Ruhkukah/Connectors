@@ -73,3 +73,17 @@ target_include_directories(moex_plaza2_cgate_fake_scenarios
         "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 
 target_compile_features(moex_plaza2_cgate_fake_scenarios PUBLIC cxx_std_20)
+
+add_library(moex_plaza2_cgate_private_state STATIC
+    src/plaza2_private_state.cpp)
+
+target_link_libraries(moex_plaza2_cgate_private_state
+    PUBLIC
+        moex_plaza2_cgate_fake_engine)
+
+target_include_directories(moex_plaza2_cgate_private_state
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+
+target_compile_features(moex_plaza2_cgate_private_state PUBLIC cxx_std_20)

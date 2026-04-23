@@ -612,6 +612,26 @@ add_test(
     NAME plaza2_fake_engine_rules_test
     COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_fake_engine_rules_test")
 
+function(moex_add_plaza2_private_state_test target_name source_file)
+    add_executable(${target_name} "${source_file}")
+    target_link_libraries(${target_name}
+        PRIVATE
+            moex_plaza2_cgate_private_state
+            moex_plaza2_cgate_fake_scenarios)
+    target_compile_features(${target_name} PRIVATE cxx_std_20)
+    set_property(TARGET ${target_name} PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+    add_test(
+        NAME ${target_name}
+        COMMAND "${MOEX_BUILD_ROOT}/tests/${target_name}")
+endfunction()
+
+moex_add_plaza2_private_state_test(plaza2_private_state_projection_test
+    tests/plaza2_cgate/plaza2_private_state_projection_test.cpp)
+moex_add_plaza2_private_state_test(plaza2_private_state_visibility_test
+    tests/plaza2_cgate/plaza2_private_state_visibility_test.cpp)
+moex_add_plaza2_private_state_test(plaza2_private_state_invalidation_test
+    tests/plaza2_cgate/plaza2_private_state_invalidation_test.cpp)
+
 add_library(plaza2_runtime_test_support STATIC
     tests/plaza2_cgate/plaza2_runtime_test_support.cpp)
 target_link_libraries(plaza2_runtime_test_support
