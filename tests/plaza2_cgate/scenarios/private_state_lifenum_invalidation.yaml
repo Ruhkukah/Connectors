@@ -27,12 +27,47 @@ events:
     stream: FORTS_REFDATA_REPL
     table: session
     rows:
-      - { replID: 1, sess_id: 400, begin: 1700200000, end: 1700203600, state: 1, inter_cl_begin: 1700201800, inter_cl_end: 1700202100, inter_cl_state: 1, eve_on: 0, eve_begin: 0, eve_end: 0, mon_on: 1, mon_begin: 1700190000, mon_end: 1700190600, settl_sess_begin: 1700203000, clr_sess_begin: 1700202400, settl_price_calc_time: 1700203200, settl_sess_t1_begin: 1700203300, margin_call_fix_schedule: 1700203400 }
+      - replID: 1
+        sess_id: 400
+        begin: 1700200000
+        end: 1700203600
+        state: 1
+        inter_cl_begin: 1700201800
+        inter_cl_end: 1700202100
+        inter_cl_state: 1
+        eve_on: 0
+        eve_begin: 0
+        eve_end: 0
+        mon_on: 1
+        mon_begin: 1700190000
+        mon_end: 1700190600
+        settl_sess_begin: 1700203000
+        clr_sess_begin: 1700202400
+        settl_price_calc_time: 1700203200
+        settl_sess_t1_begin: 1700203300
+        margin_call_fix_schedule: 1700203400
   - type: STREAM_DATA
     stream: FORTS_REFDATA_REPL
     table: fut_instruments
     rows:
-      - { replID: 2, isin_id: 5001, short_isin: SRH6, isin: Si-6.26, name: Si Jun 2026, inst_term: 2, base_contract_code: Si, roundto: 2, min_step: 1, lot_volume: 1, step_price: 1, last_trade_date: 1700210000, is_spread: 0, settlement_price: 91500.25, signs: 3, trade_mode_id: 4, group_mask: 7, trade_period_access: 15 }
+      - replID: 2
+        isin_id: 5001
+        short_isin: SRH6
+        isin: Si-6.26
+        name: Si Jun 2026
+        inst_term: 2
+        base_contract_code: Si
+        roundto: 2
+        min_step: 1
+        lot_volume: 1
+        step_price: 1
+        last_trade_date: 1700210000
+        is_spread: 0
+        settlement_price: 91500.25
+        signs: 3
+        trade_mode_id: 4
+        group_mask: 7
+        trade_period_access: 15
   - type: STREAM_DATA
     stream: FORTS_REFDATA_REPL
     table: instr2matching_map
@@ -42,22 +77,89 @@ events:
     stream: FORTS_PART_REPL
     table: part
     rows:
-      - { replID: 4, client_code: RESET, money_free: 1000.00, money_blocked: 50.00, vm_reserve: 10.00, fee: 1.00, limits_set: 1, money_old: 900.00, money_amount: 1050.00, money_pledge_amount: 5.00, actual_amount_of_base_currency: 1100.00, vm_intercl: 2.00, is_auto_update_limit: 0, broker_fee: 0.50, penalty: 0, premium_intercl: 0, net_option_value: 0 }
+      - replID: 4
+        client_code: RESET
+        money_free: 1000.00
+        money_blocked: 50.00
+        vm_reserve: 10.00
+        fee: 1.00
+        limits_set: 1
+        money_old: 900.00
+        money_amount: 1050.00
+        money_pledge_amount: 5.00
+        actual_amount_of_base_currency: 1100.00
+        vm_intercl: 2.00
+        is_auto_update_limit: 0
+        broker_fee: 0.50
+        penalty: 0
+        premium_intercl: 0
+        net_option_value: 0
   - type: STREAM_DATA
     stream: FORTS_POS_REPL
     table: position
     rows:
-      - { replID: 5, client_code: RESET, isin_id: 5001, xpos: 1, xbuys_qty: 1, xsells_qty: 0, xday_open_qty: 1, xday_open_buys_qty: 1, xday_open_sells_qty: 0, xopen_qty: 1, waprice: 91500.25, net_volume_rur: 91500.25, last_deal_id: 1, last_quantity: 1, account_type: 0 }
+      - replID: 5
+        client_code: RESET
+        isin_id: 5001
+        xpos: 1
+        xbuys_qty: 1
+        xsells_qty: 0
+        xday_open_qty: 1
+        xday_open_buys_qty: 1
+        xday_open_sells_qty: 0
+        xopen_qty: 1
+        waprice: 91500.25
+        net_volume_rur: 91500.25
+        last_deal_id: 1
+        last_quantity: 1
+        account_type: 0
   - type: STREAM_DATA
     stream: FORTS_USERORDERBOOK_REPL
     table: orders
     rows:
-      - { replID: 6, public_order_id: 22001, sess_id: 400, client_code: RESET, moment: 1700200001, moment_ns: 1, xstatus: 1, xstatus2: 1, public_action: 1, isin_id: 5001, dir: 1, price: 91500.25, public_amount: 1, public_amount_rest: 1, comment: reset-order, ext_id: 5, login_from: reset_user, private_order_id: 32001, private_amount: 1, private_amount_rest: 1, private_action: 1 }
+      - replID: 6
+        public_order_id: 22001
+        sess_id: 400
+        client_code: RESET
+        moment: 1700200001
+        moment_ns: 1
+        xstatus: 1
+        xstatus2: 1
+        public_action: 1
+        isin_id: 5001
+        dir: 1
+        price: 91500.25
+        public_amount: 1
+        public_amount_rest: 1
+        comment: reset-order
+        ext_id: 5
+        login_from: reset_user
+        private_order_id: 32001
+        private_amount: 1
+        private_amount_rest: 1
+        private_action: 1
   - type: STREAM_DATA
     stream: FORTS_TRADE_REPL
     table: user_deal
     rows:
-      - { replID: 7, sess_id: 400, isin_id: 5001, id_deal: 9200, xamount: 1, public_order_id_buy: 111, public_order_id_sell: 22001, price: 91500.25, moment: 1700200002, moment_ns: 2, code_buy: MMR, code_sell: RESET, comment_buy: maker, comment_sell: reset-order, login_buy: mm_reset, login_sell: reset_user, private_order_id_buy: 0, private_order_id_sell: 32001 }
+      - replID: 7
+        sess_id: 400
+        isin_id: 5001
+        id_deal: 9200
+        xamount: 1
+        public_order_id_buy: 111
+        public_order_id_sell: 22001
+        price: 91500.25
+        moment: 1700200002
+        moment_ns: 2
+        code_buy: MMR
+        code_sell: RESET
+        comment_buy: maker
+        comment_sell: reset-order
+        login_buy: mm_reset
+        login_sell: reset_user
+        private_order_id_buy: 0
+        private_order_id_sell: 32001
   - type: TN_COMMIT
   - type: SNAPSHOT_END
   - type: ONLINE

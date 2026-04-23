@@ -29,17 +29,70 @@ events:
     stream: FORTS_REFDATA_REPL
     table: session
     rows:
-      - { replID: 1, sess_id: 321, begin: 1700000000, end: 1700003600, state: 2, inter_cl_begin: 1700001800, inter_cl_end: 1700002100, inter_cl_state: 1, eve_on: 1, eve_begin: 1699999000, eve_end: 1699999900, mon_on: 0, mon_begin: 0, mon_end: 0, settl_sess_begin: 1700003000, clr_sess_begin: 1700002400, settl_price_calc_time: 1700003200, settl_sess_t1_begin: 1700003300, margin_call_fix_schedule: 1700003400 }
+      - replID: 1
+        sess_id: 321
+        begin: 1700000000
+        end: 1700003600
+        state: 2
+        inter_cl_begin: 1700001800
+        inter_cl_end: 1700002100
+        inter_cl_state: 1
+        eve_on: 1
+        eve_begin: 1699999000
+        eve_end: 1699999900
+        mon_on: 0
+        mon_begin: 0
+        mon_end: 0
+        settl_sess_begin: 1700003000
+        clr_sess_begin: 1700002400
+        settl_price_calc_time: 1700003200
+        settl_sess_t1_begin: 1700003300
+        margin_call_fix_schedule: 1700003400
   - type: STREAM_DATA
     stream: FORTS_REFDATA_REPL
     table: fut_instruments
     rows:
-      - { replID: 2, isin_id: 1001, short_isin: RIH6, isin: RTS-6.26, name: RTS Jun 2026, inst_term: 3, base_contract_code: RTS, roundto: 2, min_step: 10, lot_volume: 1, step_price: 12.5, last_trade_date: 1700010000, is_spread: 0, settlement_price: 105000.5, signs: 9, trade_mode_id: 4, group_mask: 31, trade_period_access: 127 }
+      - replID: 2
+        isin_id: 1001
+        short_isin: RIH6
+        isin: RTS-6.26
+        name: RTS Jun 2026
+        inst_term: 3
+        base_contract_code: RTS
+        roundto: 2
+        min_step: 10
+        lot_volume: 1
+        step_price: 12.5
+        last_trade_date: 1700010000
+        is_spread: 0
+        settlement_price: 105000.5
+        signs: 9
+        trade_mode_id: 4
+        group_mask: 31
+        trade_period_access: 127
   - type: STREAM_DATA
     stream: FORTS_REFDATA_REPL
     table: opt_sess_contents
     rows:
-      - { replID: 3, sess_id: 321, isin_id: 2001, isin: RI95000BF6, short_isin: RI95000, name: RTS call 95000, base_contract_code: RTS, fut_isin_id: 1001, put: 0, strike: 95000, roundto: 2, last_trade_date: 1700010000, signs: 5, settlement_price: 1250.25, option_series_id: 55, state: 1, trade_mode_id: 4, group_mask: 63, trade_period_access: 255 }
+      - replID: 3
+        sess_id: 321
+        isin_id: 2001
+        isin: RI95000BF6
+        short_isin: RI95000
+        name: RTS call 95000
+        base_contract_code: RTS
+        fut_isin_id: 1001
+        put: 0
+        strike: 95000
+        roundto: 2
+        last_trade_date: 1700010000
+        signs: 5
+        settlement_price: 1250.25
+        option_series_id: 55
+        state: 1
+        trade_mode_id: 4
+        group_mask: 63
+        trade_period_access: 255
   - type: STREAM_DATA
     stream: FORTS_REFDATA_REPL
     table: multileg_dict
@@ -55,12 +108,42 @@ events:
     stream: FORTS_PART_REPL
     table: part
     rows:
-      - { replID: 7, client_code: CL001, money_free: 125000.50, money_blocked: 1200.25, vm_reserve: 300.75, fee: 12.10, limits_set: 1, money_old: 110000.00, money_amount: 126200.75, money_pledge_amount: 1000.00, actual_amount_of_base_currency: 126500.25, vm_intercl: 25.10, is_auto_update_limit: 1, broker_fee: 3.15, penalty: 0, premium_intercl: 8.20, net_option_value: 15.40 }
+      - replID: 7
+        client_code: CL001
+        money_free: 125000.50
+        money_blocked: 1200.25
+        vm_reserve: 300.75
+        fee: 12.10
+        limits_set: 1
+        money_old: 110000.00
+        money_amount: 126200.75
+        money_pledge_amount: 1000.00
+        actual_amount_of_base_currency: 126500.25
+        vm_intercl: 25.10
+        is_auto_update_limit: 1
+        broker_fee: 3.15
+        penalty: 0
+        premium_intercl: 8.20
+        net_option_value: 15.40
   - type: STREAM_DATA
     stream: FORTS_POS_REPL
     table: position
     rows:
-      - { replID: 8, client_code: CL001, isin_id: 1001, xpos: 4, xbuys_qty: 6, xsells_qty: 2, xday_open_qty: 1, xday_open_buys_qty: 3, xday_open_sells_qty: 2, xopen_qty: 5, waprice: 104950.25, net_volume_rur: 420000.75, last_deal_id: 9001, last_quantity: 2, account_type: 1 }
+      - replID: 8
+        client_code: CL001
+        isin_id: 1001
+        xpos: 4
+        xbuys_qty: 6
+        xsells_qty: 2
+        xday_open_qty: 1
+        xday_open_buys_qty: 3
+        xday_open_sells_qty: 2
+        xopen_qty: 5
+        waprice: 104950.25
+        net_volume_rur: 420000.75
+        last_deal_id: 9001
+        last_quantity: 2
+        account_type: 1
   - type: STREAM_DATA
     stream: FORTS_POS_REPL
     table: info
@@ -75,22 +158,100 @@ events:
     stream: FORTS_USERORDERBOOK_REPL
     table: orders
     rows:
-      - { replID: 11, public_order_id: 10001, sess_id: 321, client_code: CL001, moment: 1700000003, moment_ns: 10, xstatus: 12, xstatus2: 120, public_action: 1, isin_id: 1001, dir: 1, price: 100500, public_amount: 5, public_amount_rest: 3, comment: live-userbook, ext_id: 77, login_from: trader_a, private_order_id: 20001, private_amount: 5, private_amount_rest: 3, private_action: 1 }
+      - replID: 11
+        public_order_id: 10001
+        sess_id: 321
+        client_code: CL001
+        moment: 1700000003
+        moment_ns: 10
+        xstatus: 12
+        xstatus2: 120
+        public_action: 1
+        isin_id: 1001
+        dir: 1
+        price: 100500
+        public_amount: 5
+        public_amount_rest: 3
+        comment: live-userbook
+        ext_id: 77
+        login_from: trader_a
+        private_order_id: 20001
+        private_amount: 5
+        private_amount_rest: 3
+        private_action: 1
   - type: STREAM_DATA
     stream: FORTS_USERORDERBOOK_REPL
     table: orders_currentday
     rows:
-      - { replID: 12, public_order_id: 10003, sess_id: 321, client_code: CL001, moment: 1700000004, moment_ns: 11, xstatus: 13, xstatus2: 130, public_action: 1, isin_id: 1001, dir: 2, price: 102250, public_amount: 7, public_amount_rest: 7, comment: currentday-order, ext_id: 79, login_from: trader_a, private_order_id: 20003, private_amount: 7, private_amount_rest: 6, private_action: 1 }
+      - replID: 12
+        public_order_id: 10003
+        sess_id: 321
+        client_code: CL001
+        moment: 1700000004
+        moment_ns: 11
+        xstatus: 13
+        xstatus2: 130
+        public_action: 1
+        isin_id: 1001
+        dir: 2
+        price: 102250
+        public_amount: 7
+        public_amount_rest: 7
+        comment: currentday-order
+        ext_id: 79
+        login_from: trader_a
+        private_order_id: 20003
+        private_amount: 7
+        private_amount_rest: 6
+        private_action: 1
   - type: STREAM_DATA
     stream: FORTS_TRADE_REPL
     table: orders_log
     rows:
-      - { replID: 13, public_order_id: 10003, sess_id: 321, isin_id: 1001, public_amount: 7, public_amount_rest: 5, id_deal: 9001, xstatus: 21, xstatus2: 210, price: 102500, moment: 1700000005, moment_ns: 12, dir: 2, public_action: 2, client_code: CL001, login_from: trader_a, comment: trade-delta, ext_id: 79, private_order_id: 20003, private_amount: 7, private_amount_rest: 4, private_action: 2 }
+      - replID: 13
+        public_order_id: 10003
+        sess_id: 321
+        isin_id: 1001
+        public_amount: 7
+        public_amount_rest: 5
+        id_deal: 9001
+        xstatus: 21
+        xstatus2: 210
+        price: 102500
+        moment: 1700000005
+        moment_ns: 12
+        dir: 2
+        public_action: 2
+        client_code: CL001
+        login_from: trader_a
+        comment: trade-delta
+        ext_id: 79
+        private_order_id: 20003
+        private_amount: 7
+        private_amount_rest: 4
+        private_action: 2
   - type: STREAM_DATA
     stream: FORTS_TRADE_REPL
     table: user_deal
     rows:
-      - { replID: 14, sess_id: 321, isin_id: 1001, id_deal: 9001, xamount: 2, public_order_id_buy: 7777, public_order_id_sell: 10003, price: 102500, moment: 1700000006, moment_ns: 13, code_buy: MM001, code_sell: CL001, comment_buy: maker-fill, comment_sell: trade-delta, login_buy: mm_bot, login_sell: trader_a, private_order_id_buy: 0, private_order_id_sell: 20003 }
+      - replID: 14
+        sess_id: 321
+        isin_id: 1001
+        id_deal: 9001
+        xamount: 2
+        public_order_id_buy: 7777
+        public_order_id_sell: 10003
+        price: 102500
+        moment: 1700000006
+        moment_ns: 13
+        code_buy: MM001
+        code_sell: CL001
+        comment_buy: maker-fill
+        comment_sell: trade-delta
+        login_buy: mm_bot
+        login_sell: trader_a
+        private_order_id_buy: 0
+        private_order_id_sell: 20003
   - type: STREAM_DATA
     stream: FORTS_TRADE_REPL
     table: heartbeat
