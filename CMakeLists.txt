@@ -131,6 +131,7 @@ moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_scheme_lock" "to
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_phase3a_materialize" "tools/plaza2_phase3a_materialize.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_schema_materialize" "tools/plaza2_schema_materialize.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_codegen" "tools/plaza2_codegen.py")
+moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_fake_scenario_materialize" "tools/plaza2_fake_scenario_materialize.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "osengine_inventory" "tools/osengine_inventory.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "matrix_validate" "tools/matrix_validate.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "profile_check" "tools/profile_check.py")
@@ -552,10 +553,23 @@ add_test(
         --check)
 
 add_test(
+    NAME plaza2_fake_scenario_materialize_check
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/plaza2_fake_scenario_materialize"
+        --project-root "${CMAKE_CURRENT_SOURCE_DIR}"
+        --check)
+
+add_test(
     NAME plaza2_scheme_parser_check
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_plaza2_scheme_parser.py"
         "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(plaza2_scheme_parser_check PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
+
+add_test(
+    NAME plaza2_fake_scenario_parser_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_plaza2_fake_scenario_parser.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(plaza2_fake_scenario_parser_check PROPERTIES
     ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
 
 add_test(
@@ -575,6 +589,28 @@ set_property(TARGET plaza2_generated_metadata_test PROPERTY RUNTIME_OUTPUT_DIREC
 add_test(
     NAME plaza2_generated_metadata_test
     COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_generated_metadata_test")
+
+add_executable(plaza2_fake_engine_scenario_test
+    tests/plaza2_cgate/plaza2_fake_engine_scenario_test.cpp)
+target_link_libraries(plaza2_fake_engine_scenario_test
+    PRIVATE
+        moex_plaza2_cgate_fake_scenarios)
+target_compile_features(plaza2_fake_engine_scenario_test PRIVATE cxx_std_20)
+set_property(TARGET plaza2_fake_engine_scenario_test PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME plaza2_fake_engine_scenario_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_fake_engine_scenario_test")
+
+add_executable(plaza2_fake_engine_rules_test
+    tests/plaza2_cgate/plaza2_fake_engine_rules_test.cpp)
+target_link_libraries(plaza2_fake_engine_rules_test
+    PRIVATE
+        moex_plaza2_cgate_fake_engine)
+target_compile_features(plaza2_fake_engine_rules_test PRIVATE cxx_std_20)
+set_property(TARGET plaza2_fake_engine_rules_test PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME plaza2_fake_engine_rules_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_fake_engine_rules_test")
 
 add_library(plaza2_runtime_test_support STATIC
     tests/plaza2_cgate/plaza2_runtime_test_support.cpp)

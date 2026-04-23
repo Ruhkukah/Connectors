@@ -1,0 +1,32 @@
+scenario_id: forts_basic_snapshot_online
+description: Basic snapshot then online transition for the private trade replication stream
+
+metadata:
+  version: 1
+  deterministic_seed: 0
+
+streams:
+  - name: FORTS_TRADE_REPL
+    scope: private_core
+
+events:
+  - type: OPEN
+  - type: SNAPSHOT_BEGIN
+  - type: TN_BEGIN
+  - type: STREAM_DATA
+    stream: FORTS_TRADE_REPL
+    table: orders_log
+    rows:
+      - { replID: 1, price: 100, private_amount: 2 }
+      - { replID: 2, price: 101, private_amount: 1 }
+  - type: TN_COMMIT
+  - type: SNAPSHOT_END
+  - type: ONLINE
+
+expected:
+  invariants:
+    - type: commit_count
+      value: 1
+    - type: stream_online
+      stream: FORTS_TRADE_REPL
+      value: true

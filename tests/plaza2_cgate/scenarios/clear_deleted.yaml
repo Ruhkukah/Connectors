@@ -1,0 +1,22 @@
+scenario_id: clear_deleted
+description: Clear-deleted control message is tracked explicitly per stream
+
+metadata:
+  version: 1
+  deterministic_seed: 0
+
+streams:
+  - name: FORTS_TRADE_REPL
+    scope: private_core
+
+events:
+  - type: OPEN
+  - type: P2REPL_CLEARDELETED
+    stream: FORTS_TRADE_REPL
+  - type: CLOSE
+
+expected:
+  invariants:
+    - type: clear_deleted_count
+      stream: FORTS_TRADE_REPL
+      value: 1
