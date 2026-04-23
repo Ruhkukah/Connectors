@@ -1,0 +1,34 @@
+scenario_id: lifenum_reset
+description: Life-number changes force the fake engine to invalidate committed stream state
+
+metadata:
+  version: 1
+  deterministic_seed: 0
+
+streams:
+  - name: FORTS_TRADE_REPL
+    scope: private_core
+
+events:
+  - type: OPEN
+  - type: P2REPL_LIFENUM
+    value: 10
+  - type: TN_BEGIN
+  - type: STREAM_DATA
+    stream: FORTS_TRADE_REPL
+    table: orders_log
+    rows:
+      - { replID: 1, private_amount: 1 }
+  - type: TN_COMMIT
+  - type: P2REPL_LIFENUM
+    value: 11
+
+expected:
+  invariants:
+    - type: commit_count
+      value: 1
+    - type: last_lifenum
+      value: 11
+    - type: stream_online
+      stream: FORTS_TRADE_REPL
+      value: false

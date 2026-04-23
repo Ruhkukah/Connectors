@@ -13,6 +13,13 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/plaza2_generated_metadata.c
         "--out protocols/plaza2_cgate/generated")
 endif()
 
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/plaza2_fake_scenarios.cpp")
+    message(FATAL_ERROR
+        "Generated PLAZA II fake scenarios are missing at protocols/plaza2_cgate/generated/plaza2_fake_scenarios.cpp. "
+        "Re-generate them with: "
+        "python3 tools/plaza2_fake_scenario_materialize.py --project-root .")
+endif()
+
 add_library(moex_plaza2_cgate_metadata STATIC
     generated/plaza2_generated_metadata.cpp)
 
@@ -38,3 +45,31 @@ target_include_directories(moex_plaza2_cgate_runtime
         "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 
 target_compile_features(moex_plaza2_cgate_runtime PUBLIC cxx_std_20)
+
+add_library(moex_plaza2_cgate_fake_engine STATIC
+    src/plaza2_fake_engine.cpp)
+
+target_link_libraries(moex_plaza2_cgate_fake_engine
+    PUBLIC
+        moex_plaza2_cgate_metadata)
+
+target_include_directories(moex_plaza2_cgate_fake_engine
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+
+target_compile_features(moex_plaza2_cgate_fake_engine PUBLIC cxx_std_20)
+
+add_library(moex_plaza2_cgate_fake_scenarios STATIC
+    generated/plaza2_fake_scenarios.cpp)
+
+target_link_libraries(moex_plaza2_cgate_fake_scenarios
+    PUBLIC
+        moex_plaza2_cgate_fake_engine)
+
+target_include_directories(moex_plaza2_cgate_fake_scenarios
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+
+target_compile_features(moex_plaza2_cgate_fake_scenarios PUBLIC cxx_std_20)

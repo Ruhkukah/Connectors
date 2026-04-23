@@ -1,0 +1,29 @@
+scenario_id: resume_from_replstate
+description: Resume token is applied before the next committed private trade block
+
+metadata:
+  version: 1
+  deterministic_seed: 0
+
+streams:
+  - name: FORTS_TRADE_REPL
+    scope: private_core
+
+events:
+  - type: OPEN
+  - type: P2REPL_REPLSTATE
+    value: lifenum=5;rev.orders_log=123
+  - type: TN_BEGIN
+  - type: STREAM_DATA
+    stream: FORTS_TRADE_REPL
+    table: orders_log
+    rows:
+      - { replID: 124, price: 102, private_amount: 3 }
+  - type: TN_COMMIT
+
+expected:
+  invariants:
+    - type: commit_count
+      value: 1
+    - type: last_replstate
+      value: lifenum=5;rev.orders_log=123
