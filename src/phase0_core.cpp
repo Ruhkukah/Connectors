@@ -1,4 +1,4 @@
-#include "adapters/alorengine_capi/moex_c_api.h"
+#include "moex_c_api_internal.hpp"
 #include "moex_core/logging/redaction.hpp"
 #include "moex_core/phase0_core.hpp"
 
@@ -10,6 +10,7 @@
 #include <fstream>
 #include <memory>
 #include <new>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -320,23 +321,554 @@ bool parse_replay_file(const std::string& path, std::vector<MoexPolledEvent>& ev
 
 } // namespace
 
-struct MoexHandleTag {
-    std::string connector_name;
-    std::string instance_id;
-    std::string profile_path;
-    std::string replay_path;
-    bool started = false;
-    bool profile_loaded = false;
-    bool prod_armed = false;
-    bool shadow_mode_enabled = true;
-    bool replay_loaded = false;
-    bool started_callback_emitted = false;
-    MoexLowRateCallback low_rate_callback = nullptr;
-    void* low_rate_user_data = nullptr;
-    MoexBackpressureCounters counters{};
-    std::vector<MoexPolledEvent> replay_events;
-    std::size_t next_replay_index = 0;
-};
+namespace {
+
+using moex::plaza2::private_state::ConnectorHealthSnapshot;
+using moex::plaza2::private_state::InstrumentKind;
+using moex::plaza2::private_state::InstrumentSnapshot;
+using moex::plaza2::private_state::LimitSnapshot;
+using moex::plaza2::private_state::MatchingMapSnapshot;
+using moex::plaza2::private_state::OwnOrderSnapshot;
+using moex::plaza2::private_state::OwnTradeSnapshot;
+using moex::plaza2::private_state::Plaza2PrivateStateProjector;
+using moex::plaza2::private_state::PositionScope;
+using moex::plaza2::private_state::PositionSnapshot;
+using moex::plaza2::private_state::ResumeMarkersSnapshot;
+using moex::plaza2::private_state::StreamHealthSnapshot;
+using moex::plaza2::private_state::TradingSessionSnapshot;
+using moex::plaza2_twime_reconciler::MatchMode;
+using moex::plaza2_twime_reconciler::OrderStatus;
+using moex::plaza2_twime_reconciler::Plaza2TwimeReconciler;
+using moex::plaza2_twime_reconciler::Plaza2TwimeReconcilerHealthSnapshot;
+using moex::plaza2_twime_reconciler::ReconciledOrderSnapshot;
+using moex::plaza2_twime_reconciler::ReconciledTradeSnapshot;
+using moex::plaza2_twime_reconciler::ReconciliationSource;
+using moex::plaza2_twime_reconciler::Side;
+using moex::plaza2_twime_reconciler::TradeStatus;
+using moex::plaza2_twime_reconciler::TwimeOrderInputKind;
+using moex::plaza2_twime_reconciler::TwimeTradeInputKind;
+
+template <typename Summary> MoexResult prepare_summary_output(Summary* out_summary) {
+    if (out_summary == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_summary->struct_size != 0U && out_summary->struct_size < sizeof(Summary)) {
+        return MOEX_RESULT_INVALID_ARGUMENT;
+    }
+    std::memset(out_summary, 0, sizeof(*out_summary));
+    out_summary->struct_size = static_cast<std::uint32_t>(sizeof(Summary));
+    out_summary->abi_version = MOEX_C_ABI_VERSION;
+    return MOEX_RESULT_OK;
+}
+
+template <typename Item> void prepare_item_output(Item& item) {
+    std::memset(&item, 0, sizeof(item));
+    item.struct_size = static_cast<std::uint32_t>(sizeof(Item));
+    item.abi_version = MOEX_C_ABI_VERSION;
+}
+
+MoexResult size_to_count(std::size_t size, std::uint32_t* out_count) {
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (size > static_cast<std::size_t>(UINT32_MAX)) {
+        *out_count = 0U;
+        return MOEX_RESULT_OVERFLOW;
+    }
+    *out_count = static_cast<std::uint32_t>(size);
+    return MOEX_RESULT_OK;
+}
+
+template <typename Native, typename Abi, typename FillFn>
+MoexResult copy_snapshot_items(std::span<const Native> items, Abi* buffer, std::uint32_t capacity,
+                               std::uint32_t* written, FillFn&& fill_item) {
+    const auto count_result = size_to_count(items.size(), written);
+    if (count_result != MOEX_RESULT_OK) {
+        return count_result;
+    }
+
+    if (*written > capacity) {
+        return MOEX_RESULT_BUFFER_TOO_SMALL;
+    }
+    if (*written > 0U && buffer == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+
+    for (std::uint32_t index = 0; index < *written; ++index) {
+        prepare_item_output(buffer[index]);
+        fill_item(items[index], buffer[index]);
+    }
+    return MOEX_RESULT_OK;
+}
+
+std::uint8_t to_abi_instrument_kind(InstrumentKind kind) {
+    switch (kind) {
+    case InstrumentKind::kFuture:
+        return MOEX_PLAZA2_INSTRUMENT_KIND_FUTURE;
+    case InstrumentKind::kOption:
+        return MOEX_PLAZA2_INSTRUMENT_KIND_OPTION;
+    case InstrumentKind::kMultileg:
+        return MOEX_PLAZA2_INSTRUMENT_KIND_MULTILEG;
+    case InstrumentKind::kUnknown:
+    default:
+        return MOEX_PLAZA2_INSTRUMENT_KIND_UNKNOWN;
+    }
+}
+
+std::uint8_t to_abi_position_scope(PositionScope scope) {
+    switch (scope) {
+    case PositionScope::kSettlementAccount:
+        return MOEX_PLAZA2_POSITION_SCOPE_SETTLEMENT_ACCOUNT;
+    case PositionScope::kClient:
+    default:
+        return MOEX_PLAZA2_POSITION_SCOPE_CLIENT;
+    }
+}
+
+std::uint8_t to_abi_side(Side side) {
+    switch (side) {
+    case Side::Buy:
+        return MOEX_PLAZA2_SIDE_BUY;
+    case Side::Sell:
+        return MOEX_PLAZA2_SIDE_SELL;
+    case Side::Unknown:
+    default:
+        return MOEX_PLAZA2_SIDE_UNKNOWN;
+    }
+}
+
+std::uint8_t to_abi_source(ReconciliationSource source) {
+    switch (source) {
+    case ReconciliationSource::Twime:
+        return MOEX_PLAZA2_RECONCILIATION_SOURCE_TWIME;
+    case ReconciliationSource::Plaza:
+        return MOEX_PLAZA2_RECONCILIATION_SOURCE_PLAZA;
+    case ReconciliationSource::Unknown:
+    default:
+        return MOEX_PLAZA2_RECONCILIATION_SOURCE_UNKNOWN;
+    }
+}
+
+std::uint8_t to_abi_match_mode(MatchMode mode) {
+    switch (mode) {
+    case MatchMode::DirectIdentifier:
+        return MOEX_PLAZA2_MATCH_MODE_DIRECT_IDENTIFIER;
+    case MatchMode::ExactFallbackTuple:
+        return MOEX_PLAZA2_MATCH_MODE_EXACT_FALLBACK_TUPLE;
+    case MatchMode::AmbiguousCandidates:
+        return MOEX_PLAZA2_MATCH_MODE_AMBIGUOUS_CANDIDATES;
+    case MatchMode::None:
+    default:
+        return MOEX_PLAZA2_MATCH_MODE_NONE;
+    }
+}
+
+std::uint8_t to_abi_order_status(OrderStatus status) {
+    switch (status) {
+    case OrderStatus::ProvisionalTwime:
+        return MOEX_PLAZA2_ORDER_STATUS_PROVISIONAL_TWIME;
+    case OrderStatus::Confirmed:
+        return MOEX_PLAZA2_ORDER_STATUS_CONFIRMED;
+    case OrderStatus::Rejected:
+        return MOEX_PLAZA2_ORDER_STATUS_REJECTED;
+    case OrderStatus::Canceled:
+        return MOEX_PLAZA2_ORDER_STATUS_CANCELED;
+    case OrderStatus::Filled:
+        return MOEX_PLAZA2_ORDER_STATUS_FILLED;
+    case OrderStatus::Ambiguous:
+        return MOEX_PLAZA2_ORDER_STATUS_AMBIGUOUS;
+    case OrderStatus::Diverged:
+        return MOEX_PLAZA2_ORDER_STATUS_DIVERGED;
+    case OrderStatus::Stale:
+        return MOEX_PLAZA2_ORDER_STATUS_STALE;
+    case OrderStatus::Unknown:
+    default:
+        return MOEX_PLAZA2_ORDER_STATUS_UNKNOWN;
+    }
+}
+
+std::uint8_t to_abi_trade_status(TradeStatus status) {
+    switch (status) {
+    case TradeStatus::PlazaOnly:
+        return MOEX_PLAZA2_TRADE_STATUS_PLAZA_ONLY;
+    case TradeStatus::Matched:
+        return MOEX_PLAZA2_TRADE_STATUS_MATCHED;
+    case TradeStatus::Diverged:
+        return MOEX_PLAZA2_TRADE_STATUS_DIVERGED;
+    case TradeStatus::Ambiguous:
+        return MOEX_PLAZA2_TRADE_STATUS_AMBIGUOUS;
+    case TradeStatus::TwimeOnly:
+    default:
+        return MOEX_PLAZA2_TRADE_STATUS_TWIME_ONLY;
+    }
+}
+
+std::uint8_t to_abi_twime_order_kind(TwimeOrderInputKind kind) {
+    switch (kind) {
+    case TwimeOrderInputKind::NewAccepted:
+        return MOEX_PLAZA2_TWIME_ORDER_KIND_NEW_ACCEPTED;
+    case TwimeOrderInputKind::ReplaceIntent:
+        return MOEX_PLAZA2_TWIME_ORDER_KIND_REPLACE_INTENT;
+    case TwimeOrderInputKind::ReplaceAccepted:
+        return MOEX_PLAZA2_TWIME_ORDER_KIND_REPLACE_ACCEPTED;
+    case TwimeOrderInputKind::CancelIntent:
+        return MOEX_PLAZA2_TWIME_ORDER_KIND_CANCEL_INTENT;
+    case TwimeOrderInputKind::CancelAccepted:
+        return MOEX_PLAZA2_TWIME_ORDER_KIND_CANCEL_ACCEPTED;
+    case TwimeOrderInputKind::Rejected:
+        return MOEX_PLAZA2_TWIME_ORDER_KIND_REJECTED;
+    case TwimeOrderInputKind::NewIntent:
+    default:
+        return MOEX_PLAZA2_TWIME_ORDER_KIND_NEW_INTENT;
+    }
+}
+
+std::uint8_t to_abi_twime_trade_kind(TwimeTradeInputKind kind) {
+    (void)kind;
+    return MOEX_PLAZA2_TWIME_TRADE_KIND_EXECUTION;
+}
+
+void fill_private_connector_health(const ConnectorHealthSnapshot& native, MoexPlaza2PrivateConnectorHealth& abi) {
+    abi.open = to_abi_bool(native.open);
+    abi.closed = to_abi_bool(native.closed);
+    abi.snapshot_active = to_abi_bool(native.snapshot_active);
+    abi.online = to_abi_bool(native.online);
+    abi.transaction_open = to_abi_bool(native.transaction_open);
+    abi.commit_count = native.commit_count;
+    abi.callback_error_count = native.callback_error_count;
+}
+
+void fill_resume_markers(const ResumeMarkersSnapshot& native, MoexPlaza2ResumeMarkers& abi) {
+    abi.has_lifenum = to_abi_bool(native.has_lifenum);
+    abi.last_lifenum = native.last_lifenum;
+    copy_fixed(native.last_replstate, abi.last_replstate, MOEX_REPLSTATE_CAPACITY);
+}
+
+void fill_stream_health_item(const StreamHealthSnapshot& native, MoexPlaza2StreamHealthItem& abi) {
+    abi.stream_code = static_cast<std::uint32_t>(native.stream_code);
+    abi.online = to_abi_bool(native.online);
+    abi.snapshot_complete = to_abi_bool(native.snapshot_complete);
+    abi.has_publication_state = to_abi_bool(native.has_publication_state);
+    abi.publication_state = native.publication_state;
+    abi.last_event_type = native.last_event_type;
+    abi.clear_deleted_count = native.clear_deleted_count;
+    abi.committed_row_count = native.committed_row_count;
+    abi.last_commit_sequence = native.last_commit_sequence;
+    abi.last_trades_rev = native.last_trades_rev;
+    abi.last_trades_lifenum = native.last_trades_lifenum;
+    abi.last_server_time = native.last_server_time;
+    abi.last_info_moment = native.last_info_moment;
+    abi.last_event_id = native.last_event_id;
+    copy_fixed(native.stream_name, abi.stream_name, MOEX_GROUP_CAPACITY);
+    copy_fixed(native.last_message, abi.last_message, MOEX_INFO_CAPACITY);
+}
+
+void fill_trading_session_item(const TradingSessionSnapshot& native, MoexPlaza2TradingSessionItem& abi) {
+    abi.sess_id = native.sess_id;
+    abi.state = native.state;
+    abi.inter_cl_state = native.inter_cl_state;
+    abi.eve_on = to_abi_bool(native.eve_on);
+    abi.mon_on = to_abi_bool(native.mon_on);
+    abi.begin = native.begin;
+    abi.end = native.end;
+    abi.inter_cl_begin = native.inter_cl_begin;
+    abi.inter_cl_end = native.inter_cl_end;
+    abi.eve_begin = native.eve_begin;
+    abi.eve_end = native.eve_end;
+    abi.mon_begin = native.mon_begin;
+    abi.mon_end = native.mon_end;
+    abi.settl_sess_begin = native.settl_sess_begin;
+    abi.clr_sess_begin = native.clr_sess_begin;
+    abi.settl_price_calc_time = native.settl_price_calc_time;
+    abi.settl_sess_t1_begin = native.settl_sess_t1_begin;
+    abi.margin_call_fix_schedule = native.margin_call_fix_schedule;
+}
+
+void fill_instrument_item(const InstrumentSnapshot& native, MoexPlaza2InstrumentItem& abi) {
+    abi.isin_id = native.isin_id;
+    abi.sess_id = native.sess_id;
+    abi.kind = to_abi_instrument_kind(native.kind);
+    abi.put = to_abi_bool(native.put);
+    abi.is_spread = to_abi_bool(native.is_spread);
+    abi.leg_count = static_cast<std::uint8_t>(std::min<std::size_t>(native.legs.size(), UINT8_MAX));
+    abi.fut_isin_id = native.fut_isin_id;
+    abi.option_series_id = native.option_series_id;
+    abi.inst_term = native.inst_term;
+    abi.roundto = native.roundto;
+    abi.lot_volume = native.lot_volume;
+    abi.trade_mode_id = native.trade_mode_id;
+    abi.state = native.state;
+    abi.signs = native.signs;
+    abi.last_trade_date = native.last_trade_date;
+    abi.group_mask = native.group_mask;
+    abi.trade_period_access = native.trade_period_access;
+    if (!native.legs.empty()) {
+        abi.leg1_isin_id = native.legs[0].leg_isin_id;
+        abi.leg1_qty_ratio = native.legs[0].qty_ratio;
+        abi.leg1_order_no = native.legs[0].leg_order_no;
+    }
+    if (native.legs.size() > 1U) {
+        abi.leg2_isin_id = native.legs[1].leg_isin_id;
+        abi.leg2_qty_ratio = native.legs[1].qty_ratio;
+        abi.leg2_order_no = native.legs[1].leg_order_no;
+    }
+    copy_fixed(native.isin, abi.isin, MOEX_SYMBOL_CAPACITY);
+    copy_fixed(native.short_isin, abi.short_isin, MOEX_SYMBOL_CAPACITY);
+    copy_fixed(native.name, abi.name, MOEX_NAME_CAPACITY);
+    copy_fixed(native.base_contract_code, abi.base_contract_code, MOEX_SYMBOL_CAPACITY);
+    copy_fixed(native.min_step, abi.min_step, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.step_price, abi.step_price, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.settlement_price, abi.settlement_price, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.strike, abi.strike, MOEX_PRICE_TEXT_CAPACITY);
+}
+
+void fill_matching_map_item(const MatchingMapSnapshot& native, MoexPlaza2MatchingMapItem& abi) {
+    abi.base_contract_id = native.base_contract_id;
+    abi.matching_id = native.matching_id;
+}
+
+void fill_limit_item(const LimitSnapshot& native, MoexPlaza2LimitItem& abi) {
+    abi.scope = to_abi_position_scope(native.scope);
+    abi.limits_set = to_abi_bool(native.limits_set);
+    abi.is_auto_update_limit = to_abi_bool(native.is_auto_update_limit);
+    copy_fixed(native.account_code, abi.account_code, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.money_free, abi.money_free, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.money_blocked, abi.money_blocked, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.vm_reserve, abi.vm_reserve, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.fee, abi.fee, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.money_old, abi.money_old, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.money_amount, abi.money_amount, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.money_pledge_amount, abi.money_pledge_amount, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.actual_amount_of_base_currency, abi.actual_amount_of_base_currency, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.vm_intercl, abi.vm_intercl, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.broker_fee, abi.broker_fee, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.penalty, abi.penalty, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.premium_intercl, abi.premium_intercl, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.net_option_value, abi.net_option_value, MOEX_PRICE_TEXT_CAPACITY);
+}
+
+void fill_position_item(const PositionSnapshot& native, MoexPlaza2PositionItem& abi) {
+    abi.scope = to_abi_position_scope(native.scope);
+    abi.account_type = native.account_type;
+    abi.isin_id = native.isin_id;
+    abi.xpos = native.xpos;
+    abi.xbuys_qty = native.xbuys_qty;
+    abi.xsells_qty = native.xsells_qty;
+    abi.xday_open_qty = native.xday_open_qty;
+    abi.xday_open_buys_qty = native.xday_open_buys_qty;
+    abi.xday_open_sells_qty = native.xday_open_sells_qty;
+    abi.xopen_qty = native.xopen_qty;
+    abi.last_deal_id = native.last_deal_id;
+    abi.last_quantity = native.last_quantity;
+    copy_fixed(native.account_code, abi.account_code, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.waprice, abi.waprice, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.net_volume_rur, abi.net_volume_rur, MOEX_PRICE_TEXT_CAPACITY);
+}
+
+void fill_own_order_item(const OwnOrderSnapshot& native, MoexPlaza2OwnOrderItem& abi) {
+    abi.multileg = to_abi_bool(native.multileg);
+    abi.dir = native.dir;
+    abi.public_action = native.public_action;
+    abi.private_action = native.private_action;
+    abi.sess_id = native.sess_id;
+    abi.isin_id = native.isin_id;
+    abi.ext_id = native.ext_id;
+    abi.from_trade_repl = to_abi_bool(native.from_trade_repl);
+    abi.from_user_book = to_abi_bool(native.from_user_book);
+    abi.from_current_day = to_abi_bool(native.from_current_day);
+    abi.public_order_id = native.public_order_id;
+    abi.private_order_id = native.private_order_id;
+    abi.public_amount = native.public_amount;
+    abi.public_amount_rest = native.public_amount_rest;
+    abi.private_amount = native.private_amount;
+    abi.private_amount_rest = native.private_amount_rest;
+    abi.id_deal = native.id_deal;
+    abi.xstatus = native.xstatus;
+    abi.xstatus2 = native.xstatus2;
+    abi.moment = native.moment;
+    abi.moment_ns = native.moment_ns;
+    copy_fixed(native.client_code, abi.client_code, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.login_from, abi.login_from, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.comment, abi.comment, MOEX_TEXT_CAPACITY);
+    copy_fixed(native.price, abi.price_text, MOEX_PRICE_TEXT_CAPACITY);
+}
+
+void fill_own_trade_item(const OwnTradeSnapshot& native, MoexPlaza2OwnTradeItem& abi) {
+    abi.multileg = to_abi_bool(native.multileg);
+    abi.id_deal = native.id_deal;
+    abi.sess_id = native.sess_id;
+    abi.isin_id = native.isin_id;
+    abi.amount = native.amount;
+    abi.public_order_id_buy = native.public_order_id_buy;
+    abi.public_order_id_sell = native.public_order_id_sell;
+    abi.private_order_id_buy = native.private_order_id_buy;
+    abi.private_order_id_sell = native.private_order_id_sell;
+    abi.moment = native.moment;
+    abi.moment_ns = native.moment_ns;
+    copy_fixed(native.price, abi.price_text, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.rate_price, abi.rate_price, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.swap_price, abi.swap_price, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.code_buy, abi.code_buy, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.code_sell, abi.code_sell, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.comment_buy, abi.comment_buy, MOEX_TEXT_CAPACITY);
+    copy_fixed(native.comment_sell, abi.comment_sell, MOEX_TEXT_CAPACITY);
+    copy_fixed(native.login_buy, abi.login_buy, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.login_sell, abi.login_sell, MOEX_ACCOUNT_CAPACITY);
+}
+
+void fill_reconciler_health(const Plaza2TwimeReconcilerHealthSnapshot& native, MoexPlaza2TwimeReconcilerHealth& abi) {
+    abi.logical_step = native.logical_step;
+    abi.total_provisional_orders = native.total_provisional_orders;
+    abi.total_confirmed_orders = native.total_confirmed_orders;
+    abi.total_rejected_orders = native.total_rejected_orders;
+    abi.total_canceled_orders = native.total_canceled_orders;
+    abi.total_filled_orders = native.total_filled_orders;
+    abi.total_diverged_orders = native.total_diverged_orders;
+    abi.total_ambiguous_orders = native.total_ambiguous_orders;
+    abi.total_stale_provisional_orders = native.total_stale_provisional_orders;
+    abi.total_unmatched_twime_orders = native.total_unmatched_twime_orders;
+    abi.total_unmatched_plaza_orders = native.total_unmatched_plaza_orders;
+    abi.total_matched_trades = native.total_matched_trades;
+    abi.total_diverged_trades = native.total_diverged_trades;
+    abi.total_ambiguous_trades = native.total_ambiguous_trades;
+    abi.total_unmatched_twime_trades = native.total_unmatched_twime_trades;
+    abi.total_unmatched_plaza_trades = native.total_unmatched_plaza_trades;
+    abi.plaza_revalidation_pending_orders = native.plaza_revalidation_pending_orders;
+    abi.plaza_revalidation_pending_trades = native.plaza_revalidation_pending_trades;
+    abi.twime_present = to_abi_bool(native.twime.present);
+    abi.twime_session_state = static_cast<std::uint32_t>(native.twime.session_state);
+    abi.twime_transport_open = to_abi_bool(native.twime.transport_open);
+    abi.twime_session_active = to_abi_bool(native.twime.session_active);
+    abi.twime_reject_seen = to_abi_bool(native.twime.reject_seen);
+    abi.twime_last_reject_code = native.twime.last_reject_code;
+    abi.twime_next_expected_inbound_seq = native.twime.next_expected_inbound_seq;
+    abi.twime_next_outbound_seq = native.twime.next_outbound_seq;
+    abi.twime_reconnect_attempts = native.twime.reconnect_attempts;
+    abi.twime_faults = native.twime.faults;
+    abi.twime_remote_closes = native.twime.remote_closes;
+    abi.twime_last_transition_time_ms = native.twime.last_transition_time_ms;
+    abi.plaza_present = to_abi_bool(native.plaza.present);
+    abi.plaza_connector_open = to_abi_bool(native.plaza.connector_open);
+    abi.plaza_connector_online = to_abi_bool(native.plaza.connector_online);
+    abi.plaza_snapshot_active = to_abi_bool(native.plaza.snapshot_active);
+    abi.plaza_required_private_streams_ready = to_abi_bool(native.plaza.required_private_streams_ready);
+    abi.plaza_invalidated = to_abi_bool(native.plaza.invalidated);
+    abi.plaza_last_lifenum = native.plaza.last_lifenum;
+    abi.plaza_required_stream_count = native.plaza.required_stream_count;
+    abi.plaza_online_stream_count = native.plaza.online_stream_count;
+    abi.plaza_snapshot_complete_stream_count = native.plaza.snapshot_complete_stream_count;
+    copy_fixed(native.plaza.last_replstate, abi.plaza_last_replstate, MOEX_REPLSTATE_CAPACITY);
+    copy_fixed(native.plaza.last_invalidation_reason, abi.plaza_last_invalidation_reason, MOEX_REASON_CAPACITY);
+}
+
+void fill_reconciled_order_item(const ReconciledOrderSnapshot& native, MoexPlaza2ReconciledOrderItem& abi) {
+    abi.status = to_abi_order_status(native.status);
+    abi.match_mode = to_abi_match_mode(native.match_mode);
+    abi.last_update_source = to_abi_source(native.last_update_source);
+    abi.plaza_revalidation_required = to_abi_bool(native.plaza_revalidation_required);
+    abi.last_update_logical_sequence = native.last_update_logical_sequence;
+    abi.last_update_logical_step = native.last_update_logical_step;
+    abi.twime_present = to_abi_bool(native.twime.present);
+    abi.twime_last_kind = to_abi_twime_order_kind(native.twime.last_kind);
+    abi.twime_side = to_abi_side(native.twime.side);
+    abi.twime_multileg = to_abi_bool(native.twime.multileg);
+    abi.twime_has_price = to_abi_bool(native.twime.has_price);
+    abi.twime_has_order_qty = to_abi_bool(native.twime.has_order_qty);
+    abi.twime_terminal_reject = to_abi_bool(native.twime.terminal_reject);
+    abi.twime_terminal_cancel = to_abi_bool(native.twime.terminal_cancel);
+    abi.twime_cl_ord_id = native.twime.cl_ord_id;
+    abi.twime_order_id = native.twime.order_id;
+    abi.twime_prev_order_id = native.twime.prev_order_id;
+    abi.twime_trading_session_id = native.twime.trading_session_id;
+    abi.twime_security_id = native.twime.security_id;
+    abi.twime_cl_ord_link_id = native.twime.cl_ord_link_id;
+    abi.twime_price_mantissa = native.twime.price_mantissa;
+    abi.twime_order_qty = native.twime.order_qty;
+    abi.twime_reject_code = native.twime.reject_code;
+    abi.twime_last_logical_sequence = native.twime.last_logical_sequence;
+    abi.twime_last_logical_step = native.twime.last_logical_step;
+    abi.plaza_present = to_abi_bool(native.plaza.present);
+    abi.plaza_multileg = to_abi_bool(native.plaza.multileg);
+    abi.plaza_side = to_abi_side(native.plaza.side);
+    abi.plaza_public_order_id = native.plaza.public_order_id;
+    abi.plaza_private_order_id = native.plaza.private_order_id;
+    abi.plaza_sess_id = native.plaza.sess_id;
+    abi.plaza_isin_id = native.plaza.isin_id;
+    abi.plaza_price_mantissa = native.plaza.price_mantissa;
+    abi.plaza_public_amount = native.plaza.public_amount;
+    abi.plaza_public_amount_rest = native.plaza.public_amount_rest;
+    abi.plaza_private_amount = native.plaza.private_amount;
+    abi.plaza_private_amount_rest = native.plaza.private_amount_rest;
+    abi.plaza_id_deal = native.plaza.id_deal;
+    abi.plaza_xstatus = native.plaza.xstatus;
+    abi.plaza_xstatus2 = native.plaza.xstatus2;
+    abi.plaza_ext_id = native.plaza.ext_id;
+    abi.plaza_public_action = native.plaza.public_action;
+    abi.plaza_private_action = native.plaza.private_action;
+    abi.plaza_from_trade_repl = to_abi_bool(native.plaza.from_trade_repl);
+    abi.plaza_from_user_book = to_abi_bool(native.plaza.from_user_book);
+    abi.plaza_from_current_day = to_abi_bool(native.plaza.from_current_day);
+    abi.plaza_moment = native.plaza.moment;
+    abi.plaza_moment_ns = native.plaza.moment_ns;
+    abi.plaza_last_logical_sequence = native.plaza.last_logical_sequence;
+    copy_fixed(native.fault_reason, abi.fault_reason, MOEX_REASON_CAPACITY);
+    copy_fixed(native.twime.account, abi.twime_account, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.twime.compliance_id, abi.twime_compliance_id, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.plaza.client_code, abi.plaza_client_code, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.plaza.login_from, abi.plaza_login_from, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.plaza.comment, abi.plaza_comment, MOEX_TEXT_CAPACITY);
+    copy_fixed(native.plaza.price_text, abi.plaza_price_text, MOEX_PRICE_TEXT_CAPACITY);
+}
+
+void fill_reconciled_trade_item(const ReconciledTradeSnapshot& native, MoexPlaza2ReconciledTradeItem& abi) {
+    abi.status = to_abi_trade_status(native.status);
+    abi.match_mode = to_abi_match_mode(native.match_mode);
+    abi.last_update_source = to_abi_source(native.last_update_source);
+    abi.plaza_revalidation_required = to_abi_bool(native.plaza_revalidation_required);
+    abi.last_update_logical_sequence = native.last_update_logical_sequence;
+    abi.last_update_logical_step = native.last_update_logical_step;
+    abi.twime_present = to_abi_bool(native.twime.present);
+    abi.twime_last_kind = to_abi_twime_trade_kind(native.twime.last_kind);
+    abi.twime_side = to_abi_side(native.twime.side);
+    abi.twime_multileg = to_abi_bool(native.twime.multileg);
+    abi.twime_has_price = to_abi_bool(native.twime.has_price);
+    abi.twime_has_last_qty = to_abi_bool(native.twime.has_last_qty);
+    abi.twime_has_order_qty = to_abi_bool(native.twime.has_order_qty);
+    abi.twime_cl_ord_id = native.twime.cl_ord_id;
+    abi.twime_order_id = native.twime.order_id;
+    abi.twime_trade_id = native.twime.trade_id;
+    abi.twime_trading_session_id = native.twime.trading_session_id;
+    abi.twime_security_id = native.twime.security_id;
+    abi.twime_price_mantissa = native.twime.price_mantissa;
+    abi.twime_last_qty = native.twime.last_qty;
+    abi.twime_order_qty = native.twime.order_qty;
+    abi.twime_last_logical_sequence = native.twime.last_logical_sequence;
+    abi.twime_last_logical_step = native.twime.last_logical_step;
+    abi.plaza_present = to_abi_bool(native.plaza.present);
+    abi.plaza_multileg = to_abi_bool(native.plaza.multileg);
+    abi.plaza_trade_id = native.plaza.trade_id;
+    abi.plaza_sess_id = native.plaza.sess_id;
+    abi.plaza_isin_id = native.plaza.isin_id;
+    abi.plaza_price_mantissa = native.plaza.price_mantissa;
+    abi.plaza_amount = native.plaza.amount;
+    abi.plaza_public_order_id_buy = native.plaza.public_order_id_buy;
+    abi.plaza_public_order_id_sell = native.plaza.public_order_id_sell;
+    abi.plaza_private_order_id_buy = native.plaza.private_order_id_buy;
+    abi.plaza_private_order_id_sell = native.plaza.private_order_id_sell;
+    abi.plaza_moment = native.plaza.moment;
+    abi.plaza_moment_ns = native.plaza.moment_ns;
+    abi.plaza_last_logical_sequence = native.plaza.last_logical_sequence;
+    copy_fixed(native.fault_reason, abi.fault_reason, MOEX_REASON_CAPACITY);
+    copy_fixed(native.plaza.price_text, abi.plaza_price_text, MOEX_PRICE_TEXT_CAPACITY);
+    copy_fixed(native.plaza.code_buy, abi.plaza_code_buy, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.plaza.code_sell, abi.plaza_code_sell, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.plaza.comment_buy, abi.plaza_comment_buy, MOEX_TEXT_CAPACITY);
+    copy_fixed(native.plaza.comment_sell, abi.plaza_comment_sell, MOEX_TEXT_CAPACITY);
+    copy_fixed(native.plaza.login_buy, abi.plaza_login_buy, MOEX_ACCOUNT_CAPACITY);
+    copy_fixed(native.plaza.login_sell, abi.plaza_login_sell, MOEX_ACCOUNT_CAPACITY);
+}
+
+} // namespace
 
 void dispatch_low_rate_callback(MoexHandleTag* handle, const MoexPolledEvent& event) {
     if (handle == nullptr || handle->low_rate_callback == nullptr) {
@@ -412,6 +944,58 @@ uint32_t moex_sizeof_polled_event(void) {
     return static_cast<uint32_t>(sizeof(MoexPolledEvent));
 }
 
+uint32_t moex_sizeof_plaza2_private_connector_health(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2PrivateConnectorHealth));
+}
+
+uint32_t moex_sizeof_plaza2_resume_markers(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2ResumeMarkers));
+}
+
+uint32_t moex_sizeof_plaza2_stream_health_item(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2StreamHealthItem));
+}
+
+uint32_t moex_sizeof_plaza2_trading_session_item(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2TradingSessionItem));
+}
+
+uint32_t moex_sizeof_plaza2_instrument_item(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2InstrumentItem));
+}
+
+uint32_t moex_sizeof_plaza2_matching_map_item(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2MatchingMapItem));
+}
+
+uint32_t moex_sizeof_plaza2_limit_item(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2LimitItem));
+}
+
+uint32_t moex_sizeof_plaza2_position_item(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2PositionItem));
+}
+
+uint32_t moex_sizeof_plaza2_own_order_item(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2OwnOrderItem));
+}
+
+uint32_t moex_sizeof_plaza2_own_trade_item(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2OwnTradeItem));
+}
+
+uint32_t moex_sizeof_plaza2_twime_reconciler_health(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2TwimeReconcilerHealth));
+}
+
+uint32_t moex_sizeof_plaza2_reconciled_order_item(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2ReconciledOrderItem));
+}
+
+uint32_t moex_sizeof_plaza2_reconciled_trade_item(void) {
+    return static_cast<uint32_t>(sizeof(MoexPlaza2ReconciledTradeItem));
+}
+
 uint32_t moex_alignof_event_header(void) {
     return static_cast<uint32_t>(alignof(MoexEventHeader));
 }
@@ -454,6 +1038,58 @@ uint32_t moex_alignof_subscription_request(void) {
 
 uint32_t moex_alignof_polled_event(void) {
     return static_cast<uint32_t>(alignof(MoexPolledEvent));
+}
+
+uint32_t moex_alignof_plaza2_private_connector_health(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2PrivateConnectorHealth));
+}
+
+uint32_t moex_alignof_plaza2_resume_markers(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2ResumeMarkers));
+}
+
+uint32_t moex_alignof_plaza2_stream_health_item(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2StreamHealthItem));
+}
+
+uint32_t moex_alignof_plaza2_trading_session_item(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2TradingSessionItem));
+}
+
+uint32_t moex_alignof_plaza2_instrument_item(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2InstrumentItem));
+}
+
+uint32_t moex_alignof_plaza2_matching_map_item(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2MatchingMapItem));
+}
+
+uint32_t moex_alignof_plaza2_limit_item(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2LimitItem));
+}
+
+uint32_t moex_alignof_plaza2_position_item(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2PositionItem));
+}
+
+uint32_t moex_alignof_plaza2_own_order_item(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2OwnOrderItem));
+}
+
+uint32_t moex_alignof_plaza2_own_trade_item(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2OwnTradeItem));
+}
+
+uint32_t moex_alignof_plaza2_twime_reconciler_health(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2TwimeReconcilerHealth));
+}
+
+uint32_t moex_alignof_plaza2_reconciled_order_item(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2ReconciledOrderItem));
+}
+
+uint32_t moex_alignof_plaza2_reconciled_trade_item(void) {
+    return static_cast<uint32_t>(alignof(MoexPlaza2ReconciledTradeItem));
 }
 
 MoexResult moex_create_connector(const MoexConnectorCreateParams* params, MoexConnectorHandle* out_handle) {
@@ -677,4 +1313,414 @@ MoexResult moex_flush_recovery_state(MoexConnectorHandle handle) {
     return MOEX_RESULT_OK;
 }
 
+MoexResult moex_get_plaza2_private_connector_health(MoexConnectorHandle handle,
+                                                    MoexPlaza2PrivateConnectorHealth* out_health) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    const auto prepare_result = prepare_summary_output(out_health);
+    if (prepare_result != MOEX_RESULT_OK) {
+        return prepare_result;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        fill_private_connector_health(handle->plaza2_private_state->connector_health(), *out_health);
+        return MOEX_RESULT_OK;
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_resume_markers(MoexConnectorHandle handle, MoexPlaza2ResumeMarkers* out_markers) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    const auto prepare_result = prepare_summary_output(out_markers);
+    if (prepare_result != MOEX_RESULT_OK) {
+        return prepare_result;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        fill_resume_markers(handle->plaza2_private_state->resume_markers(), *out_markers);
+        return MOEX_RESULT_OK;
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_stream_health_count(MoexConnectorHandle handle, uint32_t* out_count) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    return size_to_count(handle->plaza2_private_state->stream_health().size(), out_count);
+}
+
+MoexResult moex_copy_plaza2_stream_health_items(MoexConnectorHandle handle, MoexPlaza2StreamHealthItem* buffer,
+                                                uint32_t capacity, uint32_t* written) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (written == nullptr || (capacity > 0U && buffer == nullptr)) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        return copy_snapshot_items(handle->plaza2_private_state->stream_health(), buffer, capacity, written,
+                                   fill_stream_health_item);
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_trading_session_count(MoexConnectorHandle handle, uint32_t* out_count) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    return size_to_count(handle->plaza2_private_state->sessions().size(), out_count);
+}
+
+MoexResult moex_copy_plaza2_trading_session_items(MoexConnectorHandle handle, MoexPlaza2TradingSessionItem* buffer,
+                                                  uint32_t capacity, uint32_t* written) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (written == nullptr || (capacity > 0U && buffer == nullptr)) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        return copy_snapshot_items(handle->plaza2_private_state->sessions(), buffer, capacity, written,
+                                   fill_trading_session_item);
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_instrument_count(MoexConnectorHandle handle, uint32_t* out_count) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    return size_to_count(handle->plaza2_private_state->instruments().size(), out_count);
+}
+
+MoexResult moex_copy_plaza2_instrument_items(MoexConnectorHandle handle, MoexPlaza2InstrumentItem* buffer,
+                                             uint32_t capacity, uint32_t* written) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (written == nullptr || (capacity > 0U && buffer == nullptr)) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        return copy_snapshot_items(handle->plaza2_private_state->instruments(), buffer, capacity, written,
+                                   fill_instrument_item);
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_matching_map_count(MoexConnectorHandle handle, uint32_t* out_count) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    return size_to_count(handle->plaza2_private_state->matching_map().size(), out_count);
+}
+
+MoexResult moex_copy_plaza2_matching_map_items(MoexConnectorHandle handle, MoexPlaza2MatchingMapItem* buffer,
+                                               uint32_t capacity, uint32_t* written) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (written == nullptr || (capacity > 0U && buffer == nullptr)) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        return copy_snapshot_items(handle->plaza2_private_state->matching_map(), buffer, capacity, written,
+                                   fill_matching_map_item);
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_limit_count(MoexConnectorHandle handle, uint32_t* out_count) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    return size_to_count(handle->plaza2_private_state->limits().size(), out_count);
+}
+
+MoexResult moex_copy_plaza2_limit_items(MoexConnectorHandle handle, MoexPlaza2LimitItem* buffer, uint32_t capacity,
+                                        uint32_t* written) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (written == nullptr || (capacity > 0U && buffer == nullptr)) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        return copy_snapshot_items(handle->plaza2_private_state->limits(), buffer, capacity, written, fill_limit_item);
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_position_count(MoexConnectorHandle handle, uint32_t* out_count) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    return size_to_count(handle->plaza2_private_state->positions().size(), out_count);
+}
+
+MoexResult moex_copy_plaza2_position_items(MoexConnectorHandle handle, MoexPlaza2PositionItem* buffer,
+                                           uint32_t capacity, uint32_t* written) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (written == nullptr || (capacity > 0U && buffer == nullptr)) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        return copy_snapshot_items(handle->plaza2_private_state->positions(), buffer, capacity, written,
+                                   fill_position_item);
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_own_order_count(MoexConnectorHandle handle, uint32_t* out_count) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    return size_to_count(handle->plaza2_private_state->own_orders().size(), out_count);
+}
+
+MoexResult moex_copy_plaza2_own_order_items(MoexConnectorHandle handle, MoexPlaza2OwnOrderItem* buffer,
+                                            uint32_t capacity, uint32_t* written) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (written == nullptr || (capacity > 0U && buffer == nullptr)) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        return copy_snapshot_items(handle->plaza2_private_state->own_orders(), buffer, capacity, written,
+                                   fill_own_order_item);
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_own_trade_count(MoexConnectorHandle handle, uint32_t* out_count) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    return size_to_count(handle->plaza2_private_state->own_trades().size(), out_count);
+}
+
+MoexResult moex_copy_plaza2_own_trade_items(MoexConnectorHandle handle, MoexPlaza2OwnTradeItem* buffer,
+                                            uint32_t capacity, uint32_t* written) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (written == nullptr || (capacity > 0U && buffer == nullptr)) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_private_state == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        return copy_snapshot_items(handle->plaza2_private_state->own_trades(), buffer, capacity, written,
+                                   fill_own_trade_item);
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_twime_reconciler_health(MoexConnectorHandle handle,
+                                                   MoexPlaza2TwimeReconcilerHealth* out_health) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    const auto prepare_result = prepare_summary_output(out_health);
+    if (prepare_result != MOEX_RESULT_OK) {
+        return prepare_result;
+    }
+    if (handle->plaza2_twime_reconciler == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        fill_reconciler_health(handle->plaza2_twime_reconciler->health(), *out_health);
+        return MOEX_RESULT_OK;
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_reconciled_order_count(MoexConnectorHandle handle, uint32_t* out_count) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_twime_reconciler == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    return size_to_count(handle->plaza2_twime_reconciler->orders().size(), out_count);
+}
+
+MoexResult moex_copy_plaza2_reconciled_order_items(MoexConnectorHandle handle, MoexPlaza2ReconciledOrderItem* buffer,
+                                                   uint32_t capacity, uint32_t* written) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (written == nullptr || (capacity > 0U && buffer == nullptr)) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_twime_reconciler == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        return copy_snapshot_items(handle->plaza2_twime_reconciler->orders(), buffer, capacity, written,
+                                   fill_reconciled_order_item);
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult moex_get_plaza2_reconciled_trade_count(MoexConnectorHandle handle, uint32_t* out_count) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (out_count == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_twime_reconciler == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    return size_to_count(handle->plaza2_twime_reconciler->trades().size(), out_count);
+}
+
+MoexResult moex_copy_plaza2_reconciled_trade_items(MoexConnectorHandle handle, MoexPlaza2ReconciledTradeItem* buffer,
+                                                   uint32_t capacity, uint32_t* written) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (written == nullptr || (capacity > 0U && buffer == nullptr)) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    if (handle->plaza2_twime_reconciler == nullptr) {
+        return MOEX_RESULT_SNAPSHOT_UNAVAILABLE;
+    }
+    try {
+        return copy_snapshot_items(handle->plaza2_twime_reconciler->trades(), buffer, capacity, written,
+                                   fill_reconciled_trade_item);
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
 } // extern "C"
+
+namespace moex::capi_internal {
+
+MoexResult install_private_state_projector(MoexConnectorHandle handle,
+                                           plaza2::private_state::Plaza2PrivateStateProjector projector) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    try {
+        handle->plaza2_private_state =
+            std::make_unique<plaza2::private_state::Plaza2PrivateStateProjector>(std::move(projector));
+        return MOEX_RESULT_OK;
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+MoexResult install_reconciler_snapshot(MoexConnectorHandle handle,
+                                       plaza2_twime_reconciler::Plaza2TwimeReconciler reconciler) {
+    if (handle == nullptr) {
+        return MOEX_RESULT_NULL_POINTER;
+    }
+    try {
+        handle->plaza2_twime_reconciler =
+            std::make_unique<plaza2_twime_reconciler::Plaza2TwimeReconciler>(std::move(reconciler));
+        return MOEX_RESULT_OK;
+    } catch (...) {
+        return MOEX_RESULT_TRANSLATION_FAILED;
+    }
+}
+
+} // namespace moex::capi_internal
