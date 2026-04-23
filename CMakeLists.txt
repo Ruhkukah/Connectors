@@ -100,6 +100,7 @@ set_target_properties(moex_phase0_abi PROPERTIES
 add_subdirectory(protocols/twime_sbe)
 add_subdirectory(protocols/plaza2_cgate)
 add_subdirectory(connectors/twime_trade)
+add_subdirectory(connectors/plaza2_twime_reconciler)
 
 add_executable(moex_phase0_selfcheck
     tests/phase0_selfcheck.cpp)
@@ -730,6 +731,37 @@ moex_add_plaza2_live_runner_test(plaza2_live_session_validation_test
     tests/plaza2_cgate/plaza2_live_session_validation_test.cpp)
 moex_add_plaza2_live_runner_test(plaza2_live_session_runner_test
     tests/plaza2_cgate/plaza2_live_session_runner_test.cpp)
+
+function(moex_add_plaza2_twime_reconciler_test target_name source_file)
+    add_executable(${target_name} "${source_file}")
+    target_link_libraries(${target_name}
+        PRIVATE
+            moex_plaza2_twime_reconciler
+            moex_plaza2_cgate_fake_scenarios
+            twime_test_support)
+    target_include_directories(${target_name}
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/plaza2_twime_reconciler"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_trade"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_sbe")
+    target_compile_features(${target_name} PRIVATE cxx_std_20)
+    target_compile_definitions(${target_name}
+        PRIVATE
+            MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
+    set_property(TARGET ${target_name} PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+    add_test(
+        NAME ${target_name}
+        COMMAND "${MOEX_BUILD_ROOT}/tests/${target_name}")
+endfunction()
+
+moex_add_plaza2_twime_reconciler_test(plaza2_twime_reconciler_normalization_test
+    tests/plaza2_twime_reconciler/plaza2_twime_reconciler_normalization_test.cpp)
+moex_add_plaza2_twime_reconciler_test(plaza2_twime_reconciler_orders_test
+    tests/plaza2_twime_reconciler/plaza2_twime_reconciler_orders_test.cpp)
+moex_add_plaza2_twime_reconciler_test(plaza2_twime_reconciler_trades_test
+    tests/plaza2_twime_reconciler/plaza2_twime_reconciler_trades_test.cpp)
+moex_add_plaza2_twime_reconciler_test(plaza2_twime_reconciler_invalidation_test
+    tests/plaza2_twime_reconciler/plaza2_twime_reconciler_invalidation_test.cpp)
 
 add_test(
     NAME plaza2_cert_runner_requires_test_plaza2_arm
