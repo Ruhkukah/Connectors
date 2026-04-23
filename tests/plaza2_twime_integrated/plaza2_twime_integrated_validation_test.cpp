@@ -31,7 +31,8 @@ int main(int argc, char** argv) {
 
         {
             moex::test::LocalTcpServer server;
-            auto config = integrated_test::make_integrated_config(fixture, server.port(), "phase4c_missing_reconcile_arm");
+            auto config =
+                integrated_test::make_integrated_config(fixture, server.port(), "phase4c_missing_reconcile_arm");
             config.arm_state.test_reconcile_armed = false;
 
             moex::twime_trade::test::ScopedEnvVar twime_env("MOEX_TWIME_TEST_CREDENTIALS", "TWIME-SECRET");
@@ -46,7 +47,8 @@ int main(int argc, char** argv) {
 
         {
             moex::test::LocalTcpServer server;
-            auto config = integrated_test::make_integrated_config(fixture, server.port(), "phase4c_missing_twime_creds");
+            auto config =
+                integrated_test::make_integrated_config(fixture, server.port(), "phase4c_missing_twime_creds");
 
             moex::twime_trade::test::ScopedEnvVar twime_env("MOEX_TWIME_TEST_CREDENTIALS", nullptr);
             moex::twime_trade::test::ScopedEnvVar plaza_env("MOEX_PLAZA2_TEST_CREDENTIALS", "PLAZA-SECRET");

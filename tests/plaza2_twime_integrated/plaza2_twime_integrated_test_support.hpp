@@ -65,16 +65,16 @@ make_plaza_config(const moex::plaza2::test::RuntimeFixturePaths& fixture,
 
 inline moex::twime_trade::TwimeLiveSessionConfig make_twime_config(std::uint16_t port,
                                                                    std::string session_id = "phase4c_integrated") {
-    auto config = moex::twime_trade::test::make_live_session_config(port, std::move(session_id),
-                                                                    "MOEX_TWIME_TEST_CREDENTIALS");
+    auto config =
+        moex::twime_trade::test::make_live_session_config(port, std::move(session_id), "MOEX_TWIME_TEST_CREDENTIALS");
     config.tcp.runtime_arm_state.test_network_armed = true;
     config.tcp.runtime_arm_state.test_session_armed = true;
     return config;
 }
 
-inline Plaza2TwimeIntegratedTestConfig
-make_integrated_config(const moex::plaza2::test::RuntimeFixturePaths& fixture, std::uint16_t twime_port,
-                       std::string profile_id = "phase4c_integrated") {
+inline Plaza2TwimeIntegratedTestConfig make_integrated_config(const moex::plaza2::test::RuntimeFixturePaths& fixture,
+                                                              std::uint16_t twime_port,
+                                                              std::string profile_id = "phase4c_integrated") {
     Plaza2TwimeIntegratedTestConfig config;
     config.profile_id = std::move(profile_id);
     config.twime = make_twime_config(twime_port, config.profile_id + "_twime");
@@ -87,7 +87,8 @@ make_integrated_config(const moex::plaza2::test::RuntimeFixturePaths& fixture, s
     return config;
 }
 
-inline void pump_runner_until(Plaza2TwimeIntegratedTestRunner& runner, moex::twime_trade::test::ManualRunnerClock& clock,
+inline void pump_runner_until(Plaza2TwimeIntegratedTestRunner& runner,
+                              moex::twime_trade::test::ManualRunnerClock& clock,
                               const std::function<bool(const Plaza2TwimeIntegratedTestRunner&)>& predicate,
                               int max_polls = 256, std::uint64_t step_ms = 25) {
     for (int attempt = 0; attempt < max_polls; ++attempt) {

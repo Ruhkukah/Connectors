@@ -27,8 +27,8 @@ using moex::twime_sbe::TwimeEncodeRequest;
 using moex::twime_trade::TwimeFakeClock;
 using moex::twime_trade::TwimeInMemorySessionPersistenceStore;
 using moex::twime_trade::TwimeJournalEntry;
-using moex::twime_trade::TwimeLiveSessionRunResult;
 using moex::twime_trade::TwimeLiveSessionRunner;
+using moex::twime_trade::TwimeLiveSessionRunResult;
 using moex::twime_trade::TwimeSessionState;
 
 constexpr std::string_view kIntegratedConnectorName = "plaza2_twime_integrated_test";
@@ -52,24 +52,20 @@ std::string state_name(Plaza2TwimeIntegratedRunnerState state) {
 }
 
 bool all_streams_open(std::span<const Plaza2LiveStreamStatus> streams) {
-    return !streams.empty() &&
-           std::all_of(streams.begin(), streams.end(), [](const Plaza2LiveStreamStatus& stream) {
-               return stream.created && stream.opened;
-           });
+    return !streams.empty() && std::all_of(streams.begin(), streams.end(), [](const Plaza2LiveStreamStatus& stream) {
+        return stream.created && stream.opened;
+    });
 }
 
 bool all_streams_online(std::span<const Plaza2LiveStreamStatus> streams) {
-    return !streams.empty() &&
-           std::all_of(streams.begin(), streams.end(), [](const Plaza2LiveStreamStatus& stream) {
-               return stream.online;
-           });
+    return !streams.empty() && std::all_of(streams.begin(), streams.end(),
+                                           [](const Plaza2LiveStreamStatus& stream) { return stream.online; });
 }
 
 bool all_streams_snapshot_complete(std::span<const Plaza2LiveStreamStatus> streams) {
-    return !streams.empty() &&
-           std::all_of(streams.begin(), streams.end(), [](const Plaza2LiveStreamStatus& stream) {
-               return stream.snapshot_complete;
-           });
+    return !streams.empty() && std::all_of(streams.begin(), streams.end(), [](const Plaza2LiveStreamStatus& stream) {
+        return stream.snapshot_complete;
+    });
 }
 
 std::string source_prefix(std::string_view source) {
@@ -81,13 +77,15 @@ std::string sanitize_operator_line(std::string_view source, std::string_view lin
     if (const auto endpoint = rendered.find("endpoint="); endpoint != std::string::npos) {
         const auto value_begin = endpoint + std::string_view("endpoint=").size();
         const auto value_end = rendered.find_first_of(" ;", value_begin);
-        rendered.replace(value_begin, value_end == std::string::npos ? rendered.size() - value_begin : value_end - value_begin,
+        rendered.replace(value_begin,
+                         value_end == std::string::npos ? rendered.size() - value_begin : value_end - value_begin,
                          "[REDACTED_ENDPOINT]");
     }
     if (const auto credentials = rendered.find("credentials="); credentials != std::string::npos) {
         const auto value_begin = credentials + std::string_view("credentials=").size();
         const auto value_end = rendered.find_first_of(" ;", value_begin);
-        rendered.replace(value_begin, value_end == std::string::npos ? rendered.size() - value_begin : value_end - value_begin,
+        rendered.replace(value_begin,
+                         value_end == std::string::npos ? rendered.size() - value_begin : value_end - value_begin,
                          "[REDACTED]");
     }
     return rendered;
@@ -104,7 +102,8 @@ std::uint64_t max_twime_logical_sequence(const TwimeNormalizedInputBatch& batch)
     return out;
 }
 
-std::vector<TwimeEncodeRequest> decode_outbound_requests(std::span<const TwimeJournalEntry> entries, std::string& error) {
+std::vector<TwimeEncodeRequest> decode_outbound_requests(std::span<const TwimeJournalEntry> entries,
+                                                         std::string& error) {
     std::vector<TwimeEncodeRequest> requests;
     requests.reserve(entries.size());
 
@@ -301,14 +300,14 @@ struct Plaza2TwimeIntegratedTestRunner::Impl {
 
     Plaza2TwimeIntegratedRunResult refresh_reconciler() {
         std::string decode_error;
-        const auto outbound_requests = decode_outbound_requests(twime_runner.session().outbound_journal().entries(),
-                                                                decode_error);
+        const auto outbound_requests =
+            decode_outbound_requests(twime_runner.session().outbound_journal().entries(), decode_error);
         if (!decode_error.empty()) {
             return fail("failed to decode TWIME outbound journal for reconciler: " + decode_error);
         }
-        const auto batch = collect_twime_reconciliation_inputs(
-            outbound_requests, twime_runner.session().inbound_journal().entries(),
-            &twime_runner.health_snapshot(), &twime_runner.session_metrics(), 1);
+        const auto batch =
+            collect_twime_reconciliation_inputs(outbound_requests, twime_runner.session().inbound_journal().entries(),
+                                                &twime_runner.health_snapshot(), &twime_runner.session_metrics(), 1);
         if (!batch.ok) {
             return fail("failed to normalize TWIME inputs for reconciler: " + batch.error);
         }
@@ -357,9 +356,9 @@ struct Plaza2TwimeIntegratedTestRunner::Impl {
         health.reconciled_trade_count = reconciler.trades().size();
         health.evidence.operator_log_line_count = operator_log_lines.size();
 
-        health.readiness.twime_session_established =
-            health.twime_session.transport_open && health.twime_session.session_active &&
-            health.twime_session.state == TwimeSessionState::Active;
+        health.readiness.twime_session_established = health.twime_session.transport_open &&
+                                                     health.twime_session.session_active &&
+                                                     health.twime_session.state == TwimeSessionState::Active;
         health.readiness.plaza_runtime_probe_ok = health.plaza.runtime_probe_ok;
         health.readiness.plaza_scheme_drift_ok = health.plaza.scheme_drift_ok;
         health.readiness.plaza_streams_open = all_streams_open(health.plaza.streams);
@@ -367,9 +366,9 @@ struct Plaza2TwimeIntegratedTestRunner::Impl {
         health.readiness.plaza_streams_snapshot_complete = all_streams_snapshot_complete(health.plaza.streams);
         health.readiness.reconciler_attached = health.reconciler.twime.present && health.reconciler.plaza.present;
         health.readiness.abi_snapshot_attached = health.abi_snapshot_attached;
-        health.readiness.ready = health.readiness.twime_session_established && health.readiness.plaza_runtime_probe_ok &&
-                                 health.readiness.plaza_scheme_drift_ok && health.readiness.plaza_streams_open &&
-                                 health.readiness.plaza_streams_online &&
+        health.readiness.ready = health.readiness.twime_session_established &&
+                                 health.readiness.plaza_runtime_probe_ok && health.readiness.plaza_scheme_drift_ok &&
+                                 health.readiness.plaza_streams_open && health.readiness.plaza_streams_online &&
                                  health.readiness.plaza_streams_snapshot_complete &&
                                  health.readiness.reconciler_attached && health.readiness.abi_snapshot_attached;
         health.readiness.blocker = readiness_blocker();
@@ -484,8 +483,7 @@ Plaza2TwimeIntegratedTestRunner::~Plaza2TwimeIntegratedTestRunner() {
     }
 }
 
-Plaza2TwimeIntegratedTestRunner::Plaza2TwimeIntegratedTestRunner(Plaza2TwimeIntegratedTestRunner&&) noexcept =
-    default;
+Plaza2TwimeIntegratedTestRunner::Plaza2TwimeIntegratedTestRunner(Plaza2TwimeIntegratedTestRunner&&) noexcept = default;
 
 Plaza2TwimeIntegratedTestRunner&
 Plaza2TwimeIntegratedTestRunner::operator=(Plaza2TwimeIntegratedTestRunner&&) noexcept = default;

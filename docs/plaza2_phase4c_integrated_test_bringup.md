@@ -1,5 +1,8 @@
 **Scope**
-Phase 4C composes the existing live TEST-only TWIME runner, the existing live TEST-only PLAZA II private-state runner, the Phase 4A reconciler, and the Phase 4B read-side attachment path into one integrated TEST bring-up surface for `plaza2_repl + twime_trade`.
+Phase 4C composes the existing live TEST-only TWIME runner,
+the existing live TEST-only PLAZA II private-state runner,
+the Phase 4A reconciler, and the Phase 4B read-side attachment path
+into one integrated TEST bring-up surface for `plaza2_repl + twime_trade`.
 
 This phase adds only:
 - an integrated TEST runner/supervisor
@@ -90,7 +93,9 @@ build/apps/moex_plaza2_twime_integrated_runner \
   --max-polls 0
 ```
 
-Use `--max-polls 0` for a manual run that stays active until interrupted by the operator. The native runner still remains single-threaded at the orchestration level and stops cleanly through the existing runner `stop()` path.
+Use `--max-polls 0` for a manual run that stays active until interrupted by the operator.
+The native runner still remains single-threaded at the orchestration level
+and stops cleanly through the existing runner `stop()` path.
 
 **Tests Added**
 The Phase 4C test set covers:
@@ -112,7 +117,11 @@ All Phase 4C CI tests remain offline-safe by using the existing local TCP TWIME 
 - the integrated runner replays live TWIME journals into the reconciler on each explicit poll instead of introducing a new incremental cache layer
 
 **Why This Fits 2–4 vCPU**
-The integrated runner stays lean because it adds no extra transport stack, no worker pool, and no async framework. It reuses the existing single-threaded live runners and reconciler, then attaches committed read-side snapshots through the already-approved Phase 4B ABI path.
+The integrated runner stays lean because it adds no extra transport stack,
+no worker pool, and no async framework.
+It reuses the existing single-threaded live runners and reconciler,
+then attaches committed read-side snapshots through the already-approved
+Phase 4B ABI path.
 
 The hot path remains explicit:
 - one orchestration loop

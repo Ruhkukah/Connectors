@@ -55,9 +55,9 @@ int main(int argc, char** argv) {
 
                 const auto establish = server.receive_up_to(1024, std::chrono::milliseconds(3000));
                 const auto establish_decoded = decode_bytes(establish);
-                integrated_test::require(
-                    establish_decoded.metadata != nullptr && establish_decoded.metadata->name == "Establish",
-                    "integrated runner must send Establish");
+                integrated_test::require(establish_decoded.metadata != nullptr &&
+                                             establish_decoded.metadata->name == "Establish",
+                                         "integrated runner must send Establish");
 
                 auto ack = make_request("EstablishmentAck");
                 set_field(ack, "NextSeqNo", TwimeFieldValue::unsigned_integer(11));
@@ -135,16 +135,14 @@ int main(int argc, char** argv) {
         integrated_test::require(health.readiness.reconciler_attached, "reconciler attachment must be visible");
         integrated_test::require(health.readiness.abi_snapshot_attached, "ABI attachment must be visible");
         integrated_test::require(health.readiness.ready, "overall readiness must become true");
-        integrated_test::require(health.readiness.blocker.empty(),
-                                 "ready runner must not retain a readiness blocker");
+        integrated_test::require(health.readiness.blocker.empty(), "ready runner must not retain a readiness blocker");
         integrated_test::require(health.evidence.startup_report_ready, "startup evidence flag must be set");
         integrated_test::require(health.evidence.readiness_summary_ready, "readiness evidence flag must be set");
         integrated_test::require(health.reconciled_order_count >= 1, "reconciled orders must be available");
         integrated_test::require(health.reconciled_trade_count >= 1, "reconciled trades must be available");
         integrated_test::require(health.reconciler.total_diverged_orders >= 1,
                                  "diverged order count must be reflected");
-        integrated_test::require(health.reconciler.total_matched_trades >= 1,
-                                 "matched trade count must be reflected");
+        integrated_test::require(health.reconciler.total_matched_trades >= 1, "matched trade count must be reflected");
 
         auto* handle = runner.abi_handle();
         integrated_test::require(handle != nullptr, "integrated runner must expose the attached ABI handle");
@@ -160,11 +158,10 @@ int main(int argc, char** argv) {
         integrated_test::require(private_order_count >= 1U, "private own-order snapshot must be attached");
 
         uint32_t reconciled_order_count = 0;
-        integrated_test::require(
-            moex_get_plaza2_reconciled_order_count(handle, &reconciled_order_count) == MOEX_RESULT_OK,
-            "reconciled order count ABI export must succeed");
-        integrated_test::require(reconciled_order_count >= 1U,
-                                 "reconciled orders must be exported through the ABI");
+        integrated_test::require(moex_get_plaza2_reconciled_order_count(handle, &reconciled_order_count) ==
+                                     MOEX_RESULT_OK,
+                                 "reconciled order count ABI export must succeed");
+        integrated_test::require(reconciled_order_count >= 1U, "reconciled orders must be exported through the ABI");
 
         std::vector<MoexPlaza2ReconciledOrderItem> reconciled_orders(reconciled_order_count);
         uint32_t written = 0;
@@ -172,8 +169,7 @@ int main(int argc, char** argv) {
                                                                          reconciled_order_count,
                                                                          &written) == MOEX_RESULT_OK,
                                  "reconciled order copy-out must succeed");
-        integrated_test::require(written == reconciled_order_count,
-                                 "reconciled order copy-out must write all items");
+        integrated_test::require(written == reconciled_order_count, "reconciled order copy-out must write all items");
         bool found_diverged_order = false;
         for (const auto& item : reconciled_orders) {
             if (item.twime_order_id == 20003 && item.plaza_private_order_id == 20003) {
@@ -186,19 +182,17 @@ int main(int argc, char** argv) {
                                  "expected diverged integrated order is missing from the ABI snapshot");
 
         uint32_t reconciled_trade_count = 0;
-        integrated_test::require(
-            moex_get_plaza2_reconciled_trade_count(handle, &reconciled_trade_count) == MOEX_RESULT_OK,
-            "reconciled trade count ABI export must succeed");
-        integrated_test::require(reconciled_trade_count >= 1U,
-                                 "reconciled trades must be exported through the ABI");
+        integrated_test::require(moex_get_plaza2_reconciled_trade_count(handle, &reconciled_trade_count) ==
+                                     MOEX_RESULT_OK,
+                                 "reconciled trade count ABI export must succeed");
+        integrated_test::require(reconciled_trade_count >= 1U, "reconciled trades must be exported through the ABI");
 
         std::vector<MoexPlaza2ReconciledTradeItem> reconciled_trades(reconciled_trade_count);
         integrated_test::require(moex_copy_plaza2_reconciled_trade_items(handle, reconciled_trades.data(),
                                                                          reconciled_trade_count,
                                                                          &written) == MOEX_RESULT_OK,
                                  "reconciled trade copy-out must succeed");
-        integrated_test::require(written == reconciled_trade_count,
-                                 "reconciled trade copy-out must write all items");
+        integrated_test::require(written == reconciled_trade_count, "reconciled trade copy-out must write all items");
         bool found_matched_trade = false;
         for (const auto& item : reconciled_trades) {
             if (item.twime_trade_id == 9001 && item.plaza_trade_id == 9001) {

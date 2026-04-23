@@ -497,8 +497,7 @@ Plaza2TwimeIntegratedTestConfig make_config(const RunnerArgs& args) {
     config.twime.tcp.endpoint.allow_non_localhost_dns = args.twime_allow_non_localhost_dns;
     config.twime.tcp.test_network_gate.external_test_endpoint_enabled = args.twime_external_test_endpoint_enabled;
     config.twime.tcp.test_network_gate.require_explicit_runtime_arm = args.twime_require_explicit_runtime_arm;
-    config.twime.tcp.test_network_gate.block_production_like_hostnames =
-        args.twime_block_production_like_hostnames;
+    config.twime.tcp.test_network_gate.block_production_like_hostnames = args.twime_block_production_like_hostnames;
     config.twime.credentials.source = args.twime_credentials_source;
     config.twime.credentials.env_var = args.twime_credentials_env_var;
     config.twime.credentials.file_path = args.twime_credentials_file;
@@ -552,76 +551,77 @@ Plaza2TwimeIntegratedTestConfig make_config(const RunnerArgs& args) {
 void write_startup_report(const fs::path& path, const RunnerArgs& args,
                           const moex::plaza2_twime_reconciler::Plaza2TwimeIntegratedHealthSnapshot& health,
                           bool start_ok, std::string_view start_message) {
-    write_summary_json(path, {
-                                {"profile_id", args.profile_id},
-                                {"result", start_ok ? "started" : "failed"},
-                                {"runner_state", runner_state_name(health.state)},
-                                {"twime_credentials_source", twime_credential_source_name(args.twime_credentials_source)},
-                                {"plaza_credentials_source", plaza_credential_source_name(args.plaza_credentials_source)},
-                                {"armed_test_network", bool_string(args.armed_test_network)},
-                                {"armed_test_session", bool_string(args.armed_test_session)},
-                                {"armed_test_plaza2", bool_string(args.armed_test_plaza2)},
-                                {"armed_test_reconcile", bool_string(args.armed_test_reconcile)},
-                                {"message", std::string(start_message)},
-                            });
+    write_summary_json(path,
+                       {
+                           {"profile_id", args.profile_id},
+                           {"result", start_ok ? "started" : "failed"},
+                           {"runner_state", runner_state_name(health.state)},
+                           {"twime_credentials_source", twime_credential_source_name(args.twime_credentials_source)},
+                           {"plaza_credentials_source", plaza_credential_source_name(args.plaza_credentials_source)},
+                           {"armed_test_network", bool_string(args.armed_test_network)},
+                           {"armed_test_session", bool_string(args.armed_test_session)},
+                           {"armed_test_plaza2", bool_string(args.armed_test_plaza2)},
+                           {"armed_test_reconcile", bool_string(args.armed_test_reconcile)},
+                           {"message", std::string(start_message)},
+                       });
 }
 
 void write_readiness_report(const fs::path& path,
                             const moex::plaza2_twime_reconciler::Plaza2TwimeIntegratedHealthSnapshot& health) {
-    write_summary_json(path, {
-                                {"runner_state", runner_state_name(health.state)},
-                                {"ready", bool_string(health.readiness.ready)},
-                                {"readiness_blocker", health.readiness.blocker},
-                                {"twime_session_established", bool_string(health.readiness.twime_session_established)},
-                                {"plaza_runtime_probe_ok", bool_string(health.readiness.plaza_runtime_probe_ok)},
-                                {"plaza_scheme_drift_ok", bool_string(health.readiness.plaza_scheme_drift_ok)},
-                                {"plaza_streams_open", bool_string(health.readiness.plaza_streams_open)},
-                                {"plaza_streams_online", bool_string(health.readiness.plaza_streams_online)},
-                                {"plaza_streams_snapshot_complete",
-                                 bool_string(health.readiness.plaza_streams_snapshot_complete)},
-                                {"reconciler_attached", bool_string(health.readiness.reconciler_attached)},
-                                {"abi_snapshot_attached", bool_string(health.readiness.abi_snapshot_attached)},
-                            });
+    write_summary_json(
+        path, {
+                  {"runner_state", runner_state_name(health.state)},
+                  {"ready", bool_string(health.readiness.ready)},
+                  {"readiness_blocker", health.readiness.blocker},
+                  {"twime_session_established", bool_string(health.readiness.twime_session_established)},
+                  {"plaza_runtime_probe_ok", bool_string(health.readiness.plaza_runtime_probe_ok)},
+                  {"plaza_scheme_drift_ok", bool_string(health.readiness.plaza_scheme_drift_ok)},
+                  {"plaza_streams_open", bool_string(health.readiness.plaza_streams_open)},
+                  {"plaza_streams_online", bool_string(health.readiness.plaza_streams_online)},
+                  {"plaza_streams_snapshot_complete", bool_string(health.readiness.plaza_streams_snapshot_complete)},
+                  {"reconciler_attached", bool_string(health.readiness.reconciler_attached)},
+                  {"abi_snapshot_attached", bool_string(health.readiness.abi_snapshot_attached)},
+              });
 }
 
 void write_final_report(const fs::path& path,
                         const moex::plaza2_twime_reconciler::Plaza2TwimeIntegratedHealthSnapshot& health,
                         const AbiSnapshotCounts& abi_counts) {
-    write_summary_json(path, {
-                                {"runner_state", runner_state_name(health.state)},
-                                {"ready", bool_string(health.readiness.ready)},
-                                {"last_error", health.last_error},
-                                {"last_resync_reason", health.last_resync_reason},
-                                {"plaza_runtime_probe_ok", bool_string(health.plaza_runtime_probe_ok)},
-                                {"plaza_scheme_drift_ok", bool_string(health.plaza_scheme_drift_ok)},
-                                {"reconciler_updating", bool_string(health.reconciler_updating)},
-                                {"abi_handle_valid", bool_string(health.abi_handle_valid)},
-                                {"abi_snapshot_attached", bool_string(health.abi_snapshot_attached)},
-                                {"session_count", std::to_string(health.plaza.counts.session_count)},
-                                {"instrument_count", std::to_string(health.plaza.counts.instrument_count)},
-                                {"matching_map_count", std::to_string(health.plaza.counts.matching_map_count)},
-                                {"limit_count", std::to_string(health.plaza.counts.limit_count)},
-                                {"position_count", std::to_string(health.plaza.counts.position_count)},
-                                {"own_order_count", std::to_string(health.plaza.counts.own_order_count)},
-                                {"own_trade_count", std::to_string(health.plaza.counts.own_trade_count)},
-                                {"reconciled_order_count", std::to_string(health.reconciled_order_count)},
-                                {"reconciled_trade_count", std::to_string(health.reconciled_trade_count)},
-                                {"abi_private_order_result", std::to_string(abi_counts.private_order_result)},
-                                {"abi_private_order_count", std::to_string(abi_counts.private_order_count)},
-                                {"abi_private_trade_result", std::to_string(abi_counts.private_trade_result)},
-                                {"abi_private_trade_count", std::to_string(abi_counts.private_trade_count)},
-                                {"abi_reconciled_order_result", std::to_string(abi_counts.reconciled_order_result)},
-                                {"abi_reconciled_order_count", std::to_string(abi_counts.reconciled_order_count)},
-                                {"abi_reconciled_trade_result", std::to_string(abi_counts.reconciled_trade_result)},
-                                {"abi_reconciled_trade_count", std::to_string(abi_counts.reconciled_trade_count)},
-                                {"ambiguity_count",
-                                 std::to_string(health.reconciler.total_ambiguous_orders +
-                                                health.reconciler.total_ambiguous_trades)},
-                                {"diverged_order_count", std::to_string(health.reconciler.total_diverged_orders)},
-                                {"stale_order_count", std::to_string(health.reconciler.total_stale_provisional_orders)},
-                                {"plaza_last_lifenum", std::to_string(health.plaza.resume_markers.last_lifenum)},
-                                {"plaza_last_replstate", health.plaza.resume_markers.last_replstate},
-                            });
+    write_summary_json(
+        path, {
+                  {"runner_state", runner_state_name(health.state)},
+                  {"ready", bool_string(health.readiness.ready)},
+                  {"last_error", health.last_error},
+                  {"last_resync_reason", health.last_resync_reason},
+                  {"plaza_runtime_probe_ok", bool_string(health.plaza_runtime_probe_ok)},
+                  {"plaza_scheme_drift_ok", bool_string(health.plaza_scheme_drift_ok)},
+                  {"reconciler_updating", bool_string(health.reconciler_updating)},
+                  {"abi_handle_valid", bool_string(health.abi_handle_valid)},
+                  {"abi_snapshot_attached", bool_string(health.abi_snapshot_attached)},
+                  {"session_count", std::to_string(health.plaza.counts.session_count)},
+                  {"instrument_count", std::to_string(health.plaza.counts.instrument_count)},
+                  {"matching_map_count", std::to_string(health.plaza.counts.matching_map_count)},
+                  {"limit_count", std::to_string(health.plaza.counts.limit_count)},
+                  {"position_count", std::to_string(health.plaza.counts.position_count)},
+                  {"own_order_count", std::to_string(health.plaza.counts.own_order_count)},
+                  {"own_trade_count", std::to_string(health.plaza.counts.own_trade_count)},
+                  {"reconciled_order_count", std::to_string(health.reconciled_order_count)},
+                  {"reconciled_trade_count", std::to_string(health.reconciled_trade_count)},
+                  {"abi_private_order_result", std::to_string(abi_counts.private_order_result)},
+                  {"abi_private_order_count", std::to_string(abi_counts.private_order_count)},
+                  {"abi_private_trade_result", std::to_string(abi_counts.private_trade_result)},
+                  {"abi_private_trade_count", std::to_string(abi_counts.private_trade_count)},
+                  {"abi_reconciled_order_result", std::to_string(abi_counts.reconciled_order_result)},
+                  {"abi_reconciled_order_count", std::to_string(abi_counts.reconciled_order_count)},
+                  {"abi_reconciled_trade_result", std::to_string(abi_counts.reconciled_trade_result)},
+                  {"abi_reconciled_trade_count", std::to_string(abi_counts.reconciled_trade_count)},
+                  {"ambiguity_count",
+                   std::to_string(health.reconciler.total_ambiguous_orders + health.reconciler.total_ambiguous_trades)},
+                  {"diverged_order_count", std::to_string(health.reconciler.total_diverged_orders)},
+                  {"stale_order_count", std::to_string(health.reconciler.total_stale_provisional_orders)},
+                  {"plaza_last_lifenum", std::to_string(health.plaza.resume_markers.last_lifenum)},
+                  {"plaza_last_replstate", health.plaza.resume_markers.last_replstate},
+              });
 }
 
 AbiSnapshotCounts capture_abi_counts(MoexConnectorHandle handle) {
@@ -632,10 +632,8 @@ AbiSnapshotCounts capture_abi_counts(MoexConnectorHandle handle) {
 
     counts.private_order_result = moex_get_plaza2_own_order_count(handle, &counts.private_order_count);
     counts.private_trade_result = moex_get_plaza2_own_trade_count(handle, &counts.private_trade_count);
-    counts.reconciled_order_result =
-        moex_get_plaza2_reconciled_order_count(handle, &counts.reconciled_order_count);
-    counts.reconciled_trade_result =
-        moex_get_plaza2_reconciled_trade_count(handle, &counts.reconciled_trade_count);
+    counts.reconciled_order_result = moex_get_plaza2_reconciled_order_count(handle, &counts.reconciled_order_count);
+    counts.reconciled_trade_result = moex_get_plaza2_reconciled_trade_count(handle, &counts.reconciled_trade_count);
     return counts;
 }
 
