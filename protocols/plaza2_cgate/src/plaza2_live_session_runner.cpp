@@ -26,11 +26,8 @@ using generated::TableCode;
 
 constexpr std::string_view kCredentialToken = "${PLAZA2_TEST_CREDENTIALS}";
 constexpr std::array<StreamCode, 5> kRequiredPrivateStreams = {
-    StreamCode::kFortsTradeRepl,
-    StreamCode::kFortsUserorderbookRepl,
-    StreamCode::kFortsPosRepl,
-    StreamCode::kFortsPartRepl,
-    StreamCode::kFortsRefdataRepl,
+    StreamCode::kFortsTradeRepl, StreamCode::kFortsUserorderbookRepl, StreamCode::kFortsPosRepl,
+    StreamCode::kFortsPartRepl,  StreamCode::kFortsRefdataRepl,
 };
 
 bool is_loopback_host(std::string_view host) {
@@ -367,9 +364,9 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
     }
 
     void recompute_online() {
-        state_.online = !state_.streams.empty() &&
-                        std::all_of(state_.streams.begin(), state_.streams.end(),
-                                    [](const fake::StreamState& stream) { return stream.online; });
+        state_.online =
+            !state_.streams.empty() && std::all_of(state_.streams.begin(), state_.streams.end(),
+                                                   [](const fake::StreamState& stream) { return stream.online; });
     }
 
     Plaza2Error ordering_error(std::string message) const {
@@ -611,7 +608,8 @@ struct Plaza2LiveSessionRunner::Impl {
 
     Plaza2LiveRunResult load_credentials_if_needed() {
         const bool needs_credentials =
-            settings_need_credentials(config.runtime.env_open_settings) || settings_need_credentials(config.connection_settings) ||
+            settings_need_credentials(config.runtime.env_open_settings) ||
+            settings_need_credentials(config.connection_settings) ||
             settings_need_credentials(config.connection_open_settings) ||
             std::any_of(config.streams.begin(), config.streams.end(), [](const Plaza2LiveStreamConfig& stream) {
                 return settings_need_credentials(stream.settings) || settings_need_credentials(stream.open_settings);
@@ -619,7 +617,8 @@ struct Plaza2LiveSessionRunner::Impl {
 
         if (config.credentials.source == Plaza2CredentialSource::None) {
             if (needs_credentials) {
-                return fail("PLAZA II TEST settings require ${PLAZA2_TEST_CREDENTIALS}, but no credential source was configured");
+                return fail("PLAZA II TEST settings require ${PLAZA2_TEST_CREDENTIALS}, but no credential source was "
+                            "configured");
             }
             return {
                 .ok = true,
@@ -691,10 +690,11 @@ struct Plaza2LiveSessionRunner::Impl {
         health.counts.position_count = projector.positions().size();
         health.counts.own_order_count = projector.own_orders().size();
         health.counts.own_trade_count = projector.own_trades().size();
-        health.ready = health.runtime_probe_ok && health.scheme_drift_ok &&
-                       std::all_of(health.streams.begin(), health.streams.end(), [](const Plaza2LiveStreamStatus& stream) {
-                           return stream.created && stream.opened && stream.online && stream.snapshot_complete;
-                       });
+        health.ready =
+            health.runtime_probe_ok && health.scheme_drift_ok &&
+            std::all_of(health.streams.begin(), health.streams.end(), [](const Plaza2LiveStreamStatus& stream) {
+                return stream.created && stream.opened && stream.online && stream.snapshot_complete;
+            });
     }
 
     Plaza2LiveRunResult fail(std::string message) {

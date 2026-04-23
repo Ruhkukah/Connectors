@@ -389,23 +389,22 @@ int main(int argc, char** argv) {
         }
         write_lines(log_path, lines);
 
-        write_summary_json(summary_path,
-                           {
-                               {"profile_id", args.profile_id},
-                               {"result", result.ok ? "ok" : "failed"},
-                               {"runner_state", runner_state_name(health.state)},
-                               {"ready", health.ready ? "true" : "false"},
-                               {"runtime_probe_ok", health.runtime_probe_ok ? "true" : "false"},
-                               {"scheme_drift_ok", health.scheme_drift_ok ? "true" : "false"},
-                               {"session_count", std::to_string(health.counts.session_count)},
-                               {"instrument_count", std::to_string(health.counts.instrument_count)},
-                               {"matching_map_count", std::to_string(health.counts.matching_map_count)},
-                               {"limit_count", std::to_string(health.counts.limit_count)},
-                               {"position_count", std::to_string(health.counts.position_count)},
-                               {"own_order_count", std::to_string(health.counts.own_order_count)},
-                               {"own_trade_count", std::to_string(health.counts.own_trade_count)},
-                               {"last_error", health.last_error},
-                           });
+        write_summary_json(summary_path, {
+                                             {"profile_id", args.profile_id},
+                                             {"result", result.ok ? "ok" : "failed"},
+                                             {"runner_state", runner_state_name(health.state)},
+                                             {"ready", health.ready ? "true" : "false"},
+                                             {"runtime_probe_ok", health.runtime_probe_ok ? "true" : "false"},
+                                             {"scheme_drift_ok", health.scheme_drift_ok ? "true" : "false"},
+                                             {"session_count", std::to_string(health.counts.session_count)},
+                                             {"instrument_count", std::to_string(health.counts.instrument_count)},
+                                             {"matching_map_count", std::to_string(health.counts.matching_map_count)},
+                                             {"limit_count", std::to_string(health.counts.limit_count)},
+                                             {"position_count", std::to_string(health.counts.position_count)},
+                                             {"own_order_count", std::to_string(health.counts.own_order_count)},
+                                             {"own_trade_count", std::to_string(health.counts.own_trade_count)},
+                                             {"last_error", health.last_error},
+                                         });
 
         static_cast<void>(runner.stop());
         if (!result.ok) {

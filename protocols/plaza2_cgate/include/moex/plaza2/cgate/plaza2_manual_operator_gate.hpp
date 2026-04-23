@@ -23,8 +23,8 @@ class Plaza2ManualOperatorGate {
   public:
     [[nodiscard]] static Plaza2ManualOperatorGateResult
     validate_transport_connect(std::string_view endpoint_host, const Plaza2RuntimeArmState& arm_state);
-    [[nodiscard]] static Plaza2ManualOperatorGateResult
-    validate_session_start(std::string_view endpoint_host, const Plaza2RuntimeArmState& arm_state);
+    [[nodiscard]] static Plaza2ManualOperatorGateResult validate_session_start(std::string_view endpoint_host,
+                                                                               const Plaza2RuntimeArmState& arm_state);
 };
 
 } // namespace moex::plaza2::cgate

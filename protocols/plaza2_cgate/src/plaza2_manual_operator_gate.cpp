@@ -36,8 +36,7 @@ Plaza2ManualOperatorGateResult
 Plaza2ManualOperatorGate::validate_transport_connect(std::string_view endpoint_host,
                                                      const Plaza2RuntimeArmState& arm_state) {
     if (!arm_state.test_plaza2_armed) {
-        return blocked(Plaza2ErrorCode::InvalidConfiguration,
-                       "PLAZA II TEST bring-up requires --armed-test-plaza2");
+        return blocked(Plaza2ErrorCode::InvalidConfiguration, "PLAZA II TEST bring-up requires --armed-test-plaza2");
     }
     if (is_loopback_host(endpoint_host)) {
         return success();

@@ -26,8 +26,7 @@ std::vector<moex::plaza2::cgate::Plaza2LiveStreamConfig> make_private_streams() 
     };
 }
 
-moex::plaza2::cgate::Plaza2LiveSessionConfig
-make_config(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
+moex::plaza2::cgate::Plaza2LiveSessionConfig make_config(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
     using namespace moex::plaza2::cgate;
 
     Plaza2LiveSessionConfig config;
