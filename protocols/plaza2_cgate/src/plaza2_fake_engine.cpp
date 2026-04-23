@@ -89,6 +89,19 @@ void invalidate_stream_state_for_resync(EngineState& state) {
     }
 }
 
+template <typename Callback> void invoke_listener(CommitListener* listener, EngineState& state, Callback&& callback) {
+    if (listener == nullptr) {
+        return;
+    }
+    try {
+        callback(*listener);
+    } catch (const std::exception&) {
+        state.callback_error_count += 1;
+    } catch (...) {
+        state.callback_error_count += 1;
+    }
+}
+
 bool check_invariants(const ScenarioDataView& view, const EngineState& state, EngineError* error) {
     for (const auto& invariant : view.invariants) {
         switch (invariant.kind) {
@@ -152,6 +165,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             result.state.open = true;
+            invoke_listener(listener, result.state,
+                            [&](CommitListener& sink) { sink.on_event(view.scenario, event, result.state); });
             break;
 
         case EventKind::kClose:
@@ -173,6 +188,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
             for (auto& stream : result.state.streams) {
                 stream.online = false;
             }
+            invoke_listener(listener, result.state,
+                            [&](CommitListener& sink) { sink.on_event(view.scenario, event, result.state); });
             break;
 
         case EventKind::kSnapshotBegin:
@@ -194,6 +211,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             result.state.snapshot_active = true;
+            invoke_listener(listener, result.state,
+                            [&](CommitListener& sink) { sink.on_event(view.scenario, event, result.state); });
             break;
 
         case EventKind::kSnapshotEnd:
@@ -210,6 +229,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
             for (auto& stream : result.state.streams) {
                 stream.snapshot_complete = true;
             }
+            invoke_listener(listener, result.state,
+                            [&](CommitListener& sink) { sink.on_event(view.scenario, event, result.state); });
             break;
 
         case EventKind::kOnline:
@@ -230,6 +251,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
             for (auto& stream : result.state.streams) {
                 stream.online = true;
             }
+            invoke_listener(listener, result.state,
+                            [&](CommitListener& sink) { sink.on_event(view.scenario, event, result.state); });
             break;
 
         case EventKind::kTransactionBegin:
@@ -247,6 +270,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
             }
             std::fill(pending_row_deltas.begin(), pending_row_deltas.end(), 0);
             result.state.transaction_open = true;
+            invoke_listener(listener, result.state,
+                            [&](CommitListener& sink) { sink.on_event(view.scenario, event, result.state); });
             break;
 
         case EventKind::kTransactionCommit:
@@ -260,15 +285,11 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
             std::fill(pending_row_deltas.begin(), pending_row_deltas.end(), 0);
             result.state.transaction_open = false;
             result.state.commit_count += 1;
-            if (listener != nullptr) {
-                try {
-                    listener->on_transaction_commit(view.scenario, event, result.state);
-                } catch (const std::exception&) {
-                    result.state.callback_error_count += 1;
-                } catch (...) {
-                    result.state.callback_error_count += 1;
-                }
-            }
+            invoke_listener(listener, result.state,
+                            [&](CommitListener& sink) { sink.on_event(view.scenario, event, result.state); });
+            invoke_listener(listener, result.state, [&](CommitListener& sink) {
+                sink.on_transaction_commit(view.scenario, event, result.state);
+            });
             break;
 
         case EventKind::kStreamData: {
@@ -302,6 +323,9 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                                               "STREAM_DATA row resolved to an empty field span");
                     return result;
                 }
+                invoke_listener(listener, result.state, [&](CommitListener& sink) {
+                    sink.on_stream_row(view.scenario, event, row, field_span, result.state);
+                });
                 pending_row_deltas[stream_index] += 1;
             }
             break;
@@ -318,6 +342,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             result.state.last_replstate.assign(event.text_value);
+            invoke_listener(listener, result.state,
+                            [&](CommitListener& sink) { sink.on_event(view.scenario, event, result.state); });
             break;
 
         case EventKind::kLifeNum:
@@ -335,6 +361,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
             }
             result.state.has_lifenum = true;
             result.state.last_lifenum = event.numeric_value;
+            invoke_listener(listener, result.state,
+                            [&](CommitListener& sink) { sink.on_event(view.scenario, event, result.state); });
             break;
 
         case EventKind::kClearDeleted: {
@@ -354,6 +382,8 @@ RunResult Plaza2FakeEngine::run(const ScenarioDataView& view, CommitListener* li
                 return result;
             }
             result.state.streams[stream_index].clear_deleted_count += 1;
+            invoke_listener(listener, result.state,
+                            [&](CommitListener& sink) { sink.on_event(view.scenario, event, result.state); });
             break;
         }
         }

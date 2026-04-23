@@ -159,8 +159,25 @@ struct RunResult {
 class CommitListener {
   public:
     virtual ~CommitListener() = default;
+    virtual void on_event(const ScenarioSpec& scenario, const EventSpec& event, const EngineState& state) {
+        (void)scenario;
+        (void)event;
+        (void)state;
+    }
+    virtual void on_stream_row(const ScenarioSpec& scenario, const EventSpec& event, const RowSpec& row,
+                               std::span<const FieldValueSpec> fields, const EngineState& state) {
+        (void)scenario;
+        (void)event;
+        (void)row;
+        (void)fields;
+        (void)state;
+    }
     virtual void on_transaction_commit(const ScenarioSpec& scenario, const EventSpec& commit_event,
-                                       const EngineState& state) = 0;
+                                       const EngineState& state) {
+        (void)scenario;
+        (void)commit_event;
+        (void)state;
+    }
 };
 
 class Plaza2FakeEngine {

@@ -3,9 +3,9 @@
   "version": 1,
   "source_scenarios_path": "tests/plaza2_cgate/scenarios",
   "source_metadata_path": "protocols/plaza2_cgate/generated/plaza2_generated_metadata.json",
-  "scenario_count": 4,
-  "row_count": 4,
-  "field_value_count": 11,
+  "scenario_count": 7,
+  "row_count": 32,
+  "field_value_count": 416,
   "scenarios": [
     {
       "scenario_id": "clear_deleted",
@@ -33,6 +33,33 @@
       "stream_count": 1,
       "event_count": 6,
       "invariant_count": 3
+    },
+    {
+      "scenario_id": "private_state_clear_deleted",
+      "description": "Clear-deleted removes only user-orderbook-owned state while preserving trade-owned order state",
+      "metadata_version": 1,
+      "deterministic_seed": 0,
+      "stream_count": 2,
+      "event_count": 7,
+      "invariant_count": 2
+    },
+    {
+      "scenario_id": "private_state_lifenum_invalidation",
+      "description": "Life-number changes invalidate committed private-state domains across all declared private streams",
+      "metadata_version": 1,
+      "deterministic_seed": 0,
+      "stream_count": 5,
+      "event_count": 15,
+      "invariant_count": 3
+    },
+    {
+      "scenario_id": "private_state_projection",
+      "description": "Private-state snapshot replay projects committed refdata, limits, positions, own orders, and own trades",
+      "metadata_version": 1,
+      "deterministic_seed": 0,
+      "stream_count": 5,
+      "event_count": 24,
+      "invariant_count": 4
     },
     {
       "scenario_id": "resume_from_replstate",
@@ -171,6 +198,374 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 11,
+      "text_value": ""
+    },
+    {
+      "type": "OPEN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "TN_BEGIN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_USERORDERBOOK_REPL",
+      "table_name": "orders",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_USERORDERBOOK_REPL",
+      "table_name": "orders_currentday",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_TRADE_REPL",
+      "table_name": "orders_log",
+      "row_count": 2,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "TN_COMMIT",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "P2REPL_CLEARDELETED",
+      "stream_name": "FORTS_USERORDERBOOK_REPL",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "OPEN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "P2REPL_LIFENUM",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 10,
+      "text_value": ""
+    },
+    {
+      "type": "SNAPSHOT_BEGIN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "TN_BEGIN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "session",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "fut_instruments",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "instr2matching_map",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_PART_REPL",
+      "table_name": "part",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_POS_REPL",
+      "table_name": "position",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_USERORDERBOOK_REPL",
+      "table_name": "orders",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_TRADE_REPL",
+      "table_name": "user_deal",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "TN_COMMIT",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "SNAPSHOT_END",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "ONLINE",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "P2REPL_LIFENUM",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 11,
+      "text_value": ""
+    },
+    {
+      "type": "OPEN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "P2REPL_REPLSTATE",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "lifenum=7;rev.orders=10;rev.position=20"
+    },
+    {
+      "type": "P2REPL_LIFENUM",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 7,
+      "text_value": ""
+    },
+    {
+      "type": "SNAPSHOT_BEGIN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "TN_BEGIN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "session",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "fut_instruments",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "opt_sess_contents",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "multileg_dict",
+      "row_count": 2,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "instr2matching_map",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_PART_REPL",
+      "table_name": "part",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_POS_REPL",
+      "table_name": "position",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_POS_REPL",
+      "table_name": "info",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_USERORDERBOOK_REPL",
+      "table_name": "info_currentday",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_USERORDERBOOK_REPL",
+      "table_name": "orders",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_USERORDERBOOK_REPL",
+      "table_name": "orders_currentday",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_TRADE_REPL",
+      "table_name": "orders_log",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_TRADE_REPL",
+      "table_name": "user_deal",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_TRADE_REPL",
+      "table_name": "heartbeat",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_TRADE_REPL",
+      "table_name": "sys_events",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_PART_REPL",
+      "table_name": "sys_events",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "TN_COMMIT",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "SNAPSHOT_END",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": ""
+    },
+    {
+      "type": "ONLINE",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
       "text_value": ""
     },
     {

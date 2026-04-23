@@ -1,0 +1,125 @@
+scenario_id: private_state_clear_deleted
+description: Clear-deleted removes only user-orderbook-owned state while preserving trade-owned order state
+
+metadata:
+  version: 1
+  deterministic_seed: 0
+
+streams:
+  - name: FORTS_USERORDERBOOK_REPL
+    scope: private_core
+  - name: FORTS_TRADE_REPL
+    scope: private_core
+
+events:
+  - type: OPEN
+  - type: TN_BEGIN
+  - type: STREAM_DATA
+    stream: FORTS_USERORDERBOOK_REPL
+    table: orders
+    rows:
+      - replID: 1
+        public_order_id: 11001
+        sess_id: 321
+        client_code: CLX
+        moment: 1700100000
+        moment_ns: 1
+        xstatus: 1
+        xstatus2: 10
+        public_action: 1
+        isin_id: 1001
+        dir: 1
+        price: 101000
+        public_amount: 4
+        public_amount_rest: 4
+        comment: userbook-only
+        ext_id: 1
+        login_from: alpha
+        private_order_id: 21001
+        private_amount: 4
+        private_amount_rest: 4
+        private_action: 1
+  - type: STREAM_DATA
+    stream: FORTS_USERORDERBOOK_REPL
+    table: orders_currentday
+    rows:
+      - replID: 2
+        public_order_id: 11003
+        sess_id: 321
+        client_code: CLX
+        moment: 1700100001
+        moment_ns: 2
+        xstatus: 2
+        xstatus2: 20
+        public_action: 1
+        isin_id: 1001
+        dir: 2
+        price: 103000
+        public_amount: 6
+        public_amount_rest: 6
+        comment: shared-currentday
+        ext_id: 3
+        login_from: alpha
+        private_order_id: 21003
+        private_amount: 6
+        private_amount_rest: 6
+        private_action: 1
+  - type: STREAM_DATA
+    stream: FORTS_TRADE_REPL
+    table: orders_log
+    rows:
+      - replID: 3
+        public_order_id: 11002
+        sess_id: 321
+        isin_id: 1001
+        public_amount: 5
+        public_amount_rest: 5
+        id_deal: 0
+        xstatus: 3
+        xstatus2: 30
+        price: 102000
+        moment: 1700100002
+        moment_ns: 3
+        dir: 1
+        public_action: 1
+        client_code: CLX
+        login_from: alpha
+        comment: trade-only
+        ext_id: 2
+        private_order_id: 21002
+        private_amount: 5
+        private_amount_rest: 5
+        private_action: 1
+      - replID: 4
+        public_order_id: 11003
+        sess_id: 321
+        isin_id: 1001
+        public_amount: 6
+        public_amount_rest: 4
+        id_deal: 9100
+        xstatus: 4
+        xstatus2: 40
+        price: 103500
+        moment: 1700100003
+        moment_ns: 4
+        dir: 2
+        public_action: 2
+        client_code: CLX
+        login_from: alpha
+        comment: shared-trade
+        ext_id: 3
+        private_order_id: 21003
+        private_amount: 6
+        private_amount_rest: 4
+        private_action: 2
+  - type: TN_COMMIT
+  - type: P2REPL_CLEARDELETED
+    stream: FORTS_USERORDERBOOK_REPL
+
+expected:
+  invariants:
+    - type: commit_count
+      value: 1
+    - type: clear_deleted_count
+      stream: FORTS_USERORDERBOOK_REPL
+      value: 1
