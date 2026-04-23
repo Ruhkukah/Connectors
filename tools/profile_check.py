@@ -76,6 +76,26 @@ def main() -> int:
         if isinstance(twime_live_session, dict) and environment != "test":
             raise SystemExit("twime_live_session profiles are Phase 2F test-only and must use environment=test")
 
+        plaza2_repl_test = profile.get("plaza2_repl_test")
+        if isinstance(plaza2_repl_test, dict):
+            if environment != "test":
+                raise SystemExit("plaza2_repl_test profiles are Phase 3F test-only and must use environment=test")
+
+            endpoint = plaza2_repl_test.get("endpoint") or {}
+            host = str(endpoint.get("host", ""))
+            if _looks_banned_host(host):
+                raise SystemExit("plaza2_repl_test endpoint host looks like a live MOEX/broker target and is blocked")
+
+            credentials = plaza2_repl_test.get("credentials") or {}
+            if _contains_inline_credentials(credentials):
+                raise SystemExit("tracked plaza2_repl_test profiles must not contain inline credentials")
+
+            if _looks_non_loopback(host) and not _looks_placeholder(host):
+                raise SystemExit(
+                    "tracked plaza2_repl_test profiles must not contain real non-loopback hosts in Phase 3F; "
+                    "use an untracked local override plus all required --armed-test-* flags"
+                )
+
         print(f"profile {profile['profile_id']} validated")
     return 0
 

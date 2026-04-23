@@ -1,5 +1,7 @@
 #pragma once
 
+#include "plaza2_generated_metadata.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -28,6 +30,8 @@ enum class Plaza2ErrorCode : std::uint16_t {
     SymbolLoadFailed,
     AdapterState,
     RuntimeCallFailed,
+    DecodeFailed,
+    CallbackFailed,
     ProbeIncompatible,
     UnknownRuntimeResult,
 };
@@ -121,6 +125,59 @@ struct Plaza2RuntimeProbeReport {
     bool config_dir_present{false};
 };
 
+enum class Plaza2DecodedValueKind : std::uint8_t {
+    None = 0,
+    SignedInteger = 1,
+    UnsignedInteger = 2,
+    Decimal = 3,
+    FloatingPoint = 4,
+    String = 5,
+    Timestamp = 6,
+};
+
+enum class Plaza2ListenerEventKind : std::uint8_t {
+    Open = 0,
+    Close = 1,
+    TransactionBegin = 2,
+    TransactionCommit = 3,
+    StreamData = 4,
+    Online = 5,
+    LifeNum = 6,
+    ClearDeleted = 7,
+    ReplState = 8,
+    Timeout = 9,
+};
+
+inline constexpr generated::StreamCode kNoStreamCode = static_cast<generated::StreamCode>(0);
+inline constexpr generated::TableCode kNoTableCode = static_cast<generated::TableCode>(0);
+inline constexpr generated::FieldCode kNoFieldCode = static_cast<generated::FieldCode>(0);
+
+struct Plaza2DecodedFieldValue {
+    generated::FieldCode field_code{kNoFieldCode};
+    Plaza2DecodedValueKind kind{Plaza2DecodedValueKind::None};
+    std::int64_t signed_value{0};
+    std::uint64_t unsigned_value{0};
+    std::string_view text_value{};
+};
+
+struct Plaza2ListenerEvent {
+    Plaza2ListenerEventKind kind{Plaza2ListenerEventKind::Open};
+    generated::StreamCode stream_code{kNoStreamCode};
+    generated::TableCode table_code{kNoTableCode};
+    std::span<const Plaza2DecodedFieldValue> fields{};
+    std::uint64_t unsigned_value{0};
+    std::int64_t signed_value{0};
+    std::string_view text_value{};
+    std::uint32_t clear_deleted_flags{0};
+    std::uint32_t close_reason{0};
+};
+
+class Plaza2ListenerEventHandler {
+  public:
+    virtual ~Plaza2ListenerEventHandler() = default;
+    [[nodiscard]] virtual Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) = 0;
+};
+
 [[nodiscard]] Plaza2Error validate_plaza2_settings(const Plaza2Settings& settings);
 [[nodiscard]] std::string make_plaza2_application_name(std::string_view prefix, std::string_view scope,
                                                        std::uint32_t instance);
@@ -134,6 +191,7 @@ class Plaza2RuntimeProbe {
 };
 
 struct Plaza2RuntimeSharedState;
+struct Plaza2ListenerCallbackState;
 
 class Plaza2Env {
   public:
@@ -185,16 +243,18 @@ class Plaza2Connection {
 
 class Plaza2Listener {
   public:
-    Plaza2Listener() = default;
+    Plaza2Listener();
     ~Plaza2Listener();
 
-    Plaza2Listener(Plaza2Listener&&) noexcept = default;
-    Plaza2Listener& operator=(Plaza2Listener&&) noexcept = default;
+    Plaza2Listener(Plaza2Listener&&) noexcept;
+    Plaza2Listener& operator=(Plaza2Listener&&) noexcept;
 
     Plaza2Listener(const Plaza2Listener&) = delete;
     Plaza2Listener& operator=(const Plaza2Listener&) = delete;
 
     [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, std::string_view settings);
+    [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, generated::StreamCode stream_code,
+                                     std::string_view settings, Plaza2ListenerEventHandler* handler);
     [[nodiscard]] Plaza2Error open(std::string_view settings);
     [[nodiscard]] Plaza2Error close();
     [[nodiscard]] Plaza2Error destroy();
@@ -204,6 +264,7 @@ class Plaza2Listener {
   private:
     std::shared_ptr<Plaza2RuntimeSharedState> shared_;
     void* handle_{nullptr};
+    std::unique_ptr<Plaza2ListenerCallbackState> callback_state_;
 };
 
 } // namespace moex::plaza2::cgate

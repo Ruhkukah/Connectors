@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -36,6 +37,17 @@ constexpr std::uint32_t kCgErrUnsupported = kCgRangeBegin + 2;
 constexpr std::uint32_t kCgErrTimeout = kCgRangeBegin + 3;
 constexpr std::uint32_t kCgErrMore = kCgRangeBegin + 4;
 constexpr std::uint32_t kCgErrIncorrectState = kCgRangeBegin + 5;
+constexpr std::uint32_t kCgErrBufferTooSmall = kCgRangeBegin + 7;
+
+constexpr std::uint32_t kCgMsgOpen = 0x100;
+constexpr std::uint32_t kCgMsgClose = 0x101;
+constexpr std::uint32_t kCgMsgStreamData = 0x120;
+constexpr std::uint32_t kCgMsgTnBegin = 0x200;
+constexpr std::uint32_t kCgMsgTnCommit = 0x210;
+constexpr std::uint32_t kCgMsgP2replLifenum = 0x1110;
+constexpr std::uint32_t kCgMsgP2replClearDeleted = 0x1111;
+constexpr std::uint32_t kCgMsgP2replOnline = 0x1112;
+constexpr std::uint32_t kCgMsgP2replReplState = 0x1115;
 
 constexpr std::string_view kSchemeFilename = "forts_scheme.ini";
 constexpr std::array<std::string_view, 6> kProdConfigFiles = {
@@ -54,10 +66,10 @@ constexpr std::array<std::string_view, 10> kTestConfigFiles = {
     "client_router.ini",
     "router.ini",
 };
-constexpr std::array<std::string_view, 13> kRequiredSymbols = {
-    "cg_env_open",   "cg_env_close",    "cg_conn_new",      "cg_conn_destroy", "cg_conn_open",
-    "cg_conn_close", "cg_conn_process", "cg_conn_getstate", "cg_lsn_new",      "cg_lsn_destroy",
-    "cg_lsn_open",   "cg_lsn_close",    "cg_lsn_getstate",
+constexpr std::array<std::string_view, 15> kRequiredSymbols = {
+    "cg_env_open",   "cg_env_close",    "cg_conn_new",      "cg_conn_destroy",  "cg_conn_open",
+    "cg_conn_close", "cg_conn_process", "cg_conn_getstate", "cg_lsn_new",       "cg_lsn_destroy",
+    "cg_lsn_open",   "cg_lsn_close",    "cg_lsn_getstate",  "cg_lsn_getscheme", "cg_getstr",
 };
 
 constexpr std::array<std::string_view, 4> kLibraryFilenameCandidates = {
@@ -89,6 +101,8 @@ struct RuntimeApi {
     CgResult (*lsn_open)(void* listener, const char* settings){nullptr};
     CgResult (*lsn_close)(void* listener){nullptr};
     CgResult (*lsn_getstate)(void* listener, std::uint32_t* state){nullptr};
+    CgResult (*lsn_getscheme)(void* listener, void** schemeptr){nullptr};
+    CgResult (*getstr)(const char* type, const void* data, char* buffer, std::size_t* buffer_size){nullptr};
 };
 
 struct RuntimeLibraryCloser {
@@ -106,6 +120,118 @@ struct RuntimeLibraryCloser {
 struct RuntimeSchemeField {
     std::string field_name;
     std::string type_token;
+};
+
+struct CgValuePair {
+    CgValuePair* next;
+    char* key;
+    char* value;
+};
+
+struct CgFieldValueDesc {
+    CgFieldValueDesc* next;
+    char* name;
+    char* desc;
+    void* value;
+    void* mask;
+};
+
+struct CgMessageDesc;
+
+struct CgFieldDesc {
+    CgFieldDesc* next;
+    std::uint32_t id;
+    char* name;
+    char* desc;
+    char* type;
+    std::size_t size;
+    std::size_t offset;
+    void* def_value;
+    std::size_t num_values;
+    CgFieldValueDesc* values;
+    CgValuePair* hints;
+    std::size_t max_count;
+    CgFieldDesc* count_field;
+    CgMessageDesc* type_msg;
+};
+
+struct CgIndexFieldDesc {
+    CgIndexFieldDesc* next;
+    CgFieldDesc* field;
+    std::uint32_t sort_order;
+};
+
+struct CgIndexDesc {
+    CgIndexDesc* next;
+    std::size_t num_fields;
+    CgIndexFieldDesc* fields;
+    char* name;
+    char* desc;
+    CgValuePair* hints;
+};
+
+struct CgMessageDesc {
+    CgMessageDesc* next;
+    std::size_t size;
+    std::size_t num_fields;
+    CgFieldDesc* fields;
+    std::uint32_t id;
+    char* name;
+    char* desc;
+    CgValuePair* hints;
+    std::size_t num_indices;
+    CgIndexDesc* indices;
+    std::size_t align;
+};
+
+struct CgSchemeDesc {
+    std::uint32_t scheme_type;
+    std::uint32_t features;
+    std::size_t num_messages;
+    CgMessageDesc* messages;
+    CgValuePair* hints;
+};
+
+struct CgMsg {
+    std::uint32_t type;
+    std::size_t data_size;
+    void* data;
+    std::int64_t owner_id;
+};
+
+struct CgMsgStreamData {
+    std::uint32_t type;
+    std::size_t data_size;
+    void* data;
+    std::int64_t owner_id;
+    std::size_t msg_index;
+    std::uint32_t msg_id;
+    const char* msg_name;
+    std::int64_t rev;
+    std::size_t num_nulls;
+    std::uint8_t* nulls;
+    std::uint64_t user_id;
+};
+
+struct CgTime {
+    std::uint16_t year;
+    std::uint8_t month;
+    std::uint8_t day;
+    std::uint8_t hour;
+    std::uint8_t minute;
+    std::uint8_t second;
+    std::uint16_t msec;
+};
+
+struct CgDataClearDeleted {
+    std::uint32_t table_idx;
+    std::int64_t table_rev;
+    std::uint32_t flags;
+};
+
+struct CgDataLifeNum {
+    std::uint32_t life_number;
+    std::uint32_t flags;
 };
 
 struct RuntimeSchemeTable {
@@ -568,6 +694,8 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
     ok = load_symbol("cg_lsn_open", api->lsn_open) && ok;
     ok = load_symbol("cg_lsn_close", api->lsn_close) && ok;
     ok = load_symbol("cg_lsn_getstate", api->lsn_getstate) && ok;
+    ok = load_symbol("cg_lsn_getscheme", api->lsn_getscheme) && ok;
+    ok = load_symbol("cg_getstr", api->getstr) && ok;
     if (!ok) {
         return {};
     }
@@ -699,6 +827,494 @@ struct Plaza2RuntimeSharedState {
     Plaza2Settings settings;
     std::unique_ptr<RuntimeApi, RuntimeLibraryCloser> api;
 };
+
+struct RuntimeFieldPlan {
+    generated::FieldCode field_code{kNoFieldCode};
+    generated::ValueClass value_class{generated::ValueClass::kSignedInteger};
+    std::string type_token;
+    std::size_t offset{0};
+    std::size_t size{0};
+    std::size_t ordinal{0};
+};
+
+struct RuntimeMessagePlan {
+    generated::TableCode table_code{kNoTableCode};
+    std::size_t msg_index{0};
+    std::string msg_name;
+    std::vector<RuntimeFieldPlan> fields;
+};
+
+template <typename T> [[nodiscard]] T read_unaligned(const void* data) {
+    T value{};
+    std::memcpy(&value, data, sizeof(T));
+    return value;
+}
+
+[[nodiscard]] std::int64_t read_signed_integer(const void* data, std::size_t size) {
+    switch (size) {
+    case 1:
+        return read_unaligned<std::int8_t>(data);
+    case 2:
+        return read_unaligned<std::int16_t>(data);
+    case 4:
+        return read_unaligned<std::int32_t>(data);
+    case 8:
+        return read_unaligned<std::int64_t>(data);
+    default:
+        return 0;
+    }
+}
+
+[[nodiscard]] std::uint64_t read_unsigned_integer(const void* data, std::size_t size) {
+    switch (size) {
+    case 1:
+        return read_unaligned<std::uint8_t>(data);
+    case 2:
+        return read_unaligned<std::uint16_t>(data);
+    case 4:
+        return read_unaligned<std::uint32_t>(data);
+    case 8:
+        return read_unaligned<std::uint64_t>(data);
+    default:
+        return 0;
+    }
+}
+
+[[nodiscard]] std::string copy_c_string(const char* data, std::size_t size) {
+    if (data == nullptr || size == 0) {
+        return {};
+    }
+    const auto* end = static_cast<const char*>(std::memchr(data, '\0', size));
+    const auto count = end == nullptr ? size : static_cast<std::size_t>(end - data);
+    return std::string(data, count);
+}
+
+[[nodiscard]] std::uint64_t to_unix_seconds(const CgTime& value) {
+    std::tm timestamp{};
+    timestamp.tm_year = static_cast<int>(value.year) - 1900;
+    timestamp.tm_mon = static_cast<int>(value.month) - 1;
+    timestamp.tm_mday = static_cast<int>(value.day);
+    timestamp.tm_hour = static_cast<int>(value.hour);
+    timestamp.tm_min = static_cast<int>(value.minute);
+    timestamp.tm_sec = static_cast<int>(value.second);
+    return static_cast<std::uint64_t>(::timegm(&timestamp));
+}
+
+[[nodiscard]] Plaza2Error convert_runtime_field_to_string(RuntimeApi& api, std::string_view type_token,
+                                                          const void* data, std::string& out) {
+    if (api.getstr == nullptr) {
+        return {
+            .code = Plaza2ErrorCode::DecodeFailed,
+            .runtime_code = 0,
+            .message = "cg_getstr is not available in the loaded CGate runtime",
+        };
+    }
+
+    std::size_t buffer_size = 64;
+    out.assign(buffer_size, '\0');
+    auto result = api.getstr(std::string(type_token).c_str(), data, out.data(), &buffer_size);
+    if (result == kCgErrBufferTooSmall) {
+        out.assign(buffer_size, '\0');
+        result = api.getstr(std::string(type_token).c_str(), data, out.data(), &buffer_size);
+    }
+    if (result != kCgErrOk) {
+        auto error = translate_plaza2_result("cg_getstr", result);
+        if (!error) {
+            error.code = Plaza2ErrorCode::DecodeFailed;
+            error.message = "cg_getstr failed while decoding runtime field";
+            error.runtime_code = result;
+        }
+        return error;
+    }
+
+    if (buffer_size < out.size()) {
+        out.resize(buffer_size);
+    }
+    while (!out.empty() && out.back() == '\0') {
+        out.pop_back();
+    }
+    return {};
+}
+
+[[nodiscard]] const generated::TableDescriptor* find_table_descriptor_for_stream(generated::StreamCode stream_code,
+                                                                                 std::string_view table_name) {
+    for (const auto& table : generated::TablesForStream(stream_code)) {
+        if (table.table_name == table_name) {
+            return &table;
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const RuntimeMessagePlan* find_runtime_message_plan(std::span<const RuntimeMessagePlan> plans,
+                                                                  std::size_t msg_index, std::string_view msg_name) {
+    for (const auto& plan : plans) {
+        if (plan.msg_index == msg_index) {
+            return &plan;
+        }
+    }
+    for (const auto& plan : plans) {
+        if (plan.msg_name == msg_name) {
+            return &plan;
+        }
+    }
+    return nullptr;
+}
+
+struct Plaza2ListenerCallbackState {
+    std::shared_ptr<Plaza2RuntimeSharedState> shared;
+    generated::StreamCode stream_code{kNoStreamCode};
+    Plaza2ListenerEventHandler* handler{nullptr};
+    void* listener_handle{nullptr};
+    bool scheme_loaded{false};
+    std::vector<RuntimeMessagePlan> message_plans;
+    std::vector<Plaza2DecodedFieldValue> decoded_fields;
+    std::vector<std::string> text_storage;
+    Plaza2Error last_error;
+};
+
+[[nodiscard]] Plaza2Error ensure_listener_scheme_loaded(Plaza2ListenerCallbackState& state) {
+    if (state.scheme_loaded) {
+        return {};
+    }
+    if (!state.shared || !state.shared->api || state.shared->api->lsn_getscheme == nullptr ||
+        state.listener_handle == nullptr) {
+        return {
+            .code = Plaza2ErrorCode::AdapterState,
+            .runtime_code = kCgErrIncorrectState,
+            .message = "listener scheme load requires an active CGate listener handle",
+        };
+    }
+
+    void* raw_scheme = nullptr;
+    const auto scheme_result = state.shared->api->lsn_getscheme(state.listener_handle, &raw_scheme);
+    const auto scheme_error = translate_plaza2_result("cg_lsn_getscheme", scheme_result);
+    if (scheme_error) {
+        return scheme_error;
+    }
+
+    const auto* scheme = static_cast<CgSchemeDesc*>(raw_scheme);
+    if (scheme == nullptr || scheme->messages == nullptr) {
+        return {
+            .code = Plaza2ErrorCode::DecodeFailed,
+            .runtime_code = 0,
+            .message = "CGate listener scheme is empty after CG_MSG_OPEN",
+        };
+    }
+
+    state.message_plans.clear();
+    std::size_t msg_index = 0;
+    for (auto* message = scheme->messages; message != nullptr; message = message->next, ++msg_index) {
+        const auto message_name = message->name == nullptr ? std::string{} : std::string(message->name);
+        const auto* table = find_table_descriptor_for_stream(state.stream_code, message_name);
+        if (table == nullptr) {
+            continue;
+        }
+
+        RuntimeMessagePlan plan;
+        plan.table_code = table->table_code;
+        plan.msg_index = msg_index;
+        plan.msg_name = message_name;
+
+        auto* field = message->fields;
+        std::size_t ordinal = 0;
+        while (field != nullptr) {
+            const auto field_name = field->name == nullptr ? std::string_view{} : std::string_view(field->name);
+            const auto fields = generated::FieldsForTable(table->table_code);
+            const generated::FieldDescriptor* descriptor = nullptr;
+            for (const auto& candidate : fields) {
+                if (candidate.field_name == field_name) {
+                    descriptor = &candidate;
+                    break;
+                }
+            }
+            if (descriptor == nullptr) {
+                return {
+                    .code = Plaza2ErrorCode::DecodeFailed,
+                    .runtime_code = 0,
+                    .message = "runtime listener scheme field '" + std::string(field_name) +
+                               "' is not covered by the reviewed metadata baseline",
+                };
+            }
+
+            plan.fields.push_back({
+                .field_code = descriptor->field_code,
+                .value_class = descriptor->value_class,
+                .type_token = field->type == nullptr ? std::string(descriptor->type_token) : std::string(field->type),
+                .offset = field->offset,
+                .size = field->size,
+                .ordinal = ordinal,
+            });
+            field = field->next;
+            ++ordinal;
+        }
+
+        state.message_plans.push_back(std::move(plan));
+    }
+
+    if (state.message_plans.empty()) {
+        return {
+            .code = Plaza2ErrorCode::DecodeFailed,
+            .runtime_code = 0,
+            .message = "listener scheme does not expose any reviewed tables for the configured stream",
+        };
+    }
+
+    state.scheme_loaded = true;
+    return {};
+}
+
+[[nodiscard]] Plaza2Error dispatch_listener_event(Plaza2ListenerCallbackState& state,
+                                                  const Plaza2ListenerEvent& event) {
+    if (state.handler == nullptr) {
+        return {};
+    }
+    return state.handler->on_plaza2_listener_event(event);
+}
+
+[[nodiscard]] CgResult listener_callback_bridge(void*, void*, void* raw_msg, void* data) {
+    auto* state = static_cast<Plaza2ListenerCallbackState*>(data);
+    if (state == nullptr || raw_msg == nullptr) {
+        return kCgErrOk;
+    }
+
+    auto fail = [&](Plaza2Error error) -> CgResult {
+        state->last_error = std::move(error);
+        return state->last_error.runtime_code == 0 ? kCgErrInternal : state->last_error.runtime_code;
+    };
+
+    try {
+        const auto* msg = static_cast<CgMsg*>(raw_msg);
+        switch (msg->type) {
+        case kCgMsgOpen: {
+            if (const auto error = ensure_listener_scheme_loaded(*state); error) {
+                return fail(error);
+            }
+            const auto event = Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::Open,
+                .stream_code = state->stream_code,
+            };
+            if (const auto error = dispatch_listener_event(*state, event); error) {
+                return fail(error);
+            }
+            return kCgErrOk;
+        }
+        case kCgMsgClose: {
+            const auto close_reason = msg->data != nullptr && msg->data_size >= sizeof(std::uint32_t)
+                                          ? read_unaligned<std::uint32_t>(msg->data)
+                                          : 0U;
+            const auto event = Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::Close,
+                .stream_code = state->stream_code,
+                .close_reason = close_reason,
+            };
+            if (const auto error = dispatch_listener_event(*state, event); error) {
+                return fail(error);
+            }
+            return kCgErrOk;
+        }
+        case kCgMsgTnBegin: {
+            const auto event = Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::TransactionBegin,
+                .stream_code = state->stream_code,
+            };
+            if (const auto error = dispatch_listener_event(*state, event); error) {
+                return fail(error);
+            }
+            return kCgErrOk;
+        }
+        case kCgMsgTnCommit: {
+            const auto event = Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::TransactionCommit,
+                .stream_code = state->stream_code,
+            };
+            if (const auto error = dispatch_listener_event(*state, event); error) {
+                return fail(error);
+            }
+            return kCgErrOk;
+        }
+        case kCgMsgP2replOnline: {
+            const auto event = Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::Online,
+                .stream_code = state->stream_code,
+            };
+            if (const auto error = dispatch_listener_event(*state, event); error) {
+                return fail(error);
+            }
+            return kCgErrOk;
+        }
+        case kCgMsgP2replLifenum: {
+            std::uint64_t life_number = 0;
+            if (msg->data != nullptr && msg->data_size >= sizeof(CgDataLifeNum)) {
+                life_number = static_cast<std::uint64_t>(static_cast<const CgDataLifeNum*>(msg->data)->life_number);
+            } else if (msg->data != nullptr && msg->data_size >= sizeof(std::uint32_t)) {
+                life_number = read_unaligned<std::uint32_t>(msg->data);
+            }
+            const auto event = Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::LifeNum,
+                .stream_code = state->stream_code,
+                .unsigned_value = life_number,
+            };
+            if (const auto error = dispatch_listener_event(*state, event); error) {
+                return fail(error);
+            }
+            return kCgErrOk;
+        }
+        case kCgMsgP2replClearDeleted: {
+            if (msg->data == nullptr || msg->data_size < sizeof(CgDataClearDeleted)) {
+                return fail({
+                    .code = Plaza2ErrorCode::DecodeFailed,
+                    .runtime_code = 0,
+                    .message = "CG_MSG_P2REPL_CLEARDELETED did not provide cg_data_cleardeleted_t payload",
+                });
+            }
+            const auto payload = read_unaligned<CgDataClearDeleted>(msg->data);
+            const auto* plan = find_runtime_message_plan(state->message_plans, payload.table_idx, {});
+            if (plan == nullptr) {
+                return fail({
+                    .code = Plaza2ErrorCode::DecodeFailed,
+                    .runtime_code = 0,
+                    .message = "CG_MSG_P2REPL_CLEARDELETED referenced an unknown runtime table index",
+                });
+            }
+            const auto event = Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::ClearDeleted,
+                .stream_code = state->stream_code,
+                .table_code = plan->table_code,
+                .signed_value = payload.table_rev,
+                .clear_deleted_flags = payload.flags,
+            };
+            if (const auto error = dispatch_listener_event(*state, event); error) {
+                return fail(error);
+            }
+            return kCgErrOk;
+        }
+        case kCgMsgP2replReplState: {
+            const auto text =
+                msg->data == nullptr ? std::string_view{} : std::string_view(static_cast<const char*>(msg->data));
+            const auto event = Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::ReplState,
+                .stream_code = state->stream_code,
+                .text_value = text,
+            };
+            if (const auto error = dispatch_listener_event(*state, event); error) {
+                return fail(error);
+            }
+            return kCgErrOk;
+        }
+        case kCgMsgStreamData: {
+            const auto* payload = static_cast<const CgMsgStreamData*>(raw_msg);
+            const auto* plan = find_runtime_message_plan(
+                state->message_plans, payload->msg_index,
+                payload->msg_name == nullptr ? std::string_view{} : std::string_view(payload->msg_name));
+            if (plan == nullptr) {
+                return fail({
+                    .code = Plaza2ErrorCode::DecodeFailed,
+                    .runtime_code = 0,
+                    .message =
+                        "CG_MSG_STREAM_DATA referenced a runtime message that is not covered by the reviewed baseline",
+                });
+            }
+
+            state->decoded_fields.clear();
+            state->text_storage.clear();
+            state->decoded_fields.reserve(plan->fields.size());
+            state->text_storage.reserve(plan->fields.size());
+
+            for (const auto& field : plan->fields) {
+                if (payload->data == nullptr || payload->data_size < field.offset + field.size) {
+                    return fail({
+                        .code = Plaza2ErrorCode::DecodeFailed,
+                        .runtime_code = 0,
+                        .message = "CG_MSG_STREAM_DATA payload size is smaller than the runtime field plan",
+                    });
+                }
+                if (payload->nulls != nullptr && field.ordinal < payload->num_nulls &&
+                    payload->nulls[field.ordinal] != 0U) {
+                    continue;
+                }
+
+                const auto* field_ptr = static_cast<const std::byte*>(payload->data) + field.offset;
+                Plaza2DecodedFieldValue decoded{
+                    .field_code = field.field_code,
+                };
+
+                switch (field.value_class) {
+                case generated::ValueClass::kSignedInteger:
+                    decoded.kind = Plaza2DecodedValueKind::SignedInteger;
+                    decoded.signed_value = read_signed_integer(field_ptr, field.size);
+                    break;
+                case generated::ValueClass::kUnsignedInteger:
+                    decoded.kind = Plaza2DecodedValueKind::UnsignedInteger;
+                    decoded.unsigned_value = read_unsigned_integer(field_ptr, field.size);
+                    break;
+                case generated::ValueClass::kFixedString:
+                    decoded.kind = Plaza2DecodedValueKind::String;
+                    state->text_storage.push_back(
+                        field.type_token == "a" ? copy_c_string(reinterpret_cast<const char*>(field_ptr), 1)
+                                                : copy_c_string(reinterpret_cast<const char*>(field_ptr), field.size));
+                    decoded.text_value = state->text_storage.back();
+                    break;
+                case generated::ValueClass::kDecimal:
+                    decoded.kind = Plaza2DecodedValueKind::Decimal;
+                    state->text_storage.emplace_back();
+                    if (const auto error = convert_runtime_field_to_string(*state->shared->api, field.type_token,
+                                                                           field_ptr, state->text_storage.back());
+                        error) {
+                        return fail(error);
+                    }
+                    decoded.text_value = state->text_storage.back();
+                    break;
+                case generated::ValueClass::kFloatingPoint:
+                    decoded.kind = Plaza2DecodedValueKind::FloatingPoint;
+                    state->text_storage.emplace_back();
+                    if (const auto error = convert_runtime_field_to_string(*state->shared->api, field.type_token,
+                                                                           field_ptr, state->text_storage.back());
+                        error) {
+                        return fail(error);
+                    }
+                    decoded.text_value = state->text_storage.back();
+                    break;
+                case generated::ValueClass::kTimestamp:
+                    decoded.kind = Plaza2DecodedValueKind::Timestamp;
+                    decoded.unsigned_value = to_unix_seconds(read_unaligned<CgTime>(field_ptr));
+                    break;
+                case generated::ValueClass::kBinary:
+                    continue;
+                }
+
+                state->decoded_fields.push_back(decoded);
+            }
+
+            const auto event = Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::StreamData,
+                .stream_code = state->stream_code,
+                .table_code = plan->table_code,
+                .fields = state->decoded_fields,
+                .signed_value = payload->rev,
+            };
+            if (const auto error = dispatch_listener_event(*state, event); error) {
+                return fail(error);
+            }
+            return kCgErrOk;
+        }
+        default:
+            return kCgErrOk;
+        }
+    } catch (const std::exception& error) {
+        return fail({
+            .code = Plaza2ErrorCode::CallbackFailed,
+            .runtime_code = 0,
+            .message = std::string("PLAZA II listener callback failed: ") + error.what(),
+        });
+    } catch (...) {
+        return fail({
+            .code = Plaza2ErrorCode::CallbackFailed,
+            .runtime_code = 0,
+            .message = "PLAZA II listener callback failed with an unknown exception",
+        });
+    }
+}
 
 Plaza2Error validate_plaza2_settings(const Plaza2Settings& settings) {
     if (settings.runtime_root.empty()) {
@@ -1044,13 +1660,24 @@ bool Plaza2Connection::is_created() const noexcept {
     return handle_ != nullptr;
 }
 
+Plaza2Listener::Plaza2Listener() = default;
+
 Plaza2Listener::~Plaza2Listener() {
     if (handle_ != nullptr) {
         static_cast<void>(destroy());
     }
 }
 
+Plaza2Listener::Plaza2Listener(Plaza2Listener&&) noexcept = default;
+
+Plaza2Listener& Plaza2Listener::operator=(Plaza2Listener&&) noexcept = default;
+
 Plaza2Error Plaza2Listener::create(Plaza2Connection& connection, std::string_view settings) {
+    return create(connection, kNoStreamCode, settings, nullptr);
+}
+
+Plaza2Error Plaza2Listener::create(Plaza2Connection& connection, generated::StreamCode stream_code,
+                                   std::string_view settings, Plaza2ListenerEventHandler* handler) {
     if (!connection.shared_ || !connection.shared_->api || connection.handle_ == nullptr) {
         return {
             .code = Plaza2ErrorCode::AdapterState,
@@ -1074,16 +1701,30 @@ Plaza2Error Plaza2Listener::create(Plaza2Connection& connection, std::string_vie
     }
 
     shared_ = connection.shared_;
+    callback_state_.reset();
+    if (handler != nullptr) {
+        callback_state_ = std::make_unique<Plaza2ListenerCallbackState>();
+        callback_state_->shared = shared_;
+        callback_state_->stream_code = stream_code;
+        callback_state_->handler = handler;
+    }
+
     void* raw_handle = nullptr;
     const std::string copied_settings(settings);
-    const auto result = shared_->api->lsn_new(connection.handle_, copied_settings.c_str(), &noop_listener_callback,
-                                              nullptr, &raw_handle);
+    const auto result =
+        shared_->api->lsn_new(connection.handle_, copied_settings.c_str(),
+                              handler == nullptr ? &noop_listener_callback : &listener_callback_bridge,
+                              callback_state_ == nullptr ? nullptr : callback_state_.get(), &raw_handle);
     const auto translated = translate_plaza2_result("cg_lsn_new", result);
     if (translated) {
+        callback_state_.reset();
         shared_.reset();
         return translated;
     }
     handle_ = raw_handle;
+    if (callback_state_ != nullptr) {
+        callback_state_->listener_handle = raw_handle;
+    }
     return {};
 }
 
@@ -1115,6 +1756,7 @@ Plaza2Error Plaza2Listener::destroy() {
     const auto translated = translate_plaza2_result("cg_lsn_destroy", result);
     if (!translated) {
         handle_ = nullptr;
+        callback_state_.reset();
         shared_.reset();
     }
     return translated;

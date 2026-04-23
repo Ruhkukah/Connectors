@@ -142,6 +142,7 @@ moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "source_style_check" "to
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "repo_style_check" "tools/repo_style_check.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "unicode_guard" "tools/unicode_guard.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_cert_runner" "apps/moex_cert_runner.py")
+moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_plaza2_cert_runner" "apps/moex_plaza2_cert_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_replay_tool" "apps/moex_replay_tool.py")
 
 add_executable(moex_twime_cert_runner
@@ -153,6 +154,16 @@ target_compile_features(moex_twime_cert_runner PRIVATE cxx_std_20)
 set_target_properties(moex_twime_cert_runner PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
     OUTPUT_NAME "moex_twime_cert_runner")
+
+add_executable(moex_plaza2_test_runner
+    apps/plaza2_test_runner.cpp)
+target_link_libraries(moex_plaza2_test_runner
+    PRIVATE
+        moex_plaza2_cgate_live_session)
+target_compile_features(moex_plaza2_test_runner PRIVATE cxx_std_20)
+set_target_properties(moex_plaza2_test_runner PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
+    OUTPUT_NAME "moex_plaza2_test_runner")
 
 add_library(twime_test_support STATIC
     tests/twime_sbe/twime_test_support.cpp)
@@ -408,6 +419,14 @@ add_test(
     NAME profile_check_twime_live_session_local_example
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
             --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_twime_live_session_local.example.yaml")
+add_test(
+    NAME profile_check_plaza2_repl_live_session_template
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_repl_live_session.template.yaml")
+add_test(
+    NAME profile_check_plaza2_repl_live_session_local_example
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_repl_live_session_local.example.yaml")
 
 add_test(
     NAME profile_check_twime_tcp_external_fixture_real_host_fails
@@ -419,6 +438,11 @@ add_test(
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
         --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/twime_live_session_nonloopback_fixture.yaml")
 set_tests_properties(profile_check_twime_live_session_fixture_real_host_fails PROPERTIES WILL_FAIL TRUE)
+add_test(
+    NAME profile_check_plaza2_repl_fixture_real_host_fails
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/plaza2_repl_nonloopback_fixture.yaml")
+set_tests_properties(profile_check_plaza2_repl_fixture_real_host_fails PROPERTIES WILL_FAIL TRUE)
 
 add_test(
     NAME profile_check_prod_with_arm
@@ -647,6 +671,12 @@ target_compile_definitions(plaza2_runtime_test_support
 
 add_library(plaza2_fake_cgate_runtime SHARED
     tests/plaza2_cgate/fake_cgate_runtime.cpp)
+target_link_libraries(plaza2_fake_cgate_runtime
+    PRIVATE
+        moex_plaza2_cgate_metadata)
+target_include_directories(plaza2_fake_cgate_runtime
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/protocols/plaza2_cgate/generated")
 target_compile_features(plaza2_fake_cgate_runtime PUBLIC cxx_std_20)
 set_target_properties(plaza2_fake_cgate_runtime PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests"
@@ -669,6 +699,46 @@ endfunction()
 moex_add_plaza2_cgate_test(plaza2_runtime_probe_test tests/plaza2_cgate/plaza2_runtime_probe_test.cpp)
 moex_add_plaza2_cgate_test(plaza2_scheme_drift_test tests/plaza2_cgate/plaza2_scheme_drift_test.cpp)
 moex_add_plaza2_cgate_test(plaza2_runtime_adapter_test tests/plaza2_cgate/plaza2_runtime_adapter_test.cpp)
+
+add_executable(plaza2_manual_operator_gate_test
+    tests/plaza2_cgate/plaza2_manual_operator_gate_test.cpp)
+target_link_libraries(plaza2_manual_operator_gate_test
+    PRIVATE
+        plaza2_runtime_test_support
+        moex_plaza2_cgate_live_session)
+target_compile_features(plaza2_manual_operator_gate_test PRIVATE cxx_std_20)
+set_property(TARGET plaza2_manual_operator_gate_test PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME plaza2_manual_operator_gate_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_manual_operator_gate_test")
+
+function(moex_add_plaza2_live_runner_test target_name source_file)
+    add_executable(${target_name} "${source_file}")
+    add_dependencies(${target_name} plaza2_fake_cgate_runtime)
+    target_link_libraries(${target_name}
+        PRIVATE
+            plaza2_runtime_test_support
+            moex_plaza2_cgate_live_session)
+    target_compile_features(${target_name} PRIVATE cxx_std_20)
+    set_property(TARGET ${target_name} PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+    add_test(
+        NAME ${target_name}
+        COMMAND "${MOEX_BUILD_ROOT}/tests/${target_name}" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+endfunction()
+
+moex_add_plaza2_live_runner_test(plaza2_live_session_validation_test
+    tests/plaza2_cgate/plaza2_live_session_validation_test.cpp)
+moex_add_plaza2_live_runner_test(plaza2_live_session_runner_test
+    tests/plaza2_cgate/plaza2_live_session_runner_test.cpp)
+
+add_test(
+    NAME plaza2_cert_runner_requires_test_plaza2_arm
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_plaza2_cert_runner"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/plaza2_repl_nonloopback_fixture.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/plaza2-cert-runner"
+        --armed-test-network
+        --armed-test-session)
+set_tests_properties(plaza2_cert_runner_requires_test_plaza2_arm PROPERTIES WILL_FAIL TRUE)
 
 add_test(
     NAME osengine_inventory_fixture
