@@ -53,7 +53,9 @@ The read-side ownership model is explicit:
 - public ABI functions never return raw pointers into internal native vectors
 - reads have no refresh side effects and do not mutate committed native state
 
-For offline tests only, the repo uses narrow internal C++ install hooks in `src/moex_c_api_internal.hpp` to attach committed projector/reconciler objects to a connector handle. That hook is not part of the public C ABI contract.
+For offline tests only, the repo uses narrow internal C++ install hooks in
+`src/moex_c_api_internal.hpp` to attach committed projector/reconciler objects to a connector handle.
+That hook is not part of the public C ABI contract.
 
 ## Count / Copy-Out Pattern
 
