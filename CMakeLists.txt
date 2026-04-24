@@ -884,6 +884,11 @@ add_test(
 set_tests_properties(plaza2_twime_integrated_runner_requires_test_reconcile_arm PROPERTIES WILL_FAIL TRUE)
 
 add_test(
+    NAME phase4d_vps_scripts_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/scripts/assert_phase4d_vps_scripts.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_test(
     NAME osengine_inventory_fixture
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/osengine_inventory"
         --root "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/osengine/MoexFixFastTwimeFutures"
