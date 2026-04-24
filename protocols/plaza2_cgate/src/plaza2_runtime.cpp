@@ -255,6 +255,32 @@ struct RuntimeSignatureEntry {
     std::size_t count{0};
 };
 
+struct RuntimeTableEntry {
+    std::string example_name;
+    std::vector<RuntimeSchemeField> fields;
+};
+
+struct ReviewedTableEntry {
+    std::string example_name;
+    std::vector<generated::FieldDescriptor> fields;
+};
+
+struct SchemeTableKey {
+    std::string stream_name;
+    std::string table_name;
+
+    [[nodiscard]] std::string display_name() const {
+        return stream_name + "." + table_name;
+    }
+
+    friend bool operator<(const SchemeTableKey& lhs, const SchemeTableKey& rhs) noexcept {
+        if (lhs.stream_name != rhs.stream_name) {
+            return lhs.stream_name < rhs.stream_name;
+        }
+        return lhs.table_name < rhs.table_name;
+    }
+};
+
 [[nodiscard]] std::string trim_copy(std::string_view value) {
     std::size_t begin = 0;
     while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin])) != 0) {
@@ -390,6 +416,45 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
     return present;
 }
 
+[[nodiscard]] std::optional<std::filesystem::path> env_open_ini_path(std::string_view settings) {
+    constexpr std::string_view kPrefix = "ini=";
+    const auto begin = settings.find(kPrefix);
+    if (begin == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto value_begin = begin + kPrefix.size();
+    const auto value_end = settings.find(';', value_begin);
+    const auto value = trim_copy(settings.substr(value_begin, value_end - value_begin));
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    return std::filesystem::path(value);
+}
+
+[[nodiscard]] std::filesystem::path resolve_config_ini_path(const std::filesystem::path& config_dir,
+                                                            const std::filesystem::path& ini_path) {
+    if (ini_path.is_absolute()) {
+        return ini_path;
+    }
+    const auto direct = config_dir / ini_path;
+    if (std::filesystem::exists(direct)) {
+        return direct;
+    }
+    if (ini_path.has_parent_path() && ini_path.begin() != ini_path.end() && *ini_path.begin() == "config") {
+        return config_dir / ini_path.filename();
+    }
+    return direct;
+}
+
+[[nodiscard]] std::vector<std::string> expected_config_files_for_settings(const Plaza2Settings& settings) {
+    const auto ini_path = env_open_ini_path(settings.env_open_settings);
+    if (ini_path.has_value()) {
+        return {ini_path->filename().string()};
+    }
+    auto expected = Plaza2RuntimeProbe::expected_config_filenames(settings.environment);
+    return {expected.begin(), expected.end()};
+}
+
 [[nodiscard]] std::string canonical_table_signature(std::span<const RuntimeSchemeField> fields) {
     std::ostringstream out;
     for (const auto& field : fields) {
@@ -404,6 +469,95 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
         out << field.field_name << ':' << field.type_token << ';';
     }
     return out.str();
+}
+
+[[nodiscard]] bool table_is_in_list(std::string_view stream_name, std::string_view table_name,
+                                    std::span<const std::pair<std::string_view, std::string_view>> tables) {
+    return std::any_of(tables.begin(), tables.end(),
+                       [&](const auto& table) { return table.first == stream_name && table.second == table_name; });
+}
+
+[[nodiscard]] bool is_required_private_state_table(std::string_view stream_name, std::string_view table_name) {
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 21> kRequiredTables = {{
+        {"FORTS_REFDATA_REPL", "session"},
+        {"FORTS_REFDATA_REPL", "fut_instruments"},
+        {"FORTS_REFDATA_REPL", "opt_sess_contents"},
+        {"FORTS_REFDATA_REPL", "multileg_dict"},
+        {"FORTS_REFDATA_REPL", "instr2matching_map"},
+        {"FORTS_TRADE_REPL", "orders_log"},
+        {"FORTS_TRADE_REPL", "multileg_orders_log"},
+        {"FORTS_TRADE_REPL", "user_deal"},
+        {"FORTS_TRADE_REPL", "user_multileg_deal"},
+        {"FORTS_TRADE_REPL", "heartbeat"},
+        {"FORTS_TRADE_REPL", "sys_events"},
+        {"FORTS_USERORDERBOOK_REPL", "orders"},
+        {"FORTS_USERORDERBOOK_REPL", "multileg_orders"},
+        {"FORTS_USERORDERBOOK_REPL", "orders_currentday"},
+        {"FORTS_USERORDERBOOK_REPL", "multileg_orders_currentday"},
+        {"FORTS_USERORDERBOOK_REPL", "info"},
+        {"FORTS_USERORDERBOOK_REPL", "info_currentday"},
+        {"FORTS_POS_REPL", "position"},
+        {"FORTS_POS_REPL", "info"},
+        {"FORTS_PART_REPL", "part"},
+        {"FORTS_PART_REPL", "sys_events"},
+    }};
+    return table_is_in_list(stream_name, table_name, kRequiredTables);
+}
+
+[[nodiscard]] bool is_warning_only_private_state_table(std::string_view stream_name, std::string_view table_name) {
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 1> kWarningOnlyTables = {{
+        {"FORTS_REFDATA_REPL", "clearing_members"},
+    }};
+    return table_is_in_list(stream_name, table_name, kWarningOnlyTables);
+}
+
+[[nodiscard]] bool is_fatal_scheme_table_drift(const SchemeTableKey& key) {
+    if (is_warning_only_private_state_table(key.stream_name, key.table_name)) {
+        return false;
+    }
+    return is_required_private_state_table(key.stream_name, key.table_name);
+}
+
+[[nodiscard]] std::string normalized_runtime_stream_name(std::string_view scheme_name) {
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 5> kRuntimeSchemeAliases = {{
+        {"REFDATA", "FORTS_REFDATA_REPL"},
+        {"Trade", "FORTS_TRADE_REPL"},
+        {"OrderBook", "FORTS_USERORDERBOOK_REPL"},
+        {"POS", "FORTS_POS_REPL"},
+        {"PART", "FORTS_PART_REPL"},
+    }};
+    for (const auto& [runtime_name, reviewed_name] : kRuntimeSchemeAliases) {
+        if (scheme_name == runtime_name) {
+            return std::string(reviewed_name);
+        }
+    }
+    return std::string(scheme_name);
+}
+
+[[nodiscard]] std::optional<std::size_t> integer_type_size(std::string_view type_token) {
+    if (type_token == "i1" || type_token == "u1") {
+        return 1;
+    }
+    if (type_token == "i2" || type_token == "u2") {
+        return 2;
+    }
+    if (type_token == "i4" || type_token == "u4") {
+        return 4;
+    }
+    if (type_token == "i8" || type_token == "u8") {
+        return 8;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool compatible_runtime_field_type(std::string_view reviewed_type, std::string_view runtime_type) {
+    if (reviewed_type == runtime_type) {
+        return true;
+    }
+    const auto reviewed_integer_size = integer_type_size(reviewed_type);
+    const auto runtime_integer_size = integer_type_size(runtime_type);
+    return reviewed_integer_size.has_value() && runtime_integer_size.has_value() &&
+           *reviewed_integer_size == *runtime_integer_size;
 }
 
 [[nodiscard]] bool parse_runtime_scheme(const std::filesystem::path& scheme_path, ParsedRuntimeScheme& out_scheme,
@@ -625,6 +779,12 @@ void sha256_update(Sha256State& state, std::span<const std::byte> bytes) {
     if (lhs == Plaza2Compatibility::Incompatible || rhs == Plaza2Compatibility::Incompatible) {
         return Plaza2Compatibility::Incompatible;
     }
+    if (lhs == Plaza2Compatibility::Unknown || rhs == Plaza2Compatibility::Unknown) {
+        return Plaza2Compatibility::Unknown;
+    }
+    if (lhs == Plaza2Compatibility::CompatibleWithWarnings || rhs == Plaza2Compatibility::CompatibleWithWarnings) {
+        return Plaza2Compatibility::CompatibleWithWarnings;
+    }
     if (lhs == Plaza2Compatibility::Compatible && rhs == Plaza2Compatibility::Compatible) {
         return Plaza2Compatibility::Compatible;
     }
@@ -642,12 +802,14 @@ void push_issue(std::vector<Plaza2ProbeIssue>& issues, Plaza2ProbeIssueCode code
 }
 
 [[nodiscard]] Plaza2Compatibility compatibility_from_issues(const std::vector<Plaza2ProbeIssue>& issues) {
+    bool has_warning = false;
     for (const auto& issue : issues) {
         if (issue.fatal) {
             return Plaza2Compatibility::Incompatible;
         }
+        has_warning = true;
     }
-    return issues.empty() ? Plaza2Compatibility::Compatible : Plaza2Compatibility::Unknown;
+    return has_warning ? Plaza2Compatibility::CompatibleWithWarnings : Plaza2Compatibility::Compatible;
 }
 
 [[nodiscard]] std::unique_ptr<RuntimeApi, RuntimeLibraryCloser>
@@ -724,25 +886,29 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
 
     report.runtime_table_count = parsed.tables.size();
     std::size_t runtime_field_count = 0;
-    std::map<std::string, std::map<std::string, RuntimeSignatureEntry>> runtime_by_name;
+    std::map<SchemeTableKey, RuntimeTableEntry> runtime_by_name;
     for (const auto& table : parsed.tables) {
         runtime_field_count += table.fields.size();
-        auto& entry = runtime_by_name[table.table_name][canonical_table_signature(table.fields)];
+        const SchemeTableKey key{.stream_name = normalized_runtime_stream_name(table.scheme_name),
+                                 .table_name = table.table_name};
+        auto& entry = runtime_by_name[key];
         if (entry.example_name.empty()) {
-            entry.example_name = table.scheme_name + "." + table.table_name;
+            entry.example_name = key.display_name();
         }
-        ++entry.count;
+        entry.fields = table.fields;
     }
     report.runtime_field_count = runtime_field_count;
 
-    std::map<std::string, std::map<std::string, ReviewedSignatureEntry>> reviewed_by_name;
+    std::map<SchemeTableKey, ReviewedTableEntry> reviewed_by_name;
     for (const auto& table : generated::TableDescriptors()) {
         const auto fields = generated::FieldsForTable(table.table_code);
-        auto& entry = reviewed_by_name[std::string(table.table_name)][canonical_table_signature(fields)];
+        const SchemeTableKey key{.stream_name = std::string(table.stream_name),
+                                 .table_name = std::string(table.table_name)};
+        auto& entry = reviewed_by_name[key];
         if (entry.example_name.empty()) {
-            entry.example_name = std::string(table.stream_name) + "." + std::string(table.table_name);
+            entry.example_name = key.display_name();
         }
-        ++entry.count;
+        entry.fields.assign(fields.begin(), fields.end());
     }
 
     if (!settings.expected_scheme_sha256.empty() && report.runtime_scheme_sha256 != settings.expected_scheme_sha256) {
@@ -757,7 +923,21 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
                        parsed.markers.spectra_release);
     }
 
-    std::set<std::string> table_names;
+    auto record_drift = [&](const SchemeTableKey& key, Plaza2ProbeIssueCode code, bool fatal, std::string subject,
+                            std::string message) {
+        push_issue(report.issues, code, fatal, std::move(subject), message);
+        auto& count = fatal ? report.fatal_drift_count : report.warning_drift_count;
+        auto& tables = fatal ? report.fatal_drift_tables : report.warning_drift_tables;
+        auto& last_reason = fatal ? report.last_fatal_drift_reason : report.last_warning_drift_reason;
+        ++count;
+        const auto display_name = key.display_name();
+        if (std::find(tables.begin(), tables.end(), display_name) == tables.end()) {
+            tables.push_back(display_name);
+        }
+        last_reason = std::move(message);
+    };
+
+    std::set<SchemeTableKey> table_names;
     for (const auto& [table_name, _] : reviewed_by_name) {
         table_names.insert(table_name);
     }
@@ -769,52 +949,52 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
         const auto reviewed_it = reviewed_by_name.find(table_name);
         const auto runtime_it = runtime_by_name.find(table_name);
         if (reviewed_it == reviewed_by_name.end()) {
-            push_issue(report.issues, Plaza2ProbeIssueCode::RuntimeTableUnexpected, true, table_name,
-                       "runtime scheme exposes unexpected table name not present in Phase 3B baseline");
+            record_drift(table_name, Plaza2ProbeIssueCode::RuntimeTableUnexpected,
+                         is_fatal_scheme_table_drift(table_name), table_name.display_name(),
+                         "runtime scheme exposes unexpected table not present in Phase 3B baseline: " +
+                             table_name.display_name());
             continue;
         }
         if (runtime_it == runtime_by_name.end()) {
-            push_issue(report.issues, Plaza2ProbeIssueCode::ReviewedTableMissing, true,
-                       reviewed_it->second.begin()->second.example_name,
-                       "runtime scheme is missing reviewed table family '" + table_name + "'");
+            record_drift(table_name, Plaza2ProbeIssueCode::ReviewedTableMissing,
+                         is_fatal_scheme_table_drift(table_name), reviewed_it->second.example_name,
+                         "runtime scheme is missing reviewed table '" + table_name.display_name() + "'");
             continue;
         }
 
-        std::set<std::string> signatures;
-        for (const auto& [signature, _] : reviewed_it->second) {
-            signatures.insert(signature);
+        const auto runtime_signature = canonical_table_signature(runtime_it->second.fields);
+        const auto reviewed_signature = canonical_table_signature(reviewed_it->second.fields);
+        if (runtime_signature == reviewed_signature) {
+            continue;
         }
-        for (const auto& [signature, _] : runtime_it->second) {
-            signatures.insert(signature);
-        }
-        for (const auto& signature : signatures) {
-            const auto reviewed_signature_it = reviewed_it->second.find(signature);
-            const auto runtime_signature_it = runtime_it->second.find(signature);
-            const std::size_t reviewed_count =
-                reviewed_signature_it == reviewed_it->second.end() ? 0 : reviewed_signature_it->second.count;
-            const std::size_t runtime_count =
-                runtime_signature_it == runtime_it->second.end() ? 0 : runtime_signature_it->second.count;
 
-            if (reviewed_count == runtime_count) {
+        if (is_required_private_state_table(table_name.stream_name, table_name.table_name)) {
+            std::map<std::string_view, std::string_view> runtime_fields;
+            for (const auto& field : runtime_it->second.fields) {
+                runtime_fields.emplace(field.field_name, field.type_token);
+            }
+            bool material_required_drift = false;
+            for (const auto& field : reviewed_it->second.fields) {
+                const auto runtime_field_it = runtime_fields.find(field.field_name);
+                if (runtime_field_it == runtime_fields.end() ||
+                    !compatible_runtime_field_type(field.type_token, runtime_field_it->second)) {
+                    material_required_drift = true;
+                    break;
+                }
+            }
+            if (material_required_drift) {
+                record_drift(table_name, Plaza2ProbeIssueCode::ReviewedTableSignatureMismatch, true,
+                             reviewed_it->second.example_name,
+                             "runtime scheme diverged materially from reviewed projected table signature for '" +
+                                 table_name.display_name() + "'");
                 continue;
             }
-            if (reviewed_count > runtime_count) {
-                const auto subject = reviewed_signature_it == reviewed_it->second.end()
-                                         ? table_name
-                                         : reviewed_signature_it->second.example_name;
-                push_issue(report.issues,
-                           runtime_count == 0 ? Plaza2ProbeIssueCode::ReviewedTableMissing
-                                              : Plaza2ProbeIssueCode::ReviewedTableSignatureMismatch,
-                           true, subject,
-                           "runtime scheme diverged from reviewed table signature for '" + table_name + "'");
-            } else {
-                const auto subject = runtime_signature_it == runtime_it->second.end()
-                                         ? table_name
-                                         : runtime_signature_it->second.example_name;
-                push_issue(report.issues, Plaza2ProbeIssueCode::RuntimeTableUnexpected, true, subject,
-                           "runtime scheme exposes an unexpected table signature for '" + table_name + "'");
-            }
         }
+
+        record_drift(table_name, Plaza2ProbeIssueCode::ReviewedTableSignatureMismatch, false,
+                     reviewed_it->second.example_name,
+                     "runtime scheme differs from reviewed non-material table signature for '" +
+                         table_name.display_name() + "'");
     }
 
     report.compatibility = compatibility_from_issues(report.issues);
@@ -1327,6 +1507,20 @@ Plaza2Error validate_plaza2_settings(const Plaza2Settings& settings) {
     return {};
 }
 
+std::string_view plaza2_compatibility_name(Plaza2Compatibility compatibility) noexcept {
+    switch (compatibility) {
+    case Plaza2Compatibility::Unknown:
+        return "Unknown";
+    case Plaza2Compatibility::Compatible:
+        return "Compatible";
+    case Plaza2Compatibility::CompatibleWithWarnings:
+        return "CompatibleWithWarnings";
+    case Plaza2Compatibility::Incompatible:
+        return "Incompatible";
+    }
+    return "Unknown";
+}
+
 std::string make_plaza2_application_name(std::string_view prefix, std::string_view scope, std::uint32_t instance) {
     std::string sanitized_prefix = sanitize_token(prefix);
     std::string sanitized_scope = sanitize_token(scope);
@@ -1385,8 +1579,7 @@ Plaza2Error translate_plaza2_result(std::string_view operation, std::uint32_t ru
 Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& settings) {
     Plaza2RuntimeProbeReport report;
     report.layout.runtime_root = settings.runtime_root;
-    report.layout.expected_config_files.assign(expected_config_filenames(settings.environment).begin(),
-                                               expected_config_filenames(settings.environment).end());
+    report.layout.expected_config_files = expected_config_files_for_settings(settings);
 
     const auto validation_error = validate_plaza2_settings(settings);
     if (validation_error) {
@@ -1456,7 +1649,11 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
         const std::set<std::string> present(report.layout.present_config_files.begin(),
                                             report.layout.present_config_files.end());
         for (const auto& expected_name : expected) {
-            if (!present.contains(expected_name)) {
+            const auto expected_path =
+                env_open_ini_path(settings.env_open_settings).has_value()
+                    ? resolve_config_ini_path(*config_dir, *env_open_ini_path(settings.env_open_settings))
+                    : *config_dir / expected_name;
+            if (!std::filesystem::exists(expected_path)) {
                 push_issue(report.issues, Plaza2ProbeIssueCode::MissingConfigFile, true, expected_name,
                            "expected config file is missing from resolved config directory");
             }

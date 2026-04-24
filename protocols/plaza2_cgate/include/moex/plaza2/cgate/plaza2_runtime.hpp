@@ -20,7 +20,8 @@ enum class Plaza2Environment : std::uint8_t {
 enum class Plaza2Compatibility : std::uint8_t {
     Unknown = 0,
     Compatible = 1,
-    Incompatible = 2,
+    CompatibleWithWarnings = 2,
+    Incompatible = 3,
 };
 
 enum class Plaza2ErrorCode : std::uint16_t {
@@ -109,6 +110,12 @@ struct Plaza2SchemeDriftReport {
     std::size_t runtime_table_count{0};
     std::size_t reviewed_field_count{0};
     std::size_t runtime_field_count{0};
+    std::size_t fatal_drift_count{0};
+    std::size_t warning_drift_count{0};
+    std::vector<std::string> fatal_drift_tables;
+    std::vector<std::string> warning_drift_tables;
+    std::string last_fatal_drift_reason;
+    std::string last_warning_drift_reason;
     std::vector<Plaza2ProbeIssue> issues;
 };
 
@@ -179,6 +186,7 @@ class Plaza2ListenerEventHandler {
 };
 
 [[nodiscard]] Plaza2Error validate_plaza2_settings(const Plaza2Settings& settings);
+[[nodiscard]] std::string_view plaza2_compatibility_name(Plaza2Compatibility compatibility) noexcept;
 [[nodiscard]] std::string make_plaza2_application_name(std::string_view prefix, std::string_view scope,
                                                        std::uint32_t instance);
 [[nodiscard]] Plaza2Error translate_plaza2_result(std::string_view operation, std::uint32_t runtime_code);

@@ -36,7 +36,7 @@ moex::plaza2::cgate::Plaza2LiveSessionConfig make_config(const moex::plaza2::tes
     config.runtime.environment = Plaza2Environment::Test;
     config.runtime.runtime_root = fixture.root;
     config.runtime.expected_spectra_release = "SPECTRA93";
-    config.runtime.env_open_settings = "ini=config/t1.ini;key=${PLAZA2_TEST_CREDENTIALS}";
+    config.runtime.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";
     config.connection_settings = "p2tcp://198.51.100.10:4001;app_name=connectors_phase3f_success";
     config.streams = make_private_streams();
     config.credentials.source = Plaza2CredentialSource::Env;
@@ -78,6 +78,7 @@ int main(int argc, char** argv) {
             materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
 
         ::setenv("MOEX_PLAZA2_TEST_CREDENTIALS", "PHASE3F-SUPER-SECRET", 1);
+        ::setenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME", "1", 1);
 
         Plaza2LiveSessionRunner runner(make_config(fixture));
         const auto start = runner.start();
@@ -97,6 +98,10 @@ int main(int argc, char** argv) {
         const auto& health = runner.health_snapshot();
         require(health.runtime_probe_ok, "health should report runtime probe success");
         require(health.scheme_drift_ok, "health should report compatible scheme drift state");
+        require(health.scheme_drift_status == Plaza2Compatibility::Compatible,
+                "health should expose exact scheme drift compatibility");
+        require(health.scheme_drift_warning_count == 0, "clean scheme should not report warning drift");
+        require(health.scheme_drift_fatal_count == 0, "clean scheme should not report fatal drift");
         require(health.ready, "runner health should report ready");
         require(health.counts.session_count == 1, "session count mismatch");
         require(health.counts.instrument_count == 1, "instrument count mismatch");
@@ -121,7 +126,7 @@ int main(int argc, char** argv) {
             require(line.find("PHASE3F-SUPER-SECRET") == std::string::npos,
                     "runner operator log must not leak raw credential values");
         }
-        const auto probe_index = find_log_index(logs, "runtime_probe=compatible");
+        const auto probe_index = find_log_index(logs, "runtime_probe=Compatible");
         const auto env_index = find_log_index(logs, "env=open");
         const auto ready_index = find_log_index(logs, "state=ready");
         const auto redaction_index = find_log_index(logs, "[REDACTED]");
@@ -134,6 +139,7 @@ int main(int argc, char** argv) {
 
         cleanup();
         ::unsetenv("MOEX_PLAZA2_TEST_CREDENTIALS");
+        ::unsetenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

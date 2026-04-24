@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
             config.arm_state.test_network_armed = true;
             config.arm_state.test_session_armed = true;
             config.arm_state.test_plaza2_armed = true;
-            config.runtime.env_open_settings = "ini=config/t1.ini;key=${PLAZA2_TEST_CREDENTIALS}";
+            config.runtime.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";
             config.credentials.source = Plaza2CredentialSource::File;
             config.credentials.file_path = fixture.root / "missing_auth.ini";
             Plaza2LiveSessionRunner runner(config);

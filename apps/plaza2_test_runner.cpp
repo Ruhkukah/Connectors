@@ -14,6 +14,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
+using moex::plaza2::cgate::plaza2_compatibility_name;
 using moex::plaza2::cgate::Plaza2CredentialSource;
 using moex::plaza2::cgate::Plaza2Environment;
 using moex::plaza2::cgate::Plaza2LiveRunnerState;
@@ -87,6 +88,17 @@ std::optional<std::uint32_t> parse_u32(std::string_view value) {
     } catch (...) {
         return std::nullopt;
     }
+}
+
+std::string join_csv(const std::vector<std::string>& values) {
+    std::string out;
+    for (const auto& value : values) {
+        if (!out.empty()) {
+            out.push_back(',');
+        }
+        out += value;
+    }
+    return out;
 }
 
 std::optional<std::pair<std::string, std::string>> parse_assignment(std::string_view value) {
@@ -383,28 +395,42 @@ int main(int argc, char** argv) {
         lines.push_back("ready=" + std::string(health.ready ? "true" : "false"));
         lines.push_back("runtime_probe_ok=" + std::string(health.runtime_probe_ok ? "true" : "false"));
         lines.push_back("scheme_drift_ok=" + std::string(health.scheme_drift_ok ? "true" : "false"));
+        lines.push_back("scheme_drift_status=" + std::string(plaza2_compatibility_name(health.scheme_drift_status)));
+        lines.push_back("scheme_drift_warning_count=" + std::to_string(health.scheme_drift_warning_count));
+        lines.push_back("scheme_drift_fatal_count=" + std::to_string(health.scheme_drift_fatal_count));
+        lines.push_back("scheme_drift_warning_tables=" + join_csv(health.scheme_drift_warning_tables));
+        lines.push_back("scheme_drift_fatal_tables=" + join_csv(health.scheme_drift_fatal_tables));
         lines.push_back("credentials_source=" + credential_source_name(args.credentials_source));
         if (!health.last_error.empty()) {
             lines.push_back("last_error=" + health.last_error);
         }
         write_lines(log_path, lines);
 
-        write_summary_json(summary_path, {
-                                             {"profile_id", args.profile_id},
-                                             {"result", result.ok ? "ok" : "failed"},
-                                             {"runner_state", runner_state_name(health.state)},
-                                             {"ready", health.ready ? "true" : "false"},
-                                             {"runtime_probe_ok", health.runtime_probe_ok ? "true" : "false"},
-                                             {"scheme_drift_ok", health.scheme_drift_ok ? "true" : "false"},
-                                             {"session_count", std::to_string(health.counts.session_count)},
-                                             {"instrument_count", std::to_string(health.counts.instrument_count)},
-                                             {"matching_map_count", std::to_string(health.counts.matching_map_count)},
-                                             {"limit_count", std::to_string(health.counts.limit_count)},
-                                             {"position_count", std::to_string(health.counts.position_count)},
-                                             {"own_order_count", std::to_string(health.counts.own_order_count)},
-                                             {"own_trade_count", std::to_string(health.counts.own_trade_count)},
-                                             {"last_error", health.last_error},
-                                         });
+        write_summary_json(
+            summary_path,
+            {
+                {"profile_id", args.profile_id},
+                {"result", result.ok ? "ok" : "failed"},
+                {"runner_state", runner_state_name(health.state)},
+                {"ready", health.ready ? "true" : "false"},
+                {"runtime_probe_ok", health.runtime_probe_ok ? "true" : "false"},
+                {"scheme_drift_ok", health.scheme_drift_ok ? "true" : "false"},
+                {"scheme_drift_status", std::string(plaza2_compatibility_name(health.scheme_drift_status))},
+                {"scheme_drift_warning_count", std::to_string(health.scheme_drift_warning_count)},
+                {"scheme_drift_fatal_count", std::to_string(health.scheme_drift_fatal_count)},
+                {"scheme_drift_warning_tables", join_csv(health.scheme_drift_warning_tables)},
+                {"scheme_drift_fatal_tables", join_csv(health.scheme_drift_fatal_tables)},
+                {"last_scheme_drift_warning", health.last_scheme_drift_warning},
+                {"last_scheme_drift_fatal", health.last_scheme_drift_fatal},
+                {"session_count", std::to_string(health.counts.session_count)},
+                {"instrument_count", std::to_string(health.counts.instrument_count)},
+                {"matching_map_count", std::to_string(health.counts.matching_map_count)},
+                {"limit_count", std::to_string(health.counts.limit_count)},
+                {"position_count", std::to_string(health.counts.position_count)},
+                {"own_order_count", std::to_string(health.counts.own_order_count)},
+                {"own_trade_count", std::to_string(health.counts.own_trade_count)},
+                {"last_error", health.last_error},
+            });
 
         static_cast<void>(runner.stop());
         if (!result.ok) {

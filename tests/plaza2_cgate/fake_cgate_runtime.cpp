@@ -634,6 +634,13 @@ StreamCode stream_code_from_settings(std::string_view settings) {
     return static_cast<StreamCode>(0);
 }
 
+bool relative_scheme_path_forbidden(std::string_view settings) {
+    if (std::getenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME") == nullptr) {
+        return false;
+    }
+    return settings.find("|FILE|scheme/forts_scheme.ini|") != std::string_view::npos;
+}
+
 std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMessageScript>& script,
                                                        std::vector<MessagePlan>* plans) {
     auto scheme = std::make_unique<OwnedScheme>();
@@ -954,6 +961,9 @@ std::uint32_t cg_conn_getstate(void* conn, std::uint32_t* state) {
 std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback callback, void* data, void** lsnptr) {
     if (!g_env_open || conn == nullptr || settings == nullptr || callback == nullptr || lsnptr == nullptr) {
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
+    }
+    if (relative_scheme_path_forbidden(settings)) {
+        return kCgErrInvalidArgument;
     }
 
     auto* connection = static_cast<FakeConnection*>(conn);

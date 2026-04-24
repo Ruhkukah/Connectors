@@ -39,13 +39,25 @@ int main(int argc, char** argv) {
         require(report.resolved_symbols.size() == Plaza2RuntimeProbe::required_runtime_symbols().size(),
                 "not all runtime symbols were resolved");
 
+        Plaza2Settings scoped_config_settings = settings;
+        scoped_config_settings.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";
         std::filesystem::remove(fixture.config_dir / "router.ini");
+        const auto scoped_config_report = Plaza2RuntimeProbe::probe(scoped_config_settings);
+        require(scoped_config_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
+                "configured TEST route should not fail on unrelated config files");
+
         const auto missing_config = Plaza2RuntimeProbe::probe(settings);
         require(missing_config.compatibility == Plaza2Compatibility::Incompatible,
                 "missing config file should mark runtime incompatible");
 
+        std::filesystem::remove(fixture.config_dir / "t1.ini");
+        const auto missing_scoped_config = Plaza2RuntimeProbe::probe(scoped_config_settings);
+        require(missing_scoped_config.compatibility == Plaza2Compatibility::Incompatible,
+                "missing configured TEST ini should mark runtime incompatible");
+
         write_text_file(fixture.config_dir / "rogue.ini", "[rogue]\n");
         write_text_file(fixture.config_dir / "router.ini", "[router]\n");
+        write_text_file(fixture.config_dir / "t1.ini", "[t1]\n");
         const auto unexpected_config = Plaza2RuntimeProbe::probe(settings);
         bool found_unexpected = false;
         for (const auto& issue : unexpected_config.issues) {
