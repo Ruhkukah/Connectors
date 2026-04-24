@@ -43,6 +43,10 @@ Once selected, keep the image in an environment variable:
 export MOEX_BUILD_IMAGE='<selected-local-image>'
 ```
 
+For an Ubuntu 22.04 VPS, prefer an Ubuntu 22.04 build image so deployed binaries do not require newer glibc or
+libstdc++ symbols than the VPS provides. The repo `docker/Dockerfile.phase0` installs a modern CMake on Ubuntu 22.04
+for that reason.
+
 Build locally in Docker:
 
 ```bash
@@ -55,7 +59,9 @@ docker run --rm \
     cmake -S . -B build-docker-linux -DCMAKE_BUILD_TYPE=RelWithDebInfo
     cmake --build build-docker-linux -j"$(nproc)"
     ctest --test-dir build-docker-linux --output-on-failure -R \
-      "plaza2_runtime_probe_test|plaza2_scheme_drift_test|plaza2_live_session_validation_test|plaza2_live_session_runner_test|moex_phase4b_capi_read_side_test|phase0_selfcheck|source_style_check|repo_style_check|unicode_guard_check"
+      "plaza2_runtime_probe_test|plaza2_scheme_drift_test|plaza2_live_session_validation_test|\
+plaza2_live_session_runner_test|moex_phase4b_capi_read_side_test|phase0_selfcheck|\
+source_style_check|repo_style_check|unicode_guard_check"
   '
 ```
 
@@ -150,7 +156,9 @@ scripts/vps/install_cgate_linux.sh \
   --execute
 ```
 
-The `--installer` argument is needed when MOEX distributes `install.sh` beside the archive rather than inside it.
+The `--installer` argument is needed when MOEX distributes `install.sh` beside the archive rather than inside it. If the
+vendor script cannot install into the explicit user-owned directory, the helper records the failed installer log and
+copies the archive `cgate/` payload into the requested directory, repairing same-directory library symlinks when needed.
 
 Post-install discovery:
 
@@ -277,7 +285,8 @@ access, or credentials.
 - TWIME access is not available yet, so Phase 4D evidence is PLAZA II read-side only.
 - The current PLAZA II wrapper does not have a pure `--validate-only` mode.
 - Evidence scripts summarize runner outputs; deeper stream-level evidence depends on the existing runner health surface.
-- CGate install behavior ultimately depends on the operator-selected vendor archive and its `install.sh`.
+- CGate install behavior ultimately depends on the operator-selected vendor archive and its `install.sh`; the helper
+  falls back to user-owned payload copy only when the vendor script cannot be used safely.
 
 ## Next Recommended Phase
 

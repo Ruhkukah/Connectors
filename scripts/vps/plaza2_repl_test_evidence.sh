@@ -141,26 +141,54 @@ else
 EOF
 fi
 
-cat > "$output_dir/runtime_probe.json" <<EOF
-{
-  "source": "moex_plaza2_test_runner",
-  "see_final_health": true
-}
-EOF
+python3 - "$output_dir/final_health.json" "$output_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-cat > "$output_dir/scheme_drift.json" <<EOF
-{
-  "source": "moex_plaza2_test_runner",
-  "see_final_health": true
-}
-EOF
+final_health = Path(sys.argv[1])
+output_dir = Path(sys.argv[2])
+health = json.loads(final_health.read_text(encoding="utf-8"))
 
-cat > "$output_dir/readiness.json" <<EOF
-{
-  "source": "moex_plaza2_test_runner",
-  "see_final_health": true
-}
-EOF
+def write(name: str, payload: dict) -> None:
+    (output_dir / name).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+write(
+    "runtime_probe.json",
+    {
+        "source": "moex_plaza2_test_runner",
+        "runtime_probe_ok": health.get("runtime_probe_ok", "false"),
+        "runner_state": health.get("runner_state", "Unknown"),
+        "last_error": health.get("last_error", ""),
+    },
+)
+write(
+    "scheme_drift.json",
+    {
+        "source": "moex_plaza2_test_runner",
+        "scheme_drift_ok": health.get("scheme_drift_ok", "false"),
+        "last_error": health.get("last_error", ""),
+    },
+)
+write(
+    "readiness.json",
+    {
+        "source": "moex_plaza2_test_runner",
+        "ready": health.get("ready", "false"),
+        "runner_state": health.get("runner_state", "Unknown"),
+        "counts": {
+            "sessions": health.get("session_count", "0"),
+            "instruments": health.get("instrument_count", "0"),
+            "matching_map_rows": health.get("matching_map_count", "0"),
+            "limits": health.get("limit_count", "0"),
+            "positions": health.get("position_count", "0"),
+            "own_orders": health.get("own_order_count", "0"),
+            "own_trades": health.get("own_trade_count", "0"),
+        },
+        "last_error": health.get("last_error", ""),
+    },
+)
+PY
 
 if [[ "$runner_status" -ne 0 ]]; then
   echo "PLAZA II TEST evidence run failed; inspect redacted artifacts in $output_dir" >&2

@@ -105,7 +105,7 @@ It intentionally excludes credentials, endpoints, CGate vendor archives, and evi
 EOF
 
 bundle="$out_dir/moex-plaza2-test-bundle.tgz"
-tar -czf "$bundle" -C "$staging" .
+COPYFILE_DISABLE=1 tar --format ustar -czf "$bundle" -C "$staging" .
 sha256sum "$bundle" > "$bundle.sha256"
 
 echo "$bundle"

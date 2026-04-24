@@ -11,7 +11,9 @@ from moex_phase0_common import load_json_yaml
 def _find_runner() -> Path:
     candidates = [
         Path.cwd() / "apps" / "moex_plaza2_test_runner",
+        Path.cwd() / "build-docker-linux" / "apps" / "moex_plaza2_test_runner",
         Path.cwd() / "build" / "apps" / "moex_plaza2_test_runner",
+        Path(__file__).resolve().parents[1] / "build-docker-linux" / "apps" / "moex_plaza2_test_runner",
         Path(__file__).resolve().parents[1] / "build" / "apps" / "moex_plaza2_test_runner",
     ]
     runner = next((path for path in candidates if path.exists()), None)
