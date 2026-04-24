@@ -14,6 +14,7 @@ namespace moex::test {
 namespace {
 
 constexpr std::chrono::milliseconds kDefaultTimeout{3000};
+constexpr std::chrono::milliseconds kAcceptPollTimeout{50};
 
 void close_if_open(int& native_handle) noexcept {
     if (native_handle >= 0) {
@@ -155,17 +156,14 @@ void LocalTcpServer::close_client() {
 void LocalTcpServer::stop() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (stop_requested_) {
-            return;
-        }
         stop_requested_ = true;
+        if (client_socket_ >= 0) {
+            ::shutdown(client_socket_, SHUT_RDWR);
+        }
+        close_if_open(client_socket_);
+        close_if_open(listen_socket_);
     }
     condition_.notify_all();
-    if (client_socket_ >= 0) {
-        ::shutdown(client_socket_, SHUT_RDWR);
-    }
-    close_if_open(client_socket_);
-    close_if_open(listen_socket_);
     if (accept_thread_.joinable()) {
         accept_thread_.join();
     }
@@ -173,16 +171,43 @@ void LocalTcpServer::stop() {
 
 void LocalTcpServer::accept_loop() {
     while (true) {
+        int native_listen_socket = -1;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stop_requested_) {
                 return;
             }
+            native_listen_socket = listen_socket_;
+        }
+
+        pollfd descriptor{};
+        descriptor.fd = native_listen_socket;
+        descriptor.events = POLLIN | POLLHUP | POLLERR;
+        const int ready = ::poll(&descriptor, 1, static_cast<int>(kAcceptPollTimeout.count()));
+        if (ready == 0) {
+            continue;
+        }
+        if (ready < 0) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stop_requested_) {
+                return;
+            }
+            continue;
+        }
+        if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stop_requested_) {
+                return;
+            }
+            continue;
+        }
+        if ((descriptor.revents & POLLIN) == 0) {
+            continue;
         }
 
         sockaddr_in client_address{};
         socklen_t client_size = sizeof(client_address);
-        const int accepted = ::accept(listen_socket_, reinterpret_cast<sockaddr*>(&client_address), &client_size);
+        int accepted = ::accept(native_listen_socket, reinterpret_cast<sockaddr*>(&client_address), &client_size);
         if (accepted < 0) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stop_requested_) {
@@ -193,6 +218,11 @@ void LocalTcpServer::accept_loop() {
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (stop_requested_) {
+                close_if_open(accepted);
+                return;
+            }
+            close_if_open(client_socket_);
             client_socket_ = accepted;
             client_connected_ = true;
         }

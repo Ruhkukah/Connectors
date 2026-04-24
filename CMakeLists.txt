@@ -231,6 +231,17 @@ target_include_directories(local_tcp_server_support
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/support")
 
+add_executable(local_tcp_server_stop_test
+    tests/support/local_tcp_server_stop_test.cpp)
+target_link_libraries(local_tcp_server_stop_test
+    PRIVATE
+        local_tcp_server_support)
+target_compile_features(local_tcp_server_stop_test PRIVATE cxx_std_20)
+set_property(TARGET local_tcp_server_stop_test PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME local_tcp_server_stop_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/local_tcp_server_stop_test")
+
 function(moex_add_twime_test target_name source_file)
     add_executable(${target_name} "${source_file}")
     target_link_libraries(${target_name}
