@@ -177,6 +177,8 @@ moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "repo_style_check" "tool
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "unicode_guard" "tools/unicode_guard.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_cert_runner" "apps/moex_cert_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_plaza2_cert_runner" "apps/moex_plaza2_cert_runner.py")
+moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_plaza2_twime_integrated_runner"
+    "apps/moex_plaza2_twime_integrated_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_replay_tool" "apps/moex_replay_tool.py")
 
 add_executable(moex_twime_cert_runner
@@ -199,6 +201,16 @@ set_target_properties(moex_plaza2_test_runner PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
     OUTPUT_NAME "moex_plaza2_test_runner")
 
+add_executable(moex_plaza2_twime_integrated_test_runner
+    apps/plaza2_twime_integrated_test_runner.cpp)
+target_link_libraries(moex_plaza2_twime_integrated_test_runner
+    PRIVATE
+        moex_plaza2_twime_integrated_test)
+target_compile_features(moex_plaza2_twime_integrated_test_runner PRIVATE cxx_std_20)
+set_target_properties(moex_plaza2_twime_integrated_test_runner PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
+    OUTPUT_NAME "moex_plaza2_twime_integrated_test_runner")
+
 add_library(twime_test_support STATIC
     tests/twime_sbe/twime_test_support.cpp)
 target_link_libraries(twime_test_support
@@ -218,6 +230,17 @@ target_compile_features(local_tcp_server_support PUBLIC cxx_std_20)
 target_include_directories(local_tcp_server_support
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/support")
+
+add_executable(local_tcp_server_stop_test
+    tests/support/local_tcp_server_stop_test.cpp)
+target_link_libraries(local_tcp_server_stop_test
+    PRIVATE
+        local_tcp_server_support)
+target_compile_features(local_tcp_server_stop_test PRIVATE cxx_std_20)
+set_property(TARGET local_tcp_server_stop_test PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME local_tcp_server_stop_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/local_tcp_server_stop_test")
 
 function(moex_add_twime_test target_name source_file)
     add_executable(${target_name} "${source_file}")
@@ -461,6 +484,14 @@ add_test(
     NAME profile_check_plaza2_repl_live_session_local_example
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
             --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_repl_live_session_local.example.yaml")
+add_test(
+    NAME profile_check_plaza2_twime_integrated_template
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_twime_integrated_session.template.yaml")
+add_test(
+    NAME profile_check_plaza2_twime_integrated_local_example
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_twime_integrated_session_local.example.yaml")
 
 add_test(
     NAME profile_check_twime_tcp_external_fixture_real_host_fails
@@ -477,6 +508,11 @@ add_test(
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
         --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/plaza2_repl_nonloopback_fixture.yaml")
 set_tests_properties(profile_check_plaza2_repl_fixture_real_host_fails PROPERTIES WILL_FAIL TRUE)
+add_test(
+    NAME profile_check_plaza2_twime_integrated_fixture_real_host_fails
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/plaza2_twime_integrated_nonloopback_fixture.yaml")
+set_tests_properties(profile_check_plaza2_twime_integrated_fixture_real_host_fails PROPERTIES WILL_FAIL TRUE)
 
 add_test(
     NAME profile_check_prod_with_arm
@@ -804,6 +840,48 @@ add_test(
         --armed-test-network
         --armed-test-session)
 set_tests_properties(plaza2_cert_runner_requires_test_plaza2_arm PROPERTIES WILL_FAIL TRUE)
+
+function(moex_add_plaza2_twime_integrated_test target_name source_file)
+    add_executable(${target_name} "${source_file}")
+    add_dependencies(${target_name} plaza2_fake_cgate_runtime)
+    target_link_libraries(${target_name}
+        PRIVATE
+            moex_plaza2_twime_integrated_test
+            local_tcp_server_support
+            plaza2_runtime_test_support
+            twime_test_support)
+    target_include_directories(${target_name}
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/support"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_trade"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/twime_sbe"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/plaza2_cgate"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/plaza2_twime_reconciler"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/plaza2_twime_integrated")
+    target_compile_features(${target_name} PRIVATE cxx_std_20)
+    target_compile_definitions(${target_name}
+        PRIVATE
+            MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
+    set_property(TARGET ${target_name} PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+    add_test(
+        NAME ${target_name}
+        COMMAND "${MOEX_BUILD_ROOT}/tests/${target_name}" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+endfunction()
+
+moex_add_plaza2_twime_integrated_test(plaza2_twime_integrated_validation_test
+    tests/plaza2_twime_integrated/plaza2_twime_integrated_validation_test.cpp)
+moex_add_plaza2_twime_integrated_test(plaza2_twime_integrated_runner_test
+    tests/plaza2_twime_integrated/plaza2_twime_integrated_runner_test.cpp)
+
+add_test(
+    NAME plaza2_twime_integrated_runner_requires_test_reconcile_arm
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_plaza2_twime_integrated_runner"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/profiles/plaza2_twime_integrated_nonloopback_fixture.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/plaza2-twime-integrated-runner"
+        --armed-test-network
+        --armed-test-session
+        --armed-test-plaza2)
+set_tests_properties(plaza2_twime_integrated_runner_requires_test_reconcile_arm PROPERTIES WILL_FAIL TRUE)
 
 add_test(
     NAME osengine_inventory_fixture

@@ -96,6 +96,23 @@ def main() -> int:
                     "use an untracked local override plus all required --armed-test-* flags"
                 )
 
+        plaza2_twime_integrated_test = profile.get("plaza2_twime_integrated_test")
+        if isinstance(plaza2_twime_integrated_test, dict):
+            if environment != "test":
+                raise SystemExit(
+                    "plaza2_twime_integrated_test profiles are Phase 4C test-only and must use environment=test"
+                )
+
+            if not isinstance(twime_live_session, dict) or not isinstance(twime_tcp, dict):
+                raise SystemExit(
+                    "plaza2_twime_integrated_test profiles must include twime_tcp and twime_live_session sections"
+                )
+
+            if not isinstance(plaza2_repl_test, dict):
+                raise SystemExit(
+                    "plaza2_twime_integrated_test profiles must include a plaza2_repl_test section"
+                )
+
         print(f"profile {profile['profile_id']} validated")
     return 0
 

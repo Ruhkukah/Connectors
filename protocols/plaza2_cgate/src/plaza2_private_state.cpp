@@ -1093,6 +1093,12 @@ Plaza2PrivateStateProjector::Plaza2PrivateStateProjector(Plaza2PrivateStateProje
 
 Plaza2PrivateStateProjector& Plaza2PrivateStateProjector::operator=(Plaza2PrivateStateProjector&&) noexcept = default;
 
+Plaza2PrivateStateProjector Plaza2PrivateStateProjector::clone() const {
+    Plaza2PrivateStateProjector copy;
+    copy.impl_ = std::make_unique<Impl>(*impl_);
+    return copy;
+}
+
 void Plaza2PrivateStateProjector::reset() {
     impl_->reset();
 }

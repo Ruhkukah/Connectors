@@ -1535,6 +1535,12 @@ Plaza2TwimeReconciler::Plaza2TwimeReconciler(Plaza2TwimeReconciler&&) noexcept =
 
 Plaza2TwimeReconciler& Plaza2TwimeReconciler::operator=(Plaza2TwimeReconciler&&) noexcept = default;
 
+Plaza2TwimeReconciler Plaza2TwimeReconciler::clone() const {
+    Plaza2TwimeReconciler copy;
+    copy.impl_ = std::make_unique<Impl>(*impl_);
+    return copy;
+}
+
 void Plaza2TwimeReconciler::reset() {
     impl_->reset();
 }
