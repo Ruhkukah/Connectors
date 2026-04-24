@@ -167,6 +167,13 @@ write(
     {
         "source": "moex_plaza2_test_runner",
         "scheme_drift_ok": health.get("scheme_drift_ok", "false"),
+        "scheme_drift_status": health.get("scheme_drift_status", "Unknown"),
+        "scheme_drift_warning_count": health.get("scheme_drift_warning_count", "0"),
+        "scheme_drift_fatal_count": health.get("scheme_drift_fatal_count", "0"),
+        "scheme_drift_warning_tables": health.get("scheme_drift_warning_tables", ""),
+        "scheme_drift_fatal_tables": health.get("scheme_drift_fatal_tables", ""),
+        "last_scheme_drift_warning": health.get("last_scheme_drift_warning", ""),
+        "last_scheme_drift_fatal": health.get("last_scheme_drift_fatal", ""),
         "last_error": health.get("last_error", ""),
     },
 )
@@ -186,6 +193,10 @@ write(
             "own_trades": health.get("own_trade_count", "0"),
         },
         "last_error": health.get("last_error", ""),
+        "operator_warning": (
+            "P2MQRouter listens on all interfaces. Verify provider firewall or host firewall restricts access to "
+            "trusted hosts only."
+        ),
     },
 )
 PY

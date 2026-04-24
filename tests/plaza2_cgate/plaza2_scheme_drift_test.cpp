@@ -4,6 +4,24 @@
 
 #include <filesystem>
 #include <iostream>
+#include <string>
+
+namespace {
+
+std::string remove_field_from_table(std::string scheme_text, std::string_view table_header,
+                                    std::string_view field_line) {
+    const auto table_pos = scheme_text.find(table_header);
+    moex::plaza2::test::require(table_pos != std::string::npos, "expected runtime scheme fixture table missing");
+    const auto next_table_pos = scheme_text.find("\n[table:", table_pos + table_header.size());
+    const auto search_end = next_table_pos == std::string::npos ? scheme_text.size() : next_table_pos;
+    const auto field_pos = scheme_text.find(field_line, table_pos);
+    moex::plaza2::test::require(field_pos != std::string::npos && field_pos < search_end,
+                                "expected runtime scheme fixture field missing");
+    scheme_text.erase(field_pos, field_line.size());
+    return scheme_text;
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
     try {
@@ -19,23 +37,55 @@ int main(int argc, char** argv) {
         const auto fixture_root = make_temp_directory("plaza2_scheme_drift_test");
         const auto cleanup = [&]() { remove_tree(fixture_root); };
 
-        auto scheme_text = build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test");
-        const auto removed_field = std::string("field=private_order_id,i8\n");
-        const auto removed_pos = scheme_text.find(removed_field);
-        require(removed_pos != std::string::npos, "expected runtime scheme fixture field missing");
-        scheme_text.erase(removed_pos, removed_field.size());
-        scheme_text += "[table:EXTRA:unexpected_table]\nfield=replID,i8\nfield=replRev,i8\n";
+        const auto baseline_scheme_text = build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test");
+        const auto compatible_fixture = materialize_runtime_fixture(fixture_root / "compatible", fake_library,
+                                                                    Plaza2Environment::Test, baseline_scheme_text);
 
-        const auto fixture =
-            materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
+        Plaza2Settings compatible_settings;
+        compatible_settings.environment = Plaza2Environment::Test;
+        compatible_settings.runtime_root = compatible_fixture.root;
+        compatible_settings.expected_spectra_release = "SPECTRA93";
+        const auto compatible_report = Plaza2RuntimeProbe::probe(compatible_settings);
+        require(compatible_report.compatibility == Plaza2Compatibility::Compatible,
+                "unchanged runtime fixture must be compatible");
+        require(compatible_report.scheme_drift.compatibility == Plaza2Compatibility::Compatible,
+                "unchanged scheme must be compatible");
 
-        Plaza2Settings settings;
-        settings.environment = Plaza2Environment::Test;
-        settings.runtime_root = fixture.root;
-        settings.expected_spectra_release = "SPECTRA95";
-        settings.expected_scheme_sha256 = std::string(64, '0');
-        const auto report = Plaza2RuntimeProbe::probe(settings);
-        require(report.compatibility == Plaza2Compatibility::Incompatible, "drifted runtime must be incompatible");
+        const auto warning_scheme_text = remove_field_from_table(
+            baseline_scheme_text, "[table:FORTS_REFDATA_REPL:clearing_members]\n", "field=code,c2\n");
+        const auto warning_fixture = materialize_runtime_fixture(fixture_root / "warning", fake_library,
+                                                                 Plaza2Environment::Test, warning_scheme_text);
+        Plaza2Settings warning_settings;
+        warning_settings.environment = Plaza2Environment::Test;
+        warning_settings.runtime_root = warning_fixture.root;
+        warning_settings.expected_spectra_release = "SPECTRA93";
+        const auto warning_report = Plaza2RuntimeProbe::probe(warning_settings);
+        require(warning_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
+                "non-projected clearing_members drift must be compatible with warnings");
+        require(warning_report.scheme_drift.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
+                "clearing_members drift must not be fatal");
+        require(warning_report.scheme_drift.warning_drift_count > 0, "warning drift count should be visible");
+        require(warning_report.scheme_drift.fatal_drift_count == 0, "warning-only drift must not count as fatal");
+        bool found_clearing_members_warning = false;
+        for (const auto& table : warning_report.scheme_drift.warning_drift_tables) {
+            found_clearing_members_warning =
+                found_clearing_members_warning || table == "FORTS_REFDATA_REPL.clearing_members";
+        }
+        require(found_clearing_members_warning, "clearing_members warning table should be reported");
+
+        auto fatal_scheme_text = remove_field_from_table(baseline_scheme_text, "[table:FORTS_TRADE_REPL:orders_log]\n",
+                                                         "field=private_order_id,i8\n");
+        fatal_scheme_text += "[table:EXTRA:unexpected_table]\nfield=replID,i8\nfield=replRev,i8\n";
+        const auto fatal_fixture = materialize_runtime_fixture(fixture_root / "fatal", fake_library,
+                                                               Plaza2Environment::Test, fatal_scheme_text);
+
+        Plaza2Settings fatal_settings;
+        fatal_settings.environment = Plaza2Environment::Test;
+        fatal_settings.runtime_root = fatal_fixture.root;
+        fatal_settings.expected_spectra_release = "SPECTRA95";
+        fatal_settings.expected_scheme_sha256 = std::string(64, '0');
+        const auto report = Plaza2RuntimeProbe::probe(fatal_settings);
+        require(report.compatibility == Plaza2Compatibility::Incompatible, "required-table drift must be fatal");
 
         bool found_hash = false;
         bool found_version = false;
@@ -55,9 +105,10 @@ int main(int argc, char** argv) {
         require(found_version, "spectra release mismatch should be reported");
         require(found_signature_drift, "reviewed-vs-runtime signature drift should be reported");
         require(found_unexpected_table, "unexpected runtime table should be reported");
+        require(report.scheme_drift.fatal_drift_count > 0, "fatal drift count should be visible");
 
-        write_text_file(fixture.scheme_path, "[broken\n");
-        const auto broken_report = Plaza2RuntimeProbe::probe(settings);
+        write_text_file(fatal_fixture.scheme_path, "[broken\n");
+        const auto broken_report = Plaza2RuntimeProbe::probe(fatal_settings);
         bool found_parse_error = false;
         for (const auto& issue : broken_report.issues) {
             if (issue.code == Plaza2ProbeIssueCode::RuntimeSchemeParseFailed) {

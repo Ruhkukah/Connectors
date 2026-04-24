@@ -51,7 +51,7 @@ make_plaza_config(const moex::plaza2::test::RuntimeFixturePaths& fixture,
     config.runtime.environment = Plaza2Environment::Test;
     config.runtime.runtime_root = fixture.root;
     config.runtime.expected_spectra_release = "SPECTRA93";
-    config.runtime.env_open_settings = "ini=config/t1.ini;key=${PLAZA2_TEST_CREDENTIALS}";
+    config.runtime.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";
     config.connection_settings = "p2tcp://198.51.100.10:4001;app_name=connectors_phase4c_integrated";
     config.streams = make_private_streams();
     config.credentials.source = Plaza2CredentialSource::Env;

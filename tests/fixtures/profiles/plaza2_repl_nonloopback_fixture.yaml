@@ -30,7 +30,7 @@ plaza2_repl_test:
     library_path: ""
     scheme_dir: ""
     config_dir: ""
-    env_open_settings: ini=config/t1.ini;key=${PLAZA2_TEST_CREDENTIALS}
+    env_open_settings: ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}
     expected_spectra_release: SPECTRA93
     expected_scheme_sha256: ""
   credentials:

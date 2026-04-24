@@ -66,6 +66,13 @@ struct Plaza2LiveHealthSnapshot {
     Plaza2Compatibility compatibility{Plaza2Compatibility::Unknown};
     bool runtime_probe_ok{false};
     bool scheme_drift_ok{false};
+    Plaza2Compatibility scheme_drift_status{Plaza2Compatibility::Unknown};
+    std::size_t scheme_drift_warning_count{0};
+    std::size_t scheme_drift_fatal_count{0};
+    std::vector<std::string> scheme_drift_warning_tables;
+    std::vector<std::string> scheme_drift_fatal_tables;
+    std::string last_scheme_drift_warning;
+    std::string last_scheme_drift_fatal;
     bool ready{false};
     std::uint32_t last_process_runtime_code{0};
     std::string last_error;

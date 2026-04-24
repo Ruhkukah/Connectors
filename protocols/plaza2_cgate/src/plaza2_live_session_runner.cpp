@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,7 +25,9 @@ using generated::FieldCode;
 using generated::StreamCode;
 using generated::TableCode;
 
-constexpr std::string_view kCredentialToken = "${PLAZA2_TEST_CREDENTIALS}";
+constexpr std::string_view kCredentialToken = "${MOEX_PLAZA2_TEST_CREDENTIALS}";
+constexpr std::string_view kLegacyCredentialToken = "${PLAZA2_TEST_CREDENTIALS}";
+constexpr std::string_view kRelativeSchemeToken = "|FILE|scheme/forts_scheme.ini|";
 constexpr std::array<StreamCode, 5> kRequiredPrivateStreams = {
     StreamCode::kFortsTradeRepl, StreamCode::kFortsUserorderbookRepl, StreamCode::kFortsPosRepl,
     StreamCode::kFortsPartRepl,  StreamCode::kFortsRefdataRepl,
@@ -52,16 +55,55 @@ std::size_t stream_index(const EngineState& state, StreamCode stream_code) {
 }
 
 bool settings_need_credentials(std::string_view value) {
-    return value.find(kCredentialToken) != std::string_view::npos;
+    return value.find(kCredentialToken) != std::string_view::npos ||
+           value.find(kLegacyCredentialToken) != std::string_view::npos;
 }
 
 std::string substitute_credentials(std::string_view value, std::string_view credential_value) {
     std::string rendered(value);
+    auto replace_all = [&](std::string_view token) {
+        std::size_t position = 0;
+        while ((position = rendered.find(token, position)) != std::string::npos) {
+            rendered.replace(position, token.size(), credential_value);
+            position += credential_value.size();
+        }
+    };
+    replace_all(kCredentialToken);
+    replace_all(kLegacyCredentialToken);
+    return rendered;
+}
+
+std::string resolve_stream_scheme_path(std::string_view value, const std::filesystem::path& scheme_path) {
+    std::string rendered(value);
+    const auto replacement = std::string("|FILE|") + scheme_path.string() + "|";
     std::size_t position = 0;
-    while ((position = rendered.find(kCredentialToken, position)) != std::string::npos) {
-        rendered.replace(position, kCredentialToken.size(), credential_value);
-        position += credential_value.size();
+    while ((position = rendered.find(kRelativeSchemeToken, position)) != std::string::npos) {
+        rendered.replace(position, kRelativeSchemeToken.size(), replacement);
+        position += replacement.size();
     }
+    return rendered;
+}
+
+std::string resolve_env_open_ini_path(std::string_view value, const std::filesystem::path& config_dir) {
+    std::string rendered(value);
+    constexpr std::string_view kPrefix = "ini=";
+    const auto begin = rendered.find(kPrefix);
+    if (begin == std::string::npos) {
+        return rendered;
+    }
+    const auto value_begin = begin + kPrefix.size();
+    const auto value_end = rendered.find(';', value_begin);
+    const auto value_size = (value_end == std::string::npos ? rendered.size() : value_end) - value_begin;
+    const auto raw_path = std::filesystem::path(rendered.substr(value_begin, value_size));
+    if (raw_path.is_absolute()) {
+        return rendered;
+    }
+    auto resolved = config_dir / raw_path;
+    if (!std::filesystem::exists(resolved) && raw_path.has_parent_path() && raw_path.begin() != raw_path.end() &&
+        *raw_path.begin() == "config") {
+        resolved = config_dir / raw_path.filename();
+    }
+    rendered.replace(value_begin, value_size, resolved.string());
     return rendered;
 }
 
@@ -436,26 +478,42 @@ struct Plaza2LiveSessionRunner::Impl {
         effective_connection_settings = render_setting(config.connection_settings);
         effective_connection_open_settings = render_setting(config.connection_open_settings);
 
+        health.state = Plaza2LiveRunnerState::Validated;
+        probe_report = Plaza2RuntimeProbe::probe(effective_runtime);
+        health.compatibility = probe_report.compatibility;
+        health.runtime_probe_ok = probe_report.runtime_library_loadable;
+        health.scheme_drift_status = probe_report.scheme_drift.compatibility;
+        health.scheme_drift_ok = probe_report.scheme_drift.compatibility == Plaza2Compatibility::Compatible ||
+                                 probe_report.scheme_drift.compatibility == Plaza2Compatibility::CompatibleWithWarnings;
+        health.scheme_drift_warning_count = probe_report.scheme_drift.warning_drift_count;
+        health.scheme_drift_fatal_count = probe_report.scheme_drift.fatal_drift_count;
+        health.scheme_drift_warning_tables = probe_report.scheme_drift.warning_drift_tables;
+        health.scheme_drift_fatal_tables = probe_report.scheme_drift.fatal_drift_tables;
+        health.last_scheme_drift_warning = probe_report.scheme_drift.last_warning_drift_reason;
+        health.last_scheme_drift_fatal = probe_report.scheme_drift.last_fatal_drift_reason;
+        if (probe_report.compatibility == Plaza2Compatibility::Incompatible ||
+            probe_report.compatibility == Plaza2Compatibility::Unknown) {
+            return fail(first_fatal_issue_message(probe_report));
+        }
+        append_operator_log("runtime_probe=" + std::string(plaza2_compatibility_name(probe_report.compatibility)));
+        append_operator_log("scheme_drift=" +
+                            std::string(plaza2_compatibility_name(probe_report.scheme_drift.compatibility)));
+        append_operator_log("scheme_drift_warning_count=" + std::to_string(health.scheme_drift_warning_count));
+        append_operator_log("scheme_drift_fatal_count=" + std::to_string(health.scheme_drift_fatal_count));
+
+        effective_runtime.env_open_settings =
+            resolve_env_open_ini_path(effective_runtime.env_open_settings, probe_report.layout.config_dir);
+
         effective_streams.clear();
         effective_streams.reserve(config.streams.size());
         for (const auto& stream : config.streams) {
             effective_streams.push_back({
                 .stream_code = stream.stream_code,
-                .settings = render_setting(stream.settings),
+                .settings =
+                    resolve_stream_scheme_path(render_setting(stream.settings), probe_report.layout.scheme_path),
                 .open_settings = render_setting(stream.open_settings),
             });
         }
-
-        health.state = Plaza2LiveRunnerState::Validated;
-        probe_report = Plaza2RuntimeProbe::probe(effective_runtime);
-        health.compatibility = probe_report.compatibility;
-        health.runtime_probe_ok = probe_report.runtime_library_loadable;
-        health.scheme_drift_ok = probe_report.scheme_drift.compatibility == Plaza2Compatibility::Compatible;
-        if (probe_report.compatibility != Plaza2Compatibility::Compatible) {
-            return fail(first_fatal_issue_message(probe_report));
-        }
-        append_operator_log("runtime_probe=compatible");
-        append_operator_log("scheme_drift=compatible");
 
         if (const auto bridge_reset = projector_bridge.reset(effective_streams); bridge_reset) {
             return fail(bridge_reset.message);
@@ -617,8 +675,9 @@ struct Plaza2LiveSessionRunner::Impl {
 
         if (config.credentials.source == Plaza2CredentialSource::None) {
             if (needs_credentials) {
-                return fail("PLAZA II TEST settings require ${PLAZA2_TEST_CREDENTIALS}, but no credential source was "
-                            "configured");
+                return fail(
+                    "PLAZA II TEST settings require ${MOEX_PLAZA2_TEST_CREDENTIALS}, but no credential source was "
+                    "configured");
             }
             return {
                 .ok = true,

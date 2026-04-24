@@ -88,7 +88,7 @@ runner. No live defaults are embedded in code.
 Credential handling is narrow:
 
 - env or file credential sources are supported
-- `${PLAZA2_TEST_CREDENTIALS}` can be expanded into explicit CGate settings
+- `${MOEX_PLAZA2_TEST_CREDENTIALS}` can be expanded into explicit CGate settings
 - raw credential values are never written to logs or summary files
 
 ## Startup Validation Order
@@ -97,7 +97,7 @@ Credential handling is narrow:
 
 1. config shape validation
 2. manual arm validation
-3. credential loading and `${PLAZA2_TEST_CREDENTIALS}` substitution
+3. credential loading and `${MOEX_PLAZA2_TEST_CREDENTIALS}` substitution
 4. runtime layout probe
 5. required symbol validation
 6. required TEST config-file validation
@@ -181,7 +181,8 @@ fake CGate shared library fixture.
 
 - Phase 3F is TEST-only and does not add production bring-up.
 - Reconnect is intentionally not implemented yet.
-- Credential substitution is limited to `${PLAZA2_TEST_CREDENTIALS}`.
+- Credential substitution is limited to `${MOEX_PLAZA2_TEST_CREDENTIALS}` with the legacy
+  `${PLAZA2_TEST_CREDENTIALS}` token accepted only for old local overlays.
 - No on-disk resume persistence is added in this phase.
 - Listener lifecycle is still private-state-only; no public streams are opened.
 

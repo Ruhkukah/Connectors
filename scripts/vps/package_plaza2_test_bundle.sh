@@ -89,12 +89,16 @@ if [[ -d "$build_dir/lib" ]]; then
   find "$build_dir/lib" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp {} "$staging/build-docker-linux/lib/" \;
 fi
 
-mkdir -p "$staging/apps" "$staging/tools" "$staging/profiles" "$staging/scripts/vps" "$staging/docs"
+mkdir -p "$staging/apps" "$staging/tools" "$staging/profiles" "$staging/scripts/vps" "$staging/docs" \
+  "$staging/spec-lock/test/plaza2"
 cp "$repo_root/apps/moex_plaza2_cert_runner.py" "$staging/apps/"
 cp "$repo_root/tools/moex_phase0_common.py" "$staging/tools/"
+cp "$repo_root/tools/plaza2_runtime_scheme_lock.py" "$staging/tools/"
 cp "$repo_root/profiles/test_plaza2_repl_live_session.template.yaml" "$staging/profiles/"
 cp "$repo_root"/scripts/vps/*.sh "$staging/scripts/vps/"
 cp "$repo_root/docs/plaza2_phase4d_vps_cgate_install_evidence.md" "$staging/docs/"
+cp "$repo_root/docs/plaza2_phase4e_runtime_scheme_lock.md" "$staging/docs/"
+cp -R "$repo_root/spec-lock/test/plaza2/runtime_scheme" "$staging/spec-lock/test/plaza2/"
 
 cat > "$staging/README.phase4d.txt" <<EOF
 MOEX Connectors PLAZA II TEST bundle

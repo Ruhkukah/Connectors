@@ -1,0 +1,17 @@
+environment: test
+polygon: t1
+runtime_source: package_install
+package:
+  filename: cgate_9.3.0.1687_amd64.deb
+  sha256: ee2e47fafe2ff19315accf6cfb762ecdaf74f777985fd2b5c347b7cf268045f2
+runtime:
+  install_root: /opt/moex/cgate
+  scheme_path: /opt/moex/cgate/scheme/latest/forts_scheme.ini
+  scheme_sha256: cc3ab53b792eb1354b17615612abf173158e2f9dd78604bc47a121badf54b1c2
+  detected_release_marker: SPECTRA93
+evidence:
+  example_path: ~/moex/evidence/plaza2-test/<run-id>
+notes:
+  - Raw vendor runtime files are intentionally not committed.
+  - Runtime scheme lock reports are normalized derived metadata only.
+  - Credential files, auth configs, endpoints, and evidence with secrets remain untracked.

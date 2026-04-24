@@ -673,6 +673,13 @@ add_test(
 set_tests_properties(plaza2_metadata_invariants_check PROPERTIES
     ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
 
+add_test(
+    NAME plaza2_runtime_scheme_lock_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_plaza2_runtime_scheme_lock.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(plaza2_runtime_scheme_lock_check PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
+
 add_executable(plaza2_generated_metadata_test
     tests/plaza2_cgate/plaza2_generated_metadata_test.cpp)
 target_link_libraries(plaza2_generated_metadata_test
