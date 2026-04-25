@@ -186,6 +186,8 @@ moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_plaza2_twime_integr
     "apps/moex_plaza2_twime_integrated_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_plaza2_aggr20_md_runner"
     "apps/moex_plaza2_aggr20_md_runner.py")
+moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_plaza2_trade_test_order_runner"
+    "apps/moex_plaza2_trade_test_order_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_replay_tool" "apps/moex_replay_tool.py")
 
 add_executable(moex_twime_cert_runner
@@ -217,6 +219,16 @@ target_compile_features(moex_plaza2_aggr20_md_test_runner PRIVATE cxx_std_20)
 set_target_properties(moex_plaza2_aggr20_md_test_runner PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
     OUTPUT_NAME "moex_plaza2_aggr20_md_test_runner")
+
+add_executable(moex_plaza2_trade_test_order_entry_runner
+    apps/plaza2_trade_test_order_entry_runner.cpp)
+target_link_libraries(moex_plaza2_trade_test_order_entry_runner
+    PRIVATE
+        moex_plaza2_trade_test_order_entry)
+target_compile_features(moex_plaza2_trade_test_order_entry_runner PRIVATE cxx_std_20)
+set_target_properties(moex_plaza2_trade_test_order_entry_runner PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
+    OUTPUT_NAME "moex_plaza2_trade_test_order_entry_runner")
 
 add_executable(moex_plaza2_twime_integrated_test_runner
     apps/plaza2_twime_integrated_test_runner.cpp)
@@ -510,6 +522,14 @@ add_test(
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
             --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_aggr20_md_local.example.yaml")
 add_test(
+    NAME profile_check_plaza2_trade_order_entry_template
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_trade_order_entry.template.yaml")
+add_test(
+    NAME profile_check_plaza2_trade_order_entry_local_example
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_trade_order_entry_local.example.yaml")
+add_test(
     NAME profile_check_plaza2_twime_integrated_template
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
             --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_twime_integrated_session.template.yaml")
@@ -727,7 +747,8 @@ foreach(test_name IN ITEMS
         plaza2_trade_reply_decoding_test
         plaza2_trade_no_send_guard_test
         plaza2_trade_fake_session_test
-        plaza2_trade_fake_session_replication_test)
+        plaza2_trade_fake_session_replication_test
+        plaza2_trade_test_order_runner_test)
     add_executable(${test_name}
         tests/plaza2_trade/${test_name}.cpp)
     target_link_libraries(${test_name}
@@ -746,6 +767,10 @@ foreach(test_name IN ITEMS
         NAME ${test_name}
         COMMAND "${MOEX_BUILD_ROOT}/tests/${test_name}")
 endforeach()
+
+target_link_libraries(plaza2_trade_test_order_runner_test
+    PRIVATE
+        moex_plaza2_trade_test_order_entry)
 
 add_executable(plaza2_generated_metadata_test
     tests/plaza2_cgate/plaza2_generated_metadata_test.cpp)
@@ -997,6 +1022,12 @@ add_test(
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/scripts/assert_phase5d_aggr20_md.py"
         "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(phase5d_aggr20_md_scripts_check PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
+add_test(
+    NAME phase5e_trade_order_scripts_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/scripts/assert_phase5e_trade_order.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(phase5e_trade_order_scripts_check PROPERTIES
     ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
 
 add_test(

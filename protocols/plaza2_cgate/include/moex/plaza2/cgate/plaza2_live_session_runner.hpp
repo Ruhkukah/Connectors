@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -89,6 +90,25 @@ struct Plaza2LiveRunResult {
     std::string message;
 };
 
+struct Plaza2LivePublisherConfig {
+    std::string settings;
+    std::string open_settings;
+};
+
+struct Plaza2LivePublisherMessage {
+    std::string message_name;
+    std::span<const std::byte> payload{};
+    std::uint64_t user_id{0};
+    bool need_reply{true};
+};
+
+struct Plaza2LivePublisherResult {
+    bool ok{false};
+    std::string message;
+    std::uint32_t runtime_code{0};
+    std::size_t runtime_payload_size{0};
+};
+
 class Plaza2LiveSessionRunner {
   public:
     explicit Plaza2LiveSessionRunner(Plaza2LiveSessionConfig config);
@@ -103,6 +123,8 @@ class Plaza2LiveSessionRunner {
     [[nodiscard]] Plaza2LiveRunResult start();
     [[nodiscard]] Plaza2LiveRunResult poll_once();
     [[nodiscard]] Plaza2LiveRunResult stop();
+    [[nodiscard]] Plaza2LivePublisherResult open_publisher(const Plaza2LivePublisherConfig& config);
+    [[nodiscard]] Plaza2LivePublisherResult post_publisher_message(const Plaza2LivePublisherMessage& message);
 
     [[nodiscard]] const Plaza2LiveHealthSnapshot& health_snapshot() const noexcept;
     [[nodiscard]] const Plaza2RuntimeProbeReport& probe_report() const noexcept;

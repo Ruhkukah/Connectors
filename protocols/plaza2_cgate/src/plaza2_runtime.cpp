@@ -39,6 +39,9 @@ constexpr std::uint32_t kCgErrMore = kCgRangeBegin + 4;
 constexpr std::uint32_t kCgErrIncorrectState = kCgRangeBegin + 5;
 constexpr std::uint32_t kCgErrBufferTooSmall = kCgRangeBegin + 7;
 
+constexpr std::uint32_t kCgKeyName = 2;
+constexpr std::uint32_t kCgPubNeedReply = 1;
+
 constexpr std::uint32_t kCgMsgOpen = 0x100;
 constexpr std::uint32_t kCgMsgClose = 0x101;
 constexpr std::uint32_t kCgMsgStreamData = 0x120;
@@ -102,6 +105,14 @@ struct RuntimeApi {
     CgResult (*lsn_close)(void* listener){nullptr};
     CgResult (*lsn_getstate)(void* listener, std::uint32_t* state){nullptr};
     CgResult (*lsn_getscheme)(void* listener, void** schemeptr){nullptr};
+    CgResult (*pub_new)(void* conn, const char* settings, void** pubptr){nullptr};
+    CgResult (*pub_open)(void* publisher, const char* settings){nullptr};
+    CgResult (*pub_close)(void* publisher){nullptr};
+    CgResult (*pub_destroy)(void* publisher){nullptr};
+    CgResult (*pub_getstate)(void* publisher, std::uint32_t* state){nullptr};
+    CgResult (*pub_msgnew)(void* publisher, std::uint32_t id_type, const void* id, void** msgptr){nullptr};
+    CgResult (*pub_post)(void* publisher, void* msg, std::uint32_t flags){nullptr};
+    CgResult (*pub_msgfree)(void* publisher, void* msg){nullptr};
     CgResult (*getstr)(const char* type, const void* data, char* buffer, std::size_t* buffer_size){nullptr};
 };
 
@@ -211,6 +222,19 @@ struct CgMsgStreamData {
     std::size_t num_nulls;
     std::uint8_t* nulls;
     std::uint64_t user_id;
+};
+
+struct CgMsgData {
+    std::uint32_t type;
+    std::size_t data_size;
+    void* data;
+    std::int64_t owner_id;
+    std::size_t msg_index;
+    std::uint32_t msg_id;
+    const char* msg_name;
+    std::uint64_t user_id;
+    const char* addr;
+    CgMsgData* ref_msg;
 };
 
 struct CgTime {
@@ -841,6 +865,15 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
         target = reinterpret_cast<std::remove_reference_t<decltype(target)>>(symbol);
         return true;
     };
+    auto load_optional_symbol = [&](const char* name, auto& target) {
+        void* symbol = ::dlsym(api->library_handle, name);
+        if (symbol != nullptr) {
+            if (resolved_symbols != nullptr) {
+                resolved_symbols->push_back(name);
+            }
+            target = reinterpret_cast<std::remove_reference_t<decltype(target)>>(symbol);
+        }
+    };
 
     bool ok = true;
     ok = load_symbol("cg_env_open", api->env_open) && ok;
@@ -858,6 +891,14 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
     ok = load_symbol("cg_lsn_getstate", api->lsn_getstate) && ok;
     ok = load_symbol("cg_lsn_getscheme", api->lsn_getscheme) && ok;
     ok = load_symbol("cg_getstr", api->getstr) && ok;
+    load_optional_symbol("cg_pub_new", api->pub_new);
+    load_optional_symbol("cg_pub_open", api->pub_open);
+    load_optional_symbol("cg_pub_close", api->pub_close);
+    load_optional_symbol("cg_pub_destroy", api->pub_destroy);
+    load_optional_symbol("cg_pub_getstate", api->pub_getstate);
+    load_optional_symbol("cg_pub_msgnew", api->pub_msgnew);
+    load_optional_symbol("cg_pub_post", api->pub_post);
+    load_optional_symbol("cg_pub_msgfree", api->pub_msgfree);
     if (!ok) {
         return {};
     }
@@ -1177,6 +1218,10 @@ struct Plaza2ListenerCallbackState {
     if (state.scheme_loaded) {
         return {};
     }
+    if (state.stream_code == kNoStreamCode) {
+        state.scheme_loaded = true;
+        return {};
+    }
     if (!state.shared || !state.shared->api || state.shared->api->lsn_getscheme == nullptr ||
         state.listener_handle == nullptr) {
         return {
@@ -1399,6 +1444,26 @@ struct Plaza2ListenerCallbackState {
         }
         case kCgMsgStreamData: {
             const auto* payload = static_cast<const CgMsgStreamData*>(raw_msg);
+            if (state->stream_code == kNoStreamCode) {
+                const auto raw_payload =
+                    payload->data == nullptr
+                        ? std::span<const std::byte>{}
+                        : std::span<const std::byte>{static_cast<const std::byte*>(payload->data), payload->data_size};
+                const auto event = Plaza2ListenerEvent{
+                    .kind = Plaza2ListenerEventKind::StreamData,
+                    .stream_code = state->stream_code,
+                    .message_id = static_cast<std::int32_t>(payload->msg_id),
+                    .message_name =
+                        payload->msg_name == nullptr ? std::string_view{} : std::string_view(payload->msg_name),
+                    .user_id = payload->user_id,
+                    .raw_payload = raw_payload,
+                    .signed_value = payload->rev,
+                };
+                if (const auto error = dispatch_listener_event(*state, event); error) {
+                    return fail(error);
+                }
+                return kCgErrOk;
+            }
             const auto* plan = find_runtime_message_plan(
                 state->message_plans, payload->msg_index,
                 payload->msg_name == nullptr ? std::string_view{} : std::string_view(payload->msg_name));
@@ -1986,6 +2051,190 @@ Plaza2Error Plaza2Listener::state(std::uint32_t& out_state) const {
 }
 
 bool Plaza2Listener::is_created() const noexcept {
+    return handle_ != nullptr;
+}
+
+Plaza2Publisher::~Plaza2Publisher() {
+    if (handle_ != nullptr) {
+        static_cast<void>(destroy());
+    }
+}
+
+Plaza2Error Plaza2Publisher::create(Plaza2Connection& connection, std::string_view settings) {
+    if (!connection.shared_ || !connection.shared_->api || connection.handle_ == nullptr) {
+        return {
+            .code = Plaza2ErrorCode::AdapterState,
+            .runtime_code = kCgErrIncorrectState,
+            .message = "publisher create requires a created PLAZA II connection",
+        };
+    }
+    if (connection.shared_->api->pub_new == nullptr) {
+        return {
+            .code = Plaza2ErrorCode::SymbolLoadFailed,
+            .runtime_code = 0,
+            .message = "loaded CGate runtime does not expose cg_pub_new",
+        };
+    }
+    if (handle_ != nullptr) {
+        return {
+            .code = Plaza2ErrorCode::AdapterState,
+            .runtime_code = kCgErrIncorrectState,
+            .message = "publisher is already created",
+        };
+    }
+    if (settings.empty()) {
+        return {
+            .code = Plaza2ErrorCode::InvalidConfiguration,
+            .runtime_code = 0,
+            .message = "publisher settings must be provided explicitly for TEST order entry",
+        };
+    }
+
+    shared_ = connection.shared_;
+    void* raw_handle = nullptr;
+    const std::string copied_settings(settings);
+    const auto result = shared_->api->pub_new(connection.handle_, copied_settings.c_str(), &raw_handle);
+    const auto translated = translate_plaza2_result("cg_pub_new", result);
+    if (translated) {
+        shared_.reset();
+        return translated;
+    }
+    handle_ = raw_handle;
+    return {};
+}
+
+Plaza2Error Plaza2Publisher::open(std::string_view settings) {
+    if (!shared_ || !shared_->api || handle_ == nullptr) {
+        return {
+            .code = Plaza2ErrorCode::AdapterState,
+            .runtime_code = kCgErrIncorrectState,
+            .message = "publisher open requires a created publisher",
+        };
+    }
+    if (shared_->api->pub_open == nullptr) {
+        return {
+            .code = Plaza2ErrorCode::SymbolLoadFailed,
+            .runtime_code = 0,
+            .message = "loaded CGate runtime does not expose cg_pub_open",
+        };
+    }
+    const std::string copied_settings(settings);
+    const auto result = shared_->api->pub_open(handle_, copied_settings.empty() ? nullptr : copied_settings.c_str());
+    return translate_plaza2_result("cg_pub_open", result);
+}
+
+Plaza2PublisherPostResult Plaza2Publisher::post_by_message_name(std::string_view message_name,
+                                                                std::span<const std::byte> payload,
+                                                                std::uint64_t user_id, bool need_reply) {
+    if (!shared_ || !shared_->api || handle_ == nullptr) {
+        return {
+            .error =
+                {
+                    .code = Plaza2ErrorCode::AdapterState,
+                    .runtime_code = kCgErrIncorrectState,
+                    .message = "publisher post requires a created publisher",
+                },
+        };
+    }
+    if (shared_->api->pub_msgnew == nullptr || shared_->api->pub_post == nullptr ||
+        shared_->api->pub_msgfree == nullptr) {
+        return {
+            .error =
+                {
+                    .code = Plaza2ErrorCode::SymbolLoadFailed,
+                    .runtime_code = 0,
+                    .message = "loaded CGate runtime does not expose all publisher message symbols",
+                },
+        };
+    }
+    if (message_name.empty() || payload.empty()) {
+        return {
+            .error =
+                {
+                    .code = Plaza2ErrorCode::InvalidConfiguration,
+                    .runtime_code = 0,
+                    .message = "publisher post requires explicit message name and payload",
+                },
+        };
+    }
+
+    void* raw_msg = nullptr;
+    const std::string copied_name(message_name);
+    auto result = shared_->api->pub_msgnew(handle_, kCgKeyName, copied_name.c_str(), &raw_msg);
+    auto translated = translate_plaza2_result("cg_pub_msgnew", result);
+    if (translated) {
+        return {.error = translated};
+    }
+
+    auto* msg = static_cast<CgMsgData*>(raw_msg);
+    Plaza2PublisherPostResult post_result;
+    post_result.runtime_payload_size = msg == nullptr ? 0 : msg->data_size;
+    if (msg == nullptr || msg->data == nullptr || msg->data_size != payload.size()) {
+        post_result.error = {
+            .code = Plaza2ErrorCode::InvalidConfiguration,
+            .runtime_code = 0,
+            .message = "runtime publisher payload size does not match locked offline command payload",
+        };
+    } else {
+        std::memcpy(msg->data, payload.data(), payload.size());
+        msg->user_id = user_id;
+        result = shared_->api->pub_post(handle_, raw_msg, need_reply ? kCgPubNeedReply : 0U);
+        post_result.error = translate_plaza2_result("cg_pub_post", result);
+    }
+
+    const auto free_result = shared_->api->pub_msgfree(handle_, raw_msg);
+    if (!post_result.error) {
+        post_result.error = translate_plaza2_result("cg_pub_msgfree", free_result);
+    }
+    return post_result;
+}
+
+Plaza2Error Plaza2Publisher::close() {
+    if (!shared_ || !shared_->api || handle_ == nullptr || shared_->api->pub_close == nullptr) {
+        return {};
+    }
+    return translate_plaza2_result("cg_pub_close", shared_->api->pub_close(handle_));
+}
+
+Plaza2Error Plaza2Publisher::destroy() {
+    if (!shared_ || !shared_->api || handle_ == nullptr) {
+        return {};
+    }
+    if (shared_->api->pub_destroy == nullptr) {
+        return {
+            .code = Plaza2ErrorCode::SymbolLoadFailed,
+            .runtime_code = 0,
+            .message = "loaded CGate runtime does not expose cg_pub_destroy",
+        };
+    }
+    const auto result = shared_->api->pub_destroy(handle_);
+    const auto translated = translate_plaza2_result("cg_pub_destroy", result);
+    if (!translated) {
+        handle_ = nullptr;
+        shared_.reset();
+    }
+    return translated;
+}
+
+Plaza2Error Plaza2Publisher::state(std::uint32_t& out_state) const {
+    if (!shared_ || !shared_->api || handle_ == nullptr) {
+        return {
+            .code = Plaza2ErrorCode::AdapterState,
+            .runtime_code = kCgErrIncorrectState,
+            .message = "publisher state requires a created publisher",
+        };
+    }
+    if (shared_->api->pub_getstate == nullptr) {
+        return {
+            .code = Plaza2ErrorCode::SymbolLoadFailed,
+            .runtime_code = 0,
+            .message = "loaded CGate runtime does not expose cg_pub_getstate",
+        };
+    }
+    return translate_plaza2_result("cg_pub_getstate", shared_->api->pub_getstate(handle_, &out_state));
+}
+
+bool Plaza2Publisher::is_created() const noexcept {
     return handle_ != nullptr;
 }
 
