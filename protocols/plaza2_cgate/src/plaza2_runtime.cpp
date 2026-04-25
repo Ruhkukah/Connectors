@@ -223,7 +223,7 @@ struct CgTime {
     std::uint16_t msec;
 };
 
-struct CgDataClearDeleted {
+struct ClearDeletedPayload {
     std::uint32_t table_idx;
     std::int64_t table_rev;
     std::uint32_t flags;
@@ -1030,6 +1030,15 @@ template <typename T> [[nodiscard]] T read_unaligned(const void* data) {
     return value;
 }
 
+[[nodiscard]] ClearDeletedPayload read_clear_deleted_payload(const void* data) {
+    const auto* bytes = static_cast<const std::byte*>(data);
+    return {
+        .table_idx = read_unaligned<std::uint32_t>(bytes),
+        .table_rev = read_unaligned<std::int64_t>(bytes + sizeof(std::uint32_t)),
+        .flags = read_unaligned<std::uint32_t>(bytes + sizeof(std::uint32_t) + sizeof(std::int64_t)),
+    };
+}
+
 [[nodiscard]] std::int64_t read_signed_integer(const void* data, std::size_t size) {
     switch (size) {
     case 1:
@@ -1137,6 +1146,17 @@ template <typename T> [[nodiscard]] T read_unaligned(const void* data) {
         if (plan.msg_name == msg_name) {
             return &plan;
         }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const RuntimeMessagePlan*
+find_clear_deleted_runtime_message_plan(std::span<const RuntimeMessagePlan> plans, std::size_t table_idx) {
+    if (const auto* plan = find_runtime_message_plan(plans, table_idx, {}); plan != nullptr) {
+        return plan;
+    }
+    if (table_idx < plans.size()) {
+        return &plans[table_idx];
     }
     return nullptr;
 }
@@ -1341,26 +1361,21 @@ struct Plaza2ListenerCallbackState {
             return kCgErrOk;
         }
         case kCgMsgP2replClearDeleted: {
-            if (msg->data == nullptr || msg->data_size < sizeof(CgDataClearDeleted)) {
+            constexpr auto kPackedClearDeletedSize =
+                sizeof(std::uint32_t) + sizeof(std::int64_t) + sizeof(std::uint32_t);
+            if (msg->data == nullptr || msg->data_size < kPackedClearDeletedSize) {
                 return fail({
                     .code = Plaza2ErrorCode::DecodeFailed,
                     .runtime_code = 0,
                     .message = "CG_MSG_P2REPL_CLEARDELETED did not provide cg_data_cleardeleted_t payload",
                 });
             }
-            const auto payload = read_unaligned<CgDataClearDeleted>(msg->data);
-            const auto* plan = find_runtime_message_plan(state->message_plans, payload.table_idx, {});
-            if (plan == nullptr) {
-                return fail({
-                    .code = Plaza2ErrorCode::DecodeFailed,
-                    .runtime_code = 0,
-                    .message = "CG_MSG_P2REPL_CLEARDELETED referenced an unknown runtime table index",
-                });
-            }
+            const auto payload = read_clear_deleted_payload(msg->data);
+            const auto* plan = find_clear_deleted_runtime_message_plan(state->message_plans, payload.table_idx);
             const auto event = Plaza2ListenerEvent{
                 .kind = Plaza2ListenerEventKind::ClearDeleted,
                 .stream_code = state->stream_code,
-                .table_code = plan->table_code,
+                .table_code = plan == nullptr ? kNoTableCode : plan->table_code,
                 .signed_value = payload.table_rev,
                 .clear_deleted_flags = payload.flags,
             };

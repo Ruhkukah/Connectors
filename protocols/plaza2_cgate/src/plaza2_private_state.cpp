@@ -257,6 +257,20 @@ struct StagedState {
     std::unordered_set<StreamCode, EnumClassHash> touched_streams;
 };
 
+void reset_stream_watermarks(StreamHealthSnapshot& health) {
+    health.committed_row_count = 0;
+    health.last_commit_sequence = 0;
+    health.has_publication_state = false;
+    health.publication_state = 0;
+    health.last_trades_rev = 0;
+    health.last_trades_lifenum = 0;
+    health.last_server_time = 0;
+    health.last_info_moment = 0;
+    health.last_event_id = 0;
+    health.last_event_type = 0;
+    health.last_message.clear();
+}
+
 } // namespace
 
 struct Plaza2PrivateStateProjector::Impl {
@@ -473,17 +487,40 @@ struct Plaza2PrivateStateProjector::Impl {
         }
 
         auto& health = ensure_stream_health(stream_health, stream_code);
-        health.committed_row_count = 0;
-        health.last_commit_sequence = 0;
-        health.has_publication_state = false;
-        health.publication_state = 0;
-        health.last_trades_rev = 0;
-        health.last_trades_lifenum = 0;
-        health.last_server_time = 0;
-        health.last_info_moment = 0;
-        health.last_event_id = 0;
-        health.last_event_type = 0;
-        health.last_message.clear();
+        reset_stream_watermarks(health);
+    }
+
+    void stage_clear_stream_owned_state(StreamCode stream_code) {
+        switch (stream_code) {
+        case StreamCode::kFortsTradeRepl:
+            clear_trade_source(ensure_stage_copy(staged.orders, orders_by_key));
+            ensure_stage_copy(staged.trades, trades_by_key).clear();
+            staged.touched_streams.insert(StreamCode::kFortsTradeRepl);
+            break;
+        case StreamCode::kFortsUserorderbookRepl:
+            clear_user_book_source(ensure_stage_copy(staged.orders, orders_by_key));
+            staged.touched_streams.insert(StreamCode::kFortsUserorderbookRepl);
+            break;
+        case StreamCode::kFortsPosRepl:
+            ensure_stage_copy(staged.positions, positions_by_key).clear();
+            staged.touched_streams.insert(StreamCode::kFortsPosRepl);
+            break;
+        case StreamCode::kFortsPartRepl:
+            ensure_stage_copy(staged.limits, limits_by_key).clear();
+            staged.touched_streams.insert(StreamCode::kFortsPartRepl);
+            break;
+        case StreamCode::kFortsRefdataRepl:
+            ensure_stage_copy(staged.sessions, sessions_by_id).clear();
+            ensure_stage_copy(staged.instruments, instruments_by_isin).clear();
+            ensure_stage_copy(staged.matching_map, matching_by_base_contract).clear();
+            staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
+            break;
+        default:
+            break;
+        }
+
+        auto& health = ensure_stream_health(ensure_staged_stream_health(), stream_code);
+        reset_stream_watermarks(health);
     }
 
     OrderMap& ensure_staged_orders() {
@@ -1178,7 +1215,11 @@ void Plaza2PrivateStateProjector::on_event(const fake::ScenarioSpec&, const fake
         break;
     case fake::EventKind::kClearDeleted:
         impl_->sync_base_health(state);
-        impl_->clear_stream_owned_state(event.stream_code);
+        if (impl_->staged.active) {
+            impl_->stage_clear_stream_owned_state(event.stream_code);
+        } else {
+            impl_->clear_stream_owned_state(event.stream_code);
+        }
         break;
     }
 }

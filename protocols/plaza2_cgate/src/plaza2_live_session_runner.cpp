@@ -375,9 +375,6 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
     }
 
     Plaza2Error handle_clear_deleted(StreamCode stream_code) {
-        if (state_.transaction_open) {
-            return ordering_error("PLAZA II live bridge received P2REPL_CLEARDELETED inside an open transaction");
-        }
         const auto index = stream_index(state_, stream_code);
         if (index == state_.streams.size()) {
             return ordering_error("PLAZA II live bridge received P2REPL_CLEARDELETED for an undeclared stream");

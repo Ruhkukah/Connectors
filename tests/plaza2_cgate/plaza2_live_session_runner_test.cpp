@@ -79,6 +79,8 @@ int main(int argc, char** argv) {
 
         ::setenv("MOEX_PLAZA2_TEST_CREDENTIALS", "PHASE3F-SUPER-SECRET", 1);
         ::setenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME", "1", 1);
+        ::setenv("MOEX_FAKE_CGATE_CLEAR_DELETED_INSIDE_TRANSACTION", "1", 1);
+        ::setenv("MOEX_FAKE_CGATE_CLEAR_DELETED_UNKNOWN_TABLE", "1", 1);
 
         Plaza2LiveSessionRunner runner(make_config(fixture));
         const auto start = runner.start();
@@ -140,6 +142,8 @@ int main(int argc, char** argv) {
         cleanup();
         ::unsetenv("MOEX_PLAZA2_TEST_CREDENTIALS");
         ::unsetenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME");
+        ::unsetenv("MOEX_FAKE_CGATE_CLEAR_DELETED_INSIDE_TRANSACTION");
+        ::unsetenv("MOEX_FAKE_CGATE_CLEAR_DELETED_UNKNOWN_TABLE");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

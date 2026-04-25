@@ -1,6 +1,7 @@
 #include "plaza2_generated_metadata.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -40,6 +41,7 @@ constexpr std::uint32_t kCgMsgStreamData = 0x120;
 constexpr std::uint32_t kCgMsgTnBegin = 0x200;
 constexpr std::uint32_t kCgMsgTnCommit = 0x210;
 constexpr std::uint32_t kCgMsgP2replLifenum = 0x1110;
+constexpr std::uint32_t kCgMsgP2replClearDeleted = 0x1111;
 constexpr std::uint32_t kCgMsgP2replOnline = 0x1112;
 constexpr std::uint32_t kCgMsgP2replReplState = 0x1115;
 
@@ -641,6 +643,25 @@ bool relative_scheme_path_forbidden(std::string_view settings) {
     return settings.find("|FILE|scheme/forts_scheme.ini|") != std::string_view::npos;
 }
 
+bool emit_clear_deleted_inside_transaction() {
+    const auto* value = std::getenv("MOEX_FAKE_CGATE_CLEAR_DELETED_INSIDE_TRANSACTION");
+    return value != nullptr && *value != '\0' && std::string_view(value) != "0";
+}
+
+bool emit_unknown_clear_deleted_table() {
+    const auto* value = std::getenv("MOEX_FAKE_CGATE_CLEAR_DELETED_UNKNOWN_TABLE");
+    return value != nullptr && *value != '\0' && std::string_view(value) != "0";
+}
+
+std::array<std::byte, sizeof(std::uint32_t) + sizeof(std::int64_t) + sizeof(std::uint32_t)>
+make_clear_deleted_payload(std::uint32_t table_idx, std::int64_t table_rev, std::uint32_t flags) {
+    std::array<std::byte, sizeof(std::uint32_t) + sizeof(std::int64_t) + sizeof(std::uint32_t)> payload{};
+    std::memcpy(payload.data(), &table_idx, sizeof(table_idx));
+    std::memcpy(payload.data() + sizeof(table_idx), &table_rev, sizeof(table_rev));
+    std::memcpy(payload.data() + sizeof(table_idx) + sizeof(table_rev), &flags, sizeof(flags));
+    return payload;
+}
+
 std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMessageScript>& script,
                                                        std::vector<MessagePlan>* plans) {
     auto scheme = std::make_unique<OwnedScheme>();
@@ -829,6 +850,15 @@ std::uint32_t emit_script(FakeListener& listener) {
 
     if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk) {
         return result;
+    }
+    if (emit_clear_deleted_inside_transaction() && !listener.message_plans.empty()) {
+        auto clear_deleted =
+            make_clear_deleted_payload(emit_unknown_clear_deleted_table() ? 999U : 0U, script.front().rev, 0);
+        if (const auto result =
+                emit_simple_message(listener, kCgMsgP2replClearDeleted, clear_deleted.data(), clear_deleted.size());
+            result != kCgErrOk) {
+            return result;
+        }
     }
     for (const auto& message : script) {
         if (const auto result = emit_stream_message(listener, message); result != kCgErrOk) {
