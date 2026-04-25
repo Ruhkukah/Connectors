@@ -21,6 +21,9 @@ connectors:
   - connector_id: plaza2_trade
     role: trade
     requires_test_or_replay_coverage: true
+  - connector_id: plaza2_aggr20_md
+    role: market_data
+    requires_test_or_replay_coverage: true
   - connector_id: fix_dropcopy
     role: reconciliation
     requires_test_or_replay_coverage: false
