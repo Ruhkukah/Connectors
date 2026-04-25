@@ -1,0 +1,13 @@
+scenario_id: cod_heartbeat_accept
+description: CODHeartbeat accepts without order-state mutation
+metadata:
+  version: 1
+  deterministic_seed: 0
+command_flow:
+  - command: CODHeartbeat
+    expected_outcome: Accepted
+    live_send: false
+confirmation:
+  emits_fake_replication: true
+  commit_bounded: true
+  projected_private_state: true

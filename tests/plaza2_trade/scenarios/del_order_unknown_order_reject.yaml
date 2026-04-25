@@ -1,0 +1,13 @@
+scenario_id: del_order_unknown_order_reject
+description: DelOrder rejects an unknown fake order id
+metadata:
+  version: 1
+  deterministic_seed: 0
+command_flow:
+  - command: DelOrder
+    expected_outcome: UnknownOrder
+    live_send: false
+confirmation:
+  emits_fake_replication: true
+  commit_bounded: true
+  projected_private_state: true

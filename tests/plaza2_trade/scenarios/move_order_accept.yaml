@@ -1,0 +1,13 @@
+scenario_id: move_order_accept
+description: MoveOrder updates an active fake order
+metadata:
+  version: 1
+  deterministic_seed: 0
+command_flow:
+  - command: MoveOrder
+    expected_outcome: Accepted
+    live_send: false
+confirmation:
+  emits_fake_replication: true
+  commit_bounded: true
+  projected_private_state: true
