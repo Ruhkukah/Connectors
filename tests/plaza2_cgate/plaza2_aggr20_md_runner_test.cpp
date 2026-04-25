@@ -18,11 +18,11 @@ moex::plaza2::cgate::Plaza2Aggr20MdConfig make_config(const moex::plaza2::test::
     config.runtime.environment = Plaza2Environment::Test;
     config.runtime.runtime_root = fixture.root;
     config.runtime.expected_spectra_release = "SPECTRA93";
-    config.runtime.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";
+    config.runtime.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
     config.connection_settings = "p2tcp://localhost:4001;app_name=connectors_phase5d_aggr20";
-    config.stream.settings = "p2repl://FORTS_AGGR20_REPL;scheme=|FILE|scheme/forts_scheme.ini|FORTS_AGGR20_REPL";
-    config.credentials.source = Plaza2CredentialSource::Env;
-    config.credentials.env_var = "MOEX_PLAZA2_TEST_CREDENTIALS";
+    config.stream.settings = "p2repl://FORTS_AGGR20_REPL;scheme=|FILE|scheme/forts_scheme.ini|Aggr";
+    config.software_key.source = Plaza2CredentialSource::Env;
+    config.software_key.env_var = "MOEX_PLAZA2_CGATE_SOFTWARE_KEY";
     config.arm_state.test_network_armed = true;
     config.arm_state.test_session_armed = true;
     config.arm_state.test_plaza2_armed = true;
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
         const auto fixture =
             materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
 
-        ::setenv("MOEX_PLAZA2_TEST_CREDENTIALS", "PHASE5D-REDACTION-SAMPLE", 1);
+        ::setenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "PHASE5D-REDACTION-SAMPLE", 1);
         ::setenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME", "1", 1);
 
         Plaza2Aggr20MdRunner runner(make_config(fixture));
@@ -91,7 +91,7 @@ int main(int argc, char** argv) {
         require(stop.ok, "AGGR20 runner stop should succeed");
 
         cleanup();
-        ::unsetenv("MOEX_PLAZA2_TEST_CREDENTIALS");
+        ::unsetenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY");
         ::unsetenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME");
         return 0;
     } catch (const std::exception& error) {

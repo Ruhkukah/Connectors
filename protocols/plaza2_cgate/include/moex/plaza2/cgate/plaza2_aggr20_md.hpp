@@ -72,6 +72,7 @@ struct Plaza2Aggr20MdConfig {
     std::string connection_open_settings;
     Plaza2Aggr20MdStreamConfig stream;
     Plaza2CredentialConfig credentials{};
+    Plaza2CredentialConfig software_key{};
     Plaza2RuntimeArmState arm_state{};
     bool test_market_data_armed{false};
     std::uint32_t process_timeout_ms{50};

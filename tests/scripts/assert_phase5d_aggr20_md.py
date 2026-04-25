@@ -31,6 +31,14 @@ def validate_profile(path: Path) -> None:
             raise AssertionError(f"profile {path} unexpectedly enables {forbidden}")
     if not profile.get("test_market_data_armed_required"):
         raise AssertionError(f"profile {path} must require the market-data arm flag")
+    runtime = section.get("runtime") or {}
+    if "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}" not in str(runtime.get("env_open_settings", "")):
+        raise AssertionError(f"profile {path} must use the CGate software-key token in env_open_settings")
+    if "${MOEX_PLAZA2_TEST_CREDENTIALS}" in str(runtime.get("env_open_settings", "")):
+        raise AssertionError(f"profile {path} must not use the exchange credential token as the CGate key")
+    software_key = section.get("software_key") or {}
+    if software_key.get("env_var") != "MOEX_PLAZA2_CGATE_SOFTWARE_KEY":
+        raise AssertionError(f"profile {path} must use the canonical CGate software-key env var")
 
 
 def main() -> int:

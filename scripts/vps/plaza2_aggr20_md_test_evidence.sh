@@ -78,8 +78,8 @@ set +o history
 # shellcheck disable=SC1090
 source "$secret_env_file"
 set -o history
-if [[ -z "${MOEX_PLAZA2_TEST_CREDENTIALS:-}" ]]; then
-  echo "MOEX_PLAZA2_TEST_CREDENTIALS is not set by secret env file" >&2
+if [[ -z "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY:-}" ]]; then
+  echo "MOEX_PLAZA2_CGATE_SOFTWARE_KEY is not set by secret env file" >&2
   exit 1
 fi
 
@@ -89,7 +89,7 @@ cat > "$output_dir/startup.json" <<EOF
   "profile": "$profile",
   "git_sha": "$git_sha",
   "docker_image": "$docker_image",
-  "credential_value": "[REDACTED]"
+  "software_key": "[REDACTED]"
 }
 EOF
 
@@ -118,6 +118,7 @@ set -e
 sed -i.bak -E \
   -e 's/(password|passwd|pwd|secret|token|credential|key)=([^ ;]+)/\1=[REDACTED]/Ig' \
   -e 's/MOEX_PLAZA2_TEST_CREDENTIALS=[^ ;]+/MOEX_PLAZA2_TEST_CREDENTIALS=[REDACTED]/g' \
+  -e 's/MOEX_PLAZA2_CGATE_SOFTWARE_KEY=[^ ;]+/MOEX_PLAZA2_CGATE_SOFTWARE_KEY=[REDACTED]/g' \
   "$operator_log"
 rm -f "$operator_log.bak"
 

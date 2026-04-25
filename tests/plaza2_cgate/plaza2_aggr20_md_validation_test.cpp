@@ -15,11 +15,11 @@ moex::plaza2::cgate::Plaza2Aggr20MdConfig make_config() {
     config.endpoint_port = 4001;
     config.runtime.environment = Plaza2Environment::Test;
     config.runtime.runtime_root = "/tmp/plaza2-runtime-placeholder";
-    config.runtime.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";
+    config.runtime.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
     config.connection_settings = "p2tcp://localhost:4001;app_name=connectors_phase5d_aggr20";
-    config.stream.settings = "p2repl://FORTS_AGGR20_REPL;scheme=|FILE|scheme/forts_scheme.ini|FORTS_AGGR20_REPL";
-    config.credentials.source = Plaza2CredentialSource::Env;
-    config.credentials.env_var = "MOEX_PLAZA2_TEST_CREDENTIALS";
+    config.stream.settings = "p2repl://FORTS_AGGR20_REPL;scheme=|FILE|scheme/forts_scheme.ini|Aggr";
+    config.software_key.source = Plaza2CredentialSource::Env;
+    config.software_key.env_var = "MOEX_PLAZA2_CGATE_SOFTWARE_KEY";
     config.arm_state.test_network_armed = true;
     config.arm_state.test_session_armed = true;
     config.arm_state.test_plaza2_armed = true;
@@ -41,6 +41,13 @@ int main() {
             config.test_market_data_armed = false;
             const auto error = validate_plaza2_aggr20_md_config(config);
             require(static_cast<bool>(error), "AGGR20 config should require --armed-test-market-data");
+        }
+
+        {
+            auto config = make_config();
+            config.runtime.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";
+            const auto error = validate_plaza2_aggr20_md_config(config);
+            require(static_cast<bool>(error), "AGGR20 config must not use exchange credentials as CGate key");
         }
 
         {

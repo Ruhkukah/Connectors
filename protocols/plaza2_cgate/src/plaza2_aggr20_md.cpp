@@ -21,6 +21,7 @@ using generated::TableCode;
 
 constexpr std::string_view kCredentialToken = "${MOEX_PLAZA2_TEST_CREDENTIALS}";
 constexpr std::string_view kLegacyCredentialToken = "${PLAZA2_TEST_CREDENTIALS}";
+constexpr std::string_view kSoftwareKeyToken = "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
 constexpr std::string_view kRelativeSchemeToken = "|FILE|scheme/forts_scheme.ini|";
 
 bool is_loopback_host(std::string_view host) {
@@ -43,18 +44,16 @@ bool settings_need_credentials(std::string_view value) {
            value.find(kLegacyCredentialToken) != std::string_view::npos;
 }
 
-std::string substitute_credentials(std::string_view value, std::string_view credential_value) {
-    std::string rendered(value);
-    auto replace_all = [&](std::string_view token) {
-        std::size_t position = 0;
-        while ((position = rendered.find(token, position)) != std::string::npos) {
-            rendered.replace(position, token.size(), credential_value);
-            position += credential_value.size();
-        }
-    };
-    replace_all(kCredentialToken);
-    replace_all(kLegacyCredentialToken);
-    return rendered;
+bool settings_need_software_key(std::string_view value) {
+    return value.find(kSoftwareKeyToken) != std::string_view::npos;
+}
+
+void replace_all(std::string& rendered, std::string_view token, std::string_view replacement) {
+    std::size_t position = 0;
+    while ((position = rendered.find(token, position)) != std::string::npos) {
+        rendered.replace(position, token.size(), replacement);
+        position += replacement.size();
+    }
 }
 
 std::string resolve_stream_scheme_path(std::string_view value, const std::filesystem::path& scheme_path) {
@@ -443,6 +442,11 @@ Plaza2Error validate_plaza2_aggr20_md_config(const Plaza2Aggr20MdConfig& config)
     if (config.runtime.env_open_settings.empty()) {
         return invalid_config("runtime.env_open_settings must be provided explicitly");
     }
+    if (config.runtime.env_open_settings.find(kCredentialToken) != std::string::npos ||
+        config.runtime.env_open_settings.find(kLegacyCredentialToken) != std::string::npos) {
+        return invalid_config("Phase 5D env_open_settings must use ${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}, not the "
+                              "exchange credential variable");
+    }
     if (config.connection_settings.empty()) {
         return invalid_config("connection_settings must be provided explicitly");
     }
@@ -485,8 +489,8 @@ struct Plaza2Aggr20MdRunner::Impl {
         if (!is_loopback_host(config.endpoint_host) && !config.test_market_data_armed) {
             return fail("external AGGR20 TEST market data requires --armed-test-market-data");
         }
-        if (const auto credentials = load_credentials_if_needed(); !credentials.ok) {
-            return credentials;
+        if (const auto secrets = load_secrets_if_needed(); !secrets.ok) {
+            return secrets;
         }
 
         effective_runtime = config.runtime;
@@ -602,42 +606,67 @@ struct Plaza2Aggr20MdRunner::Impl {
         };
     }
 
-    Plaza2Aggr20MdRunResult load_credentials_if_needed() {
+    Plaza2Aggr20MdRunResult load_secrets_if_needed() {
         const bool needs_credentials = settings_need_credentials(config.runtime.env_open_settings) ||
                                        settings_need_credentials(config.connection_settings) ||
                                        settings_need_credentials(config.connection_open_settings) ||
                                        settings_need_credentials(config.stream.settings) ||
                                        settings_need_credentials(config.stream.open_settings);
+        const bool needs_software_key = settings_need_software_key(config.runtime.env_open_settings) ||
+                                        settings_need_software_key(config.connection_settings) ||
+                                        settings_need_software_key(config.connection_open_settings) ||
+                                        settings_need_software_key(config.stream.settings) ||
+                                        settings_need_software_key(config.stream.open_settings);
 
         if (config.credentials.source == Plaza2CredentialSource::None) {
             if (needs_credentials) {
                 return fail("AGGR20 TEST settings require ${MOEX_PLAZA2_TEST_CREDENTIALS}, but no credential source "
                             "was configured");
             }
+        } else {
+            loaded_credentials = load_plaza2_credentials(config.credentials);
+            if (!loaded_credentials.has_value()) {
+                return fail(config.credentials.source == Plaza2CredentialSource::Env
+                                ? "AGGR20 TEST credential env var is missing or empty"
+                                : "AGGR20 TEST credential file is missing or empty");
+            }
+            append_operator_log("credentials=" + redact_plaza2_credentials(loaded_credentials->value));
+        }
+
+        if (config.software_key.source == Plaza2CredentialSource::None) {
+            if (needs_software_key) {
+                return fail("AGGR20 TEST settings require ${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}, but no software-key "
+                            "source was configured");
+            }
             return {
                 .ok = true,
-                .message = "AGGR20 TEST credentials not required",
+                .message = "AGGR20 TEST secrets loaded",
             };
         }
 
-        loaded_credentials = load_plaza2_credentials(config.credentials);
-        if (!loaded_credentials.has_value()) {
-            return fail(config.credentials.source == Plaza2CredentialSource::Env
-                            ? "AGGR20 TEST credential env var is missing or empty"
-                            : "AGGR20 TEST credential file is missing or empty");
+        loaded_software_key = load_plaza2_credentials(config.software_key);
+        if (!loaded_software_key.has_value()) {
+            return fail(config.software_key.source == Plaza2CredentialSource::Env
+                            ? "AGGR20 TEST software-key env var is missing or empty"
+                            : "AGGR20 TEST software-key file is missing or empty");
         }
-        append_operator_log("credentials=" + redact_plaza2_credentials(loaded_credentials->value));
+        append_operator_log("software_key=" + redact_plaza2_credentials(loaded_software_key->value));
         return {
             .ok = true,
-            .message = "AGGR20 TEST credentials loaded",
+            .message = "AGGR20 TEST secrets loaded",
         };
     }
 
     std::string render_setting(std::string_view value) const {
-        if (!loaded_credentials.has_value()) {
-            return std::string(value);
+        std::string rendered(value);
+        if (loaded_credentials.has_value()) {
+            replace_all(rendered, kCredentialToken, loaded_credentials->value);
+            replace_all(rendered, kLegacyCredentialToken, loaded_credentials->value);
         }
-        return substitute_credentials(value, loaded_credentials->value);
+        if (loaded_software_key.has_value()) {
+            replace_all(rendered, kSoftwareKeyToken, loaded_software_key->value);
+        }
+        return rendered;
     }
 
     void refresh_health() {
@@ -678,6 +707,7 @@ struct Plaza2Aggr20MdRunner::Impl {
     Plaza2Aggr20MdStreamConfig effective_stream;
     std::vector<std::string> operator_log_lines;
     std::optional<Plaza2Credentials> loaded_credentials;
+    std::optional<Plaza2Credentials> loaded_software_key;
     Plaza2Settings effective_runtime;
     std::string effective_connection_settings;
     std::string effective_connection_open_settings;

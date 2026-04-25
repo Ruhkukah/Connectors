@@ -43,6 +43,10 @@ Both are TEST-only and contain placeholders or localhost-safe values only. They 
 
 The only allowed stream is `FORTS_AGGR20_REPL`.
 
+The installed SPECTRA93 runtime exposes AGGR depth streams through the `Aggr` DB scheme alias. The
+listener setting therefore uses `p2repl://FORTS_AGGR20_REPL;scheme=|FILE|...|Aggr` rather than a DB
+scheme named `FORTS_AGGR20_REPL`.
+
 ## Runner Model
 
 The runner surface is `Plaza2Aggr20MdRunner`, exposed through:
@@ -55,7 +59,8 @@ Startup order:
 
 1. Validate TEST-only profile and all arm flags.
 2. Validate that only `FORTS_AGGR20_REPL` is configured.
-3. Load credentials through the existing redacted credential provider.
+3. Load the CGate software key through the redacted secret provider. The software key is distinct
+   from the exchange TEST account credential and is referenced as `${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}`.
 4. Run runtime probe and scoped scheme-drift validation.
 5. Open CGate environment and connection.
 6. Open one AGGR20 listener.

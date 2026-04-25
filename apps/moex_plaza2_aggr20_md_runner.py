@@ -32,6 +32,8 @@ def main() -> int:
     parser.add_argument("--armed-test-market-data", action="store_true")
     parser.add_argument("--credentials-env")
     parser.add_argument("--credentials-file")
+    parser.add_argument("--software-key-env")
+    parser.add_argument("--software-key-file")
     parser.add_argument("--max-polls", type=int, default=8)
     args = parser.parse_args()
 
@@ -44,6 +46,7 @@ def main() -> int:
     runtime = plaza2_md.get("runtime") or {}
     session = plaza2_md.get("session") or {}
     credentials = plaza2_md.get("credentials") or {}
+    software_key = plaza2_md.get("software_key") or {}
     endpoint = plaza2_md.get("endpoint") or {}
     stream = plaza2_md.get("stream") or {}
 
@@ -97,6 +100,17 @@ def main() -> int:
         command.extend(["--credentials-env-var", env_var])
     if file_path:
         command.extend(["--credentials-file", file_path])
+
+    software_key_source = str(software_key.get("source", "none"))
+    command.extend(["--software-key-source", software_key_source])
+    software_key_env = args.software_key_env or str(software_key.get("env_var", ""))
+    software_key_file = args.software_key_file or str(
+        software_key.get("credentials_file", software_key.get("file_path", ""))
+    )
+    if software_key_env:
+        command.extend(["--software-key-env-var", software_key_env])
+    if software_key_file:
+        command.extend(["--software-key-file", software_key_file])
 
     if args.armed_test_network:
         command.append("--armed-test-network")

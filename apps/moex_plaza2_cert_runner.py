@@ -31,6 +31,8 @@ def main() -> int:
     parser.add_argument("--armed-test-plaza2", action="store_true")
     parser.add_argument("--credentials-env")
     parser.add_argument("--credentials-file")
+    parser.add_argument("--software-key-env")
+    parser.add_argument("--software-key-file")
     parser.add_argument("--max-polls", type=int, default=8)
     args = parser.parse_args()
 
@@ -43,6 +45,7 @@ def main() -> int:
     runtime = plaza2_test.get("runtime") or {}
     session = plaza2_test.get("session") or {}
     credentials = plaza2_test.get("credentials") or {}
+    software_key = plaza2_test.get("software_key") or {}
     listeners = plaza2_test.get("listeners") or {}
     endpoint = plaza2_test.get("endpoint") or {}
 
@@ -95,6 +98,17 @@ def main() -> int:
         command.extend(["--credentials-env-var", env_var])
     if file_path:
         command.extend(["--credentials-file", file_path])
+
+    software_key_source = str(software_key.get("source", "none"))
+    command.extend(["--software-key-source", software_key_source])
+    software_key_env = args.software_key_env or str(software_key.get("env_var", ""))
+    software_key_file = args.software_key_file or str(
+        software_key.get("credentials_file", software_key.get("file_path", ""))
+    )
+    if software_key_env:
+        command.extend(["--software-key-env-var", software_key_env])
+    if software_key_file:
+        command.extend(["--software-key-file", software_key_file])
 
     for stream_name, stream_config in listeners.items():
         stream_settings = str((stream_config or {}).get("settings", ""))

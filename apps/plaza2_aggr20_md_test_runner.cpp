@@ -43,6 +43,9 @@ struct RunnerArgs {
     Plaza2CredentialSource credentials_source{Plaza2CredentialSource::None};
     std::string credentials_env_var;
     fs::path credentials_file;
+    Plaza2CredentialSource software_key_source{Plaza2CredentialSource::None};
+    std::string software_key_env_var;
+    fs::path software_key_file;
     bool armed_test_network{false};
     bool armed_test_session{false};
     bool armed_test_plaza2{false};
@@ -166,6 +169,22 @@ std::optional<RunnerArgs> parse_args(int argc, char** argv) {
             args.credentials_env_var = argv[++index];
         } else if (argument == "--credentials-file" && index + 1 < argc) {
             args.credentials_file = argv[++index];
+        } else if (argument == "--software-key-source" && index + 1 < argc) {
+            const std::string source = argv[++index];
+            if (source == "none") {
+                args.software_key_source = Plaza2CredentialSource::None;
+            } else if (source == "env") {
+                args.software_key_source = Plaza2CredentialSource::Env;
+            } else if (source == "file") {
+                args.software_key_source = Plaza2CredentialSource::File;
+            } else {
+                std::cerr << "invalid --software-key-source value\n";
+                return std::nullopt;
+            }
+        } else if (argument == "--software-key-env-var" && index + 1 < argc) {
+            args.software_key_env_var = argv[++index];
+        } else if (argument == "--software-key-file" && index + 1 < argc) {
+            args.software_key_file = argv[++index];
         } else if (argument == "--armed-test-network") {
             args.armed_test_network = true;
         } else if (argument == "--armed-test-session") {
@@ -254,6 +273,9 @@ Plaza2Aggr20MdConfig make_config(const RunnerArgs& args) {
     config.credentials.source = args.credentials_source;
     config.credentials.env_var = args.credentials_env_var;
     config.credentials.file_path = args.credentials_file;
+    config.software_key.source = args.software_key_source;
+    config.software_key.env_var = args.software_key_env_var;
+    config.software_key.file_path = args.software_key_file;
     config.arm_state.test_network_armed = args.armed_test_network;
     config.arm_state.test_session_armed = args.armed_test_session;
     config.arm_state.test_plaza2_armed = args.armed_test_plaza2;

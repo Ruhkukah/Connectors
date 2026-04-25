@@ -29,6 +29,7 @@ struct Plaza2LiveSessionConfig {
     std::string connection_open_settings;
     std::vector<Plaza2LiveStreamConfig> streams;
     Plaza2CredentialConfig credentials{};
+    Plaza2CredentialConfig software_key{};
     Plaza2RuntimeArmState arm_state{};
     std::uint32_t process_timeout_ms{50};
 };

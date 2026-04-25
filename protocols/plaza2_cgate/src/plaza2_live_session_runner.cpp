@@ -27,6 +27,7 @@ using generated::TableCode;
 
 constexpr std::string_view kCredentialToken = "${MOEX_PLAZA2_TEST_CREDENTIALS}";
 constexpr std::string_view kLegacyCredentialToken = "${PLAZA2_TEST_CREDENTIALS}";
+constexpr std::string_view kSoftwareKeyToken = "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
 constexpr std::string_view kRelativeSchemeToken = "|FILE|scheme/forts_scheme.ini|";
 constexpr std::array<StreamCode, 5> kRequiredPrivateStreams = {
     StreamCode::kFortsTradeRepl, StreamCode::kFortsUserorderbookRepl, StreamCode::kFortsPosRepl,
@@ -59,18 +60,16 @@ bool settings_need_credentials(std::string_view value) {
            value.find(kLegacyCredentialToken) != std::string_view::npos;
 }
 
-std::string substitute_credentials(std::string_view value, std::string_view credential_value) {
-    std::string rendered(value);
-    auto replace_all = [&](std::string_view token) {
-        std::size_t position = 0;
-        while ((position = rendered.find(token, position)) != std::string::npos) {
-            rendered.replace(position, token.size(), credential_value);
-            position += credential_value.size();
-        }
-    };
-    replace_all(kCredentialToken);
-    replace_all(kLegacyCredentialToken);
-    return rendered;
+bool settings_need_software_key(std::string_view value) {
+    return value.find(kSoftwareKeyToken) != std::string_view::npos;
+}
+
+void replace_all(std::string& rendered, std::string_view token, std::string_view replacement) {
+    std::size_t position = 0;
+    while ((position = rendered.find(token, position)) != std::string::npos) {
+        rendered.replace(position, token.size(), replacement);
+        position += replacement.size();
+    }
 }
 
 std::string resolve_stream_scheme_path(std::string_view value, const std::filesystem::path& scheme_path) {
@@ -466,8 +465,8 @@ struct Plaza2LiveSessionRunner::Impl {
             return fail(session_gate.reason);
         }
 
-        if (const auto credentials = load_credentials_if_needed(); !credentials.ok) {
-            return credentials;
+        if (const auto secrets = load_secrets_if_needed(); !secrets.ok) {
+            return secrets;
         }
 
         effective_runtime = config.runtime;
@@ -661,13 +660,20 @@ struct Plaza2LiveSessionRunner::Impl {
         };
     }
 
-    Plaza2LiveRunResult load_credentials_if_needed() {
+    Plaza2LiveRunResult load_secrets_if_needed() {
         const bool needs_credentials =
             settings_need_credentials(config.runtime.env_open_settings) ||
             settings_need_credentials(config.connection_settings) ||
             settings_need_credentials(config.connection_open_settings) ||
             std::any_of(config.streams.begin(), config.streams.end(), [](const Plaza2LiveStreamConfig& stream) {
                 return settings_need_credentials(stream.settings) || settings_need_credentials(stream.open_settings);
+            });
+        const bool needs_software_key =
+            settings_need_software_key(config.runtime.env_open_settings) ||
+            settings_need_software_key(config.connection_settings) ||
+            settings_need_software_key(config.connection_open_settings) ||
+            std::any_of(config.streams.begin(), config.streams.end(), [](const Plaza2LiveStreamConfig& stream) {
+                return settings_need_software_key(stream.settings) || settings_need_software_key(stream.open_settings);
             });
 
         if (config.credentials.source == Plaza2CredentialSource::None) {
@@ -676,33 +682,56 @@ struct Plaza2LiveSessionRunner::Impl {
                     "PLAZA II TEST settings require ${MOEX_PLAZA2_TEST_CREDENTIALS}, but no credential source was "
                     "configured");
             }
+        } else {
+            loaded_credentials = load_plaza2_credentials(config.credentials);
+            if (!loaded_credentials.has_value()) {
+                return fail(config.credentials.source == Plaza2CredentialSource::Env
+                                ? "PLAZA II TEST credential env var is missing or empty"
+                                : "PLAZA II TEST credential file is missing or empty");
+            }
+
+            append_operator_log("credentials_source=" +
+                                std::string(config.credentials.source == Plaza2CredentialSource::Env ? "env" : "file"));
+            append_operator_log("credentials=" + redact_plaza2_credentials(loaded_credentials->value));
+        }
+
+        if (config.software_key.source == Plaza2CredentialSource::None) {
+            if (needs_software_key) {
+                return fail("PLAZA II TEST settings require ${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}, but no software-key "
+                            "source was configured");
+            }
             return {
                 .ok = true,
-                .message = "PLAZA II TEST credentials not required",
+                .message = "PLAZA II TEST secrets loaded",
             };
         }
 
-        loaded_credentials = load_plaza2_credentials(config.credentials);
-        if (!loaded_credentials.has_value()) {
-            return fail(config.credentials.source == Plaza2CredentialSource::Env
-                            ? "PLAZA II TEST credential env var is missing or empty"
-                            : "PLAZA II TEST credential file is missing or empty");
+        loaded_software_key = load_plaza2_credentials(config.software_key);
+        if (!loaded_software_key.has_value()) {
+            return fail(config.software_key.source == Plaza2CredentialSource::Env
+                            ? "PLAZA II TEST software-key env var is missing or empty"
+                            : "PLAZA II TEST software-key file is missing or empty");
         }
 
-        append_operator_log("credentials_source=" +
-                            std::string(config.credentials.source == Plaza2CredentialSource::Env ? "env" : "file"));
-        append_operator_log("credentials=" + redact_plaza2_credentials(loaded_credentials->value));
+        append_operator_log("software_key_source=" +
+                            std::string(config.software_key.source == Plaza2CredentialSource::Env ? "env" : "file"));
+        append_operator_log("software_key=" + redact_plaza2_credentials(loaded_software_key->value));
         return {
             .ok = true,
-            .message = "PLAZA II TEST credentials loaded",
+            .message = "PLAZA II TEST secrets loaded",
         };
     }
 
     std::string render_setting(std::string_view value) const {
-        if (!loaded_credentials.has_value()) {
-            return std::string(value);
+        std::string rendered(value);
+        if (loaded_credentials.has_value()) {
+            replace_all(rendered, kCredentialToken, loaded_credentials->value);
+            replace_all(rendered, kLegacyCredentialToken, loaded_credentials->value);
         }
-        return substitute_credentials(value, loaded_credentials->value);
+        if (loaded_software_key.has_value()) {
+            replace_all(rendered, kSoftwareKeyToken, loaded_software_key->value);
+        }
+        return rendered;
     }
 
     void mark_stream_created(StreamCode stream_code) {
@@ -780,6 +809,7 @@ struct Plaza2LiveSessionRunner::Impl {
     std::vector<Plaza2LiveStreamConfig> effective_streams;
     std::vector<std::string> operator_log_lines;
     std::optional<Plaza2Credentials> loaded_credentials;
+    std::optional<Plaza2Credentials> loaded_software_key;
     Plaza2Settings effective_runtime;
     std::string effective_connection_settings;
     std::string effective_connection_open_settings;
