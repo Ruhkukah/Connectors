@@ -31,8 +31,7 @@ class CommitBoundaryProbe final : public CommitListener {
     }
 
     void on_stream_row(const ScenarioSpec& scenario, const EventSpec& event, const RowSpec& row,
-                       std::span<const moex::plaza2::fake::FieldValueSpec> fields,
-                       const EngineState& state) override {
+                       std::span<const moex::plaza2::fake::FieldValueSpec> fields, const EngineState& state) override {
         projector_.on_stream_row(scenario, event, row, fields, state);
         saw_uncommitted_row_ = true;
         if (projector_.own_orders().empty()) {

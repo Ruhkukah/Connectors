@@ -28,7 +28,8 @@ using moex::plaza2_trade::test_support::require;
 void test_rejects_before_established() {
     Plaza2TradeFakeSession session;
     const auto result = session.submit(Plaza2TradeCommandRequest{make_add_order()});
-    require(result.status == Plaza2TradeFakeOutcomeStatus::InvalidState, "fake session should reject before established");
+    require(result.status == Plaza2TradeFakeOutcomeStatus::InvalidState,
+            "fake session should reject before established");
     require(session.orders().empty(), "invalid-state command should not mutate order state");
 }
 
@@ -100,8 +101,8 @@ void test_all_command_families_represented() {
     Plaza2TradeFakeSession session;
     session.establish();
     const Plaza2TradeCommandRequest requests[] = {
-        make_add_order(),         make_iceberg_add_order(), make_iceberg_del_order(), make_iceberg_move_order(),
-        make_del_orders_by_bf_limit(), make_cod_heartbeat(),
+        make_add_order(),          make_iceberg_add_order(),      make_iceberg_del_order(),
+        make_iceberg_move_order(), make_del_orders_by_bf_limit(), make_cod_heartbeat(),
     };
 
     const auto add = session.submit(Plaza2TradeCommandRequest{make_add_order()});
@@ -113,7 +114,8 @@ void test_all_command_families_represented() {
 
     for (const auto& request : requests) {
         const auto result = session.submit(request);
-        require(result.status != Plaza2TradeFakeOutcomeStatus::InvalidState, "represented command should not be ignored");
+        require(result.status != Plaza2TradeFakeOutcomeStatus::InvalidState,
+                "represented command should not be ignored");
     }
     require(session.submit(Plaza2TradeCommandRequest{del}).status != Plaza2TradeFakeOutcomeStatus::InvalidState,
             "DelOrder should be represented");

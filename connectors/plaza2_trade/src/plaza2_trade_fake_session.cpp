@@ -96,7 +96,8 @@ void append_user_order_row(Plaza2TradeFakeReplicationBatch& batch, const Plaza2T
     append_text(batch, FieldCode::kFortsUserorderbookReplOrdersCurrentdayClientCode, order.client_code);
     append_i64(batch, FieldCode::kFortsUserorderbookReplOrdersCurrentdayMoment, static_cast<std::int64_t>(moment));
     append_u64(batch, FieldCode::kFortsUserorderbookReplOrdersCurrentdayMomentNs, 0);
-    append_i64(batch, FieldCode::kFortsUserorderbookReplOrdersCurrentdayXstatus, static_cast<std::int64_t>(order.status));
+    append_i64(batch, FieldCode::kFortsUserorderbookReplOrdersCurrentdayXstatus,
+               static_cast<std::int64_t>(order.status));
     append_i64(batch, FieldCode::kFortsUserorderbookReplOrdersCurrentdayXstatus2, 0);
     append_i64(batch, FieldCode::kFortsUserorderbookReplOrdersCurrentdayPublicAction,
                order.remaining_quantity == 0 ? 2 : 1);
@@ -385,7 +386,8 @@ Plaza2TradeFakeSubmitResult Plaza2TradeFakeSession::submit(const Plaza2TradeComm
     }
     if (!result.encoded_command.validation.ok()) {
         result.status = Plaza2TradeFakeOutcomeStatus::ValidationFailed;
-        result.diagnostic = result.encoded_command.validation.field_name + ": " + result.encoded_command.validation.message;
+        result.diagnostic =
+            result.encoded_command.validation.field_name + ": " + result.encoded_command.validation.message;
         result.decoded_reply = make_reply(result.reply_msgid, result.status, result.diagnostic);
         return result;
     }
@@ -418,8 +420,8 @@ Plaza2TradeFakeSubmitResult Plaza2TradeFakeSession::submit(const Plaza2TradeComm
                 order.last_command_family = kind;
                 orders_.push_back(order);
                 accepted.generated_order_id = order.synthetic_order_id;
-                accepted.decoded_reply = make_reply(result.reply_msgid, accepted.status, accepted.diagnostic,
-                                                   order.synthetic_order_id);
+                accepted.decoded_reply =
+                    make_reply(result.reply_msgid, accepted.status, accepted.diagnostic, order.synthetic_order_id);
                 accepted.replication = make_batch("phase5c_add_order_accept");
                 append_order_confirmation(accepted.replication, orders_.back(), next_repl_id_, next_moment_);
                 finish_batch(accepted.replication);
@@ -438,8 +440,8 @@ Plaza2TradeFakeSubmitResult Plaza2TradeFakeSession::submit(const Plaza2TradeComm
                 it->remaining_quantity = 0;
                 it->last_command_family = kind;
                 accepted.generated_order_id = it->synthetic_order_id;
-                accepted.decoded_reply = make_reply(result.reply_msgid, accepted.status, accepted.diagnostic,
-                                                   it->synthetic_order_id, 1);
+                accepted.decoded_reply =
+                    make_reply(result.reply_msgid, accepted.status, accepted.diagnostic, it->synthetic_order_id, 1);
                 accepted.replication = make_batch("phase5c_del_order_accept");
                 append_order_confirmation(accepted.replication, *it, next_repl_id_, next_moment_);
                 finish_batch(accepted.replication);
@@ -461,8 +463,8 @@ Plaza2TradeFakeSubmitResult Plaza2TradeFakeSession::submit(const Plaza2TradeComm
                 it->client_transaction_id = value.ext_id1.value_or(it->client_transaction_id);
                 it->last_command_family = kind;
                 accepted.generated_order_id = it->synthetic_order_id;
-                accepted.decoded_reply = make_reply(result.reply_msgid, accepted.status, accepted.diagnostic,
-                                                   it->synthetic_order_id);
+                accepted.decoded_reply =
+                    make_reply(result.reply_msgid, accepted.status, accepted.diagnostic, it->synthetic_order_id);
                 accepted.replication = make_batch("phase5c_move_order_accept");
                 append_order_confirmation(accepted.replication, *it, next_repl_id_, next_moment_);
                 finish_batch(accepted.replication);
@@ -482,8 +484,8 @@ Plaza2TradeFakeSubmitResult Plaza2TradeFakeSession::submit(const Plaza2TradeComm
                 it->client_transaction_id = value.ext_id.value_or(it->client_transaction_id);
                 it->last_command_family = kind;
                 accepted.generated_order_id = it->synthetic_order_id;
-                accepted.decoded_reply = make_reply(result.reply_msgid, accepted.status, accepted.diagnostic,
-                                                   it->synthetic_order_id);
+                accepted.decoded_reply =
+                    make_reply(result.reply_msgid, accepted.status, accepted.diagnostic, it->synthetic_order_id);
                 accepted.replication = make_batch("phase5c_iceberg_move_order_accept");
                 append_order_confirmation(accepted.replication, *it, next_repl_id_, next_moment_);
                 finish_batch(accepted.replication);
@@ -539,8 +541,8 @@ Plaza2TradeFakeSubmitResult Plaza2TradeFakeSession::simulate_fill(std::int64_t o
         it->status = Plaza2TradeFakeOrderStatus::Filled;
     }
 
-    auto result = make_result(it->last_command_family, it->client_transaction_id, Plaza2TradeFakeOutcomeStatus::Accepted,
-                              "fake fill accepted");
+    auto result = make_result(it->last_command_family, it->client_transaction_id,
+                              Plaza2TradeFakeOutcomeStatus::Accepted, "fake fill accepted");
     result.generated_order_id = it->synthetic_order_id;
     result.generated_deal_id = deal_id;
     result.replication = make_batch("phase5c_fake_fill");
