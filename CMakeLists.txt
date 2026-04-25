@@ -705,12 +705,15 @@ foreach(test_name IN ITEMS
         plaza2_trade_command_validation_test
         plaza2_trade_command_encoding_test
         plaza2_trade_reply_decoding_test
-        plaza2_trade_no_send_guard_test)
+        plaza2_trade_no_send_guard_test
+        plaza2_trade_fake_session_test
+        plaza2_trade_fake_session_replication_test)
     add_executable(${test_name}
         tests/plaza2_trade/${test_name}.cpp)
     target_link_libraries(${test_name}
         PRIVATE
-            moex_plaza2_trade_offline_codec)
+            moex_plaza2_trade_offline_codec
+            moex_plaza2_cgate_private_state)
     target_include_directories(${test_name}
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/plaza2_trade")

@@ -32,12 +32,18 @@ void test_encoded_command_is_not_sendable() {
 void test_offline_codec_does_not_reference_cgate_publisher_api() {
     const auto source_root = std::filesystem::path(MOEX_SOURCE_ROOT);
     const auto source = read_file(source_root / "connectors/plaza2_trade/src/plaza2_trade_codec.cpp");
+    const auto fake_source = read_file(source_root / "connectors/plaza2_trade/src/plaza2_trade_fake_session.cpp");
     const auto header =
         read_file(source_root / "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_trade_codec.hpp");
-    const auto combined = source + header;
+    const auto fake_header =
+        read_file(source_root / "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_trade_fake_session.hpp");
+    const auto cmake = read_file(source_root / "connectors/plaza2_trade/CMakeLists.txt");
+    const auto combined = source + fake_source + header + fake_header + cmake;
     require(combined.find("cg_pub_") == std::string::npos, "offline codec must not reference CGate publisher API");
     require(combined.find("publish(") == std::string::npos, "offline codec must not expose publish operation");
-    require(combined.find("submit(") == std::string::npos, "offline codec must not expose submit operation");
+    require(combined.find("submit_live(") == std::string::npos, "offline codec must not expose live submit operation");
+    require(combined.find("moex_plaza2_cgate_runtime") == std::string::npos,
+            "offline trade module must not link CGate runtime");
 }
 
 } // namespace

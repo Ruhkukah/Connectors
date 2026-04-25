@@ -1,0 +1,13 @@
+scenario_id: del_user_orders_accept
+description: DelUserOrders cancels matching active fake orders
+metadata:
+  version: 1
+  deterministic_seed: 0
+command_flow:
+  - command: DelUserOrders
+    expected_outcome: Accepted
+    live_send: false
+confirmation:
+  emits_fake_replication: true
+  commit_bounded: true
+  projected_private_state: true

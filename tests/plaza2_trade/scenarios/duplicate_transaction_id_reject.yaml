@@ -1,0 +1,13 @@
+scenario_id: duplicate_transaction_id_reject
+description: Duplicate ext_id rejected deterministically
+metadata:
+  version: 1
+  deterministic_seed: 0
+command_flow:
+  - command: AddOrder
+    expected_outcome: DuplicateClientTransactionId
+    live_send: false
+confirmation:
+  emits_fake_replication: true
+  commit_bounded: true
+  projected_private_state: true

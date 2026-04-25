@@ -1,0 +1,13 @@
+scenario_id: add_order_then_fake_fill
+description: AddOrder followed by fake fill confirmation
+metadata:
+  version: 1
+  deterministic_seed: 0
+command_flow:
+  - command: AddOrder
+    expected_outcome: Accepted
+    live_send: false
+confirmation:
+  emits_fake_replication: true
+  commit_bounded: true
+  projected_private_state: true
