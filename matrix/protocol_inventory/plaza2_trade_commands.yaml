@@ -1,0 +1,238 @@
+version: 1
+items:
+- protocol_item_id: plaza2_trade_command_add_order
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_command
+  command_name: AddOrder
+  msgid: 474
+  operation_type: add_order
+  command_family: plain_order
+  publisher_service: FORTS_SRV
+  publisher_category: FORTS_MSG
+  publisher_scheme: message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  request: true
+  safety_classification: spec_only
+  runnable: false
+  first_planned_implementation_phase: phase5b_offline_builder
+  reply_ids:
+  - plaza2_trade_reply_forts_msg179
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  dependencies:
+  - trading_session
+  - instrument_isin_id
+  - client_code
+  - broker_code
+  - limits_for_optional_precheck
+  - price_step_and_lot_rules
+  notes: Official AddOrder request. Phase 5A records only; no command builder is emitted.
+- protocol_item_id: plaza2_trade_command_iceberg_add_order
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_command
+  command_name: IcebergAddOrder
+  msgid: 475
+  operation_type: add_iceberg_order
+  command_family: iceberg_order
+  publisher_service: FORTS_SRV
+  publisher_category: FORTS_MSG
+  publisher_scheme: message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  request: true
+  safety_classification: spec_only
+  runnable: false
+  first_planned_implementation_phase: phase5b_offline_builder
+  reply_ids:
+  - plaza2_trade_reply_forts_msg180
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  dependencies:
+  - trading_session
+  - instrument_isin_id
+  - client_code
+  - broker_code
+  - limits_for_optional_precheck
+  - price_step_and_lot_rules
+  notes: Iceberg add request surface found in forts_messages.ini.
+- protocol_item_id: plaza2_trade_command_del_order
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_command
+  command_name: DelOrder
+  msgid: 461
+  operation_type: cancel_order
+  command_family: plain_order
+  publisher_service: FORTS_SRV
+  publisher_category: FORTS_MSG
+  publisher_scheme: message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  request: true
+  safety_classification: spec_only
+  runnable: false
+  first_planned_implementation_phase: phase5b_offline_builder
+  reply_ids:
+  - plaza2_trade_reply_forts_msg177
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  dependencies:
+  - active_order_id
+  - instrument_isin_id
+  - client_code
+  - broker_code
+  notes: Plain order cancellation request.
+- protocol_item_id: plaza2_trade_command_iceberg_del_order
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_command
+  command_name: IcebergDelOrder
+  msgid: 464
+  operation_type: cancel_iceberg_order
+  command_family: iceberg_order
+  publisher_service: FORTS_SRV
+  publisher_category: FORTS_MSG
+  publisher_scheme: message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  request: true
+  safety_classification: spec_only
+  runnable: false
+  first_planned_implementation_phase: phase5b_offline_builder
+  reply_ids:
+  - plaza2_trade_reply_forts_msg182
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  dependencies:
+  - active_order_id
+  - instrument_isin_id
+  - broker_code
+  notes: Iceberg order cancellation request.
+- protocol_item_id: plaza2_trade_command_move_order
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_command
+  command_name: MoveOrder
+  msgid: 476
+  operation_type: replace_or_move_order
+  command_family: plain_order
+  publisher_service: FORTS_SRV
+  publisher_category: FORTS_MSG
+  publisher_scheme: message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  request: true
+  safety_classification: spec_only
+  runnable: false
+  first_planned_implementation_phase: phase5b_offline_builder
+  reply_ids:
+  - plaza2_trade_reply_forts_msg176
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  dependencies:
+  - active_order_id
+  - instrument_isin_id
+  - client_code
+  - broker_code
+  - limits_for_optional_precheck
+  - price_step_and_lot_rules
+  notes: MoveOrder can modify one or two orders according to the official field surface.
+- protocol_item_id: plaza2_trade_command_iceberg_move_order
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_command
+  command_name: IcebergMoveOrder
+  msgid: 477
+  operation_type: replace_or_move_iceberg_order
+  command_family: iceberg_order
+  publisher_service: FORTS_SRV
+  publisher_category: FORTS_MSG
+  publisher_scheme: message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  request: true
+  safety_classification: spec_only
+  runnable: false
+  first_planned_implementation_phase: phase5b_offline_builder
+  reply_ids:
+  - plaza2_trade_reply_forts_msg181
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  dependencies:
+  - active_order_id
+  - instrument_isin_id
+  - broker_code
+  - limits_for_optional_precheck
+  - price_step_and_lot_rules
+  notes: Iceberg move/change request surface found in forts_messages.ini.
+- protocol_item_id: plaza2_trade_command_del_user_orders
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_command
+  command_name: DelUserOrders
+  msgid: 466
+  operation_type: mass_cancel_by_mask
+  command_family: mass_cancel
+  publisher_service: FORTS_SRV
+  publisher_category: FORTS_MSG
+  publisher_scheme: message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  request: true
+  safety_classification: spec_only
+  runnable: false
+  first_planned_implementation_phase: phase5b_offline_builder
+  reply_ids:
+  - plaza2_trade_reply_forts_msg186
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  dependencies:
+  - client_code
+  - broker_code
+  - base_contract_code
+  - instrument_isin_id
+  - instrument_mask_semantics
+  notes: Mass delete surface; exact mask semantics are deferred to Phase 5B documentation
+    and offline codec tests.
+- protocol_item_id: plaza2_trade_command_del_orders_by_bf_limit
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_command
+  command_name: DelOrdersByBFLimit
+  msgid: 419
+  operation_type: mass_cancel_by_broker_firm_limit
+  command_family: mass_cancel
+  publisher_service: FORTS_SRV
+  publisher_category: FORTS_MSG
+  publisher_scheme: message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  request: true
+  safety_classification: spec_only
+  runnable: false
+  first_planned_implementation_phase: phase5b_offline_builder
+  reply_ids:
+  - plaza2_trade_reply_forts_msg172
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  dependencies:
+  - broker_code
+  - broker_firm_limit_state
+  notes: NCC check/delete-by-BF-limit request; inventory only, not runnable.
+- protocol_item_id: plaza2_trade_command_cod_heartbeat
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_command
+  command_name: CODHeartbeat
+  msgid: 10000
+  operation_type: cancel_on_disconnect_heartbeat
+  command_family: system_heartbeat
+  publisher_service: FORTS_SRV
+  publisher_category: FORTS_MSG
+  publisher_scheme: message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  request: true
+  safety_classification: spec_only
+  runnable: false
+  first_planned_implementation_phase: phase5b_offline_builder
+  reply_ids: []
+  dependencies:
+  - publisher_session_state
+  - cancel_on_disconnect_policy
+  notes: Cancel-on-disconnect heartbeat must remain non-order-sending support surface
+    until later phases.

@@ -166,6 +166,8 @@ moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_phase3a_material
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_schema_materialize" "tools/plaza2_schema_materialize.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_codegen" "tools/plaza2_codegen.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_fake_scenario_materialize" "tools/plaza2_fake_scenario_materialize.py")
+moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_phase5a_trade_materialize"
+    "tools/plaza2_phase5a_trade_materialize.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "osengine_inventory" "tools/osengine_inventory.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "matrix_validate" "tools/matrix_validate.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "profile_check" "tools/profile_check.py")
@@ -678,6 +680,14 @@ add_test(
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_plaza2_runtime_scheme_lock.py"
         "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(plaza2_runtime_scheme_lock_check PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
+
+add_test(
+    NAME plaza2_trade_spec_lock_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_plaza2_trade_spec_lock.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${MOEX_TOOLS_BUILD_DIR}/plaza2_phase5a_trade_materialize")
+set_tests_properties(plaza2_trade_spec_lock_check PROPERTIES
     ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
 
 add_executable(plaza2_generated_metadata_test

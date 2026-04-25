@@ -1,0 +1,27 @@
+version: 1
+items:
+- protocol_item_id: plaza2_trade_error_forts_msg99
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_error
+  error_name: FORTS_MSG99
+  msgid: 99
+  error_kind: flood_control
+  fields:
+  - queue_size
+  - penalty_remain
+  - message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  expected_handling_phase: phase5c_fake_session_later
+- protocol_item_id: plaza2_trade_error_forts_msg100
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_error
+  error_name: FORTS_MSG100
+  msgid: 100
+  error_kind: system_error
+  fields:
+  - code
+  - message
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  expected_handling_phase: phase5c_fake_session_later
