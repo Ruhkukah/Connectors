@@ -75,6 +75,9 @@ fi
 if [[ -x "$build_dir/apps/moex_plaza2_aggr20_md_test_runner" ]]; then
   cp "$build_dir/apps/moex_plaza2_aggr20_md_test_runner" "$staging/build-docker-linux/apps/"
 fi
+if [[ -x "$build_dir/apps/moex_plaza2_trade_test_order_entry_runner" ]]; then
+  cp "$build_dir/apps/moex_plaza2_trade_test_order_entry_runner" "$staging/build-docker-linux/apps/"
+fi
 
 cat > "$staging/build-docker-linux/apps/moex_plaza2_cert_runner" <<'EOF'
 #!/usr/bin/env sh
@@ -98,6 +101,17 @@ exec python3 "$BUNDLE_ROOT/apps/moex_plaza2_aggr20_md_runner.py" "$@"
 EOF
 chmod 755 "$staging/build-docker-linux/apps/moex_plaza2_aggr20_md_runner"
 
+cat > "$staging/build-docker-linux/apps/moex_plaza2_trade_test_order_runner" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+
+APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+BUNDLE_ROOT="$(CDPATH= cd -- "$APP_DIR/../.." && pwd)"
+export PYTHONPATH="$BUNDLE_ROOT/tools${PYTHONPATH+:$PYTHONPATH}"
+exec python3 "$BUNDLE_ROOT/apps/moex_plaza2_trade_test_order_runner.py" "$@"
+EOF
+chmod 755 "$staging/build-docker-linux/apps/moex_plaza2_trade_test_order_runner"
+
 if [[ -d "$build_dir/lib" ]]; then
   mkdir -p "$staging/build-docker-linux/lib"
   find "$build_dir/lib" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp {} "$staging/build-docker-linux/lib/" \;
@@ -107,15 +121,20 @@ mkdir -p "$staging/apps" "$staging/tools" "$staging/profiles" "$staging/scripts/
   "$staging/spec-lock/test/plaza2"
 cp "$repo_root/apps/moex_plaza2_cert_runner.py" "$staging/apps/"
 cp "$repo_root/apps/moex_plaza2_aggr20_md_runner.py" "$staging/apps/"
+cp "$repo_root/apps/moex_plaza2_trade_test_order_runner.py" "$staging/apps/"
 cp "$repo_root/tools/moex_phase0_common.py" "$staging/tools/"
 cp "$repo_root/tools/plaza2_runtime_scheme_lock.py" "$staging/tools/"
 cp "$repo_root/profiles/test_plaza2_repl_live_session.template.yaml" "$staging/profiles/"
 cp "$repo_root/profiles/test_plaza2_aggr20_md.template.yaml" "$staging/profiles/"
+cp "$repo_root/profiles/test_plaza2_trade_order_entry.template.yaml" "$staging/profiles/"
 cp "$repo_root"/scripts/vps/*.sh "$staging/scripts/vps/"
 cp "$repo_root/docs/plaza2_phase4d_vps_cgate_install_evidence.md" "$staging/docs/"
 cp "$repo_root/docs/plaza2_phase4e_runtime_scheme_lock.md" "$staging/docs/"
 if [[ -f "$repo_root/docs/plaza2_phase5d_aggr20_market_data_bringup.md" ]]; then
   cp "$repo_root/docs/plaza2_phase5d_aggr20_market_data_bringup.md" "$staging/docs/"
+fi
+if [[ -f "$repo_root/docs/plaza2_phase5e_test_order_entry_bringup.md" ]]; then
+  cp "$repo_root/docs/plaza2_phase5e_test_order_entry_bringup.md" "$staging/docs/"
 fi
 cp -R "$repo_root/spec-lock/test/plaza2/runtime_scheme" "$staging/spec-lock/test/plaza2/"
 

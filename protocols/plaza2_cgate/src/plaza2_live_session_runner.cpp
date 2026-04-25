@@ -601,6 +601,8 @@ struct Plaza2LiveSessionRunner::Impl {
             static_cast<void>(it->listener.destroy());
         }
         listeners.clear();
+        static_cast<void>(publisher.close());
+        static_cast<void>(publisher.destroy());
         static_cast<void>(connection.close());
         static_cast<void>(connection.destroy());
         static_cast<void>(env.close());
@@ -612,6 +614,68 @@ struct Plaza2LiveSessionRunner::Impl {
         return {
             .ok = true,
             .message = "PLAZA II TEST runner stopped",
+        };
+    }
+
+    Plaza2LivePublisherResult open_publisher(const Plaza2LivePublisherConfig& publisher_config) {
+        if (!started) {
+            return {
+                .ok = false,
+                .message = "PLAZA II live TEST runner must be started before opening a publisher",
+            };
+        }
+        if (publisher_config.settings.empty()) {
+            return {
+                .ok = false,
+                .message = "publisher settings must be provided explicitly",
+            };
+        }
+        const auto rendered_settings =
+            resolve_stream_scheme_path(render_setting(publisher_config.settings), probe_report.layout.scheme_path);
+        const auto rendered_open_settings = render_setting(publisher_config.open_settings);
+        if (const auto create_error = publisher.create(connection, rendered_settings); create_error) {
+            return {
+                .ok = false,
+                .message = create_error.message,
+                .runtime_code = create_error.runtime_code,
+            };
+        }
+        if (const auto open_error = publisher.open(rendered_open_settings); open_error) {
+            return {
+                .ok = false,
+                .message = open_error.message,
+                .runtime_code = open_error.runtime_code,
+            };
+        }
+        append_operator_log("publisher=open");
+        return {
+            .ok = true,
+            .message = "PLAZA II TEST publisher opened",
+        };
+    }
+
+    Plaza2LivePublisherResult post_publisher_message(const Plaza2LivePublisherMessage& message) {
+        if (!publisher.is_created()) {
+            return {
+                .ok = false,
+                .message = "publisher must be opened before posting a message",
+            };
+        }
+        auto result =
+            publisher.post_by_message_name(message.message_name, message.payload, message.user_id, message.need_reply);
+        if (result.error) {
+            return {
+                .ok = false,
+                .message = result.error.message,
+                .runtime_code = result.error.runtime_code,
+                .runtime_payload_size = result.runtime_payload_size,
+            };
+        }
+        append_operator_log("publisher=post message=" + message.message_name);
+        return {
+            .ok = true,
+            .message = "PLAZA II TEST publisher message posted",
+            .runtime_payload_size = result.runtime_payload_size,
         };
     }
 
@@ -805,6 +869,7 @@ struct Plaza2LiveSessionRunner::Impl {
     LiveProjectorBridge projector_bridge;
     Plaza2Env env;
     Plaza2Connection connection;
+    Plaza2Publisher publisher;
     std::vector<LiveListenerHandle> listeners;
     std::vector<Plaza2LiveStreamConfig> effective_streams;
     std::vector<std::string> operator_log_lines;
@@ -839,6 +904,14 @@ Plaza2LiveRunResult Plaza2LiveSessionRunner::poll_once() {
 
 Plaza2LiveRunResult Plaza2LiveSessionRunner::stop() {
     return impl_->stop();
+}
+
+Plaza2LivePublisherResult Plaza2LiveSessionRunner::open_publisher(const Plaza2LivePublisherConfig& config) {
+    return impl_->open_publisher(config);
+}
+
+Plaza2LivePublisherResult Plaza2LiveSessionRunner::post_publisher_message(const Plaza2LivePublisherMessage& message) {
+    return impl_->post_publisher_message(message);
 }
 
 const Plaza2LiveHealthSnapshot& Plaza2LiveSessionRunner::health_snapshot() const noexcept {
