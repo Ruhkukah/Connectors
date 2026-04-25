@@ -101,6 +101,7 @@ add_subdirectory(protocols/twime_sbe)
 add_subdirectory(protocols/plaza2_cgate)
 add_subdirectory(connectors/twime_trade)
 add_subdirectory(connectors/plaza2_twime_reconciler)
+add_subdirectory(connectors/plaza2_trade)
 
 target_link_libraries(moex_phase0_core
     PUBLIC
@@ -168,6 +169,8 @@ moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_codegen" "tools/
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_fake_scenario_materialize" "tools/plaza2_fake_scenario_materialize.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_phase5a_trade_materialize"
     "tools/plaza2_phase5a_trade_materialize.py")
+moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "plaza2_phase5b_trade_codec_materialize"
+    "tools/plaza2_phase5b_trade_codec_materialize.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "osengine_inventory" "tools/osengine_inventory.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "matrix_validate" "tools/matrix_validate.py")
 moex_generate_python_launcher("${MOEX_TOOLS_BUILD_DIR}" "profile_check" "tools/profile_check.py")
@@ -689,6 +692,37 @@ add_test(
         "${MOEX_TOOLS_BUILD_DIR}/plaza2_phase5a_trade_materialize")
 set_tests_properties(plaza2_trade_spec_lock_check PROPERTIES
     ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
+
+add_test(
+    NAME plaza2_trade_codec_materialize_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_plaza2_trade_codec_materialize.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${MOEX_TOOLS_BUILD_DIR}/plaza2_phase5b_trade_codec_materialize")
+set_tests_properties(plaza2_trade_codec_materialize_check PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
+
+foreach(test_name IN ITEMS
+        plaza2_trade_command_validation_test
+        plaza2_trade_command_encoding_test
+        plaza2_trade_reply_decoding_test
+        plaza2_trade_no_send_guard_test)
+    add_executable(${test_name}
+        tests/plaza2_trade/${test_name}.cpp)
+    target_link_libraries(${test_name}
+        PRIVATE
+            moex_plaza2_trade_offline_codec)
+    target_include_directories(${test_name}
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/plaza2_trade")
+    target_compile_features(${test_name} PRIVATE cxx_std_20)
+    target_compile_definitions(${test_name}
+        PRIVATE
+            MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
+    set_property(TARGET ${test_name} PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+    add_test(
+        NAME ${test_name}
+        COMMAND "${MOEX_BUILD_ROOT}/tests/${test_name}")
+endforeach()
 
 add_executable(plaza2_generated_metadata_test
     tests/plaza2_cgate/plaza2_generated_metadata_test.cpp)
