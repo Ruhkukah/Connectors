@@ -1,0 +1,57 @@
+version: 1
+environment: test
+profile: t1
+scope: plaza2_transactional_trading_spec_lock
+raw_vendor_files_committed: false
+artifacts:
+- artifact_id: installed_cgate_docs_cgate_en_pdf
+  artifact_id_ref: cgate_docs
+  relative_path: docs/cgate_en.pdf
+  runtime_path: /opt/moex/cgate/docs/cgate_en.pdf
+  sha256: 71ab9be53f8ae3c06e87598b284ee53fbec4eae3c41568870ab996592be163ca
+  status: locked_hash_only
+  role: CGate publisher and callback API reference
+- artifact_id: installed_plaza_docs_p2gate_en_html
+  artifact_id_ref: plaza_docs
+  relative_path: docs/p2gate_en.html
+  runtime_path: /opt/moex/cgate/docs/p2gate_en.html
+  sha256: ac1b5cb3d316049985a3ef40249f57f7aa07d3dec88fca1131bdb67a02d78f90
+  status: locked_hash_only
+  role: PLAZA II order and replication reference
+- artifact_id: installed_forts_messages_ini
+  artifact_id_ref: cgate_docs
+  relative_path: scheme/latest/forts_messages.ini
+  runtime_path: /opt/moex/cgate/scheme/latest/forts_messages.ini
+  sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  status: locked_hash_only
+  role: PLAZA II transactional command and reply scheme
+  markers:
+    spectra_release: SPECTRA93
+    dds_version: 93.1.6.39534
+    target_polygon: prod
+- artifact_id: installed_forts_scheme_ini
+  artifact_id_ref: plaza_docs
+  relative_path: scheme/latest/forts_scheme.ini
+  runtime_path: /opt/moex/cgate/scheme/latest/forts_scheme.ini
+  sha256: cc3ab53b792eb1354b17615612abf173158e2f9dd78604bc47a121badf54b1c2
+  status: locked_hash_only
+  role: PLAZA II private replication confirmation scheme
+  markers:
+    spectra_release: SPECTRA93
+- artifact_id: installed_sample_send_c
+  artifact_id_ref: cgate_docs
+  relative_path: samples/c/basic/send.c
+  runtime_path: /opt/moex/cgate/samples/c/basic/send.c
+  sha256: 405ccee59439ea87ae7ac4ef9c1d675b323313b93767a4fd75569955665ed22d
+  status: locked_hash_only
+  role: official CGate publisher sample for AddOrder and replies
+safety:
+  all_commands_spec_only: true
+  live_order_sending: false
+  command_builders: false
+  write_side_abi: false
+notes:
+- Raw vendor docs, schemes, samples, credentials, auth files, and endpoints are intentionally
+  not committed.
+- This manifest records hashes and derived inventory for the installed TEST CGate
+  package only.

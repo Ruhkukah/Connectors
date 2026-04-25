@@ -1,0 +1,179 @@
+version: 1
+items:
+- protocol_item_id: plaza2_trade_confirmation_addorder
+  artifact_id: plaza_docs
+  surface_kind: plaza2_transaction_confirmation_mapping
+  command_id: plaza2_trade_command_add_order
+  command_name: AddOrder
+  expected_reply_ids:
+  - plaza2_trade_reply_forts_msg179
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  replication_tables:
+  - FORTS_TRADE_REPL.orders_log
+  - FORTS_USERORDERBOOK_REPL.orders
+  - FORTS_REJECTEDORDERS_REPL.rejected_orders
+  correlation_keys:
+  - order_id from FORTS_MSG179
+  - ext_id
+  - isin_id
+  - client_code
+  phase3e_projects_required_tables: true
+  phase4a_reconciler_candidate: true
+  known_uncertainty: Exact rejection and order lifecycle codes remain Phase 5B/5C
+    validation items.
+- protocol_item_id: plaza2_trade_confirmation_icebergaddorder
+  artifact_id: plaza_docs
+  surface_kind: plaza2_transaction_confirmation_mapping
+  command_id: plaza2_trade_command_iceberg_add_order
+  command_name: IcebergAddOrder
+  expected_reply_ids:
+  - plaza2_trade_reply_forts_msg180
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  replication_tables:
+  - FORTS_TRADE_REPL.orders_log
+  - FORTS_USERORDERBOOK_REPL.orders
+  - FORTS_REJECTEDORDERS_REPL.rejected_orders
+  correlation_keys:
+  - iceberg_order_id from FORTS_MSG180
+  - ext_id
+  - isin_id
+  - client_code
+  phase3e_projects_required_tables: true
+  phase4a_reconciler_candidate: true
+  known_uncertainty: Exact rejection and order lifecycle codes remain Phase 5B/5C
+    validation items.
+- protocol_item_id: plaza2_trade_confirmation_delorder
+  artifact_id: plaza_docs
+  surface_kind: plaza2_transaction_confirmation_mapping
+  command_id: plaza2_trade_command_del_order
+  command_name: DelOrder
+  expected_reply_ids:
+  - plaza2_trade_reply_forts_msg177
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  replication_tables:
+  - FORTS_TRADE_REPL.orders_log
+  - FORTS_USERORDERBOOK_REPL.orders
+  correlation_keys:
+  - order_id
+  - isin_id
+  - client_code
+  phase3e_projects_required_tables: true
+  phase4a_reconciler_candidate: true
+  known_uncertainty: Exact rejection and order lifecycle codes remain Phase 5B/5C
+    validation items.
+- protocol_item_id: plaza2_trade_confirmation_icebergdelorder
+  artifact_id: plaza_docs
+  surface_kind: plaza2_transaction_confirmation_mapping
+  command_id: plaza2_trade_command_iceberg_del_order
+  command_name: IcebergDelOrder
+  expected_reply_ids:
+  - plaza2_trade_reply_forts_msg182
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  replication_tables:
+  - FORTS_TRADE_REPL.orders_log
+  - FORTS_USERORDERBOOK_REPL.orders
+  correlation_keys:
+  - order_id
+  - isin_id
+  phase3e_projects_required_tables: true
+  phase4a_reconciler_candidate: true
+  known_uncertainty: Exact rejection and order lifecycle codes remain Phase 5B/5C
+    validation items.
+- protocol_item_id: plaza2_trade_confirmation_moveorder
+  artifact_id: plaza_docs
+  surface_kind: plaza2_transaction_confirmation_mapping
+  command_id: plaza2_trade_command_move_order
+  command_name: MoveOrder
+  expected_reply_ids:
+  - plaza2_trade_reply_forts_msg176
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  replication_tables:
+  - FORTS_TRADE_REPL.orders_log
+  - FORTS_USERORDERBOOK_REPL.orders
+  correlation_keys:
+  - order_id1
+  - order_id2
+  - ext_id1
+  - ext_id2
+  - isin_id
+  - client_code
+  phase3e_projects_required_tables: true
+  phase4a_reconciler_candidate: true
+  known_uncertainty: Exact rejection and order lifecycle codes remain Phase 5B/5C
+    validation items.
+- protocol_item_id: plaza2_trade_confirmation_icebergmoveorder
+  artifact_id: plaza_docs
+  surface_kind: plaza2_transaction_confirmation_mapping
+  command_id: plaza2_trade_command_iceberg_move_order
+  command_name: IcebergMoveOrder
+  expected_reply_ids:
+  - plaza2_trade_reply_forts_msg181
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  replication_tables:
+  - FORTS_TRADE_REPL.orders_log
+  - FORTS_USERORDERBOOK_REPL.orders
+  correlation_keys:
+  - order_id
+  - ext_id
+  - isin_id
+  phase3e_projects_required_tables: true
+  phase4a_reconciler_candidate: true
+  known_uncertainty: Exact rejection and order lifecycle codes remain Phase 5B/5C
+    validation items.
+- protocol_item_id: plaza2_trade_confirmation_deluserorders
+  artifact_id: plaza_docs
+  surface_kind: plaza2_transaction_confirmation_mapping
+  command_id: plaza2_trade_command_del_user_orders
+  command_name: DelUserOrders
+  expected_reply_ids:
+  - plaza2_trade_reply_forts_msg186
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  replication_tables:
+  - FORTS_TRADE_REPL.orders_log
+  - FORTS_USERORDERBOOK_REPL.orders
+  correlation_keys:
+  - code
+  - base_contract_code
+  - isin_id
+  - ext_id
+  phase3e_projects_required_tables: true
+  phase4a_reconciler_candidate: true
+  known_uncertainty: Exact rejection and order lifecycle codes remain Phase 5B/5C
+    validation items.
+- protocol_item_id: plaza2_trade_confirmation_delordersbybflimit
+  artifact_id: plaza_docs
+  surface_kind: plaza2_transaction_confirmation_mapping
+  command_id: plaza2_trade_command_del_orders_by_bf_limit
+  command_name: DelOrdersByBFLimit
+  expected_reply_ids:
+  - plaza2_trade_reply_forts_msg172
+  - plaza2_trade_error_forts_msg99
+  - plaza2_trade_error_forts_msg100
+  replication_tables:
+  - FORTS_TRADE_REPL.orders_log
+  - FORTS_USERORDERBOOK_REPL.orders
+  correlation_keys:
+  - broker_code
+  phase3e_projects_required_tables: true
+  phase4a_reconciler_candidate: true
+  known_uncertainty: Exact rejection and order lifecycle codes remain Phase 5B/5C
+    validation items.
+- protocol_item_id: plaza2_trade_confirmation_codheartbeat
+  artifact_id: plaza_docs
+  surface_kind: plaza2_transaction_confirmation_mapping
+  command_id: plaza2_trade_command_cod_heartbeat
+  command_name: CODHeartbeat
+  expected_reply_ids: []
+  replication_tables: []
+  correlation_keys:
+  - seq_number
+  phase3e_projects_required_tables: false
+  phase4a_reconciler_candidate: false
+  known_uncertainty: System heartbeat has no order-state confirmation table.

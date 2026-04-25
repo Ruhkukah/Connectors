@@ -1,0 +1,115 @@
+version: 1
+items:
+- protocol_item_id: plaza2_trade_reply_forts_msg176
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_reply
+  reply_name: FORTS_MSG176
+  msgid: 176
+  reply_kind: move_order_result
+  fields:
+  - code
+  - message
+  - order_id1
+  - order_id2
+  correlates_to_command: MoveOrder
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  expected_handling_phase: phase5c_fake_session_later
+- protocol_item_id: plaza2_trade_reply_forts_msg177
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_reply
+  reply_name: FORTS_MSG177
+  msgid: 177
+  reply_kind: delete_order_result
+  fields:
+  - code
+  - message
+  - amount
+  correlates_to_command: DelOrder
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  expected_handling_phase: phase5c_fake_session_later
+- protocol_item_id: plaza2_trade_reply_forts_msg179
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_reply
+  reply_name: FORTS_MSG179
+  msgid: 179
+  reply_kind: add_order_result
+  fields:
+  - code
+  - message
+  - order_id
+  correlates_to_command: AddOrder
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  expected_handling_phase: phase5c_fake_session_later
+- protocol_item_id: plaza2_trade_reply_forts_msg180
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_reply
+  reply_name: FORTS_MSG180
+  msgid: 180
+  reply_kind: iceberg_add_order_result
+  fields:
+  - code
+  - message
+  - iceberg_order_id
+  correlates_to_command: IcebergAddOrder
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  expected_handling_phase: phase5c_fake_session_later
+- protocol_item_id: plaza2_trade_reply_forts_msg181
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_reply
+  reply_name: FORTS_MSG181
+  msgid: 181
+  reply_kind: iceberg_move_order_result
+  fields:
+  - code
+  - message
+  - order_id
+  correlates_to_command: IcebergMoveOrder
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  expected_handling_phase: phase5c_fake_session_later
+- protocol_item_id: plaza2_trade_reply_forts_msg182
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_reply
+  reply_name: FORTS_MSG182
+  msgid: 182
+  reply_kind: iceberg_delete_order_result
+  fields:
+  - code
+  - message
+  - amount
+  correlates_to_command: IcebergDelOrder
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  expected_handling_phase: phase5c_fake_session_later
+- protocol_item_id: plaza2_trade_reply_forts_msg186
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_reply
+  reply_name: FORTS_MSG186
+  msgid: 186
+  reply_kind: mass_delete_result
+  fields:
+  - code
+  - message
+  - num_orders
+  correlates_to_command: DelUserOrders
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  expected_handling_phase: phase5c_fake_session_later
+- protocol_item_id: plaza2_trade_reply_forts_msg172
+  artifact_id: cgate_docs
+  surface_kind: plaza2_transaction_reply
+  reply_name: FORTS_MSG172
+  msgid: 172
+  reply_kind: delete_by_bf_limit_result
+  fields:
+  - code
+  - message
+  - num_orders
+  correlates_to_command: DelOrdersByBFLimit
+  source_artifact: scheme/latest/forts_messages.ini
+  source_sha256: 9ab7a54f59c9266c5d14bf8f6286cce228be1c6e7babd494909c5d3aa3f34d5b
+  expected_handling_phase: phase5c_fake_session_later
