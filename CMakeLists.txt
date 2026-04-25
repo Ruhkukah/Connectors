@@ -184,6 +184,8 @@ moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_cert_runner" "apps/
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_plaza2_cert_runner" "apps/moex_plaza2_cert_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_plaza2_twime_integrated_runner"
     "apps/moex_plaza2_twime_integrated_runner.py")
+moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_plaza2_aggr20_md_runner"
+    "apps/moex_plaza2_aggr20_md_runner.py")
 moex_generate_python_launcher("${MOEX_APPS_BUILD_DIR}" "moex_replay_tool" "apps/moex_replay_tool.py")
 
 add_executable(moex_twime_cert_runner
@@ -205,6 +207,16 @@ target_compile_features(moex_plaza2_test_runner PRIVATE cxx_std_20)
 set_target_properties(moex_plaza2_test_runner PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
     OUTPUT_NAME "moex_plaza2_test_runner")
+
+add_executable(moex_plaza2_aggr20_md_test_runner
+    apps/plaza2_aggr20_md_test_runner.cpp)
+target_link_libraries(moex_plaza2_aggr20_md_test_runner
+    PRIVATE
+        moex_plaza2_cgate_aggr20_md)
+target_compile_features(moex_plaza2_aggr20_md_test_runner PRIVATE cxx_std_20)
+set_target_properties(moex_plaza2_aggr20_md_test_runner PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
+    OUTPUT_NAME "moex_plaza2_aggr20_md_test_runner")
 
 add_executable(moex_plaza2_twime_integrated_test_runner
     apps/plaza2_twime_integrated_test_runner.cpp)
@@ -489,6 +501,14 @@ add_test(
     NAME profile_check_plaza2_repl_live_session_local_example
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
             --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_repl_live_session_local.example.yaml")
+add_test(
+    NAME profile_check_plaza2_aggr20_md_template
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_aggr20_md.template.yaml")
+add_test(
+    NAME profile_check_plaza2_aggr20_md_local_example
+    COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
+            --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_aggr20_md_local.example.yaml")
 add_test(
     NAME profile_check_plaza2_twime_integrated_template
     COMMAND "${MOEX_TOOLS_BUILD_DIR}/profile_check"
@@ -855,6 +875,27 @@ moex_add_plaza2_live_runner_test(plaza2_live_session_validation_test
 moex_add_plaza2_live_runner_test(plaza2_live_session_runner_test
     tests/plaza2_cgate/plaza2_live_session_runner_test.cpp)
 
+function(moex_add_plaza2_aggr20_md_test target_name source_file)
+    add_executable(${target_name} "${source_file}")
+    add_dependencies(${target_name} plaza2_fake_cgate_runtime)
+    target_link_libraries(${target_name}
+        PRIVATE
+            plaza2_runtime_test_support
+            moex_plaza2_cgate_aggr20_md)
+    target_compile_features(${target_name} PRIVATE cxx_std_20)
+    set_property(TARGET ${target_name} PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+    add_test(
+        NAME ${target_name}
+        COMMAND "${MOEX_BUILD_ROOT}/tests/${target_name}" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+endfunction()
+
+moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_validation_test
+    tests/plaza2_cgate/plaza2_aggr20_md_validation_test.cpp)
+moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_projection_test
+    tests/plaza2_cgate/plaza2_aggr20_md_projection_test.cpp)
+moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_runner_test
+    tests/plaza2_cgate/plaza2_aggr20_md_runner_test.cpp)
+
 function(moex_add_plaza2_twime_reconciler_test target_name source_file)
     add_executable(${target_name} "${source_file}")
     target_link_libraries(${target_name}
@@ -894,6 +935,16 @@ add_test(
         --armed-test-network
         --armed-test-session)
 set_tests_properties(plaza2_cert_runner_requires_test_plaza2_arm PROPERTIES WILL_FAIL TRUE)
+
+add_test(
+    NAME plaza2_aggr20_md_runner_requires_market_data_arm
+    COMMAND "${MOEX_APPS_BUILD_DIR}/moex_plaza2_aggr20_md_runner"
+        --profile "${CMAKE_CURRENT_SOURCE_DIR}/profiles/test_plaza2_aggr20_md.template.yaml"
+        --output-dir "${MOEX_TEST_OUTPUT_DIR}/plaza2-aggr20-md-runner"
+        --armed-test-network
+        --armed-test-session
+        --armed-test-plaza2)
+set_tests_properties(plaza2_aggr20_md_runner_requires_market_data_arm PROPERTIES WILL_FAIL TRUE)
 
 function(moex_add_plaza2_twime_integrated_test target_name source_file)
     add_executable(${target_name} "${source_file}")
@@ -941,6 +992,12 @@ add_test(
     NAME phase4d_vps_scripts_check
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/scripts/assert_phase4d_vps_scripts.py"
         "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(
+    NAME phase5d_aggr20_md_scripts_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/scripts/assert_phase5d_aggr20_md.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(phase5d_aggr20_md_scripts_check PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${MOEX_PYTHON_DEPS_DIR}")
 
 add_test(
     NAME osengine_inventory_fixture

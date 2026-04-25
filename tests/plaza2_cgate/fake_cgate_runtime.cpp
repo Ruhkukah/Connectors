@@ -283,6 +283,75 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     using enum TableCode;
 
     switch (stream_code) {
+    case kFortsAggrRepl:
+        return {
+            {
+                .table_code = kFortsAggrReplOrdersAggr,
+                .rev = 21,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplId,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 2101},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplRev,
+                         .kind = SignedInteger,
+                         .signed_value = 21},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplAct,
+                         .kind = SignedInteger,
+                         .signed_value = 0},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrIsinId,
+                         .kind = SignedInteger,
+                         .signed_value = 1001},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrPrice, .kind = Text, .text = "102500"},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrVolume,
+                         .kind = SignedInteger,
+                         .signed_value = 7},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrMoment,
+                         .kind = SignedInteger,
+                         .signed_value = 1700000010},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrMomentNs,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 101},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrDir,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrSynthVolume, .kind = Text, .text = "0"},
+                    },
+            },
+            {
+                .table_code = kFortsAggrReplOrdersAggr,
+                .rev = 22,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplId,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 2102},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplRev,
+                         .kind = SignedInteger,
+                         .signed_value = 22},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplAct,
+                         .kind = SignedInteger,
+                         .signed_value = 0},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrIsinId,
+                         .kind = SignedInteger,
+                         .signed_value = 1001},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrPrice, .kind = Text, .text = "102750"},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrVolume,
+                         .kind = SignedInteger,
+                         .signed_value = 5},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrMoment,
+                         .kind = SignedInteger,
+                         .signed_value = 1700000011},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrMomentNs,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 102},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrDir,
+                         .kind = SignedInteger,
+                         .signed_value = 2},
+                        {.field_code = FieldCode::kFortsAggrReplOrdersAggrSynthVolume, .kind = Text, .text = "0"},
+                    },
+            },
+        };
     case kFortsRefdataRepl:
         return {
             {
@@ -628,6 +697,11 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
 }
 
 StreamCode stream_code_from_settings(std::string_view settings) {
+    if (settings.find("FORTS_AGGR5_REPL") != std::string_view::npos ||
+        settings.find("FORTS_AGGR20_REPL") != std::string_view::npos ||
+        settings.find("FORTS_AGGR50_REPL") != std::string_view::npos) {
+        return StreamCode::kFortsAggrRepl;
+    }
     for (const auto& descriptor : StreamDescriptors()) {
         if (settings.find(descriptor.stream_name) != std::string_view::npos) {
             return descriptor.stream_code;

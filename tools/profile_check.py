@@ -96,6 +96,35 @@ def main() -> int:
                     "use an untracked local override plus all required --armed-test-* flags"
                 )
 
+        plaza2_aggr20_md_test = profile.get("plaza2_aggr20_md_test")
+        if isinstance(plaza2_aggr20_md_test, dict):
+            if environment != "test":
+                raise SystemExit("plaza2_aggr20_md_test profiles are Phase 5D test-only and must use environment=test")
+
+            endpoint = plaza2_aggr20_md_test.get("endpoint") or {}
+            host = str(endpoint.get("host", ""))
+            if _looks_banned_host(host):
+                raise SystemExit("plaza2_aggr20_md_test endpoint host looks like a live MOEX/broker target and is blocked")
+
+            credentials = plaza2_aggr20_md_test.get("credentials") or {}
+            if _contains_inline_credentials(credentials):
+                raise SystemExit("tracked plaza2_aggr20_md_test profiles must not contain inline credentials")
+
+            if _looks_non_loopback(host) and not _looks_placeholder(host):
+                raise SystemExit(
+                    "tracked plaza2_aggr20_md_test profiles must not contain real non-loopback hosts in Phase 5D; "
+                    "use an untracked local override plus all required --armed-test-* flags"
+                )
+
+            stream = plaza2_aggr20_md_test.get("stream") or {}
+            stream_name = str(stream.get("name", ""))
+            stream_settings = str(stream.get("settings", ""))
+            if stream_name != "FORTS_AGGR20_REPL" or "FORTS_AGGR20_REPL" not in stream_settings:
+                raise SystemExit("Phase 5D tracked public market-data profiles may enable only FORTS_AGGR20_REPL")
+            for forbidden in ("FORTS_ORDLOG_REPL", "FORTS_ORDBOOK_REPL", "FORTS_DEALS_REPL"):
+                if forbidden in stream_settings:
+                    raise SystemExit(f"Phase 5D tracked profiles must not enable {forbidden}")
+
         plaza2_twime_integrated_test = profile.get("plaza2_twime_integrated_test")
         if isinstance(plaza2_twime_integrated_test, dict):
             if environment != "test":

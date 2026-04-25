@@ -1,0 +1,49 @@
+version: 1
+profile_id: test_plaza2_aggr20_md
+environment: test
+armed: false
+test_network_armed_required: true
+test_session_armed_required: true
+test_plaza2_armed_required: true
+test_market_data_armed_required: true
+profile_neutral_coverage: true
+broker_topology:
+  mode: broker_router
+  order_path: none
+  market_data_path: broker_router
+  router_location: unknown
+shadow_mode:
+  enabled: false
+  primary_source: native_moex
+  native_connectors_read_only: true
+connectors:
+  market_data:
+    - plaza2_aggr20_md
+  orders: []
+  state: []
+plaza2_aggr20_md_test:
+  enabled: true
+  endpoint:
+    host: TEST_PLAZA2_ENDPOINT_HOST_PLACEHOLDER
+    port: 4001
+  runtime:
+    root: PLAZA2_RUNTIME_ROOT_PLACEHOLDER
+    library_path: ""
+    scheme_dir: ""
+    config_dir: ""
+    env_open_settings: ini=config/t1.ini;key=${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}
+    expected_spectra_release: SPECTRA93
+    expected_scheme_sha256: ""
+  software_key:
+    source: env
+    env_var: MOEX_PLAZA2_CGATE_SOFTWARE_KEY
+  credentials:
+    source: none
+  session:
+    connection_settings: p2tcp://TEST_PLAZA2_ENDPOINT_HOST_PLACEHOLDER:4001;app_name=connectors_phase5d_aggr20
+    connection_open_settings: ""
+    process_timeout_ms: 50
+  stream:
+    name: FORTS_AGGR20_REPL
+    settings: p2repl://FORTS_AGGR20_REPL;scheme=|FILE|scheme/forts_scheme.ini|Aggr
+    open_settings: ""
