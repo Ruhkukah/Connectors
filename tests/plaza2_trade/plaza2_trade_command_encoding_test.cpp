@@ -4,9 +4,9 @@
 
 namespace {
 
+using moex::plaza2_trade::bytes_to_hex;
 using moex::plaza2_trade::Plaza2TradeCodec;
 using moex::plaza2_trade::Plaza2TradeCommandRequest;
-using moex::plaza2_trade::bytes_to_hex;
 using moex::plaza2_trade::test_support::fixture_text;
 using moex::plaza2_trade::test_support::make_add_order;
 using moex::plaza2_trade::test_support::make_cod_heartbeat;

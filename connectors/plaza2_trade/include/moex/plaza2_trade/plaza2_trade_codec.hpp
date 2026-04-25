@@ -28,7 +28,9 @@ struct Plaza2TradeValidationResult {
     std::string field_name;
     std::string message;
 
-    [[nodiscard]] bool ok() const noexcept { return code == Plaza2TradeValidationCode::Ok; }
+    [[nodiscard]] bool ok() const noexcept {
+        return code == Plaza2TradeValidationCode::Ok;
+    }
 };
 
 struct Plaza2TradeEncodedCommand {

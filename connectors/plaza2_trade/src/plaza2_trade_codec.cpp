@@ -27,14 +27,11 @@ template <typename T> void append_le(std::vector<std::byte>& out, T value) {
             raw = static_cast<Unsigned>(((raw & 0x000000FFU) << 24U) | ((raw & 0x0000FF00U) << 8U) |
                                         ((raw & 0x00FF0000U) >> 8U) | ((raw & 0xFF000000U) >> 24U));
         } else if constexpr (sizeof(T) == 8) {
-            raw = static_cast<Unsigned>(((raw & 0x00000000000000FFULL) << 56U) |
-                                        ((raw & 0x000000000000FF00ULL) << 40U) |
-                                        ((raw & 0x0000000000FF0000ULL) << 24U) |
-                                        ((raw & 0x00000000FF000000ULL) << 8U) |
-                                        ((raw & 0x000000FF00000000ULL) >> 8U) |
-                                        ((raw & 0x0000FF0000000000ULL) >> 24U) |
-                                        ((raw & 0x00FF000000000000ULL) >> 40U) |
-                                        ((raw & 0xFF00000000000000ULL) >> 56U));
+            raw =
+                static_cast<Unsigned>(((raw & 0x00000000000000FFULL) << 56U) | ((raw & 0x000000000000FF00ULL) << 40U) |
+                                      ((raw & 0x0000000000FF0000ULL) << 24U) | ((raw & 0x00000000FF000000ULL) << 8U) |
+                                      ((raw & 0x000000FF00000000ULL) >> 8U) | ((raw & 0x0000FF0000000000ULL) >> 24U) |
+                                      ((raw & 0x00FF000000000000ULL) >> 40U) | ((raw & 0xFF00000000000000ULL) >> 56U));
         }
     }
     const auto start = out.size();
@@ -58,14 +55,11 @@ template <typename T> std::optional<T> load_le(std::span<const std::byte> bytes,
             raw = static_cast<Unsigned>(((raw & 0x000000FFU) << 24U) | ((raw & 0x0000FF00U) << 8U) |
                                         ((raw & 0x00FF0000U) >> 8U) | ((raw & 0xFF000000U) >> 24U));
         } else if constexpr (sizeof(T) == 8) {
-            raw = static_cast<Unsigned>(((raw & 0x00000000000000FFULL) << 56U) |
-                                        ((raw & 0x000000000000FF00ULL) << 40U) |
-                                        ((raw & 0x0000000000FF0000ULL) << 24U) |
-                                        ((raw & 0x00000000FF000000ULL) << 8U) |
-                                        ((raw & 0x000000FF00000000ULL) >> 8U) |
-                                        ((raw & 0x0000FF0000000000ULL) >> 24U) |
-                                        ((raw & 0x00FF000000000000ULL) >> 40U) |
-                                        ((raw & 0xFF00000000000000ULL) >> 56U));
+            raw =
+                static_cast<Unsigned>(((raw & 0x00000000000000FFULL) << 56U) | ((raw & 0x000000000000FF00ULL) << 40U) |
+                                      ((raw & 0x0000000000FF0000ULL) << 24U) | ((raw & 0x00000000FF000000ULL) << 8U) |
+                                      ((raw & 0x000000FF00000000ULL) >> 8U) | ((raw & 0x0000FF0000000000ULL) >> 24U) |
+                                      ((raw & 0x00FF000000000000ULL) >> 40U) | ((raw & 0xFF00000000000000ULL) >> 56U));
         }
     }
     return static_cast<T>(raw);
@@ -76,7 +70,8 @@ Plaza2TradeValidationResult ok() {
 }
 
 Plaza2TradeValidationResult fail(Plaza2TradeValidationCode code, std::string field_name, std::string message) {
-    return Plaza2TradeValidationResult{.code = code, .field_name = std::move(field_name), .message = std::move(message)};
+    return Plaza2TradeValidationResult{
+        .code = code, .field_name = std::move(field_name), .message = std::move(message)};
 }
 
 bool is_ascii_printable(std::string_view value) {
@@ -120,7 +115,8 @@ Plaza2TradeValidationResult validate_fixed_string(std::string_view field, const 
         return fail(Plaza2TradeValidationCode::StringTooLong, std::string(field), "fixed string field is too long");
     }
     if (!is_ascii_printable(*value)) {
-        return fail(Plaza2TradeValidationCode::InvalidAscii, std::string(field), "fixed string must be printable ASCII");
+        return fail(Plaza2TradeValidationCode::InvalidAscii, std::string(field),
+                    "fixed string must be printable ASCII");
     }
     return ok();
 }
@@ -415,8 +411,7 @@ Plaza2TradeValidationResult validate_del_user_orders(const DelUserOrdersRequest&
     if (auto result = validate_fixed_string("code", request.code, 3, true); !result.ok()) {
         return result;
     }
-    if (auto result = validate_fixed_string("base_contract_code", request.base_contract_code, 25, true);
-        !result.ok()) {
+    if (auto result = validate_fixed_string("base_contract_code", request.base_contract_code, 25, true); !result.ok()) {
         return result;
     }
     if (auto result = validate_integer("ext_id", request.ext_id, false); !result.ok()) {

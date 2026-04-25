@@ -23,9 +23,8 @@ using moex::plaza2_trade::test_support::require;
 void test_all_phase5a_commands_are_represented() {
     const Plaza2TradeCodec codec;
     const Plaza2TradeCommandRequest requests[] = {
-        make_add_order(),          make_iceberg_add_order(), make_del_order(),
-        make_iceberg_del_order(),  make_move_order(),        make_iceberg_move_order(),
-        make_del_user_orders(),    make_del_orders_by_bf_limit(),
+        make_add_order(),     make_iceberg_add_order(),  make_del_order(),       make_iceberg_del_order(),
+        make_move_order(),    make_iceberg_move_order(), make_del_user_orders(), make_del_orders_by_bf_limit(),
         make_cod_heartbeat(),
     };
     for (const auto& request : requests) {
@@ -58,7 +57,8 @@ void test_invalid_values_fail() {
 
     auto bad_quantity = make_add_order();
     bad_quantity.amount = 0;
-    require(codec.validate(Plaza2TradeCommandRequest{bad_quantity}).code == Plaza2TradeValidationCode::InvalidNumericRange,
+    require(codec.validate(Plaza2TradeCommandRequest{bad_quantity}).code ==
+                Plaza2TradeValidationCode::InvalidNumericRange,
             "zero order quantity should fail");
 
     auto bad_price = make_add_order();

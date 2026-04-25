@@ -7,9 +7,9 @@
 
 namespace {
 
+using moex::plaza2_trade::is_sendable;
 using moex::plaza2_trade::Plaza2TradeCodec;
 using moex::plaza2_trade::Plaza2TradeCommandRequest;
-using moex::plaza2_trade::is_sendable;
 using moex::plaza2_trade::test_support::make_add_order;
 using moex::plaza2_trade::test_support::require;
 
@@ -32,7 +32,8 @@ void test_encoded_command_is_not_sendable() {
 void test_offline_codec_does_not_reference_cgate_publisher_api() {
     const auto source_root = std::filesystem::path(MOEX_SOURCE_ROOT);
     const auto source = read_file(source_root / "connectors/plaza2_trade/src/plaza2_trade_codec.cpp");
-    const auto header = read_file(source_root / "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_trade_codec.hpp");
+    const auto header =
+        read_file(source_root / "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_trade_codec.hpp");
     const auto combined = source + header;
     require(combined.find("cg_pub_") == std::string::npos, "offline codec must not reference CGate publisher API");
     require(combined.find("publish(") == std::string::npos, "offline codec must not expose publish operation");

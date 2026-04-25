@@ -55,6 +55,7 @@ def materialized_payload(project_root: Path) -> dict:
         command_items.append(item)
 
     return {
+        "__generated_marker": "Generated file, do not edit.",
         "generated_by": GENERATED_NOTICE,
         "version": 1,
         "source_matrices": [
