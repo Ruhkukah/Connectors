@@ -38,7 +38,12 @@ void test_offline_codec_does_not_reference_cgate_publisher_api() {
     const auto fake_header =
         read_file(source_root / "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_trade_fake_session.hpp");
     const auto cmake = read_file(source_root / "connectors/plaza2_trade/CMakeLists.txt");
-    const auto combined = source + fake_source + header + fake_header + cmake;
+    const auto offline_target_begin = cmake.find("add_library(moex_plaza2_trade_offline_codec");
+    const auto next_target = cmake.find("add_library(", offline_target_begin + 1);
+    require(offline_target_begin != std::string::npos && next_target != std::string::npos,
+            "offline codec CMake target must remain independently inspectable");
+    const auto offline_cmake = cmake.substr(offline_target_begin, next_target - offline_target_begin);
+    const auto combined = source + fake_source + header + fake_header + offline_cmake;
     require(combined.find("cg_pub_") == std::string::npos, "offline codec must not reference CGate publisher API");
     require(combined.find("publish(") == std::string::npos, "offline codec must not expose publish operation");
     require(combined.find("submit_live(") == std::string::npos, "offline codec must not expose live submit operation");

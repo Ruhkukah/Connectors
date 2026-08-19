@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -205,9 +206,75 @@ bool order_has_any_source(const OwnOrderSnapshot& order) {
     return order.from_trade_repl || order.from_user_book || order.from_current_day;
 }
 
+void append_identifier_alias(std::vector<std::int64_t>& aliases, std::int64_t value) {
+    if (value == 0 || std::find(aliases.begin(), aliases.end(), value) != aliases.end()) {
+        return;
+    }
+    aliases.push_back(value);
+    std::sort(aliases.begin(), aliases.end());
+}
+
+bool has_identifier_alias(const std::vector<std::int64_t>& aliases, std::int64_t value) {
+    return value != 0 && std::find(aliases.begin(), aliases.end(), value) != aliases.end();
+}
+
+bool order_identity_matches(const OwnOrderSnapshot& order, const OrderKey& incoming) {
+    if (order.multileg != incoming.multileg) {
+        return false;
+    }
+    if (incoming.public_order_id != 0 &&
+        (order.public_order_id == incoming.public_order_id ||
+         has_identifier_alias(order.public_order_id_aliases, incoming.public_order_id))) {
+        return true;
+    }
+    if (incoming.private_order_id != 0 &&
+        (order.private_order_id == incoming.private_order_id ||
+         has_identifier_alias(order.private_order_id_aliases, incoming.private_order_id))) {
+        return true;
+    }
+    return incoming.ext_id != 0 && order.ext_id == incoming.ext_id && !incoming.client_code.empty() &&
+           order.client_code == incoming.client_code;
+}
+
+OwnOrderSnapshot& find_or_create_order(OrderMap& orders, const OrderKey& incoming) {
+    auto found = std::find_if(orders.begin(), orders.end(),
+                              [&](const auto& entry) { return order_identity_matches(entry.second, incoming); });
+    auto& order = found == orders.end() ? orders[incoming] : found->second;
+
+    append_identifier_alias(order.public_order_id_aliases, order.public_order_id);
+    append_identifier_alias(order.private_order_id_aliases, order.private_order_id);
+    append_identifier_alias(order.public_order_id_aliases, incoming.public_order_id);
+    append_identifier_alias(order.private_order_id_aliases, incoming.private_order_id);
+
+    const bool same_client_ext = incoming.ext_id != 0 && order.ext_id == incoming.ext_id &&
+                                 !incoming.client_code.empty() && order.client_code == incoming.client_code;
+    if (same_client_ext && ((order.public_order_id != 0 && incoming.public_order_id != 0 &&
+                             order.public_order_id != incoming.public_order_id) ||
+                            (order.private_order_id != 0 && incoming.private_order_id != 0 &&
+                             order.private_order_id != incoming.private_order_id))) {
+        order.identity_conflict = true;
+    }
+
+    if (order.public_order_id == 0) {
+        order.public_order_id = incoming.public_order_id;
+    }
+    if (order.private_order_id == 0) {
+        order.private_order_id = incoming.private_order_id;
+    }
+    if (order.ext_id == 0) {
+        order.ext_id = incoming.ext_id;
+    }
+    if (order.client_code.empty()) {
+        order.client_code = incoming.client_code;
+    }
+    order.multileg = incoming.multileg;
+    return order;
+}
+
 void clear_trade_source(OrderMap& orders) {
     for (auto it = orders.begin(); it != orders.end();) {
         it->second.from_trade_repl = false;
+        it->second.trade_repl_commit_sequence = 0;
         if (!order_has_any_source(it->second)) {
             it = orders.erase(it);
         } else {
@@ -220,6 +287,7 @@ void clear_user_book_source(OrderMap& orders) {
     for (auto it = orders.begin(); it != orders.end();) {
         it->second.from_user_book = false;
         it->second.from_current_day = false;
+        it->second.user_orderbook_commit_sequence = 0;
         if (!order_has_any_source(it->second)) {
             it = orders.erase(it);
         } else {
@@ -523,9 +591,8 @@ struct Plaza2PrivateStateProjector::Impl {
         reset_stream_watermarks(health);
     }
 
-    OrderMap& ensure_staged_orders() {
-        staged.touched_streams.insert(StreamCode::kFortsTradeRepl);
-        staged.touched_streams.insert(StreamCode::kFortsUserorderbookRepl);
+    OrderMap& ensure_staged_orders(StreamCode stream_code) {
+        staged.touched_streams.insert(stream_code);
         return ensure_stage_copy(staged.orders, orders_by_key);
     }
 
@@ -560,7 +627,7 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void apply_trade_order_row(const RowReader& row, bool multileg) {
-        auto& orders = ensure_staged_orders();
+        auto& orders = ensure_staged_orders(StreamCode::kFortsTradeRepl);
         OrderKey key{
             .multileg = multileg,
             .public_order_id = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPublicOrderId
@@ -572,12 +639,7 @@ struct Plaza2PrivateStateProjector::Impl {
             .client_code = row.text(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogClientCode
                                              : FieldCode::kFortsTradeReplOrdersLogClientCode),
         };
-        auto& order = orders[key];
-        order.multileg = multileg;
-        order.public_order_id = key.public_order_id;
-        order.private_order_id = key.private_order_id;
-        order.ext_id = key.ext_id;
-        order.client_code = key.client_code;
+        auto& order = find_or_create_order(orders, key);
         order.sess_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogSessId
                                          : FieldCode::kFortsTradeReplOrdersLogSessId);
         order.isin_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogIsinId
@@ -613,10 +675,11 @@ struct Plaza2PrivateStateProjector::Impl {
         order.moment_ns = row.u64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogMomentNs
                                            : FieldCode::kFortsTradeReplOrdersLogMomentNs);
         order.from_trade_repl = true;
+        order.trade_repl_commit_sequence = std::numeric_limits<std::uint64_t>::max();
     }
 
     void apply_user_book_order_row(const RowReader& row, bool multileg, bool current_day) {
-        auto& orders = ensure_staged_orders();
+        auto& orders = ensure_staged_orders(StreamCode::kFortsUserorderbookRepl);
         const auto public_order_id_field =
             multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPublicOrderId
                                     : FieldCode::kFortsUserorderbookReplMultilegOrdersPublicOrderId)
@@ -724,12 +787,7 @@ struct Plaza2PrivateStateProjector::Impl {
             .ext_id = row.i32(ext_id_field),
             .client_code = row.text(client_code_field),
         };
-        auto& order = orders[key];
-        order.multileg = multileg;
-        order.public_order_id = key.public_order_id;
-        order.private_order_id = key.private_order_id;
-        order.ext_id = key.ext_id;
-        order.client_code = key.client_code;
+        auto& order = find_or_create_order(orders, key);
 
         order.sess_id = row.i32(sess_field);
         order.isin_id = row.i32(isin_field);
@@ -749,6 +807,7 @@ struct Plaza2PrivateStateProjector::Impl {
         order.moment_ns = row.u64(moment_ns_field);
         order.from_user_book = !current_day;
         order.from_current_day = current_day;
+        order.user_orderbook_commit_sequence = std::numeric_limits<std::uint64_t>::max();
     }
 
     void apply_trade_row(const RowReader& row, bool multileg) {
@@ -781,6 +840,10 @@ struct Plaza2PrivateStateProjector::Impl {
                                                       : FieldCode::kFortsTradeReplUserDealPrivateOrderIdBuy);
         trade.private_order_id_sell = row.i64(multileg ? FieldCode::kFortsTradeReplUserMultilegDealPrivateOrderIdSell
                                                        : FieldCode::kFortsTradeReplUserDealPrivateOrderIdSell);
+        trade.ext_id_buy = row.i32(multileg ? FieldCode::kFortsTradeReplUserMultilegDealExtIdBuy
+                                            : FieldCode::kFortsTradeReplUserDealExtIdBuy);
+        trade.ext_id_sell = row.i32(multileg ? FieldCode::kFortsTradeReplUserMultilegDealExtIdSell
+                                             : FieldCode::kFortsTradeReplUserDealExtIdSell);
         trade.code_buy = row.text(multileg ? FieldCode::kFortsTradeReplUserMultilegDealCodeBuy
                                            : FieldCode::kFortsTradeReplUserDealCodeBuy);
         trade.code_sell = row.text(multileg ? FieldCode::kFortsTradeReplUserMultilegDealCodeSell
@@ -1098,6 +1161,14 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         if (staged.orders.has_value()) {
             orders_by_key = std::move(*staged.orders);
+            for (auto& [_, order] : orders_by_key) {
+                if (order.trade_repl_commit_sequence == std::numeric_limits<std::uint64_t>::max()) {
+                    order.trade_repl_commit_sequence = state.commit_count;
+                }
+                if (order.user_orderbook_commit_sequence == std::numeric_limits<std::uint64_t>::max()) {
+                    order.user_orderbook_commit_sequence = state.commit_count;
+                }
+            }
             rebuild_orders();
         }
         if (staged.trades.has_value()) {

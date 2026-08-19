@@ -2,8 +2,36 @@
 
 #include "plaza2_runtime_test_support.hpp"
 
+#include <array>
+#include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <string>
+#include <vector>
+
+namespace {
+
+struct ReplyCapture final : moex::plaza2::cgate::Plaza2ListenerEventHandler {
+    moex::plaza2::cgate::Plaza2Error
+    on_plaza2_listener_event(const moex::plaza2::cgate::Plaza2ListenerEvent& event) override {
+        if (event.kind == moex::plaza2::cgate::Plaza2ListenerEventKind::StreamData &&
+            event.stream_code == moex::plaza2::cgate::kNoStreamCode) {
+            message_id = event.message_id;
+            message_name = event.message_name;
+            user_id = event.user_id;
+            payload.assign(event.raw_payload.begin(), event.raw_payload.end());
+        }
+        return {};
+    }
+
+    std::int32_t message_id{0};
+    std::string message_name;
+    std::uint32_t user_id{0};
+    std::vector<std::byte> payload;
+};
+
+} // namespace
 
 int main(int argc, char** argv) {
     try {
@@ -53,9 +81,57 @@ int main(int argc, char** argv) {
         std::uint32_t listener_state = 0;
         require(!listener.state(listener_state) && listener_state == 2, "fake listener should become active");
 
+        const auto publisher_timeout = translate_plaza2_result("cg_pub_post", 131075);
+        require(publisher_timeout && publisher_timeout.code == Plaza2ErrorCode::RuntimeCallFailed,
+                "CG_ERR_TIMEOUT should be an error for publisher operations");
+
+        Plaza2Publisher publisher;
+        require(!publisher.create(connection, "p2mq://PUB;category=FORTS_MSG"), "fake publisher create should succeed");
+        require(!publisher.open({}), "fake publisher open should succeed");
+        ReplyCapture reply_capture;
+        Plaza2Listener reply_listener;
+        require(!reply_listener.create(connection, kNoStreamCode, "p2mqreply://;ref=PUB", &reply_capture),
+                "untyped reply listener create should succeed");
+        require(!reply_listener.open({}), "untyped reply listener open should succeed");
+        const std::array<std::byte, 8> payload{};
+
+        ::setenv("MOEX_FAKE_PUB_MSGNEW_RESULT", "internal", 1);
+        const auto allocation_failure = publisher.post_by_message_name("AddOrder", payload, 701, true);
+        require(allocation_failure.certainty == Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                    allocation_failure.allocation_error && !allocation_failure.post_invoked,
+                "message allocation failure should be definitely not sent");
+        ::unsetenv("MOEX_FAKE_PUB_MSGNEW_RESULT");
+
+        ::setenv("MOEX_FAKE_PUB_POST_RESULT", "timeout", 1);
+        const auto ambiguous = publisher.post_by_message_name("AddOrder", payload, 702, true);
+        require(ambiguous.certainty == Plaza2SubmissionCertainty::PossiblySent && ambiguous.post_error,
+                "publisher timeout should preserve possible-submission certainty");
+        ::unsetenv("MOEX_FAKE_PUB_POST_RESULT");
+
+        ::setenv("MOEX_FAKE_PUB_MSGFREE_RESULT", "internal", 1);
+        const auto posted_free_failure = publisher.post_by_message_name("AddOrder", payload, 703, true);
+        require(posted_free_failure.certainty == Plaza2SubmissionCertainty::Posted && posted_free_failure.free_error &&
+                    !posted_free_failure.post_error,
+                "message-free failure must not erase a successful post");
+        ::unsetenv("MOEX_FAKE_PUB_MSGFREE_RESULT");
+
+        std::uint32_t reply_process_code = 0;
+        const auto reply_process_error = connection.process(0, &reply_process_code);
+        require(!reply_process_error,
+                "posted reply should be delivered through cg_conn_process: " + reply_process_error.message + " (" +
+                    std::to_string(reply_process_code) + ")");
+        require(reply_capture.user_id == 703 && reply_capture.message_id == 179 &&
+                    reply_capture.message_name == "AddOrderReply" && reply_capture.payload.size() == 16,
+                "reply listener must expose the exact publisher user_id and raw reply payload");
+
         const auto reopen_error = connection.open({});
         require(reopen_error && reopen_error.code == Plaza2ErrorCode::AdapterState,
                 "reopening an active connection should translate to adapter-state error");
+
+        require(!publisher.close(), "publisher close should succeed");
+        require(!publisher.destroy(), "publisher destroy should succeed");
+        require(!reply_listener.close(), "reply listener close should succeed");
+        require(!reply_listener.destroy(), "reply listener destroy should succeed");
 
         require(!listener.close(), "listener close should succeed");
         require(!listener.destroy(), "listener destroy should succeed");

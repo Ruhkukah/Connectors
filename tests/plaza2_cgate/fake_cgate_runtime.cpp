@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -37,6 +38,7 @@ constexpr std::uint32_t kStateActive = 2;
 constexpr std::uint32_t kStateError = 3;
 
 constexpr std::uint32_t kCgMsgOpen = 0x100;
+constexpr std::uint32_t kCgMsgData = 0x20;
 constexpr std::uint32_t kCgMsgStreamData = 0x120;
 constexpr std::uint32_t kCgMsgTnBegin = 0x200;
 constexpr std::uint32_t kCgMsgTnCommit = 0x210;
@@ -136,6 +138,18 @@ struct CgMsgStreamData {
     std::uint64_t user_id;
 };
 
+struct CgMsgData {
+    std::uint32_t type;
+    std::size_t data_size;
+    void* data;
+    std::size_t msg_index;
+    std::uint32_t msg_id;
+    const char* msg_name;
+    std::uint32_t user_id;
+    const char* addr;
+    CgMsgData* ref_msg;
+};
+
 struct CgTime {
     std::uint16_t year;
     std::uint8_t month;
@@ -206,6 +220,13 @@ struct MessagePlan {
 
 struct FakeConnection;
 
+struct FakeReply {
+    std::uint32_t message_id{0};
+    std::string message_name;
+    std::uint32_t user_id{0};
+    std::vector<std::byte> payload;
+};
+
 using CgListenerCallback = std::uint32_t (*)(void* conn, void* listener, void* msg, void* data);
 
 struct FakeListener {
@@ -215,6 +236,7 @@ struct FakeListener {
     CgListenerCallback callback{nullptr};
     void* callback_data{nullptr};
     StreamCode stream_code{};
+    bool reply_listener{false};
     std::unique_ptr<OwnedScheme> scheme;
     std::vector<MessagePlan> message_plans;
     bool script_emitted{false};
@@ -224,10 +246,38 @@ struct FakeConnection {
     std::uint32_t state{kStateClosed};
     std::string settings;
     std::vector<FakeListener*> listeners;
+    std::vector<FakeReply> pending_replies;
     bool script_emitted{false};
 };
 
+struct FakePublisher {
+    std::uint32_t state{kStateClosed};
+    FakeConnection* connection{nullptr};
+    std::string settings;
+};
+
+struct FakePublisherMessage {
+    CgMsgData message{};
+    std::string name;
+    std::vector<std::byte> payload;
+};
+
 bool g_env_open = false;
+std::unordered_map<void*, FakePublisherMessage*> g_publisher_messages;
+
+std::uint32_t configured_result(const char* variable) {
+    const auto* value = std::getenv(variable);
+    if (value == nullptr || *value == '\0' || std::string_view(value) == "ok") {
+        return kCgErrOk;
+    }
+    if (std::string_view(value) == "timeout") {
+        return kCgErrTimeout;
+    }
+    if (std::string_view(value) == "invalid") {
+        return kCgErrInvalidArgument;
+    }
+    return kCgRangeBegin;
+}
 
 std::string copy_c_string(const char* value, std::size_t size) {
     if (value == nullptr || size == 0) {
@@ -900,6 +950,21 @@ std::uint32_t emit_stream_message(FakeListener& listener, const FakeMessageScrip
     return listener.callback(listener.connection, &listener, &stream_data, listener.callback_data);
 }
 
+std::uint32_t emit_reply_message(FakeListener& listener, const FakeReply& reply) {
+    CgMsgData message{
+        .type = kCgMsgData,
+        .data_size = reply.payload.size(),
+        .data = const_cast<std::byte*>(reply.payload.data()),
+        .msg_index = 0,
+        .msg_id = reply.message_id,
+        .msg_name = reply.message_name.c_str(),
+        .user_id = reply.user_id,
+        .addr = nullptr,
+        .ref_msg = nullptr,
+    };
+    return listener.callback(listener.connection, &listener, &message, listener.callback_data);
+}
+
 std::uint32_t emit_script(FakeListener& listener) {
     const auto script = script_for_stream(listener.stream_code);
     if (script.empty()) {
@@ -1028,14 +1093,24 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrIncorrectState;
     }
 
-    if (connection->script_emitted) {
+    if (connection->script_emitted && connection->pending_replies.empty()) {
         return kCgErrTimeout;
     }
 
     bool emitted_any = false;
     for (auto* listener : connection->listeners) {
-        if (listener == nullptr || listener->state != kStateActive || listener->script_emitted ||
-            listener->callback == nullptr || listener->callback_data == nullptr) {
+        if (listener == nullptr || listener->state != kStateActive ||
+            (!listener->reply_listener && listener->script_emitted) || listener->callback == nullptr ||
+            listener->callback_data == nullptr) {
+            continue;
+        }
+        if (listener->reply_listener) {
+            for (const auto& reply : connection->pending_replies) {
+                if (const auto result = emit_reply_message(*listener, reply); result != kCgErrOk) {
+                    return result;
+                }
+                emitted_any = true;
+            }
             continue;
         }
         const auto result = emit_script(*listener);
@@ -1050,6 +1125,7 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrTimeout;
     }
 
+    connection->pending_replies.clear();
     connection->script_emitted = true;
     return kCgErrOk;
 }
@@ -1076,6 +1152,13 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
     listener->connection = connection;
     listener->callback = callback;
     listener->callback_data = data;
+    listener->reply_listener = listener->settings.find("p2mqreply://") != std::string::npos;
+    if (listener->reply_listener) {
+        listener->stream_code = static_cast<StreamCode>(0);
+        connection->listeners.push_back(listener);
+        *lsnptr = listener;
+        return kCgErrOk;
+    }
     listener->stream_code = stream_code_from_settings(listener->settings);
     if (FindStreamByCode(listener->stream_code) == nullptr) {
         delete listener;
@@ -1137,6 +1220,106 @@ std::uint32_t cg_lsn_getscheme(void* listener, void** schemeptr) {
     auto* typed = static_cast<FakeListener*>(listener);
     *schemeptr = typed->scheme == nullptr ? nullptr : &typed->scheme->desc;
     return typed->scheme == nullptr ? kCgErrIncorrectState : kCgErrOk;
+}
+
+std::uint32_t cg_pub_new(void* conn, const char* settings, void** pubptr) {
+    if (conn == nullptr || settings == nullptr || pubptr == nullptr) {
+        return kCgErrInvalidArgument;
+    }
+    auto* publisher = new FakePublisher{};
+    publisher->connection = static_cast<FakeConnection*>(conn);
+    publisher->settings = settings;
+    *pubptr = publisher;
+    return kCgErrOk;
+}
+
+std::uint32_t cg_pub_open(void* publisher, const char*) {
+    if (publisher == nullptr) {
+        return kCgErrInvalidArgument;
+    }
+    static_cast<FakePublisher*>(publisher)->state = kStateActive;
+    return kCgErrOk;
+}
+
+std::uint32_t cg_pub_close(void* publisher) {
+    if (publisher == nullptr) {
+        return kCgErrInvalidArgument;
+    }
+    static_cast<FakePublisher*>(publisher)->state = kStateClosed;
+    return kCgErrOk;
+}
+
+std::uint32_t cg_pub_destroy(void* publisher) {
+    if (publisher == nullptr) {
+        return kCgErrInvalidArgument;
+    }
+    delete static_cast<FakePublisher*>(publisher);
+    return kCgErrOk;
+}
+
+std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
+    if (publisher == nullptr || state == nullptr) {
+        return kCgErrInvalidArgument;
+    }
+    *state = static_cast<FakePublisher*>(publisher)->state;
+    return kCgErrOk;
+}
+
+std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void** msgptr) {
+    if (publisher == nullptr || id == nullptr || msgptr == nullptr) {
+        return kCgErrInvalidArgument;
+    }
+    if (const auto result = configured_result("MOEX_FAKE_PUB_MSGNEW_RESULT"); result != kCgErrOk) {
+        return result;
+    }
+    auto* owned = new FakePublisherMessage{};
+    owned->name = static_cast<const char*>(id);
+    owned->payload.resize(8);
+    owned->message.type = kCgMsgData;
+    owned->message.data_size = owned->payload.size();
+    owned->message.data = owned->payload.data();
+    owned->message.msg_name = owned->name.c_str();
+    *msgptr = &owned->message;
+    g_publisher_messages.emplace(*msgptr, owned);
+    return kCgErrOk;
+}
+
+std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
+    if (publisher == nullptr || message == nullptr) {
+        return kCgErrInvalidArgument;
+    }
+    const auto result = configured_result("MOEX_FAKE_PUB_POST_RESULT");
+    if (result == kCgErrOk && (flags & 1U) != 0U) {
+        const auto* typed_publisher = static_cast<FakePublisher*>(publisher);
+        const auto* typed_message = static_cast<CgMsgData*>(message);
+        typed_publisher->connection->pending_replies.push_back({
+            .message_id = typed_message->msg_name != nullptr && std::string_view(typed_message->msg_name) == "AddOrder"
+                              ? 179U
+                              : 177U,
+            .message_name =
+                typed_message->msg_name != nullptr && std::string_view(typed_message->msg_name) == "AddOrder"
+                    ? "AddOrderReply"
+                    : "DelOrderReply",
+            .user_id = typed_message->user_id,
+            .payload = std::vector<std::byte>(16),
+        });
+    }
+    return result;
+}
+
+std::uint32_t cg_pub_msgfree(void*, void* message) {
+    if (message == nullptr) {
+        return kCgErrInvalidArgument;
+    }
+    const auto found = g_publisher_messages.find(message);
+    if (found == g_publisher_messages.end()) {
+        return kCgErrInvalidArgument;
+    }
+    auto* owned = found->second;
+    g_publisher_messages.erase(found);
+    const auto result = configured_result("MOEX_FAKE_PUB_MSGFREE_RESULT");
+    delete owned;
+    return result;
 }
 
 std::uint32_t cg_getstr(const char*, const void* data, char* buffer, std::size_t* buffer_size) {

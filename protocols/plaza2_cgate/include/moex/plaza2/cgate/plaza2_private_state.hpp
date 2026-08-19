@@ -179,9 +179,14 @@ struct OwnOrderSnapshot {
     std::int64_t moment{0};
     std::uint64_t moment_ns{0};
     std::int32_t ext_id{0};
+    std::vector<std::int64_t> public_order_id_aliases;
+    std::vector<std::int64_t> private_order_id_aliases;
+    bool identity_conflict{false};
     bool from_trade_repl{false};
     bool from_user_book{false};
     bool from_current_day{false};
+    std::uint64_t trade_repl_commit_sequence{0};
+    std::uint64_t user_orderbook_commit_sequence{0};
 };
 
 struct OwnTradeSnapshot {
@@ -197,6 +202,8 @@ struct OwnTradeSnapshot {
     std::int64_t public_order_id_sell{0};
     std::int64_t private_order_id_buy{0};
     std::int64_t private_order_id_sell{0};
+    std::int32_t ext_id_buy{0};
+    std::int32_t ext_id_sell{0};
     std::string code_buy;
     std::string code_sell;
     std::string comment_buy;

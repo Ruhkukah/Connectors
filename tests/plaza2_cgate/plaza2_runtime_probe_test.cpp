@@ -2,6 +2,7 @@
 
 #include "plaza2_runtime_test_support.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 
@@ -36,8 +37,10 @@ int main(int argc, char** argv) {
         require(report.layout.version_markers.spectra_release == "SPECTRA93", "spectra release marker mismatch");
         require(report.layout.version_markers.dds_version == "93.0.0.0", "dds version marker mismatch");
         require(report.layout.version_markers.target_polygon == "test", "target polygon marker mismatch");
-        require(report.resolved_symbols.size() == Plaza2RuntimeProbe::required_runtime_symbols().size(),
-                "not all runtime symbols were resolved");
+        for (const auto required_symbol : Plaza2RuntimeProbe::required_runtime_symbols()) {
+            require(std::ranges::find(report.resolved_symbols, required_symbol) != report.resolved_symbols.end(),
+                    "required runtime symbol was not resolved: " + std::string(required_symbol));
+        }
 
         Plaza2Settings scoped_config_settings = settings;
         scoped_config_settings.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";
