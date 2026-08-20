@@ -69,6 +69,7 @@ observe_order(std::int32_t ext_id, std::string_view client_code, Plaza2TradeSide
 struct OrderReplyObservation {
     std::uint32_t user_id{0};
     Plaza2TradeCommandKind command_kind{Plaza2TradeCommandKind::AddOrder};
+    bool timed_out{false};
     bool accepted{false};
     std::int32_t code{0};
     std::optional<std::int64_t> order_id;
@@ -87,6 +88,8 @@ class OrderLifecycleTransport {
     virtual ~OrderLifecycleTransport() = default;
     [[nodiscard]] virtual plaza2::cgate::Plaza2PublisherMessageResult post(const Plaza2TradeEncodedCommand& command,
                                                                            std::uint32_t user_id) = 0;
+    [[nodiscard]] virtual plaza2::cgate::Plaza2PublisherMessageResult
+    post_exact_ext_id_recovery(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) = 0;
     [[nodiscard]] virtual OrderLifecyclePollResult poll(std::chrono::steady_clock::time_point deadline) = 0;
     [[nodiscard]] virtual OrderLifecyclePollResult reconcile() = 0;
 };
@@ -110,14 +113,26 @@ struct OrderSmokeSnapshot {
     std::string tick_size;
     std::string top_bid;
     std::string top_ask;
+    std::string market_data_source;
+    std::uint64_t aggr20_source_sequence{0};
+    std::int64_t aggr20_source_revision{0};
+    std::string aggr20_observed_at_utc;
     std::uint64_t aggr20_age_ms{0};
     std::uint64_t max_aggr20_age_ms{0};
+    std::string trading_day;
+    std::string session_id;
+    std::string session_state;
+    std::string refdata_source;
+    std::uint64_t refdata_source_sequence{0};
+    std::int64_t refdata_source_revision{0};
+    std::string limits_source;
+    std::uint64_t limits_commit_sequence{0};
 };
 
-struct OrderSmokeLimits {
-    std::string max_notional;
+struct OrderSmokePolicy {
+    std::string version;
+    std::string sha256;
     std::uint32_t max_distance_ticks{0};
-    std::int32_t max_quantity{1};
 };
 
 struct OrderLifecycleConfig {
@@ -133,6 +148,8 @@ struct OrderLifecycleConfig {
     std::string authorized_plan_sha256;
 
     std::int32_t isin_id{0};
+    std::string base_contract_code;
+    std::int8_t instrument_mask{0};
     std::string broker_code;
     std::string client_code;
     Plaza2TradeSide side{Plaza2TradeSide::Buy};
@@ -142,10 +159,11 @@ struct OrderLifecycleConfig {
     std::int32_t ext_id{0};
     std::uint32_t add_user_id{0};
     std::uint32_t cancel_user_id{0};
+    std::uint32_t recovery_user_id{0};
     std::string comment;
 
     OrderSmokeSnapshot smoke;
-    OrderSmokeLimits limits;
+    OrderSmokePolicy policy;
     std::chrono::milliseconds add_observation_timeout{std::chrono::seconds(60)};
     std::chrono::milliseconds cancel_observation_timeout{std::chrono::seconds(60)};
     std::uint32_t max_poll_attempts{1024};
@@ -166,7 +184,6 @@ enum class PreSendFailure : std::uint8_t {
     PriceNotTickAligned,
     Aggr20NotFreshTwoSided,
     MarketablePrice,
-    NotionalCeilingExceeded,
     DistanceCeilingExceeded,
     LimitsSnapshotMissing,
     InvalidIdentifier,
@@ -185,6 +202,7 @@ struct PreSendPlan {
     std::string canonical_json;
     std::string sha256;
     Plaza2TradeEncodedCommand add_command;
+    Plaza2TradeEncodedCommand exact_ext_id_recovery_command;
 };
 
 [[nodiscard]] PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config);
@@ -193,15 +211,20 @@ struct PreSendPlan {
 
 struct OrderLifecycleResult {
     bool ok{false};
-    bool safe_terminal{false};
+    bool market_safe_terminal{false};
+    bool journal_ok{true};
+    bool journal_degraded{false};
+    bool evidence_consistent{true};
     bool orphan_incident_written{false};
     OrderLifecycleState state{OrderLifecycleState::DefinitelyNotSent};
     std::string message;
     std::optional<OrderObservation> observation;
     plaza2::cgate::Plaza2PublisherMessageResult add_submission;
     plaza2::cgate::Plaza2PublisherMessageResult cancel_submission;
+    plaza2::cgate::Plaza2PublisherMessageResult recovery_submission;
     std::optional<OrderReplyObservation> add_reply;
     std::optional<OrderReplyObservation> cancel_reply;
+    std::optional<OrderReplyObservation> recovery_reply;
     std::vector<OrderLifecycleState> transitions;
     std::filesystem::path journal_path;
 };

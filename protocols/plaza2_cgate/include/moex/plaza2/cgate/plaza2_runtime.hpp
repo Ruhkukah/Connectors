@@ -129,8 +129,10 @@ struct Plaza2RuntimeProbeReport {
     bool runtime_root_present{false};
     bool runtime_library_present{false};
     bool runtime_library_loadable{false};
+    bool trading_capable{false};
     bool scheme_file_present{false};
     bool config_dir_present{false};
+    std::vector<std::string> missing_trading_symbols;
 };
 
 enum class Plaza2DecodedValueKind : std::uint8_t {
@@ -203,6 +205,7 @@ class Plaza2RuntimeProbe {
     [[nodiscard]] static Plaza2RuntimeProbeReport probe(const Plaza2Settings& settings);
     [[nodiscard]] static std::span<const std::string_view> expected_config_filenames(Plaza2Environment environment);
     [[nodiscard]] static std::span<const std::string_view> required_runtime_symbols();
+    [[nodiscard]] static std::span<const std::string_view> required_trading_symbols();
 };
 
 struct Plaza2RuntimeSharedState;

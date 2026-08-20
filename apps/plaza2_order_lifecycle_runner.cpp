@@ -90,6 +90,13 @@ bool parse_arguments(int argc, char** argv, Arguments& arguments, std::string& e
             if (!parse_integer(value, arguments.config.isin_id)) {
                 error = "invalid --isin-id";
             }
+        } else if (option == "--base-contract-code") {
+            arguments.config.base_contract_code = require_value(index, option);
+        } else if (option == "--instrument-mask") {
+            const auto value = require_value(index, option);
+            if (!parse_integer(value, arguments.config.instrument_mask)) {
+                error = "invalid --instrument-mask";
+            }
         } else if (option == "--broker-code") {
             arguments.config.broker_code = require_value(index, option);
         } else if (option == "--client-code") {
@@ -110,11 +117,6 @@ bool parse_arguments(int argc, char** argv, Arguments& arguments, std::string& e
             if (!parse_integer(value, arguments.config.quantity)) {
                 error = "invalid --quantity";
             }
-        } else if (option == "--max-quantity") {
-            const auto value = require_value(index, option);
-            if (!parse_integer(value, arguments.config.limits.max_quantity)) {
-                error = "invalid --max-quantity";
-            }
         } else if (option == "--ext-id") {
             const auto value = require_value(index, option);
             if (!parse_integer(value, arguments.config.ext_id)) {
@@ -130,6 +132,11 @@ bool parse_arguments(int argc, char** argv, Arguments& arguments, std::string& e
             if (!parse_integer(value, arguments.config.cancel_user_id)) {
                 error = "invalid --cancel-user-id";
             }
+        } else if (option == "--recovery-user-id") {
+            const auto value = require_value(index, option);
+            if (!parse_integer(value, arguments.config.recovery_user_id)) {
+                error = "invalid --recovery-user-id";
+            }
         } else if (option == "--comment") {
             arguments.config.comment = require_value(index, option);
         } else if (option == "--tick-size") {
@@ -138,6 +145,20 @@ bool parse_arguments(int argc, char** argv, Arguments& arguments, std::string& e
             arguments.config.smoke.top_bid = require_value(index, option);
         } else if (option == "--top-ask") {
             arguments.config.smoke.top_ask = require_value(index, option);
+        } else if (option == "--market-data-source") {
+            arguments.config.smoke.market_data_source = require_value(index, option);
+        } else if (option == "--aggr20-source-sequence") {
+            const auto value = require_value(index, option);
+            if (!parse_integer(value, arguments.config.smoke.aggr20_source_sequence)) {
+                error = "invalid --aggr20-source-sequence";
+            }
+        } else if (option == "--aggr20-source-revision") {
+            const auto value = require_value(index, option);
+            if (!parse_integer(value, arguments.config.smoke.aggr20_source_revision)) {
+                error = "invalid --aggr20-source-revision";
+            }
+        } else if (option == "--aggr20-observed-at-utc") {
+            arguments.config.smoke.aggr20_observed_at_utc = require_value(index, option);
         } else if (option == "--aggr20-age-ms") {
             const auto value = require_value(index, option);
             if (!parse_integer(value, arguments.config.smoke.aggr20_age_ms)) {
@@ -148,11 +169,38 @@ bool parse_arguments(int argc, char** argv, Arguments& arguments, std::string& e
             if (!parse_integer(value, arguments.config.smoke.max_aggr20_age_ms)) {
                 error = "invalid --max-aggr20-age-ms";
             }
-        } else if (option == "--max-notional") {
-            arguments.config.limits.max_notional = require_value(index, option);
+        } else if (option == "--trading-day") {
+            arguments.config.smoke.trading_day = require_value(index, option);
+        } else if (option == "--session-id") {
+            arguments.config.smoke.session_id = require_value(index, option);
+        } else if (option == "--session-state") {
+            arguments.config.smoke.session_state = require_value(index, option);
+        } else if (option == "--refdata-source") {
+            arguments.config.smoke.refdata_source = require_value(index, option);
+        } else if (option == "--refdata-source-sequence") {
+            const auto value = require_value(index, option);
+            if (!parse_integer(value, arguments.config.smoke.refdata_source_sequence)) {
+                error = "invalid --refdata-source-sequence";
+            }
+        } else if (option == "--refdata-source-revision") {
+            const auto value = require_value(index, option);
+            if (!parse_integer(value, arguments.config.smoke.refdata_source_revision)) {
+                error = "invalid --refdata-source-revision";
+            }
+        } else if (option == "--limits-source") {
+            arguments.config.smoke.limits_source = require_value(index, option);
+        } else if (option == "--limits-commit-sequence") {
+            const auto value = require_value(index, option);
+            if (!parse_integer(value, arguments.config.smoke.limits_commit_sequence)) {
+                error = "invalid --limits-commit-sequence";
+            }
+        } else if (option == "--smoke-policy-version") {
+            arguments.config.policy.version = require_value(index, option);
+        } else if (option == "--smoke-policy-sha256") {
+            arguments.config.policy.sha256 = require_value(index, option);
         } else if (option == "--max-distance-ticks") {
             const auto value = require_value(index, option);
-            if (!parse_integer(value, arguments.config.limits.max_distance_ticks)) {
+            if (!parse_integer(value, arguments.config.policy.max_distance_ticks)) {
                 error = "invalid --max-distance-ticks";
             }
         } else if (option == "--plan-sha256") {

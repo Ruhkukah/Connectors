@@ -13,22 +13,31 @@
 namespace {
 
 struct ReplyCapture final : moex::plaza2::cgate::Plaza2ListenerEventHandler {
+    struct Captured {
+        moex::plaza2::cgate::Plaza2ListenerEventKind kind;
+        std::int32_t message_id;
+        std::string message_name;
+        std::uint32_t user_id;
+        std::vector<std::byte> payload;
+    };
+
     moex::plaza2::cgate::Plaza2Error
     on_plaza2_listener_event(const moex::plaza2::cgate::Plaza2ListenerEvent& event) override {
-        if (event.kind == moex::plaza2::cgate::Plaza2ListenerEventKind::StreamData &&
+        if ((event.kind == moex::plaza2::cgate::Plaza2ListenerEventKind::StreamData ||
+             event.kind == moex::plaza2::cgate::Plaza2ListenerEventKind::Timeout) &&
             event.stream_code == moex::plaza2::cgate::kNoStreamCode) {
-            message_id = event.message_id;
-            message_name = event.message_name;
-            user_id = event.user_id;
-            payload.assign(event.raw_payload.begin(), event.raw_payload.end());
+            events.push_back({
+                .kind = event.kind,
+                .message_id = event.message_id,
+                .message_name = std::string(event.message_name),
+                .user_id = event.user_id,
+                .payload = std::vector<std::byte>(event.raw_payload.begin(), event.raw_payload.end()),
+            });
         }
         return {};
     }
 
-    std::int32_t message_id{0};
-    std::string message_name;
-    std::uint32_t user_id{0};
-    std::vector<std::byte> payload;
+    std::vector<Captured> events;
 };
 
 } // namespace
@@ -115,14 +124,32 @@ int main(int argc, char** argv) {
                 "message-free failure must not erase a successful post");
         ::unsetenv("MOEX_FAKE_PUB_MSGFREE_RESULT");
 
+        ::setenv("MOEX_FAKE_PUB_REPLY_MODE", "timeout", 1);
+        const auto add_timeout = publisher.post_by_message_name("AddOrder", payload, 704, true);
+        const auto del_timeout = publisher.post_by_message_name("DelOrder", payload, 705, true);
+        require(add_timeout.certainty == Plaza2SubmissionCertainty::Posted &&
+                    del_timeout.certainty == Plaza2SubmissionCertainty::Posted,
+                "timeout fixtures should model successfully posted commands awaiting replies");
+        ::unsetenv("MOEX_FAKE_PUB_REPLY_MODE");
+
         std::uint32_t reply_process_code = 0;
         const auto reply_process_error = connection.process(0, &reply_process_code);
         require(!reply_process_error,
                 "posted reply should be delivered through cg_conn_process: " + reply_process_error.message + " (" +
                     std::to_string(reply_process_code) + ")");
-        require(reply_capture.user_id == 703 && reply_capture.message_id == 179 &&
-                    reply_capture.message_name == "AddOrderReply" && reply_capture.payload.size() == 16,
+        require(reply_capture.events.size() == 3, "ordinary DATA and both P2MQ timeout events should be delivered");
+        require(reply_capture.events[0].kind == Plaza2ListenerEventKind::StreamData &&
+                    reply_capture.events[0].user_id == 703 && reply_capture.events[0].message_id == 179 &&
+                    reply_capture.events[0].message_name == "AddOrderReply" &&
+                    reply_capture.events[0].payload.size() == 16,
                 "reply listener must expose the exact publisher user_id and raw reply payload");
+        require(reply_capture.events[1].kind == Plaza2ListenerEventKind::Timeout &&
+                    reply_capture.events[1].user_id == 704 && reply_capture.events[1].message_id == 0 &&
+                    reply_capture.events[1].message_name.empty() && reply_capture.events[1].payload.empty(),
+                "CG_MSG_P2MQ_TIMEOUT must retain only the originating AddOrder user_id");
+        require(reply_capture.events[2].kind == Plaza2ListenerEventKind::Timeout &&
+                    reply_capture.events[2].user_id == 705,
+                "CG_MSG_P2MQ_TIMEOUT must retain the originating DelOrder user_id");
 
         const auto reopen_error = connection.open({});
         require(reopen_error && reopen_error.code == Plaza2ErrorCode::AdapterState,

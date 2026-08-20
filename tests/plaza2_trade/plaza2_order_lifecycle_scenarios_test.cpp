@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -59,17 +60,18 @@ class ScriptTransport final : public OrderLifecycleTransport {
     explicit ScriptTransport(FakeClock& clock) : clock_(clock) {}
 
     cgate::Plaza2PublisherMessageResult post(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) override {
-        commands.push_back(command);
-        user_ids.push_back(user_id);
-        if (post_results.empty()) {
-            return {};
-        }
-        auto result = post_results.front();
-        post_results.erase(post_results.begin());
-        return result;
+        recovery_posts.push_back(false);
+        return submit(command, user_id);
+    }
+
+    cgate::Plaza2PublisherMessageResult post_exact_ext_id_recovery(const Plaza2TradeEncodedCommand& command,
+                                                                   std::uint32_t user_id) override {
+        recovery_posts.push_back(true);
+        return submit(command, user_id);
     }
 
     OrderLifecyclePollResult poll(std::chrono::steady_clock::time_point) override {
+        run_hook(poll_hooks);
         clock_.advance(std::chrono::seconds(1));
         if (poll_results.empty()) {
             clock_.advance(std::chrono::minutes(5));
@@ -81,6 +83,7 @@ class ScriptTransport final : public OrderLifecycleTransport {
     }
 
     OrderLifecyclePollResult reconcile() override {
+        run_hook(reconciliation_hooks);
         if (reconciliation_results.empty()) {
             return {};
         }
@@ -93,8 +96,35 @@ class ScriptTransport final : public OrderLifecycleTransport {
     std::vector<cgate::Plaza2PublisherMessageResult> post_results;
     std::vector<OrderLifecyclePollResult> poll_results;
     std::vector<OrderLifecyclePollResult> reconciliation_results;
+    std::vector<std::function<void()>> post_hooks;
+    std::vector<std::function<void()>> poll_hooks;
+    std::vector<std::function<void()>> reconciliation_hooks;
     std::vector<Plaza2TradeEncodedCommand> commands;
     std::vector<std::uint32_t> user_ids;
+    std::vector<bool> recovery_posts;
+
+  private:
+    cgate::Plaza2PublisherMessageResult submit(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) {
+        commands.push_back(command);
+        user_ids.push_back(user_id);
+        run_hook(post_hooks);
+        if (post_results.empty()) {
+            return {};
+        }
+        auto result = post_results.front();
+        post_results.erase(post_results.begin());
+        return result;
+    }
+
+    static void run_hook(std::vector<std::function<void()>>& hooks) {
+        if (!hooks.empty()) {
+            auto hook = std::move(hooks.front());
+            hooks.erase(hooks.begin());
+            if (hook) {
+                hook();
+            }
+        }
+    }
 };
 
 cgate::Plaza2PublisherMessageResult posted() {
@@ -125,6 +155,8 @@ OrderLifecycleConfig base_config(const std::filesystem::path& root, std::string 
     config.profile_enabled = true;
     config.environment = cgate::Plaza2Environment::Test;
     config.isin_id = 1001;
+    config.base_contract_code = "Si";
+    config.instrument_mask = 1;
     config.broker_code = "ABCD";
     config.client_code = "C01";
     config.side = Plaza2TradeSide::Buy;
@@ -134,6 +166,7 @@ OrderLifecycleConfig base_config(const std::filesystem::path& root, std::string 
     config.ext_id = 7001;
     config.add_user_id = 8001;
     config.cancel_user_id = 8002;
+    config.recovery_user_id = 8003;
     config.comment = "offline-test";
     config.smoke.instrument_exists = true;
     config.smoke.tradable_session = true;
@@ -142,11 +175,23 @@ OrderLifecycleConfig base_config(const std::filesystem::path& root, std::string 
     config.smoke.tick_size = "0.25";
     config.smoke.top_bid = "100.00";
     config.smoke.top_ask = "100.25";
+    config.smoke.market_data_source = "FORTS_FUTAGGR20_REPL.aggr20";
+    config.smoke.aggr20_source_sequence = 501;
+    config.smoke.aggr20_source_revision = 7;
+    config.smoke.aggr20_observed_at_utc = "2026-08-20T07:00:00.000Z";
     config.smoke.aggr20_age_ms = 25;
     config.smoke.max_aggr20_age_ms = 1000;
-    config.limits.max_notional = "1000.00";
-    config.limits.max_distance_ticks = 4;
-    config.limits.max_quantity = 1;
+    config.smoke.trading_day = "2026-08-20";
+    config.smoke.session_id = "morning-1";
+    config.smoke.session_state = "trading";
+    config.smoke.refdata_source = "FORTS_REFDATA_REPL";
+    config.smoke.refdata_source_sequence = 601;
+    config.smoke.refdata_source_revision = 8;
+    config.smoke.limits_source = "FORTS_PART_REPL.part";
+    config.smoke.limits_commit_sequence = 701;
+    config.policy.version = "smoke-v2.1";
+    config.policy.sha256 = std::string(64, 'b');
+    config.policy.max_distance_ticks = 4;
     config.add_observation_timeout = std::chrono::seconds(3);
     config.cancel_observation_timeout = std::chrono::seconds(3);
     config.max_poll_attempts = 8;
@@ -177,6 +222,23 @@ OrderReplyObservation cancel_reply(bool accepted) {
     return {
         .user_id = 8002,
         .command_kind = Plaza2TradeCommandKind::DelOrder,
+        .accepted = accepted,
+        .code = accepted ? 0 : 14,
+    };
+}
+
+OrderReplyObservation timeout_reply(Plaza2TradeCommandKind kind, std::uint32_t user_id) {
+    return {
+        .user_id = user_id,
+        .command_kind = kind,
+        .timed_out = true,
+    };
+}
+
+OrderReplyObservation recovery_reply(bool accepted) {
+    return {
+        .user_id = 8003,
+        .command_kind = Plaza2TradeCommandKind::DelUserOrders,
         .accepted = accepted,
         .code = accepted ? 0 : 14,
     };
@@ -216,7 +278,67 @@ void test_dry_run_with_no_arms() {
     require(result.journal_path.filename() == "pre_send_plan.json", "dry-run must emit canonical plan filename");
     const auto text = read_text(result.journal_path);
     require(text.find("payload_sha256") != std::string::npos, "plan should contain a payload hash");
+    require(text.find("recovery_payload_sha256") != std::string::npos,
+            "plan should commit the prevalidated exact-ext recovery payload");
     require(text.find(config.client_code) == std::string::npos, "plan must not write client account data");
+    std::filesystem::remove_all(root);
+}
+
+void test_reviewed_evidence_hash_sensitivity() {
+    const auto root = make_temp_root("hash_sensitivity");
+    const auto baseline_config = base_config(root, "hash-sensitivity");
+    const auto baseline = build_pre_send_plan(baseline_config);
+    require(baseline.ok, "baseline reviewed-evidence plan should validate");
+
+    const std::vector<std::pair<std::string_view, std::function<void(OrderLifecycleConfig&)>>> mutations = {
+        {"tick_size", [](auto& config) { config.smoke.tick_size = "0.50"; }},
+        {"top_bid", [](auto& config) { config.smoke.top_bid = "99.75"; }},
+        {"top_ask", [](auto& config) { config.smoke.top_ask = "100.50"; }},
+        {"market_data_source", [](auto& config) { config.smoke.market_data_source += ".reviewed"; }},
+        {"aggr20_source_sequence", [](auto& config) { ++config.smoke.aggr20_source_sequence; }},
+        {"aggr20_source_revision", [](auto& config) { ++config.smoke.aggr20_source_revision; }},
+        {"aggr20_observed_at_utc",
+         [](auto& config) { config.smoke.aggr20_observed_at_utc = "2026-08-20T07:00:00.001Z"; }},
+        {"aggr20_age_ms", [](auto& config) { ++config.smoke.aggr20_age_ms; }},
+        {"max_aggr20_age_ms", [](auto& config) { ++config.smoke.max_aggr20_age_ms; }},
+        {"trading_day", [](auto& config) { config.smoke.trading_day = "2026-08-21"; }},
+        {"session_id", [](auto& config) { config.smoke.session_id = "morning-2"; }},
+        {"session_state", [](auto& config) { config.smoke.session_state = "trading-reviewed"; }},
+        {"refdata_source", [](auto& config) { config.smoke.refdata_source += ".reviewed"; }},
+        {"refdata_source_sequence", [](auto& config) { ++config.smoke.refdata_source_sequence; }},
+        {"refdata_source_revision", [](auto& config) { ++config.smoke.refdata_source_revision; }},
+        {"limits_source", [](auto& config) { config.smoke.limits_source += ".reviewed"; }},
+        {"limits_commit_sequence", [](auto& config) { ++config.smoke.limits_commit_sequence; }},
+        {"policy_version", [](auto& config) { config.policy.version = "smoke-v2.1.1"; }},
+        {"policy_sha256", [](auto& config) { config.policy.sha256 = std::string(64, 'c'); }},
+        {"max_distance_ticks", [](auto& config) { ++config.policy.max_distance_ticks; }},
+        {"base_contract_code", [](auto& config) { config.base_contract_code = "RI"; }},
+        {"instrument_mask", [](auto& config) { config.instrument_mask = 2; }},
+    };
+    for (const auto& [name, mutate] : mutations) {
+        auto changed = baseline_config;
+        mutate(changed);
+        const auto plan = build_pre_send_plan(changed);
+        require(plan.ok, std::string(name) + " sensitivity fixture should remain valid");
+        require(plan.sha256 != baseline.sha256, std::string(name) + " must change the canonical plan hash");
+    }
+
+    auto missing_instrument = baseline_config;
+    missing_instrument.smoke.instrument_exists = false;
+    require(build_pre_send_plan(missing_instrument).failure == PreSendFailure::InstrumentMissing,
+            "instrument existence evidence must fail closed");
+    auto non_tradable = baseline_config;
+    non_tradable.smoke.tradable_session = false;
+    require(build_pre_send_plan(non_tradable).failure == PreSendFailure::SessionNotTradable,
+            "session tradability evidence must fail closed");
+    auto one_sided = baseline_config;
+    one_sided.smoke.aggr20_two_sided = false;
+    require(build_pre_send_plan(one_sided).failure == PreSendFailure::Aggr20NotFreshTwoSided,
+            "two-sided BBO evidence must fail closed");
+    auto missing_limits = baseline_config;
+    missing_limits.smoke.limits_snapshot_applicable = false;
+    require(build_pre_send_plan(missing_limits).failure == PreSendFailure::LimitsSnapshotMissing,
+            "limits applicability evidence must fail closed");
     std::filesystem::remove_all(root);
 }
 
@@ -239,9 +361,8 @@ void test_validation_refusals() {
 
     auto quantity = base_config(root, "quantity-two");
     quantity.quantity = 2;
-    quantity.limits.max_quantity = 2;
     require(build_pre_send_plan(quantity).failure == PreSendFailure::InvalidQuantity,
-            "quantity two must fail even when max_quantity is two");
+            "quantity two must fail under the fixed quantity-one policy");
 
     auto armed_dry = base_config(root, "armed-dry");
     armed_dry.any_arm_flag = true;
@@ -274,7 +395,7 @@ void test_message_allocation_failure() {
     };
     transport.post_results = {allocation_failure};
     const auto result = run_script(config, transport, clock);
-    require(result.safe_terminal && result.state == OrderLifecycleState::DefinitelyNotSent,
+    require(result.market_safe_terminal && result.state == OrderLifecycleState::DefinitelyNotSent,
             "allocation failure should be definitely not sent");
     require(transport.commands.size() == 1, "allocation failure should not retry AddOrder");
     std::filesystem::remove_all(root);
@@ -314,13 +435,185 @@ void test_post_timeout_ambiguous_submission() {
     authorize_live(config);
     FakeClock clock;
     ScriptTransport transport(clock);
-    transport.post_results = {possibly_sent()};
+    transport.post_results = {possibly_sent(), posted()};
     transport.poll_results = {{.deadline_reached = true}};
     transport.reconciliation_results = {{}};
     const auto result = run_script(config, transport, clock);
     require(result.state == OrderLifecycleState::UnresolvedOrphanIncident && result.orphan_incident_written,
             "ambiguous AddOrder must produce an orphan incident when unresolved");
-    require(transport.commands.size() == 1, "ambiguous AddOrder must never be retried");
+    require(transport.commands.size() == 2 && transport.recovery_posts[1],
+            "ambiguous AddOrder must receive one exact-ext_id recovery, never another AddOrder");
+    std::filesystem::remove_all(root);
+}
+
+void test_reply_then_replication_arrival() {
+    const auto root = make_temp_root("reply_then_replication");
+    auto config = base_config(root, "reply-then-replication");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.replies = {accepted_add()}},
+        {.observations = {observation(OrderLifecycleState::Working)}},
+        {.replies = {cancel_reply(true)}, .observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    const auto result = run_script(config, transport, clock);
+    require(result.state == OrderLifecycleState::Cancelled && transport.commands.size() == 2,
+            "reply-before-replication must continue polling until DelOrder has a safe matched identity");
+    std::filesystem::remove_all(root);
+}
+
+void test_reply_arrives_after_intermediate_empty_poll() {
+    const auto root = make_temp_root("reply_after_empty");
+    auto config = base_config(root, "reply-after-empty");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.observations = {observation(OrderLifecycleState::Working)}},
+        {},
+        {.replies = {accepted_add()}},
+        {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    const auto result = run_script(config, transport, clock);
+    require(result.state == OrderLifecycleState::Cancelled && transport.commands.size() == 2,
+            "an intermediate empty poll must not convert a later AddOrder reply into an orphan");
+    std::filesystem::remove_all(root);
+}
+
+void test_replication_then_reply_arrival() {
+    const auto root = make_temp_root("replication_then_reply");
+    auto config = base_config(root, "replication-then-reply");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.observations = {observation(OrderLifecycleState::Working)}},
+        {.replies = {accepted_add()}},
+        {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    const auto result = run_script(config, transport, clock);
+    require(result.state == OrderLifecycleState::Cancelled && transport.commands.size() == 2,
+            "replication-before-reply must continue polling for the user_id-correlated AddOrder ID");
+    std::filesystem::remove_all(root);
+}
+
+void test_reply_only_timeout_reconcile_finds_working() {
+    const auto root = make_temp_root("reply_only_reconcile");
+    auto config = base_config(root, "reply-only-reconcile");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.replies = {accepted_add()}},
+        {.deadline_reached = true},
+        {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    transport.reconciliation_results = {{.observations = {observation(OrderLifecycleState::Working)}}};
+    const auto result = run_script(config, transport, clock);
+    require(result.state == OrderLifecycleState::Cancelled && transport.commands.size() == 2 &&
+                !transport.recovery_posts[1],
+            "reply-only timeout must reconcile and use DelOrder when reconciliation finds Working");
+    std::filesystem::remove_all(root);
+}
+
+void test_replication_only_timeout_reconcile_finds_reply() {
+    const auto root = make_temp_root("replication_only_reconcile");
+    auto config = base_config(root, "replication-only-reconcile");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.observations = {observation(OrderLifecycleState::Working)}},
+        {.deadline_reached = true},
+        {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    transport.reconciliation_results = {{.replies = {accepted_add()}}};
+    const auto result = run_script(config, transport, clock);
+    require(result.state == OrderLifecycleState::Cancelled && transport.commands.size() == 2 &&
+                !transport.recovery_posts[1],
+            "replication-only timeout must reconcile and use DelOrder when reconciliation finds the reply");
+    std::filesystem::remove_all(root);
+}
+
+void test_replication_without_reply_uses_exact_ext_recovery() {
+    const auto root = make_temp_root("replication_without_reply");
+    auto config = base_config(root, "replication-without-reply");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.observations = {observation(OrderLifecycleState::Working)}},
+        {.deadline_reached = true},
+        {.replies = {recovery_reply(true)}, .observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    transport.reconciliation_results = {{.observations = {observation(OrderLifecycleState::Working)}}};
+    const auto result = run_script(config, transport, clock);
+    require(result.state == OrderLifecycleState::Cancelled && transport.commands.size() == 2 &&
+                transport.recovery_posts[1] && transport.user_ids[1] == config.recovery_user_id,
+            "replication without an accepted AddOrder ID must use exactly one recovery submission");
+
+    DelUserOrdersRequest expected;
+    expected.broker_code = config.broker_code;
+    expected.buy_sell = 1;
+    expected.non_system = 0;
+    expected.code = config.client_code;
+    expected.base_contract_code = config.base_contract_code;
+    expected.ext_id = config.ext_id;
+    expected.isin_id = config.isin_id;
+    expected.instrument_mask = config.instrument_mask;
+    const auto encoded = Plaza2TradeCodec{}.encode(Plaza2TradeCommandRequest{expected});
+    require(transport.commands[1].command_kind == Plaza2TradeCommandKind::DelUserOrders &&
+                transport.commands[1].payload == encoded.payload,
+            "recovery payload must bind exact ext_id, client, side, account, and instrument context");
+    std::filesystem::remove_all(root);
+}
+
+void test_terminal_replication_before_reply_arrival() {
+    const auto root = make_temp_root("terminal_before_reply");
+    auto config = base_config(root, "terminal-before-reply");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted()};
+    transport.poll_results = {{.observations = {observation(OrderLifecycleState::Filled, 1, 1, 0)}}};
+    const auto result = run_script(config, transport, clock);
+    require(result.state == OrderLifecycleState::Filled && !result.add_reply.has_value() &&
+                transport.commands.size() == 1,
+            "terminal replication must win even when the AddOrder reply has not arrived");
+    std::filesystem::remove_all(root);
+}
+
+void test_p2mq_timeout_is_uncertainty_not_completion() {
+    const auto root = make_temp_root("p2mq_timeout");
+    auto config = base_config(root, "p2mq-timeout");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.replies = {timeout_reply(Plaza2TradeCommandKind::AddOrder, config.add_user_id)},
+         .observations = {observation(OrderLifecycleState::Working)}},
+        {.deadline_reached = true},
+        {.replies = {timeout_reply(Plaza2TradeCommandKind::DelUserOrders, config.recovery_user_id)}},
+        {.deadline_reached = true},
+    };
+    transport.reconciliation_results = {
+        {.observations = {observation(OrderLifecycleState::Working)}},
+        {.observations = {observation(OrderLifecycleState::Working)}},
+    };
+    const auto result = run_script(config, transport, clock);
+    require(result.state == OrderLifecycleState::UnresolvedOrphanIncident && result.add_reply->timed_out &&
+                result.recovery_reply->timed_out && !result.market_safe_terminal,
+            "P2MQ Add/recovery timeouts must retain uncertainty and never imply rejection or cancellation");
+    require(transport.commands.size() == 2 && transport.recovery_posts[1],
+            "P2MQ Add timeout may trigger one exact-ext_id recovery but never another AddOrder");
     std::filesystem::remove_all(root);
 }
 
@@ -470,7 +763,8 @@ void test_duplicate_ext_id_refusal_and_orphan_journal() {
     const auto first_result = run_script(first, first_transport, first_clock);
     require(first_result.orphan_incident_written, "first run should leave an orphan incident");
     const auto journal_text = read_text(first_result.journal_path);
-    require(journal_text.find("\"orphan_incident\": true") != std::string::npos, "orphan journal should be durable");
+    require(journal_text.find("\"orphan_incident\": true") != std::string::npos,
+            "orphan incident should be present in the published local journal");
     require(journal_text.find("\"finished\": false") != std::string::npos,
             "unresolved run should retain unfinished identifier locks");
     require(journal_text.find(first.client_code) == std::string::npos, "journal must not contain client account data");
@@ -479,6 +773,97 @@ void test_duplicate_ext_id_refusal_and_orphan_journal() {
     const auto second_plan = build_pre_send_plan(second);
     require(second_plan.failure == PreSendFailure::DuplicateIdentifier,
             "unfinished run must refuse duplicate ext/user IDs");
+    std::filesystem::remove_all(root);
+}
+
+std::filesystem::path journal_temp_path(const std::filesystem::path& root, std::string_view run_id) {
+    return root / run_id / "journal.json.tmp";
+}
+
+void test_journal_failure_after_successful_add_post() {
+    const auto root = make_temp_root("journal_after_add");
+    auto config = base_config(root, "journal-after-add");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    const auto blocker = journal_temp_path(root, config.run_id);
+    transport.post_results = {posted()};
+    transport.post_hooks = {[&]() { std::filesystem::create_directory(blocker); }};
+    transport.poll_hooks = {[&]() { std::filesystem::remove_all(blocker); }};
+    transport.poll_results = {
+        {.replies = {accepted_add()}, .observations = {observation(OrderLifecycleState::Filled, 1, 1, 0)}},
+    };
+    const auto result = run_script(config, transport, clock);
+    require(result.market_safe_terminal && result.state == OrderLifecycleState::Filled && result.journal_degraded &&
+                !result.journal_ok && !result.ok,
+            "journal failure after Add post must not stop factual market cleanup or masquerade as full success");
+    require(std::filesystem::exists(root / "active" / "ext_7001"),
+            "degraded journal must retain identifier locks even after a market terminal state");
+    std::filesystem::remove_all(root);
+}
+
+void test_journal_reply_recording_failure() {
+    const auto root = make_temp_root("journal_reply");
+    auto config = base_config(root, "journal-reply");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    const auto blocker = journal_temp_path(root, config.run_id);
+    transport.post_results = {posted(), posted()};
+    transport.post_hooks = {std::function<void()>{}, [&]() { std::filesystem::remove_all(blocker); }};
+    transport.poll_hooks = {[&]() { std::filesystem::create_directory(blocker); }};
+    transport.poll_results = {
+        {.replies = {accepted_add()}, .observations = {observation(OrderLifecycleState::Working)}},
+        {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    const auto result = run_script(config, transport, clock);
+    require(result.market_safe_terminal && result.state == OrderLifecycleState::Cancelled && result.journal_degraded &&
+                !result.journal_ok,
+            "reply-recording failure must not prevent the already-identified working order from being cancelled");
+    require(std::filesystem::exists(root / "active" / "user_8001"),
+            "reply-recording degradation must retain all unfinished-run locks");
+    std::filesystem::remove_all(root);
+}
+
+void test_final_orphan_journal_failure_is_not_reported_as_written() {
+    const auto root = make_temp_root("journal_final_orphan");
+    auto config = base_config(root, "journal-final-orphan");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    const auto blocker = journal_temp_path(root, config.run_id);
+    transport.post_results = {posted()};
+    transport.poll_results = {{.replies = {accepted_add()}}, {.deadline_reached = true}};
+    transport.reconciliation_hooks = {[&]() { std::filesystem::create_directory(blocker); }};
+    transport.reconciliation_results = {{}};
+    const auto result = run_script(config, transport, clock);
+    require(result.state == OrderLifecycleState::UnresolvedOrphanIncident && !result.market_safe_terminal &&
+                result.journal_degraded && !result.journal_ok && !result.orphan_incident_written,
+            "failed final orphan persistence must never be reported as an incident successfully written");
+    require(std::filesystem::exists(root / "active" / "ext_7001"),
+            "failed orphan persistence must retain the ext_id lock");
+    std::filesystem::remove_all(root);
+}
+
+void test_journal_failure_after_terminal_cancellation() {
+    const auto root = make_temp_root("journal_terminal_cancel");
+    auto config = base_config(root, "journal-terminal-cancel");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    const auto blocker = journal_temp_path(root, config.run_id);
+    transport.post_results = {posted(), posted()};
+    transport.poll_hooks = {std::function<void()>{}, [&]() { std::filesystem::create_directory(blocker); }};
+    transport.poll_results = {
+        {.replies = {accepted_add()}, .observations = {observation(OrderLifecycleState::Working)}},
+        {.replies = {cancel_reply(true)}, .observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    const auto result = run_script(config, transport, clock);
+    require(result.market_safe_terminal && result.state == OrderLifecycleState::Cancelled && result.journal_degraded &&
+                !result.journal_ok && !result.orphan_incident_written,
+            "journal failure after terminal cancellation must preserve market truth but fail evidence health");
+    require(std::filesystem::exists(root / "active" / "user_8002"),
+            "terminal market state must not release locks when final evidence persistence failed");
     std::filesystem::remove_all(root);
 }
 
@@ -639,11 +1024,20 @@ void test_timeout_translation_and_sha256() {
 int main() {
     try {
         test_dry_run_with_no_arms();
+        test_reviewed_evidence_hash_sensitivity();
         test_validation_refusals();
         test_pre_post_validation_failure();
         test_message_allocation_failure();
         test_post_success_plus_free_failure();
         test_post_timeout_ambiguous_submission();
+        test_reply_then_replication_arrival();
+        test_reply_arrives_after_intermediate_empty_poll();
+        test_replication_then_reply_arrival();
+        test_reply_only_timeout_reconcile_finds_working();
+        test_replication_only_timeout_reconcile_finds_reply();
+        test_replication_without_reply_uses_exact_ext_recovery();
+        test_terminal_replication_before_reply_arrival();
+        test_p2mq_timeout_is_uncertainty_not_completion();
         test_immediate_full_fill();
         test_partial_fill_then_remainder_cancellation();
         test_replication_timeout_then_reconciliation();
@@ -652,6 +1046,10 @@ int main() {
         test_polling_failure_after_possible_submission();
         test_source_provenance_scenarios();
         test_duplicate_ext_id_refusal_and_orphan_journal();
+        test_journal_failure_after_successful_add_post();
+        test_journal_reply_recording_failure();
+        test_final_orphan_journal_failure_is_not_reported_as_written();
+        test_journal_failure_after_terminal_cancellation();
         test_public_private_id_mismatch();
         test_observation_fill_is_never_cancelled();
         test_private_projection_independent_stream_commits();

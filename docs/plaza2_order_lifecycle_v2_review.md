@@ -1,213 +1,194 @@
-# PLAZA II order lifecycle V2 review
+# PLAZA II order lifecycle V2.1 review
 
 ## Scope and verdict
 
-This increment starts from authoritative main commit
-`dc396cbe05ddae37989a12e2cef6d0ce1e8fd757` on branch
-`codex/plaza2-order-lifecycle-v2`. It implements a transport-neutral order
-lifecycle, runtime publisher primitives, factual private-state observations,
-durable local incident journaling, and a native dry-run planner.
+This correctness pass starts from authoritative PR #25 head
+`ad29ad5685f9cdfc664a14c244c92d9157aa7146` on branch
+`codex/plaza2-order-lifecycle-v2`. It stays inside the existing transport-neutral,
+offline lifecycle design. No new live transport, profile, wrapper, executable,
+script, C ABI, production path, or generic recovery framework was added.
 
 The offline acceptance gate passes. No production connection, TEST connection,
 network command, credential, software key, account secret, broker profile, or
-live order was used. The native executable contains no live transport and
-deliberately refuses `--send-test-order` after validating the exact plan hash.
+live order was used. The native runner still has no live transport and refuses
+`--send-test-order` after validating the exact plan hash.
 
-This verdict is not authorization for a live TEST order.
+This verdict is a review gate, not authorization for a live TEST order.
 
-## Locked semantics used
+## Authoritative semantics
 
-The implementation was checked against the repository-pinned vendor material:
+The implementation was checked against the repository-pinned CGate/P2Gate
+material and the current official MOEX CGate 9.3 header:
 
-- `spec-lock/prod/plaza2/cgate_docs/cache/cgate_en.pdf`, sections 2.7.7 through
-  2.7.9: publisher message allocation, post, and free are separate calls;
-  `cg_msg_data_t.user_id` is 32-bit; `CG_PUB_NEEDREPLY` routes a reply carrying
-  the originating `user_id` to a `p2mqreply` listener.
-- `spec-lock/prod/plaza2/cgate_docs/cache/cgate_en.pdf`, connection processing:
-  `CG_ERR_TIMEOUT` is the benign no-event result of `cg_conn_process`, not a
-  generic success result for publisher operations.
-- `spec-lock/prod/plaza2/cgate_docs/cache/p2gate_en.html`: AddOrder request 474
-  has reply 179 containing `order_id`; DelOrder request 461 has reply 177 and
-  consumes `order_id`, described as the order ID to delete.
+- `spec-lock/prod/plaza2/cgate_docs/cache/cgate_en.pdf`, publisher and connection
+  processing sections: message allocation, post, and free are distinct;
+  `CG_PUB_NEEDREPLY` routes an originating `uint32 user_id` to `p2mqreply`;
+  `cg_conn_process` timeout means no event, while publisher timeout is not
+  generic success.
+- `spec-lock/prod/plaza2/cgate_docs/cache/p2gate_en.html`, AddOrder/DelOrder and
+  DelUserOrders sections: AddOrder 474 replies with 179 and an `order_id`;
+  DelOrder 461 consumes that ID; DelUserOrders 466 with nonzero `ext_id` is the
+  documented narrow response to an uncertain Add/Move outcome; deletion timeout
+  does not establish deletion.
+- The current official CGate distribution header confirms
+  `CG_MSG_DATA == 0x110`, `CG_MSG_P2MQ_TIMEOUT == 0x1001`, and the
+  `cg_msg_data_t` ABI including `owner_id` and the `user_id` union member:
+  <https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/Game/>.
 
-Consequently, DelOrder is encoded only with the `order_id` from an accepted,
-`user_id`-correlated AddOrder reply. The reply ID must also match a replicated
-public/private identifier or alias. There is no public/private fallback guess.
+A P2MQ timeout is surfaced as uncertainty with only its originating `user_id`.
+The transport can associate it with AddOrder, DelOrder, or exact-ext recovery
+through the three fixed, unique user IDs; the generic runtime does not invent an
+operation or rejection.
 
-## Code changed
+## Corrected lifecycle completion
 
-- `protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_runtime.hpp` and
-  `protocols/plaza2_cgate/src/plaza2_runtime.cpp`
-  - make timeout translation operation-specific;
-  - expose SHA-256 for payload/plan fingerprints;
-  - add publisher create/open/post/close/destroy support;
-  - retain allocation, post, and free errors independently;
-  - classify publisher outcomes as definitely not sent, possibly sent, or
-    posted;
-  - expose raw untyped reply messages with documented 32-bit `user_id`.
-- `protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_private_state.hpp`
-  and `protocols/plaza2_cgate/src/plaza2_private_state.cpp`
-  - touch only the stream that supplied an order row;
-  - retain independent source commit sequences;
-  - converge the two order sources by proven IDs or ext/client identity;
-  - retain identifier aliases and flag conflicting identities;
-  - project trade-side ext IDs for own-trade matching.
-- `connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_order_lifecycle.hpp`
-  and `connectors/plaza2_trade/src/plaza2_order_lifecycle.cpp`
-  - add the transport and monotonic-clock abstractions;
-  - add complete order observations and lifecycle control;
-  - add canonical pre-send plans and exact-hash authorization;
-  - enforce the first smoke policy;
-  - add atomic local journals and unfinished-run identifier locks.
-- `apps/plaza2_order_lifecycle_runner.cpp`
-  - add a native dry-run entry point with authoritative enabled/environment
-    values and no CGate open path.
-- `tests/plaza2_trade/plaza2_order_lifecycle_scenarios_test.cpp`
-  - add one deterministic scenario executable for the lifecycle matrix.
-- `tests/plaza2_cgate/fake_cgate_runtime.cpp` and existing runtime tests
-  - add publisher fault injection and an executable `user_id` reply round trip.
-- CMake registers one lifecycle library, one native runner, and one new CTest.
+Reply and replication are asynchronous evidence surfaces. Add-phase polling is
+now state-driven:
 
-## Safety invariants
+- factual `Filled` or `Cancelled` replication stops immediately;
+- a correlated, non-timeout AddOrder rejection resolves only when no
+  contradictory order evidence exists;
+- `Working` or `PartiallyFilled` continues until an accepted correlated reply
+  supplies `order_id`, that ID matches a replicated public/private ID or alias,
+  and the evidence remains consistent;
+- an accepted reply arriving first continues until replication appears;
+- intermediate empty polls do not discard either surface;
+- any deadline without a usable cancellation precondition or terminal state
+  invokes reconciliation, even when one evidence surface is already present.
 
-1. Dry-run rejects all arm flags, invokes no transport, and writes only
-   `pre_send_plan.json`.
-2. A future send mode requires `--send-test-order` and the exact SHA-256 of the
-   canonical plan generated from the same inputs.
-3. Native validation rejects disabled and non-TEST profiles; these values are
-   not hardcoded by a wrapper.
-4. Quantity must equal one even if editable `max_quantity` is two or higher.
-5. Limit type, refdata membership, tradable session, decimal validity, tick
-   alignment, fresh two-sided AGGR20, passive price, independent notional and
-   distance ceilings, applicable limits, and identifier uniqueness are all
-   independent fail-closed checks with no override.
-6. Allocation failure is definitely not sent. Any invoked, non-successful post
-   is possibly sent. Successful post remains posted even if message free fails.
-7. AddOrder is never retried after an ambiguous outcome.
-8. Every possible/posted path reconciles to a factual safe terminal state or
-   writes an unfinished orphan incident while retaining identifier locks.
-9. DelOrder uses only the accepted AddOrder reply ID; it is never guessed from
-   a public/private fallback.
-10. Full own-trade evidence takes precedence over a cancellation-shaped order
-    row. A fill cannot be labelled cancelled.
-11. Source provenance and commit sequences are retained independently for
-    trade replication, user-orderbook replication, current-day data, and own
-    trades.
-12. Plans and journals contain fingerprints, IDs, hashes, quantities, states,
-    and provenance only. Broker/client/account values and raw command payloads
-    are not written.
+DelOrder is still encoded only from the accepted AddOrder reply ID. Public or
+private replication IDs are never guessed into DelOrder. Conflicting ordinary
+replies, reply/replication ID mismatch, contradictory rejection/order evidence,
+and changing replicated identities set `evidence_consistent=false`.
 
-## Lifecycle transitions
+When AddOrder may have processed and an accepted AddOrder ID remains unavailable,
+the controller may submit exactly one transport-neutral recovery operation:
+DelUserOrders constrained to this run's nonzero `ext_id`, client, side, common
+order class, base contract, `isin_id`, instrument mask, and broker context. It
+never submits another AddOrder and never exposes broad cancellation. After that
+request it continues polling and reconciliation; a delete reply or P2MQ timeout
+does not become factual cancellation.
 
-| Evidence or operation | State/result | Required next action |
-|---|---|---|
-| Pre-send validation or message allocation fails | `definitely_not_sent` | Safe terminal; no retry needed |
-| Publisher post was invoked and did not return success | `possibly_sent` | Never retry AddOrder; poll and reconcile |
-| Publisher post returned success | `posted` | Observe reply and replication |
-| Correlated AddOrder reply rejects and no order evidence exists | `rejected` | Safe terminal |
-| Replication proves open remainder with no executions | `working` | Cancel only after accepted reply ID is proven |
-| Own trades prove executions with open remainder | `partially_filled` | Preserve executions; cancel only the remainder |
-| Own trades/replication prove the original quantity executed | `filled` | Safe terminal; never send DelOrder |
-| DelOrder was submitted after reply-ID proof | `cancel_pending` | Poll and reconcile; do not infer success from timeout |
-| Replication proves the remaining quantity removed without a full fill | `cancelled` | Safe terminal; retain any executed quantity |
-| Identity conflict, missing reply ID, polling failure, or inconclusive timeout | `unresolved_orphan_incident` | Persist unfinished incident and retain ext/user locks |
+## Canonical pre-send plan
 
-## Tests and scenarios
+`moex.plaza2.pre_send_plan.v2` hashes the encoded AddOrder and prevalidated
+exact-ext recovery payloads plus every non-secret reviewed input that can change
+the smoke verdict:
 
-The single `plaza2_order_lifecycle_scenarios_test` covers:
+- tick size, top bid, top ask, price, side, quantity, and instrument identity;
+- market-data source, AGGR20 sequence/revision, observation timestamp, age, and
+  maximum permitted age;
+- trading day, session identity/state, and tradability verdict;
+- refdata source sequence/revision and instrument-existence verdict;
+- limits source identity, commit sequence, and applicability verdict;
+- smoke-policy version, policy SHA-256, and maximum distance ticks;
+- profile/environment fingerprints and all unique lifecycle IDs.
 
-- dry-run with no arms and no transport call;
-- disabled profile, non-TEST profile, conflicting modes, armed dry-run, and
-  quantity two even when `max_quantity` is two;
-- pre-post tick validation and message allocation failure;
-- successful post plus message-free failure;
-- post timeout/ambiguous submission with no AddOrder retry;
-- immediate full fill;
-- partial fill followed by factual remainder cancellation;
-- replication timeout followed by reconciliation;
-- cancel rejection and cancel timeout;
-- polling failure after possible submission;
-- trade-only, user-orderbook-only, and converged provenance;
-- unfinished-run duplicate ext/user refusal;
-- public/private identity mismatch with no guessed cancel;
-- full-fill precedence over a cancellation-shaped row;
-- independent projector stream commits and source convergence;
-- operation-specific timeout translation and a known SHA-256 vector.
+Broker/client/account values are not written. Their exact AddOrder and recovery
+values remain committed through encoded payload SHA-256 fingerprints.
+Hash-sensitivity tests change each reviewed value independently and require a
+different plan hash; fail-closed boolean evidence is tested through its
+corresponding validation refusal.
 
-The runtime adapter test additionally covers publisher allocation/post/free
-classification and proves that publisher `user_id` 703 is returned by an
-untyped reply listener as AddOrder reply message 179 with a raw payload.
+The misleading price-versus-`max_notional` comparison and dead `max_quantity`
+surface were removed. The first smoke remains hard quantity one, limit-only,
+tick-aligned, fresh two-sided, passive/non-marketable, within maximum BBO
+distance, and backed by applicable refdata/session/limits evidence.
 
-## Baseline versus final metrics
+## Atomic local journal and degradation
 
-Both measurements are local Debug/Ninja builds with AppleClang 17 and the same
-default Ninja parallelism. Wall-clock numbers are environmental observations,
-not performance acceptance thresholds.
+`moex.plaza2.order_run_journal.v2` is an atomic local journal, not a claim of
+power-loss durability. Each update writes and flushes a same-directory temporary
+file, then atomically renames it over the published path. The previous complete
+file remains until rename succeeds. There is no file `fsync` or parent-directory
+`fsync`, so persistence through kernel, filesystem, or power failure is not
+claimed.
 
-| Metric | Baseline `dc396cbe` | Final branch |
-|---|---:|---:|
-| CMake targets | 222 | 226 |
-| CTests | 153 | 154 |
-| Configure time | 1.93 s | 1.72 s |
-| Build time | 9.52 s | 9.10 s |
-| Full CTest time | 32.65 s | 31.60 s |
-| Full CTest result | 153/153 pass | 154/154 pass |
+Every intermediate persistence failure is retained in memory as
+`journal_degraded=true`. After AddOrder is possibly sent or posted, journal
+failure does not stop polling, reconciliation, DelOrder, or exact-ext recovery.
+Results independently report:
 
-ASan plus UBSan passed the lifecycle scenario, runtime adapter, runtime probe,
-and offline no-send guard (4/4). Apple ASan does not support leak detection, so
-the successful run used `ASAN_OPTIONS=detect_leaks=0:halt_on_error=1` and
-`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
+- `market_safe_terminal` — replication proved Filled/Cancelled, or the command
+  was definitely not sent/rejected before an order could exist;
+- `journal_ok` — the final state persisted and no earlier journal write failed;
+- `evidence_consistent` — reply and replication identities/outcomes agree.
 
-The native CLI dry-run also produced
-`pre_send_plan_sha256=abc22ebd9c33f95198ff2c460633f0a7015e90e3af592ff1f2376e7a1acc9615`
-for the documented offline fixture. Inspection confirmed that the plan contains
-the payload hash and smoke verdicts but no broker or client value.
+Any degraded run retains its ext/add/cancel/recovery identifier locks, including
+after a market-terminal outcome. `orphan_incident_written` is true only when the
+final orphan state was actually published successfully.
 
-## Selective PR #24 reuse
+## Runtime capability gate
 
-PR #24 and commit `24e4619e29244a6c11f368044550aabf04653a86` were inspected
-with `git show`/`git diff` only. No commit was cherry-picked and no file was
-copied wholesale.
+The read-side runtime ABI remains the compatibility baseline. Publisher symbols
+are loaded optionally and do not make a read-only installation incompatible.
+The separate `trading_capable` report requires connection processing, untyped
+reply-listener lifecycle, and all publisher lifecycle/message functions. Missing
+trading symbols are listed explicitly for a future concrete trade transport.
 
-The useful publisher symbol-loading and handle-lifecycle ideas from these two
-historical files were selectively reworked into the current runtime boundary:
+## Offline verification
 
-- `protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_runtime.hpp`
-- `protocols/plaza2_cgate/src/plaza2_runtime.cpp`
+The existing lifecycle scenario executable now additionally covers:
 
-The new implementation changes the unsafe historical semantics: timeout is not
-generic success, allocation/post/free results are separate, successful post is
-not erased by free failure, replies use the documented raw listener contract,
-and lifecycle decisions are made by the new controller.
+- Working replication before a later accepted reply;
+- accepted reply before later Working replication;
+- accepted reply after an intermediate empty poll;
+- reply-only timeout with reconciliation finding Working;
+- replication-only timeout with reconciliation finding the accepted reply;
+- terminal replication before a reply;
+- replication without an accepted ID using the exact encoded ext recovery;
+- Add/recovery P2MQ timeouts remaining unresolved rather than cancelled;
+- BBO, freshness, session, refdata, limits, policy, and instrument-context plan
+  hash sensitivity;
+- journal failure after Add post, while recording a reply, while publishing a
+  final orphan, and after market-terminal cancellation.
 
-The following historical scaffolding was deliberately not reused:
+The existing fake-runtime adapter test round-trips ordinary `CG_MSG_DATA`, an
+AddOrder `CG_MSG_P2MQ_TIMEOUT` with user ID 704, and a DelOrder timeout with user
+ID 705. The runtime probe test checks both complete trading capability and that
+`cg_pub_post` is not a read-side compatibility requirement.
 
-- `apps/moex_plaza2_trade_test_order_runner.py`;
-- `apps/plaza2_trade_test_order_entry_runner.cpp`;
-- `connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_trade_test_order_runner.hpp`;
-- `connectors/plaza2_trade/src/plaza2_trade_test_order_runner.cpp`;
-- `docs/plaza2_phase5e_test_order_entry_bringup.md`;
-- both `profiles/test_plaza2_trade_order_entry*` files;
-- `scripts/vps/plaza2_trade_test_order_evidence.sh` and the package-script
-  expansion;
-- the phase-specific runner/script tests;
-- the historical live-session changes and fallback order-ID logic.
+Verification on AppleClang 17 / Debug / Ninja:
+
+| Check | Result |
+|---|---:|
+| Full CTest | 154/154 pass |
+| ASan+UBSan changed-target set | 4/4 pass |
+| Native offline plan/privacy check | pass |
+| `git diff --check` | pass |
+| Network or live order activity | none |
+
+The sanitizer set was the lifecycle scenarios, runtime adapter, runtime probe,
+and offline no-send guard. It used
+`ASAN_OPTIONS=detect_leaks=0:halt_on_error=1` because Apple ASan does not support
+leak detection, plus `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
+
+## Delta from authoritative V2 head
+
+| Metric | `ad29ad5685` | V2.1 final | Delta |
+|---|---:|---:|---:|
+| CMake targets | 226 | 226 | 0 |
+| CTests | 154 | 154 | 0 |
+| Tracked files changed | 0 | 10 | +10 |
+| Lines added | 0 | 1,135 | +1,135 |
+| Lines removed | 0 | 377 | +377 |
+
+No CMake target or CTest was added; existing scenario/runtime targets were
+extended as requested.
 
 ## Remaining blockers before a live TEST order
 
-1. Implement and review a concrete TEST-only transport that composes the
-   publisher, reply decoder, trade/user-orderbook replication, and reconciliation
-   APIs. The current native runner intentionally has no such transport.
-2. Bind smoke evidence to authoritative committed refdata, session, AGGR20, and
-   limits snapshots rather than operator-supplied offline fixture flags.
-3. Validate actual installed TEST CGate runtime/scheme compatibility and the
-   reply payload decoder against the locked broker TEST environment without
-   placing credentials or endpoint secrets in Git.
+1. Implement and review a concrete TEST-only transport composing the publisher,
+   timeout/reply mapping, private replication, and reconciliation APIs. The
+   current runner intentionally has no such transport.
+2. Source plan evidence directly from authoritative committed refdata, session,
+   AGGR20, and limits snapshots rather than operator-supplied offline values.
+3. Validate the installed broker TEST runtime/scheme and reply decoders without
+   placing credentials or endpoints in Git.
 4. Define restart-time orphan reconciliation and operational journal ownership,
-   permissions, retention, and alerting. Unfinished IDs currently remain locked
-   by design.
-5. Review a generated plan, provide its exact hash through a separate explicit
-   authorization gate, and conduct a separately approved one-order TEST run.
+   permissions, retention, alerting, and Linux durability requirements.
+5. Review a newly generated plan and require a separate explicit authorization
+   before any one-order TEST exercise.
 
-Stop here. No VPS run, live TEST submission, production work, C ABI rewrite, or
-new protocol phase is part of this increment.
+Stop here. No VPS run, network session, live TEST submission, production work,
+or new protocol phase is part of V2.1.

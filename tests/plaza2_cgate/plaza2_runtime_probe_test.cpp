@@ -41,6 +41,18 @@ int main(int argc, char** argv) {
             require(std::ranges::find(report.resolved_symbols, required_symbol) != report.resolved_symbols.end(),
                     "required runtime symbol was not resolved: " + std::string(required_symbol));
         }
+        require(report.trading_capable && report.missing_trading_symbols.empty(),
+                "fake runtime should expose the complete publisher/reply trading capability");
+        for (const auto required_symbol : Plaza2RuntimeProbe::required_trading_symbols()) {
+            require(std::ranges::find(report.resolved_symbols, required_symbol) != report.resolved_symbols.end(),
+                    "required trading symbol was not resolved: " + std::string(required_symbol));
+        }
+        require(std::ranges::find(Plaza2RuntimeProbe::required_runtime_symbols(), "cg_pub_post") ==
+                    Plaza2RuntimeProbe::required_runtime_symbols().end(),
+                "publisher symbols must remain optional for read-only runtime compatibility");
+        require(std::ranges::find(Plaza2RuntimeProbe::required_trading_symbols(), "cg_pub_post") !=
+                    Plaza2RuntimeProbe::required_trading_symbols().end(),
+                "trading capability must explicitly require publisher symbols");
 
         Plaza2Settings scoped_config_settings = settings;
         scoped_config_settings.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";

@@ -44,10 +44,11 @@ constexpr std::uint32_t kCgPubNeedReply = 1;
 
 constexpr std::uint32_t kCgMsgOpen = 0x100;
 constexpr std::uint32_t kCgMsgClose = 0x101;
-constexpr std::uint32_t kCgMsgData = 0x20;
+constexpr std::uint32_t kCgMsgData = 0x110;
 constexpr std::uint32_t kCgMsgStreamData = 0x120;
 constexpr std::uint32_t kCgMsgTnBegin = 0x200;
 constexpr std::uint32_t kCgMsgTnCommit = 0x210;
+constexpr std::uint32_t kCgMsgP2MqTimeout = 0x1001;
 constexpr std::uint32_t kCgMsgP2replLifenum = 0x1110;
 constexpr std::uint32_t kCgMsgP2replClearDeleted = 0x1111;
 constexpr std::uint32_t kCgMsgP2replOnline = 0x1112;
@@ -74,6 +75,11 @@ constexpr std::array<std::string_view, 15> kRequiredSymbols = {
     "cg_env_open",   "cg_env_close",    "cg_conn_new",      "cg_conn_destroy",  "cg_conn_open",
     "cg_conn_close", "cg_conn_process", "cg_conn_getstate", "cg_lsn_new",       "cg_lsn_destroy",
     "cg_lsn_open",   "cg_lsn_close",    "cg_lsn_getstate",  "cg_lsn_getscheme", "cg_getstr",
+};
+constexpr std::array<std::string_view, 14> kRequiredTradingSymbols = {
+    "cg_conn_process", "cg_lsn_new",    "cg_lsn_destroy", "cg_lsn_open",    "cg_lsn_close",
+    "cg_lsn_getstate", "cg_pub_new",    "cg_pub_open",    "cg_pub_close",   "cg_pub_destroy",
+    "cg_pub_getstate", "cg_pub_msgnew", "cg_pub_post",    "cg_pub_msgfree",
 };
 
 constexpr std::array<std::string_view, 4> kLibraryFilenameCandidates = {
@@ -231,6 +237,7 @@ struct CgMsgData {
     std::uint32_t type;
     std::size_t data_size;
     void* data;
+    std::int64_t owner_id;
     std::size_t msg_index;
     std::uint32_t msg_id;
     const char* msg_name;
@@ -1471,6 +1478,27 @@ struct Plaza2ListenerCallbackState {
             }
             return kCgErrOk;
         }
+        case kCgMsgP2MqTimeout: {
+            if (state->stream_code != kNoStreamCode) {
+                return fail({
+                    .code = Plaza2ErrorCode::DecodeFailed,
+                    .runtime_code = 0,
+                    .message = "CG_MSG_P2MQ_TIMEOUT is only valid on an untyped CGate reply listener",
+                });
+            }
+            // Current MOEX CGate 9.3 cgate.h: timeout uses cg_msg_data_t;
+            // only the originating uint32 user_id is contractually meaningful.
+            const auto* payload = static_cast<const CgMsgData*>(raw_msg);
+            const auto event = Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::Timeout,
+                .stream_code = kNoStreamCode,
+                .user_id = payload->user_id,
+            };
+            if (const auto error = dispatch_listener_event(*state, event); error) {
+                return fail(error);
+            }
+            return kCgErrOk;
+        }
         case kCgMsgStreamData: {
             const auto* payload = static_cast<const CgMsgStreamData*>(raw_msg);
             const auto* plan = find_runtime_message_plan(
@@ -1711,6 +1739,12 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
         auto api = load_runtime_api(*library_path, &resolved_symbols, &library_issues);
         report.runtime_library_loadable = api != nullptr;
         report.resolved_symbols = std::move(resolved_symbols);
+        for (const auto required_symbol : kRequiredTradingSymbols) {
+            if (std::ranges::find(report.resolved_symbols, required_symbol) == report.resolved_symbols.end()) {
+                report.missing_trading_symbols.emplace_back(required_symbol);
+            }
+        }
+        report.trading_capable = report.runtime_library_loadable && report.missing_trading_symbols.empty();
         report.issues.insert(report.issues.end(), library_issues.begin(), library_issues.end());
     }
 
@@ -1783,6 +1817,10 @@ std::span<const std::string_view> Plaza2RuntimeProbe::expected_config_filenames(
 
 std::span<const std::string_view> Plaza2RuntimeProbe::required_runtime_symbols() {
     return kRequiredSymbols;
+}
+
+std::span<const std::string_view> Plaza2RuntimeProbe::required_trading_symbols() {
+    return kRequiredTradingSymbols;
 }
 
 Plaza2Env::~Plaza2Env() {

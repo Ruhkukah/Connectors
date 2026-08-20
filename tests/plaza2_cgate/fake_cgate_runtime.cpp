@@ -38,10 +38,11 @@ constexpr std::uint32_t kStateActive = 2;
 constexpr std::uint32_t kStateError = 3;
 
 constexpr std::uint32_t kCgMsgOpen = 0x100;
-constexpr std::uint32_t kCgMsgData = 0x20;
+constexpr std::uint32_t kCgMsgData = 0x110;
 constexpr std::uint32_t kCgMsgStreamData = 0x120;
 constexpr std::uint32_t kCgMsgTnBegin = 0x200;
 constexpr std::uint32_t kCgMsgTnCommit = 0x210;
+constexpr std::uint32_t kCgMsgP2MqTimeout = 0x1001;
 constexpr std::uint32_t kCgMsgP2replLifenum = 0x1110;
 constexpr std::uint32_t kCgMsgP2replClearDeleted = 0x1111;
 constexpr std::uint32_t kCgMsgP2replOnline = 0x1112;
@@ -142,6 +143,7 @@ struct CgMsgData {
     std::uint32_t type;
     std::size_t data_size;
     void* data;
+    std::int64_t owner_id;
     std::size_t msg_index;
     std::uint32_t msg_id;
     const char* msg_name;
@@ -225,6 +227,7 @@ struct FakeReply {
     std::string message_name;
     std::uint32_t user_id{0};
     std::vector<std::byte> payload;
+    bool timed_out{false};
 };
 
 using CgListenerCallback = std::uint32_t (*)(void* conn, void* listener, void* msg, void* data);
@@ -277,6 +280,11 @@ std::uint32_t configured_result(const char* variable) {
         return kCgErrInvalidArgument;
     }
     return kCgRangeBegin;
+}
+
+bool configured_reply_timeout() {
+    const auto* value = std::getenv("MOEX_FAKE_PUB_REPLY_MODE");
+    return value != nullptr && std::string_view(value) == "timeout";
 }
 
 std::string copy_c_string(const char* value, std::size_t size) {
@@ -952,9 +960,10 @@ std::uint32_t emit_stream_message(FakeListener& listener, const FakeMessageScrip
 
 std::uint32_t emit_reply_message(FakeListener& listener, const FakeReply& reply) {
     CgMsgData message{
-        .type = kCgMsgData,
+        .type = reply.timed_out ? kCgMsgP2MqTimeout : kCgMsgData,
         .data_size = reply.payload.size(),
         .data = const_cast<std::byte*>(reply.payload.data()),
+        .owner_id = 0,
         .msg_index = 0,
         .msg_id = reply.message_id,
         .msg_name = reply.message_name.c_str(),
@@ -1302,6 +1311,7 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
                     : "DelOrderReply",
             .user_id = typed_message->user_id,
             .payload = std::vector<std::byte>(16),
+            .timed_out = configured_reply_timeout(),
         });
     }
     return result;
