@@ -1,12 +1,14 @@
-# PLAZA II order lifecycle V2.1 review
+# PLAZA II order lifecycle V2.1/V2.2 final review
 
 ## Scope and verdict
 
-This correctness pass starts from authoritative PR #25 head
-`ad29ad5685f9cdfc664a14c244c92d9157aa7146` on branch
-`codex/plaza2-order-lifecycle-v2`. It stays inside the existing transport-neutral,
-offline lifecycle design. No new live transport, profile, wrapper, executable,
-script, C ABI, production path, or generic recovery framework was added.
+This document covers the V2.1 correctness pass from authoritative head
+`ad29ad5685f9cdfc664a14c244c92d9157aa7146` and the final V2.2 merge-gate
+correction from head `1e8b100a65da9f03712bf74762cb97fbb239cbfa` on branch
+`codex/plaza2-order-lifecycle-v2`. Both stay inside the existing
+transport-neutral, offline lifecycle design. No new live transport, profile,
+wrapper, executable, script, C ABI, production path, or generic recovery
+framework was added.
 
 The offline acceptance gate passes. No production connection, TEST connection,
 network command, credential, software key, account secret, broker profile, or
@@ -55,6 +57,15 @@ now state-driven:
 - intermediate empty polls do not discard either surface;
 - any deadline without a usable cancellation precondition or terminal state
   invokes reconciliation, even when one evidence surface is already present.
+
+V2.2 makes terminal replication fail closed against inconsistent evidence.
+`Filled` or `Cancelled` establishes `market_safe_terminal=true` only while
+`evidence_consistent=true`. Identity conflict, contradictory ordinary reply
+evidence, or a mismatch retained from before exact-ext recovery converts the
+result to `unresolved_orphan_incident`, keeps `market_safe_terminal=false`, and
+retains every ext/add/cancel/recovery lock. Evidence consistency is sticky:
+once false, no later observation or recovery response can restore it in the
+same run. Restart-time reconciliation is the future clearing mechanism.
 
 DelOrder is still encoded only from the accepted AddOrder reply ID. Public or
 private replication IDs are never guessed into DelOrder. Conflicting ordinary
@@ -109,14 +120,15 @@ Every intermediate persistence failure is retained in memory as
 failure does not stop polling, reconciliation, DelOrder, or exact-ext recovery.
 Results independently report:
 
-- `market_safe_terminal` — replication proved Filled/Cancelled, or the command
-  was definitely not sent/rejected before an order could exist;
+- `market_safe_terminal` — consistent replication proved Filled/Cancelled, or
+  the command was definitely not sent/rejected before an order could exist;
 - `journal_ok` — the final state persisted and no earlier journal write failed;
 - `evidence_consistent` — reply and replication identities/outcomes agree.
 
-Any degraded run retains its ext/add/cancel/recovery identifier locks, including
-after a market-terminal outcome. `orphan_incident_written` is true only when the
-final orphan state was actually published successfully.
+Any degraded run and any inconsistent terminal incident retains its
+ext/add/cancel/recovery identifier locks, including after factual terminal
+replication. `orphan_incident_written` is true only when the final orphan state
+was actually published successfully.
 
 ## Runtime capability gate
 
@@ -141,7 +153,11 @@ The existing lifecycle scenario executable now additionally covers:
 - BBO, freshness, session, refdata, limits, policy, and instrument-context plan
   hash sensitivity;
 - journal failure after Add post, while recording a reply, while publishing a
-  final orphan, and after market-terminal cancellation.
+  final orphan, and after market-terminal cancellation;
+- full fill carrying an identity conflict;
+- cancelled replication contradicting the ordinary AddOrder reply identity;
+- terminal cancellation after exact-ext recovery with pre-existing inconsistent
+  evidence.
 
 The existing fake-runtime adapter test round-trips ordinary `CG_MSG_DATA`, an
 AddOrder `CG_MSG_P2MQ_TIMEOUT` with user ID 704, and a DelOrder timeout with user
@@ -165,13 +181,13 @@ leak detection, plus `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
 ## Delta from authoritative V2 head
 
-| Metric | `ad29ad5685` | V2.1 final | Delta |
+| Metric | `ad29ad5685` | V2.1/V2.2 final | Delta |
 |---|---:|---:|---:|
 | CMake targets | 226 | 226 | 0 |
 | CTests | 154 | 154 | 0 |
 | Tracked files changed | 0 | 10 | +10 |
-| Lines added | 0 | 1,135 | +1,135 |
-| Lines removed | 0 | 377 | +377 |
+| Lines added | 0 | 1,242 | +1,242 |
+| Lines removed | 0 | 380 | +380 |
 
 No CMake target or CTest was added; existing scenario/runtime targets were
 extended as requested.
@@ -191,4 +207,6 @@ extended as requested.
    before any one-order TEST exercise.
 
 Stop here. No VPS run, network session, live TEST submission, production work,
-or new protocol phase is part of V2.1.
+or new protocol phase is part of V2.1/V2.2. With the offline gates above green,
+PR #25 is ready for merge; this does not authorize the future live TEST
+transport.

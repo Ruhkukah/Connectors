@@ -290,14 +290,14 @@ class RunJournal {
                 std::string& error) {
         append_state(state);
         final_state_ = state;
-        market_safe_terminal_ = market_safe_terminal;
+        market_safe_terminal_ = market_safe_terminal && evidence_consistent;
         evidence_consistent_ = evidence_consistent;
         orphan_incident_ = orphan;
         if (!persist(error)) {
             mark_degraded(error);
             return false;
         }
-        if (market_safe_terminal && !degraded_) {
+        if (market_safe_terminal_ && !degraded_) {
             release_locks();
         }
         return true;
@@ -380,7 +380,8 @@ class RunJournal {
         out << "  \"market_safe_terminal\": " << (market_safe_terminal_ ? "true" : "false") << ",\n";
         out << "  \"evidence_consistent\": " << (evidence_consistent_ ? "true" : "false") << ",\n";
         out << "  \"journal_degraded\": " << (degraded_ ? "true" : "false") << ",\n";
-        out << "  \"finished\": " << (market_safe_terminal_ && !degraded_ ? "true" : "false") << "\n";
+        out << "  \"finished\": " << (market_safe_terminal_ && evidence_consistent_ && !degraded_ ? "true" : "false")
+            << "\n";
         out << "}\n";
         return out.str();
     }
@@ -588,6 +589,14 @@ void reconcile_once(const OrderLifecycleConfig& config, OrderLifecycleTransport&
 OrderLifecycleResult finish_result(OrderLifecycleResult result, RunJournal& journal, OrderLifecycleState state,
                                    bool market_safe_terminal, bool orphan, std::string message,
                                    const LifecycleEvidence& evidence) {
+    const bool inconsistent_replication_terminal =
+        !evidence.consistent && (state == OrderLifecycleState::Filled || state == OrderLifecycleState::Cancelled);
+    if (inconsistent_replication_terminal) {
+        state = OrderLifecycleState::UnresolvedOrphanIncident;
+        market_safe_terminal = false;
+        orphan = true;
+        message += "; terminal replication is not releasable while lifecycle evidence is inconsistent";
+    }
     result.state = state;
     result.market_safe_terminal = market_safe_terminal;
     result.evidence_consistent = evidence.consistent;

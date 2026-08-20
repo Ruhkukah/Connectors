@@ -780,6 +780,80 @@ std::filesystem::path journal_temp_path(const std::filesystem::path& root, std::
     return root / run_id / "journal.json.tmp";
 }
 
+void require_persisted_inconsistent_terminal_incident(const std::filesystem::path& root,
+                                                      const OrderLifecycleConfig& config,
+                                                      const OrderLifecycleResult& result) {
+    require(result.state == OrderLifecycleState::UnresolvedOrphanIncident && !result.market_safe_terminal &&
+                !result.evidence_consistent && !result.ok && result.orphan_incident_written,
+            "inconsistent terminal replication must become a persisted unresolved incident");
+    require(std::filesystem::exists(root / "active" / ("ext_" + std::to_string(config.ext_id))) &&
+                std::filesystem::exists(root / "active" / ("user_" + std::to_string(config.add_user_id))) &&
+                std::filesystem::exists(root / "active" / ("user_" + std::to_string(config.cancel_user_id))) &&
+                std::filesystem::exists(root / "active" / ("user_" + std::to_string(config.recovery_user_id))),
+            "inconsistent terminal incident must retain every ext/user lock");
+    const auto journal_text = read_text(result.journal_path);
+    require(journal_text.find("\"final_state\": \"unresolved_orphan_incident\"") != std::string::npos &&
+                journal_text.find("\"market_safe_terminal\": false") != std::string::npos &&
+                journal_text.find("\"evidence_consistent\": false") != std::string::npos,
+            "final journal must persist the unresolved, unsafe, inconsistent verdict");
+}
+
+void test_full_fill_with_identity_conflict_is_unresolved() {
+    const auto root = make_temp_root("filled_identity_conflict");
+    auto config = base_config(root, "filled-identity-conflict");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    auto filled = observation(OrderLifecycleState::Filled, 1, 1, 0);
+    filled.identity_conflict = true;
+    transport.post_results = {posted()};
+    transport.poll_results = {{.replies = {accepted_add()}, .observations = {filled}}};
+    const auto result = run_script(config, transport, clock);
+    require_persisted_inconsistent_terminal_incident(root, config, result);
+    std::filesystem::remove_all(root);
+}
+
+void test_cancelled_with_contradictory_add_identity_is_unresolved() {
+    const auto root = make_temp_root("cancelled_reply_conflict");
+    auto config = base_config(root, "cancelled-reply-conflict");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted()};
+    transport.poll_results = {
+        {.replies = {accepted_add(9002)}, .observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    const auto result = run_script(config, transport, clock);
+    require_persisted_inconsistent_terminal_incident(root, config, result);
+    std::filesystem::remove_all(root);
+}
+
+void test_terminal_after_exact_ext_recovery_with_prior_inconsistency_is_unresolved() {
+    const auto root = make_temp_root("recovery_terminal_conflict");
+    auto config = base_config(root, "recovery-terminal-conflict");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    const auto contradictory_rejection = OrderReplyObservation{
+        .user_id = config.add_user_id,
+        .command_kind = Plaza2TradeCommandKind::AddOrder,
+        .accepted = false,
+        .code = 14,
+    };
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.replies = {contradictory_rejection}, .observations = {observation(OrderLifecycleState::Working)}},
+        {.deadline_reached = true},
+        {.replies = {recovery_reply(true)}, .observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    transport.reconciliation_results = {{.observations = {observation(OrderLifecycleState::Working)}}};
+    const auto result = run_script(config, transport, clock);
+    require(transport.commands.size() == 2 && transport.recovery_posts[1],
+            "pre-existing inconsistency without an AddOrder ID should use exactly one exact-ext recovery");
+    require_persisted_inconsistent_terminal_incident(root, config, result);
+    std::filesystem::remove_all(root);
+}
+
 void test_journal_failure_after_successful_add_post() {
     const auto root = make_temp_root("journal_after_add");
     auto config = base_config(root, "journal-after-add");
@@ -1046,6 +1120,9 @@ int main() {
         test_polling_failure_after_possible_submission();
         test_source_provenance_scenarios();
         test_duplicate_ext_id_refusal_and_orphan_journal();
+        test_full_fill_with_identity_conflict_is_unresolved();
+        test_cancelled_with_contradictory_add_identity_is_unresolved();
+        test_terminal_after_exact_ext_recovery_with_prior_inconsistency_is_unresolved();
         test_journal_failure_after_successful_add_post();
         test_journal_reply_recording_failure();
         test_final_orphan_journal_failure_is_not_reported_as_written();
