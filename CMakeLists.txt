@@ -218,6 +218,15 @@ set_target_properties(moex_plaza2_aggr20_md_test_runner PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}"
     OUTPUT_NAME "moex_plaza2_aggr20_md_test_runner")
 
+add_executable(moex_plaza2_order_lifecycle_runner
+    apps/plaza2_order_lifecycle_runner.cpp)
+target_link_libraries(moex_plaza2_order_lifecycle_runner
+    PRIVATE
+        moex_plaza2_trade_order_lifecycle)
+target_compile_features(moex_plaza2_order_lifecycle_runner PRIVATE cxx_std_20)
+set_target_properties(moex_plaza2_order_lifecycle_runner PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}")
+
 add_executable(moex_plaza2_twime_integrated_test_runner
     apps/plaza2_twime_integrated_test_runner.cpp)
 target_link_libraries(moex_plaza2_twime_integrated_test_runner
@@ -746,6 +755,18 @@ foreach(test_name IN ITEMS
         NAME ${test_name}
         COMMAND "${MOEX_BUILD_ROOT}/tests/${test_name}")
 endforeach()
+
+add_executable(plaza2_order_lifecycle_scenarios_test
+    tests/plaza2_trade/plaza2_order_lifecycle_scenarios_test.cpp)
+target_link_libraries(plaza2_order_lifecycle_scenarios_test
+    PRIVATE
+        moex_plaza2_trade_order_lifecycle)
+target_compile_features(plaza2_order_lifecycle_scenarios_test PRIVATE cxx_std_20)
+set_property(TARGET plaza2_order_lifecycle_scenarios_test
+    PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME plaza2_order_lifecycle_scenarios_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_order_lifecycle_scenarios_test")
 
 add_executable(plaza2_generated_metadata_test
     tests/plaza2_cgate/plaza2_generated_metadata_test.cpp)

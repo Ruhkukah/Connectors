@@ -2,6 +2,7 @@
 
 #include "plaza2_generated_metadata.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -128,8 +129,10 @@ struct Plaza2RuntimeProbeReport {
     bool runtime_root_present{false};
     bool runtime_library_present{false};
     bool runtime_library_loadable{false};
+    bool trading_capable{false};
     bool scheme_file_present{false};
     bool config_dir_present{false};
+    std::vector<std::string> missing_trading_symbols;
 };
 
 enum class Plaza2DecodedValueKind : std::uint8_t {
@@ -172,6 +175,10 @@ struct Plaza2ListenerEvent {
     generated::StreamCode stream_code{kNoStreamCode};
     generated::TableCode table_code{kNoTableCode};
     std::span<const Plaza2DecodedFieldValue> fields{};
+    std::int32_t message_id{0};
+    std::string_view message_name{};
+    std::uint32_t user_id{0};
+    std::span<const std::byte> raw_payload{};
     std::uint64_t unsigned_value{0};
     std::int64_t signed_value{0};
     std::string_view text_value{};
@@ -190,12 +197,15 @@ class Plaza2ListenerEventHandler {
 [[nodiscard]] std::string make_plaza2_application_name(std::string_view prefix, std::string_view scope,
                                                        std::uint32_t instance);
 [[nodiscard]] Plaza2Error translate_plaza2_result(std::string_view operation, std::uint32_t runtime_code);
+[[nodiscard]] std::string plaza2_sha256_hex(std::span<const std::byte> bytes);
+[[nodiscard]] std::string plaza2_sha256_hex(std::string_view text);
 
 class Plaza2RuntimeProbe {
   public:
     [[nodiscard]] static Plaza2RuntimeProbeReport probe(const Plaza2Settings& settings);
     [[nodiscard]] static std::span<const std::string_view> expected_config_filenames(Plaza2Environment environment);
     [[nodiscard]] static std::span<const std::string_view> required_runtime_symbols();
+    [[nodiscard]] static std::span<const std::string_view> required_trading_symbols();
 };
 
 struct Plaza2RuntimeSharedState;
@@ -244,6 +254,7 @@ class Plaza2Connection {
 
   private:
     friend class Plaza2Listener;
+    friend class Plaza2Publisher;
 
     std::shared_ptr<Plaza2RuntimeSharedState> shared_;
     void* handle_{nullptr};
@@ -273,6 +284,48 @@ class Plaza2Listener {
     std::shared_ptr<Plaza2RuntimeSharedState> shared_;
     void* handle_{nullptr};
     std::unique_ptr<Plaza2ListenerCallbackState> callback_state_;
+};
+
+enum class Plaza2SubmissionCertainty : std::uint8_t {
+    DefinitelyNotSent = 0,
+    PossiblySent = 1,
+    Posted = 2,
+};
+
+struct Plaza2PublisherMessageResult {
+    Plaza2SubmissionCertainty certainty{Plaza2SubmissionCertainty::DefinitelyNotSent};
+    Plaza2Error validation_error;
+    Plaza2Error allocation_error;
+    Plaza2Error post_error;
+    Plaza2Error free_error;
+    std::size_t runtime_payload_size{0};
+    bool post_invoked{false};
+};
+
+class Plaza2Publisher {
+  public:
+    Plaza2Publisher() = default;
+    ~Plaza2Publisher();
+
+    Plaza2Publisher(Plaza2Publisher&&) noexcept = default;
+    Plaza2Publisher& operator=(Plaza2Publisher&&) noexcept = default;
+
+    Plaza2Publisher(const Plaza2Publisher&) = delete;
+    Plaza2Publisher& operator=(const Plaza2Publisher&) = delete;
+
+    [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, std::string_view settings);
+    [[nodiscard]] Plaza2Error open(std::string_view settings);
+    [[nodiscard]] Plaza2PublisherMessageResult post_by_message_name(std::string_view message_name,
+                                                                    std::span<const std::byte> payload,
+                                                                    std::uint32_t user_id, bool need_reply);
+    [[nodiscard]] Plaza2Error close();
+    [[nodiscard]] Plaza2Error destroy();
+    [[nodiscard]] Plaza2Error state(std::uint32_t& out_state) const;
+    [[nodiscard]] bool is_created() const noexcept;
+
+  private:
+    std::shared_ptr<Plaza2RuntimeSharedState> shared_;
+    void* handle_{nullptr};
 };
 
 } // namespace moex::plaza2::cgate
