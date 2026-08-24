@@ -134,6 +134,7 @@ jobs:
           plaza2_runtime_adapter_test
           plaza2_runtime_probe_test
           plaza2_trade_no_send_guard_test
+          plaza2_trade_transport_scenarios_test
 
       - name: Run critical component sanitizer tests
         env:

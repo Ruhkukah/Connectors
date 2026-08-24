@@ -29,6 +29,13 @@ struct Plaza2TestTradeStreamConfig {
 // operator-supplied age; those values are captured in an execution receipt.
 struct Plaza2AuthorizedOrderIntent {
     std::string sha256;
+    // Optional persisted canonical JSON.  When present it must equal the
+    // recomputed representation below; the transport never trusts the hash
+    // without recomputing the same fields.
+    std::string canonical_json;
+    std::string profile_id;
+    std::string profile_fingerprint;
+    std::string environment{"test"};
     std::string add_payload_sha256;
     std::string recovery_payload_sha256;
     std::int64_t isin_id{0};
@@ -40,10 +47,20 @@ struct Plaza2AuthorizedOrderIntent {
     std::uint32_t add_user_id{0};
     std::uint32_t cancel_user_id{0};
     std::uint32_t recovery_user_id{0};
+    std::int8_t instrument_mask{1};
+    // Raw broker/client values remain in memory only for payload binding. The
+    // canonical intent records their SHA-256 fingerprints instead.
+    std::string broker_code;
+    std::string client_code;
+    std::string broker_code_sha256;
+    std::string client_code_sha256;
     std::string policy_version;
     std::string policy_sha256;
     std::uint32_t max_distance_ticks{0};
 };
+
+[[nodiscard]] std::string canonical_authorized_order_intent_json(const Plaza2AuthorizedOrderIntent& intent);
+[[nodiscard]] std::string authorized_order_intent_sha256(const Plaza2AuthorizedOrderIntent& intent);
 
 struct Plaza2ExecutionSafetyReceipt {
     std::string authorized_intent_sha256;
@@ -52,6 +69,18 @@ struct Plaza2ExecutionSafetyReceipt {
     std::optional<plaza2::private_state::InstrumentSnapshot> instrument;
     std::optional<plaza2::private_state::TradingSessionSnapshot> session;
     std::optional<plaza2::private_state::LimitSnapshot> limit;
+    std::string runtime_compatibility;
+    std::string runtime_scheme_sha256;
+    std::size_t runtime_scheme_fatal_drift_count{0};
+    std::size_t runtime_scheme_warning_drift_count{0};
+    bool aggr_online{false};
+    bool aggr_snapshot_complete{false};
+    std::string limit_fingerprint_sha256;
+    std::uint64_t limit_source_commit_sequence{0};
+    std::optional<plaza2::private_state::PositionSnapshot> position;
+    std::string position_fingerprint_sha256;
+    std::uint64_t position_source_commit_sequence{0};
+    std::string private_streams_json;
     std::chrono::milliseconds local_age{0};
     bool passive_non_marketable{false};
     bool bbo_distance_allowed{false};
@@ -71,6 +100,9 @@ struct Plaza2TestSessionHostConfig {
     std::string connection_settings;
     std::string connection_open_settings;
     std::vector<Plaza2TestTradeStreamConfig> private_streams;
+    // Current-day/session status service streams are supplementary to the
+    // exact five private replication streams above.
+    std::vector<Plaza2TestTradeStreamConfig> status_streams;
     Plaza2TestTradeStreamConfig aggr20_stream;
     std::string publisher_settings;
     std::string publisher_open_settings;
@@ -97,6 +129,8 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] const plaza2::cgate::Plaza2RuntimeProbeReport& probe_report() const noexcept;
     [[nodiscard]] const plaza2::private_state::Plaza2PrivateStateProjector& private_state() const noexcept;
     [[nodiscard]] const plaza2::cgate::Plaza2Aggr20BookProjector& aggr20_projector() const noexcept;
+    [[nodiscard]] bool aggr_online() const noexcept;
+    [[nodiscard]] bool aggr_snapshot_complete() const noexcept;
     [[nodiscard]] bool p2mqreply_open() const noexcept;
     [[nodiscard]] bool publisher_open() const noexcept;
 

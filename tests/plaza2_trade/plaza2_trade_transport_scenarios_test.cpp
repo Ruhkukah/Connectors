@@ -3,6 +3,7 @@
 #include "plaza2_runtime_test_support.hpp"
 
 #include <cstdlib>
+#include <array>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -72,17 +73,25 @@ Plaza2TestTradeTransportConfig make_config(const moex::plaza2::test::RuntimeFixt
     config.max_aggr20_age = std::chrono::seconds(5);
     config.authorized_intent = Plaza2AuthorizedOrderIntent{
         .sha256 = std::string(64, 'a'),
+        .profile_id = "offline-plaza2-test",
+        .profile_fingerprint = std::string(64, 'e'),
+        .environment = "test",
         .add_payload_sha256 = {},
         .recovery_payload_sha256 = {},
         .isin_id = 1001,
         .base_contract_code = "RTS",
         .side = Plaza2TradeSide::Sell,
-        .price = "103.00",
+        .price = "103000",
         .quantity = 1,
         .ext_id = 79,
         .add_user_id = 701,
         .cancel_user_id = 702,
         .recovery_user_id = 703,
+        .instrument_mask = 1,
+        .broker_code = "BRK1",
+        .client_code = "C01",
+        .broker_code_sha256 = cgate::plaza2_sha256_hex("BRK1"),
+        .client_code_sha256 = cgate::plaza2_sha256_hex("C01"),
         .policy_version = "offline-v1",
         .policy_sha256 = std::string(64, 'd'),
         .max_distance_ticks = 4,
@@ -93,9 +102,9 @@ Plaza2TestTradeTransportConfig make_config(const moex::plaza2::test::RuntimeFixt
     config.target_side = Plaza2TradeSide::Sell;
     config.target_max_distance_ticks = 4;
     config.observation_ext_id = 79;
-    config.observation_client_code = "CL001";
+    config.observation_client_code = "BRK1C01";
     config.observation_side = Plaza2TradeSide::Sell;
-    config.observation_quantity = 7;
+    config.observation_quantity = 1;
     return config;
 }
 
@@ -106,7 +115,7 @@ AddOrderRequest add_request() {
     request.client_code = "C01";
     request.dir = Plaza2TradeSide::Sell;
     request.type = Plaza2TradeOrderType::Limit;
-    request.amount = 7;
+    request.amount = 1;
     request.price = "103000";
     request.comment = "offline";
     request.ext_id = 79;
@@ -133,6 +142,8 @@ Plaza2TestTradeTransportConfig prepared_config(const moex::plaza2::test::Runtime
     auto config = make_config(fixture);
     config.authorized_intent->add_payload_sha256 = cgate::plaza2_sha256_hex(add.payload);
     config.authorized_intent->recovery_payload_sha256 = cgate::plaza2_sha256_hex(recovery.payload);
+    config.authorized_intent->canonical_json = canonical_authorized_order_intent_json(*config.authorized_intent);
+    config.authorized_intent->sha256 = authorized_order_intent_sha256(*config.authorized_intent);
     return config;
 }
 
@@ -219,7 +230,7 @@ OrderLifecycleResult run_concrete_controller_case(const moex::plaza2::test::Runt
                         order_mode != nullptr && std::string_view(order_mode) == "cancel" ? "1" : nullptr);
     ScopedEnv conflict("MOEX_FAKE_IDENTITY_CONFLICT", identity_conflict ? "1" : nullptr);
     ScopedEnv reply_id("MOEX_FAKE_PUB_REPLY_ORDER_ID", reply_order_id);
-    ScopedEnv client_code("MOEX_FAKE_CLIENT_CODE", "C01");
+    ScopedEnv client_code("MOEX_FAKE_CLIENT_CODE", "BRK1C01");
     ScopedEnv cancel_after_del_env("MOEX_FAKE_CANCEL_AFTER_DEL", cancel_after_del ? "1" : nullptr);
 
     const Plaza2TradeCodec codec;
@@ -239,6 +250,9 @@ OrderLifecycleResult run_concrete_controller_case(const moex::plaza2::test::Runt
     transport_config.authorized_intent->add_payload_sha256 = cgate::plaza2_sha256_hex(dry.add_command.payload);
     transport_config.authorized_intent->recovery_payload_sha256 =
         cgate::plaza2_sha256_hex(dry.exact_ext_id_recovery_command.payload);
+    transport_config.authorized_intent->canonical_json =
+        canonical_authorized_order_intent_json(*transport_config.authorized_intent);
+    transport_config.authorized_intent->sha256 = authorized_order_intent_sha256(*transport_config.authorized_intent);
     transport_config.observation_quantity = 1;
     transport_config.observation_client_code = config.client_code;
     transport_config.observation_side = config.side;
@@ -261,13 +275,11 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
     const auto add = encoded_add(codec);
     const auto recovery = encoded_recovery(codec);
     const std::vector<std::pair<const char*, std::string_view>> cases = {
-        {"MOEX_FAKE_AGGR_ONE_SIDED", "two-sided"},
-        {"MOEX_FAKE_MISSING_INSTRUMENT", "absent"},
-        {"MOEX_FAKE_MISSING_SESSION", "session"},
-        {"MOEX_FAKE_NONTRADABLE_SESSION", "session"},
-        {"MOEX_FAKE_MISSING_LIMITS", "limit"},
-        {"MOEX_FAKE_WRONG_LIMIT_CLIENT", "limit"},
-        {"MOEX_FAKE_DISABLE_REPLY_LISTENER", "cg_lsn_new"},
+        {"MOEX_FAKE_AGGR_ONE_SIDED", "two-sided"},     {"MOEX_FAKE_MISSING_INSTRUMENT", "absent"},
+        {"MOEX_FAKE_MISSING_SESSION", "session"},      {"MOEX_FAKE_NONTRADABLE_SESSION", "session"},
+        {"MOEX_FAKE_SCHEDULED_SESSION", "session"},    {"MOEX_FAKE_SUSPENDED_SESSION", "session"},
+        {"MOEX_FAKE_COMPLETED_SESSION", "session"},    {"MOEX_FAKE_MISSING_LIMITS", "limit"},
+        {"MOEX_FAKE_WRONG_LIMIT_CLIENT", "limit"},     {"MOEX_FAKE_DISABLE_REPLY_LISTENER", "cg_lsn_new"},
         {"MOEX_FAKE_DISABLE_PUBLISHER", "cg_pub_new"},
     };
     for (const auto& [variable, expected] : cases) {
@@ -298,6 +310,16 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
         expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
                         contains_text(result.validation_error.message, "starting position"),
                     "non-zero starting position must fail closed");
+    }
+    {
+        ScopedEnv missing_position("MOEX_FAKE_MISSING_POSITION", "1");
+        auto config = prepared_config(fixture, add, recovery);
+        config.require_zero_starting_position = true;
+        Plaza2TestTradeTransport transport(std::move(config));
+        const auto result = transport.post(add, 701);
+        expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        contains_text(result.validation_error.message, "starting position"),
+                    "missing starting position must not be treated as zero");
     }
     {
         const auto blocker = fixture.root / "receipt-blocker";
@@ -333,6 +355,99 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
         const auto result = transport.post(distant_add, 701);
         expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !result.post_invoked,
                     "out-of-distance authorized price must be rejected before AddOrder");
+    }
+}
+
+void test_authorized_payload_binding(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
+    const Plaza2TradeCodec codec;
+    const auto recovery = encoded_recovery(codec);
+    const auto expect_not_sent = [&](Plaza2TestTradeTransportConfig config, const Plaza2TradeEncodedCommand& command,
+                                     std::string_view label) {
+        Plaza2TestTradeTransport transport(std::move(config));
+        const auto result = transport.post(command, 701);
+        expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !result.post_invoked,
+                    label);
+    };
+
+    {
+        auto request = add_request();
+        request.amount = 7;
+        const auto command = codec.encode(Plaza2TradeCommandRequest{request});
+        auto config = prepared_config(fixture, command, recovery);
+        expect_not_sent(std::move(config), command,
+                        "authorized quantity-one intent must reject a seven-contract payload");
+    }
+    {
+        auto request = add_request();
+        request.dir = Plaza2TradeSide::Buy;
+        const auto command = codec.encode(Plaza2TradeCommandRequest{request});
+        auto config = prepared_config(fixture, command, recovery);
+        expect_not_sent(std::move(config), command, "authorized sell intent must reject a buy payload");
+    }
+    {
+        auto request = add_request();
+        request.price = "103250";
+        const auto command = codec.encode(Plaza2TradeCommandRequest{request});
+        auto config = prepared_config(fixture, command, recovery);
+        expect_not_sent(std::move(config), command, "authorized exact price must reject a different payload price");
+    }
+    {
+        auto request = add_request();
+        request.isin_id = 2002;
+        const auto command = codec.encode(Plaza2TradeCommandRequest{request});
+        auto config = prepared_config(fixture, command, recovery);
+        expect_not_sent(std::move(config), command, "authorized target isin must reject a different payload isin");
+    }
+    {
+        auto request = add_request();
+        request.price = "104250";
+        const auto command = codec.encode(Plaza2TradeCommandRequest{request});
+        auto config = prepared_config(fixture, command, recovery);
+        config.authorized_intent->price = request.price.value();
+        config.target_price = request.price.value();
+        config.target_max_distance_ticks = 1000;
+        config.authorized_intent->canonical_json = canonical_authorized_order_intent_json(*config.authorized_intent);
+        config.authorized_intent->sha256 = authorized_order_intent_sha256(*config.authorized_intent);
+        expect_not_sent(std::move(config), command, "transport distance override must not weaken authorized policy");
+    }
+    {
+        auto config = prepared_config(fixture, encoded_add(codec), recovery);
+        config.authorized_intent->sha256 = std::string(64, 'a');
+        const auto command = encoded_add(codec);
+        expect_not_sent(std::move(config), command, "arbitrary intent SHA must not authorize an AddOrder");
+    }
+}
+
+void test_replication_epoch_gates(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
+    const Plaza2TradeCodec codec;
+    const auto add = encoded_add(codec);
+    const auto recovery = encoded_recovery(codec);
+    const std::array<std::pair<const char*, std::string_view>, 4> cases = {
+        std::pair{"MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY", "private close"},
+        std::pair{"MOEX_FAKE_AGGR_CLOSE_AFTER_READY", "AGGR20 close"},
+        std::pair{"MOEX_FAKE_PRIVATE_LIFENUM_AFTER_READY", "private LifeNum"},
+        std::pair{"MOEX_FAKE_AGGR_LIFENUM_AFTER_READY", "AGGR20 LifeNum"},
+    };
+    for (const auto& [variable, label] : cases) {
+        ScopedEnv scenario(variable, "1");
+        auto config = prepared_config(fixture, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(config));
+        const auto first = transport.post(add, 701);
+        expect_case(first.certainty == cgate::Plaza2SubmissionCertainty::Posted,
+                    std::string(label) + " fixture must initially reach the fake ready state");
+        static_cast<void>(transport.poll(std::chrono::steady_clock::now() + std::chrono::seconds(1)));
+        const auto after_epoch = transport.post(add, 701);
+        expect_case(after_epoch.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        !after_epoch.post_invoked,
+                    std::string(label) + " must invalidate AddOrder readiness");
+        static_cast<void>(transport.host().stop());
+        {
+            ScopedEnv restored(variable, nullptr);
+            const auto reopened = transport.post(add, 701);
+            expect_case(reopened.certainty == cgate::Plaza2SubmissionCertainty::Posted && reopened.post_invoked,
+                        std::string(label) + " must regain readiness only after a complete fresh snapshot");
+            static_cast<void>(transport.host().stop());
+        }
     }
 }
 
@@ -509,6 +624,7 @@ int main(int argc, char** argv) {
             materialize_runtime_fixture(root, std::filesystem::path(argv[1]), cgate::Plaza2Environment::Test,
                                         build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test"));
         ::setenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME", "1", 1);
+        ::setenv("MOEX_FAKE_CLIENT_CODE", "BRK1C01", 1);
         ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
 
         const Plaza2TradeCodec codec;
@@ -522,6 +638,10 @@ int main(int argc, char** argv) {
         require(recovery.validation.ok() && recovery.payload.size() == 49,
                 "exact-ext recovery fixture must use reviewed payload size");
         transport_config.authorized_intent->recovery_payload_sha256 = cgate::plaza2_sha256_hex(recovery.payload);
+        transport_config.authorized_intent->canonical_json =
+            canonical_authorized_order_intent_json(*transport_config.authorized_intent);
+        transport_config.authorized_intent->sha256 =
+            authorized_order_intent_sha256(*transport_config.authorized_intent);
         Plaza2TestTradeTransport transport(std::move(transport_config));
         const auto posted = transport.post(add, 701);
         require(posted.certainty == cgate::Plaza2SubmissionCertainty::Posted && posted.post_invoked,
@@ -531,7 +651,9 @@ int main(int argc, char** argv) {
                 "AddOrder must persist execution-safety receipt before posting");
         require(transport.last_execution_safety_receipt().has_value() &&
                     transport.last_execution_safety_receipt()->passive_non_marketable &&
-                    transport.last_execution_safety_receipt()->bbo_distance_allowed,
+                    transport.last_execution_safety_receipt()->bbo_distance_allowed &&
+                    transport.last_execution_safety_receipt()->aggr_online &&
+                    transport.last_execution_safety_receipt()->aggr_snapshot_complete,
                 "execution-safety receipt must record passive and BBO-distance checks");
 
         const auto first_poll = transport.poll(std::chrono::steady_clock::now() + std::chrono::seconds(1));
@@ -567,6 +689,8 @@ int main(int argc, char** argv) {
         require(transport.host().stop().code == cgate::Plaza2ErrorCode::None, "TEST host must stop cleanly");
 
         test_target_preflight_refusals(fixture);
+        test_authorized_payload_binding(fixture);
+        test_replication_epoch_gates(fixture);
         test_reply_bridge_fail_closed(fixture);
         test_multi_instrument_and_terminal_controller(fixture);
 

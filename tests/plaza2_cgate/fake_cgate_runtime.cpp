@@ -38,6 +38,7 @@ constexpr std::uint32_t kStateActive = 2;
 constexpr std::uint32_t kStateError = 3;
 
 constexpr std::uint32_t kCgMsgOpen = 0x100;
+constexpr std::uint32_t kCgMsgClose = 0x101;
 constexpr std::uint32_t kCgMsgData = 0x110;
 constexpr std::uint32_t kCgMsgStreamData = 0x120;
 constexpr std::uint32_t kCgMsgTnBegin = 0x200;
@@ -251,6 +252,7 @@ struct FakeConnection {
     std::vector<FakeListener*> listeners;
     std::vector<FakeReply> pending_replies;
     bool script_emitted{false};
+    bool liveness_event_emitted{false};
 };
 
 struct FakePublisher {
@@ -470,7 +472,7 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .signed_value = 1700003600},
                         {.field_code = FieldCode::kFortsRefdataReplSessionState,
                          .kind = SignedInteger,
-                         .signed_value = 2},
+                         .signed_value = 1},
                     },
             },
             {
@@ -505,13 +507,66 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                         {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId,
                          .kind = SignedInteger,
                          .signed_value = 4},
-                        {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsMinStep, .kind = Text, .text = "10"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsMinStep, .kind = Text, .text = "250"},
                         {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsStepPrice,
                          .kind = Text,
                          .text = "12.5"},
                         {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsSettlementPrice,
                          .kind = Text,
                          .text = "105000.5"},
+                    },
+            },
+            {
+                .table_code = kFortsRefdataReplFutSessContents,
+                .rev = 3,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsReplId,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 3101},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsReplRev,
+                         .kind = SignedInteger,
+                         .signed_value = 3},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsReplAct,
+                         .kind = SignedInteger,
+                         .signed_value = 0},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsSessId,
+                         .kind = SignedInteger,
+                         .signed_value = 321},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsIsinId,
+                         .kind = SignedInteger,
+                         .signed_value = 1001},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsShortIsin,
+                         .kind = Text,
+                         .text = "RIH6"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsIsin,
+                         .kind = Text,
+                         .text = "RTS-6.26"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsName,
+                         .kind = Text,
+                         .text = "RTS Jun 2026"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsBaseContractCode,
+                         .kind = Text,
+                         .text = "RTS"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsRoundto,
+                         .kind = SignedInteger,
+                         .signed_value = 2},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsMinStep, .kind = Text, .text = "250"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsLotVolume,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsTradeModeId,
+                         .kind = SignedInteger,
+                         .signed_value = 4},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsState,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsGroupMask,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsTradePeriodAccess,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
                     },
             },
             {
@@ -525,6 +580,56 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                         {.field_code = FieldCode::kFortsRefdataReplInstr2matchingMapMatchingId,
                          .kind = SignedInteger,
                          .signed_value = 3},
+                    },
+            },
+        };
+    case kFortsSessionstateRepl:
+        return {
+            {
+                .table_code = kFortsSessionstateReplSessionState,
+                .rev = 1,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsSessionstateReplSessionStateReplId,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 4101},
+                        {.field_code = FieldCode::kFortsSessionstateReplSessionStateReplRev,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsSessionstateReplSessionStateReplAct,
+                         .kind = SignedInteger,
+                         .signed_value = 0},
+                        {.field_code = FieldCode::kFortsSessionstateReplSessionStateSessId,
+                         .kind = SignedInteger,
+                         .signed_value = 321},
+                        {.field_code = FieldCode::kFortsSessionstateReplSessionStatePublicState,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                    },
+            },
+        };
+    case kFortsInstrumentstateRepl:
+        return {
+            {
+                .table_code = kFortsInstrumentstateReplInstrumentState,
+                .rev = 1,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsInstrumentstateReplInstrumentStateReplId,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 4201},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplInstrumentStateReplRev,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplInstrumentStateReplAct,
+                         .kind = SignedInteger,
+                         .signed_value = 0},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplInstrumentStateIsinId,
+                         .kind = SignedInteger,
+                         .signed_value = 1001},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplInstrumentStatePublicState,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
                     },
             },
         };
@@ -850,19 +955,43 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
         }
     } else if (stream_code == StreamCode::kFortsRefdataRepl) {
         if (fake_flag("MOEX_FAKE_MISSING_INSTRUMENT")) {
-            std::erase_if(script,
-                          [](const auto& message) { return message.table_code == kFortsRefdataReplFutInstruments; });
+            std::erase_if(script, [](const auto& message) {
+                return message.table_code == kFortsRefdataReplFutInstruments ||
+                       message.table_code == kFortsRefdataReplFutSessContents;
+            });
         }
+    } else if (stream_code == StreamCode::kFortsSessionstateRepl) {
         if (fake_flag("MOEX_FAKE_MISSING_SESSION")) {
-            std::erase_if(script, [](const auto& message) { return message.table_code == kFortsRefdataReplSession; });
-        }
-        if (fake_flag("MOEX_FAKE_NONTRADABLE_SESSION")) {
             for (auto& message : script) {
-                if (message.table_code != kFortsRefdataReplSession) {
-                    continue;
+                if (auto* sess = find_field(message, kFortsSessionstateReplSessionStateSessId)) {
+                    sess->signed_value = 999;
                 }
-                if (auto* state = find_field(message, kFortsRefdataReplSessionState)) {
+            }
+        }
+        if (fake_flag("MOEX_FAKE_SCHEDULED_SESSION") || fake_flag("MOEX_FAKE_NONTRADABLE_SESSION")) {
+            for (auto& message : script) {
+                if (auto* state = find_field(message, kFortsSessionstateReplSessionStatePublicState)) {
                     state->signed_value = 0;
+                }
+            }
+        } else if (fake_flag("MOEX_FAKE_SUSPENDED_SESSION")) {
+            for (auto& message : script) {
+                if (auto* state = find_field(message, kFortsSessionstateReplSessionStatePublicState)) {
+                    state->signed_value = 2;
+                }
+            }
+        } else if (fake_flag("MOEX_FAKE_COMPLETED_SESSION")) {
+            for (auto& message : script) {
+                if (auto* state = find_field(message, kFortsSessionstateReplSessionStatePublicState)) {
+                    state->signed_value = 4;
+                }
+            }
+        }
+    } else if (stream_code == StreamCode::kFortsInstrumentstateRepl) {
+        if (fake_flag("MOEX_FAKE_MISSING_INSTRUMENT")) {
+            for (auto& message : script) {
+                if (auto* isin = find_field(message, kFortsInstrumentstateReplInstrumentStateIsinId)) {
+                    isin->signed_value = 999999;
                 }
             }
         }
@@ -881,10 +1010,14 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                 }
             }
         }
-    } else if (stream_code == StreamCode::kFortsPosRepl && fake_flag("MOEX_FAKE_ZERO_POSITION")) {
-        for (auto& message : script) {
-            if (auto* position = find_field(message, kFortsPosReplPositionXpos)) {
-                position->signed_value = 0;
+    } else if (stream_code == StreamCode::kFortsPosRepl) {
+        if (fake_flag("MOEX_FAKE_MISSING_POSITION")) {
+            std::erase_if(script, [](const auto& message) { return message.table_code == kFortsPosReplPosition; });
+        } else if (fake_flag("MOEX_FAKE_ZERO_POSITION")) {
+            for (auto& message : script) {
+                if (auto* position = find_field(message, kFortsPosReplPositionXpos)) {
+                    position->signed_value = 0;
+                }
             }
         }
     } else if (stream_code == StreamCode::kFortsUserorderbookRepl) {
@@ -915,7 +1048,8 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
             }
         }
         if (fake_flag("MOEX_FAKE_IDENTITY_CONFLICT")) {
-            for (const auto& source : script) {
+            for (std::size_t index = 0; index < script.size(); ++index) {
+                const auto source = script[index];
                 if (source.table_code != kFortsUserorderbookReplOrdersCurrentday) {
                     continue;
                 }
@@ -941,6 +1075,9 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
         for (auto& message : script) {
             for (const auto field_code : client_fields) {
                 if (auto* field = find_field(message, field_code)) {
+                    if (fake_flag("MOEX_FAKE_WRONG_LIMIT_CLIENT") && field_code == kFortsPartReplPartClientCode) {
+                        continue;
+                    }
                     field->text = replacement;
                 }
             }
@@ -950,9 +1087,9 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
 }
 
 StreamCode stream_code_from_settings(std::string_view settings) {
-    if (settings.find("FORTS_AGGR5_REPL") != std::string_view::npos ||
-        settings.find("FORTS_AGGR20_REPL") != std::string_view::npos ||
-        settings.find("FORTS_AGGR50_REPL") != std::string_view::npos) {
+    if (settings.find(std::string_view{"FORTS_AGGR5_REPL"}) != std::string_view::npos ||
+        settings.find(std::string_view{"FORTS_AGGR20_REPL"}) != std::string_view::npos ||
+        settings.find(std::string_view{"FORTS_AGGR50_REPL"}) != std::string_view::npos) {
         return StreamCode::kFortsAggrRepl;
     }
     for (const auto& descriptor : StreamDescriptors()) {
@@ -967,7 +1104,7 @@ bool relative_scheme_path_forbidden(std::string_view settings) {
     if (std::getenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME") == nullptr) {
         return false;
     }
-    return settings.find("|FILE|scheme/forts_scheme.ini|") != std::string_view::npos;
+    return settings.find(std::string_view{"|FILE|scheme/forts_scheme.ini|"}) != std::string_view::npos;
 }
 
 bool emit_clear_deleted_inside_transaction() {
@@ -1225,6 +1362,10 @@ void detach_listener(FakeConnection* connection, FakeListener* listener) {
 
 extern "C" {
 
+const char* moex_fake_cgate_runtime_v1() {
+    return "moex_fake_cgate_runtime_v1";
+}
+
 std::uint32_t cg_env_open(const char* settings) {
     if (settings == nullptr || *settings == '\0') {
         return kCgErrInvalidArgument;
@@ -1298,6 +1439,38 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrIncorrectState;
     }
 
+    if (connection->script_emitted && connection->pending_replies.empty() && !connection->liveness_event_emitted) {
+        const bool private_liveness =
+            fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_PRIVATE_LIFENUM_AFTER_READY");
+        const bool aggr_liveness =
+            fake_flag("MOEX_FAKE_AGGR_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_AGGR_LIFENUM_AFTER_READY");
+        if (private_liveness || aggr_liveness) {
+            for (auto* listener : connection->listeners) {
+                if (listener == nullptr || listener->reply_listener || listener->state != kStateActive) {
+                    continue;
+                }
+                const bool is_aggr = listener->stream_code == StreamCode::kFortsAggrRepl;
+                if ((is_aggr && !aggr_liveness) || (!is_aggr && !private_liveness)) {
+                    continue;
+                }
+                if ((is_aggr && fake_flag("MOEX_FAKE_AGGR_CLOSE_AFTER_READY")) ||
+                    (!is_aggr && fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY"))) {
+                    if (const auto result = emit_simple_message(*listener, kCgMsgClose); result != kCgErrOk) {
+                        return result;
+                    }
+                } else {
+                    CgDataLifeNum life_num{.life_number = 8, .flags = 0};
+                    if (const auto result =
+                            emit_simple_message(*listener, kCgMsgP2replLifenum, &life_num, sizeof(life_num));
+                        result != kCgErrOk) {
+                        return result;
+                    }
+                }
+            }
+            connection->liveness_event_emitted = true;
+            return kCgErrOk;
+        }
+    }
     if (connection->script_emitted && connection->pending_replies.empty()) {
         return kCgErrTimeout;
     }
@@ -1361,7 +1534,7 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
     if (relative_scheme_path_forbidden(settings)) {
         return kCgErrInvalidArgument;
     }
-    if (std::string_view(settings).find("p2mqreply://") != std::string_view::npos &&
+    if (std::string_view(settings).find(std::string_view{"p2mqreply://"}) != std::string_view::npos &&
         fake_flag("MOEX_FAKE_DISABLE_REPLY_LISTENER")) {
         return kCgErrInvalidArgument;
     }

@@ -123,6 +123,8 @@ int main() {
         require(one_sided.has_value() && one_sided->top_bid.has_value() && !one_sided->top_ask.has_value(),
                 "deleted target ask must leave a one-sided scoped snapshot");
         require(one_sided->committed_at == local_now, "scoped timestamp must advance on every commit");
+        require(one_sided->last_repl_id == 5 && one_sided->last_repl_rev == 15,
+                "scoped deletion must retain the target's latest replication identity");
 
         local_now += std::chrono::seconds(1);
         projector.begin_transaction();
@@ -139,6 +141,8 @@ int main() {
         const auto target_after_other_update = projector.snapshot_for_isin(1001);
         require(target_after_other_update.has_value() && target_after_other_update->top_bid->price == "100.50",
                 "updating another instrument must not change target BBO");
+        require(target_after_other_update->committed_at == local_now - std::chrono::seconds(1),
+                "updating another instrument must not refresh target local freshness");
 
         return 0;
     } catch (const std::exception& error) {

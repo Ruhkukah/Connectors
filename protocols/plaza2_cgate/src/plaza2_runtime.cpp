@@ -231,8 +231,8 @@ struct CgMsgStreamData {
     std::uint64_t user_id;
 };
 
-// Current locked MOEX CGate 9.3 cgate.h: unlike cg_msg_streamdata_t,
-// cg_msg_data_t includes owner_id, has no revision/presence-map fields, and its user_id union member is u32.
+// Locked MOEX CGate 9.3 cgate.h layout: cg_msg_data_t includes owner_id,
+// has no revision/presence-map fields, and its user_id member is a u32.
 struct CgMsgData {
     std::uint32_t type;
     std::size_t data_size;
@@ -1738,6 +1738,8 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
         auto resolved_symbols = std::vector<std::string>{};
         auto api = load_runtime_api(*library_path, &resolved_symbols, &library_issues);
         report.runtime_library_loadable = api != nullptr;
+        report.fake_runtime_marker_present =
+            api != nullptr && ::dlsym(api->library_handle, "moex_fake_cgate_runtime_v1") != nullptr;
         report.resolved_symbols = std::move(resolved_symbols);
         for (const auto required_symbol : kRequiredTradingSymbols) {
             if (std::ranges::find(report.resolved_symbols, required_symbol) == report.resolved_symbols.end()) {

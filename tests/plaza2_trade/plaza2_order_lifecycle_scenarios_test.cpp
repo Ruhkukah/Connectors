@@ -41,6 +41,13 @@ std::string read_text(const std::filesystem::path& path) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+void write_text(const std::filesystem::path& path, std::string_view text) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    require(static_cast<bool>(output), "test fixture journal must be writable");
+    output.write(text.data(), static_cast<std::streamsize>(text.size()));
+    require(static_cast<bool>(output), "test fixture journal must be written");
+}
+
 class FakeClock final : public OrderLifecycleClock {
   public:
     std::chrono::steady_clock::time_point now() const noexcept override {
@@ -862,6 +869,90 @@ void test_restart_reconciliation_retains_working_locks() {
     std::filesystem::remove_all(root);
 }
 
+void test_restart_reconciliation_rejects_mismatch_and_corruption() {
+    const auto terminal_order = [] {
+        private_state::OwnOrderSnapshot terminal;
+        terminal.public_order_id = 9001;
+        terminal.private_order_id = 9001;
+        terminal.ext_id = 7001;
+        terminal.client_code = "C01";
+        terminal.public_amount = 1;
+        terminal.private_amount = 1;
+        terminal.public_amount_rest = 0;
+        terminal.private_amount_rest = 0;
+        terminal.public_action = 0;
+        terminal.private_action = 0;
+        terminal.from_user_book = true;
+        return terminal;
+    };
+
+    {
+        const auto root = make_temp_root("restart_mismatched_config");
+        auto config = base_config(root, "restart-mismatched-config");
+        authorize_live(config);
+        FakeClock clock;
+        ScriptTransport transport(clock);
+        transport.post_results = {possibly_sent()};
+        transport.poll_results = {{.deadline_reached = true}};
+        const auto initial = run_script(config, transport, clock);
+        require(initial.orphan_incident_written, "mismatch fixture must leave an unfinished journal");
+        auto mismatched = config;
+        ++mismatched.ext_id;
+        const auto order = terminal_order();
+        const std::vector orders{order};
+        const std::vector<private_state::OwnTradeSnapshot> trades;
+        const auto reconciliation = reconcile_unfinished_run(mismatched, orders, trades);
+        require(!reconciliation.ok && reconciliation.locks_retained &&
+                    std::filesystem::exists(root / "active" / "ext_7001"),
+                "mismatched restart identity must retain the original locks");
+        std::filesystem::remove_all(root);
+    }
+
+    {
+        const auto root = make_temp_root("restart_reply_id_mismatch");
+        auto config = base_config(root, "restart-reply-id-mismatch");
+        authorize_live(config);
+        FakeClock clock;
+        ScriptTransport transport(clock);
+        transport.post_results = {possibly_sent()};
+        transport.poll_results = {{.deadline_reached = true}};
+        const auto initial = run_script(config, transport, clock);
+        require(initial.orphan_incident_written, "reply-id fixture must leave an unfinished journal");
+        auto journal = read_text(initial.journal_path);
+        const auto marker = std::string("\"add_reply_order_id\": 0");
+        const auto position = journal.find(marker);
+        require(position != std::string::npos, "reply-id fixture must expose the historical Add reply field");
+        journal.replace(position, marker.size(), "\"add_reply_order_id\": 9999");
+        write_text(initial.journal_path, journal);
+        const auto order = terminal_order();
+        const std::vector orders{order};
+        const std::vector<private_state::OwnTradeSnapshot> trades;
+        const auto reconciliation = reconcile_unfinished_run(config, orders, trades);
+        require(!reconciliation.ok && reconciliation.locks_retained,
+                "historical Add reply identity mismatch must retain locks");
+        std::filesystem::remove_all(root);
+    }
+
+    {
+        const auto root = make_temp_root("restart_malformed_journal");
+        auto config = base_config(root, "restart-malformed-journal");
+        authorize_live(config);
+        FakeClock clock;
+        ScriptTransport transport(clock);
+        transport.post_results = {possibly_sent()};
+        transport.poll_results = {{.deadline_reached = true}};
+        const auto initial = run_script(config, transport, clock);
+        require(initial.orphan_incident_written, "malformed fixture must leave an unfinished journal");
+        write_text(initial.journal_path, "{ malformed journal\n");
+        const auto order = terminal_order();
+        const std::vector orders{order};
+        const std::vector<private_state::OwnTradeSnapshot> trades;
+        const auto reconciliation = reconcile_unfinished_run(config, orders, trades);
+        require(!reconciliation.ok && reconciliation.locks_retained, "malformed restart journal must retain locks");
+        std::filesystem::remove_all(root);
+    }
+}
+
 std::filesystem::path journal_temp_path(const std::filesystem::path& root, std::string_view run_id) {
     return root / run_id / "journal.json.tmp";
 }
@@ -1208,6 +1299,7 @@ int main() {
         test_duplicate_ext_id_refusal_and_orphan_journal();
         test_restart_reconciliation_resolves_consistent_terminal();
         test_restart_reconciliation_retains_working_locks();
+        test_restart_reconciliation_rejects_mismatch_and_corruption();
         test_full_fill_with_identity_conflict_is_unresolved();
         test_cancelled_with_contradictory_add_identity_is_unresolved();
         test_terminal_after_exact_ext_recovery_with_prior_inconsistency_is_unresolved();

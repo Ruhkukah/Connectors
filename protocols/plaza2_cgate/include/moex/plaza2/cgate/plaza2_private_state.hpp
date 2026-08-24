@@ -63,6 +63,8 @@ struct TradingSessionSnapshot {
     std::int64_t begin{0};
     std::int64_t end{0};
     std::int32_t state{0};
+    bool has_current_status{false};
+    std::int32_t current_status{0};
     std::int64_t inter_cl_begin{0};
     std::int64_t inter_cl_end{0};
     std::int32_t inter_cl_state{0};
@@ -100,6 +102,10 @@ struct InstrumentSnapshot {
     std::int32_t lot_volume{0};
     std::int32_t trade_mode_id{0};
     std::int32_t state{0};
+    bool current_session_member{false};
+    std::int32_t current_session_state{0};
+    bool has_current_status{false};
+    std::int32_t current_status{0};
     std::int32_t signs{0};
     bool put{false};
     bool is_spread{false};

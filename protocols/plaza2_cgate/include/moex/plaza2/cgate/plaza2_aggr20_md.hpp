@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace moex::plaza2::cgate {
@@ -82,6 +83,7 @@ class Plaza2Aggr20BookProjector {
 
   private:
     std::vector<Plaza2Aggr20Level> staged_rows_;
+    std::unordered_set<std::int64_t> affected_isin_ids_;
     Plaza2Aggr20Snapshot committed_;
     std::unordered_map<std::int64_t, Plaza2Aggr20InstrumentSnapshot> instrument_snapshots_;
     NowFn now_;

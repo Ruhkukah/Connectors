@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -138,6 +139,38 @@ bool atomic_write(const std::filesystem::path& path, std::string_view contents, 
     return true;
 }
 
+std::optional<std::string> journal_string_field(std::string_view text, std::string_view key) {
+    const auto marker = std::string("\"") + std::string(key) + "\": \"";
+    const auto begin = text.find(marker);
+    if (begin == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto value_begin = begin + marker.size();
+    const auto value_end = text.find('"', value_begin);
+    if (value_end == std::string_view::npos) {
+        return std::nullopt;
+    }
+    return std::string(text.substr(value_begin, value_end - value_begin));
+}
+
+std::optional<std::int64_t> journal_integer_field(std::string_view text, std::string_view key) {
+    const auto marker = std::string("\"") + std::string(key) + "\": ";
+    const auto begin = text.find(marker);
+    if (begin == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto value_begin = begin + marker.size();
+    const auto value_end = text.find_first_of(",\n}", value_begin);
+    const auto value = text.substr(value_begin, value_end == std::string_view::npos ? text.size() - value_begin
+                                                                                    : value_end - value_begin);
+    std::int64_t parsed = 0;
+    const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc{} || ptr != value.data() + value.size()) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
 PreSendPlan fail_plan(PreSendFailure failure, std::string message) {
     return {
         .ok = false,
@@ -188,9 +221,11 @@ bool contains_id(std::span<const std::int64_t> aliases, std::int64_t value) {
 
 class RunJournal {
   public:
-    bool begin(const OrderLifecycleConfig& config, std::string payload_hash, std::string& error) {
+    bool begin(const OrderLifecycleConfig& config, std::string payload_hash, std::string recovery_payload_hash,
+               std::string& error) {
         config_ = &config;
         payload_hash_ = std::move(payload_hash);
+        recovery_payload_hash_ = std::move(recovery_payload_hash);
         if (!valid_run_token(config.run_id) || config.journal_root.empty()) {
             error = "journal requires a safe unique run_id and explicit journal_root";
             return false;
@@ -335,6 +370,7 @@ class RunJournal {
         out << "  \"cancel_user_id\": " << config_->cancel_user_id << ",\n";
         out << "  \"recovery_user_id\": " << config_->recovery_user_id << ",\n";
         out << "  \"payload_sha256\": \"" << payload_hash_ << "\",\n";
+        out << "  \"recovery_payload_sha256\": \"" << recovery_payload_hash_ << "\",\n";
         out << "  \"add_submission_certainty\": \"" << submission_certainty_name(add_submission_.certainty) << "\",\n";
         out << "  \"add_post_invoked\": " << (add_submission_.post_invoked ? "true" : "false") << ",\n";
         out << "  \"add_reply_observed\": " << (add_reply_.has_value() ? "true" : "false") << ",\n";
@@ -425,6 +461,7 @@ class RunJournal {
     std::filesystem::path path_;
     std::vector<std::filesystem::path> active_locks_;
     std::string payload_hash_;
+    std::string recovery_payload_hash_;
     cgate::Plaza2PublisherMessageResult add_submission_;
     cgate::Plaza2PublisherMessageResult cancel_submission_;
     cgate::Plaza2PublisherMessageResult recovery_submission_;
@@ -1052,6 +1089,43 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
         return result;
     }
 
+    // The original journal is immutable evidence.  Validate its fixed run
+    // identity and the canonical AddOrder payload before considering any
+    // terminal observation for lock removal.
+    const auto schema = journal_string_field(journal_text, "schema");
+    const auto journal_run_id = journal_string_field(journal_text, "run_id");
+    const auto journal_profile_id = journal_string_field(journal_text, "profile_id");
+    const auto journal_profile = journal_string_field(journal_text, "profile_fingerprint");
+    const auto journal_payload = journal_string_field(journal_text, "payload_sha256");
+    const auto journal_recovery_payload = journal_string_field(journal_text, "recovery_payload_sha256");
+    const auto journal_ext = journal_integer_field(journal_text, "ext_id");
+    const auto journal_add_user = journal_integer_field(journal_text, "add_user_id");
+    const auto journal_cancel_user = journal_integer_field(journal_text, "cancel_user_id");
+    const auto journal_recovery_user = journal_integer_field(journal_text, "recovery_user_id");
+    const auto journal_add_reply_id = journal_integer_field(journal_text, "add_reply_order_id");
+    auto plan_config = config;
+    plan_config.dry_run = true;
+    plan_config.send_test_order = false;
+    plan_config.authorized_plan_sha256.clear();
+    plan_config.journal_root = result.journal_path.parent_path() / "reconciliation_plan";
+    const auto plan = build_pre_send_plan(plan_config);
+    if (!schema.has_value() || *schema != "moex.plaza2.order_run_journal.v2" || !journal_run_id.has_value() ||
+        *journal_run_id != config.run_id || !journal_profile_id.has_value() ||
+        *journal_profile_id != config.profile_id || !journal_profile.has_value() ||
+        *journal_profile != config.profile_fingerprint || !journal_payload.has_value() ||
+        !journal_recovery_payload.has_value() || !plan.ok ||
+        *journal_payload != cgate::plaza2_sha256_hex(plan.add_command.payload) ||
+        *journal_recovery_payload != cgate::plaza2_sha256_hex(plan.exact_ext_id_recovery_command.payload) ||
+        !journal_ext.has_value() || *journal_ext != config.ext_id || !journal_add_user.has_value() ||
+        *journal_add_user != config.add_user_id || !journal_cancel_user.has_value() ||
+        *journal_cancel_user != config.cancel_user_id || !journal_recovery_user.has_value() ||
+        *journal_recovery_user != config.recovery_user_id) {
+        result.ok = false;
+        result.message =
+            "unfinished journal identity or payload does not match the reconciliation request; retaining locks";
+        return result;
+    }
+
     const auto observation =
         observe_order(config.ext_id, config.client_code, config.side, config.quantity, orders, trades);
     if (!observation.has_value() || !observation_terminal(observation) || observation->identity_conflict) {
@@ -1062,43 +1136,39 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
         return result;
     }
 
-    const auto run_directory = result.journal_path.parent_path();
-    std::ostringstream resolution;
-    resolution << "{\n"
-               << "  \"schema\": \"moex.plaza2.restart_reconciliation.v1\",\n"
-               << "  \"run_id\": \"" << json_escape(config.run_id) << "\",\n"
-               << "  \"ext_id\": " << config.ext_id << ",\n"
-               << "  \"state\": \"" << order_lifecycle_state_name(observation->state) << "\",\n"
-               << "  \"public_order_id\": " << observation->public_order_id << ",\n"
-               << "  \"private_order_id\": " << observation->private_order_id << ",\n"
-               << "  \"evidence_consistent\": true,\n"
-               << "  \"locks_released\": true\n"
-               << "}\n";
-    std::string error;
-    if (!atomic_write(run_directory / "restart_reconciliation.json", resolution.str(), error)) {
+    const auto journal_sha256 = cgate::plaza2_sha256_hex(journal_text);
+    const auto known_public_id = journal_integer_field(journal_text, "public_order_id").value_or(0);
+    const auto known_private_id = journal_integer_field(journal_text, "private_order_id").value_or(0);
+    const auto known_add_reply_id = journal_add_reply_id.value_or(0);
+    if ((known_add_reply_id != 0 && !reply_id_matches_observation(known_add_reply_id, *observation)) ||
+        (known_public_id != 0 && !reply_id_matches_observation(known_public_id, *observation)) ||
+        (known_private_id != 0 && !reply_id_matches_observation(known_private_id, *observation))) {
         result.ok = false;
-        result.message = "restart resolution record failed: " + error;
+        result.message = "restart observation does not preserve the historical order identity; retaining locks";
         return result;
     }
 
-    std::string resolved_journal = journal_text;
-    const auto replace_literal = [](std::string& text, std::string_view from, std::string_view to) {
-        std::size_t offset = 0;
-        while ((offset = text.find(from, offset)) != std::string::npos) {
-            text.replace(offset, from.size(), to);
-            offset += to.size();
-        }
+    const auto run_directory = result.journal_path.parent_path();
+    const auto write_resolution = [&](bool prepared, bool locks_released, std::string& error) {
+        std::ostringstream resolution;
+        resolution << "{\n"
+                   << "  \"schema\": \"moex.plaza2.restart_reconciliation.v2\",\n"
+                   << "  \"run_id\": \"" << json_escape(config.run_id) << "\",\n"
+                   << "  \"journal_sha256\": \"" << journal_sha256 << "\",\n"
+                   << "  \"ext_id\": " << config.ext_id << ",\n"
+                   << "  \"state\": \"" << order_lifecycle_state_name(observation->state) << "\",\n"
+                   << "  \"public_order_id\": " << observation->public_order_id << ",\n"
+                   << "  \"private_order_id\": " << observation->private_order_id << ",\n"
+                   << "  \"evidence_consistent\": true,\n"
+                   << "  \"resolution_prepared\": " << (prepared ? "true" : "false") << ",\n"
+                   << "  \"locks_released\": " << (locks_released ? "true" : "false") << "\n"
+                   << "}\n";
+        return atomic_write(run_directory / "restart_reconciliation.json", resolution.str(), error);
     };
-    replace_literal(resolved_journal, "\"final_state\": \"unresolved_orphan_incident\"",
-                    std::string("\"final_state\": \"") + std::string(order_lifecycle_state_name(observation->state)) +
-                        "\"");
-    replace_literal(resolved_journal, "\"orphan_incident\": true", "\"orphan_incident\": false");
-    replace_literal(resolved_journal, "\"market_safe_terminal\": false", "\"market_safe_terminal\": true");
-    replace_literal(resolved_journal, "\"evidence_consistent\": false", "\"evidence_consistent\": true");
-    replace_literal(resolved_journal, "\"finished\": false", "\"finished\": true");
-    if (!atomic_write(result.journal_path, resolved_journal, error)) {
+    std::string error;
+    if (!write_resolution(true, false, error)) {
         result.ok = false;
-        result.message = "resolved journal publication failed: " + error;
+        result.message = "restart resolution preparation failed: " + error;
         return result;
     }
 
@@ -1113,14 +1183,20 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
         std::filesystem::remove(lock, filesystem_error);
     }
     result.state = observation->state;
-    result.resolved = true;
     result.locks_retained =
         std::any_of(locks.begin(), locks.end(), [](const auto& lock) { return std::filesystem::exists(lock); });
-    result.message = result.locks_retained ? "restart resolution published but some locks remain"
-                                           : "restart reconciliation resolved a consistent terminal observation";
     if (result.locks_retained) {
         result.ok = false;
+        result.message = "restart resolution prepared but some identifier locks remain";
+        return result;
     }
+    result.resolved = true;
+    if (!write_resolution(false, true, error)) {
+        result.ok = false;
+        result.message = "restart final resolution publication failed: " + error;
+        return result;
+    }
+    result.message = "restart reconciliation resolved a consistent terminal observation";
     return result;
 }
 
@@ -1161,7 +1237,8 @@ OrderLifecycleResult OrderLifecycleController::run() {
     RunJournal journal;
     std::string journal_error;
     const auto payload_hash = cgate::plaza2_sha256_hex(plan.add_command.payload);
-    if (!journal.begin(config_, payload_hash, journal_error)) {
+    const auto recovery_payload_hash = cgate::plaza2_sha256_hex(plan.exact_ext_id_recovery_command.payload);
+    if (!journal.begin(config_, payload_hash, recovery_payload_hash, journal_error)) {
         result.market_safe_terminal = true;
         result.journal_ok = false;
         result.journal_degraded = true;

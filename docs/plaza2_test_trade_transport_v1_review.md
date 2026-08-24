@@ -15,8 +15,10 @@ software key, `cg_pub_post` against a real runtime, or TEST order was used.
 ## One-session host
 
 `Plaza2TestSessionHost` owns one `Plaza2Env`, one connection, the five private
-replication listeners, the AGGR20 listener, one untyped `p2mqreply` listener,
-and one publisher. Startup probes the runtime before opening the environment;
+replication listeners, the current-day `SESSIONSTATE` and `INSTRUMENTSTATE`
+status listeners, the AGGR20 listener, one untyped `p2mqreply` listener, and
+one publisher. Startup probes the runtime and requires the private
+`moex_fake_cgate_runtime_v1` marker before opening the environment;
 shutdown closes and destroys publisher/listeners in reverse dependency order,
 then the connection and environment. Private state, AGGR20 state, reply
 correlation, and publisher operations therefore share one fake connection and
@@ -29,8 +31,11 @@ message name, preserves CGate's `DefinitelyNotSent`, `PossiblySent`, and
 replication plus correlated replies. A publisher timeout remains uncertainty;
 it is never converted into a rejection or cancellation.
 
-AddOrder is accepted only after a static authorized intent hash is present and
-the target-specific execution-safety receipt has been atomically published.
+AddOrder is accepted only after a recomputed canonical authorized intent (with
+payload, participant, identifier, policy, and profile fingerprints) binds the
+encoded command byte-for-byte and the target-specific execution-safety receipt
+has been atomically published. Loopback alone is not treated as evidence of a
+fake runtime.
 The receipt is derived from the current committed projectors immediately before
 the post and contains the target BBO, local monotonic age, exchange evidence,
 session/instrument state, exact client limit-row hash, stream readiness,
@@ -56,13 +61,17 @@ into an order decision. Each scoped commit carries:
 - exchange moment and moment-nanoseconds;
 - instrument-specific depth, revision, and best levels.
 
-There is no operator-supplied age field in this projector path. A missing,
-one-sided, deleted, stale, non-tradable, or non-target instrument is not a
-ready target and must not authorize a post. Target readiness also requires a
-futures instrument with a min-step, the exact session in state `2`, every
-configured private stream online and snapshot-complete, exactly matching
-client-scoped limits with `limits_set=true`, and (when requested) zero starting
-position.
+There is no operator-supplied age field in this projector path. A transaction
+updates scoped freshness only for affected `isin_id` values; unrelated
+instrument traffic cannot refresh the target. A missing, one-sided, deleted,
+stale, non-tradable, or non-target instrument is not a ready target and must
+not authorize a post. Target readiness also requires current-day
+`fut_sess_contents` membership, current session and instrument status rows, a
+futures min-step, the exact session in state `1` (running; Add + Cancel
+allowed), every required private stream and AGGR20 epoch online and
+snapshot-complete, exactly one matching seven-symbol client limit row with
+`limits_set=true`, and (when requested) exactly one matching client position
+row with `xpos=0`.
 
 ## Profile and ABI controls
 
@@ -91,8 +100,9 @@ actual concrete transport and fake CGate runtime for:
   contradictory AddOrder identity fail-closed results, and the Add-timeout
   recovery path to factual cancellation, including a working AddOrder followed
   by DelOrder and a publisher post timeout with recovery still available;
-- two instrument AGGR20 isolation, one-sided/stale/absent targets, missing or
-  non-tradable session, missing or wrong client limit row, non-zero starting
+- two instrument AGGR20 isolation and target-only freshness, one-sided/stale/
+  absent targets, scheduled/running/suspended/completed session states,
+  missing or non-tradable session, missing or wrong client limit row, non-zero starting
   position, marketable and out-of-distance prices, unavailable
   p2mqreply/publisher, and receipt-persistence refusal;
 - cleanup posting after the target AGGR20 has become stale.
@@ -102,9 +112,10 @@ state-machine coverage, including sticky inconsistent-terminal semantics,
 identifier-lock assertions, journal degradation, and restart reconciliation.
 
 `reconcile_unfinished_run()` is a read-only startup mechanism: it never posts a
-command, retains locks for missing/working/conflicting observations, and only
-publishes a terminal resolution record and releases locks after a fresh matching
-terminal observation is atomically recorded.
+command, validates the immutable journal schema/run identity/profile/payload
+and historical order IDs, retains locks for missing/working/conflicting or
+mismatched observations, and writes a separate SHA-referencing prepared then
+verified resolution record before releasing locks.
 
 ## Final invariant
 
