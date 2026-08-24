@@ -1,0 +1,35 @@
+#include <algorithm>
+#include <array>
+#include <iostream>
+#include <string_view>
+
+@MOEX_CASE_DECLARATIONS@
+
+namespace {
+
+struct TestCase {
+    std::string_view name;
+    int (*run)();
+};
+
+constexpr auto kCases = std::to_array<TestCase>({
+@MOEX_CASE_ENTRIES@});
+
+} // namespace
+
+int main(int argc, char** argv) {
+    if (argc != 3 || std::string_view(argv[1]) != "--case") {
+        std::cerr << "usage: " << argv[0] << " --case <name>\n";
+        return 2;
+    }
+
+    const std::string_view requested(argv[2]);
+    const auto found = std::find_if(kCases.begin(), kCases.end(), [requested](const TestCase& candidate) {
+        return candidate.name == requested;
+    });
+    if (found == kCases.end()) {
+        std::cerr << "unknown test case: " << requested << '\n';
+        return 2;
+    }
+    return found->run();
+}

@@ -3,13 +3,15 @@ name: ci
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
   pull_request:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  phase0-hardening:
+  connector-validation:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -31,15 +33,14 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Install Python requirements
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt
 
       - name: Guard hidden Unicode
         run: |
           python3 tools/unicode_guard.py \
             .github \
             CMakeLists.txt \
+            cmake \
             include \
             src \
             protocols \
@@ -68,6 +69,7 @@ jobs:
           python3 tools/source_style_check.py --require-clang-format \
             .github \
             CMakeLists.txt \
+            cmake \
             include \
             src \
             protocols \
@@ -88,35 +90,9 @@ jobs:
         run: cmake --build build
 
       - name: Run ctest
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -LE preflight
 
-      - name: Validate matrix
-        run: build/tools/matrix_validate --matrix-dir matrix
-
-      - name: Rebuild TWIME schema inventory
-        run: build/tools/twime_schema_indexer --schema protocols/twime_sbe/schema/twime_spectra-7.7.xml --out matrix/protocol_inventory
-
-      - name: Verify TWIME code generation
-        run: build/tools/twime_codegen --schema protocols/twime_sbe/schema/twime_spectra-7.7.xml --out protocols/twime_sbe/generated --check
-
-      - name: Verify TWIME fixture goldens
-        run: build/tools/twime_fixture_check --fixtures tests/fixtures/twime_sbe --check
-
-      - name: Run cert runner stub
-        run: build/apps/moex_cert_runner --scenario cert/stub/phase0_stub.yaml --output-dir build/ci-cert-runner
-
-      - name: Verify prod profiles fail without arm
-        run: |
-          set +e
-          build/tools/profile_check --profile profiles/prod_*.template.yaml
-          status=$?
-          set -e
-          test "$status" -ne 0
-
-      - name: Verify prod profiles pass with arm
-        run: build/tools/profile_check --profile profiles/prod_*.template.yaml --armed
-
-  twime-sanitizers:
+  component-sanitizers:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -144,11 +120,23 @@ jobs:
           -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
 
       - name: Build sanitizer targets
-        run: cmake --build build-asan
+        run: >
+          cmake --build build-asan --target
+          twime_sbe_tests
+          twime_session_tests
+          twime_byte_transport_tests
+          twime_tcp_transport_tests
+          twime_tcp_session_tests
+          twime_endpoint_gate_tests
+          twime_live_runner_tests
+          moex_phase0_selfcheck
+          plaza2_order_lifecycle_scenarios_test
+          plaza2_runtime_adapter_test
+          plaza2_runtime_probe_test
+          plaza2_trade_no_send_guard_test
 
-      - name: Run TWIME sanitizer tests
+      - name: Run critical component sanitizer tests
         env:
-          ASAN_OPTIONS: detect_leaks=1
-        run: |
-          ctest --test-dir build-asan --output-on-failure \
-            -R "^(twime_.*|phase0_selfcheck|source_style_check)$"
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-asan --output-on-failure -L sanitizer

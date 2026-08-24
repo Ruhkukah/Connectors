@@ -22,7 +22,7 @@ int main() {
         runner.set_time_source([&runner_clock] { return runner_clock(); });
 
         std::exception_ptr server_error;
-        std::thread server_thread([&] {
+        std::jthread server_thread([&] {
             try {
                 moex::twime_sbe::test::require(server.wait_for_client(std::chrono::milliseconds(3000)),
                                                "expected client connection");
