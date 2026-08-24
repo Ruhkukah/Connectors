@@ -252,6 +252,7 @@ int main(int argc, char** argv) {
         std::cerr << error << '\n';
         return 2;
     }
+    std::cout << "authorized_intent_sha256=" << plan.sha256 << '\n';
     std::cout << "pre_send_plan_sha256=" << plan.sha256 << '\n';
     return 0;
 }

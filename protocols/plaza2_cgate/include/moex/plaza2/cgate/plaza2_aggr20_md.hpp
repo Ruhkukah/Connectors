@@ -6,11 +6,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace moex::plaza2::cgate {
@@ -35,13 +38,38 @@ struct Plaza2Aggr20Snapshot {
     std::size_t ask_depth_levels{0};
     std::uint64_t last_repl_id{0};
     std::int64_t last_repl_rev{0};
+    // Cross-instrument values retained for diagnostics only. Trading must use
+    // snapshot_for_isin(), never these global best prices.
     std::optional<Plaza2Aggr20Level> top_bid;
     std::optional<Plaza2Aggr20Level> top_ask;
     std::vector<Plaza2Aggr20Level> levels;
+    std::chrono::steady_clock::time_point committed_at{};
+    std::uint64_t exchange_moment{0};
+    std::uint64_t exchange_moment_ns{0};
+};
+
+struct Plaza2Aggr20InstrumentSnapshot {
+    std::int64_t isin_id{0};
+    std::size_t row_count{0};
+    std::size_t bid_depth_levels{0};
+    std::size_t ask_depth_levels{0};
+    std::uint64_t last_repl_id{0};
+    std::int64_t last_repl_rev{0};
+    std::optional<Plaza2Aggr20Level> top_bid;
+    std::optional<Plaza2Aggr20Level> top_ask;
+    // This is captured from the local monotonic clock at commit time.
+    std::chrono::steady_clock::time_point committed_at{};
+    std::uint64_t exchange_moment{0};
+    std::uint64_t exchange_moment_ns{0};
 };
 
 class Plaza2Aggr20BookProjector {
   public:
+    using Clock = std::chrono::steady_clock;
+    using NowFn = std::function<Clock::time_point()>;
+
+    explicit Plaza2Aggr20BookProjector(NowFn now = {});
+
     void reset();
     void begin_transaction();
     [[nodiscard]] Plaza2Error on_row(std::span<const Plaza2DecodedFieldValue> fields);
@@ -49,11 +77,14 @@ class Plaza2Aggr20BookProjector {
     void rollback();
 
     [[nodiscard]] const Plaza2Aggr20Snapshot& snapshot() const noexcept;
+    [[nodiscard]] std::optional<Plaza2Aggr20InstrumentSnapshot> snapshot_for_isin(std::int64_t isin_id) const;
     [[nodiscard]] bool transaction_open() const noexcept;
 
   private:
     std::vector<Plaza2Aggr20Level> staged_rows_;
     Plaza2Aggr20Snapshot committed_;
+    std::unordered_map<std::int64_t, Plaza2Aggr20InstrumentSnapshot> instrument_snapshots_;
+    NowFn now_;
     bool transaction_open_{false};
 };
 

@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
             config.arm_state.test_reconcile_armed = false;
 
             moex::twime_trade::test::ScopedEnvVar twime_env("MOEX_TWIME_TEST_CREDENTIALS", "TWIME-SECRET");
-            moex::twime_trade::test::ScopedEnvVar plaza_env("MOEX_PLAZA2_TEST_CREDENTIALS", "PLAZA-SECRET");
+            moex::twime_trade::test::ScopedEnvVar plaza_env("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "PLAZA-SECRET");
 
             Plaza2TwimeIntegratedTestRunner runner(std::move(config));
             const auto result = runner.start();
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
                 integrated_test::make_integrated_config(fixture, server.port(), "phase4c_missing_twime_creds");
 
             moex::twime_trade::test::ScopedEnvVar twime_env("MOEX_TWIME_TEST_CREDENTIALS", nullptr);
-            moex::twime_trade::test::ScopedEnvVar plaza_env("MOEX_PLAZA2_TEST_CREDENTIALS", "PLAZA-SECRET");
+            moex::twime_trade::test::ScopedEnvVar plaza_env("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "PLAZA-SECRET");
 
             Plaza2TwimeIntegratedTestRunner runner(std::move(config));
             const auto result = runner.start();
@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
             config.plaza.runtime.expected_spectra_release = "SPECTRA95";
 
             moex::twime_trade::test::ScopedEnvVar twime_env("MOEX_TWIME_TEST_CREDENTIALS", "TWIME-SECRET");
-            moex::twime_trade::test::ScopedEnvVar plaza_env("MOEX_PLAZA2_TEST_CREDENTIALS", "PLAZA-SECRET");
+            moex::twime_trade::test::ScopedEnvVar plaza_env("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "PLAZA-SECRET");
 
             Plaza2TwimeIntegratedTestRunner runner(std::move(config));
             const auto result = runner.start();

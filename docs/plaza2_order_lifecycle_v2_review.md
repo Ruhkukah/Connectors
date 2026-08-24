@@ -7,8 +7,9 @@ This document covers the V2.1 correctness pass from authoritative head
 correction from head `1e8b100a65da9f03712bf74762cb97fbb239cbfa` on branch
 `codex/plaza2-order-lifecycle-v2`. Both stay inside the existing
 transport-neutral, offline lifecycle design. No new live transport, profile,
-wrapper, executable, script, C ABI, production path, or generic recovery
-framework was added.
+wrapper, script, C ABI, production path, or generic recovery framework was
+added by that lifecycle increment. The follow-on V1 fake-runtime transport and
+its single semantic test executable are documented separately.
 
 The offline acceptance gate passes. No production connection, TEST connection,
 network command, credential, software key, account secret, broker profile, or
@@ -82,24 +83,21 @@ does not become factual cancellation.
 
 ## Canonical pre-send plan
 
-`moex.plaza2.pre_send_plan.v2` hashes the encoded AddOrder and prevalidated
-exact-ext recovery payloads plus every non-secret reviewed input that can change
-the smoke verdict:
+The lifecycle plan is a static `moex.plaza2.authorized_order_intent.v1`. It
+hashes the encoded AddOrder and prevalidated exact-ext recovery payloads plus
+the non-secret static intent and policy:
 
-- tick size, top bid, top ask, price, side, quantity, and instrument identity;
-- market-data source, AGGR20 sequence/revision, observation timestamp, age, and
-  maximum permitted age;
-- trading day, session identity/state, and tradability verdict;
-- refdata source sequence/revision and instrument-existence verdict;
-- limits source identity, commit sequence, and applicability verdict;
+- price, side, quantity, and instrument identity;
 - smoke-policy version, policy SHA-256, and maximum distance ticks;
 - profile/environment fingerprints and all unique lifecycle IDs.
 
 Broker/client/account values are not written. Their exact AddOrder and recovery
 values remain committed through encoded payload SHA-256 fingerprints.
-Hash-sensitivity tests change each reviewed value independently and require a
-different plan hash; fail-closed boolean evidence is tested through its
-corresponding validation refusal.
+Dynamic BBO, session, refdata, limits, and local-age observations are persisted
+as reviewed evidence but are intentionally excluded from the authorization
+hash. The concrete TEST transport derives a fresh, atomically persisted
+execution-safety receipt immediately before AddOrder. A changed market therefore
+cannot silently authorize a different order or reprice the authorized intent.
 
 The misleading price-versus-`max_notional` comparison and dead `max_quantity`
 surface were removed. The first smoke remains hard quantity one, limit-only,
@@ -194,19 +192,20 @@ extended as requested.
 
 ## Remaining blockers before a live TEST order
 
-1. Implement and review a concrete TEST-only transport composing the publisher,
-   timeout/reply mapping, private replication, and reconciliation APIs. The
-   current runner intentionally has no such transport.
-2. Source plan evidence directly from authoritative committed refdata, session,
+The separate V1 transport review now covers the offline fake-runtime
+composition of the publisher, timeout/reply mapping, private replication, and
+reconciliation APIs. The following gates still remain before any live TEST
+order:
+
+1. Source plan evidence directly from authoritative committed refdata, session,
    AGGR20, and limits snapshots rather than operator-supplied offline values.
-3. Validate the installed broker TEST runtime/scheme and reply decoders without
+2. Validate the installed broker TEST runtime/scheme and reply decoders without
    placing credentials or endpoints in Git.
-4. Define restart-time orphan reconciliation and operational journal ownership,
+3. Define restart-time orphan reconciliation and operational journal ownership,
    permissions, retention, alerting, and Linux durability requirements.
-5. Review a newly generated plan and require a separate explicit authorization
+4. Review a newly generated plan and require a separate explicit authorization
    before any one-order TEST exercise.
 
 Stop here. No VPS run, network session, live TEST submission, production work,
-or new protocol phase is part of V2.1/V2.2. With the offline gates above green,
-PR #25 is ready for merge; this does not authorize the future live TEST
-transport.
+or new protocol phase is part of V2.1/V2.2. The V1 fake-runtime transport is
+offline-only and does not authorize a live TEST order.

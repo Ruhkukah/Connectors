@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
 
         moex::test::LocalTcpServer server;
         moex::twime_trade::test::ScopedEnvVar twime_env("MOEX_TWIME_TEST_CREDENTIALS", "TWIME-INTEGRATED-SECRET");
-        moex::twime_trade::test::ScopedEnvVar plaza_env("MOEX_PLAZA2_TEST_CREDENTIALS", "PLAZA-INTEGRATED-SECRET");
+        moex::twime_trade::test::ScopedEnvVar plaza_env("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "PLAZA-INTEGRATED-SECRET");
 
         auto config = integrated_test::make_integrated_config(fixture, server.port(), "phase4c_integrated_runner");
         moex::twime_trade::test::ManualRunnerClock runner_clock;

@@ -631,6 +631,11 @@ struct Plaza2LiveSessionRunner::Impl {
         if (config.runtime.env_open_settings.empty()) {
             return fail("runtime.env_open_settings must be provided explicitly");
         }
+        if (config.runtime.env_open_settings.find(kCredentialToken) != std::string::npos ||
+            config.runtime.env_open_settings.find(kLegacyCredentialToken) != std::string::npos) {
+            return fail("PLAZA II TEST env_open_settings must use ${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}, not the "
+                        "exchange credential variable");
+        }
         if (config.connection_settings.empty()) {
             return fail("connection_settings must be provided explicitly");
         }

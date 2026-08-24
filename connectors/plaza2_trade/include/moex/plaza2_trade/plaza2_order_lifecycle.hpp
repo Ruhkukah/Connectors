@@ -199,7 +199,11 @@ struct PreSendPlan {
     bool ok{false};
     PreSendFailure failure{PreSendFailure::None};
     std::string message;
+    // The canonical hash is an authorization hash for static order intent. It
+    // deliberately excludes dynamic market/session observations; those belong
+    // in the execution-safety receipt produced immediately before posting.
     std::string canonical_json;
+    std::string reviewed_evidence_json;
     std::string sha256;
     Plaza2TradeEncodedCommand add_command;
     Plaza2TradeEncodedCommand exact_ext_id_recovery_command;
@@ -208,6 +212,24 @@ struct PreSendPlan {
 [[nodiscard]] PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config);
 [[nodiscard]] bool write_pre_send_plan(const std::filesystem::path& output_directory, const PreSendPlan& plan,
                                        std::string& error);
+
+struct RestartReconciliationResult {
+    bool ok{true};
+    bool run_found{false};
+    bool resolved{false};
+    bool locks_retained{true};
+    OrderLifecycleState state{OrderLifecycleState::UnresolvedOrphanIncident};
+    std::filesystem::path journal_path;
+    std::string message;
+};
+
+// Read-only startup reconciliation over a previously unfinished local run.
+// It never submits a command. Locks are removed only after a fresh, matching
+// terminal observation and a published resolution record.
+[[nodiscard]] RestartReconciliationResult
+reconcile_unfinished_run(const OrderLifecycleConfig& config,
+                         std::span<const plaza2::private_state::OwnOrderSnapshot> orders,
+                         std::span<const plaza2::private_state::OwnTradeSnapshot> trades);
 
 struct OrderLifecycleResult {
     bool ok{false};

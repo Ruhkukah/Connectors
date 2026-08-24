@@ -916,19 +916,21 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     }
     const auto recovery_payload_hash = cgate::plaza2_sha256_hex(recovery_command.payload);
 
+    // Only static, human-authorized intent is hashed. Dynamic market/session
+    // observations are written separately and are re-derived by the concrete
+    // transport immediately before AddOrder.
     std::ostringstream json;
     json << "{\n";
-    json << "  \"schema\": \"moex.plaza2.pre_send_plan.v2\",\n";
+    json << "  \"schema\": \"moex.plaza2.authorized_order_intent.v1\",\n";
     json << "  \"profile_id\": \"" << json_escape(config.profile_id) << "\",\n";
     json << "  \"profile_fingerprint\": \"" << config.profile_fingerprint << "\",\n";
     json << "  \"environment\": \"test\",\n";
-    json << "  \"profile_enabled\": true,\n";
     json << "  \"command\": \"AddOrder\",\n";
     json << "  \"message_id\": " << command.msgid << ",\n";
     json << "  \"payload_sha256\": \"" << payload_hash << "\",\n";
     json << "  \"recovery_message_id\": " << recovery_command.msgid << ",\n";
     json << "  \"recovery_payload_sha256\": \"" << recovery_payload_hash << "\",\n";
-    json << "  \"user_id\": " << config.add_user_id << ",\n";
+    json << "  \"add_user_id\": " << config.add_user_id << ",\n";
     json << "  \"cancel_user_id\": " << config.cancel_user_id << ",\n";
     json << "  \"recovery_user_id\": " << config.recovery_user_id << ",\n";
     json << "  \"ext_id\": " << config.ext_id << ",\n";
@@ -939,56 +941,64 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     json << "  \"order_type\": \"limit\",\n";
     json << "  \"price\": \"" << json_escape(config.price) << "\",\n";
     json << "  \"quantity\": 1,\n";
-    json << "  \"reviewed_evidence\": {\n";
-    json << "    \"tick_size\": \"" << json_escape(config.smoke.tick_size) << "\",\n";
-    json << "    \"top_bid\": \"" << json_escape(config.smoke.top_bid) << "\",\n";
-    json << "    \"top_ask\": \"" << json_escape(config.smoke.top_ask) << "\",\n";
-    json << "    \"market_data_source\": \"" << json_escape(config.smoke.market_data_source) << "\",\n";
-    json << "    \"aggr20_source_sequence\": " << config.smoke.aggr20_source_sequence << ",\n";
-    json << "    \"aggr20_source_revision\": " << config.smoke.aggr20_source_revision << ",\n";
-    json << "    \"aggr20_observed_at_utc\": \"" << json_escape(config.smoke.aggr20_observed_at_utc) << "\",\n";
-    json << "    \"aggr20_age_ms\": " << config.smoke.aggr20_age_ms << ",\n";
-    json << "    \"max_aggr20_age_ms\": " << config.smoke.max_aggr20_age_ms << ",\n";
-    json << "    \"trading_day\": \"" << json_escape(config.smoke.trading_day) << "\",\n";
-    json << "    \"session_id\": \"" << json_escape(config.smoke.session_id) << "\",\n";
-    json << "    \"session_state\": \"" << json_escape(config.smoke.session_state) << "\",\n";
-    json << "    \"tradable_session\": " << (config.smoke.tradable_session ? "true" : "false") << ",\n";
-    json << "    \"refdata_source\": \"" << json_escape(config.smoke.refdata_source) << "\",\n";
-    json << "    \"refdata_source_sequence\": " << config.smoke.refdata_source_sequence << ",\n";
-    json << "    \"refdata_source_revision\": " << config.smoke.refdata_source_revision << ",\n";
-    json << "    \"instrument_exists\": " << (config.smoke.instrument_exists ? "true" : "false") << ",\n";
-    json << "    \"limits_source\": \"" << json_escape(config.smoke.limits_source) << "\",\n";
-    json << "    \"limits_commit_sequence\": " << config.smoke.limits_commit_sequence << ",\n";
-    json << "    \"limits_snapshot_applicable\": " << (config.smoke.limits_snapshot_applicable ? "true" : "false")
-         << "\n";
-    json << "  },\n";
+    json << "  \"client_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.client_code) << "\",\n";
+    json << "  \"broker_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.broker_code) << "\",\n";
     json << "  \"smoke_policy\": {\n";
     json << "    \"version\": \"" << json_escape(config.policy.version) << "\",\n";
     json << "    \"sha256\": \"" << config.policy.sha256 << "\",\n";
     json << "    \"max_distance_ticks\": " << config.policy.max_distance_ticks << "\n";
-    json << "  },\n";
-    json << "  \"checks\": {\n";
-    json << "    \"aggr20_fresh_two_sided\": true,\n";
-    json << "    \"applicable_limits_snapshot\": true,\n";
-    json << "    \"distance_ceiling\": true,\n";
-    json << "    \"instrument_in_refdata\": true,\n";
-    json << "    \"passive_non_marketable\": true,\n";
-    json << "    \"quantity_one\": true,\n";
-    json << "    \"tick_aligned\": true,\n";
-    json << "    \"tradable_session\": true,\n";
-    json << "    \"unique_identifiers\": true\n";
     json << "  }\n";
     json << "}\n";
+
+    std::ostringstream evidence_json;
+    evidence_json << "{\n";
+    evidence_json << "  \"schema\": \"moex.plaza2.reviewed_execution_evidence.v1\",\n";
+    evidence_json << "  \"authorized_intent_sha256\": \"PENDING\",\n";
+    evidence_json << "  \"reviewed_evidence\": {\n";
+    evidence_json << "    \"tick_size\": \"" << json_escape(config.smoke.tick_size) << "\",\n";
+    evidence_json << "    \"top_bid\": \"" << json_escape(config.smoke.top_bid) << "\",\n";
+    evidence_json << "    \"top_ask\": \"" << json_escape(config.smoke.top_ask) << "\",\n";
+    evidence_json << "    \"market_data_source\": \"" << json_escape(config.smoke.market_data_source) << "\",\n";
+    evidence_json << "    \"aggr20_source_sequence\": " << config.smoke.aggr20_source_sequence << ",\n";
+    evidence_json << "    \"aggr20_source_revision\": " << config.smoke.aggr20_source_revision << ",\n";
+    evidence_json << "    \"aggr20_observed_at_utc\": \"" << json_escape(config.smoke.aggr20_observed_at_utc)
+                  << "\",\n";
+    evidence_json << "    \"aggr20_age_ms\": " << config.smoke.aggr20_age_ms << ",\n";
+    evidence_json << "    \"max_aggr20_age_ms\": " << config.smoke.max_aggr20_age_ms << ",\n";
+    evidence_json << "    \"trading_day\": \"" << json_escape(config.smoke.trading_day) << "\",\n";
+    evidence_json << "    \"session_id\": \"" << json_escape(config.smoke.session_id) << "\",\n";
+    evidence_json << "    \"session_state\": \"" << json_escape(config.smoke.session_state) << "\",\n";
+    evidence_json << "    \"tradable_session\": " << (config.smoke.tradable_session ? "true" : "false") << ",\n";
+    evidence_json << "    \"refdata_source\": \"" << json_escape(config.smoke.refdata_source) << "\",\n";
+    evidence_json << "    \"refdata_source_sequence\": " << config.smoke.refdata_source_sequence << ",\n";
+    evidence_json << "    \"refdata_source_revision\": " << config.smoke.refdata_source_revision << ",\n";
+    evidence_json << "    \"instrument_exists\": " << (config.smoke.instrument_exists ? "true" : "false") << ",\n";
+    evidence_json << "    \"limits_source\": \"" << json_escape(config.smoke.limits_source) << "\",\n";
+    evidence_json << "    \"limits_commit_sequence\": " << config.smoke.limits_commit_sequence << ",\n";
+    evidence_json << "    \"limits_snapshot_applicable\": "
+                  << (config.smoke.limits_snapshot_applicable ? "true" : "false") << "\n";
+    evidence_json << "  }\n";
+    evidence_json << "}\n";
 
     PreSendPlan plan{
         .ok = true,
         .failure = PreSendFailure::None,
         .message = "pre-send plan validated",
         .canonical_json = json.str(),
+        .reviewed_evidence_json = evidence_json.str(),
         .add_command = std::move(command),
         .exact_ext_id_recovery_command = std::move(recovery_command),
     };
     plan.sha256 = cgate::plaza2_sha256_hex(plan.canonical_json);
+    const auto intent_placeholder = std::string("\"authorized_intent_sha256\": \"PENDING\"");
+    const auto intent_value = std::string("\"authorized_intent_sha256\": \"") + plan.sha256 + "\"";
+    while (true) {
+        const auto position = plan.reviewed_evidence_json.find(intent_placeholder);
+        if (position == std::string::npos) {
+            break;
+        }
+        plan.reviewed_evidence_json.replace(position, intent_placeholder.size(), intent_value);
+    }
     if (config.send_test_order &&
         (!valid_sha256(config.authorized_plan_sha256) || config.authorized_plan_sha256 != plan.sha256)) {
         return fail_plan(PreSendFailure::PlanHashMismatch,
@@ -1002,7 +1012,116 @@ bool write_pre_send_plan(const std::filesystem::path& output_directory, const Pr
         error = "cannot write an invalid pre-send plan";
         return false;
     }
-    return atomic_write(output_directory / "pre_send_plan.json", plan.canonical_json, error);
+    if (!atomic_write(output_directory / "authorized_intent.json", plan.canonical_json, error)) {
+        return false;
+    }
+    if (!atomic_write(output_directory / "pre_send_plan.json", plan.canonical_json, error)) {
+        return false;
+    }
+    if (!plan.reviewed_evidence_json.empty() &&
+        !atomic_write(output_directory / "reviewed_execution_evidence.json", plan.reviewed_evidence_json, error)) {
+        return false;
+    }
+    return true;
+}
+
+RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig& config,
+                                                     std::span<const private_state::OwnOrderSnapshot> orders,
+                                                     std::span<const private_state::OwnTradeSnapshot> trades) {
+    RestartReconciliationResult result;
+    result.journal_path = config.journal_root / config.run_id / "journal.json";
+    const auto active = has_unfinished_identifier(config);
+    if (!active) {
+        result.run_found = false;
+        result.locks_retained = false;
+        result.message = "no unfinished identifier locks found";
+        return result;
+    }
+    result.run_found = true;
+    if (!std::filesystem::exists(result.journal_path)) {
+        result.ok = false;
+        result.message = "unfinished identifier locks have no journal; retaining them";
+        return result;
+    }
+
+    std::ifstream input(result.journal_path, std::ios::binary);
+    const std::string journal_text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    if (!input && journal_text.empty()) {
+        result.ok = false;
+        result.message = "unfinished journal could not be read; retaining identifier locks";
+        return result;
+    }
+
+    const auto observation =
+        observe_order(config.ext_id, config.client_code, config.side, config.quantity, orders, trades);
+    if (!observation.has_value() || !observation_terminal(observation) || observation->identity_conflict) {
+        result.state = observation.has_value() ? observation->state : OrderLifecycleState::UnresolvedOrphanIncident;
+        result.message = observation.has_value() && observation->identity_conflict
+                             ? "restart observation has an identity conflict; retaining identifier locks"
+                             : "restart observation is absent or still working; retaining identifier locks";
+        return result;
+    }
+
+    const auto run_directory = result.journal_path.parent_path();
+    std::ostringstream resolution;
+    resolution << "{\n"
+               << "  \"schema\": \"moex.plaza2.restart_reconciliation.v1\",\n"
+               << "  \"run_id\": \"" << json_escape(config.run_id) << "\",\n"
+               << "  \"ext_id\": " << config.ext_id << ",\n"
+               << "  \"state\": \"" << order_lifecycle_state_name(observation->state) << "\",\n"
+               << "  \"public_order_id\": " << observation->public_order_id << ",\n"
+               << "  \"private_order_id\": " << observation->private_order_id << ",\n"
+               << "  \"evidence_consistent\": true,\n"
+               << "  \"locks_released\": true\n"
+               << "}\n";
+    std::string error;
+    if (!atomic_write(run_directory / "restart_reconciliation.json", resolution.str(), error)) {
+        result.ok = false;
+        result.message = "restart resolution record failed: " + error;
+        return result;
+    }
+
+    std::string resolved_journal = journal_text;
+    const auto replace_literal = [](std::string& text, std::string_view from, std::string_view to) {
+        std::size_t offset = 0;
+        while ((offset = text.find(from, offset)) != std::string::npos) {
+            text.replace(offset, from.size(), to);
+            offset += to.size();
+        }
+    };
+    replace_literal(resolved_journal, "\"final_state\": \"unresolved_orphan_incident\"",
+                    std::string("\"final_state\": \"") + std::string(order_lifecycle_state_name(observation->state)) +
+                        "\"");
+    replace_literal(resolved_journal, "\"orphan_incident\": true", "\"orphan_incident\": false");
+    replace_literal(resolved_journal, "\"market_safe_terminal\": false", "\"market_safe_terminal\": true");
+    replace_literal(resolved_journal, "\"evidence_consistent\": false", "\"evidence_consistent\": true");
+    replace_literal(resolved_journal, "\"finished\": false", "\"finished\": true");
+    if (!atomic_write(result.journal_path, resolved_journal, error)) {
+        result.ok = false;
+        result.message = "resolved journal publication failed: " + error;
+        return result;
+    }
+
+    const std::array locks = {
+        ext_lock_path(config),
+        user_lock_path(config, config.add_user_id),
+        user_lock_path(config, config.cancel_user_id),
+        user_lock_path(config, config.recovery_user_id),
+    };
+    std::error_code filesystem_error;
+    for (const auto& lock : locks) {
+        std::filesystem::remove(lock, filesystem_error);
+    }
+    result.state = observation->state;
+    result.resolved = true;
+    result.locks_retained =
+        std::any_of(locks.begin(), locks.end(), [](const auto& lock) { return std::filesystem::exists(lock); });
+    result.message = result.locks_retained ? "restart resolution published but some locks remain"
+                                           : "restart reconciliation resolved a consistent terminal observation";
+    if (result.locks_retained) {
+        result.ok = false;
+    }
+    return result;
 }
 
 OrderLifecycleController::OrderLifecycleController(OrderLifecycleConfig config, OrderLifecycleTransport& transport,

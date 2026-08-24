@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <exception>
 #include <filesystem>
 #include <optional>
@@ -279,9 +280,13 @@ class Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
 
 } // namespace
 
+Plaza2Aggr20BookProjector::Plaza2Aggr20BookProjector(NowFn now)
+    : now_(now ? std::move(now) : NowFn{[] { return Clock::now(); }}) {}
+
 void Plaza2Aggr20BookProjector::reset() {
     staged_rows_.clear();
     committed_ = {};
+    instrument_snapshots_.clear();
     transaction_open_ = false;
 }
 
@@ -327,6 +332,8 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
         auto existing = std::find_if(committed_.levels.begin(), committed_.levels.end(), [&](const auto& level) {
             return level.isin_id == row.isin_id && level.dir == row.dir && level.price_scaled == row.price_scaled;
         });
+        committed_.last_repl_id = std::max(committed_.last_repl_id, row.repl_id);
+        committed_.last_repl_rev = std::max(committed_.last_repl_rev, row.repl_rev);
         if (row.volume <= 0) {
             if (existing != committed_.levels.end()) {
                 committed_.levels.erase(existing);
@@ -338,29 +345,50 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
         } else {
             *existing = row;
         }
-        committed_.last_repl_id = std::max(committed_.last_repl_id, row.repl_id);
-        committed_.last_repl_rev = std::max(committed_.last_repl_rev, row.repl_rev);
     }
 
     committed_.row_count = committed_.levels.size();
+    committed_.committed_at = now_();
+    committed_.exchange_moment = 0;
+    committed_.exchange_moment_ns = 0;
     committed_.bid_depth_levels = 0;
     committed_.ask_depth_levels = 0;
     committed_.top_bid.reset();
     committed_.top_ask.reset();
+    instrument_snapshots_.clear();
     std::set<std::int64_t> instruments;
     for (const auto& level : committed_.levels) {
         instruments.insert(level.isin_id);
+        auto& scoped = instrument_snapshots_[level.isin_id];
+        scoped.isin_id = level.isin_id;
+        scoped.row_count += 1;
+        scoped.last_repl_id = std::max(scoped.last_repl_id, level.repl_id);
+        scoped.last_repl_rev = std::max(scoped.last_repl_rev, level.repl_rev);
+        scoped.exchange_moment = std::max(scoped.exchange_moment, level.moment);
+        scoped.exchange_moment_ns = std::max(scoped.exchange_moment_ns, level.moment_ns);
+        committed_.exchange_moment = std::max(committed_.exchange_moment, level.moment);
+        committed_.exchange_moment_ns = std::max(committed_.exchange_moment_ns, level.moment_ns);
         if (level.dir == 1) {
             committed_.bid_depth_levels += 1;
             if (!committed_.top_bid.has_value() || level.price_scaled > committed_.top_bid->price_scaled) {
                 committed_.top_bid = level;
+            }
+            if (!scoped.top_bid.has_value() || level.price_scaled > scoped.top_bid->price_scaled) {
+                scoped.top_bid = level;
             }
         } else if (level.dir == 2) {
             committed_.ask_depth_levels += 1;
             if (!committed_.top_ask.has_value() || level.price_scaled < committed_.top_ask->price_scaled) {
                 committed_.top_ask = level;
             }
+            if (!scoped.top_ask.has_value() || level.price_scaled < scoped.top_ask->price_scaled) {
+                scoped.top_ask = level;
+            }
         }
+    }
+    for (auto& [unused_isin, scoped] : instrument_snapshots_) {
+        static_cast<void>(unused_isin);
+        scoped.committed_at = committed_.committed_at;
     }
     committed_.instrument_count = instruments.size();
     staged_rows_.clear();
@@ -375,6 +403,14 @@ void Plaza2Aggr20BookProjector::rollback() {
 
 const Plaza2Aggr20Snapshot& Plaza2Aggr20BookProjector::snapshot() const noexcept {
     return committed_;
+}
+
+std::optional<Plaza2Aggr20InstrumentSnapshot> Plaza2Aggr20BookProjector::snapshot_for_isin(std::int64_t isin_id) const {
+    const auto it = instrument_snapshots_.find(isin_id);
+    if (it == instrument_snapshots_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
 }
 
 bool Plaza2Aggr20BookProjector::transaction_open() const noexcept {
