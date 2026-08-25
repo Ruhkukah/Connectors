@@ -1,5 +1,5 @@
 schema=plaza2_t1_candidate_census.v1
-source_sha=97f0d5644a461f1bdb168330124a2d670b2cbc6b
+source_sha=08588f6018809fb0373d8a6db37e113f91badfb3
 futures_observed=330
 membership_pass=327
 session_public_state_1_pass=0

@@ -1,6 +1,6 @@
 {
   "schema": "plaza2_test_connectivity_receipt.v1",
-  "git_sha": "97f0d5644a461f1bdb168330124a2d670b2cbc6b",
+  "git_sha": "08588f6018809fb0373d8a6db37e113f91badfb3",
   "qualification_state": "NOT_READY",
   "terminal_classification": "NOT_READY",
   "qualification_classification": "TEST_CONTOUR_NOT_CURRENTLY_TRADEABLE",
