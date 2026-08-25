@@ -52,6 +52,8 @@ The redacted evidence directory is:
 
 `/home/azgaldov/moex/evidence/plaza2-qualification-t1-20260825T114101Z`
 
+Final code head: `a92cf284d79f3d74aeffa1cb95af0f75a5ad6126`.
+
 It contains the source/runtime/scheme fingerprints, service and socket
 snapshots, nonsecret profile filenames, router-resolution excerpts, the
 repository run output, and the matrices below. Authentication files,
@@ -118,8 +120,9 @@ claim durable orphan journals.
 
 With the repository Python environment selected, the changed qualifier target
 builds and its focused test passes. The changed-target ASan/UBSan build and
-test also pass. The native no-send/privacy checks and `git diff --check` are
-run again for the final head.
+test pass 4/4 across the qualifier, runtime adapter, runtime probe, and
+structural no-send guard. The native no-send/privacy checks pass 3/3, and
+`git diff --check` passes.
 
 The full CTest run is 156/157: all functional tests pass, while
 `source_style_check` reports pre-existing AppleClang-format differences in
