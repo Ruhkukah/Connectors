@@ -46,6 +46,13 @@ std::string stream_name(StreamCode stream_code) {
     return descriptor == nullptr ? std::string{} : std::string(descriptor->stream_name);
 }
 
+std::string stream_label(const Plaza2LiveStreamConfig& stream) {
+    if (!stream.label.empty()) {
+        return stream.label;
+    }
+    return stream_name(stream.stream_code);
+}
+
 std::size_t stream_index(const EngineState& state, StreamCode stream_code) {
     for (std::size_t index = 0; index < state.streams.size(); ++index) {
         if (state.streams[index].stream_code == stream_code) {
@@ -438,7 +445,8 @@ struct Plaza2LiveSessionRunner::Impl {
         for (const auto& stream : config.streams) {
             health.streams.push_back({
                 .stream_code = stream.stream_code,
-                .stream_name = stream_name(stream.stream_code),
+                .stream_name = stream_label(stream),
+                .required_online = stream.require_online,
             });
         }
     }
@@ -505,9 +513,12 @@ struct Plaza2LiveSessionRunner::Impl {
         for (const auto& stream : config.streams) {
             effective_streams.push_back({
                 .stream_code = stream.stream_code,
+                .label = stream.label,
                 .settings =
                     resolve_stream_scheme_path(render_setting(stream.settings), probe_report.layout.scheme_path),
                 .open_settings = render_setting(stream.open_settings),
+                .require_online = stream.require_online,
+                .handler = stream.handler,
             });
         }
 
@@ -533,25 +544,45 @@ struct Plaza2LiveSessionRunner::Impl {
         }
         append_operator_log("connection=open");
 
+        if (config.open_publisher) {
+            if (config.publisher_settings.empty()) {
+                return fail("publisher_settings must be provided when open_publisher is enabled");
+            }
+            if (const auto create_error = publisher.create(connection, render_setting(config.publisher_settings));
+                create_error) {
+                return fail(create_error.message);
+            }
+            health.publisher_created = true;
+            append_operator_log("publisher=create");
+            if (const auto open_error = publisher.open(render_setting(config.publisher_open_settings)); open_error) {
+                return fail(open_error.message);
+            }
+            health.publisher_opened = true;
+            append_operator_log("publisher=open");
+        }
+
         listeners.clear();
         listeners.reserve(effective_streams.size());
         for (const auto& stream : effective_streams) {
             LiveListenerHandle handle{
                 .config = stream,
             };
-            if (const auto create_error =
-                    handle.listener.create(connection, stream.stream_code, stream.settings, &projector_bridge);
-                create_error) {
+            const auto create_error =
+                stream.stream_code == kNoStreamCode
+                    ? handle.listener.create(connection, stream.settings)
+                    : handle.listener.create(connection, stream.stream_code, stream.settings,
+                                             stream.handler == nullptr ? &projector_bridge : stream.handler);
+            if (create_error) {
                 return fail(create_error.message);
             }
             mark_stream_created(stream.stream_code);
-            append_operator_log("listener=create stream=" + stream_name(stream.stream_code));
+            append_operator_log("listener=create stream=" + stream_label(stream));
 
             if (const auto open_error = handle.listener.open(stream.open_settings); open_error) {
                 return fail(open_error.message);
             }
             mark_stream_opened(stream.stream_code);
-            append_operator_log("listener=open stream=" + stream_name(stream.stream_code));
+            append_operator_log("listener=open stream=" + stream_label(stream));
             listeners.push_back(std::move(handle));
         }
 
@@ -601,6 +632,12 @@ struct Plaza2LiveSessionRunner::Impl {
             static_cast<void>(it->listener.destroy());
         }
         listeners.clear();
+        if (health.publisher_created) {
+            static_cast<void>(publisher.close());
+            static_cast<void>(publisher.destroy());
+            health.publisher_created = false;
+            health.publisher_opened = false;
+        }
         static_cast<void>(connection.close());
         static_cast<void>(connection.destroy());
         static_cast<void>(env.close());
@@ -639,25 +676,35 @@ struct Plaza2LiveSessionRunner::Impl {
         if (config.connection_settings.empty()) {
             return fail("connection_settings must be provided explicitly");
         }
-        if (config.streams.size() != kRequiredPrivateStreams.size()) {
-            return fail("Phase 3F requires exactly the five private replication streams");
-        }
-
         std::vector<StreamCode> present_streams;
         present_streams.reserve(config.streams.size());
         for (const auto& stream : config.streams) {
             if (stream.settings.empty()) {
                 return fail("every configured PLAZA II listener must provide settings");
             }
-            present_streams.push_back(stream.stream_code);
+            if (stream.stream_code != kNoStreamCode) {
+                present_streams.push_back(stream.stream_code);
+            }
         }
         std::sort(present_streams.begin(), present_streams.end());
+        if (std::adjacent_find(present_streams.begin(), present_streams.end()) != present_streams.end()) {
+            return fail("PLAZA II listener stream codes must be unique");
+        }
 
         auto expected_streams = std::vector<StreamCode>(kRequiredPrivateStreams.begin(), kRequiredPrivateStreams.end());
         std::sort(expected_streams.begin(), expected_streams.end());
-        if (present_streams != expected_streams) {
-            return fail("Phase 3F stream set must be exactly FORTS_TRADE_REPL, FORTS_USERORDERBOOK_REPL, "
+        if (!std::includes(present_streams.begin(), present_streams.end(), expected_streams.begin(),
+                           expected_streams.end())) {
+            return fail("PLAZA II listener set must include FORTS_TRADE_REPL, FORTS_USERORDERBOOK_REPL, "
                         "FORTS_POS_REPL, FORTS_PART_REPL, and FORTS_REFDATA_REPL");
+        }
+        if (config.open_publisher && config.publisher_settings.empty()) {
+            return fail("publisher_settings must be provided when open_publisher is enabled");
+        }
+        for (const auto& stream : config.streams) {
+            if (stream.stream_code == kNoStreamCode && stream.require_online) {
+                return fail("untyped PLAZA II listeners must not require replication ONLINE");
+            }
         }
         return {
             .ok = true,
@@ -781,9 +828,10 @@ struct Plaza2LiveSessionRunner::Impl {
         health.counts.own_order_count = projector.own_orders().size();
         health.counts.own_trade_count = projector.own_trades().size();
         health.ready =
-            health.runtime_probe_ok && health.scheme_drift_ok &&
+            health.runtime_probe_ok && health.scheme_drift_ok && (!config.open_publisher || health.publisher_opened) &&
             std::all_of(health.streams.begin(), health.streams.end(), [](const Plaza2LiveStreamStatus& stream) {
-                return stream.created && stream.opened && stream.online && stream.snapshot_complete;
+                return stream.created && stream.opened &&
+                       (!stream.required_online || (stream.online && stream.snapshot_complete));
             });
     }
 
@@ -810,6 +858,7 @@ struct Plaza2LiveSessionRunner::Impl {
     LiveProjectorBridge projector_bridge;
     Plaza2Env env;
     Plaza2Connection connection;
+    Plaza2Publisher publisher;
     std::vector<LiveListenerHandle> listeners;
     std::vector<Plaza2LiveStreamConfig> effective_streams;
     std::vector<std::string> operator_log_lines;

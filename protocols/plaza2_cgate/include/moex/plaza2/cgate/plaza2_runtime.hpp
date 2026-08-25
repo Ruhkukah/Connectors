@@ -124,6 +124,7 @@ struct Plaza2RuntimeProbeReport {
     Plaza2Compatibility compatibility{Plaza2Compatibility::Unknown};
     Plaza2RuntimeLayout layout;
     Plaza2SchemeDriftReport scheme_drift;
+    std::string runtime_library_sha256;
     std::vector<std::string> resolved_symbols;
     std::vector<Plaza2ProbeIssue> issues;
     bool runtime_root_present{false};

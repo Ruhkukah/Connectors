@@ -50,11 +50,16 @@ function(moex_add_app target_name source_file link_library)
     add_executable(${target_name} "${MOEX_SOURCE_ROOT}/apps/${source_file}")
     target_link_libraries(${target_name} PRIVATE ${link_library})
     target_compile_features(${target_name} PRIVATE cxx_std_20)
+    if(MOEX_SOURCE_GIT_SHA)
+        target_compile_definitions(${target_name} PRIVATE MOEX_SOURCE_GIT_SHA="${MOEX_SOURCE_GIT_SHA}")
+    endif()
     set_target_properties(${target_name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}")
 endfunction()
 
 moex_add_app(moex_twime_cert_runner twime_cert_runner.cpp moex_twime_trade)
 moex_add_app(moex_plaza2_test_runner plaza2_test_runner.cpp moex_plaza2_cgate_live_session)
+moex_add_app(moex_plaza2_test_connectivity_qualifier plaza2_test_connectivity_qualifier.cpp
+    moex_plaza2_cgate_connectivity_qualifier)
 moex_add_app(moex_plaza2_aggr20_md_test_runner plaza2_aggr20_md_test_runner.cpp moex_plaza2_cgate_aggr20_md)
 moex_add_app(moex_plaza2_order_lifecycle_runner plaza2_order_lifecycle_runner.cpp moex_plaza2_trade_order_lifecycle)
 moex_add_app(moex_plaza2_twime_integrated_test_runner plaza2_twime_integrated_test_runner.cpp

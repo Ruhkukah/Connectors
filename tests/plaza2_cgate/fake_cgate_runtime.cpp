@@ -393,8 +393,8 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                 .fields =
                     {
                         {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplId,
-                         .kind = UnsignedInteger,
-                         .unsigned_value = 2101},
+                         .kind = SignedInteger,
+                         .signed_value = 2101},
                         {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplRev,
                          .kind = SignedInteger,
                          .signed_value = 21},
@@ -426,8 +426,8 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                 .fields =
                     {
                         {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplId,
-                         .kind = UnsignedInteger,
-                         .unsigned_value = 2102},
+                         .kind = SignedInteger,
+                         .signed_value = 2102},
                         {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplRev,
                          .kind = SignedInteger,
                          .signed_value = 22},

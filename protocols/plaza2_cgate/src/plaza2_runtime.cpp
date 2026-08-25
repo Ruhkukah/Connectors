@@ -1734,6 +1734,9 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
     } else {
         report.layout.library_path = *library_path;
         report.runtime_library_present = std::filesystem::exists(*library_path);
+        if (report.runtime_library_present) {
+            report.runtime_library_sha256 = sha256_hex(*library_path);
+        }
         auto library_issues = std::vector<Plaza2ProbeIssue>{};
         auto resolved_symbols = std::vector<std::string>{};
         auto api = load_runtime_api(*library_path, &resolved_symbols, &library_issues);

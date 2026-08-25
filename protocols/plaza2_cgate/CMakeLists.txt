@@ -122,3 +122,18 @@ target_include_directories(moex_plaza2_cgate_aggr20_md
         "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 
 target_compile_features(moex_plaza2_cgate_aggr20_md PUBLIC cxx_std_20)
+
+add_library(moex_plaza2_cgate_connectivity_qualifier STATIC
+    src/plaza2_trade_connectivity_qualifier.cpp)
+
+target_link_libraries(moex_plaza2_cgate_connectivity_qualifier
+    PUBLIC
+        moex_plaza2_cgate_aggr20_md
+        moex_plaza2_cgate_live_session)
+
+target_include_directories(moex_plaza2_cgate_connectivity_qualifier
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+
+target_compile_features(moex_plaza2_cgate_connectivity_qualifier PUBLIC cxx_std_20)
