@@ -83,9 +83,16 @@ struct OrderLifecyclePollResult {
     std::vector<OrderObservation> observations;
 };
 
+struct PreSendPlan;
+
 class OrderLifecycleTransport {
   public:
     virtual ~OrderLifecycleTransport() = default;
+    // The controller binds the exact, already-authorized static plan before
+    // opening a journal or allowing any transport-side AddOrder path.  A
+    // transport-neutral scripted implementation may accept this binding as a
+    // no-op; concrete transports must retain and enforce the bound identity.
+    [[nodiscard]] virtual plaza2::cgate::Plaza2Error bind_authorized_plan(const PreSendPlan& plan) = 0;
     [[nodiscard]] virtual plaza2::cgate::Plaza2PublisherMessageResult post(const Plaza2TradeEncodedCommand& command,
                                                                            std::uint32_t user_id) = 0;
     [[nodiscard]] virtual plaza2::cgate::Plaza2PublisherMessageResult
@@ -118,7 +125,6 @@ struct OrderSmokeSnapshot {
     std::int64_t aggr20_source_revision{0};
     std::string aggr20_observed_at_utc;
     std::uint64_t aggr20_age_ms{0};
-    std::uint64_t max_aggr20_age_ms{0};
     std::string trading_day;
     std::string session_id;
     std::string session_state;
@@ -133,6 +139,8 @@ struct OrderSmokePolicy {
     std::string version;
     std::string sha256;
     std::uint32_t max_distance_ticks{0};
+    std::uint64_t max_aggr20_age_ms{0};
+    bool require_zero_starting_position{false};
 };
 
 struct OrderLifecycleConfig {

@@ -1,9 +1,10 @@
-# PLAZA II TEST trade transport V1 review
+# PLAZA II TEST trade transport V1.2 review
 
 ## Scope and stop gate
 
 This increment starts from merged-main `cc43c16` (PR #26). It adds a
-TEST-only, fake-runtime transport path for offline semantic tests. It does not
+TEST-only, fake-runtime transport path for offline semantic tests and closes
+the V1.2 authorization-continuity gate on PR #27. It does not
 add a live operator runner, a broker executable, a Python/VPS wrapper, a
 production transport, or a network command. The transport host refuses a
 non-TEST runtime and is exercised only with the repository fake CGate runtime
@@ -24,18 +25,26 @@ then the connection and environment. Private state, AGGR20 state, reply
 correlation, and publisher operations therefore share one fake connection and
 one event-processing loop.
 
-`Plaza2TestTradeTransport` implements `OrderLifecycleTransport`. It posts the
-already encoded AddOrder, DelOrder, and exact-ext DelUserOrders payloads by
+`Plaza2TestTradeTransport` implements `OrderLifecycleTransport`. The lifecycle
+controller binds one exact `PreSendPlan` after plan-hash validation and before
+journal creation or transport startup. The concrete transport retains that
+plan SHA and rejects an AddOrder unless the plan canonical JSON, AddOrder
+payload hash, exact-ext recovery payload hash, profile, IDs, environment, and
+policy all equal its authorized intent. It posts the already encoded AddOrder,
+DelOrder, and exact-ext DelUserOrders payloads by
 message name, preserves CGate's `DefinitelyNotSent`, `PossiblySent`, and
 `Posted` certainty, never retries an AddOrder, and polls committed private
 replication plus correlated replies. A publisher timeout remains uncertainty;
 it is never converted into a rejection or cancellation.
 
 AddOrder is accepted only after a recomputed canonical authorized intent (with
-payload, participant, identifier, policy, and profile fingerprints) binds the
-encoded command byte-for-byte and the target-specific execution-safety receipt
+payload, participant, identifier, profile, and fixed entry-policy fingerprints)
+binds the encoded command byte-for-byte and the target-specific execution-safety receipt
 has been atomically published. Loopback alone is not treated as evidence of a
-fake runtime.
+fake runtime. The canonical fixed policy includes `max_aggr20_age_ms` and
+`require_zero_starting_position`; transport configuration may only apply a
+stricter age/position override. The receipt records the authorized maximum and
+zero-position policy alongside observed local age and the selected position row.
 The receipt is derived from the current committed projectors immediately before
 the post and contains the target BBO, local monotonic age, exchange evidence,
 session/instrument state, exact client limit-row hash, stream readiness,
@@ -71,7 +80,9 @@ futures min-step, the exact session in state `1` (running; Add + Cancel
 allowed), every required private stream and AGGR20 epoch online and
 snapshot-complete, exactly one matching seven-symbol client limit row with
 `limits_set=true`, and (when requested) exactly one matching client position
-row with `xpos=0`.
+row with the authorized seven-symbol participant, expected `account_type` (`2`
+for a normal client, locked BF semantics `1` for client code `000`), and
+`xpos=0`.
 
 ## Profile and ABI controls
 
@@ -100,6 +111,10 @@ actual concrete transport and fake CGate runtime for:
   contradictory AddOrder identity fail-closed results, and the Add-timeout
   recovery path to factual cancellation, including a working AddOrder followed
   by DelOrder and a publisher post timeout with recovery still available;
+- exact plan binding before AddOrder, refusal without a binding, controller /
+  transport policy-SHA mismatch before host startup, canonical age and
+  zero-position policy continuity, correct normal-client account type, and
+  wrong-account-type zero-position refusal;
 - two instrument AGGR20 isolation and target-only freshness, one-sided/stale/
   absent targets, scheduled/running/suspended/completed session states,
   missing or non-tradable session, missing or wrong client limit row, non-zero starting
@@ -118,6 +133,14 @@ mismatched observations, and writes a separate SHA-referencing prepared then
 verified resolution record before releasing locks.
 
 ## Final invariant
+
+There is exactly one human-authorized static intent from plan creation through
+the concrete transport post: the controller binds the canonical plan SHA before
+journal/host startup, and the transport refuses AddOrder unless its payload,
+recovery command, identifiers, profile, environment, and fixed entry policy
+match that bound plan. Dynamic BBO, timestamps, session state, local age, and
+position observations remain receipt evidence rather than authorization-hash
+inputs.
 
 The transport may release no identifier lock merely because a terminal-looking
 row arrived. For any order that may have existed, a `Filled` or `Cancelled`
@@ -141,7 +164,7 @@ The final offline validation was green:
 | TWIME label | 74/74 pass |
 | Sanitizer label | 66/66 pass |
 | .NET ABI checks | 2/2 pass |
-| Changed-target ASan/UBSan | 6/6 pass |
+| Changed-target ASan/UBSan | 3/3 pass |
 | No-test/no-operator minimal build | 57/57 build steps |
 | `git diff --check`, source/repo style, Unicode | pass |
 | Native offline plan/privacy check | pass |

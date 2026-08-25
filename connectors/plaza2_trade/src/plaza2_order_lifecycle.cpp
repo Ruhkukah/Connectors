@@ -878,8 +878,8 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     if (price->scaled % tick->scaled != 0) {
         return fail_plan(PreSendFailure::PriceNotTickAligned, "limit price is not aligned to the instrument tick");
     }
-    if (!config.smoke.aggr20_two_sided || config.smoke.max_aggr20_age_ms == 0 ||
-        config.smoke.aggr20_age_ms > config.smoke.max_aggr20_age_ms) {
+    if (!config.smoke.aggr20_two_sided || config.policy.max_aggr20_age_ms == 0 ||
+        config.smoke.aggr20_age_ms > config.policy.max_aggr20_age_ms) {
         return fail_plan(PreSendFailure::Aggr20NotFreshTwoSided, "AGGR20 must be fresh and two-sided");
     }
     const bool marketable =
@@ -983,7 +983,10 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     json << "  \"smoke_policy\": {\n";
     json << "    \"version\": \"" << json_escape(config.policy.version) << "\",\n";
     json << "    \"sha256\": \"" << config.policy.sha256 << "\",\n";
-    json << "    \"max_distance_ticks\": " << config.policy.max_distance_ticks << "\n";
+    json << "    \"max_distance_ticks\": " << config.policy.max_distance_ticks << ",\n";
+    json << "    \"max_aggr20_age_ms\": " << config.policy.max_aggr20_age_ms << ",\n";
+    json << "    \"require_zero_starting_position\": "
+         << (config.policy.require_zero_starting_position ? "true" : "false") << "\n";
     json << "  }\n";
     json << "}\n";
 
@@ -1001,7 +1004,7 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     evidence_json << "    \"aggr20_observed_at_utc\": \"" << json_escape(config.smoke.aggr20_observed_at_utc)
                   << "\",\n";
     evidence_json << "    \"aggr20_age_ms\": " << config.smoke.aggr20_age_ms << ",\n";
-    evidence_json << "    \"max_aggr20_age_ms\": " << config.smoke.max_aggr20_age_ms << ",\n";
+    evidence_json << "    \"max_aggr20_age_ms\": " << config.policy.max_aggr20_age_ms << ",\n";
     evidence_json << "    \"trading_day\": \"" << json_escape(config.smoke.trading_day) << "\",\n";
     evidence_json << "    \"session_id\": \"" << json_escape(config.smoke.session_id) << "\",\n";
     evidence_json << "    \"session_state\": \"" << json_escape(config.smoke.session_state) << "\",\n";
@@ -1231,6 +1234,15 @@ OrderLifecycleResult OrderLifecycleController::run() {
         result.message = "dry-run wrote canonical pre_send_plan.json without opening CGate";
         result.transitions = {OrderLifecycleState::DefinitelyNotSent};
         result.journal_path = output_directory / "pre_send_plan.json";
+        return result;
+    }
+
+    const auto binding_error = transport_.bind_authorized_plan(plan);
+    if (binding_error) {
+        result.market_safe_terminal = true;
+        result.state = OrderLifecycleState::DefinitelyNotSent;
+        result.message = "authorization binding failed: " + binding_error.message;
+        result.transitions = {OrderLifecycleState::DefinitelyNotSent};
         return result;
     }
 

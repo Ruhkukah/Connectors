@@ -166,7 +166,7 @@ bool parse_arguments(int argc, char** argv, Arguments& arguments, std::string& e
             }
         } else if (option == "--max-aggr20-age-ms") {
             const auto value = require_value(index, option);
-            if (!parse_integer(value, arguments.config.smoke.max_aggr20_age_ms)) {
+            if (!parse_integer(value, arguments.config.policy.max_aggr20_age_ms)) {
                 error = "invalid --max-aggr20-age-ms";
             }
         } else if (option == "--trading-day") {
@@ -203,6 +203,8 @@ bool parse_arguments(int argc, char** argv, Arguments& arguments, std::string& e
             if (!parse_integer(value, arguments.config.policy.max_distance_ticks)) {
                 error = "invalid --max-distance-ticks";
             }
+        } else if (option == "--require-zero-starting-position") {
+            arguments.config.policy.require_zero_starting_position = true;
         } else if (option == "--plan-sha256") {
             arguments.config.authorized_plan_sha256 = require_value(index, option);
         } else if (option == "--instrument-exists") {

@@ -66,6 +66,11 @@ class ScriptTransport final : public OrderLifecycleTransport {
   public:
     explicit ScriptTransport(FakeClock& clock) : clock_(clock) {}
 
+    cgate::Plaza2Error bind_authorized_plan(const PreSendPlan& plan) override {
+        bound_plan_sha256 = plan.sha256;
+        return {};
+    }
+
     cgate::Plaza2PublisherMessageResult post(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) override {
         recovery_posts.push_back(false);
         return submit(command, user_id);
@@ -109,6 +114,7 @@ class ScriptTransport final : public OrderLifecycleTransport {
     std::vector<Plaza2TradeEncodedCommand> commands;
     std::vector<std::uint32_t> user_ids;
     std::vector<bool> recovery_posts;
+    std::string bound_plan_sha256;
 
   private:
     cgate::Plaza2PublisherMessageResult submit(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) {
@@ -187,7 +193,6 @@ OrderLifecycleConfig base_config(const std::filesystem::path& root, std::string 
     config.smoke.aggr20_source_revision = 7;
     config.smoke.aggr20_observed_at_utc = "2026-08-20T07:00:00.000Z";
     config.smoke.aggr20_age_ms = 25;
-    config.smoke.max_aggr20_age_ms = 1000;
     config.smoke.trading_day = "2026-08-20";
     config.smoke.session_id = "morning-1";
     config.smoke.session_state = "trading";
@@ -199,6 +204,7 @@ OrderLifecycleConfig base_config(const std::filesystem::path& root, std::string 
     config.policy.version = "smoke-v2.1";
     config.policy.sha256 = std::string(64, 'b');
     config.policy.max_distance_ticks = 4;
+    config.policy.max_aggr20_age_ms = 1000;
     config.add_observation_timeout = std::chrono::seconds(3);
     config.cancel_observation_timeout = std::chrono::seconds(3);
     config.max_poll_attempts = 8;
@@ -307,7 +313,6 @@ void test_reviewed_evidence_hash_sensitivity() {
         {"aggr20_observed_at_utc",
          [](auto& config) { config.smoke.aggr20_observed_at_utc = "2026-08-20T07:00:00.001Z"; }},
         {"aggr20_age_ms", [](auto& config) { ++config.smoke.aggr20_age_ms; }},
-        {"max_aggr20_age_ms", [](auto& config) { ++config.smoke.max_aggr20_age_ms; }},
         {"trading_day", [](auto& config) { config.smoke.trading_day = "2026-08-21"; }},
         {"session_id", [](auto& config) { config.smoke.session_id = "morning-2"; }},
         {"session_state", [](auto& config) { config.smoke.session_state = "trading-reviewed"; }},
@@ -340,6 +345,8 @@ void test_reviewed_evidence_hash_sensitivity() {
         {"policy_version", [](auto& config) { config.policy.version = "smoke-v2.2"; }},
         {"policy_sha256", [](auto& config) { config.policy.sha256 = std::string(64, 'c'); }},
         {"max_distance_ticks", [](auto& config) { ++config.policy.max_distance_ticks; }},
+        {"max_aggr20_age_ms", [](auto& config) { ++config.policy.max_aggr20_age_ms; }},
+        {"require_zero_starting_position", [](auto& config) { config.policy.require_zero_starting_position = true; }},
     };
     for (const auto& [name, mutate] : intent_mutations) {
         auto changed = baseline_config;

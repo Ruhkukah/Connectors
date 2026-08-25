@@ -57,6 +57,8 @@ struct Plaza2AuthorizedOrderIntent {
     std::string policy_version;
     std::string policy_sha256;
     std::uint32_t max_distance_ticks{0};
+    std::uint64_t max_aggr20_age_ms{0};
+    bool require_zero_starting_position{false};
 };
 
 [[nodiscard]] std::string canonical_authorized_order_intent_json(const Plaza2AuthorizedOrderIntent& intent);
@@ -82,6 +84,8 @@ struct Plaza2ExecutionSafetyReceipt {
     std::uint64_t position_source_commit_sequence{0};
     std::string private_streams_json;
     std::chrono::milliseconds local_age{0};
+    std::uint64_t authorized_max_aggr20_age_ms{0};
+    bool require_zero_starting_position{false};
     bool passive_non_marketable{false};
     bool bbo_distance_allowed{false};
     bool quantity_one{false};
@@ -157,7 +161,9 @@ struct Plaza2TestTradeTransportConfig {
     Plaza2TestSessionHostConfig host;
     std::int64_t target_isin_id{0};
     std::int32_t target_session_id{0};
-    std::chrono::milliseconds max_aggr20_age{std::chrono::seconds(2)};
+    // Zero means use the bound intent exactly. A non-zero value is allowed
+    // only as a stricter runtime override (negative forces a stale refusal).
+    std::chrono::milliseconds max_aggr20_age{0};
     std::optional<Plaza2AuthorizedOrderIntent> authorized_intent;
     std::filesystem::path execution_safety_receipt_path;
     bool require_zero_starting_position{false};
@@ -181,6 +187,7 @@ class Plaza2TestTradeTransport final : public OrderLifecycleTransport {
     Plaza2TestTradeTransport(Plaza2TestTradeTransport&&) noexcept;
     Plaza2TestTradeTransport& operator=(Plaza2TestTradeTransport&&) noexcept;
 
+    [[nodiscard]] plaza2::cgate::Plaza2Error bind_authorized_plan(const PreSendPlan& plan) override;
     [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult post(const Plaza2TradeEncodedCommand& command,
                                                                    std::uint32_t user_id) override;
     [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult

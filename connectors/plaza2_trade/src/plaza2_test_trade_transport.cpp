@@ -785,7 +785,10 @@ std::string canonical_authorized_order_intent_json(const Plaza2AuthorizedOrderIn
          << "  \"smoke_policy\": {\n"
          << "    \"version\": \"" << json_escape_local(intent.policy_version) << "\",\n"
          << "    \"sha256\": \"" << intent.policy_sha256 << "\",\n"
-         << "    \"max_distance_ticks\": " << intent.max_distance_ticks << "\n"
+         << "    \"max_distance_ticks\": " << intent.max_distance_ticks << ",\n"
+         << "    \"max_aggr20_age_ms\": " << intent.max_aggr20_age_ms << ",\n"
+         << "    \"require_zero_starting_position\": " << (intent.require_zero_starting_position ? "true" : "false")
+         << "\n"
          << "  }\n"
          << "}\n";
     return json.str();
@@ -1104,6 +1107,31 @@ struct Plaza2TestTradeTransport::Impl {
         return std::min(intent()->max_distance_ticks, config.target_max_distance_ticks);
     }
 
+    [[nodiscard]] std::chrono::milliseconds effective_max_aggr20_age() const noexcept {
+        const auto* authorized = intent();
+        if (authorized == nullptr) {
+            return std::chrono::milliseconds::zero();
+        }
+        const auto authorized_age =
+            std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(authorized->max_aggr20_age_ms));
+        if (config.max_aggr20_age.count() == 0) {
+            return authorized_age;
+        }
+        return std::min(config.max_aggr20_age, authorized_age);
+    }
+
+    [[nodiscard]] bool require_zero_starting_position() const noexcept {
+        return intent() != nullptr &&
+               (intent()->require_zero_starting_position || config.require_zero_starting_position);
+    }
+
+    [[nodiscard]] std::int8_t expected_position_account_type() const noexcept {
+        // FORTS_POS_REPL uses account_type=1 for the brokerage-firm row and
+        // account_type=2 for a normal client row. The locked BF form uses
+        // client_code=000.
+        return intent() != nullptr && intent()->client_code == "000" ? 1 : 2;
+    }
+
     [[nodiscard]] std::string participant_code() const {
         if (intent() != nullptr && !intent()->broker_code.empty() && !intent()->client_code.empty()) {
             return intent()->broker_code + intent()->client_code;
@@ -1121,7 +1149,10 @@ struct Plaza2TestTradeTransport::Impl {
             !valid_hex_sha256(authorized->recovery_payload_sha256) || !valid_hex_sha256(authorized->policy_sha256)) {
             return invalid("authorized intent hashes are not valid SHA-256 values");
         }
-        if (authorized->quantity != 1 || authorized->isin_id <= 0 || authorized->ext_id <= 0 ||
+        if (authorized->max_aggr20_age_ms == 0 ||
+            authorized->max_aggr20_age_ms >
+                static_cast<std::uint64_t>(std::numeric_limits<std::chrono::milliseconds::rep>::max()) ||
+            authorized->quantity != 1 || authorized->isin_id <= 0 || authorized->ext_id <= 0 ||
             authorized->add_user_id == 0 || authorized->cancel_user_id == 0 || authorized->recovery_user_id == 0 ||
             authorized->add_user_id == authorized->cancel_user_id ||
             authorized->add_user_id == authorized->recovery_user_id ||
@@ -1162,6 +1193,11 @@ struct Plaza2TestTradeTransport::Impl {
         if (config.target_max_distance_ticks > authorized->max_distance_ticks) {
             return invalid("transport distance override cannot weaken authorized policy");
         }
+        if (config.max_aggr20_age.count() > 0 &&
+            config.max_aggr20_age >
+                std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(authorized->max_aggr20_age_ms))) {
+            return invalid("transport AGGR20 age override cannot weaken authorized policy");
+        }
         if (config.observation_ext_id != 0 && config.observation_ext_id != authorized->ext_id) {
             return invalid("duplicated observation_ext_id contradicts the authorized intent");
         }
@@ -1175,6 +1211,25 @@ struct Plaza2TestTradeTransport::Impl {
             config.observation_client_code != participant_code()) {
             return invalid("observation client identity cannot select a different participant");
         }
+        return {};
+    }
+
+    Plaza2Error bind_authorized_plan(const PreSendPlan& plan) {
+        if (!plan.ok || plan.sha256.empty() || plan.canonical_json.empty()) {
+            return invalid("cannot bind an invalid pre-send plan");
+        }
+        if (const auto intent_error = validate_intent(); intent_error) {
+            return intent_error;
+        }
+        const auto* authorized = intent();
+        if (authorized == nullptr || plan.sha256 != authorized->sha256 ||
+            plan.canonical_json != canonical_authorized_order_intent_json(*authorized) ||
+            cgate::plaza2_sha256_hex(plan.add_command.payload) != authorized->add_payload_sha256 ||
+            cgate::plaza2_sha256_hex(plan.exact_ext_id_recovery_command.payload) !=
+                authorized->recovery_payload_sha256) {
+            return invalid("pre-send plan is not the exact authorized order intent");
+        }
+        bound_authorized_plan_sha256 = plan.sha256;
         return {};
     }
 
@@ -1240,7 +1295,7 @@ struct Plaza2TestTradeTransport::Impl {
         if (!scoped.has_value() || !scoped->top_bid.has_value() || !scoped->top_ask.has_value()) {
             return invalid("target AGGR20 snapshot is missing or not two-sided");
         }
-        if (std::chrono::steady_clock::now() - scoped->committed_at > config.max_aggr20_age) {
+        if (std::chrono::steady_clock::now() - scoped->committed_at > effective_max_aggr20_age()) {
             return invalid("target AGGR20 snapshot is stale");
         }
         const auto& private_state = host.private_state();
@@ -1290,14 +1345,25 @@ struct Plaza2TestTradeTransport::Impl {
             return invalid(matching_limit_count == 0 ? "applicable committed client limit row is missing or unset"
                                                      : "multiple applicable committed client limit rows are ambiguous");
         }
-        if (config.require_zero_starting_position) {
+        const auto expected_account_type = expected_position_account_type();
+        const auto matching_positions = std::count_if(
+            private_state.positions().begin(), private_state.positions().end(), [&](const auto& candidate) {
+                return candidate.scope == plaza2::private_state::PositionScope::kClient &&
+                       candidate.isin_id == target && candidate.account_code == participant_code() &&
+                       candidate.account_type == expected_account_type;
+            });
+        if (require_zero_starting_position() && matching_positions != 1) {
+            return invalid(matching_positions == 0
+                               ? "target starting position row is missing or has the wrong account type"
+                               : "multiple applicable target starting position rows are ambiguous");
+        }
+        if (require_zero_starting_position()) {
             const auto position = std::find_if(
                 private_state.positions().begin(), private_state.positions().end(), [&](const auto& candidate) {
-                    return candidate.isin_id == target && candidate.account_code == participant_code();
+                    return candidate.scope == plaza2::private_state::PositionScope::kClient &&
+                           candidate.isin_id == target && candidate.account_code == participant_code() &&
+                           candidate.account_type == expected_account_type;
                 });
-            if (position == private_state.positions().end()) {
-                return invalid("target starting position row is missing");
-            }
             if (position->xpos != 0) {
                 return invalid("target starting position is not zero");
             }
@@ -1347,16 +1413,18 @@ struct Plaza2TestTradeTransport::Impl {
             return candidate.scope == plaza2::private_state::PositionScope::kClient &&
                    candidate.account_code == participant_code() && candidate.limits_set;
         });
+        const auto expected_account_type = expected_position_account_type();
         const auto position =
             std::find_if(state.positions().begin(), state.positions().end(), [&](const auto& candidate) {
                 return candidate.scope == plaza2::private_state::PositionScope::kClient &&
-                       candidate.isin_id == target && candidate.account_code == participant_code();
+                       candidate.isin_id == target && candidate.account_code == participant_code() &&
+                       candidate.account_type == expected_account_type;
             });
         if (instrument == state.instruments().end() || session == state.sessions().end() ||
             limit == state.limits().end()) {
             return invalid("execution-safety receipt lacks target refdata/session/limit evidence");
         }
-        if (config.require_zero_starting_position && position == state.positions().end()) {
+        if (require_zero_starting_position() && position == state.positions().end()) {
             return invalid("execution-safety receipt lacks the required starting position evidence");
         }
 
@@ -1408,7 +1476,9 @@ struct Plaza2TestTradeTransport::Impl {
         }
         receipt.local_age = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
                                                                                   scoped->committed_at);
-        if (receipt.local_age > config.max_aggr20_age) {
+        receipt.authorized_max_aggr20_age_ms = config.authorized_intent->max_aggr20_age_ms;
+        receipt.require_zero_starting_position = config.authorized_intent->require_zero_starting_position;
+        if (receipt.local_age > effective_max_aggr20_age()) {
             return invalid("execution-safety receipt observed a stale target AGGR20 snapshot");
         }
         receipt.quantity_one = config.authorized_intent->quantity == 1;
@@ -1442,6 +1512,9 @@ struct Plaza2TestTradeTransport::Impl {
              << "  \"aggr20_repl_id\": " << scoped->last_repl_id << ",\n"
              << "  \"aggr20_repl_rev\": " << scoped->last_repl_rev << ",\n"
              << "  \"local_age_ms\": " << receipt.local_age.count() << ",\n"
+             << "  \"authorized_max_aggr20_age_ms\": " << receipt.authorized_max_aggr20_age_ms << ",\n"
+             << "  \"require_zero_starting_position\": " << (receipt.require_zero_starting_position ? "true" : "false")
+             << ",\n"
              << "  \"exchange_moment\": " << scoped->exchange_moment << ",\n"
              << "  \"exchange_moment_ns\": " << scoped->exchange_moment_ns << ",\n"
              << "  \"aggr_online\": " << (receipt.aggr_online ? "true" : "false") << ",\n"
@@ -1495,6 +1568,12 @@ struct Plaza2TestTradeTransport::Impl {
             return result;
         }
         if (command.command_kind == Plaza2TradeCommandKind::AddOrder) {
+            if (bound_authorized_plan_sha256.empty() || intent() == nullptr ||
+                bound_authorized_plan_sha256 != intent()->sha256) {
+                Plaza2PublisherMessageResult result;
+                result.validation_error = invalid("AddOrder requires the exact authorized pre-send plan binding");
+                return result;
+            }
             if (const auto binding = validate_add_payload(command, user_id); binding) {
                 Plaza2PublisherMessageResult result;
                 result.validation_error = binding;
@@ -1601,6 +1680,7 @@ struct Plaza2TestTradeTransport::Impl {
     Plaza2TestTradeTransportConfig config;
     Plaza2TestSessionHost host;
     std::optional<Plaza2ExecutionSafetyReceipt> last_receipt;
+    std::string bound_authorized_plan_sha256;
 };
 
 Plaza2TestTradeTransport::Plaza2TestTradeTransport(Plaza2TestTradeTransportConfig config)
@@ -1608,6 +1688,10 @@ Plaza2TestTradeTransport::Plaza2TestTradeTransport(Plaza2TestTradeTransportConfi
 Plaza2TestTradeTransport::~Plaza2TestTradeTransport() = default;
 Plaza2TestTradeTransport::Plaza2TestTradeTransport(Plaza2TestTradeTransport&&) noexcept = default;
 Plaza2TestTradeTransport& Plaza2TestTradeTransport::operator=(Plaza2TestTradeTransport&&) noexcept = default;
+
+Plaza2Error Plaza2TestTradeTransport::bind_authorized_plan(const PreSendPlan& plan) {
+    return impl_->bind_authorized_plan(plan);
+}
 
 Plaza2PublisherMessageResult Plaza2TestTradeTransport::post(const Plaza2TradeEncodedCommand& command,
                                                             std::uint32_t user_id) {

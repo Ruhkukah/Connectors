@@ -662,7 +662,7 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .signed_value = 1001},
                         {.field_code = FieldCode::kFortsPosReplPositionAccountType,
                          .kind = SignedInteger,
-                         .signed_value = 1},
+                         .signed_value = 2},
                         {.field_code = FieldCode::kFortsPosReplPositionXpos, .kind = SignedInteger, .signed_value = 4},
                         {.field_code = FieldCode::kFortsPosReplPositionWaprice, .kind = Text, .text = "104950.25"},
                     },
@@ -1017,6 +1017,13 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
             for (auto& message : script) {
                 if (auto* position = find_field(message, kFortsPosReplPositionXpos)) {
                     position->signed_value = 0;
+                }
+            }
+        }
+        if (fake_flag("MOEX_FAKE_WRONG_POSITION_ACCOUNT_TYPE")) {
+            for (auto& message : script) {
+                if (auto* account_type = find_field(message, kFortsPosReplPositionAccountType)) {
+                    account_type->signed_value = 1;
                 }
             }
         }

@@ -95,6 +95,8 @@ Plaza2TestTradeTransportConfig make_config(const moex::plaza2::test::RuntimeFixt
         .policy_version = "offline-v1",
         .policy_sha256 = std::string(64, 'd'),
         .max_distance_ticks = 4,
+        .max_aggr20_age_ms = 5000,
+        .require_zero_starting_position = false,
     };
     config.execution_safety_receipt_path = fixture.root / "execution_safety.json";
     config.target_tick_size = "250";
@@ -145,6 +147,26 @@ Plaza2TestTradeTransportConfig prepared_config(const moex::plaza2::test::Runtime
     config.authorized_intent->canonical_json = canonical_authorized_order_intent_json(*config.authorized_intent);
     config.authorized_intent->sha256 = authorized_order_intent_sha256(*config.authorized_intent);
     return config;
+}
+
+void expect_case(bool condition, std::string_view message);
+
+PreSendPlan bound_plan(const Plaza2AuthorizedOrderIntent& intent, const Plaza2TradeEncodedCommand& add,
+                       const Plaza2TradeEncodedCommand& recovery) {
+    return {
+        .ok = true,
+        .failure = PreSendFailure::None,
+        .message = "test-bound plan",
+        .canonical_json = intent.canonical_json,
+        .sha256 = intent.sha256,
+        .add_command = add,
+        .exact_ext_id_recovery_command = recovery,
+    };
+}
+
+void bind_test_plan(Plaza2TestTradeTransport& transport, const PreSendPlan& plan) {
+    const auto binding = transport.bind_authorized_plan(plan);
+    expect_case(!binding, "concrete transport test fixture must bind its exact static plan: " + binding.message);
 }
 
 Plaza2TradeEncodedCommand encoded_add(const Plaza2TradeCodec& codec) {
@@ -200,7 +222,6 @@ OrderLifecycleConfig make_controller_config(const std::filesystem::path& root) {
     config.smoke.aggr20_source_revision = 1;
     config.smoke.aggr20_observed_at_utc = "2026-08-24T00:00:00Z";
     config.smoke.aggr20_age_ms = 0;
-    config.smoke.max_aggr20_age_ms = 1000;
     config.smoke.trading_day = "20260824";
     config.smoke.session_id = "321";
     config.smoke.session_state = "trading";
@@ -212,6 +233,7 @@ OrderLifecycleConfig make_controller_config(const std::filesystem::path& root) {
     config.policy.version = "offline-v1";
     config.policy.sha256 = std::string(64, 'f');
     config.policy.max_distance_ticks = 4;
+    config.policy.max_aggr20_age_ms = 1000;
     config.add_observation_timeout = std::chrono::seconds(2);
     config.cancel_observation_timeout = std::chrono::seconds(2);
     config.max_poll_attempts = 4;
@@ -221,7 +243,8 @@ OrderLifecycleConfig make_controller_config(const std::filesystem::path& root) {
 
 OrderLifecycleResult run_concrete_controller_case(const moex::plaza2::test::RuntimeFixturePaths& fixture,
                                                   const char* order_mode, const char* reply_order_id,
-                                                  bool identity_conflict, bool cancel_after_del = false) {
+                                                  bool identity_conflict, bool cancel_after_del = false,
+                                                  bool mismatched_policy = false, bool* host_started = nullptr) {
     std::optional<ScopedEnv> mode;
     if (order_mode != nullptr) {
         mode.emplace("MOEX_FAKE_FULL_FILL", std::string_view(order_mode) == "full" ? "1" : nullptr);
@@ -250,9 +273,23 @@ OrderLifecycleResult run_concrete_controller_case(const moex::plaza2::test::Runt
     transport_config.authorized_intent->add_payload_sha256 = cgate::plaza2_sha256_hex(dry.add_command.payload);
     transport_config.authorized_intent->recovery_payload_sha256 =
         cgate::plaza2_sha256_hex(dry.exact_ext_id_recovery_command.payload);
+    if (!mismatched_policy) {
+        transport_config.authorized_intent->policy_version = config.policy.version;
+        transport_config.authorized_intent->policy_sha256 = config.policy.sha256;
+        transport_config.authorized_intent->max_aggr20_age_ms = config.policy.max_aggr20_age_ms;
+        transport_config.authorized_intent->require_zero_starting_position =
+            config.policy.require_zero_starting_position;
+        transport_config.max_aggr20_age =
+            std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(config.policy.max_aggr20_age_ms));
+    }
     transport_config.authorized_intent->canonical_json =
         canonical_authorized_order_intent_json(*transport_config.authorized_intent);
     transport_config.authorized_intent->sha256 = authorized_order_intent_sha256(*transport_config.authorized_intent);
+    if (!mismatched_policy) {
+        expect_case(transport_config.authorized_intent->sha256 == dry.sha256 &&
+                        transport_config.authorized_intent->canonical_json == dry.canonical_json,
+                    "concrete controller must derive the exact canonical authorized intent");
+    }
     transport_config.observation_quantity = 1;
     transport_config.observation_client_code = config.client_code;
     transport_config.observation_side = config.side;
@@ -265,6 +302,9 @@ OrderLifecycleResult run_concrete_controller_case(const moex::plaza2::test::Runt
     SystemOrderLifecycleClock clock;
     OrderLifecycleController controller(config, transport, clock);
     auto result = controller.run();
+    if (host_started != nullptr) {
+        *host_started = transport.host().started();
+    }
     static_cast<void>(transport.host().stop());
     std::filesystem::remove_all(config.journal_root);
     return result;
@@ -285,7 +325,9 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
     for (const auto& [variable, expected] : cases) {
         ScopedEnv scenario(variable, "1");
         auto config = prepared_config(fixture, add, recovery);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto result = transport.post(add, 701);
         expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !result.post_invoked &&
                         contains_text(result.validation_error.message, expected),
@@ -296,7 +338,9 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
     {
         auto config = prepared_config(fixture, add, recovery);
         config.max_aggr20_age = std::chrono::milliseconds(-1);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto result = transport.post(add, 701);
         expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
                         contains_text(result.validation_error.message, "stale"),
@@ -305,7 +349,9 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
     {
         auto config = prepared_config(fixture, add, recovery);
         config.require_zero_starting_position = true;
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto result = transport.post(add, 701);
         expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
                         contains_text(result.validation_error.message, "starting position"),
@@ -315,18 +361,49 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
         ScopedEnv missing_position("MOEX_FAKE_MISSING_POSITION", "1");
         auto config = prepared_config(fixture, add, recovery);
         config.require_zero_starting_position = true;
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto result = transport.post(add, 701);
         expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
                         contains_text(result.validation_error.message, "starting position"),
                     "missing starting position must not be treated as zero");
     }
     {
+        ScopedEnv zero_position("MOEX_FAKE_ZERO_POSITION", "1");
+        auto config = prepared_config(fixture, add, recovery);
+        config.authorized_intent->require_zero_starting_position = true;
+        config.authorized_intent->canonical_json = canonical_authorized_order_intent_json(*config.authorized_intent);
+        config.authorized_intent->sha256 = authorized_order_intent_sha256(*config.authorized_intent);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
+        const auto result = transport.post(add, 701);
+        expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::Posted && result.post_invoked,
+                    "the exact normal-client account_type=2 zero position row must pass the zero gate");
+        static_cast<void>(transport.host().stop());
+    }
+    {
+        ScopedEnv wrong_account_type("MOEX_FAKE_WRONG_POSITION_ACCOUNT_TYPE", "1");
+        ScopedEnv zero_position("MOEX_FAKE_ZERO_POSITION", "1");
+        auto config = prepared_config(fixture, add, recovery);
+        config.require_zero_starting_position = true;
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
+        const auto result = transport.post(add, 701);
+        expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        contains_text(result.validation_error.message, "account type"),
+                    "a brokerage-firm account_type=1 row must not satisfy a normal-client zero gate");
+    }
+    {
         const auto blocker = fixture.root / "receipt-blocker";
         moex::plaza2::test::write_text_file(blocker, "not a directory");
         auto config = prepared_config(fixture, add, recovery);
         config.execution_safety_receipt_path = blocker / "execution_safety.json";
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto result = transport.post(add, 701);
         expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !result.post_invoked &&
                         contains_text(result.validation_error.message, "execution-safety"),
@@ -339,7 +416,11 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
         auto config = prepared_config(fixture, marketable_add, recovery);
         config.authorized_intent->price = marketable_request.price.value();
         config.target_price = marketable_request.price.value();
+        config.authorized_intent->canonical_json = canonical_authorized_order_intent_json(*config.authorized_intent);
+        config.authorized_intent->sha256 = authorized_order_intent_sha256(*config.authorized_intent);
+        const auto plan = bound_plan(*config.authorized_intent, marketable_add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto result = transport.post(marketable_add, 701);
         expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !result.post_invoked,
                     "marketable authorized price must be rejected before AddOrder");
@@ -351,7 +432,11 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
         auto config = prepared_config(fixture, distant_add, recovery);
         config.authorized_intent->price = distant_request.price.value();
         config.target_price = distant_request.price.value();
+        config.authorized_intent->canonical_json = canonical_authorized_order_intent_json(*config.authorized_intent);
+        config.authorized_intent->sha256 = authorized_order_intent_sha256(*config.authorized_intent);
+        const auto plan = bound_plan(*config.authorized_intent, distant_add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto result = transport.post(distant_add, 701);
         expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !result.post_invoked,
                     "out-of-distance authorized price must be rejected before AddOrder");
@@ -360,13 +445,25 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
 
 void test_authorized_payload_binding(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
     const Plaza2TradeCodec codec;
+    {
+        const auto add = encoded_add(codec);
+        const auto recovery = encoded_recovery(codec);
+        auto config = prepared_config(fixture, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(config));
+        const auto result = transport.post(add, 701);
+        expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !result.post_invoked &&
+                        !transport.host().started(),
+                    "concrete transport must refuse AddOrder before an exact plan is bound");
+    }
     const auto recovery = encoded_recovery(codec);
     const auto expect_not_sent = [&](Plaza2TestTradeTransportConfig config, const Plaza2TradeEncodedCommand& command,
                                      std::string_view label) {
+        const auto plan = bound_plan(*config.authorized_intent, command, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        const auto binding = transport.bind_authorized_plan(plan);
         const auto result = transport.post(command, 701);
         expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !result.post_invoked,
-                    label);
+                    std::string(label) + (binding ? ": " + binding.message : ""));
     };
 
     {
@@ -431,7 +528,9 @@ void test_replication_epoch_gates(const moex::plaza2::test::RuntimeFixturePaths&
     for (const auto& [variable, label] : cases) {
         ScopedEnv scenario(variable, "1");
         auto config = prepared_config(fixture, add, recovery);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto first = transport.post(add, 701);
         expect_case(first.certainty == cgate::Plaza2SubmissionCertainty::Posted,
                     std::string(label) + " fixture must initially reach the fake ready state");
@@ -458,7 +557,9 @@ void test_multi_instrument_and_terminal_controller(const moex::plaza2::test::Run
     {
         ScopedEnv multi("MOEX_FAKE_AGGR_MULTI_INSTRUMENT", "1");
         auto transport_config = prepared_config(fixture, add, recovery);
+        const auto plan = bound_plan(*transport_config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(transport_config));
+        bind_test_plan(transport, plan);
         const auto posted = transport.post(add, 701);
         expect_case(posted.certainty == cgate::Plaza2SubmissionCertainty::Posted,
                     "multi-instrument target should remain postable from scoped BBO");
@@ -475,6 +576,14 @@ void test_multi_instrument_and_terminal_controller(const moex::plaza2::test::Run
                         !result.evidence_consistent && !result.ok,
                     "full fill with identity conflict must remain unresolved through concrete transport: " +
                         result.message + " / add=" + result.add_submission.validation_error.message);
+    }
+    {
+        bool host_started = false;
+        const auto result = run_concrete_controller_case(fixture, "full", "20003", false, false, true, &host_started);
+        expect_case(result.state == OrderLifecycleState::DefinitelyNotSent && result.market_safe_terminal &&
+                        result.add_submission.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        !result.add_submission.post_invoked && !host_started,
+                    "controller/transport policy mismatch must reject AddOrder before starting the TEST host");
     }
     {
         const auto result = run_concrete_controller_case(fixture, "cancel", "99999", false);
@@ -505,7 +614,9 @@ void test_multi_instrument_and_terminal_controller(const moex::plaza2::test::Run
     {
         auto config = prepared_config(fixture, add, recovery);
         config.max_aggr20_age = std::chrono::milliseconds(20);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto posted = transport.post(add, 701);
         expect_case(posted.certainty == cgate::Plaza2SubmissionCertainty::Posted,
                     "cleanup freshness fixture AddOrder should post before ageing the BBO");
@@ -531,7 +642,9 @@ void test_reply_bridge_fail_closed(const moex::plaza2::test::RuntimeFixturePaths
     {
         ScopedEnv reply_first("MOEX_FAKE_REPLY_BEFORE_REPLICATION", "1");
         auto config = prepared_config(fixture, add, recovery);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto posted = transport.post(add, 701);
         expect_case(posted.certainty == cgate::Plaza2SubmissionCertainty::Posted,
                     "reply-before-replication fixture AddOrder should be posted");
@@ -543,7 +656,9 @@ void test_reply_bridge_fail_closed(const moex::plaza2::test::RuntimeFixturePaths
     {
         ScopedEnv post_timeout("MOEX_FAKE_PUB_POST_RESULT", "timeout");
         auto config = prepared_config(fixture, add, recovery);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto ambiguous = transport.post(add, 701);
         expect_case(ambiguous.certainty == cgate::Plaza2SubmissionCertainty::PossiblySent && ambiguous.post_invoked,
                     "publisher AddOrder timeout must remain PossiblySent");
@@ -555,7 +670,9 @@ void test_reply_bridge_fail_closed(const moex::plaza2::test::RuntimeFixturePaths
     {
         ScopedEnv reply_timeout("MOEX_FAKE_PUB_REPLY_MODE", "timeout");
         auto config = prepared_config(fixture, add, recovery);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto posted = transport.post(add, 701);
         expect_case(posted.certainty == cgate::Plaza2SubmissionCertainty::Posted,
                     "cancellation-timeout fixture AddOrder should be posted");
@@ -583,7 +700,9 @@ void test_reply_bridge_fail_closed(const moex::plaza2::test::RuntimeFixturePaths
     for (const auto& [variable, expected] : cases) {
         ScopedEnv scenario(variable, variable == std::string_view("MOEX_FAKE_PUB_REPLY_FAMILY") ? "wrong" : "1");
         auto config = prepared_config(fixture, add, recovery);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto posted = transport.post(add, 701);
         expect_case(posted.certainty == cgate::Plaza2SubmissionCertainty::Posted,
                     "reply failure fixture AddOrder should still be posted");
@@ -594,7 +713,9 @@ void test_reply_bridge_fail_closed(const moex::plaza2::test::RuntimeFixturePaths
     {
         ScopedEnv timeout("MOEX_FAKE_PUB_REPLY_TIMEOUT_ADD_ONLY", "1");
         auto config = prepared_config(fixture, add, recovery);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
         const auto posted = transport.post(add, 701);
         expect_case(posted.certainty == cgate::Plaza2SubmissionCertainty::Posted,
                     "timeout fixture AddOrder should be posted");
@@ -642,7 +763,9 @@ int main(int argc, char** argv) {
             canonical_authorized_order_intent_json(*transport_config.authorized_intent);
         transport_config.authorized_intent->sha256 =
             authorized_order_intent_sha256(*transport_config.authorized_intent);
+        const auto plan = bound_plan(*transport_config.authorized_intent, add, recovery);
         Plaza2TestTradeTransport transport(std::move(transport_config));
+        bind_test_plan(transport, plan);
         const auto posted = transport.post(add, 701);
         require(posted.certainty == cgate::Plaza2SubmissionCertainty::Posted && posted.post_invoked,
                 "fake TEST transport must preserve posted certainty: " + posted.validation_error.message + " / " +
@@ -653,7 +776,9 @@ int main(int argc, char** argv) {
                     transport.last_execution_safety_receipt()->passive_non_marketable &&
                     transport.last_execution_safety_receipt()->bbo_distance_allowed &&
                     transport.last_execution_safety_receipt()->aggr_online &&
-                    transport.last_execution_safety_receipt()->aggr_snapshot_complete,
+                    transport.last_execution_safety_receipt()->aggr_snapshot_complete &&
+                    transport.last_execution_safety_receipt()->authorized_max_aggr20_age_ms == 5000 &&
+                    !transport.last_execution_safety_receipt()->require_zero_starting_position,
                 "execution-safety receipt must record passive and BBO-distance checks");
 
         const auto first_poll = transport.poll(std::chrono::steady_clock::now() + std::chrono::seconds(1));
