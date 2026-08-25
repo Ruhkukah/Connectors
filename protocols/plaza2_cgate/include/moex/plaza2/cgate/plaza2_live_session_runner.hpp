@@ -21,6 +21,7 @@ struct Plaza2LiveStreamConfig {
     std::string label;
     std::string settings;
     std::string open_settings;
+    std::string listener_url_mode{"negotiated"};
     bool require_online{true};
     Plaza2ListenerEventHandler* handler{nullptr};
 };
@@ -54,6 +55,7 @@ enum class Plaza2LiveRunnerState : std::uint8_t {
 struct Plaza2LiveStreamStatus {
     generated::StreamCode stream_code{kNoStreamCode};
     std::string stream_name;
+    std::string listener_url_mode{"negotiated"};
     bool created{false};
     bool opened{false};
     bool online{false};

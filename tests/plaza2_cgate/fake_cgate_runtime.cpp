@@ -1578,6 +1578,10 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
         delete listener;
         return kCgErrIncorrectState;
     }
+    if (fake_flag("MOEX_FAKE_WRONG_SCHEME_OVERRIDE") && listener->settings.find("WRONG_SCHEME") != std::string::npos) {
+        listener->scheme = std::make_unique<OwnedScheme>();
+        listener->message_plans.clear();
+    }
 
     connection->listeners.push_back(listener);
     *lsnptr = listener;

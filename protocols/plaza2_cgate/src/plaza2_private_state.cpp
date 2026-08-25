@@ -542,9 +542,37 @@ struct Plaza2PrivateStateProjector::Impl {
             limits_by_key.clear();
             rebuild_limits();
             break;
-        case StreamCode::kFortsRefdataRepl:
+        case StreamCode::kFortsRefdataRepl: {
+            std::unordered_map<std::int32_t, std::int32_t> session_status;
+            for (const auto& [sess_id, session] : sessions_by_id) {
+                if (session.has_current_status) {
+                    session_status.emplace(sess_id, session.current_status);
+                }
+            }
+            std::unordered_map<std::int32_t, std::int32_t> instrument_status;
+            for (const auto& [isin_id, instrument] : instruments_by_isin) {
+                if (instrument.has_current_status) {
+                    instrument_status.emplace(isin_id, instrument.current_status);
+                }
+            }
             sessions_by_id.clear();
+            for (const auto& [sess_id, status] : session_status) {
+                sessions_by_id.emplace(sess_id, TradingSessionSnapshot{
+                                                    .sess_id = sess_id,
+                                                    .state = status,
+                                                    .has_current_status = true,
+                                                    .current_status = status,
+                                                });
+            }
             instruments_by_isin.clear();
+            for (const auto& [isin_id, status] : instrument_status) {
+                instruments_by_isin.emplace(isin_id, InstrumentSnapshot{
+                                                         .isin_id = isin_id,
+                                                         .has_current_status = true,
+                                                         .current_status = status,
+                                                     });
+            }
+        }
             matching_by_base_contract.clear();
             rebuild_sessions();
             rebuild_instruments();
@@ -593,9 +621,39 @@ struct Plaza2PrivateStateProjector::Impl {
             ensure_stage_copy(staged.limits, limits_by_key).clear();
             staged.touched_streams.insert(StreamCode::kFortsPartRepl);
             break;
-        case StreamCode::kFortsRefdataRepl:
-            ensure_stage_copy(staged.sessions, sessions_by_id).clear();
-            ensure_stage_copy(staged.instruments, instruments_by_isin).clear();
+        case StreamCode::kFortsRefdataRepl: {
+            auto& sessions = ensure_stage_copy(staged.sessions, sessions_by_id);
+            std::unordered_map<std::int32_t, std::int32_t> session_status;
+            for (const auto& [sess_id, session] : sessions) {
+                if (session.has_current_status) {
+                    session_status.emplace(sess_id, session.current_status);
+                }
+            }
+            sessions.clear();
+            for (const auto& [sess_id, status] : session_status) {
+                sessions.emplace(sess_id, TradingSessionSnapshot{
+                                              .sess_id = sess_id,
+                                              .state = status,
+                                              .has_current_status = true,
+                                              .current_status = status,
+                                          });
+            }
+            auto& instruments = ensure_stage_copy(staged.instruments, instruments_by_isin);
+            std::unordered_map<std::int32_t, std::int32_t> instrument_status;
+            for (const auto& [isin_id, instrument] : instruments) {
+                if (instrument.has_current_status) {
+                    instrument_status.emplace(isin_id, instrument.current_status);
+                }
+            }
+            instruments.clear();
+            for (const auto& [isin_id, status] : instrument_status) {
+                instruments.emplace(isin_id, InstrumentSnapshot{
+                                                 .isin_id = isin_id,
+                                                 .has_current_status = true,
+                                                 .current_status = status,
+                                             });
+            }
+        }
             ensure_stage_copy(staged.matching_map, matching_by_base_contract).clear();
             staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
             break;

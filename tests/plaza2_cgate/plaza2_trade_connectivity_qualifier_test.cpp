@@ -2,6 +2,8 @@
 
 #include "plaza2_runtime_test_support.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -17,13 +19,12 @@ Plaza2LiveStreamConfig typed_stream(StreamCode code, std::string_view name) {
     return {
         .stream_code = code,
         .label = std::string(name),
-        .settings = "p2repl://" + std::string(name) + ";scheme=|FILE|scheme/forts_scheme.ini|" +
-                    std::string(name),
+        .settings = "p2repl://" + std::string(name),
+        .listener_url_mode = "negotiated",
     };
 }
 
-Plaza2TradeConnectivityQualifierConfig make_config(
-    const moex::plaza2::test::RuntimeFixturePaths& fixture) {
+Plaza2TradeConnectivityQualifierConfig make_config(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
     Plaza2TradeConnectivityQualifierConfig config;
     config.session.profile_id = "plaza2_qualification_fixture";
     config.session.endpoint_host = "198.51.100.10";
@@ -43,7 +44,8 @@ Plaza2TradeConnectivityQualifierConfig make_config(
         typed_stream(StreamCode::kFortsInstrumentstateRepl, "FORTS_INSTRUMENTSTATE_REPL"),
         {.stream_code = StreamCode::kFortsAggrRepl,
          .label = "FORTS_AGGR_REPL",
-         .settings = "p2repl://FORTS_AGGR20_REPL;scheme=|FILE|scheme/forts_scheme.ini|Aggr",
+         .settings = "p2repl://FORTS_AGGR20_REPL",
+         .listener_url_mode = "negotiated",
          .require_online = false},
         {.stream_code = kNoStreamCode,
          .label = "p2mqreply",
@@ -132,8 +134,54 @@ int main(int argc, char** argv) {
                 "position identity evidence mismatch");
         require(result.p2mqreply_open && result.publisher_open, "publisher/reply listener evidence mismatch");
 
+        const std::array required_streams = {
+            std::string_view{"FORTS_TRADE_REPL"},
+            std::string_view{"FORTS_USERORDERBOOK_REPL"},
+            std::string_view{"FORTS_POS_REPL"},
+            std::string_view{"FORTS_PART_REPL"},
+            std::string_view{"FORTS_REFDATA_REPL"},
+            std::string_view{"FORTS_SESSIONSTATE_REPL"},
+            std::string_view{"FORTS_INSTRUMENTSTATE_REPL"},
+            std::string_view{"FORTS_AGGR_REPL"},
+        };
+        for (const auto stream_name : required_streams) {
+            const auto it = std::find_if(qualifier.private_session().health_snapshot().streams.begin(),
+                                         qualifier.private_session().health_snapshot().streams.end(),
+                                         [&](const auto& stream) { return stream.stream_name == stream_name; });
+            require(it != qualifier.private_session().health_snapshot().streams.end(),
+                    "bare listener should be present in health receipt");
+            require(it->listener_url_mode == "negotiated" && it->created && it->opened && it->online &&
+                        it->snapshot_complete,
+                    "bare listener should negotiate a scheme and complete its snapshot");
+        }
+        const auto reply_it = std::find_if(qualifier.private_session().health_snapshot().streams.begin(),
+                                           qualifier.private_session().health_snapshot().streams.end(),
+                                           [](const auto& stream) { return stream.stream_name == "p2mqreply"; });
+        require(reply_it != qualifier.private_session().health_snapshot().streams.end() && reply_it->created &&
+                    reply_it->opened,
+                "p2mqreply should remain independently open");
+
         const auto stop = qualifier.stop();
         require(stop.ok, "qualification fixture stop should succeed");
+
+        {
+            auto wrong_config = make_config(fixture);
+            for (auto& stream : wrong_config.session.streams) {
+                if (stream.stream_code == StreamCode::kFortsPartRepl) {
+                    stream.settings = "p2repl://FORTS_PART_REPL;scheme=|FILE|scheme/forts_scheme.ini|WRONG_SCHEME";
+                    stream.listener_url_mode = "explicit_override";
+                }
+            }
+            ::setenv("MOEX_FAKE_WRONG_SCHEME_OVERRIDE", "1", 1);
+            Plaza2TradeConnectivityQualifier wrong_qualifier(std::move(wrong_config));
+            const auto wrong_start = wrong_qualifier.start();
+            require(!wrong_start.ok, "an explicitly wrong scheme override must fail closed");
+            const auto& wrong_health = wrong_qualifier.private_session().health_snapshot();
+            require(wrong_health.failing_listener == "FORTS_PART_REPL" &&
+                        wrong_health.last_error_code != Plaza2ErrorCode::None,
+                    "wrong scheme failure should identify the affected listener and runtime error");
+            ::unsetenv("MOEX_FAKE_WRONG_SCHEME_OVERRIDE");
+        }
 
         const auto run_status_case = [&](const char* flag, const char* label) {
             ::setenv(flag, "1", 1);
@@ -162,8 +210,7 @@ int main(int argc, char** argv) {
             const auto& status = status_qualifier.qualification();
             require(status.target_instrument_status_available && status.target_instrument_status == 0,
                     "non-tradable instrument raw public_state should be preserved");
-            require(!status.target_instrument_add_capable && !status.market_state_ready &&
-                        !status.add_order_qualified,
+            require(!status.target_instrument_add_capable && !status.market_state_ready && !status.add_order_qualified,
                     "non-tradable instrument must fail market readiness");
             ::unsetenv("MOEX_FAKE_NONTRADABLE_INSTRUMENT");
         }
@@ -209,8 +256,7 @@ int main(int argc, char** argv) {
                     typed_listener_opened = stream.created && stream.opened;
                 }
             }
-            require(typed_listener_opened,
-                    "failure receipt should preserve previously created/opened typed listeners");
+            require(typed_listener_opened, "failure receipt should preserve previously created/opened typed listeners");
             ::unsetenv("MOEX_FAKE_DISABLE_REPLY_LISTENER");
         }
 

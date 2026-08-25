@@ -97,12 +97,10 @@ class QualificationAggr20Bridge final : public Plaza2ListenerEventHandler {
 };
 
 bool is_stream_ready(const Plaza2LiveStreamStatus& stream) {
-    return stream.created && stream.opened && (!stream.required_online ||
-                                               (stream.online && stream.snapshot_complete));
+    return stream.created && stream.opened && (!stream.required_online || (stream.online && stream.snapshot_complete));
 }
 
-const Plaza2LiveStreamStatus* find_stream(std::span<const Plaza2LiveStreamStatus> streams,
-                                           std::string_view label) {
+const Plaza2LiveStreamStatus* find_stream(std::span<const Plaza2LiveStreamStatus> streams, std::string_view label) {
     for (const auto& stream : streams) {
         if (stream.stream_name == label) {
             return &stream;
@@ -113,8 +111,7 @@ const Plaza2LiveStreamStatus* find_stream(std::span<const Plaza2LiveStreamStatus
 
 bool has_all_private_streams(std::span<const Plaza2LiveStreamStatus> streams) {
     constexpr std::array<std::string_view, 5> required = {
-        "FORTS_TRADE_REPL", "FORTS_USERORDERBOOK_REPL", "FORTS_POS_REPL", "FORTS_PART_REPL",
-        "FORTS_REFDATA_REPL",
+        "FORTS_TRADE_REPL", "FORTS_USERORDERBOOK_REPL", "FORTS_POS_REPL", "FORTS_PART_REPL", "FORTS_REFDATA_REPL",
     };
     return std::ranges::all_of(required, [&](std::string_view label) {
         const auto* stream = find_stream(streams, label);
@@ -124,7 +121,8 @@ bool has_all_private_streams(std::span<const Plaza2LiveStreamStatus> streams) {
 
 bool has_all_status_streams(std::span<const Plaza2LiveStreamStatus> streams) {
     constexpr std::array<std::string_view, 2> required = {
-        "FORTS_SESSIONSTATE_REPL", "FORTS_INSTRUMENTSTATE_REPL",
+        "FORTS_SESSIONSTATE_REPL",
+        "FORTS_INSTRUMENTSTATE_REPL",
     };
     return std::ranges::all_of(required, [&](std::string_view label) {
         const auto* stream = find_stream(streams, label);
@@ -141,8 +139,8 @@ bool has_p2mqreply(std::span<const Plaza2LiveStreamStatus> streams) {
     return false;
 }
 
-const private_state::InstrumentSnapshot* find_target(
-    std::span<const private_state::InstrumentSnapshot> instruments, std::string_view target) {
+const private_state::InstrumentSnapshot* find_target(std::span<const private_state::InstrumentSnapshot> instruments,
+                                                     std::string_view target) {
     std::int32_t target_id = 0;
     const bool target_is_numeric = parse_isin_id(target, target_id);
     for (const auto& instrument : instruments) {
@@ -156,7 +154,7 @@ const private_state::InstrumentSnapshot* find_target(
 
 void add_failure(Plaza2QualificationSnapshot& snapshot, bool condition, std::string reason) {
     if (!condition && std::find(snapshot.failure_reasons.begin(), snapshot.failure_reasons.end(), reason) ==
-                           snapshot.failure_reasons.end()) {
+                          snapshot.failure_reasons.end()) {
         snapshot.failure_reasons.push_back(std::move(reason));
     }
 }
@@ -239,9 +237,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         }
         const auto& streams = config.session.streams;
         const auto has_stream_code = [&](generated::StreamCode code) {
-            return std::ranges::any_of(streams, [&](const Plaza2LiveStreamConfig& stream) {
-                return stream.stream_code == code;
-            });
+            return std::ranges::any_of(
+                streams, [&](const Plaza2LiveStreamConfig& stream) { return stream.stream_code == code; });
         };
         if (!has_stream_code(generated::StreamCode::kFortsSessionstateRepl) ||
             !has_stream_code(generated::StreamCode::kFortsInstrumentstateRepl)) {
@@ -302,8 +299,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
             snapshot.target_current_session_member = target->current_session_member;
             snapshot.target_instrument_status_available = target->has_current_status;
             snapshot.target_instrument_status = target->current_status;
-            snapshot.target_instrument_add_capable = snapshot.target_instrument_status_available &&
-                                                     snapshot.target_instrument_status == 1;
+            snapshot.target_instrument_add_capable =
+                snapshot.target_instrument_status_available && snapshot.target_instrument_status == 1;
             snapshot.target_min_step = target->min_step;
             snapshot.target_trade_mode_id = target->trade_mode_id;
             snapshot.target_refdata_present = target->kind == InstrumentKind::kFuture && target->sess_id != 0 &&
@@ -314,8 +311,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
                 if (session.sess_id == target->sess_id) {
                     snapshot.target_session_status_available = session.has_current_status;
                     snapshot.target_session_status = session.current_status;
-                    snapshot.target_session_add_capable = snapshot.target_session_status_available &&
-                                                         snapshot.target_session_status == 1;
+                    snapshot.target_session_add_capable =
+                        snapshot.target_session_status_available && snapshot.target_session_status == 1;
                     break;
                 }
             }
@@ -350,20 +347,22 @@ struct Plaza2TradeConnectivityQualifier::Impl {
                 snapshot.position_xpos = position.xpos;
             }
         }
-        snapshot.position_identity_exact = snapshot.applicable_position_count == 1 &&
-                                            snapshot.position_account_type == config.target.expected_position_account_type;
+        snapshot.position_identity_exact =
+            snapshot.applicable_position_count == 1 &&
+            snapshot.position_account_type == config.target.expected_position_account_type;
 
         const bool aggr_age_ok = snapshot.target_aggr20_age_ms <= config.max_aggr20_age_ms &&
                                  snapshot.target_aggr20_repl_id != 0 && snapshot.target_aggr20_repl_rev != 0 &&
                                  aggr_bridge.online() && aggr_bridge.snapshot_complete();
-        snapshot.market_state_ready = health.runtime_probe_ok && health.scheme_drift_ok && snapshot.target_refdata_present &&
-                                      snapshot.target_session_add_capable && snapshot.target_instrument_add_capable &&
-                                      snapshot.target_aggr20_two_sided && aggr_age_ok;
-        snapshot.account_state_ready = snapshot.participant_limit_unique && snapshot.participant_limits_set &&
-                                       snapshot.position_identity_exact;
+        snapshot.market_state_ready = health.runtime_probe_ok && health.scheme_drift_ok &&
+                                      snapshot.target_refdata_present && snapshot.target_session_add_capable &&
+                                      snapshot.target_instrument_add_capable && snapshot.target_aggr20_two_sided &&
+                                      aggr_age_ok;
+        snapshot.account_state_ready =
+            snapshot.participant_limit_unique && snapshot.participant_limits_set && snapshot.position_identity_exact;
         snapshot.publisher_ready = snapshot.publisher_open && snapshot.runtime_trading_capable;
         snapshot.add_order_qualified = snapshot.connectivity_ready && snapshot.market_state_ready &&
-                                      snapshot.account_state_ready && snapshot.publisher_ready;
+                                       snapshot.account_state_ready && snapshot.publisher_ready;
 
         add_failure(snapshot, health.runtime_probe_ok, "runtime probe failed");
         add_failure(snapshot, health.scheme_drift_ok, "scheme drift is not compatible");
@@ -423,8 +422,7 @@ std::string_view plaza2_qualification_state_name(Plaza2QualificationState state)
     return "Unknown";
 }
 
-Plaza2TradeConnectivityQualifier::Plaza2TradeConnectivityQualifier(
-    Plaza2TradeConnectivityQualifierConfig config)
+Plaza2TradeConnectivityQualifier::Plaza2TradeConnectivityQualifier(Plaza2TradeConnectivityQualifierConfig config)
     : impl_(std::make_unique<Impl>(std::move(config))) {}
 
 Plaza2TradeConnectivityQualifier::~Plaza2TradeConnectivityQualifier() {
@@ -433,11 +431,11 @@ Plaza2TradeConnectivityQualifier::~Plaza2TradeConnectivityQualifier() {
     }
 }
 
-Plaza2TradeConnectivityQualifier::Plaza2TradeConnectivityQualifier(
-    Plaza2TradeConnectivityQualifier&&) noexcept = default;
+Plaza2TradeConnectivityQualifier::Plaza2TradeConnectivityQualifier(Plaza2TradeConnectivityQualifier&&) noexcept =
+    default;
 
-Plaza2TradeConnectivityQualifier& Plaza2TradeConnectivityQualifier::operator=(
-    Plaza2TradeConnectivityQualifier&&) noexcept = default;
+Plaza2TradeConnectivityQualifier&
+Plaza2TradeConnectivityQualifier::operator=(Plaza2TradeConnectivityQualifier&&) noexcept = default;
 
 Plaza2TradeConnectivityQualificationResult Plaza2TradeConnectivityQualifier::start() {
     return impl_->start();

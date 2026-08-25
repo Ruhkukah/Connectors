@@ -127,7 +127,8 @@ std::optional<Args> parse_args(int argc, char** argv) {
         } else if (argument == "--endpoint-host" && take_value(index, argc, argv, args.endpoint_host)) {
         } else if (argument == "--endpoint-port" && take_value(index, argc, argv, value)) {
             const auto parsed = parse_port(value);
-            if (!parsed.has_value()) return std::nullopt;
+            if (!parsed.has_value())
+                return std::nullopt;
             args.endpoint_port = *parsed;
         } else if (argument == "--runtime-root" && take_value(index, argc, argv, value)) {
             args.runtime_root = value;
@@ -138,43 +139,55 @@ std::optional<Args> parse_args(int argc, char** argv) {
         } else if (argument == "--config-dir" && take_value(index, argc, argv, value)) {
             args.config_dir = value;
         } else if (argument == "--env-open-settings" && take_value(index, argc, argv, args.env_open_settings)) {
-        } else if (argument == "--expected-spectra-release" && take_value(index, argc, argv, args.expected_spectra_release)) {
-        } else if (argument == "--expected-scheme-sha256" && take_value(index, argc, argv, args.expected_scheme_sha256)) {
+        } else if (argument == "--expected-spectra-release" &&
+                   take_value(index, argc, argv, args.expected_spectra_release)) {
+        } else if (argument == "--expected-scheme-sha256" &&
+                   take_value(index, argc, argv, args.expected_scheme_sha256)) {
         } else if (argument == "--connection-settings" && take_value(index, argc, argv, args.connection_settings)) {
-        } else if (argument == "--connection-open-settings" && take_value(index, argc, argv, args.connection_open_settings)) {
+        } else if (argument == "--connection-open-settings" &&
+                   take_value(index, argc, argv, args.connection_open_settings)) {
         } else if (argument == "--stream-settings" && take_value(index, argc, argv, value)) {
             const auto assignment = parse_assignment(value);
-            if (!assignment.has_value()) return std::nullopt;
+            if (!assignment.has_value())
+                return std::nullopt;
             args.stream_settings.push_back(*assignment);
         } else if (argument == "--stream-open-settings" && take_value(index, argc, argv, value)) {
             const auto assignment = parse_assignment(value);
-            if (!assignment.has_value()) return std::nullopt;
+            if (!assignment.has_value())
+                return std::nullopt;
             args.stream_open_settings.push_back(*assignment);
         } else if (argument == "--p2mqreply-settings" && take_value(index, argc, argv, args.p2mqreply_settings)) {
-        } else if (argument == "--p2mqreply-open-settings" && take_value(index, argc, argv, args.p2mqreply_open_settings)) {
+        } else if (argument == "--p2mqreply-open-settings" &&
+                   take_value(index, argc, argv, args.p2mqreply_open_settings)) {
         } else if (argument == "--publisher-settings" && take_value(index, argc, argv, args.publisher_settings)) {
-        } else if (argument == "--publisher-open-settings" && take_value(index, argc, argv, args.publisher_open_settings)) {
+        } else if (argument == "--publisher-open-settings" &&
+                   take_value(index, argc, argv, args.publisher_open_settings)) {
         } else if (argument == "--target-isin" && take_value(index, argc, argv, args.target_isin)) {
         } else if (argument == "--participant" && take_value(index, argc, argv, args.participant)) {
         } else if (argument == "--account-type" && take_value(index, argc, argv, value)) {
             const auto parsed = parse_u32(value);
-            if (!parsed.has_value() || *parsed > 127) return std::nullopt;
+            if (!parsed.has_value() || *parsed > 127)
+                return std::nullopt;
             args.account_type = static_cast<std::int8_t>(*parsed);
         } else if (argument == "--max-aggr20-age-ms" && take_value(index, argc, argv, value)) {
             const auto parsed = parse_u32(value);
-            if (!parsed.has_value()) return std::nullopt;
+            if (!parsed.has_value())
+                return std::nullopt;
             args.max_aggr20_age_ms = *parsed;
         } else if (argument == "--process-timeout-ms" && take_value(index, argc, argv, value)) {
             const auto parsed = parse_u32(value);
-            if (!parsed.has_value()) return std::nullopt;
+            if (!parsed.has_value())
+                return std::nullopt;
             args.process_timeout_ms = *parsed;
         } else if (argument == "--qualification-timeout-ms" && take_value(index, argc, argv, value)) {
             const auto parsed = parse_u32(value);
-            if (!parsed.has_value() || *parsed == 0) return std::nullopt;
+            if (!parsed.has_value() || *parsed == 0)
+                return std::nullopt;
             args.qualification_timeout_ms = *parsed;
         } else if (argument == "--max-polls" && take_value(index, argc, argv, value)) {
             const auto parsed = parse_u32(value);
-            if (!parsed.has_value()) return std::nullopt;
+            if (!parsed.has_value())
+                return std::nullopt;
             args.max_polls = *parsed;
         } else if (argument == "--credentials-env-var" && take_value(index, argc, argv, args.credentials_env_var)) {
             args.credentials_source = Plaza2CredentialSource::Env;
@@ -210,7 +223,8 @@ std::optional<Args> parse_args(int argc, char** argv) {
 
 std::string lookup(const std::vector<std::pair<std::string, std::string>>& values, std::string_view key) {
     for (const auto& [name, value] : values) {
-        if (name == key) return value;
+        if (name == key)
+            return value;
     }
     return {};
 }
@@ -219,15 +233,17 @@ std::string lookup_open(const Args& args, std::string_view key) {
     return lookup(args.stream_open_settings, key);
 }
 
-Plaza2LiveStreamConfig typed_stream(StreamCode code, std::string label, std::string settings,
-                                    const Args& args, bool require_online = true) {
+Plaza2LiveStreamConfig typed_stream(StreamCode code, std::string label, std::string settings, const Args& args,
+                                    bool explicit_override, bool require_online = true) {
     return {
         .stream_code = code,
         .label = std::move(label),
         .settings = std::move(settings),
-        .open_settings = lookup_open(args, code == StreamCode::kFortsAggrRepl
-                                                 ? "FORTS_AGGR20_REPL"
-                                                 : std::string_view{moex::plaza2::generated::FindStreamByCode(code)->stream_name}),
+        .open_settings =
+            lookup_open(args, code == StreamCode::kFortsAggrRepl
+                                  ? "FORTS_AGGR20_REPL"
+                                  : std::string_view{moex::plaza2::generated::FindStreamByCode(code)->stream_name}),
+        .listener_url_mode = explicit_override ? "explicit_override" : "negotiated",
         .require_online = require_online,
     };
 }
@@ -247,7 +263,11 @@ Plaza2TradeConnectivityQualifierConfig make_config(const Args& args) {
     config.session.runtime.expected_scheme_sha256 = args.expected_scheme_sha256;
     config.session.connection_settings = args.connection_settings;
     config.session.connection_open_settings = args.connection_open_settings;
-    const auto find_setting = [&](std::string_view key) { return lookup(args.stream_settings, key); };
+    const auto find_setting = [&](std::string_view key) {
+        const auto explicit_setting = lookup(args.stream_settings, key);
+        return explicit_setting.empty() ? "p2repl://" + std::string(key) : explicit_setting;
+    };
+    const auto has_explicit_setting = [&](std::string_view key) { return !lookup(args.stream_settings, key).empty(); };
     const std::array required = std::to_array<std::pair<StreamCode, std::string_view>>({
         {StreamCode::kFortsTradeRepl, "FORTS_TRADE_REPL"},
         {StreamCode::kFortsUserorderbookRepl, "FORTS_USERORDERBOOK_REPL"},
@@ -258,15 +278,18 @@ Plaza2TradeConnectivityQualifierConfig make_config(const Args& args) {
         {StreamCode::kFortsInstrumentstateRepl, "FORTS_INSTRUMENTSTATE_REPL"},
     });
     for (const auto& [code, label] : required) {
-        config.session.streams.push_back(typed_stream(code, std::string(label), find_setting(label), args));
+        config.session.streams.push_back(
+            typed_stream(code, std::string(label), find_setting(label), args, has_explicit_setting(label)));
     }
-    config.session.streams.push_back(typed_stream(
-        StreamCode::kFortsAggrRepl, "FORTS_AGGR_REPL", find_setting("FORTS_AGGR20_REPL"), args, false));
+    config.session.streams.push_back(typed_stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR_REPL",
+                                                  find_setting("FORTS_AGGR20_REPL"), args,
+                                                  has_explicit_setting("FORTS_AGGR20_REPL"), false));
     config.session.streams.push_back({
         .stream_code = kNoStreamCode,
         .label = "p2mqreply",
         .settings = args.p2mqreply_settings,
         .open_settings = args.p2mqreply_open_settings,
+        .listener_url_mode = "explicit_override",
         .require_online = false,
     });
     config.session.credentials.source = args.credentials_source;
@@ -293,10 +316,14 @@ Plaza2TradeConnectivityQualifierConfig make_config(const Args& args) {
 std::string json_escape(std::string_view value) {
     std::string out;
     for (const char ch : value) {
-        if (ch == '\\') out += "\\\\";
-        else if (ch == '"') out += "\\\"";
-        else if (ch == '\n') out += "\\n";
-        else out.push_back(ch);
+        if (ch == '\\')
+            out += "\\\\";
+        else if (ch == '"')
+            out += "\\\"";
+        else if (ch == '\n')
+            out += "\\n";
+        else
+            out.push_back(ch);
     }
     return out;
 }
@@ -336,7 +363,8 @@ std::string_view build_arch() {
 
 std::string host_hash() {
     std::array<char, 256> buffer{};
-    if (gethostname(buffer.data(), buffer.size() - 1) != 0) return "unavailable";
+    if (gethostname(buffer.data(), buffer.size() - 1) != 0)
+        return "unavailable";
     return plaza2_sha256_hex(std::string_view(buffer.data())).substr(0, 16);
 }
 
@@ -359,7 +387,8 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     const auto string_array = [&](std::string_view key, const auto& values) {
         json += "  \"" + std::string(key) + "\": [";
         for (std::size_t index = 0; index < values.size(); ++index) {
-            if (index != 0) json += ", ";
+            if (index != 0)
+                json += ", ";
             json += "\"" + json_escape(values[index]) + "\"";
         }
         json += "],\n";
@@ -447,10 +476,12 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     field("failing_listener", health.failing_listener);
     json += "  \"stream_status\": [";
     for (std::size_t index = 0; index < health.streams.size(); ++index) {
-        if (index != 0) json += ", ";
+        if (index != 0)
+            json += ", ";
         const auto& stream = health.streams[index];
-        json += "{\"name\":\"" + json_escape(stream.stream_name) + "\",\"created\":" +
-                (stream.created ? "true" : "false") + ",\"opened\":" + (stream.opened ? "true" : "false") +
+        json += "{\"name\":\"" + json_escape(stream.stream_name) + "\",\"listener_url_mode\":\"" +
+                json_escape(stream.listener_url_mode) + "\",\"created\":" + (stream.created ? "true" : "false") +
+                ",\"opened\":" + (stream.opened ? "true" : "false") +
                 ",\"online\":" + (stream.online ? "true" : "false") +
                 ",\"snapshot_complete\":" + (stream.snapshot_complete ? "true" : "false") +
                 ",\"required_online\":" + (stream.required_online ? "true" : "false") + "}";
@@ -460,7 +491,8 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     field("result_message", result_message);
     json += "  \"failure_reasons\": [";
     for (std::size_t index = 0; index < snapshot.failure_reasons.size(); ++index) {
-        if (index != 0) json += ", ";
+        if (index != 0)
+            json += ", ";
         json += "\"" + json_escape(snapshot.failure_reasons[index]) + "\"";
     }
     json += "]\n}\n";
@@ -482,7 +514,8 @@ void write_review(const fs::path& path, const Args& args, const Plaza2TradeConne
            << "- Target: `" << args.target_isin << "`\n"
            << "- Participant: `" << args.participant << "`\n"
            << "- Result: `" << result_message << "`\n"
-           << "- Receipt SHA-256: `" << receipt_sha << "`\n\n"
+           << "- Receipt SHA-256: `" << receipt_sha
+           << "`\n\n"
               "## Readiness\n\n"
            << "- connectivity_ready: `" << (snapshot.connectivity_ready ? "true" : "false") << "`\n"
            << "- market_state_ready: `" << (snapshot.market_state_ready ? "true" : "false") << "`\n"
@@ -498,20 +531,22 @@ void write_review(const fs::path& path, const Args& args, const Plaza2TradeConne
 
 int main(int argc, char** argv) {
     const auto parsed = parse_args(argc, argv);
-    if (!parsed.has_value()) return 1;
+    if (!parsed.has_value())
+        return 1;
     const auto args = *parsed;
     std::filesystem::create_directories(args.output_dir);
 
     Plaza2TradeConnectivityQualifier qualifier(make_config(args));
     auto result = qualifier.start();
     if (result.ok) {
-        const auto deadline = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds(args.qualification_timeout_ms);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(args.qualification_timeout_ms);
         std::uint32_t polls = 0;
         while (!qualifier.qualification().add_order_qualified && std::chrono::steady_clock::now() < deadline &&
                (args.max_polls == 0 || polls < args.max_polls)) {
             result = qualifier.poll_once();
-            if (!result.ok) break;
+            if (!result.ok)
+                break;
             ++polls;
         }
         if (result.ok && !qualifier.qualification().add_order_qualified) {

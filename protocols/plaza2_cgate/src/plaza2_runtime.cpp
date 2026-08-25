@@ -1284,12 +1284,9 @@ struct Plaza2ListenerCallbackState {
                 }
             }
             if (descriptor == nullptr) {
-                return {
-                    .code = Plaza2ErrorCode::DecodeFailed,
-                    .runtime_code = 0,
-                    .message = "runtime listener scheme field '" + std::string(field_name) +
-                               "' is not covered by the reviewed metadata baseline",
-                };
+                ++ordinal;
+                field = field->next;
+                continue;
             }
 
             plan.fields.push_back({
