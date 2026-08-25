@@ -52,7 +52,8 @@ The redacted evidence directory is:
 
 `/home/azgaldov/moex/evidence/plaza2-qualification-t1-20260825T114101Z`
 
-Final code head: `175c4adff3b0d3bbc0343bc7817dbd804f68d9e2`.
+The final code head is recorded in `source_sha.txt` in that evidence
+directory and in the PR description.
 
 It contains the source/runtime/scheme fingerprints, service and socket
 snapshots, nonsecret profile filenames, router-resolution excerpts, the
