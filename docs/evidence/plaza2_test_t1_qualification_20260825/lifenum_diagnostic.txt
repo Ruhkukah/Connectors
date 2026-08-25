@@ -1,0 +1,23 @@
+LifeNum ABI and metric reconciliation (read-only, redacted)
+
+Installed header: /opt/moex/cgate/include/cgate.h
+Header SHA-256: 22779ba792506f188ad478ce94d25ad86f33dea9d7a12b6ad00d0a5ea6a88bea
+Definition: struct cg_data_lifenum_t { uint32_t life_number; uint32_t flags; }
+Message: CG_MSG_P2REPL_LIFENUM = 0x1110
+CG_LIFENUM_CHANGE__DONT_CLEAR_STORAGE = 0x1
+CG_MAX_REVISON = INT64_MAX
+Observed ABI: sizeof=8, life_number offset=0, flags offset=4 (pack(4)).
+
+Temporary official MOEX basic/repl.c callback, one stream at a time:
+FORTS_TRADE_REPL: data_size=8 decoded=66739 flags=0 bytes=B304010000000000
+FORTS_REFDATA_REPL: data_size=8 decoded=101386943 flags=0 bytes=BF0A0B0600000000
+
+The repository callback decodes the same cg_data_lifenum_t payload and the
+repository matrix values (66739 for TRADE and 101386943 for REFDATA) match the
+official sample payload observations. The frozen vendor matrix's value `2`
+is therefore not the raw CG_MSG_P2REPL_LIFENUM life_number; it is a different
+matrix metric whose provenance was not a raw callback field.
+
+Disposition: SAME_VALUE_DIFFERENT_MATRIX_METRIC
+No runtime decode change was required. The temporary diagnostic was not added
+as a target, executable, or permanent callback.

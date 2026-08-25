@@ -36,8 +36,15 @@ enum class Plaza2QualificationState : std::uint8_t {
     Failed = 5,
 };
 
+enum class Plaza2QualificationTerminal : std::uint8_t {
+    Ready = 0,
+    NotReady = 1,
+    Error = 2,
+};
+
 struct Plaza2QualificationSnapshot {
     Plaza2QualificationState state{Plaza2QualificationState::Created};
+    Plaza2QualificationTerminal terminal{Plaza2QualificationTerminal::NotReady};
     bool connectivity_ready{false};
     bool market_state_ready{false};
     bool account_state_ready{false};
@@ -85,6 +92,7 @@ struct Plaza2TradeConnectivityQualificationResult {
 };
 
 [[nodiscard]] std::string_view plaza2_qualification_state_name(Plaza2QualificationState state) noexcept;
+[[nodiscard]] std::string_view plaza2_qualification_terminal_name(Plaza2QualificationTerminal terminal) noexcept;
 
 class Plaza2TradeConnectivityQualifier {
   public:

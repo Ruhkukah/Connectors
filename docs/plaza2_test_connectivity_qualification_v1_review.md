@@ -1,21 +1,43 @@
-# PLAZA II TEST connectivity qualification V1
+# PLAZA II TEST connectivity qualification V1.1
 
-This PR is a target-specific, read-only qualification path for the MOEX
-PLAZA II TEST environment. It remains separate from `Plaza2TestTradeTransport`,
-which is fake-only. No order payload, publisher message, or cleanup command is
-available on this path.
+PR #28 is a target-specific, read-only qualification path for the MOEX
+PLAZA II TEST environment. It remains separate from
+`Plaza2TestTradeTransport`, which is fake-only. The PR includes the
+read-only qualifier executable; it does not include an order path.
 
 ## Safety boundary
 
 TEST network, TEST session, PLAZA II, and market-data arms are explicit. The
-qualifier may create, open, inspect, and close the qualification listeners and
-the open-only publisher. It does not allocate a publisher message or call
-`cg_pub_post`; no live TEST order was sent.
+qualifier may create, open, inspect, and close qualification listeners and the
+open-only publisher. It does not allocate a publisher message or call
+`cg_pub_post`; no live TEST order was sent. Credentials, settings, router
+configuration, and raw captures are excluded from committed evidence.
 
-The receipt records per-listener creation/open/ONLINE/snapshot state, the
-runtime error fields, factual readiness booleans, and the individual causes
-when a conjunction is false. A missing POS row remains fail-closed and is not
-interpreted as zero.
+The receipt records per-listener creation/open/ONLINE/snapshot state, runtime
+errors, readiness booleans, terminal classification, and individual failure
+causes. A missing POS row remains fail-closed as **NOT PROVEN ZERO**.
+
+## V1.1 replication invariants
+
+`P2REPL_CLEARDELETED` is retained as a typed pending event carrying
+`stream_code`, `table_code`, `table_rev`, and `flags`. It is applied at the
+existing transaction-safe boundary. For a table with source revision `r`, a
+clear at `R` removes only rows with `r < R`; `INT64_MAX` clears only the
+addressed table. Table-scoped cleanup never calls the stream-wide projector.
+Internal source-revision metadata covers the qualifier's REFDATA,
+SESSIONSTATE, INSTRUMENTSTATE, POS, PART, and related order/book tables.
+Uncommitted clears remain invisible until commit, and subsequent rows rebuild
+the cleared table normally.
+
+LifeNum is tracked and delivered per replication stream. A changed LifeNum
+invalidates only that stream's owning projector domain; the initial value and
+an identical repeat do not invalidate any domain. The verified CGate 9.3 ABI
+layout was not changed.
+
+Refresh clears every target-derived field before looking up the target. A
+bounded run is persisted as terminal `READY`, `NOT_READY`, or `ERROR`; a
+not-ready run is never represented by `qualification_state="Started"` as its
+final interpretation.
 
 ## Negotiated listener schemes
 
@@ -37,15 +59,6 @@ override and is recorded as `listener_url_mode=explicit_override`; omitted
 known streams are recorded as `negotiated`. Settings and credentials are not
 written to the receipt.
 
-The runtime plan now binds reviewed fields to their actual negotiated ordinal
-while tolerating additive runtime fields. Per-stream LifeNum tracking avoids
-mistaking independent service lifetimes for a global reset. `CLEARDELETED` is
-staged at the next transaction boundary (or applied before ONLINE when no
-transaction follows), and refdata resets preserve already observed status
-rows until the corresponding refdata rows arrive. These changes keep the
-read-side projector commit-bounded and fail-closed without changing the
-verified CGate ABI layout.
-
 ## Runtime and readiness gates
 
 `Plaza2RuntimeProbe` records the installed library fingerprint, version
@@ -53,8 +66,9 @@ markers, resolved symbols, scheme SHA-256, and scheme-drift classification.
 `full_version_certified` remains false without a separate ABI and scheme
 review.
 
-`market_state_ready` requires target refdata and current session membership,
-`SESSIONSTATE.public_state == 1`, `INSTRUMENTSTATE.public_state == 1`, and a
+`market_state_ready` requires target FUTURES refdata and current-session
+membership, `SESSIONSTATE.public_state == 1`,
+`INSTRUMENTSTATE.public_state == 1`, a valid min step and trade mode, and a
 fresh two-sided AGGR20 BBO. `account_state_ready` requires one exact client
 PART row with `limits_set=true` and one exact client POS row with the expected
 account type. `add_order_qualified` is informational only and never
@@ -66,75 +80,36 @@ The committed redacted bundle is:
 
 `docs/evidence/plaza2_test_t1_qualification_20260825/`
 
-It contains the source/runtime fingerprints, frozen vendor matrix, corrected
-repository matrix, control-plane probe, the redacted qualifier receipt and
-hash, the pre-fix wrong-scheme evidence, and T0 status. It contains no auth
-file, credential, software key, router configuration, host address, or raw
-capture.
+It contains source/runtime fingerprints, the frozen vendor matrix, the
+corrected repository matrix, the LifeNum ABI diagnostic, control-plane probe,
+candidate census, POS census, the redacted qualifier receipt and hash, the
+pre-fix wrong-scheme evidence, and T0 status.
 
-### Official vendor read-only matrix
+The official matrix column is named `vendor_lifenum_metric`; it is not the raw
+CGate LifeNum payload. The repository column is named `cg_data_lifenum`.
+`lifenum_diagnostic.txt` records the installed `cg_data_lifenum_t` layout,
+raw bytes, decoded values, and the official `basic/repl.c` comparison. The
+disposition is `SAME_VALUE_DIFFERENT_MATRIX_METRIC`; no runtime decode change
+was required.
 
-The official MOEX `basic/repl.c` sample was run one stream at a time with bare
-settings and a bounded stop. All eight streams created/opened, delivered data,
-reached `ONLINE`, completed a snapshot, and reported replication state:
+The final qualifier receipt is target-specific and read-only. It includes the
+terminal classification, internally reset target fields, all readiness
+booleans, and a redacted POS census for the authorized participant. The
+candidate census first applies every declared market-state gate. If it is
+empty, the result is classified `TEST_CONTOUR_NOT_CURRENTLY_TRADEABLE`; no
+order is attempted.
 
-| Stream | Rows | LifeNum | ReplState | Elapsed (ms) |
-| --- | ---: | ---: | ---: | ---: |
-| `FORTS_TRADE_REPL` | 78520 | 2 | 1 | 8011 |
-| `FORTS_USERORDERBOOK_REPL` | 2 | 2 | 1 | 8009 |
-| `FORTS_POS_REPL` | 1 | 2 | 1 | 8010 |
-| `FORTS_PART_REPL` | 44 | 2 | 1 | 8010 |
-| `FORTS_REFDATA_REPL` | 30346 | 2 | 1 | 8014 |
-| `FORTS_SESSIONSTATE_REPL` | 45 | 2 | 1 | 8010 |
-| `FORTS_INSTRUMENTSTATE_REPL` | 22868 | 2 | 1 | 8010 |
-| `FORTS_AGGR20_REPL` | 31632 | 2 | 1 | 8011 |
+The bounded T1 census observed 330 FUTURES instruments and 327 current-session
+members, but zero instruments with `SESSIONSTATE.public_state == 1`; the final
+qualified count was zero. The authorized-participant POS census contained no
+rows, which remains **NOT PROVEN ZERO**, not an inferred zero position.
 
-### Corrected repository matrix
-
-The repository implementation was rerun one stream at a time with the same
-bare/default selection. All eight rows in the committed repository matrix
-have `created=opened=open_event=first_data=ever_online=snapshot_complete=1`
-and `error_code=runtime_code=0`. Counts are qualitative, not an equality
-claim, because the runs occurred at different times.
-
-### Combined qualifier result
-
-The bounded run used `qualification_timeout_ms=60000` and `max_polls=0` with
-target `RIU6` (ISIN id 3822999, session 11692) and participant `FZ0001o`.
-All eight typed streams, `p2mqreply`, and the open-only publisher were open;
-the receipt records `connectivity_ready=true` and `publisher_ready=true`.
-
-The run correctly stopped without a readiness claim:
-
-| Field | Result |
-| --- | --- |
-| `connectivity_ready` | `true` |
-| `market_state_ready` | `false` |
-| `account_state_ready` | `false` |
-| `publisher_ready` | `true` |
-| `add_order_qualified` | `false` |
-
-The final persisted receipt records a fail-closed late-clear boundary: target
-refdata and status are unavailable at the end of the bounded run. The direct
-status probe recorded target session/instrument `public_state=0`; no two-sided
-fresh AGGR20 BBO or exact POS row was present. The PART row is unique and has
-`limits_set=true`. This is a qualification no-go for the current
-market/account state, not a listener-connectivity failure.
-
-### Control plane and T0
+## Control plane and T0
 
 A temporary official-sample derivative created/opened/observed/closed
-`p2mqreply` and the publisher, with zero `cg_pub_msgnew` and zero
+`p2mqreply` and the publisher with zero `cg_pub_msgnew` and zero
 `cg_pub_post` calls. T0 was inactive and recorded as `T0_NOT_AVAILABLE`; T1
 remained active. No router or authentication configuration was changed.
-
-### Prior connector defect
-
-The pre-fix repository PART/REFDATA aliases returned `32776 / 0x8008 /
-DB:WRONG_DB_SCHEME`, while the official vendor bare/default subscriptions
-succeeded. The redacted failure file retains the affected listeners and
-runtime/scheme fingerprints. The corrected repository matrix demonstrates the
-connector-side scheme-selection fix.
 
 ## Validation
 
@@ -143,10 +118,15 @@ connector-side scheme-selection fix.
 | Full CTest | 157/157 pass |
 | Changed-target ASan/UBSan set | 4/4 pass |
 | Source style check | pass |
-| .NET ABI smoke/policy | pass |
-| Structural no-send/privacy checks | pass |
+| Repository style check | pass |
+| ABI smoke/policy | pass |
+| No-send/privacy checks | pass |
+| GitHub connector-validation | pass |
+| Requested GitHub sanitizer rerun | pass; prior TWIME failure classified as an unrelated timing flake |
 | `git diff --check` | pass |
 | Live orders or publisher messages | none |
 
-No new target, profile, wrapper, script, executable, router setting, or live
-order path was added.
+The order-lifecycle wording remains **atomic local journal; no power-loss
+durability claimed**. No durable orphan-journal claim is made. No new target,
+profile, wrapper, or script was added; PR #28 includes the read-only
+qualifier executable.

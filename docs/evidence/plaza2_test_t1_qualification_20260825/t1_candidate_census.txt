@@ -1,0 +1,16 @@
+schema=plaza2_t1_candidate_census.v1
+source_sha=97f0d5644a461f1bdb168330124a2d670b2cbc6b
+futures_observed=330
+membership_pass=327
+session_public_state_1_pass=0
+instrument_public_state_1_pass=0
+valid_min_step_pass=0
+valid_trade_mode_id_pass=0
+two_sided_aggr20_pass=0
+fresh_aggr20_pass=0
+qualified_count=0
+classification=TEST_CONTOUR_NOT_CURRENTLY_TRADEABLE
+
+This temporary read-only census applied every declared market-state gate to
+the corrected projector during the bounded T1 run. No candidate was selected
+and no order or publisher message was attempted.

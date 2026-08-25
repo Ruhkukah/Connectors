@@ -4,15 +4,21 @@
 
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <span>
 #include <stdexcept>
 
 namespace {
 
+using moex::plaza2::fake::EngineState;
+using moex::plaza2::fake::EventKind;
+using moex::plaza2::fake::EventSpec;
 using moex::plaza2::fake::FindScenarioById;
 using moex::plaza2::fake::Plaza2FakeEngine;
 using moex::plaza2::fake::ViewForScenario;
 using moex::plaza2::generated::StreamCode;
+using moex::plaza2::generated::TableCode;
+using moex::plaza2::private_state::InstrumentSnapshot;
 using moex::plaza2::private_state::OwnOrderSnapshot;
 using moex::plaza2::private_state::Plaza2PrivateStateProjector;
 using moex::plaza2::private_state::StreamHealthSnapshot;
@@ -36,6 +42,15 @@ const StreamHealthSnapshot* find_stream(std::span<const StreamHealthSnapshot> st
     for (const auto& stream : streams) {
         if (stream.stream_code == stream_code) {
             return &stream;
+        }
+    }
+    return nullptr;
+}
+
+const InstrumentSnapshot* find_instrument(std::span<const InstrumentSnapshot> instruments, std::int32_t isin_id) {
+    for (const auto& instrument : instruments) {
+        if (instrument.isin_id == isin_id) {
+            return &instrument;
         }
     }
     return nullptr;
@@ -84,6 +99,40 @@ int main() {
         require(clear_deleted_stream->clear_deleted_count == 1, "clear-deleted count should advance");
         require(clear_deleted_stream->committed_row_count == 0, "user-orderbook row watermark should be reset");
 
+        Plaza2PrivateStateProjector table_clear_projector;
+        run_or_throw("private_state_table_clear_deleted", &table_clear_projector);
+        require(table_clear_projector.instruments().size() == 2,
+                "table clear should remove stale rows and retain the rebuilt/refdata rows");
+        require(find_instrument(table_clear_projector.instruments(), 7001) != nullptr,
+                "a fresh transaction should rebuild a previously cleared fut_sess_contents row");
+        require(find_instrument(table_clear_projector.instruments(), 7002) != nullptr,
+                "fut_sess_contents rows at the clear revision must remain");
+        require(find_instrument(table_clear_projector.instruments(), 8001) == nullptr &&
+                    find_instrument(table_clear_projector.instruments(), 8002) == nullptr,
+                "MAX clear must affect only the addressed fut_instruments table");
+
+        EngineState uncommitted_state{};
+        uncommitted_state.open = true;
+        uncommitted_state.transaction_open = true;
+        const EventSpec begin_event{.kind = EventKind::kTransactionBegin, .stream_code = StreamCode::kFortsRefdataRepl};
+        table_clear_projector.on_event({}, begin_event, uncommitted_state);
+        const EventSpec uncommitted_clear{
+            .kind = EventKind::kClearDeleted,
+            .stream_code = StreamCode::kFortsRefdataRepl,
+            .table_code = TableCode::kFortsRefdataReplFutSessContents,
+            .signed_value = std::numeric_limits<std::int64_t>::max(),
+        };
+        table_clear_projector.on_event({}, uncommitted_clear, uncommitted_state);
+        require(table_clear_projector.instruments().size() == 2,
+                "an uncommitted table clear must not change committed visibility");
+        uncommitted_state.transaction_open = false;
+        uncommitted_state.commit_count = 3;
+        const EventSpec commit_event{.kind = EventKind::kTransactionCommit,
+                                     .stream_code = StreamCode::kFortsRefdataRepl};
+        table_clear_projector.on_transaction_commit({}, commit_event, uncommitted_state);
+        require(table_clear_projector.instruments().empty(),
+                "a committed MAX table clear should remove the addressed table rows");
+
         Plaza2PrivateStateProjector lifenum_projector;
         run_or_throw("private_state_lifenum_invalidation", &lifenum_projector);
 
@@ -112,6 +161,38 @@ int main() {
             require(stream.last_commit_sequence == 0,
                     "stream commit watermark should reset after lifenum invalidation");
         }
+
+        Plaza2PrivateStateProjector scoped_lifenum_projector;
+        run_or_throw("private_state_scoped_lifenum", &scoped_lifenum_projector);
+        EngineState scoped_state{};
+        scoped_state.open = true;
+        scoped_state.online = true;
+        scoped_state.has_lifenum = true;
+        scoped_state.last_lifenum = 8;
+        const auto* preserved_status_instrument = find_instrument(scoped_lifenum_projector.instruments(), 9001);
+        require(scoped_lifenum_projector.matching_map().empty() && preserved_status_instrument != nullptr &&
+                    preserved_status_instrument->kind == moex::plaza2::private_state::InstrumentKind::kUnknown &&
+                    preserved_status_instrument->has_current_status,
+                "REFDATA LifeNum must invalidate REFDATA-owned state while preserving status state");
+        require(!scoped_lifenum_projector.positions().empty() && !scoped_lifenum_projector.limits().empty(),
+                "REFDATA LifeNum must preserve POS and PART state");
+        require(!scoped_lifenum_projector.sessions().empty() && !scoped_lifenum_projector.instruments().empty(),
+                "REFDATA LifeNum must preserve status-owned session and instrument state");
+        const auto preserved_position_count = scoped_lifenum_projector.positions().size();
+        const EventSpec refdata_lifenum{
+            .kind = EventKind::kLifeNum, .stream_code = StreamCode::kFortsRefdataRepl, .numeric_value = 2};
+        scoped_lifenum_projector.on_event({}, refdata_lifenum, scoped_state);
+        require(scoped_lifenum_projector.positions().size() == preserved_position_count,
+                "repeated LifeNum must not invalidate another domain");
+
+        Plaza2PrivateStateProjector pos_lifenum_projector;
+        run_or_throw("private_state_scoped_lifenum", &pos_lifenum_projector);
+        const EventSpec pos_lifenum{
+            .kind = EventKind::kLifeNum, .stream_code = StreamCode::kFortsPosRepl, .numeric_value = 9};
+        pos_lifenum_projector.on_event({}, pos_lifenum, scoped_state);
+        require(pos_lifenum_projector.positions().empty(), "POS LifeNum must invalidate POS state");
+        require(!pos_lifenum_projector.limits().empty() && !pos_lifenum_projector.instruments().empty(),
+                "POS LifeNum must preserve PART and REFDATA state");
 
         return 0;
     } catch (const std::exception& error) {

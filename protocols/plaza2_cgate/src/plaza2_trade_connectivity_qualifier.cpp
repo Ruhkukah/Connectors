@@ -144,6 +144,9 @@ const private_state::InstrumentSnapshot* find_target(std::span<const private_sta
     std::int32_t target_id = 0;
     const bool target_is_numeric = parse_isin_id(target, target_id);
     for (const auto& instrument : instruments) {
+        if (!instrument.current_session_member) {
+            continue;
+        }
         if ((target_is_numeric && instrument.isin_id == target_id) || instrument.isin == target ||
             instrument.short_isin == target) {
             return &instrument;
@@ -181,6 +184,7 @@ struct Plaza2TradeConnectivityQualifier::Impl {
             return validation;
         }
         snapshot.state = Plaza2QualificationState::Validated;
+        snapshot.terminal = Plaza2QualificationTerminal::NotReady;
 
         if (const auto result = private_runner->start(); !result.ok) {
             refresh();
@@ -202,6 +206,9 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         refresh();
         if (snapshot.add_order_qualified && snapshot.state != Plaza2QualificationState::Stopped) {
             snapshot.state = Plaza2QualificationState::Ready;
+            snapshot.terminal = Plaza2QualificationTerminal::Ready;
+        } else {
+            snapshot.terminal = Plaza2QualificationTerminal::NotReady;
         }
         return {.ok = true, .message = "PLAZA II TEST connectivity qualification poll completed"};
     }
@@ -212,6 +219,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
             started = false;
             snapshot.state = Plaza2QualificationState::Stopped;
             refresh();
+            snapshot.terminal = snapshot.add_order_qualified ? Plaza2QualificationTerminal::Ready
+                                                             : Plaza2QualificationTerminal::NotReady;
             if (!result.ok) {
                 return {.ok = false, .message = result.message};
             }
@@ -272,7 +281,12 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         snapshot.connectivity_ready = health.runtime_probe_ok && health.scheme_drift_ok &&
                                       snapshot.private_streams_ready && snapshot.status_streams_ready &&
                                       snapshot.p2mqreply_open;
+        snapshot.target_isin_id = 0;
+        snapshot.target_sess_id = 0;
         snapshot.target_found = false;
+        snapshot.target_current_session_member = false;
+        snapshot.target_min_step.clear();
+        snapshot.target_trade_mode_id = 0;
         snapshot.target_session_status_available = false;
         snapshot.target_session_status = 0;
         snapshot.target_session_add_capable = false;
@@ -288,6 +302,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         snapshot.participant_limits_set = false;
         snapshot.applicable_position_count = 0;
         snapshot.position_identity_exact = false;
+        snapshot.position_account_type = 0;
+        snapshot.position_xpos = 0;
         snapshot.failure_reasons.clear();
 
         const auto& projector = private_runner->projector();
@@ -387,11 +403,15 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         add_failure(snapshot, snapshot.runtime_trading_capable, "runtime trading capability symbols are incomplete");
         if (snapshot.add_order_qualified && snapshot.state != Plaza2QualificationState::Stopped) {
             snapshot.state = Plaza2QualificationState::Ready;
+            snapshot.terminal = Plaza2QualificationTerminal::Ready;
+        } else if (snapshot.state != Plaza2QualificationState::Failed) {
+            snapshot.terminal = Plaza2QualificationTerminal::NotReady;
         }
     }
 
     Plaza2TradeConnectivityQualificationResult fail(std::string message) {
         snapshot.state = Plaza2QualificationState::Failed;
+        snapshot.terminal = Plaza2QualificationTerminal::Error;
         snapshot.failure_reasons.push_back(message);
         return {.ok = false, .message = std::move(message)};
     }
@@ -420,6 +440,18 @@ std::string_view plaza2_qualification_state_name(Plaza2QualificationState state)
         return "Failed";
     }
     return "Unknown";
+}
+
+std::string_view plaza2_qualification_terminal_name(Plaza2QualificationTerminal terminal) noexcept {
+    switch (terminal) {
+    case Plaza2QualificationTerminal::Ready:
+        return "READY";
+    case Plaza2QualificationTerminal::NotReady:
+        return "NOT_READY";
+    case Plaza2QualificationTerminal::Error:
+        return "ERROR";
+    }
+    return "ERROR";
 }
 
 Plaza2TradeConnectivityQualifier::Plaza2TradeConnectivityQualifier(Plaza2TradeConnectivityQualifierConfig config)

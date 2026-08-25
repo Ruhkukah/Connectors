@@ -1,4 +1,4 @@
-stream,created,opened,open_event,first_data,ever_online,snapshot_complete,row_count,lifenum,replstate_seen,elapsed_ms,error_code,runtime_code
+stream,created,opened,open_event,first_data,ever_online,snapshot_complete,row_count,cg_data_lifenum,replstate_seen,elapsed_ms,error_code,runtime_code
 FORTS_TRADE_REPL,1,1,1,1,1,1,88498,66739,1,637,0,0
 FORTS_USERORDERBOOK_REPL,1,1,1,1,1,1,2,66739,1,86,0,0
 FORTS_POS_REPL,1,1,1,1,1,1,16,66739,1,521,0,0

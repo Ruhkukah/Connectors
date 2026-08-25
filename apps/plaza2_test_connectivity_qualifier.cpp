@@ -439,6 +439,7 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     number("scheme_warning_drift_count", probe.scheme_drift.warning_drift_count);
     field("target_isin", args.target_isin);
     field("participant", args.participant);
+    boolean("target_found", snapshot.target_found);
     number("target_isin_id", snapshot.target_isin_id);
     number("target_sess_id", snapshot.target_sess_id);
     boolean("target_in_fut_sess_contents", snapshot.target_current_session_member);
@@ -465,6 +466,22 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     number("position_account_type", snapshot.position_account_type);
     number("position_xpos", snapshot.position_xpos);
     boolean("position_identity_exact", snapshot.position_identity_exact);
+    json += "  \"position_census\": [";
+    bool first_position = true;
+    for (const auto& position : qualifier.private_session().projector().positions()) {
+        if (position.scope != moex::plaza2::private_state::PositionScope::kClient ||
+            position.account_code != args.participant) {
+            continue;
+        }
+        if (!first_position) {
+            json += ", ";
+        }
+        first_position = false;
+        json += "{\"isin_id\":" + std::to_string(position.isin_id) +
+                ",\"account_type\":" + std::to_string(position.account_type) +
+                ",\"xpos\":" + std::to_string(position.xpos) + "}";
+    }
+    json += "],\n";
     boolean("connectivity_ready", snapshot.connectivity_ready);
     boolean("market_state_ready", snapshot.market_state_ready);
     boolean("account_state_ready", snapshot.account_state_ready);
@@ -487,7 +504,9 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
                 ",\"required_online\":" + (stream.required_online ? "true" : "false") + "}";
     }
     json += "],\n";
-    field("qualification_state", plaza2_qualification_state_name(snapshot.state));
+    field("qualification_state", plaza2_qualification_terminal_name(snapshot.terminal));
+    field("lifecycle_state", plaza2_qualification_state_name(snapshot.state));
+    field("terminal_classification", plaza2_qualification_terminal_name(snapshot.terminal));
     field("result_message", result_message);
     json += "  \"failure_reasons\": [";
     for (std::size_t index = 0; index < snapshot.failure_reasons.size(); ++index) {
@@ -514,6 +533,7 @@ void write_review(const fs::path& path, const Args& args, const Plaza2TradeConne
            << "- Target: `" << args.target_isin << "`\n"
            << "- Participant: `" << args.participant << "`\n"
            << "- Result: `" << result_message << "`\n"
+           << "- Terminal classification: `" << plaza2_qualification_terminal_name(snapshot.terminal) << "`\n"
            << "- Receipt SHA-256: `" << receipt_sha
            << "`\n\n"
               "## Readiness\n\n"

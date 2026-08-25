@@ -116,6 +116,8 @@ int main(int argc, char** argv) {
         require(result.account_state_ready, "account-state readiness should pass");
         require(result.publisher_ready, "publisher readiness should pass");
         require(result.add_order_qualified, "informational add-order qualification should pass");
+        require(result.terminal == Plaza2QualificationTerminal::Ready,
+                "a fully qualified run must classify its terminal receipt as READY");
         require(result.target_found && result.target_isin_id == 1001, "target identity mismatch");
         require(result.target_sess_id == 321 && result.target_session_status_available,
                 "target session evidence mismatch");
@@ -161,6 +163,28 @@ int main(int argc, char** argv) {
                     reply_it->opened,
                 "p2mqreply should remain independently open");
 
+        {
+            ::setenv("MOEX_FAKE_REMOVE_TARGET_AFTER_READY", "1", 1);
+            Plaza2TradeConnectivityQualifier refresh_qualifier(make_config(fixture));
+            require(refresh_qualifier.start().ok, "target-removal refresh start should succeed");
+            require(refresh_qualifier.poll_once().ok, "target-removal initial poll should succeed");
+            const auto& present = refresh_qualifier.qualification();
+            require(present.target_found && present.target_refdata_present,
+                    "target-removal regression must begin with target evidence");
+            require(refresh_qualifier.poll_once().ok, "target-removal invalidation poll should succeed");
+            const auto& removed = refresh_qualifier.qualification();
+            require(!removed.target_found && removed.target_isin_id == 0 && removed.target_sess_id == 0 &&
+                        !removed.target_current_session_member && removed.target_min_step.empty() &&
+                        removed.target_trade_mode_id == 0 && !removed.target_session_status_available &&
+                        !removed.target_instrument_status_available && !removed.target_refdata_present &&
+                        !removed.target_aggr20_two_sided && removed.target_aggr20_repl_id == 0 &&
+                        removed.target_aggr20_repl_rev == 0 && removed.applicable_position_count == 0 &&
+                        !removed.position_identity_exact && removed.position_account_type == 0 &&
+                        removed.position_xpos == 0,
+                    "refresh must clear all target-derived evidence after target removal");
+            ::unsetenv("MOEX_FAKE_REMOVE_TARGET_AFTER_READY");
+        }
+
         const auto stop = qualifier.stop();
         require(stop.ok, "qualification fixture stop should succeed");
 
@@ -195,6 +219,8 @@ int main(int argc, char** argv) {
                 require(status.target_found, std::string(label) + " target should remain present");
                 require(!status.market_state_ready && !status.add_order_qualified,
                         std::string(label) + " must fail market readiness");
+                require(status.terminal == Plaza2QualificationTerminal::NotReady,
+                        std::string(label) + " must classify its bounded receipt as NOT_READY");
             }
             ::unsetenv(flag);
         };
@@ -244,6 +270,8 @@ int main(int argc, char** argv) {
             Plaza2TradeConnectivityQualifier failed_qualifier(make_config(fixture));
             const auto failed_start = failed_qualifier.start();
             require(!failed_start.ok, "reply-listener failure should fail start");
+            require(failed_qualifier.qualification().terminal == Plaza2QualificationTerminal::Error,
+                    "a listener start failure must classify its receipt as ERROR");
             const auto& failed_health = failed_qualifier.private_session().health_snapshot();
             require(failed_health.failing_listener == "p2mqreply",
                     "failure receipt should identify the failing p2mqreply listener");

@@ -72,6 +72,8 @@ def flatten_scenarios(scenarios: list[dict]) -> dict:
                     "row_count": len(event["rows"]),
                     "numeric_value": event["numeric_value"],
                     "text_value": event["text_value"],
+                    "signed_value": event["signed_value"],
+                    "clear_deleted_flags": event["clear_deleted_flags"],
                 }
             )
 
@@ -133,6 +135,8 @@ def render_json_payload(flattened: dict) -> str:
                 "row_count": row["row_count"],
                 "numeric_value": row["numeric_value"],
                 "text_value": row["text_value"],
+                "signed_value": row["signed_value"],
+                "clear_deleted_flags": row["clear_deleted_flags"],
             }
             for row in flattened["events"]
         ],
@@ -230,7 +234,9 @@ def render_cpp(flattened: dict) -> str:
             f"{row['first_row_index']}u, "
             f"{row['row_count']}u, "
             f"{row['numeric_value']}u, "
-            f"{cpp_string_literal(row['text_value'])}"
+            f"{cpp_string_literal(row['text_value'])}, "
+            f"{row['signed_value']}, "
+            f"{row['clear_deleted_flags']}u"
             "},"
         )
     lines.append("}};")

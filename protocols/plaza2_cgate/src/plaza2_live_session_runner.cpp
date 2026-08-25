@@ -135,7 +135,7 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         state_ = {};
         state_.streams.clear();
         pending_row_deltas_.assign(streams.size(), 0);
-        pending_clear_deleted_.assign(streams.size(), false);
+        pending_clear_deleted_.assign(streams.size(), {});
         stream_lifenums_.clear();
         for (const auto& stream : streams) {
             state_.streams.push_back({
@@ -216,7 +216,7 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         case Plaza2ListenerEventKind::LifeNum:
             return handle_lifenum(event.stream_code, event.unsigned_value);
         case Plaza2ListenerEventKind::ClearDeleted:
-            return handle_clear_deleted(event.stream_code);
+            return handle_clear_deleted(event);
         case Plaza2ListenerEventKind::ReplState:
             return handle_replstate(event.text_value);
         }
@@ -247,14 +247,17 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
             .stream_code = stream_code,
         };
         projector_.on_event(scenario_, fake_event, state_);
-        if (pending_clear_deleted_[index]) {
+        for (const auto& pending : pending_clear_deleted_[index]) {
             const EventSpec clear_event{
                 .kind = EventKind::kClearDeleted,
-                .stream_code = stream_code,
+                .stream_code = pending.stream_code,
+                .table_code = pending.table_code,
+                .signed_value = pending.table_rev,
+                .clear_deleted_flags = pending.flags,
             };
             projector_.on_event(scenario_, clear_event, state_);
-            pending_clear_deleted_[index] = false;
         }
+        pending_clear_deleted_[index].clear();
         return {};
     }
 
@@ -337,6 +340,7 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
             .kind = EventKind::kStreamData,
             .stream_code = event.stream_code,
             .table_code = event.table_code,
+            .signed_value = event.signed_value,
         };
         const RowSpec row{
             .stream_code = event.stream_code,
@@ -353,14 +357,17 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         if (index == state_.streams.size()) {
             return ordering_error("PLAZA II live bridge received ONLINE for an undeclared stream");
         }
-        if (pending_clear_deleted_[index]) {
+        for (const auto& pending : pending_clear_deleted_[index]) {
             const EventSpec clear_event{
                 .kind = EventKind::kClearDeleted,
-                .stream_code = stream_code,
+                .stream_code = pending.stream_code,
+                .table_code = pending.table_code,
+                .signed_value = pending.table_rev,
+                .clear_deleted_flags = pending.flags,
             };
             projector_.on_event(scenario_, clear_event, state_);
-            pending_clear_deleted_[index] = false;
         }
+        pending_clear_deleted_[index].clear();
         state_.streams[index].online = true;
         state_.streams[index].snapshot_complete = true;
         recompute_online();
@@ -381,7 +388,8 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         if (known_stream != stream_lifenums_.end() && known_stream->second == life_number) {
             return {};
         }
-        const bool stream_lifenum_changed = known_stream != stream_lifenums_.end();
+        const bool stream_lifenum_seen = known_stream != stream_lifenums_.end();
+        const bool stream_lifenum_changed = stream_lifenum_seen;
         if (known_stream == stream_lifenums_.end()) {
             stream_lifenums_.emplace_back(stream_code, life_number);
         } else {
@@ -390,18 +398,20 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         state_.has_lifenum = true;
         state_.last_lifenum = life_number;
         if (stream_lifenum_changed) {
-            std::fill(pending_clear_deleted_.begin(), pending_clear_deleted_.end(), false);
-            for (auto& stream : state_.streams) {
-                stream.online = false;
-                stream.snapshot_complete = false;
-                stream.committed_row_count = 0;
+            const auto index = stream_index(state_, stream_code);
+            if (index < state_.streams.size()) {
+                pending_clear_deleted_[index].clear();
+                state_.streams[index].online = false;
+                state_.streams[index].snapshot_complete = false;
+                state_.streams[index].committed_row_count = 0;
             }
-            state_.online = false;
+            recompute_online();
             last_resync_reason_ = "lifenum_change:" + stream_name(stream_code);
         }
-        if (stream_lifenum_changed || stream_lifenums_.size() == 1) {
+        if (!stream_lifenum_seen || stream_lifenum_changed) {
             const EventSpec fake_event{
                 .kind = EventKind::kLifeNum,
+                .stream_code = stream_code,
                 .numeric_value = life_number,
             };
             projector_.on_event(scenario_, fake_event, state_);
@@ -409,7 +419,8 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         return {};
     }
 
-    Plaza2Error handle_clear_deleted(StreamCode stream_code) {
+    Plaza2Error handle_clear_deleted(const Plaza2ListenerEvent& event) {
+        const auto stream_code = event.stream_code;
         const auto index = stream_index(state_, stream_code);
         if (index == state_.streams.size()) {
             return ordering_error("PLAZA II live bridge received P2REPL_CLEARDELETED for an undeclared stream");
@@ -418,15 +429,24 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         state_.streams[index].online = false;
         state_.streams[index].snapshot_complete = false;
         recompute_online();
-        pending_clear_deleted_[index] = true;
+        pending_clear_deleted_[index].push_back({
+            .stream_code = stream_code,
+            .table_code = event.table_code,
+            .table_rev = event.signed_value,
+            .flags = event.clear_deleted_flags,
+        });
         last_resync_reason_ = "clear_deleted:" + stream_name(stream_code);
         if (state_.transaction_open) {
+            const auto pending = pending_clear_deleted_[index].back();
             const EventSpec clear_event{
                 .kind = EventKind::kClearDeleted,
-                .stream_code = stream_code,
+                .stream_code = pending.stream_code,
+                .table_code = pending.table_code,
+                .signed_value = pending.table_rev,
+                .clear_deleted_flags = pending.flags,
             };
             projector_.on_event(scenario_, clear_event, state_);
-            pending_clear_deleted_[index] = false;
+            pending_clear_deleted_[index].pop_back();
         }
         return {};
     }
@@ -462,7 +482,14 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
     fake::ScenarioSpec scenario_{};
     EngineState state_{};
     std::vector<std::uint64_t> pending_row_deltas_;
-    std::vector<bool> pending_clear_deleted_;
+    struct PendingClearDeleted {
+        StreamCode stream_code{kNoStreamCode};
+        TableCode table_code{kNoTableCode};
+        std::int64_t table_rev{0};
+        std::uint32_t flags{0};
+    };
+
+    std::vector<std::vector<PendingClearDeleted>> pending_clear_deleted_;
     std::vector<std::pair<StreamCode, std::uint64_t>> stream_lifenums_;
     std::vector<std::string> text_storage_;
     std::vector<FieldValueSpec> field_storage_;

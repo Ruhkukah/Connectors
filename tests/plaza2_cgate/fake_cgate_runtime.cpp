@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -1454,6 +1455,33 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
     }
 
     if (connection->script_emitted && connection->pending_replies.empty() && !connection->liveness_event_emitted) {
+        if (fake_flag("MOEX_FAKE_REMOVE_TARGET_AFTER_READY")) {
+            for (auto* listener : connection->listeners) {
+                if (listener == nullptr || listener->reply_listener || listener->state != kStateActive ||
+                    listener->stream_code != StreamCode::kFortsRefdataRepl) {
+                    continue;
+                }
+                const auto* plan = find_message_plan(*listener, TableCode::kFortsRefdataReplFutSessContents);
+                if (plan == nullptr) {
+                    return kCgErrIncorrectState;
+                }
+                auto clear_deleted = make_clear_deleted_payload(static_cast<std::uint32_t>(plan->msg_index),
+                                                                std::numeric_limits<std::int64_t>::max(), 0);
+                if (const auto result = emit_simple_message(*listener, kCgMsgP2replClearDeleted, clear_deleted.data(),
+                                                            clear_deleted.size());
+                    result != kCgErrOk) {
+                    return result;
+                }
+                if (const auto result = emit_simple_message(*listener, kCgMsgTnBegin); result != kCgErrOk) {
+                    return result;
+                }
+                if (const auto result = emit_simple_message(*listener, kCgMsgTnCommit); result != kCgErrOk) {
+                    return result;
+                }
+            }
+            connection->liveness_event_emitted = true;
+            return kCgErrOk;
+        }
         const bool private_liveness =
             fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_PRIVATE_LIFENUM_AFTER_READY");
         const bool aggr_liveness =

@@ -87,6 +87,11 @@ struct EventSpec {
     std::uint32_t row_count{0};
     std::uint64_t numeric_value{0};
     std::string_view text_value{};
+    // Runtime replication metadata carried by CG_MSG_STREAM_DATA and
+    // CG_MSG_P2REPL_CLEARDELETED.  These remain optional for legacy fake
+    // scenarios which do not model revisions.
+    std::int64_t signed_value{0};
+    std::uint32_t clear_deleted_flags{0};
 };
 
 struct InvariantSpec {

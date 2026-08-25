@@ -1,0 +1,93 @@
+scenario_id: private_state_table_clear_deleted
+description: Table-scoped clear-deleted removes only stale rows from the addressed table
+
+metadata:
+  version: 1
+  deterministic_seed: 0
+
+streams:
+  - name: FORTS_REFDATA_REPL
+    scope: private_core
+
+events:
+  - type: OPEN
+  - type: TN_BEGIN
+  - type: STREAM_DATA
+    stream: FORTS_REFDATA_REPL
+    table: fut_sess_contents
+    revision: 10
+    rows:
+      - replID: 1
+        isin_id: 7001
+        sess_id: 701
+        isin: AA-6.26
+        short_isin: AAU6
+        name: old
+        base_contract_code: AA
+        state: 1
+        replAct: 0
+        min_step: 1
+        trade_mode_id: 1
+  - type: STREAM_DATA
+    stream: FORTS_REFDATA_REPL
+    table: fut_sess_contents
+    revision: 20
+    rows:
+      - replID: 2
+        isin_id: 7002
+        sess_id: 702
+        isin: BB-6.26
+        short_isin: BBU6
+        name: keep
+        base_contract_code: BB
+        state: 1
+        replAct: 0
+        min_step: 1
+        trade_mode_id: 1
+  - type: STREAM_DATA
+    stream: FORTS_REFDATA_REPL
+    table: fut_instruments
+    revision: 30
+    rows:
+      - { replID: 3, isin_id: 8001, isin: CC-6.26, short_isin: CCU6, name: clear-one, base_contract_code: CC, min_step: 1, trade_mode_id: 1 }
+  - type: STREAM_DATA
+    stream: FORTS_REFDATA_REPL
+    table: fut_instruments
+    revision: 40
+    rows:
+      - { replID: 4, isin_id: 8002, isin: DD-6.26, short_isin: DDU6, name: clear-two, base_contract_code: DD, min_step: 1, trade_mode_id: 1 }
+  - type: TN_COMMIT
+  - type: P2REPL_CLEARDELETED
+    stream: FORTS_REFDATA_REPL
+    table: fut_sess_contents
+    revision: 20
+  - type: P2REPL_CLEARDELETED
+    stream: FORTS_REFDATA_REPL
+    table: fut_instruments
+    revision: 9223372036854775807
+  - type: TN_BEGIN
+  - type: STREAM_DATA
+    stream: FORTS_REFDATA_REPL
+    table: fut_sess_contents
+    revision: 50
+    rows:
+      - replID: 5
+        isin_id: 7001
+        sess_id: 705
+        isin: AA-6.26
+        short_isin: AAU6
+        name: rebuilt
+        base_contract_code: AA
+        state: 1
+        replAct: 0
+        min_step: 1
+        trade_mode_id: 1
+  - type: TN_COMMIT
+
+expected:
+  invariants:
+    - type: commit_count
+      value: 2
+    - type: clear_deleted_count
+      stream: FORTS_REFDATA_REPL
+      value: 2
