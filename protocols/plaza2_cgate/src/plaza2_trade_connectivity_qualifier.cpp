@@ -50,10 +50,20 @@ class QualificationAggr20Bridge final : public Plaza2ListenerEventHandler {
         case Plaza2ListenerEventKind::Open:
         case Plaza2ListenerEventKind::Timeout:
         case Plaza2ListenerEventKind::ReplState:
+            return {};
         case Plaza2ListenerEventKind::LifeNum:
+            if (has_lifenum_ && last_lifenum_ != event.unsigned_value) {
+                online_ = false;
+                snapshot_complete_ = false;
+                projector_.reset();
+            }
+            has_lifenum_ = true;
+            last_lifenum_ = event.unsigned_value;
             return {};
         case Plaza2ListenerEventKind::Close:
             online_ = false;
+            snapshot_complete_ = false;
+            projector_.reset();
             return {};
         case Plaza2ListenerEventKind::TransactionBegin:
             projector_.begin_transaction();
@@ -70,6 +80,7 @@ class QualificationAggr20Bridge final : public Plaza2ListenerEventHandler {
             snapshot_complete_ = true;
             return {};
         case Plaza2ListenerEventKind::ClearDeleted:
+            online_ = false;
             projector_.reset();
             snapshot_complete_ = false;
             return {};
@@ -81,6 +92,8 @@ class QualificationAggr20Bridge final : public Plaza2ListenerEventHandler {
     Plaza2Aggr20BookProjector& projector_;
     bool online_{false};
     bool snapshot_complete_{false};
+    bool has_lifenum_{false};
+    std::uint64_t last_lifenum_{0};
 };
 
 bool is_stream_ready(const Plaza2LiveStreamStatus& stream) {
@@ -172,6 +185,7 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         snapshot.state = Plaza2QualificationState::Validated;
 
         if (const auto result = private_runner->start(); !result.ok) {
+            refresh();
             return fail(result.message);
         }
         started = true;
@@ -262,6 +276,12 @@ struct Plaza2TradeConnectivityQualifier::Impl {
                                       snapshot.private_streams_ready && snapshot.status_streams_ready &&
                                       snapshot.p2mqreply_open;
         snapshot.target_found = false;
+        snapshot.target_session_status_available = false;
+        snapshot.target_session_status = 0;
+        snapshot.target_session_add_capable = false;
+        snapshot.target_instrument_status_available = false;
+        snapshot.target_instrument_status = 0;
+        snapshot.target_instrument_add_capable = false;
         snapshot.target_refdata_present = false;
         snapshot.target_aggr20_two_sided = false;
         snapshot.target_aggr20_age_ms = 0;
@@ -282,6 +302,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
             snapshot.target_current_session_member = target->current_session_member;
             snapshot.target_instrument_status_available = target->has_current_status;
             snapshot.target_instrument_status = target->current_status;
+            snapshot.target_instrument_add_capable = snapshot.target_instrument_status_available &&
+                                                     snapshot.target_instrument_status == 1;
             snapshot.target_min_step = target->min_step;
             snapshot.target_trade_mode_id = target->trade_mode_id;
             snapshot.target_refdata_present = target->kind == InstrumentKind::kFuture && target->sess_id != 0 &&
@@ -292,6 +314,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
                 if (session.sess_id == target->sess_id) {
                     snapshot.target_session_status_available = session.has_current_status;
                     snapshot.target_session_status = session.current_status;
+                    snapshot.target_session_add_capable = snapshot.target_session_status_available &&
+                                                         snapshot.target_session_status == 1;
                     break;
                 }
             }
@@ -333,7 +357,7 @@ struct Plaza2TradeConnectivityQualifier::Impl {
                                  snapshot.target_aggr20_repl_id != 0 && snapshot.target_aggr20_repl_rev != 0 &&
                                  aggr_bridge.online() && aggr_bridge.snapshot_complete();
         snapshot.market_state_ready = health.runtime_probe_ok && health.scheme_drift_ok && snapshot.target_refdata_present &&
-                                      snapshot.target_session_status_available && snapshot.target_instrument_status_available &&
+                                      snapshot.target_session_add_capable && snapshot.target_instrument_add_capable &&
                                       snapshot.target_aggr20_two_sided && aggr_age_ok;
         snapshot.account_state_ready = snapshot.participant_limit_unique && snapshot.participant_limits_set &&
                                        snapshot.position_identity_exact;
@@ -351,6 +375,10 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         add_failure(snapshot, snapshot.target_refdata_present, "target refdata is incomplete");
         add_failure(snapshot, snapshot.target_session_status_available, "target SESSIONSTATE is unavailable");
         add_failure(snapshot, snapshot.target_instrument_status_available, "target INSTRUMENTSTATE is unavailable");
+        add_failure(snapshot, snapshot.target_session_add_capable,
+                    "target SESSIONSTATE public_state is not add-capable (1)");
+        add_failure(snapshot, snapshot.target_instrument_add_capable,
+                    "target INSTRUMENTSTATE public_state is not add-capable (1)");
         add_failure(snapshot, snapshot.target_aggr20_two_sided, "target AGGR20 BBO is not two-sided");
         add_failure(snapshot, aggr_age_ok, "target AGGR20 evidence is missing, unversioned, stale, or offline");
         add_failure(snapshot, snapshot.participant_limit_unique && snapshot.participant_limits_set,

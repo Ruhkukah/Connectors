@@ -117,8 +117,12 @@ int main(int argc, char** argv) {
         require(result.target_found && result.target_isin_id == 1001, "target identity mismatch");
         require(result.target_sess_id == 321 && result.target_session_status_available,
                 "target session evidence mismatch");
+        require(result.target_session_status == 1 && result.target_session_add_capable,
+                "target session should be add-capable only at public_state=1");
         require(result.target_instrument_status_available && result.target_refdata_present,
                 "target instrument evidence mismatch");
+        require(result.target_instrument_status == 1 && result.target_instrument_add_capable,
+                "target instrument should be add-capable only at public_state=1");
         require(result.target_aggr20_two_sided && result.target_aggr20_repl_id == 2102 &&
                     result.target_aggr20_repl_rev == 22,
                 "target AGGR20 evidence mismatch");
@@ -130,6 +134,86 @@ int main(int argc, char** argv) {
 
         const auto stop = qualifier.stop();
         require(stop.ok, "qualification fixture stop should succeed");
+
+        const auto run_status_case = [&](const char* flag, const char* label) {
+            ::setenv(flag, "1", 1);
+            {
+                Plaza2TradeConnectivityQualifier status_qualifier(make_config(fixture));
+                const auto status_start = status_qualifier.start();
+                require(status_start.ok, std::string(label) + " start should succeed");
+                const auto status_poll = status_qualifier.poll_once();
+                require(status_poll.ok, std::string(label) + " poll should succeed");
+                const auto& status = status_qualifier.qualification();
+                require(status.target_found, std::string(label) + " target should remain present");
+                require(!status.market_state_ready && !status.add_order_qualified,
+                        std::string(label) + " must fail market readiness");
+            }
+            ::unsetenv(flag);
+        };
+
+        run_status_case("MOEX_FAKE_SCHEDULED_SESSION", "scheduled session");
+        {
+            ::setenv("MOEX_FAKE_NONTRADABLE_INSTRUMENT", "1", 1);
+            Plaza2TradeConnectivityQualifier status_qualifier(make_config(fixture));
+            const auto status_start = status_qualifier.start();
+            require(status_start.ok, "non-tradable instrument start should succeed");
+            const auto status_poll = status_qualifier.poll_once();
+            require(status_poll.ok, "non-tradable instrument poll should succeed");
+            const auto& status = status_qualifier.qualification();
+            require(status.target_instrument_status_available && status.target_instrument_status == 0,
+                    "non-tradable instrument raw public_state should be preserved");
+            require(!status.target_instrument_add_capable && !status.market_state_ready &&
+                        !status.add_order_qualified,
+                    "non-tradable instrument must fail market readiness");
+            ::unsetenv("MOEX_FAKE_NONTRADABLE_INSTRUMENT");
+        }
+
+        const auto run_aggr_invalidation_case = [&](const char* flag, const char* label) {
+            ::setenv(flag, "1", 1);
+            {
+                Plaza2TradeConnectivityQualifier aggr_qualifier(make_config(fixture));
+                const auto aggr_start = aggr_qualifier.start();
+                require(aggr_start.ok, std::string(label) + " start should succeed");
+                const auto first_poll = aggr_qualifier.poll_once();
+                require(first_poll.ok && aggr_qualifier.qualification().target_aggr20_two_sided,
+                        std::string(label) + " should initially receive a two-sided BBO");
+                const auto second_poll = aggr_qualifier.poll_once();
+                require(second_poll.ok, std::string(label) + " invalidation poll should succeed");
+                const auto& invalidated = aggr_qualifier.qualification();
+                require(!invalidated.market_state_ready && !invalidated.target_aggr20_two_sided &&
+                            !invalidated.add_order_qualified,
+                        std::string(label) + " must fail closed after AGGR20 invalidation");
+                require(!aggr_qualifier.aggr20_projector().snapshot_for_isin(1001).has_value(),
+                        std::string(label) + " must clear the old AGGR20 snapshot");
+            }
+            ::unsetenv(flag);
+        };
+
+        run_aggr_invalidation_case("MOEX_FAKE_AGGR_LIFENUM_AFTER_READY", "AGGR20 lifenum change");
+        run_aggr_invalidation_case("MOEX_FAKE_AGGR_CLOSE_AFTER_READY", "AGGR20 close");
+
+        {
+            ::setenv("MOEX_FAKE_DISABLE_REPLY_LISTENER", "1", 1);
+            Plaza2TradeConnectivityQualifier failed_qualifier(make_config(fixture));
+            const auto failed_start = failed_qualifier.start();
+            require(!failed_start.ok, "reply-listener failure should fail start");
+            const auto& failed_health = failed_qualifier.private_session().health_snapshot();
+            require(failed_health.failing_listener == "p2mqreply",
+                    "failure receipt should identify the failing p2mqreply listener");
+            require(failed_health.last_error_code != Plaza2ErrorCode::None &&
+                        failed_health.last_error_runtime_code != 0 && !failed_health.last_error.empty(),
+                    "failure receipt should preserve typed runtime error details");
+            bool typed_listener_opened = false;
+            for (const auto& stream : failed_health.streams) {
+                if (stream.stream_name == "FORTS_TRADE_REPL") {
+                    typed_listener_opened = stream.created && stream.opened;
+                }
+            }
+            require(typed_listener_opened,
+                    "failure receipt should preserve previously created/opened typed listeners");
+            ::unsetenv("MOEX_FAKE_DISABLE_REPLY_LISTENER");
+        }
+
         ::unsetenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY");
         remove_tree(fixture_root);
         return 0;

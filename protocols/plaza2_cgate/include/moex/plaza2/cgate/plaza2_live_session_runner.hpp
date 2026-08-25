@@ -86,8 +86,11 @@ struct Plaza2LiveHealthSnapshot {
     bool ready{false};
     bool publisher_created{false};
     bool publisher_opened{false};
+    Plaza2ErrorCode last_error_code{Plaza2ErrorCode::None};
+    std::uint32_t last_error_runtime_code{0};
     std::uint32_t last_process_runtime_code{0};
     std::string last_error;
+    std::string failing_listener;
     std::string last_resync_reason;
     private_state::ConnectorHealthSnapshot connector_health;
     private_state::ResumeMarkersSnapshot resume_markers;

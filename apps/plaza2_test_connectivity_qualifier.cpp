@@ -49,7 +49,8 @@ struct Args {
     std::int8_t account_type{2};
     std::uint32_t max_aggr20_age_ms{5000};
     std::uint32_t process_timeout_ms{50};
-    std::uint32_t max_polls{8};
+    std::uint32_t qualification_timeout_ms{60000};
+    std::uint32_t max_polls{0};
     Plaza2CredentialSource credentials_source{Plaza2CredentialSource::None};
     std::string credentials_env_var;
     fs::path credentials_file;
@@ -70,7 +71,8 @@ void usage() {
                  "  --p2mqreply-settings VALUE --publisher-settings VALUE\n"
                  "  --target-isin ISIN --participant CLIENT_CODE\n"
                  "  --armed-test-network --armed-test-session --armed-test-plaza2\n"
-                 "  --armed-test-market-data [--max-polls N] [--max-aggr20-age-ms N]\n";
+                 "  --armed-test-market-data [--qualification-timeout-ms N] [--max-polls N]\n"
+                 "  [--max-aggr20-age-ms N] [--process-timeout-ms N]\n";
 }
 
 std::optional<std::uint32_t> parse_u32(std::string_view value) {
@@ -166,6 +168,10 @@ std::optional<Args> parse_args(int argc, char** argv) {
             const auto parsed = parse_u32(value);
             if (!parsed.has_value()) return std::nullopt;
             args.process_timeout_ms = *parsed;
+        } else if (argument == "--qualification-timeout-ms" && take_value(index, argc, argv, value)) {
+            const auto parsed = parse_u32(value);
+            if (!parsed.has_value() || *parsed == 0) return std::nullopt;
+            args.qualification_timeout_ms = *parsed;
         } else if (argument == "--max-polls" && take_value(index, argc, argv, value)) {
             const auto parsed = parse_u32(value);
             if (!parsed.has_value()) return std::nullopt;
@@ -409,8 +415,10 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     boolean("target_in_fut_sess_contents", snapshot.target_current_session_member);
     boolean("target_session_status_available", snapshot.target_session_status_available);
     number("target_session_status", snapshot.target_session_status);
+    boolean("target_session_add_capable", snapshot.target_session_add_capable);
     boolean("target_instrument_status_available", snapshot.target_instrument_status_available);
     number("target_instrument_status", snapshot.target_instrument_status);
+    boolean("target_instrument_add_capable", snapshot.target_instrument_add_capable);
     field("target_min_step", snapshot.target_min_step);
     number("target_trade_mode_id", snapshot.target_trade_mode_id);
     boolean("target_refdata_present", snapshot.target_refdata_present);
@@ -433,6 +441,21 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     boolean("account_state_ready", snapshot.account_state_ready);
     boolean("publisher_ready", snapshot.publisher_ready);
     boolean("add_order_qualified", snapshot.add_order_qualified);
+    number("last_error_code", static_cast<std::uint16_t>(health.last_error_code));
+    number("last_error_runtime_code", health.last_error_runtime_code);
+    field("last_error", health.last_error);
+    field("failing_listener", health.failing_listener);
+    json += "  \"stream_status\": [";
+    for (std::size_t index = 0; index < health.streams.size(); ++index) {
+        if (index != 0) json += ", ";
+        const auto& stream = health.streams[index];
+        json += "{\"name\":\"" + json_escape(stream.stream_name) + "\",\"created\":" +
+                (stream.created ? "true" : "false") + ",\"opened\":" + (stream.opened ? "true" : "false") +
+                ",\"online\":" + (stream.online ? "true" : "false") +
+                ",\"snapshot_complete\":" + (stream.snapshot_complete ? "true" : "false") +
+                ",\"required_online\":" + (stream.required_online ? "true" : "false") + "}";
+    }
+    json += "],\n";
     field("qualification_state", plaza2_qualification_state_name(snapshot.state));
     field("result_message", result_message);
     json += "  \"failure_reasons\": [";
@@ -482,12 +505,20 @@ int main(int argc, char** argv) {
     Plaza2TradeConnectivityQualifier qualifier(make_config(args));
     auto result = qualifier.start();
     if (result.ok) {
-        for (std::uint32_t poll = 0; poll < args.max_polls && !qualifier.qualification().add_order_qualified; ++poll) {
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(args.qualification_timeout_ms);
+        std::uint32_t polls = 0;
+        while (!qualifier.qualification().add_order_qualified && std::chrono::steady_clock::now() < deadline &&
+               (args.max_polls == 0 || polls < args.max_polls)) {
             result = qualifier.poll_once();
             if (!result.ok) break;
+            ++polls;
         }
         if (result.ok && !qualifier.qualification().add_order_qualified) {
-            result = {.ok = false, .message = "qualification did not reach all readiness gates before max polls"};
+            result = {.ok = false,
+                      .message = std::chrono::steady_clock::now() >= deadline
+                                     ? "qualification did not reach all readiness gates before monotonic timeout"
+                                     : "qualification did not reach all readiness gates before max polls"};
         }
     }
 

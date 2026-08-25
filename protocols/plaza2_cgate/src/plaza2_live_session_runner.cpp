@@ -456,6 +456,8 @@ struct Plaza2LiveSessionRunner::Impl {
             return fail("PLAZA II live TEST runner already started");
         }
 
+        health.failing_listener.clear();
+
         append_operator_log("profile=" + config.profile_id);
         append_operator_log("endpoint=" + config.endpoint_host + ":" + std::to_string(config.endpoint_port));
 
@@ -530,32 +532,36 @@ struct Plaza2LiveSessionRunner::Impl {
         }
 
         if (const auto env_error = env.open(effective_runtime); env_error) {
-            return fail(env_error.message);
+            health.failing_listener = "environment";
+            return fail_error(env_error);
         }
         append_operator_log("env=open");
 
         if (const auto connection_error = connection.create(env, effective_connection_settings); connection_error) {
-            return fail(connection_error.message);
+            health.failing_listener = "connection";
+            return fail_error(connection_error);
         }
         append_operator_log("connection=create");
 
         if (const auto open_error = connection.open(effective_connection_open_settings); open_error) {
-            return fail(open_error.message);
+            health.failing_listener = "connection";
+            return fail_error(open_error);
         }
         append_operator_log("connection=open");
 
         if (config.open_publisher) {
+            health.failing_listener = "publisher";
             if (config.publisher_settings.empty()) {
                 return fail("publisher_settings must be provided when open_publisher is enabled");
             }
             if (const auto create_error = publisher.create(connection, render_setting(config.publisher_settings));
                 create_error) {
-                return fail(create_error.message);
+                return fail_error(create_error);
             }
             health.publisher_created = true;
             append_operator_log("publisher=create");
             if (const auto open_error = publisher.open(render_setting(config.publisher_open_settings)); open_error) {
-                return fail(open_error.message);
+                return fail_error(open_error);
             }
             health.publisher_opened = true;
             append_operator_log("publisher=open");
@@ -564,6 +570,7 @@ struct Plaza2LiveSessionRunner::Impl {
         listeners.clear();
         listeners.reserve(effective_streams.size());
         for (const auto& stream : effective_streams) {
+            health.failing_listener = stream_label(stream);
             LiveListenerHandle handle{
                 .config = stream,
             };
@@ -573,13 +580,13 @@ struct Plaza2LiveSessionRunner::Impl {
                     : handle.listener.create(connection, stream.stream_code, stream.settings,
                                              stream.handler == nullptr ? &projector_bridge : stream.handler);
             if (create_error) {
-                return fail(create_error.message);
+                return fail_error(create_error);
             }
             mark_stream_created(stream.stream_code);
             append_operator_log("listener=create stream=" + stream_label(stream));
 
             if (const auto open_error = handle.listener.open(stream.open_settings); open_error) {
-                return fail(open_error.message);
+                return fail_error(open_error);
             }
             mark_stream_opened(stream.stream_code);
             append_operator_log("listener=open stream=" + stream_label(stream));
@@ -587,6 +594,7 @@ struct Plaza2LiveSessionRunner::Impl {
         }
 
         started = true;
+        health.failing_listener.clear();
         health.state = Plaza2LiveRunnerState::Started;
         refresh_health();
         return {
@@ -604,7 +612,7 @@ struct Plaza2LiveSessionRunner::Impl {
         const auto process_error = connection.process(config.process_timeout_ms, &runtime_code);
         health.last_process_runtime_code = runtime_code;
         if (process_error) {
-            return fail(process_error.message);
+            return fail_error(process_error);
         }
 
         refresh_health();
@@ -843,6 +851,12 @@ struct Plaza2LiveSessionRunner::Impl {
             .ok = false,
             .message = std::move(message),
         };
+    }
+
+    Plaza2LiveRunResult fail_error(const Plaza2Error& error) {
+        health.last_error_code = error.code;
+        health.last_error_runtime_code = error.runtime_code;
+        return fail(error.message);
     }
 
     void append_operator_log(std::string line) {

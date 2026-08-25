@@ -995,6 +995,13 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                 }
             }
         }
+        if (fake_flag("MOEX_FAKE_NONTRADABLE_INSTRUMENT")) {
+            for (auto& message : script) {
+                if (auto* state = find_field(message, kFortsInstrumentstateReplInstrumentStatePublicState)) {
+                    state->signed_value = 0;
+                }
+            }
+        }
     } else if (stream_code == StreamCode::kFortsPartRepl) {
         if (fake_flag("MOEX_FAKE_MISSING_LIMITS")) {
             for (auto& message : script) {

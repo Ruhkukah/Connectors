@@ -52,8 +52,10 @@ struct Plaza2QualificationSnapshot {
     bool target_current_session_member{false};
     bool target_session_status_available{false};
     std::int32_t target_session_status{0};
+    bool target_session_add_capable{false};
     bool target_instrument_status_available{false};
     std::int32_t target_instrument_status{0};
+    bool target_instrument_add_capable{false};
     std::string target_min_step;
     std::int32_t target_trade_mode_id{0};
     bool target_refdata_present{false};

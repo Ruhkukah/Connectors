@@ -231,8 +231,8 @@ struct CgMsgStreamData {
     std::uint64_t user_id;
 };
 
-// Locked MOEX CGate 9.3 cgate.h layout: cg_msg_data_t includes owner_id,
-// has no revision/presence-map fields, and its user_id member is a u32.
+// Locked MOEX CGate 9.3 cgate.h layout: cg_msg_data_t includes owner_id and
+// msg_index/msg_id/msg_name/user_id/addr/ref_msg; it has no revision or presence-map fields.
 struct CgMsgData {
     std::uint32_t type;
     std::size_t data_size;

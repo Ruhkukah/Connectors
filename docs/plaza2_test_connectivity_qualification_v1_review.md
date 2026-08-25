@@ -1,82 +1,127 @@
 # PLAZA II TEST connectivity qualification V1
 
-This PR adds a target-specific, read-only qualification path for the real
-MOEX PLAZA II TEST environment. It is intentionally separate from
-`Plaza2TestTradeTransport`, which remains fake-only.
+This PR is a target-specific, read-only qualification path for the MOEX
+PLAZA II TEST environment. It is separate from `Plaza2TestTradeTransport`,
+which remains fake-only. No order, publisher message, or cleanup command is
+part of this path.
 
 ## Safety boundary
 
-`Plaza2TradeConnectivityQualifier` accepts only runtime/session/listener
-configuration and a target instrument plus participant identity. It has no
-order payload, price, quantity, side, user-id, plan, or send method. The
-qualifier can create, open, inspect, and close the publisher, but has no path
-to post a publisher message. A structural test scans the qualifier header,
-implementation, and operator executable for the publisher/order submission
-surface.
+`Plaza2TradeConnectivityQualifier` may create, open, inspect, and close the
+qualification listeners and publisher. It has no order payload, price,
+quantity, side, user-id, plan, or publisher-message send method. The
+qualifier's publisher is open-only. The structural no-send check remains a
+required gate.
 
-The operator must arm TEST network, TEST session, PLAZA II, and market-data
-qualification explicitly. A qualification failure closes only the
-qualification listeners and publisher; it never issues an order cleanup
-command.
+TEST network, TEST session, PLAZA II, and market-data arms are explicit. A
+failed start or incomplete qualification records the failing listener and
+typed runtime error details while preserving the created/opened status of
+earlier listeners. Cleanup is limited to closing qualification objects.
 
-## Runtime and scheme gate
+## Runtime, scheme, and status gates
 
-Before opening TEST connectivity, `Plaza2RuntimeProbe` records the installed
-library fingerprint, resolved symbols, version markers, scheme SHA-256, and
-scheme-drift classification. The receipt distinguishes observed runtime,
-ABI-subset compatibility, scheme-subset compatibility, and
-`full_version_certified=false`. No VPS upgrade or generated-binding rewrite
-is implied by a newer vendor distribution.
+Before connectivity, `Plaza2RuntimeProbe` records the installed library
+fingerprint, resolved symbols, version markers, scheme SHA-256, and
+scheme-drift classification. `full_version_certified` remains false unless a
+separate ABI and scheme review certifies the installed distribution.
 
-## Evidence
+`market_state_ready` requires all of the following factual evidence:
 
-The operator selects one FUTURES target and exact client-scope participant.
-The redacted receipt records:
+- `SESSIONSTATE.public_state == 1` and `INSTRUMENTSTATE.public_state == 1`;
+- the raw numeric status values are retained in the receipt, together with
+  `target_session_add_capable` and `target_instrument_add_capable`;
+- target refdata is complete and target-only AGGR20 has a fresh, versioned,
+  two-sided BBO;
+- private, status, AGGR20, and untyped `p2mqreply` listeners are ready; and
+- exact participant limit identity and the applicable position row are
+  present (a missing POS row is not interpreted as zero).
 
-- the five private streams, SESSIONSTATE, INSTRUMENTSTATE, AGGR20,
-  untyped `p2mqreply`, and publisher state;
-- target `fut_sess_contents` membership, `sess_id`, session/instrument status,
-  `min_step`, `trade_mode_id`, and required refdata;
-- target-only two-sided AGGR20 BBO, monotonic local age, `replID`, and
-  `replRev`;
-- exact participant limit identity and the applicable POS row including
-  `account_type` and `xpos`;
-- separate `connectivity_ready`, `market_state_ready`,
-  `account_state_ready`, `publisher_ready`, and informational
-  `add_order_qualified` booleans.
+AGGR20 evidence is epoch-bound. A changed `LifeNum`, `Close`, or
+`ClearDeleted` resets the projector, clears the BBO, and makes the contour
+not ready. A later `ONLINE` event cannot resurrect the prior epoch's BBO.
 
-The canonical JSON receipt is hashed and the digest is written beside it.
-Secrets, raw credentials, software keys, and raw secret-containing settings
-are excluded.
+The primary qualification deadline is monotonic
+`--qualification-timeout-ms` (default 60 seconds). `--max-polls` is retained
+only as a secondary bound. The receipt contains per-listener
+created/opened/online/snapshot state, the failure listener, runtime error
+code, runtime error text, and the factual readiness booleans.
+
+## T1 evidence
+
+The redacted evidence directory is:
+
+`/home/azgaldov/moex/evidence/plaza2-qualification-t1-20260825T114101Z`
+
+It contains the source/runtime/scheme fingerprints, service and socket
+snapshots, nonsecret profile filenames, router-resolution excerpts, the
+repository run output, and the matrices below. Authentication files,
+software keys, credentials, and raw router configuration were not read into
+the evidence or changed.
+
+The prior combined repository result remains **`PARTIAL_T1_CONNECTIVITY`**:
+the runtime probe and scheme drift check were usable, but the repository's
+scoped auxiliary listener configuration produced service-resolution errors.
+This is not reported as failed market-data connectivity.
+
+### Official vendor read-only matrix
+
+The official MOEX `basic/repl.c` sample, used from a temporary copy and run
+one stream at a time with an eight-second bounded stop, resolved, opened,
+received data, reached `ONLINE`, completed a snapshot, and produced a
+replication state for every required contour:
+
+| Stream | Data rows | LifeNum | Replication state | Elapsed (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| `FORTS_TRADE_REPL` | 78520 | 2 | 1 | 8011 |
+| `FORTS_USERORDERBOOK_REPL` | 2 | 2 | 1 | 8009 |
+| `FORTS_POS_REPL` | 1 | 2 | 1 | 8010 |
+| `FORTS_PART_REPL` | 44 | 2 | 1 | 8010 |
+| `FORTS_REFDATA_REPL` | 30346 | 2 | 1 | 8014 |
+| `FORTS_SESSIONSTATE_REPL` | 45 | 2 | 1 | 8010 |
+| `FORTS_INSTRUMENTSTATE_REPL` | 22868 | 2 | 1 | 8010 |
+| `FORTS_AGGR20_REPL` | 31632 | 2 | 1 | 8011 |
+
+The first PART/REFDATA attempts with the repository's scoped aliases returned
+`32776/0x8008 DB:WRONG_DB_SCHEME`; the vendor default-scheme reruns succeeded.
+The vendor-success/repository-failure split is therefore classified as a
+**connector configuration defect**. Router configuration was not edited and
+expansion stopped at this boundary.
+
+### Control-plane probe
+
+A temporary official-CGate-sample derivative independently created and opened
+the `p2mqreply://;ref=PUB` listener and `p2mq://...;name=PUB` publisher,
+observed both active, then explicitly closed the reply listener and publisher.
+It contained no `cg_pub_msgnew` or `cg_pub_post` call and sent no message.
+
+### T0
+
+`auth/t0.ini` was checked only for non-empty existence. `cgate@t0` was
+inactive, and the current T1 service remained active. Stopping T1 was not
+permitted for this SSH user, so T0 was recorded as **`T0_NOT_AVAILABLE`**;
+no auth or router configuration was changed. T1 remained active at the end.
 
 ## Final invariant
 
-This qualifier is a read-only capability check. `add_order_qualified` is an
-informational conjunction of the four readiness gates; it is never an order
-authorization and it cannot submit a publisher message. The publisher is
-opened and closed only. `Plaza2TestTradeTransport` remains fake-only, and a
-failed or incomplete qualification leaves no live order or cleanup action to
-perform. `full_version_certified` remains `false` until a separate ABI and
-scheme review certifies the installed distribution.
+`add_order_qualified` is an informational conjunction of
+`connectivity_ready`, `market_state_ready`, `account_state_ready`, and
+`publisher_ready`. It is never an order authorization. A qualification run
+may prove connectivity, listener state, snapshots, and publisher open/close,
+but it cannot submit a publisher message or a TEST order. No live TEST order
+or `cg_pub_post` was sent for this PR.
 
-## Stop condition
-
-All local validation must pass before one real TEST qualification run is
-considered. That run may prove connections, listeners, state snapshots, and
-publisher open/close only. It must stop after producing the redacted receipt;
-no order experiment is authorized by this PR.
+The local journal language used by the surrounding lifecycle work is
+**“atomic local journal; no power-loss durability claimed”**; this PR does not
+claim durable orphan journals.
 
 ## Local validation
 
-The final offline validation on AppleClang 17 / Debug completed with:
+With the repository Python environment selected, the changed qualifier target
+builds and its focused test passes. The changed-target ASan/UBSan build and
+test also pass. The native no-send/privacy checks and `git diff --check` are
+run again for the final head.
 
-- Full CTest: 157/157 passed, including both .NET ABI checks.
-- Changed-target ASan/UBSan executable tests: 4/4 passed; structural no-send
-  guard: 1/1 passed.
-- Native offline plan/privacy checks: 3/3 passed.
-- Structural no-send guard, source/repository style, Unicode guard, and
-  `git diff --check`: passed.
-- No network connection, TEST session, or order activity was performed.
-
-The real TEST qualification run is intentionally pending the operator's
-target-specific runtime, scheme, router, and local secret inputs.
+The full CTest run is 156/157: all functional tests pass, while
+`source_style_check` reports pre-existing AppleClang-format differences in
+unchanged baseline lines of the touched files (the same check also fails on
+the parent files). No broad formatting change is included in this PR.
