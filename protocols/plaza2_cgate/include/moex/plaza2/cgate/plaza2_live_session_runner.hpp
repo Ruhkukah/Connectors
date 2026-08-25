@@ -16,8 +16,14 @@ namespace moex::plaza2::cgate {
 
 struct Plaza2LiveStreamConfig {
     generated::StreamCode stream_code{kNoStreamCode};
+    // A zero stream code denotes an untyped listener (currently p2mqreply).
+    // Untyped listeners are opened and state-checked but do not decode rows.
+    std::string label;
     std::string settings;
     std::string open_settings;
+    std::string listener_url_mode{"negotiated"};
+    bool require_online{true};
+    Plaza2ListenerEventHandler* handler{nullptr};
 };
 
 struct Plaza2LiveSessionConfig {
@@ -32,6 +38,9 @@ struct Plaza2LiveSessionConfig {
     Plaza2CredentialConfig software_key{};
     Plaza2RuntimeArmState arm_state{};
     std::uint32_t process_timeout_ms{50};
+    bool open_publisher{false};
+    std::string publisher_settings;
+    std::string publisher_open_settings;
 };
 
 enum class Plaza2LiveRunnerState : std::uint8_t {
@@ -46,10 +55,12 @@ enum class Plaza2LiveRunnerState : std::uint8_t {
 struct Plaza2LiveStreamStatus {
     generated::StreamCode stream_code{kNoStreamCode};
     std::string stream_name;
+    std::string listener_url_mode{"negotiated"};
     bool created{false};
     bool opened{false};
     bool online{false};
     bool snapshot_complete{false};
+    bool required_online{true};
 };
 
 struct Plaza2LiveStateCounts {
@@ -75,8 +86,13 @@ struct Plaza2LiveHealthSnapshot {
     std::string last_scheme_drift_warning;
     std::string last_scheme_drift_fatal;
     bool ready{false};
+    bool publisher_created{false};
+    bool publisher_opened{false};
+    Plaza2ErrorCode last_error_code{Plaza2ErrorCode::None};
+    std::uint32_t last_error_runtime_code{0};
     std::uint32_t last_process_runtime_code{0};
     std::string last_error;
+    std::string failing_listener;
     std::string last_resync_reason;
     private_state::ConnectorHealthSnapshot connector_health;
     private_state::ResumeMarkersSnapshot resume_markers;

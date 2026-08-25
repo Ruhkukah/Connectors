@@ -231,8 +231,9 @@ struct CgMsgStreamData {
     std::uint64_t user_id;
 };
 
-// Locked MOEX CGate 9.3 cgate.h layout: cg_msg_data_t includes owner_id,
-// has no revision/presence-map fields, and its user_id member is a u32.
+// Locked MOEX CGate 9.3 cgate.h layout: the current cg_msg_data_t includes
+// owner_id and msg_index/msg_id/msg_name/user_id/addr/ref_msg; it has no
+// revision or presence-map fields.
 struct CgMsgData {
     std::uint32_t type;
     std::size_t data_size;
@@ -1284,12 +1285,9 @@ struct Plaza2ListenerCallbackState {
                 }
             }
             if (descriptor == nullptr) {
-                return {
-                    .code = Plaza2ErrorCode::DecodeFailed,
-                    .runtime_code = 0,
-                    .message = "runtime listener scheme field '" + std::string(field_name) +
-                               "' is not covered by the reviewed metadata baseline",
-                };
+                ++ordinal;
+                field = field->next;
+                continue;
             }
 
             plan.fields.push_back({
@@ -1734,6 +1732,9 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
     } else {
         report.layout.library_path = *library_path;
         report.runtime_library_present = std::filesystem::exists(*library_path);
+        if (report.runtime_library_present) {
+            report.runtime_library_sha256 = sha256_hex(*library_path);
+        }
         auto library_issues = std::vector<Plaza2ProbeIssue>{};
         auto resolved_symbols = std::vector<std::string>{};
         auto api = load_runtime_api(*library_path, &resolved_symbols, &library_issues);

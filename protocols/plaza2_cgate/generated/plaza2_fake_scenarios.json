@@ -3,9 +3,9 @@
   "version": 1,
   "source_scenarios_path": "tests/plaza2_cgate/scenarios",
   "source_metadata_path": "protocols/plaza2_cgate/generated/plaza2_generated_metadata.json",
-  "scenario_count": 7,
-  "row_count": 32,
-  "field_value_count": 416,
+  "scenario_count": 9,
+  "row_count": 42,
+  "field_value_count": 490,
   "scenarios": [
     {
       "scenario_id": "clear_deleted",
@@ -62,6 +62,24 @@
       "invariant_count": 4
     },
     {
+      "scenario_id": "private_state_scoped_lifenum",
+      "description": "A LifeNum change invalidates only the owning replication domain",
+      "metadata_version": 1,
+      "deterministic_seed": 0,
+      "stream_count": 5,
+      "event_count": 13,
+      "invariant_count": 1
+    },
+    {
+      "scenario_id": "private_state_table_clear_deleted",
+      "description": "Table-scoped clear-deleted removes only stale rows from the addressed table",
+      "metadata_version": 1,
+      "deterministic_seed": 0,
+      "stream_count": 1,
+      "event_count": 12,
+      "invariant_count": 2
+    },
+    {
       "scenario_id": "resume_from_replstate",
       "description": "Resume token is applied before the next committed private trade block",
       "metadata_version": 1,
@@ -78,7 +96,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "P2REPL_CLEARDELETED",
@@ -86,7 +106,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "CLOSE",
@@ -94,7 +116,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "OPEN",
@@ -102,7 +126,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "SNAPSHOT_BEGIN",
@@ -110,7 +136,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_BEGIN",
@@ -118,7 +146,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -126,7 +156,9 @@
       "table_name": "orders_log",
       "row_count": 2,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_COMMIT",
@@ -134,7 +166,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "SNAPSHOT_END",
@@ -142,7 +176,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "ONLINE",
@@ -150,7 +186,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "OPEN",
@@ -158,7 +196,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "P2REPL_LIFENUM",
@@ -166,7 +206,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 10,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_BEGIN",
@@ -174,7 +216,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -182,7 +226,9 @@
       "table_name": "orders_log",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_COMMIT",
@@ -190,7 +236,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "P2REPL_LIFENUM",
@@ -198,7 +246,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 11,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "OPEN",
@@ -206,7 +256,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_BEGIN",
@@ -214,7 +266,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -222,7 +276,9 @@
       "table_name": "orders",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -230,7 +286,9 @@
       "table_name": "orders_currentday",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -238,7 +296,9 @@
       "table_name": "orders_log",
       "row_count": 2,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_COMMIT",
@@ -246,7 +306,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "P2REPL_CLEARDELETED",
@@ -254,7 +316,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "OPEN",
@@ -262,7 +326,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "P2REPL_LIFENUM",
@@ -270,7 +336,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 10,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "SNAPSHOT_BEGIN",
@@ -278,7 +346,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_BEGIN",
@@ -286,7 +356,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -294,7 +366,9 @@
       "table_name": "session",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -302,7 +376,9 @@
       "table_name": "fut_instruments",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -310,7 +386,9 @@
       "table_name": "instr2matching_map",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -318,7 +396,9 @@
       "table_name": "part",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -326,7 +406,9 @@
       "table_name": "position",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -334,7 +416,9 @@
       "table_name": "orders",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -342,7 +426,9 @@
       "table_name": "user_deal",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_COMMIT",
@@ -350,7 +436,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "SNAPSHOT_END",
@@ -358,7 +446,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "ONLINE",
@@ -366,7 +456,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "P2REPL_LIFENUM",
@@ -374,7 +466,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 11,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "OPEN",
@@ -382,7 +476,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "P2REPL_REPLSTATE",
@@ -390,7 +486,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": "lifenum=7;rev.orders=10;rev.position=20"
+      "text_value": "lifenum=7;rev.orders=10;rev.position=20",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "P2REPL_LIFENUM",
@@ -398,7 +496,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 7,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "SNAPSHOT_BEGIN",
@@ -406,7 +506,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_BEGIN",
@@ -414,7 +516,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -422,7 +526,9 @@
       "table_name": "session",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -430,7 +536,9 @@
       "table_name": "fut_instruments",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -438,7 +546,9 @@
       "table_name": "opt_sess_contents",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -446,7 +556,9 @@
       "table_name": "multileg_dict",
       "row_count": 2,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -454,7 +566,9 @@
       "table_name": "instr2matching_map",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -462,7 +576,9 @@
       "table_name": "part",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -470,7 +586,9 @@
       "table_name": "position",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -478,7 +596,9 @@
       "table_name": "info",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -486,7 +606,9 @@
       "table_name": "info_currentday",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -494,7 +616,9 @@
       "table_name": "orders",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -502,7 +626,9 @@
       "table_name": "orders_currentday",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -510,7 +636,9 @@
       "table_name": "orders_log",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -518,7 +646,9 @@
       "table_name": "user_deal",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -526,7 +656,9 @@
       "table_name": "heartbeat",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -534,7 +666,9 @@
       "table_name": "sys_events",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
@@ -542,7 +676,9 @@
       "table_name": "sys_events",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_COMMIT",
@@ -550,7 +686,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "SNAPSHOT_END",
@@ -558,7 +696,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "ONLINE",
@@ -566,7 +706,9 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "OPEN",
@@ -574,15 +716,39 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
-      "type": "P2REPL_REPLSTATE",
-      "stream_name": "",
+      "type": "P2REPL_LIFENUM",
+      "stream_name": "FORTS_REFDATA_REPL",
       "table_name": "",
       "row_count": 0,
-      "numeric_value": 0,
-      "text_value": "lifenum=5;rev.orders_log=123"
+      "numeric_value": 1,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "P2REPL_LIFENUM",
+      "stream_name": "FORTS_PART_REPL",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 1,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "P2REPL_LIFENUM",
+      "stream_name": "FORTS_POS_REPL",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 1,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_BEGIN",
@@ -590,15 +756,59 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     },
     {
       "type": "STREAM_DATA",
-      "stream_name": "FORTS_TRADE_REPL",
-      "table_name": "orders_log",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "fut_sess_contents",
       "row_count": 1,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 10,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_PART_REPL",
+      "table_name": "part",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 10,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_POS_REPL",
+      "table_name": "position",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 10,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_SESSIONSTATE_REPL",
+      "table_name": "session_state",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 10,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_INSTRUMENTSTATE_REPL",
+      "table_name": "instrument_state",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 10,
+      "clear_deleted_flags": 0
     },
     {
       "type": "TN_COMMIT",
@@ -606,7 +816,199 @@
       "table_name": "",
       "row_count": 0,
       "numeric_value": 0,
-      "text_value": ""
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "P2REPL_LIFENUM",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 2,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "P2REPL_LIFENUM",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 2,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "OPEN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "TN_BEGIN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "fut_sess_contents",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 10,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "fut_sess_contents",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 20,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "fut_instruments",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 30,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "fut_instruments",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 40,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "TN_COMMIT",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "P2REPL_CLEARDELETED",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "fut_sess_contents",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 20,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "P2REPL_CLEARDELETED",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "fut_instruments",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 9223372036854775807,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "TN_BEGIN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_REFDATA_REPL",
+      "table_name": "fut_sess_contents",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 50,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "TN_COMMIT",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "OPEN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "P2REPL_REPLSTATE",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "lifenum=5;rev.orders_log=123",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "TN_BEGIN",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "STREAM_DATA",
+      "stream_name": "FORTS_TRADE_REPL",
+      "table_name": "orders_log",
+      "row_count": 1,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
+    },
+    {
+      "type": "TN_COMMIT",
+      "stream_name": "",
+      "table_name": "",
+      "row_count": 0,
+      "numeric_value": 0,
+      "text_value": "",
+      "signed_value": 0,
+      "clear_deleted_flags": 0
     }
   ]
 }

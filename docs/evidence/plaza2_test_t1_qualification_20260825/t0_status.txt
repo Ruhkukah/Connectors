@@ -1,0 +1,5 @@
+T0_NOT_AVAILABLE
+
+The T0 service was inactive during the bounded check. T1 remained active.
+No router or authentication configuration was changed, and no T0 live
+qualification or order attempt was made.

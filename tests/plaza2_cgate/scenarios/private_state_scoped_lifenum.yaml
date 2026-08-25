@@ -1,0 +1,83 @@
+scenario_id: private_state_scoped_lifenum
+description: A LifeNum change invalidates only the owning replication domain
+
+metadata:
+  version: 1
+  deterministic_seed: 0
+
+streams:
+  - name: FORTS_REFDATA_REPL
+    scope: private_core
+  - name: FORTS_PART_REPL
+    scope: private_core
+  - name: FORTS_POS_REPL
+    scope: private_core
+  - name: FORTS_SESSIONSTATE_REPL
+    scope: private_core
+  - name: FORTS_INSTRUMENTSTATE_REPL
+    scope: private_core
+
+events:
+  - type: OPEN
+  - type: P2REPL_LIFENUM
+    stream: FORTS_REFDATA_REPL
+    value: 1
+  - type: P2REPL_LIFENUM
+    stream: FORTS_PART_REPL
+    value: 1
+  - type: P2REPL_LIFENUM
+    stream: FORTS_POS_REPL
+    value: 1
+  - type: TN_BEGIN
+  - type: STREAM_DATA
+    stream: FORTS_REFDATA_REPL
+    table: fut_sess_contents
+    revision: 10
+    rows:
+      - replID: 1
+        isin_id: 9001
+        sess_id: 901
+        isin: RIU6
+        short_isin: RIU6
+        name: target
+        base_contract_code: RI
+        state: 1
+        replAct: 0
+        min_step: 1
+        trade_mode_id: 1
+  - type: STREAM_DATA
+    stream: FORTS_PART_REPL
+    table: part
+    revision: 10
+    rows:
+      - { replID: 2, client_code: FZ0001o, limits_set: 1 }
+  - type: STREAM_DATA
+    stream: FORTS_POS_REPL
+    table: position
+    revision: 10
+    rows:
+      - { replID: 3, client_code: FZ0001o, isin_id: 9001, account_type: 2, xpos: 3 }
+  - type: STREAM_DATA
+    stream: FORTS_SESSIONSTATE_REPL
+    table: session_state
+    revision: 10
+    rows:
+      - { replID: 4, sess_id: 901, public_state: 1 }
+  - type: STREAM_DATA
+    stream: FORTS_INSTRUMENTSTATE_REPL
+    table: instrument_state
+    revision: 10
+    rows:
+      - { replID: 5, isin_id: 9001, public_state: 1 }
+  - type: TN_COMMIT
+  - type: P2REPL_LIFENUM
+    stream: FORTS_REFDATA_REPL
+    value: 2
+  - type: P2REPL_LIFENUM
+    stream: FORTS_REFDATA_REPL
+    value: 2
+
+expected:
+  invariants:
+    - type: commit_count
+      value: 1

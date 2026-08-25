@@ -10,12 +10,12 @@
 
 namespace moex::plaza2::fake {
 
-inline constexpr std::size_t kFakeScenarioCount = 7;
-inline constexpr std::size_t kFakeScenarioStreamCount = 16;
-inline constexpr std::size_t kFakeScenarioEventCount = 67;
-inline constexpr std::size_t kFakeScenarioRowCount = 32;
-inline constexpr std::size_t kFakeScenarioFieldValueCount = 416;
-inline constexpr std::size_t kFakeScenarioInvariantCount = 17;
+inline constexpr std::size_t kFakeScenarioCount = 9;
+inline constexpr std::size_t kFakeScenarioStreamCount = 22;
+inline constexpr std::size_t kFakeScenarioEventCount = 92;
+inline constexpr std::size_t kFakeScenarioRowCount = 42;
+inline constexpr std::size_t kFakeScenarioFieldValueCount = 490;
+inline constexpr std::size_t kFakeScenarioInvariantCount = 20;
 
 std::span<const ScenarioSpec> FakeScenarioSpecs();
 std::span<const generated::StreamCode> FakeScenarioStreamCodes();

@@ -32,6 +32,7 @@ int main(int argc, char** argv) {
         require(report.compatibility == Plaza2Compatibility::Compatible, "expected compatible runtime probe result");
         require(report.runtime_root_present, "runtime root should be present");
         require(report.runtime_library_present && report.runtime_library_loadable, "fake runtime library should load");
+        require(report.runtime_library_sha256.size() == 64, "runtime library SHA-256 fingerprint should be recorded");
         require(report.scheme_file_present, "runtime scheme file should be detected");
         require(report.config_dir_present, "config directory should be detected");
         require(report.layout.version_markers.spectra_release == "SPECTRA93", "spectra release marker mismatch");

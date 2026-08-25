@@ -1,0 +1,11 @@
+{
+  "spectra_release": "SPECTRA93",
+  "runtime_version": "93.1.6.39534",
+  "cgate_package_version": "9.3.0.1687",
+  "runtime_library_sha256": "c1a1752026806a6c7364326ab29794d0b85c1f9db26ec3fdbb509190e5b0a4a2",
+  "scheme_sha256": "cc3ab53b792eb1354b17615612abf173158e2f9dd78604bc47a121badf54b1c2",
+  "runtime_compatibility": "CompatibleWithWarnings",
+  "scheme_drift_warning_count": 183,
+  "scheme_drift_fatal_count": 0,
+  "full_version_certified": false
+}

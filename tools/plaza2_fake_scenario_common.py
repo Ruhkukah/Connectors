@@ -405,6 +405,8 @@ def parse_plaza2_fake_scenario(scenario_path: Path, metadata_index: dict) -> dic
             "rows": [],
             "numeric_value": 0,
             "text_value": "",
+            "signed_value": 0,
+            "clear_deleted_flags": 0,
         }
 
         if event_type == "STREAM_DATA":
@@ -427,6 +429,10 @@ def parse_plaza2_fake_scenario(scenario_path: Path, metadata_index: dict) -> dic
             parsed_event["rows"] = _parse_rows(
                 scenario_path, event_index, stream_name, table_name, event.get("rows"), metadata_index
             )
+            revision = event.get("revision", event.get("repl_rev", 0))
+            if isinstance(revision, bool) or not isinstance(revision, int):
+                raise ValueError(f"{scenario_path.name}: events[{event_index}].revision must be an integer")
+            parsed_event["signed_value"] = revision
         elif event_type == "P2REPL_REPLSTATE":
             parsed_event["text_value"] = _expect_string(
                 event.get("value"), f"{scenario_path.name}: events[{event_index}].value"
@@ -435,6 +441,15 @@ def parse_plaza2_fake_scenario(scenario_path: Path, metadata_index: dict) -> dic
             parsed_event["numeric_value"] = _expect_uint(
                 event.get("value"), f"{scenario_path.name}: events[{event_index}].value"
             )
+            stream_name = event.get("stream")
+            if stream_name is not None:
+                stream_name = _expect_string(stream_name, f"{scenario_path.name}: events[{event_index}].stream")
+                if stream_name not in declared_streams:
+                    raise ValueError(
+                        f"{scenario_path.name}: events[{event_index}] references undeclared stream {stream_name!r}"
+                    )
+                parsed_event["stream_name"] = stream_name
+                parsed_event["stream_code_token"] = stream_code_token(stream_name)
         elif event_type == "P2REPL_CLEARDELETED":
             stream_name = _expect_string(event.get("stream"), f"{scenario_path.name}: events[{event_index}].stream")
             if stream_name not in declared_streams:
@@ -443,6 +458,24 @@ def parse_plaza2_fake_scenario(scenario_path: Path, metadata_index: dict) -> dic
                 )
             parsed_event["stream_name"] = stream_name
             parsed_event["stream_code_token"] = stream_code_token(stream_name)
+            table_name = event.get("table")
+            if table_name is not None:
+                table_name = _expect_string(table_name, f"{scenario_path.name}: events[{event_index}].table")
+                if (stream_name, table_name) not in metadata_index["tables_by_key"]:
+                    raise ValueError(
+                        f"{scenario_path.name}: events[{event_index}] references unknown table "
+                        f"{stream_name}.{table_name}"
+                    )
+                parsed_event["table_name"] = table_name
+                parsed_event["table_code_token"] = table_code_token(stream_name, table_name)
+            revision = event.get("revision", event.get("table_rev", 0))
+            if isinstance(revision, bool) or not isinstance(revision, int):
+                raise ValueError(f"{scenario_path.name}: events[{event_index}].revision must be an integer")
+            flags = event.get("flags", 0)
+            if isinstance(flags, bool) or not isinstance(flags, int) or flags < 0:
+                raise ValueError(f"{scenario_path.name}: events[{event_index}].flags must be a non-negative integer")
+            parsed_event["signed_value"] = revision
+            parsed_event["clear_deleted_flags"] = flags
 
         parsed_events.append(parsed_event)
 

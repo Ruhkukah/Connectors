@@ -1,0 +1,12 @@
+Prior connector defect (before the negotiated/default-scheme correction)
+
+Affected listeners: FORTS_PART_REPL and FORTS_REFDATA_REPL
+Repository scoped listener settings selected guessed aliases such as PART and REFDATA.
+Observed result: 32776 / 0x8008 / DB:WRONG_DB_SCHEME
+Official vendor bare/default listener settings succeeded for the same T1 services.
+
+Fingerprint context retained for comparison:
+  runtime library SHA-256: c1a1752026806a6c7364326ab29794d0b85c1f9db26ec3fdbb509190e5b0a4a2
+  negotiated scheme SHA-256: cc3ab53b792eb1354b17615612abf173158e2f9dd78604bc47a121badf54b1c2
+
+No credentials, software key, router configuration, host address, or raw capture is included.

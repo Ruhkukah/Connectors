@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -393,8 +394,8 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                 .fields =
                     {
                         {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplId,
-                         .kind = UnsignedInteger,
-                         .unsigned_value = 2101},
+                         .kind = SignedInteger,
+                         .signed_value = 2101},
                         {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplRev,
                          .kind = SignedInteger,
                          .signed_value = 21},
@@ -426,8 +427,8 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                 .fields =
                     {
                         {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplId,
-                         .kind = UnsignedInteger,
-                         .unsigned_value = 2102},
+                         .kind = SignedInteger,
+                         .signed_value = 2102},
                         {.field_code = FieldCode::kFortsAggrReplOrdersAggrReplRev,
                          .kind = SignedInteger,
                          .signed_value = 22},
@@ -995,6 +996,13 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                 }
             }
         }
+        if (fake_flag("MOEX_FAKE_NONTRADABLE_INSTRUMENT")) {
+            for (auto& message : script) {
+                if (auto* state = find_field(message, kFortsInstrumentstateReplInstrumentStatePublicState)) {
+                    state->signed_value = 0;
+                }
+            }
+        }
     } else if (stream_code == StreamCode::kFortsPartRepl) {
         if (fake_flag("MOEX_FAKE_MISSING_LIMITS")) {
             for (auto& message : script) {
@@ -1447,6 +1455,33 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
     }
 
     if (connection->script_emitted && connection->pending_replies.empty() && !connection->liveness_event_emitted) {
+        if (fake_flag("MOEX_FAKE_REMOVE_TARGET_AFTER_READY")) {
+            for (auto* listener : connection->listeners) {
+                if (listener == nullptr || listener->reply_listener || listener->state != kStateActive ||
+                    listener->stream_code != StreamCode::kFortsRefdataRepl) {
+                    continue;
+                }
+                const auto* plan = find_message_plan(*listener, TableCode::kFortsRefdataReplFutSessContents);
+                if (plan == nullptr) {
+                    return kCgErrIncorrectState;
+                }
+                auto clear_deleted = make_clear_deleted_payload(static_cast<std::uint32_t>(plan->msg_index),
+                                                                std::numeric_limits<std::int64_t>::max(), 0);
+                if (const auto result = emit_simple_message(*listener, kCgMsgP2replClearDeleted, clear_deleted.data(),
+                                                            clear_deleted.size());
+                    result != kCgErrOk) {
+                    return result;
+                }
+                if (const auto result = emit_simple_message(*listener, kCgMsgTnBegin); result != kCgErrOk) {
+                    return result;
+                }
+                if (const auto result = emit_simple_message(*listener, kCgMsgTnCommit); result != kCgErrOk) {
+                    return result;
+                }
+            }
+            connection->liveness_event_emitted = true;
+            return kCgErrOk;
+        }
         const bool private_liveness =
             fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_PRIVATE_LIFENUM_AFTER_READY");
         const bool aggr_liveness =
@@ -1570,6 +1605,10 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
     if (!listener->scheme) {
         delete listener;
         return kCgErrIncorrectState;
+    }
+    if (fake_flag("MOEX_FAKE_WRONG_SCHEME_OVERRIDE") && listener->settings.find("WRONG_SCHEME") != std::string::npos) {
+        listener->scheme = std::make_unique<OwnedScheme>();
+        listener->message_plans.clear();
     }
 
     connection->listeners.push_back(listener);

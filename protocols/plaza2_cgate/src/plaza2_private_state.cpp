@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <span>
@@ -122,6 +123,7 @@ using LimitMap = std::unordered_map<LimitKey, LimitSnapshot, LimitKeyHash>;
 using PositionMap = std::unordered_map<PositionKey, PositionSnapshot, PositionKeyHash>;
 using OrderMap = std::unordered_map<OrderKey, OwnOrderSnapshot, OrderKeyHash>;
 using TradeMap = std::unordered_map<TradeKey, OwnTradeSnapshot, TradeKeyHash>;
+using SourceRevisionRows = std::unordered_map<TableCode, std::unordered_map<std::string, std::int64_t>, EnumClassHash>;
 
 struct RowReader {
     std::span<const fake::FieldValueSpec> fields;
@@ -174,6 +176,48 @@ struct RowReader {
         return field == nullptr ? std::string{} : std::string(field->text_value);
     }
 };
+
+std::string revision_key(std::initializer_list<std::string_view> parts) {
+    std::string key;
+    for (const auto part : parts) {
+        if (!key.empty()) {
+            key.push_back('|');
+        }
+        key.append(part);
+    }
+    return key;
+}
+
+std::string revision_key(std::int64_t value) {
+    return std::to_string(value);
+}
+
+std::string revision_key(std::int32_t value) {
+    return std::to_string(value);
+}
+
+std::string revision_key(const OrderKey& key) {
+    return revision_key({key.multileg ? "1" : "0", std::to_string(key.public_order_id),
+                         std::to_string(key.private_order_id), std::to_string(key.ext_id), key.client_code});
+}
+
+std::string revision_key(const PositionKey& key) {
+    return revision_key({std::to_string(static_cast<std::uint32_t>(key.scope)), key.account_code,
+                         std::to_string(key.isin_id), std::to_string(key.account_type)});
+}
+
+std::string revision_key(const LimitKey& key) {
+    return revision_key({std::to_string(static_cast<std::uint32_t>(key.scope)), key.account_code});
+}
+
+std::string revision_key(const OwnOrderSnapshot& row) {
+    return revision_key({row.multileg ? "1" : "0", std::to_string(row.public_order_id),
+                         std::to_string(row.private_order_id), std::to_string(row.ext_id), row.client_code});
+}
+
+std::string revision_key(const OwnTradeSnapshot& row) {
+    return revision_key({row.multileg ? "1" : "0", std::to_string(row.id_deal)});
+}
 
 template <typename Map> Map& ensure_stage_copy(std::optional<Map>& staged, const Map& committed) {
     if (!staged.has_value()) {
@@ -322,6 +366,7 @@ struct StagedState {
     std::optional<OrderMap> orders;
     std::optional<TradeMap> trades;
     std::optional<std::vector<StreamHealthSnapshot>> stream_health;
+    std::optional<SourceRevisionRows> source_revisions;
     std::unordered_set<StreamCode, EnumClassHash> touched_streams;
 };
 
@@ -353,6 +398,8 @@ struct Plaza2PrivateStateProjector::Impl {
     PositionMap positions_by_key;
     OrderMap orders_by_key;
     TradeMap trades_by_key;
+    SourceRevisionRows source_revisions;
+    std::unordered_map<StreamCode, std::uint64_t, EnumClassHash> lifenums_by_stream;
 
     std::vector<TradingSessionSnapshot> session_snapshots;
     std::vector<InstrumentSnapshot> instrument_snapshots;
@@ -375,6 +422,8 @@ struct Plaza2PrivateStateProjector::Impl {
         positions_by_key.clear();
         orders_by_key.clear();
         trades_by_key.clear();
+        source_revisions.clear();
+        lifenums_by_stream.clear();
         session_snapshots.clear();
         instrument_snapshots.clear();
         matching_snapshots.clear();
@@ -422,6 +471,112 @@ struct Plaza2PrivateStateProjector::Impl {
             staged.stream_health = stream_health;
         }
         return *staged.stream_health;
+    }
+
+    SourceRevisionRows& ensure_staged_source_revisions() {
+        if (!staged.source_revisions.has_value()) {
+            staged.source_revisions = source_revisions;
+        }
+        return *staged.source_revisions;
+    }
+
+    SourceRevisionRows& active_source_revisions() {
+        return staged.active ? ensure_staged_source_revisions() : source_revisions;
+    }
+
+    void record_source_revision(TableCode table_code, std::string key, std::int64_t revision) {
+        if (key.empty()) {
+            return;
+        }
+        active_source_revisions()[table_code][std::move(key)] = revision;
+    }
+
+    std::string row_revision_key(TableCode table_code, const RowReader& row) const {
+        switch (table_code) {
+        case TableCode::kFortsTradeReplOrdersLog:
+            return revision_key(OrderKey{
+                .multileg = false,
+                .public_order_id = row.i64(FieldCode::kFortsTradeReplOrdersLogPublicOrderId),
+                .private_order_id = row.i64(FieldCode::kFortsTradeReplOrdersLogPrivateOrderId),
+                .ext_id = row.i32(FieldCode::kFortsTradeReplOrdersLogExtId),
+                .client_code = row.text(FieldCode::kFortsTradeReplOrdersLogClientCode),
+            });
+        case TableCode::kFortsTradeReplMultilegOrdersLog:
+            return revision_key(OrderKey{
+                .multileg = true,
+                .public_order_id = row.i64(FieldCode::kFortsTradeReplMultilegOrdersLogPublicOrderId),
+                .private_order_id = row.i64(FieldCode::kFortsTradeReplMultilegOrdersLogPrivateOrderId),
+                .ext_id = row.i32(FieldCode::kFortsTradeReplMultilegOrdersLogExtId),
+                .client_code = row.text(FieldCode::kFortsTradeReplMultilegOrdersLogClientCode),
+            });
+        case TableCode::kFortsTradeReplUserDeal:
+            return revision_key({"0", std::to_string(row.i64(FieldCode::kFortsTradeReplUserDealIdDeal))});
+        case TableCode::kFortsTradeReplUserMultilegDeal:
+            return revision_key({"1", std::to_string(row.i64(FieldCode::kFortsTradeReplUserMultilegDealIdDeal))});
+        case TableCode::kFortsUserorderbookReplOrders:
+            return revision_key(OrderKey{
+                .multileg = false,
+                .public_order_id = row.i64(FieldCode::kFortsUserorderbookReplOrdersPublicOrderId),
+                .private_order_id = row.i64(FieldCode::kFortsUserorderbookReplOrdersPrivateOrderId),
+                .ext_id = row.i32(FieldCode::kFortsUserorderbookReplOrdersExtId),
+                .client_code = row.text(FieldCode::kFortsUserorderbookReplOrdersClientCode),
+            });
+        case TableCode::kFortsUserorderbookReplMultilegOrders:
+            return revision_key(OrderKey{
+                .multileg = true,
+                .public_order_id = row.i64(FieldCode::kFortsUserorderbookReplMultilegOrdersPublicOrderId),
+                .private_order_id = row.i64(FieldCode::kFortsUserorderbookReplMultilegOrdersPrivateOrderId),
+                .ext_id = row.i32(FieldCode::kFortsUserorderbookReplMultilegOrdersExtId),
+                .client_code = row.text(FieldCode::kFortsUserorderbookReplMultilegOrdersClientCode),
+            });
+        case TableCode::kFortsUserorderbookReplOrdersCurrentday:
+            return revision_key(OrderKey{
+                .multileg = false,
+                .public_order_id = row.i64(FieldCode::kFortsUserorderbookReplOrdersCurrentdayPublicOrderId),
+                .private_order_id = row.i64(FieldCode::kFortsUserorderbookReplOrdersCurrentdayPrivateOrderId),
+                .ext_id = row.i32(FieldCode::kFortsUserorderbookReplOrdersCurrentdayExtId),
+                .client_code = row.text(FieldCode::kFortsUserorderbookReplOrdersCurrentdayClientCode),
+            });
+        case TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday:
+            return revision_key(OrderKey{
+                .multileg = true,
+                .public_order_id = row.i64(FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPublicOrderId),
+                .private_order_id = row.i64(FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateOrderId),
+                .ext_id = row.i32(FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayExtId),
+                .client_code = row.text(FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayClientCode),
+            });
+        case TableCode::kFortsPosReplPosition:
+            return revision_key(PositionKey{
+                .scope = PositionScope::kClient,
+                .account_code = row.text(FieldCode::kFortsPosReplPositionClientCode),
+                .isin_id = row.i32(FieldCode::kFortsPosReplPositionIsinId),
+                .account_type = row.i8(FieldCode::kFortsPosReplPositionAccountType),
+            });
+        case TableCode::kFortsPartReplPart:
+            return revision_key(LimitKey{
+                .scope = PositionScope::kClient,
+                .account_code = row.text(FieldCode::kFortsPartReplPartClientCode),
+            });
+        case TableCode::kFortsRefdataReplSession:
+            return revision_key(row.i32(FieldCode::kFortsRefdataReplSessionSessId));
+        case TableCode::kFortsRefdataReplFutInstruments:
+            return revision_key(row.i32(FieldCode::kFortsRefdataReplFutInstrumentsIsinId));
+        case TableCode::kFortsRefdataReplFutSessContents:
+            return revision_key(row.i32(FieldCode::kFortsRefdataReplFutSessContentsIsinId));
+        case TableCode::kFortsRefdataReplOptSessContents:
+            return revision_key(row.i32(FieldCode::kFortsRefdataReplOptSessContentsIsinId));
+        case TableCode::kFortsRefdataReplMultilegDict:
+            return revision_key({std::to_string(row.i32(FieldCode::kFortsRefdataReplMultilegDictIsinId)),
+                                 std::to_string(row.i8(FieldCode::kFortsRefdataReplMultilegDictLegOrderNo))});
+        case TableCode::kFortsRefdataReplInstr2matchingMap:
+            return revision_key(row.i32(FieldCode::kFortsRefdataReplInstr2matchingMapBaseContractId));
+        case TableCode::kFortsSessionstateReplSessionState:
+            return revision_key(row.i32(FieldCode::kFortsSessionstateReplSessionStateSessId));
+        case TableCode::kFortsInstrumentstateReplInstrumentState:
+            return revision_key(row.i32(FieldCode::kFortsInstrumentstateReplInstrumentStateIsinId));
+        default:
+            return {};
+        }
     }
 
     StreamHealthSnapshot& ensure_stream_health(std::vector<StreamHealthSnapshot>& target, StreamCode stream_code) {
@@ -522,6 +677,323 @@ struct Plaza2PrivateStateProjector::Impl {
         rebuild_trades();
     }
 
+    bool source_row_is_stale(TableCode table_code, std::string_view key, std::int64_t clear_revision) const {
+        const SourceRevisionRows* revisions = &source_revisions;
+        if (staged.active) {
+            if (!staged.source_revisions.has_value()) {
+                return false;
+            }
+            revisions = &*staged.source_revisions;
+        }
+        const auto rows_it = revisions->find(table_code);
+        if (rows_it == revisions->end()) {
+            return false;
+        }
+        const auto row_it = rows_it->second.find(std::string(key));
+        if (row_it == rows_it->second.end()) {
+            return false;
+        }
+        return clear_revision == std::numeric_limits<std::int64_t>::max() || row_it->second < clear_revision;
+    }
+
+    bool has_source_row(TableCode table_code, std::string_view key) const {
+        const SourceRevisionRows* revisions = &source_revisions;
+        if (staged.active) {
+            if (!staged.source_revisions.has_value()) {
+                return false;
+            }
+            revisions = &*staged.source_revisions;
+        }
+        const auto table_it = revisions->find(table_code);
+        return table_it != revisions->end() && table_it->second.find(std::string(key)) != table_it->second.end();
+    }
+
+    void erase_source_row(TableCode table_code, std::string_view key) {
+        auto& revisions = active_source_revisions();
+        const auto table_it = revisions.find(table_code);
+        if (table_it == revisions.end()) {
+            return;
+        }
+        table_it->second.erase(std::string(key));
+        if (table_it->second.empty()) {
+            revisions.erase(table_it);
+        }
+    }
+
+    void clear_table_owned_state(TableCode table_code, std::int64_t clear_revision) {
+        static_cast<void>(active_source_revisions());
+        auto& sessions = staged.active ? ensure_stage_copy(staged.sessions, sessions_by_id) : sessions_by_id;
+        auto& instruments =
+            staged.active ? ensure_stage_copy(staged.instruments, instruments_by_isin) : instruments_by_isin;
+        auto& matching = staged.active ? ensure_stage_copy(staged.matching_map, matching_by_base_contract)
+                                       : matching_by_base_contract;
+        auto& limits = staged.active ? ensure_stage_copy(staged.limits, limits_by_key) : limits_by_key;
+        auto& positions = staged.active ? ensure_stage_copy(staged.positions, positions_by_key) : positions_by_key;
+        auto& orders = staged.active ? ensure_stage_copy(staged.orders, orders_by_key) : orders_by_key;
+        auto& trades = staged.active ? ensure_stage_copy(staged.trades, trades_by_key) : trades_by_key;
+
+        const auto clear_stream_for_table = [&](TableCode code) {
+            switch (code) {
+            case TableCode::kFortsTradeReplOrdersLog:
+            case TableCode::kFortsTradeReplMultilegOrdersLog:
+            case TableCode::kFortsTradeReplUserDeal:
+            case TableCode::kFortsTradeReplUserMultilegDeal:
+                return StreamCode::kFortsTradeRepl;
+            case TableCode::kFortsUserorderbookReplOrders:
+            case TableCode::kFortsUserorderbookReplMultilegOrders:
+            case TableCode::kFortsUserorderbookReplInfo:
+            case TableCode::kFortsUserorderbookReplOrdersCurrentday:
+            case TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday:
+            case TableCode::kFortsUserorderbookReplInfoCurrentday:
+                return StreamCode::kFortsUserorderbookRepl;
+            case TableCode::kFortsPosReplPosition:
+            case TableCode::kFortsPosReplPositionSa:
+            case TableCode::kFortsPosReplInfo:
+                return StreamCode::kFortsPosRepl;
+            case TableCode::kFortsPartReplPart:
+            case TableCode::kFortsPartReplPartSa:
+                return StreamCode::kFortsPartRepl;
+            case TableCode::kFortsRefdataReplSession:
+            case TableCode::kFortsRefdataReplFutInstruments:
+            case TableCode::kFortsRefdataReplFutSessContents:
+            case TableCode::kFortsRefdataReplOptSessContents:
+            case TableCode::kFortsRefdataReplMultilegDict:
+            case TableCode::kFortsRefdataReplInstr2matchingMap:
+                return StreamCode::kFortsRefdataRepl;
+            case TableCode::kFortsSessionstateReplSessionState:
+                return StreamCode::kFortsSessionstateRepl;
+            case TableCode::kFortsInstrumentstateReplInstrumentState:
+                return StreamCode::kFortsInstrumentstateRepl;
+            default:
+                return fake::kNoStreamCode;
+            }
+        };
+
+        const auto stream_code = clear_stream_for_table(table_code);
+        auto mark_touched = [&]() {
+            if (stream_code == fake::kNoStreamCode) {
+                return;
+            }
+            staged.touched_streams.insert(stream_code);
+            auto& health = ensure_stream_health(ensure_staged_stream_health(), stream_code);
+            reset_stream_watermarks(health);
+        };
+
+        const auto clear_orders = [&](bool trade_source, bool user_source, bool current_day_source) {
+            const auto table_it = active_source_revisions().find(table_code);
+            if (table_it == active_source_revisions().end()) {
+                return;
+            }
+            for (auto it = orders.begin(); it != orders.end();) {
+                const auto key = revision_key(it->second);
+                if (!source_row_is_stale(table_code, key, clear_revision)) {
+                    ++it;
+                    continue;
+                }
+                if (trade_source) {
+                    it->second.from_trade_repl = false;
+                    it->second.trade_repl_commit_sequence = 0;
+                }
+                if (user_source) {
+                    it->second.from_user_book = false;
+                    it->second.user_orderbook_commit_sequence = 0;
+                }
+                if (current_day_source) {
+                    it->second.from_current_day = false;
+                }
+                erase_source_row(table_code, key);
+                if (!order_has_any_source(it->second)) {
+                    it = orders.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        };
+
+        switch (table_code) {
+        case TableCode::kFortsTradeReplOrdersLog:
+            clear_orders(true, false, false);
+            break;
+        case TableCode::kFortsTradeReplMultilegOrdersLog:
+            clear_orders(true, false, false);
+            break;
+        case TableCode::kFortsTradeReplUserDeal:
+        case TableCode::kFortsTradeReplUserMultilegDeal: {
+            for (auto it = trades.begin(); it != trades.end();) {
+                const auto key = revision_key(it->second);
+                if (source_row_is_stale(table_code, key, clear_revision)) {
+                    erase_source_row(table_code, key);
+                    it = trades.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            break;
+        }
+        case TableCode::kFortsUserorderbookReplOrders:
+        case TableCode::kFortsUserorderbookReplMultilegOrders:
+            clear_orders(false, true, false);
+            break;
+        case TableCode::kFortsUserorderbookReplOrdersCurrentday:
+        case TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday:
+            clear_orders(false, false, true);
+            break;
+        case TableCode::kFortsPosReplPosition:
+            for (auto it = positions.begin(); it != positions.end();) {
+                const auto key = revision_key(it->first);
+                if (source_row_is_stale(table_code, key, clear_revision)) {
+                    erase_source_row(table_code, key);
+                    it = positions.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            break;
+        case TableCode::kFortsPartReplPart:
+            for (auto it = limits.begin(); it != limits.end();) {
+                const auto key = revision_key(it->first);
+                if (source_row_is_stale(table_code, key, clear_revision)) {
+                    erase_source_row(table_code, key);
+                    it = limits.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            break;
+        case TableCode::kFortsRefdataReplSession:
+            for (auto it = sessions.begin(); it != sessions.end();) {
+                const auto key = revision_key(it->first);
+                if (!source_row_is_stale(table_code, key, clear_revision)) {
+                    ++it;
+                    continue;
+                }
+                const auto status_it = active_source_revisions().find(TableCode::kFortsSessionstateReplSessionState);
+                const bool keep_status = status_it != active_source_revisions().end() &&
+                                         has_source_row(TableCode::kFortsSessionstateReplSessionState, key);
+                erase_source_row(table_code, key);
+                if (keep_status) {
+                    TradingSessionSnapshot replacement{.sess_id = it->first,
+                                                       .state = it->second.current_status,
+                                                       .has_current_status = it->second.has_current_status,
+                                                       .current_status = it->second.current_status};
+                    it->second = std::move(replacement);
+                    ++it;
+                } else {
+                    it = sessions.erase(it);
+                }
+            }
+            break;
+        case TableCode::kFortsRefdataReplFutSessContents:
+            for (auto it = instruments.begin(); it != instruments.end();) {
+                const auto key = revision_key(it->first);
+                if (!source_row_is_stale(table_code, key, clear_revision)) {
+                    ++it;
+                    continue;
+                }
+                const bool keep_other = has_source_row(TableCode::kFortsRefdataReplFutInstruments, key) ||
+                                        has_source_row(TableCode::kFortsRefdataReplOptSessContents, key) ||
+                                        has_source_row(TableCode::kFortsInstrumentstateReplInstrumentState, key);
+                erase_source_row(table_code, key);
+                if (keep_other) {
+                    it->second.sess_id = 0;
+                    it->second.current_session_member = false;
+                    it->second.current_session_state = 0;
+                    ++it;
+                } else {
+                    it = instruments.erase(it);
+                }
+            }
+            break;
+        case TableCode::kFortsRefdataReplFutInstruments:
+        case TableCode::kFortsRefdataReplOptSessContents:
+            for (auto it = instruments.begin(); it != instruments.end();) {
+                const auto key = revision_key(it->first);
+                if (!source_row_is_stale(table_code, key, clear_revision)) {
+                    ++it;
+                    continue;
+                }
+                const bool keep_other = has_source_row(table_code == TableCode::kFortsRefdataReplFutInstruments
+                                                           ? TableCode::kFortsRefdataReplFutSessContents
+                                                           : TableCode::kFortsRefdataReplFutInstruments,
+                                                       key) ||
+                                        has_source_row(TableCode::kFortsInstrumentstateReplInstrumentState, key);
+                erase_source_row(table_code, key);
+                if (keep_other) {
+                    ++it;
+                } else {
+                    it = instruments.erase(it);
+                }
+            }
+            break;
+        case TableCode::kFortsRefdataReplMultilegDict:
+            for (auto& [isin_id, instrument] : instruments) {
+                std::erase_if(instrument.legs, [&](const InstrumentLegSnapshot& leg) {
+                    const auto key = revision_key({std::to_string(isin_id), std::to_string(leg.leg_order_no)});
+                    if (!source_row_is_stale(table_code, key, clear_revision)) {
+                        return false;
+                    }
+                    erase_source_row(table_code, key);
+                    return true;
+                });
+            }
+            break;
+        case TableCode::kFortsRefdataReplInstr2matchingMap:
+            for (auto it = matching.begin(); it != matching.end();) {
+                const auto key = revision_key(it->first);
+                if (source_row_is_stale(table_code, key, clear_revision)) {
+                    erase_source_row(table_code, key);
+                    it = matching.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            break;
+        case TableCode::kFortsSessionstateReplSessionState:
+            for (auto it = sessions.begin(); it != sessions.end();) {
+                const auto key = revision_key(it->first);
+                if (!source_row_is_stale(table_code, key, clear_revision)) {
+                    ++it;
+                    continue;
+                }
+                erase_source_row(table_code, key);
+                if (has_source_row(TableCode::kFortsRefdataReplSession, key)) {
+                    it->second.has_current_status = false;
+                    it->second.current_status = 0;
+                    ++it;
+                } else {
+                    it = sessions.erase(it);
+                }
+            }
+            break;
+        case TableCode::kFortsInstrumentstateReplInstrumentState:
+            for (auto it = instruments.begin(); it != instruments.end();) {
+                const auto key = revision_key(it->first);
+                if (!source_row_is_stale(table_code, key, clear_revision)) {
+                    ++it;
+                    continue;
+                }
+                erase_source_row(table_code, key);
+                if (has_source_row(TableCode::kFortsRefdataReplFutSessContents, key) ||
+                    has_source_row(TableCode::kFortsRefdataReplFutInstruments, key) ||
+                    has_source_row(TableCode::kFortsRefdataReplOptSessContents, key)) {
+                    it->second.has_current_status = false;
+                    it->second.current_status = 0;
+                    ++it;
+                } else {
+                    it = instruments.erase(it);
+                }
+            }
+            break;
+        default:
+            break;
+        }
+
+        mark_touched();
+        if (!staged.active) {
+            rebuild_all_snapshots();
+        }
+    }
+
     void clear_stream_owned_state(StreamCode stream_code) {
         switch (stream_code) {
         case StreamCode::kFortsTradeRepl:
@@ -542,9 +1014,37 @@ struct Plaza2PrivateStateProjector::Impl {
             limits_by_key.clear();
             rebuild_limits();
             break;
-        case StreamCode::kFortsRefdataRepl:
+        case StreamCode::kFortsRefdataRepl: {
+            std::unordered_map<std::int32_t, std::int32_t> session_status;
+            for (const auto& [sess_id, session] : sessions_by_id) {
+                if (session.has_current_status) {
+                    session_status.emplace(sess_id, session.current_status);
+                }
+            }
+            std::unordered_map<std::int32_t, std::int32_t> instrument_status;
+            for (const auto& [isin_id, instrument] : instruments_by_isin) {
+                if (instrument.has_current_status) {
+                    instrument_status.emplace(isin_id, instrument.current_status);
+                }
+            }
             sessions_by_id.clear();
+            for (const auto& [sess_id, status] : session_status) {
+                sessions_by_id.emplace(sess_id, TradingSessionSnapshot{
+                                                    .sess_id = sess_id,
+                                                    .state = status,
+                                                    .has_current_status = true,
+                                                    .current_status = status,
+                                                });
+            }
             instruments_by_isin.clear();
+            for (const auto& [isin_id, status] : instrument_status) {
+                instruments_by_isin.emplace(isin_id, InstrumentSnapshot{
+                                                         .isin_id = isin_id,
+                                                         .has_current_status = true,
+                                                         .current_status = status,
+                                                     });
+            }
+        }
             matching_by_base_contract.clear();
             rebuild_sessions();
             rebuild_instruments();
@@ -593,9 +1093,39 @@ struct Plaza2PrivateStateProjector::Impl {
             ensure_stage_copy(staged.limits, limits_by_key).clear();
             staged.touched_streams.insert(StreamCode::kFortsPartRepl);
             break;
-        case StreamCode::kFortsRefdataRepl:
-            ensure_stage_copy(staged.sessions, sessions_by_id).clear();
-            ensure_stage_copy(staged.instruments, instruments_by_isin).clear();
+        case StreamCode::kFortsRefdataRepl: {
+            auto& sessions = ensure_stage_copy(staged.sessions, sessions_by_id);
+            std::unordered_map<std::int32_t, std::int32_t> session_status;
+            for (const auto& [sess_id, session] : sessions) {
+                if (session.has_current_status) {
+                    session_status.emplace(sess_id, session.current_status);
+                }
+            }
+            sessions.clear();
+            for (const auto& [sess_id, status] : session_status) {
+                sessions.emplace(sess_id, TradingSessionSnapshot{
+                                              .sess_id = sess_id,
+                                              .state = status,
+                                              .has_current_status = true,
+                                              .current_status = status,
+                                          });
+            }
+            auto& instruments = ensure_stage_copy(staged.instruments, instruments_by_isin);
+            std::unordered_map<std::int32_t, std::int32_t> instrument_status;
+            for (const auto& [isin_id, instrument] : instruments) {
+                if (instrument.has_current_status) {
+                    instrument_status.emplace(isin_id, instrument.current_status);
+                }
+            }
+            instruments.clear();
+            for (const auto& [isin_id, status] : instrument_status) {
+                instruments.emplace(isin_id, InstrumentSnapshot{
+                                                 .isin_id = isin_id,
+                                                 .has_current_status = true,
+                                                 .current_status = status,
+                                             });
+            }
+        }
             ensure_stage_copy(staged.matching_map, matching_by_base_contract).clear();
             staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
             break;
@@ -1130,6 +1660,7 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void apply_row(const fake::EventSpec& event, const RowReader& row) {
+        record_source_revision(event.table_code, row_revision_key(event.table_code, row), event.signed_value);
         switch (event.table_code) {
         case TableCode::kFortsTradeReplOrdersLog:
             apply_trade_order_row(row, false);
@@ -1271,6 +1802,9 @@ struct Plaza2PrivateStateProjector::Impl {
         if (staged.stream_health.has_value()) {
             stream_health = std::move(*staged.stream_health);
         }
+        if (staged.source_revisions.has_value()) {
+            source_revisions = std::move(*staged.source_revisions);
+        }
         sync_base_health(state);
         for (const auto stream_code : staged.touched_streams) {
             auto& health = ensure_stream_health(stream_health, stream_code);
@@ -1279,9 +1813,57 @@ struct Plaza2PrivateStateProjector::Impl {
         staged = {};
     }
 
+    void clear_source_revisions_for_stream(StreamCode stream_code) {
+        auto& revisions = active_source_revisions();
+        const auto belongs_to_stream = [stream_code](TableCode table_code) {
+            switch (stream_code) {
+            case StreamCode::kFortsTradeRepl:
+                return table_code == TableCode::kFortsTradeReplOrdersLog ||
+                       table_code == TableCode::kFortsTradeReplMultilegOrdersLog ||
+                       table_code == TableCode::kFortsTradeReplUserDeal ||
+                       table_code == TableCode::kFortsTradeReplUserMultilegDeal;
+            case StreamCode::kFortsUserorderbookRepl:
+                return table_code == TableCode::kFortsUserorderbookReplOrders ||
+                       table_code == TableCode::kFortsUserorderbookReplMultilegOrders ||
+                       table_code == TableCode::kFortsUserorderbookReplOrdersCurrentday ||
+                       table_code == TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday;
+            case StreamCode::kFortsPosRepl:
+                return table_code == TableCode::kFortsPosReplPosition;
+            case StreamCode::kFortsPartRepl:
+                return table_code == TableCode::kFortsPartReplPart;
+            case StreamCode::kFortsRefdataRepl:
+                return table_code == TableCode::kFortsRefdataReplSession ||
+                       table_code == TableCode::kFortsRefdataReplFutInstruments ||
+                       table_code == TableCode::kFortsRefdataReplFutSessContents ||
+                       table_code == TableCode::kFortsRefdataReplOptSessContents ||
+                       table_code == TableCode::kFortsRefdataReplMultilegDict ||
+                       table_code == TableCode::kFortsRefdataReplInstr2matchingMap;
+            case StreamCode::kFortsSessionstateRepl:
+                return table_code == TableCode::kFortsSessionstateReplSessionState;
+            case StreamCode::kFortsInstrumentstateRepl:
+                return table_code == TableCode::kFortsInstrumentstateReplInstrumentState;
+            default:
+                return false;
+            }
+        };
+        for (auto it = revisions.begin(); it != revisions.end();) {
+            if (belongs_to_stream(it->first)) {
+                it = revisions.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void invalidate_stream_domain(StreamCode stream_code) {
+        clear_stream_owned_state(stream_code);
+        clear_source_revisions_for_stream(stream_code);
+    }
+
     void invalidate_all_stream_domains() {
         for (const auto& health : stream_health) {
             clear_stream_owned_state(health.stream_code);
+            clear_source_revisions_for_stream(health.stream_code);
         }
     }
 };
@@ -1375,11 +1957,23 @@ void Plaza2PrivateStateProjector::on_event(const fake::ScenarioSpec&, const fake
         break;
     case fake::EventKind::kLifeNum:
         impl_->sync_base_health(state);
-        impl_->invalidate_all_stream_domains();
+        if (event.stream_code == fake::kNoStreamCode) {
+            impl_->invalidate_all_stream_domains();
+        } else {
+            const auto known = impl_->lifenums_by_stream.find(event.stream_code);
+            if (known == impl_->lifenums_by_stream.end()) {
+                impl_->lifenums_by_stream.emplace(event.stream_code, event.numeric_value);
+            } else if (known->second != event.numeric_value) {
+                known->second = event.numeric_value;
+                impl_->invalidate_stream_domain(event.stream_code);
+            }
+        }
         break;
     case fake::EventKind::kClearDeleted:
         impl_->sync_base_health(state);
-        if (impl_->staged.active) {
+        if (event.table_code != fake::kNoTableCode) {
+            impl_->clear_table_owned_state(event.table_code, event.signed_value);
+        } else if (impl_->staged.active) {
             impl_->stage_clear_stream_owned_state(event.stream_code);
         } else {
             impl_->clear_stream_owned_state(event.stream_code);

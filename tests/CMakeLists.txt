@@ -585,6 +585,20 @@ moex_add_plaza2_live_runner_test(plaza2_live_session_validation_test
 moex_add_plaza2_live_runner_test(plaza2_live_session_runner_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_live_session_runner_test.cpp)
 
+add_executable(plaza2_trade_connectivity_qualifier_test
+    ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_trade_connectivity_qualifier_test.cpp)
+add_dependencies(plaza2_trade_connectivity_qualifier_test plaza2_fake_cgate_runtime)
+target_link_libraries(plaza2_trade_connectivity_qualifier_test
+    PRIVATE
+        plaza2_runtime_test_support
+        moex_plaza2_cgate_connectivity_qualifier)
+target_compile_features(plaza2_trade_connectivity_qualifier_test PRIVATE cxx_std_20)
+set_property(TARGET plaza2_trade_connectivity_qualifier_test PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME plaza2_trade_connectivity_qualifier_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_trade_connectivity_qualifier_test"
+        "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+
 function(moex_add_plaza2_aggr20_md_test target_name source_file)
     add_executable(${target_name} "${source_file}")
     add_dependencies(${target_name} plaza2_fake_cgate_runtime)
@@ -645,6 +659,11 @@ add_test(
         --armed-test-network
         --armed-test-session)
 set_tests_properties(plaza2_cert_runner_requires_test_plaza2_arm PROPERTIES WILL_FAIL TRUE)
+
+add_test(
+    NAME plaza2_connectivity_qualifier_no_send_guard
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/assert_plaza2_qualifier_no_send.py"
+        "${MOEX_SOURCE_ROOT}")
 
 add_test(
     NAME plaza2_aggr20_md_runner_requires_market_data_arm

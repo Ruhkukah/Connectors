@@ -46,6 +46,13 @@ std::string stream_name(StreamCode stream_code) {
     return descriptor == nullptr ? std::string{} : std::string(descriptor->stream_name);
 }
 
+std::string stream_label(const Plaza2LiveStreamConfig& stream) {
+    if (!stream.label.empty()) {
+        return stream.label;
+    }
+    return stream_name(stream.stream_code);
+}
+
 std::size_t stream_index(const EngineState& state, StreamCode stream_code) {
     for (std::size_t index = 0; index < state.streams.size(); ++index) {
         if (state.streams[index].stream_code == stream_code) {
@@ -128,6 +135,8 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         state_ = {};
         state_.streams.clear();
         pending_row_deltas_.assign(streams.size(), 0);
+        pending_clear_deleted_.assign(streams.size(), {});
+        stream_lifenums_.clear();
         for (const auto& stream : streams) {
             state_.streams.push_back({
                 .stream_code = stream.stream_code,
@@ -205,9 +214,9 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         case Plaza2ListenerEventKind::Online:
             return handle_online(event.stream_code);
         case Plaza2ListenerEventKind::LifeNum:
-            return handle_lifenum(event.unsigned_value);
+            return handle_lifenum(event.stream_code, event.unsigned_value);
         case Plaza2ListenerEventKind::ClearDeleted:
-            return handle_clear_deleted(event.stream_code);
+            return handle_clear_deleted(event);
         case Plaza2ListenerEventKind::ReplState:
             return handle_replstate(event.text_value);
         }
@@ -238,6 +247,17 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
             .stream_code = stream_code,
         };
         projector_.on_event(scenario_, fake_event, state_);
+        for (const auto& pending : pending_clear_deleted_[index]) {
+            const EventSpec clear_event{
+                .kind = EventKind::kClearDeleted,
+                .stream_code = pending.stream_code,
+                .table_code = pending.table_code,
+                .signed_value = pending.table_rev,
+                .clear_deleted_flags = pending.flags,
+            };
+            projector_.on_event(scenario_, clear_event, state_);
+        }
+        pending_clear_deleted_[index].clear();
         return {};
     }
 
@@ -320,6 +340,7 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
             .kind = EventKind::kStreamData,
             .stream_code = event.stream_code,
             .table_code = event.table_code,
+            .signed_value = event.signed_value,
         };
         const RowSpec row{
             .stream_code = event.stream_code,
@@ -336,6 +357,17 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         if (index == state_.streams.size()) {
             return ordering_error("PLAZA II live bridge received ONLINE for an undeclared stream");
         }
+        for (const auto& pending : pending_clear_deleted_[index]) {
+            const EventSpec clear_event{
+                .kind = EventKind::kClearDeleted,
+                .stream_code = pending.stream_code,
+                .table_code = pending.table_code,
+                .signed_value = pending.table_rev,
+                .clear_deleted_flags = pending.flags,
+            };
+            projector_.on_event(scenario_, clear_event, state_);
+        }
+        pending_clear_deleted_[index].clear();
         state_.streams[index].online = true;
         state_.streams[index].snapshot_complete = true;
         recompute_online();
@@ -347,44 +379,75 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         return {};
     }
 
-    Plaza2Error handle_lifenum(std::uint64_t life_number) {
+    Plaza2Error handle_lifenum(StreamCode stream_code, std::uint64_t life_number) {
         if (state_.transaction_open) {
             return ordering_error("PLAZA II live bridge received P2REPL_LIFENUM inside an open transaction");
         }
-        if (state_.has_lifenum && state_.last_lifenum == life_number) {
+        auto known_stream = std::ranges::find_if(
+            stream_lifenums_, [stream_code](const auto& entry) { return entry.first == stream_code; });
+        if (known_stream != stream_lifenums_.end() && known_stream->second == life_number) {
             return {};
         }
-        if (state_.has_lifenum && state_.last_lifenum != life_number) {
-            for (auto& stream : state_.streams) {
-                stream.online = false;
-                stream.snapshot_complete = false;
-                stream.committed_row_count = 0;
-            }
-            state_.online = false;
-            last_resync_reason_ = "lifenum_change";
+        const bool stream_lifenum_seen = known_stream != stream_lifenums_.end();
+        const bool stream_lifenum_changed = stream_lifenum_seen;
+        if (known_stream == stream_lifenums_.end()) {
+            stream_lifenums_.emplace_back(stream_code, life_number);
+        } else {
+            known_stream->second = life_number;
         }
         state_.has_lifenum = true;
         state_.last_lifenum = life_number;
-        const EventSpec fake_event{
-            .kind = EventKind::kLifeNum,
-            .numeric_value = life_number,
-        };
-        projector_.on_event(scenario_, fake_event, state_);
+        if (stream_lifenum_changed) {
+            const auto index = stream_index(state_, stream_code);
+            if (index < state_.streams.size()) {
+                pending_clear_deleted_[index].clear();
+                state_.streams[index].online = false;
+                state_.streams[index].snapshot_complete = false;
+                state_.streams[index].committed_row_count = 0;
+            }
+            recompute_online();
+            last_resync_reason_ = "lifenum_change:" + stream_name(stream_code);
+        }
+        if (!stream_lifenum_seen || stream_lifenum_changed) {
+            const EventSpec fake_event{
+                .kind = EventKind::kLifeNum,
+                .stream_code = stream_code,
+                .numeric_value = life_number,
+            };
+            projector_.on_event(scenario_, fake_event, state_);
+        }
         return {};
     }
 
-    Plaza2Error handle_clear_deleted(StreamCode stream_code) {
+    Plaza2Error handle_clear_deleted(const Plaza2ListenerEvent& event) {
+        const auto stream_code = event.stream_code;
         const auto index = stream_index(state_, stream_code);
         if (index == state_.streams.size()) {
             return ordering_error("PLAZA II live bridge received P2REPL_CLEARDELETED for an undeclared stream");
         }
         state_.streams[index].clear_deleted_count += 1;
-        last_resync_reason_ = "clear_deleted:" + stream_name(stream_code);
-        const EventSpec fake_event{
-            .kind = EventKind::kClearDeleted,
+        state_.streams[index].online = false;
+        state_.streams[index].snapshot_complete = false;
+        recompute_online();
+        pending_clear_deleted_[index].push_back({
             .stream_code = stream_code,
-        };
-        projector_.on_event(scenario_, fake_event, state_);
+            .table_code = event.table_code,
+            .table_rev = event.signed_value,
+            .flags = event.clear_deleted_flags,
+        });
+        last_resync_reason_ = "clear_deleted:" + stream_name(stream_code);
+        if (state_.transaction_open) {
+            const auto pending = pending_clear_deleted_[index].back();
+            const EventSpec clear_event{
+                .kind = EventKind::kClearDeleted,
+                .stream_code = pending.stream_code,
+                .table_code = pending.table_code,
+                .signed_value = pending.table_rev,
+                .clear_deleted_flags = pending.flags,
+            };
+            projector_.on_event(scenario_, clear_event, state_);
+            pending_clear_deleted_[index].pop_back();
+        }
         return {};
     }
 
@@ -419,13 +482,68 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
     fake::ScenarioSpec scenario_{};
     EngineState state_{};
     std::vector<std::uint64_t> pending_row_deltas_;
+    struct PendingClearDeleted {
+        StreamCode stream_code{kNoStreamCode};
+        TableCode table_code{kNoTableCode};
+        std::int64_t table_rev{0};
+        std::uint32_t flags{0};
+    };
+
+    std::vector<std::vector<PendingClearDeleted>> pending_clear_deleted_;
+    std::vector<std::pair<StreamCode, std::uint64_t>> stream_lifenums_;
     std::vector<std::string> text_storage_;
     std::vector<FieldValueSpec> field_storage_;
     std::string last_resync_reason_;
 };
 
+class HealthTrackingHandler final : public Plaza2ListenerEventHandler {
+  public:
+    HealthTrackingHandler(Plaza2LiveHealthSnapshot& health, generated::StreamCode stream_code,
+                          Plaza2ListenerEventHandler* delegate)
+        : health_(health), stream_code_(stream_code), delegate_(delegate) {}
+
+    Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override {
+        for (auto& stream : health_.streams) {
+            if (stream.stream_code != stream_code_) {
+                continue;
+            }
+            switch (event.kind) {
+            case Plaza2ListenerEventKind::Close:
+            case Plaza2ListenerEventKind::ClearDeleted:
+                stream.online = false;
+                stream.snapshot_complete = false;
+                break;
+            case Plaza2ListenerEventKind::LifeNum:
+                if (has_lifenum_ && last_lifenum_ != event.unsigned_value) {
+                    stream.online = false;
+                    stream.snapshot_complete = false;
+                }
+                has_lifenum_ = true;
+                last_lifenum_ = event.unsigned_value;
+                break;
+            case Plaza2ListenerEventKind::Online:
+                stream.online = true;
+                stream.snapshot_complete = true;
+                break;
+            default:
+                break;
+            }
+            break;
+        }
+        return delegate_ == nullptr ? Plaza2Error{} : delegate_->on_plaza2_listener_event(event);
+    }
+
+  private:
+    Plaza2LiveHealthSnapshot& health_;
+    generated::StreamCode stream_code_;
+    Plaza2ListenerEventHandler* delegate_;
+    bool has_lifenum_{false};
+    std::uint64_t last_lifenum_{0};
+};
+
 struct LiveListenerHandle {
     Plaza2LiveStreamConfig config;
+    std::unique_ptr<HealthTrackingHandler> health_handler;
     Plaza2Listener listener;
 };
 
@@ -438,7 +556,9 @@ struct Plaza2LiveSessionRunner::Impl {
         for (const auto& stream : config.streams) {
             health.streams.push_back({
                 .stream_code = stream.stream_code,
-                .stream_name = stream_name(stream.stream_code),
+                .stream_name = stream_label(stream),
+                .listener_url_mode = stream.listener_url_mode,
+                .required_online = stream.require_online,
             });
         }
     }
@@ -447,6 +567,8 @@ struct Plaza2LiveSessionRunner::Impl {
         if (started) {
             return fail("PLAZA II live TEST runner already started");
         }
+
+        health.failing_listener.clear();
 
         append_operator_log("profile=" + config.profile_id);
         append_operator_log("endpoint=" + config.endpoint_host + ":" + std::to_string(config.endpoint_port));
@@ -505,9 +627,13 @@ struct Plaza2LiveSessionRunner::Impl {
         for (const auto& stream : config.streams) {
             effective_streams.push_back({
                 .stream_code = stream.stream_code,
+                .label = stream.label,
                 .settings =
                     resolve_stream_scheme_path(render_setting(stream.settings), probe_report.layout.scheme_path),
                 .open_settings = render_setting(stream.open_settings),
+                .listener_url_mode = stream.listener_url_mode,
+                .require_online = stream.require_online,
+                .handler = stream.handler,
             });
         }
 
@@ -519,43 +645,72 @@ struct Plaza2LiveSessionRunner::Impl {
         }
 
         if (const auto env_error = env.open(effective_runtime); env_error) {
-            return fail(env_error.message);
+            health.failing_listener = "environment";
+            return fail_error(env_error);
         }
         append_operator_log("env=open");
 
         if (const auto connection_error = connection.create(env, effective_connection_settings); connection_error) {
-            return fail(connection_error.message);
+            health.failing_listener = "connection";
+            return fail_error(connection_error);
         }
         append_operator_log("connection=create");
 
         if (const auto open_error = connection.open(effective_connection_open_settings); open_error) {
-            return fail(open_error.message);
+            health.failing_listener = "connection";
+            return fail_error(open_error);
         }
         append_operator_log("connection=open");
+
+        if (config.open_publisher) {
+            health.failing_listener = "publisher";
+            if (config.publisher_settings.empty()) {
+                return fail("publisher_settings must be provided when open_publisher is enabled");
+            }
+            if (const auto create_error = publisher.create(connection, render_setting(config.publisher_settings));
+                create_error) {
+                return fail_error(create_error);
+            }
+            health.publisher_created = true;
+            append_operator_log("publisher=create");
+            if (const auto open_error = publisher.open(render_setting(config.publisher_open_settings)); open_error) {
+                return fail_error(open_error);
+            }
+            health.publisher_opened = true;
+            append_operator_log("publisher=open");
+        }
 
         listeners.clear();
         listeners.reserve(effective_streams.size());
         for (const auto& stream : effective_streams) {
+            health.failing_listener = stream_label(stream);
             LiveListenerHandle handle{
                 .config = stream,
             };
-            if (const auto create_error =
-                    handle.listener.create(connection, stream.stream_code, stream.settings, &projector_bridge);
-                create_error) {
-                return fail(create_error.message);
+            if (stream.stream_code != kNoStreamCode) {
+                handle.health_handler = std::make_unique<HealthTrackingHandler>(
+                    health, stream.stream_code, stream.handler == nullptr ? &projector_bridge : stream.handler);
+            }
+            const auto create_error = stream.stream_code == kNoStreamCode
+                                          ? handle.listener.create(connection, stream.settings)
+                                          : handle.listener.create(connection, stream.stream_code, stream.settings,
+                                                                   handle.health_handler.get());
+            if (create_error) {
+                return fail_error(create_error);
             }
             mark_stream_created(stream.stream_code);
-            append_operator_log("listener=create stream=" + stream_name(stream.stream_code));
+            append_operator_log("listener=create stream=" + stream_label(stream));
 
             if (const auto open_error = handle.listener.open(stream.open_settings); open_error) {
-                return fail(open_error.message);
+                return fail_error(open_error);
             }
             mark_stream_opened(stream.stream_code);
-            append_operator_log("listener=open stream=" + stream_name(stream.stream_code));
+            append_operator_log("listener=open stream=" + stream_label(stream));
             listeners.push_back(std::move(handle));
         }
 
         started = true;
+        health.failing_listener.clear();
         health.state = Plaza2LiveRunnerState::Started;
         refresh_health();
         return {
@@ -573,7 +728,7 @@ struct Plaza2LiveSessionRunner::Impl {
         const auto process_error = connection.process(config.process_timeout_ms, &runtime_code);
         health.last_process_runtime_code = runtime_code;
         if (process_error) {
-            return fail(process_error.message);
+            return fail_error(process_error);
         }
 
         refresh_health();
@@ -601,10 +756,20 @@ struct Plaza2LiveSessionRunner::Impl {
             static_cast<void>(it->listener.destroy());
         }
         listeners.clear();
+        if (health.publisher_created) {
+            static_cast<void>(publisher.close());
+            static_cast<void>(publisher.destroy());
+            health.publisher_created = false;
+            health.publisher_opened = false;
+        }
         static_cast<void>(connection.close());
         static_cast<void>(connection.destroy());
         static_cast<void>(env.close());
         static_cast<void>(projector_bridge.end_run());
+        for (auto& stream : health.streams) {
+            stream.online = false;
+            stream.snapshot_complete = false;
+        }
         started = false;
         refresh_health();
         health.state = Plaza2LiveRunnerState::Stopped;
@@ -639,25 +804,35 @@ struct Plaza2LiveSessionRunner::Impl {
         if (config.connection_settings.empty()) {
             return fail("connection_settings must be provided explicitly");
         }
-        if (config.streams.size() != kRequiredPrivateStreams.size()) {
-            return fail("Phase 3F requires exactly the five private replication streams");
-        }
-
         std::vector<StreamCode> present_streams;
         present_streams.reserve(config.streams.size());
         for (const auto& stream : config.streams) {
             if (stream.settings.empty()) {
                 return fail("every configured PLAZA II listener must provide settings");
             }
-            present_streams.push_back(stream.stream_code);
+            if (stream.stream_code != kNoStreamCode) {
+                present_streams.push_back(stream.stream_code);
+            }
         }
         std::sort(present_streams.begin(), present_streams.end());
+        if (std::adjacent_find(present_streams.begin(), present_streams.end()) != present_streams.end()) {
+            return fail("PLAZA II listener stream codes must be unique");
+        }
 
         auto expected_streams = std::vector<StreamCode>(kRequiredPrivateStreams.begin(), kRequiredPrivateStreams.end());
         std::sort(expected_streams.begin(), expected_streams.end());
-        if (present_streams != expected_streams) {
-            return fail("Phase 3F stream set must be exactly FORTS_TRADE_REPL, FORTS_USERORDERBOOK_REPL, "
+        if (!std::includes(present_streams.begin(), present_streams.end(), expected_streams.begin(),
+                           expected_streams.end())) {
+            return fail("PLAZA II listener set must include FORTS_TRADE_REPL, FORTS_USERORDERBOOK_REPL, "
                         "FORTS_POS_REPL, FORTS_PART_REPL, and FORTS_REFDATA_REPL");
+        }
+        if (config.open_publisher && config.publisher_settings.empty()) {
+            return fail("publisher_settings must be provided when open_publisher is enabled");
+        }
+        for (const auto& stream : config.streams) {
+            if (stream.stream_code == kNoStreamCode && stream.require_online) {
+                return fail("untyped PLAZA II listeners must not require replication ONLINE");
+            }
         }
         return {
             .ok = true,
@@ -760,19 +935,6 @@ struct Plaza2LiveSessionRunner::Impl {
         health.resume_markers = projector.resume_markers();
         health.last_resync_reason = projector_bridge.last_resync_reason();
 
-        for (auto& status : health.streams) {
-            status.online = false;
-            status.snapshot_complete = false;
-        }
-        for (const auto& stream_health : projector.stream_health()) {
-            for (auto& status : health.streams) {
-                if (status.stream_code == stream_health.stream_code) {
-                    status.online = stream_health.online;
-                    status.snapshot_complete = stream_health.snapshot_complete;
-                }
-            }
-        }
-
         health.counts.session_count = projector.sessions().size();
         health.counts.instrument_count = projector.instruments().size();
         health.counts.matching_map_count = projector.matching_map().size();
@@ -781,9 +943,10 @@ struct Plaza2LiveSessionRunner::Impl {
         health.counts.own_order_count = projector.own_orders().size();
         health.counts.own_trade_count = projector.own_trades().size();
         health.ready =
-            health.runtime_probe_ok && health.scheme_drift_ok &&
+            health.runtime_probe_ok && health.scheme_drift_ok && (!config.open_publisher || health.publisher_opened) &&
             std::all_of(health.streams.begin(), health.streams.end(), [](const Plaza2LiveStreamStatus& stream) {
-                return stream.created && stream.opened && stream.online && stream.snapshot_complete;
+                return stream.created && stream.opened &&
+                       (!stream.required_online || (stream.online && stream.snapshot_complete));
             });
     }
 
@@ -795,6 +958,12 @@ struct Plaza2LiveSessionRunner::Impl {
             .ok = false,
             .message = std::move(message),
         };
+    }
+
+    Plaza2LiveRunResult fail_error(const Plaza2Error& error) {
+        health.last_error_code = error.code;
+        health.last_error_runtime_code = error.runtime_code;
+        return fail(error.message);
     }
 
     void append_operator_log(std::string line) {
@@ -810,6 +979,7 @@ struct Plaza2LiveSessionRunner::Impl {
     LiveProjectorBridge projector_bridge;
     Plaza2Env env;
     Plaza2Connection connection;
+    Plaza2Publisher publisher;
     std::vector<LiveListenerHandle> listeners;
     std::vector<Plaza2LiveStreamConfig> effective_streams;
     std::vector<std::string> operator_log_lines;
