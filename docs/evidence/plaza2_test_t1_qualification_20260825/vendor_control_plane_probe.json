@@ -1,0 +1,12 @@
+{
+  "p2mqreply_created": true,
+  "p2mqreply_opened": true,
+  "p2mqreply_active_observed": true,
+  "p2mqreply_closed": true,
+  "publisher_created": true,
+  "publisher_opened": true,
+  "publisher_active_observed": true,
+  "publisher_closed": true,
+  "cg_pub_msgnew_calls": 0,
+  "cg_pub_post_calls": 0
+}

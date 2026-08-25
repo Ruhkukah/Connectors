@@ -1,0 +1,9 @@
+stream,created,opened,open_event,first_data,ever_online,snapshot_complete,row_count,lifenum,replstate_seen,elapsed_ms,error_code,runtime_code
+FORTS_TRADE_REPL,1,1,1,1,1,1,78520,2,1,8011,0,0
+FORTS_USERORDERBOOK_REPL,1,1,1,1,1,1,2,2,1,8009,0,0
+FORTS_POS_REPL,1,1,1,1,1,1,1,2,1,8010,0,0
+FORTS_PART_REPL,1,1,1,1,1,1,44,2,1,8010,0,0
+FORTS_REFDATA_REPL,1,1,1,1,1,1,30346,2,1,8014,0,0
+FORTS_SESSIONSTATE_REPL,1,1,1,1,1,1,45,2,1,8010,0,0
+FORTS_INSTRUMENTSTATE_REPL,1,1,1,1,1,1,22868,2,1,8010,0,0
+FORTS_AGGR20_REPL,1,1,1,1,1,1,31632,2,1,8011,0,0
