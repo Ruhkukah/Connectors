@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -138,6 +139,38 @@ bool atomic_write(const std::filesystem::path& path, std::string_view contents, 
     return true;
 }
 
+std::optional<std::string> journal_string_field(std::string_view text, std::string_view key) {
+    const auto marker = std::string("\"") + std::string(key) + "\": \"";
+    const auto begin = text.find(marker);
+    if (begin == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto value_begin = begin + marker.size();
+    const auto value_end = text.find('"', value_begin);
+    if (value_end == std::string_view::npos) {
+        return std::nullopt;
+    }
+    return std::string(text.substr(value_begin, value_end - value_begin));
+}
+
+std::optional<std::int64_t> journal_integer_field(std::string_view text, std::string_view key) {
+    const auto marker = std::string("\"") + std::string(key) + "\": ";
+    const auto begin = text.find(marker);
+    if (begin == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto value_begin = begin + marker.size();
+    const auto value_end = text.find_first_of(",\n}", value_begin);
+    const auto value = text.substr(value_begin, value_end == std::string_view::npos ? text.size() - value_begin
+                                                                                    : value_end - value_begin);
+    std::int64_t parsed = 0;
+    const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc{} || ptr != value.data() + value.size()) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
 PreSendPlan fail_plan(PreSendFailure failure, std::string message) {
     return {
         .ok = false,
@@ -188,9 +221,11 @@ bool contains_id(std::span<const std::int64_t> aliases, std::int64_t value) {
 
 class RunJournal {
   public:
-    bool begin(const OrderLifecycleConfig& config, std::string payload_hash, std::string& error) {
+    bool begin(const OrderLifecycleConfig& config, std::string payload_hash, std::string recovery_payload_hash,
+               std::string& error) {
         config_ = &config;
         payload_hash_ = std::move(payload_hash);
+        recovery_payload_hash_ = std::move(recovery_payload_hash);
         if (!valid_run_token(config.run_id) || config.journal_root.empty()) {
             error = "journal requires a safe unique run_id and explicit journal_root";
             return false;
@@ -335,6 +370,7 @@ class RunJournal {
         out << "  \"cancel_user_id\": " << config_->cancel_user_id << ",\n";
         out << "  \"recovery_user_id\": " << config_->recovery_user_id << ",\n";
         out << "  \"payload_sha256\": \"" << payload_hash_ << "\",\n";
+        out << "  \"recovery_payload_sha256\": \"" << recovery_payload_hash_ << "\",\n";
         out << "  \"add_submission_certainty\": \"" << submission_certainty_name(add_submission_.certainty) << "\",\n";
         out << "  \"add_post_invoked\": " << (add_submission_.post_invoked ? "true" : "false") << ",\n";
         out << "  \"add_reply_observed\": " << (add_reply_.has_value() ? "true" : "false") << ",\n";
@@ -425,6 +461,7 @@ class RunJournal {
     std::filesystem::path path_;
     std::vector<std::filesystem::path> active_locks_;
     std::string payload_hash_;
+    std::string recovery_payload_hash_;
     cgate::Plaza2PublisherMessageResult add_submission_;
     cgate::Plaza2PublisherMessageResult cancel_submission_;
     cgate::Plaza2PublisherMessageResult recovery_submission_;
@@ -841,8 +878,8 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     if (price->scaled % tick->scaled != 0) {
         return fail_plan(PreSendFailure::PriceNotTickAligned, "limit price is not aligned to the instrument tick");
     }
-    if (!config.smoke.aggr20_two_sided || config.smoke.max_aggr20_age_ms == 0 ||
-        config.smoke.aggr20_age_ms > config.smoke.max_aggr20_age_ms) {
+    if (!config.smoke.aggr20_two_sided || config.policy.max_aggr20_age_ms == 0 ||
+        config.smoke.aggr20_age_ms > config.policy.max_aggr20_age_ms) {
         return fail_plan(PreSendFailure::Aggr20NotFreshTwoSided, "AGGR20 must be fresh and two-sided");
     }
     const bool marketable =
@@ -916,19 +953,21 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     }
     const auto recovery_payload_hash = cgate::plaza2_sha256_hex(recovery_command.payload);
 
+    // Only static, human-authorized intent is hashed. Dynamic market/session
+    // observations are written separately and are re-derived by the concrete
+    // transport immediately before AddOrder.
     std::ostringstream json;
     json << "{\n";
-    json << "  \"schema\": \"moex.plaza2.pre_send_plan.v2\",\n";
+    json << "  \"schema\": \"moex.plaza2.authorized_order_intent.v1\",\n";
     json << "  \"profile_id\": \"" << json_escape(config.profile_id) << "\",\n";
     json << "  \"profile_fingerprint\": \"" << config.profile_fingerprint << "\",\n";
     json << "  \"environment\": \"test\",\n";
-    json << "  \"profile_enabled\": true,\n";
     json << "  \"command\": \"AddOrder\",\n";
     json << "  \"message_id\": " << command.msgid << ",\n";
     json << "  \"payload_sha256\": \"" << payload_hash << "\",\n";
     json << "  \"recovery_message_id\": " << recovery_command.msgid << ",\n";
     json << "  \"recovery_payload_sha256\": \"" << recovery_payload_hash << "\",\n";
-    json << "  \"user_id\": " << config.add_user_id << ",\n";
+    json << "  \"add_user_id\": " << config.add_user_id << ",\n";
     json << "  \"cancel_user_id\": " << config.cancel_user_id << ",\n";
     json << "  \"recovery_user_id\": " << config.recovery_user_id << ",\n";
     json << "  \"ext_id\": " << config.ext_id << ",\n";
@@ -939,56 +978,67 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     json << "  \"order_type\": \"limit\",\n";
     json << "  \"price\": \"" << json_escape(config.price) << "\",\n";
     json << "  \"quantity\": 1,\n";
-    json << "  \"reviewed_evidence\": {\n";
-    json << "    \"tick_size\": \"" << json_escape(config.smoke.tick_size) << "\",\n";
-    json << "    \"top_bid\": \"" << json_escape(config.smoke.top_bid) << "\",\n";
-    json << "    \"top_ask\": \"" << json_escape(config.smoke.top_ask) << "\",\n";
-    json << "    \"market_data_source\": \"" << json_escape(config.smoke.market_data_source) << "\",\n";
-    json << "    \"aggr20_source_sequence\": " << config.smoke.aggr20_source_sequence << ",\n";
-    json << "    \"aggr20_source_revision\": " << config.smoke.aggr20_source_revision << ",\n";
-    json << "    \"aggr20_observed_at_utc\": \"" << json_escape(config.smoke.aggr20_observed_at_utc) << "\",\n";
-    json << "    \"aggr20_age_ms\": " << config.smoke.aggr20_age_ms << ",\n";
-    json << "    \"max_aggr20_age_ms\": " << config.smoke.max_aggr20_age_ms << ",\n";
-    json << "    \"trading_day\": \"" << json_escape(config.smoke.trading_day) << "\",\n";
-    json << "    \"session_id\": \"" << json_escape(config.smoke.session_id) << "\",\n";
-    json << "    \"session_state\": \"" << json_escape(config.smoke.session_state) << "\",\n";
-    json << "    \"tradable_session\": " << (config.smoke.tradable_session ? "true" : "false") << ",\n";
-    json << "    \"refdata_source\": \"" << json_escape(config.smoke.refdata_source) << "\",\n";
-    json << "    \"refdata_source_sequence\": " << config.smoke.refdata_source_sequence << ",\n";
-    json << "    \"refdata_source_revision\": " << config.smoke.refdata_source_revision << ",\n";
-    json << "    \"instrument_exists\": " << (config.smoke.instrument_exists ? "true" : "false") << ",\n";
-    json << "    \"limits_source\": \"" << json_escape(config.smoke.limits_source) << "\",\n";
-    json << "    \"limits_commit_sequence\": " << config.smoke.limits_commit_sequence << ",\n";
-    json << "    \"limits_snapshot_applicable\": " << (config.smoke.limits_snapshot_applicable ? "true" : "false")
-         << "\n";
-    json << "  },\n";
+    json << "  \"client_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.client_code) << "\",\n";
+    json << "  \"broker_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.broker_code) << "\",\n";
     json << "  \"smoke_policy\": {\n";
     json << "    \"version\": \"" << json_escape(config.policy.version) << "\",\n";
     json << "    \"sha256\": \"" << config.policy.sha256 << "\",\n";
-    json << "    \"max_distance_ticks\": " << config.policy.max_distance_ticks << "\n";
-    json << "  },\n";
-    json << "  \"checks\": {\n";
-    json << "    \"aggr20_fresh_two_sided\": true,\n";
-    json << "    \"applicable_limits_snapshot\": true,\n";
-    json << "    \"distance_ceiling\": true,\n";
-    json << "    \"instrument_in_refdata\": true,\n";
-    json << "    \"passive_non_marketable\": true,\n";
-    json << "    \"quantity_one\": true,\n";
-    json << "    \"tick_aligned\": true,\n";
-    json << "    \"tradable_session\": true,\n";
-    json << "    \"unique_identifiers\": true\n";
+    json << "    \"max_distance_ticks\": " << config.policy.max_distance_ticks << ",\n";
+    json << "    \"max_aggr20_age_ms\": " << config.policy.max_aggr20_age_ms << ",\n";
+    json << "    \"require_zero_starting_position\": "
+         << (config.policy.require_zero_starting_position ? "true" : "false") << "\n";
     json << "  }\n";
     json << "}\n";
+
+    std::ostringstream evidence_json;
+    evidence_json << "{\n";
+    evidence_json << "  \"schema\": \"moex.plaza2.reviewed_execution_evidence.v1\",\n";
+    evidence_json << "  \"authorized_intent_sha256\": \"PENDING\",\n";
+    evidence_json << "  \"reviewed_evidence\": {\n";
+    evidence_json << "    \"tick_size\": \"" << json_escape(config.smoke.tick_size) << "\",\n";
+    evidence_json << "    \"top_bid\": \"" << json_escape(config.smoke.top_bid) << "\",\n";
+    evidence_json << "    \"top_ask\": \"" << json_escape(config.smoke.top_ask) << "\",\n";
+    evidence_json << "    \"market_data_source\": \"" << json_escape(config.smoke.market_data_source) << "\",\n";
+    evidence_json << "    \"aggr20_source_sequence\": " << config.smoke.aggr20_source_sequence << ",\n";
+    evidence_json << "    \"aggr20_source_revision\": " << config.smoke.aggr20_source_revision << ",\n";
+    evidence_json << "    \"aggr20_observed_at_utc\": \"" << json_escape(config.smoke.aggr20_observed_at_utc)
+                  << "\",\n";
+    evidence_json << "    \"aggr20_age_ms\": " << config.smoke.aggr20_age_ms << ",\n";
+    evidence_json << "    \"max_aggr20_age_ms\": " << config.policy.max_aggr20_age_ms << ",\n";
+    evidence_json << "    \"trading_day\": \"" << json_escape(config.smoke.trading_day) << "\",\n";
+    evidence_json << "    \"session_id\": \"" << json_escape(config.smoke.session_id) << "\",\n";
+    evidence_json << "    \"session_state\": \"" << json_escape(config.smoke.session_state) << "\",\n";
+    evidence_json << "    \"tradable_session\": " << (config.smoke.tradable_session ? "true" : "false") << ",\n";
+    evidence_json << "    \"refdata_source\": \"" << json_escape(config.smoke.refdata_source) << "\",\n";
+    evidence_json << "    \"refdata_source_sequence\": " << config.smoke.refdata_source_sequence << ",\n";
+    evidence_json << "    \"refdata_source_revision\": " << config.smoke.refdata_source_revision << ",\n";
+    evidence_json << "    \"instrument_exists\": " << (config.smoke.instrument_exists ? "true" : "false") << ",\n";
+    evidence_json << "    \"limits_source\": \"" << json_escape(config.smoke.limits_source) << "\",\n";
+    evidence_json << "    \"limits_commit_sequence\": " << config.smoke.limits_commit_sequence << ",\n";
+    evidence_json << "    \"limits_snapshot_applicable\": "
+                  << (config.smoke.limits_snapshot_applicable ? "true" : "false") << "\n";
+    evidence_json << "  }\n";
+    evidence_json << "}\n";
 
     PreSendPlan plan{
         .ok = true,
         .failure = PreSendFailure::None,
         .message = "pre-send plan validated",
         .canonical_json = json.str(),
+        .reviewed_evidence_json = evidence_json.str(),
         .add_command = std::move(command),
         .exact_ext_id_recovery_command = std::move(recovery_command),
     };
     plan.sha256 = cgate::plaza2_sha256_hex(plan.canonical_json);
+    const auto intent_placeholder = std::string("\"authorized_intent_sha256\": \"PENDING\"");
+    const auto intent_value = std::string("\"authorized_intent_sha256\": \"") + plan.sha256 + "\"";
+    while (true) {
+        const auto position = plan.reviewed_evidence_json.find(intent_placeholder);
+        if (position == std::string::npos) {
+            break;
+        }
+        plan.reviewed_evidence_json.replace(position, intent_placeholder.size(), intent_value);
+    }
     if (config.send_test_order &&
         (!valid_sha256(config.authorized_plan_sha256) || config.authorized_plan_sha256 != plan.sha256)) {
         return fail_plan(PreSendFailure::PlanHashMismatch,
@@ -1002,7 +1052,155 @@ bool write_pre_send_plan(const std::filesystem::path& output_directory, const Pr
         error = "cannot write an invalid pre-send plan";
         return false;
     }
-    return atomic_write(output_directory / "pre_send_plan.json", plan.canonical_json, error);
+    if (!atomic_write(output_directory / "authorized_intent.json", plan.canonical_json, error)) {
+        return false;
+    }
+    if (!atomic_write(output_directory / "pre_send_plan.json", plan.canonical_json, error)) {
+        return false;
+    }
+    if (!plan.reviewed_evidence_json.empty() &&
+        !atomic_write(output_directory / "reviewed_execution_evidence.json", plan.reviewed_evidence_json, error)) {
+        return false;
+    }
+    return true;
+}
+
+RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig& config,
+                                                     std::span<const private_state::OwnOrderSnapshot> orders,
+                                                     std::span<const private_state::OwnTradeSnapshot> trades) {
+    RestartReconciliationResult result;
+    result.journal_path = config.journal_root / config.run_id / "journal.json";
+    const auto active = has_unfinished_identifier(config);
+    if (!active) {
+        result.run_found = false;
+        result.locks_retained = false;
+        result.message = "no unfinished identifier locks found";
+        return result;
+    }
+    result.run_found = true;
+    if (!std::filesystem::exists(result.journal_path)) {
+        result.ok = false;
+        result.message = "unfinished identifier locks have no journal; retaining them";
+        return result;
+    }
+
+    std::ifstream input(result.journal_path, std::ios::binary);
+    const std::string journal_text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    if (!input && journal_text.empty()) {
+        result.ok = false;
+        result.message = "unfinished journal could not be read; retaining identifier locks";
+        return result;
+    }
+
+    // The original journal is immutable evidence.  Validate its fixed run
+    // identity and the canonical AddOrder payload before considering any
+    // terminal observation for lock removal.
+    const auto schema = journal_string_field(journal_text, "schema");
+    const auto journal_run_id = journal_string_field(journal_text, "run_id");
+    const auto journal_profile_id = journal_string_field(journal_text, "profile_id");
+    const auto journal_profile = journal_string_field(journal_text, "profile_fingerprint");
+    const auto journal_payload = journal_string_field(journal_text, "payload_sha256");
+    const auto journal_recovery_payload = journal_string_field(journal_text, "recovery_payload_sha256");
+    const auto journal_ext = journal_integer_field(journal_text, "ext_id");
+    const auto journal_add_user = journal_integer_field(journal_text, "add_user_id");
+    const auto journal_cancel_user = journal_integer_field(journal_text, "cancel_user_id");
+    const auto journal_recovery_user = journal_integer_field(journal_text, "recovery_user_id");
+    const auto journal_add_reply_id = journal_integer_field(journal_text, "add_reply_order_id");
+    auto plan_config = config;
+    plan_config.dry_run = true;
+    plan_config.send_test_order = false;
+    plan_config.authorized_plan_sha256.clear();
+    plan_config.journal_root = result.journal_path.parent_path() / "reconciliation_plan";
+    const auto plan = build_pre_send_plan(plan_config);
+    if (!schema.has_value() || *schema != "moex.plaza2.order_run_journal.v2" || !journal_run_id.has_value() ||
+        *journal_run_id != config.run_id || !journal_profile_id.has_value() ||
+        *journal_profile_id != config.profile_id || !journal_profile.has_value() ||
+        *journal_profile != config.profile_fingerprint || !journal_payload.has_value() ||
+        !journal_recovery_payload.has_value() || !plan.ok ||
+        *journal_payload != cgate::plaza2_sha256_hex(plan.add_command.payload) ||
+        *journal_recovery_payload != cgate::plaza2_sha256_hex(plan.exact_ext_id_recovery_command.payload) ||
+        !journal_ext.has_value() || *journal_ext != config.ext_id || !journal_add_user.has_value() ||
+        *journal_add_user != config.add_user_id || !journal_cancel_user.has_value() ||
+        *journal_cancel_user != config.cancel_user_id || !journal_recovery_user.has_value() ||
+        *journal_recovery_user != config.recovery_user_id) {
+        result.ok = false;
+        result.message =
+            "unfinished journal identity or payload does not match the reconciliation request; retaining locks";
+        return result;
+    }
+
+    const auto observation =
+        observe_order(config.ext_id, config.client_code, config.side, config.quantity, orders, trades);
+    if (!observation.has_value() || !observation_terminal(observation) || observation->identity_conflict) {
+        result.state = observation.has_value() ? observation->state : OrderLifecycleState::UnresolvedOrphanIncident;
+        result.message = observation.has_value() && observation->identity_conflict
+                             ? "restart observation has an identity conflict; retaining identifier locks"
+                             : "restart observation is absent or still working; retaining identifier locks";
+        return result;
+    }
+
+    const auto journal_sha256 = cgate::plaza2_sha256_hex(journal_text);
+    const auto known_public_id = journal_integer_field(journal_text, "public_order_id").value_or(0);
+    const auto known_private_id = journal_integer_field(journal_text, "private_order_id").value_or(0);
+    const auto known_add_reply_id = journal_add_reply_id.value_or(0);
+    if ((known_add_reply_id != 0 && !reply_id_matches_observation(known_add_reply_id, *observation)) ||
+        (known_public_id != 0 && !reply_id_matches_observation(known_public_id, *observation)) ||
+        (known_private_id != 0 && !reply_id_matches_observation(known_private_id, *observation))) {
+        result.ok = false;
+        result.message = "restart observation does not preserve the historical order identity; retaining locks";
+        return result;
+    }
+
+    const auto run_directory = result.journal_path.parent_path();
+    const auto write_resolution = [&](bool prepared, bool locks_released, std::string& error) {
+        std::ostringstream resolution;
+        resolution << "{\n"
+                   << "  \"schema\": \"moex.plaza2.restart_reconciliation.v2\",\n"
+                   << "  \"run_id\": \"" << json_escape(config.run_id) << "\",\n"
+                   << "  \"journal_sha256\": \"" << journal_sha256 << "\",\n"
+                   << "  \"ext_id\": " << config.ext_id << ",\n"
+                   << "  \"state\": \"" << order_lifecycle_state_name(observation->state) << "\",\n"
+                   << "  \"public_order_id\": " << observation->public_order_id << ",\n"
+                   << "  \"private_order_id\": " << observation->private_order_id << ",\n"
+                   << "  \"evidence_consistent\": true,\n"
+                   << "  \"resolution_prepared\": " << (prepared ? "true" : "false") << ",\n"
+                   << "  \"locks_released\": " << (locks_released ? "true" : "false") << "\n"
+                   << "}\n";
+        return atomic_write(run_directory / "restart_reconciliation.json", resolution.str(), error);
+    };
+    std::string error;
+    if (!write_resolution(true, false, error)) {
+        result.ok = false;
+        result.message = "restart resolution preparation failed: " + error;
+        return result;
+    }
+
+    const std::array locks = {
+        ext_lock_path(config),
+        user_lock_path(config, config.add_user_id),
+        user_lock_path(config, config.cancel_user_id),
+        user_lock_path(config, config.recovery_user_id),
+    };
+    std::error_code filesystem_error;
+    for (const auto& lock : locks) {
+        std::filesystem::remove(lock, filesystem_error);
+    }
+    result.state = observation->state;
+    result.locks_retained =
+        std::any_of(locks.begin(), locks.end(), [](const auto& lock) { return std::filesystem::exists(lock); });
+    if (result.locks_retained) {
+        result.ok = false;
+        result.message = "restart resolution prepared but some identifier locks remain";
+        return result;
+    }
+    result.resolved = true;
+    if (!write_resolution(false, true, error)) {
+        result.ok = false;
+        result.message = "restart final resolution publication failed: " + error;
+        return result;
+    }
+    result.message = "restart reconciliation resolved a consistent terminal observation";
+    return result;
 }
 
 OrderLifecycleController::OrderLifecycleController(OrderLifecycleConfig config, OrderLifecycleTransport& transport,
@@ -1039,10 +1237,20 @@ OrderLifecycleResult OrderLifecycleController::run() {
         return result;
     }
 
+    const auto binding_error = transport_.bind_authorized_plan(plan);
+    if (binding_error) {
+        result.market_safe_terminal = true;
+        result.state = OrderLifecycleState::DefinitelyNotSent;
+        result.message = "authorization binding failed: " + binding_error.message;
+        result.transitions = {OrderLifecycleState::DefinitelyNotSent};
+        return result;
+    }
+
     RunJournal journal;
     std::string journal_error;
     const auto payload_hash = cgate::plaza2_sha256_hex(plan.add_command.payload);
-    if (!journal.begin(config_, payload_hash, journal_error)) {
+    const auto recovery_payload_hash = cgate::plaza2_sha256_hex(plan.exact_ext_id_recovery_command.payload);
+    if (!journal.begin(config_, payload_hash, recovery_payload_hash, journal_error)) {
         result.market_safe_terminal = true;
         result.journal_ok = false;
         result.journal_degraded = true;

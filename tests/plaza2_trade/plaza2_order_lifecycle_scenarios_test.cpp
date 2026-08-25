@@ -41,6 +41,13 @@ std::string read_text(const std::filesystem::path& path) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+void write_text(const std::filesystem::path& path, std::string_view text) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    require(static_cast<bool>(output), "test fixture journal must be writable");
+    output.write(text.data(), static_cast<std::streamsize>(text.size()));
+    require(static_cast<bool>(output), "test fixture journal must be written");
+}
+
 class FakeClock final : public OrderLifecycleClock {
   public:
     std::chrono::steady_clock::time_point now() const noexcept override {
@@ -58,6 +65,11 @@ class FakeClock final : public OrderLifecycleClock {
 class ScriptTransport final : public OrderLifecycleTransport {
   public:
     explicit ScriptTransport(FakeClock& clock) : clock_(clock) {}
+
+    cgate::Plaza2Error bind_authorized_plan(const PreSendPlan& plan) override {
+        bound_plan_sha256 = plan.sha256;
+        return {};
+    }
 
     cgate::Plaza2PublisherMessageResult post(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) override {
         recovery_posts.push_back(false);
@@ -102,6 +114,7 @@ class ScriptTransport final : public OrderLifecycleTransport {
     std::vector<Plaza2TradeEncodedCommand> commands;
     std::vector<std::uint32_t> user_ids;
     std::vector<bool> recovery_posts;
+    std::string bound_plan_sha256;
 
   private:
     cgate::Plaza2PublisherMessageResult submit(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) {
@@ -180,7 +193,6 @@ OrderLifecycleConfig base_config(const std::filesystem::path& root, std::string 
     config.smoke.aggr20_source_revision = 7;
     config.smoke.aggr20_observed_at_utc = "2026-08-20T07:00:00.000Z";
     config.smoke.aggr20_age_ms = 25;
-    config.smoke.max_aggr20_age_ms = 1000;
     config.smoke.trading_day = "2026-08-20";
     config.smoke.session_id = "morning-1";
     config.smoke.session_state = "trading";
@@ -192,6 +204,7 @@ OrderLifecycleConfig base_config(const std::filesystem::path& root, std::string 
     config.policy.version = "smoke-v2.1";
     config.policy.sha256 = std::string(64, 'b');
     config.policy.max_distance_ticks = 4;
+    config.policy.max_aggr20_age_ms = 1000;
     config.add_observation_timeout = std::chrono::seconds(3);
     config.cancel_observation_timeout = std::chrono::seconds(3);
     config.max_poll_attempts = 8;
@@ -300,7 +313,6 @@ void test_reviewed_evidence_hash_sensitivity() {
         {"aggr20_observed_at_utc",
          [](auto& config) { config.smoke.aggr20_observed_at_utc = "2026-08-20T07:00:00.001Z"; }},
         {"aggr20_age_ms", [](auto& config) { ++config.smoke.aggr20_age_ms; }},
-        {"max_aggr20_age_ms", [](auto& config) { ++config.smoke.max_aggr20_age_ms; }},
         {"trading_day", [](auto& config) { config.smoke.trading_day = "2026-08-21"; }},
         {"session_id", [](auto& config) { config.smoke.session_id = "morning-2"; }},
         {"session_state", [](auto& config) { config.smoke.session_state = "trading-reviewed"; }},
@@ -309,18 +321,39 @@ void test_reviewed_evidence_hash_sensitivity() {
         {"refdata_source_revision", [](auto& config) { ++config.smoke.refdata_source_revision; }},
         {"limits_source", [](auto& config) { config.smoke.limits_source += ".reviewed"; }},
         {"limits_commit_sequence", [](auto& config) { ++config.smoke.limits_commit_sequence; }},
-        {"policy_version", [](auto& config) { config.policy.version = "smoke-v2.1.1"; }},
-        {"policy_sha256", [](auto& config) { config.policy.sha256 = std::string(64, 'c'); }},
-        {"max_distance_ticks", [](auto& config) { ++config.policy.max_distance_ticks; }},
-        {"base_contract_code", [](auto& config) { config.base_contract_code = "RI"; }},
-        {"instrument_mask", [](auto& config) { config.instrument_mask = 2; }},
     };
     for (const auto& [name, mutate] : mutations) {
         auto changed = baseline_config;
         mutate(changed);
         const auto plan = build_pre_send_plan(changed);
         require(plan.ok, std::string(name) + " sensitivity fixture should remain valid");
-        require(plan.sha256 != baseline.sha256, std::string(name) + " must change the canonical plan hash");
+        require(plan.sha256 == baseline.sha256,
+                std::string(name) + " is dynamic execution evidence and must not change the intent hash");
+        require(plan.reviewed_evidence_json != baseline.reviewed_evidence_json,
+                std::string(name) + " must change the separately persisted reviewed evidence");
+    }
+
+    const std::vector<std::pair<std::string_view, std::function<void(OrderLifecycleConfig&)>>> intent_mutations = {
+        {"price", [](auto& config) { config.price = "99.75"; }},
+        {"side",
+         [](auto& config) {
+             config.side = Plaza2TradeSide::Sell;
+             config.price = "100.50";
+         }},
+        {"ext_id", [](auto& config) { ++config.ext_id; }},
+        {"add_user_id", [](auto& config) { config.add_user_id += 10; }},
+        {"policy_version", [](auto& config) { config.policy.version = "smoke-v2.2"; }},
+        {"policy_sha256", [](auto& config) { config.policy.sha256 = std::string(64, 'c'); }},
+        {"max_distance_ticks", [](auto& config) { ++config.policy.max_distance_ticks; }},
+        {"max_aggr20_age_ms", [](auto& config) { ++config.policy.max_aggr20_age_ms; }},
+        {"require_zero_starting_position", [](auto& config) { config.policy.require_zero_starting_position = true; }},
+    };
+    for (const auto& [name, mutate] : intent_mutations) {
+        auto changed = baseline_config;
+        mutate(changed);
+        const auto plan = build_pre_send_plan(changed);
+        require(plan.ok, std::string(name) + " intent fixture should remain valid: " + plan.message);
+        require(plan.sha256 != baseline.sha256, std::string(name) + " must change the intent hash");
     }
 
     auto missing_instrument = baseline_config;
@@ -776,6 +809,157 @@ void test_duplicate_ext_id_refusal_and_orphan_journal() {
     std::filesystem::remove_all(root);
 }
 
+void test_restart_reconciliation_resolves_consistent_terminal() {
+    const auto root = make_temp_root("restart_resolution");
+    auto config = base_config(root, "restart-resolution");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {possibly_sent()};
+    transport.poll_results = {{.deadline_reached = true}};
+    const auto initial = run_script(config, transport, clock);
+    require(initial.orphan_incident_written, "restart fixture must leave an unfinished orphan journal");
+
+    private_state::OwnOrderSnapshot terminal;
+    terminal.public_order_id = 9001;
+    terminal.private_order_id = 9001;
+    terminal.ext_id = config.ext_id;
+    terminal.client_code = config.client_code;
+    terminal.public_amount = 1;
+    terminal.private_amount = 1;
+    terminal.public_amount_rest = 0;
+    terminal.private_amount_rest = 0;
+    terminal.public_action = 0;
+    terminal.private_action = 0;
+    terminal.from_user_book = true;
+    const std::vector orders{terminal};
+    const std::vector<private_state::OwnTradeSnapshot> trades;
+    const auto reconciliation = reconcile_unfinished_run(config, orders, trades);
+    require(reconciliation.ok && reconciliation.run_found && reconciliation.resolved &&
+                !reconciliation.locks_retained && reconciliation.state == OrderLifecycleState::Cancelled,
+            "restart reconciliation should resolve a fresh consistent cancelled observation");
+    require(std::filesystem::exists(root / config.run_id / "restart_reconciliation.json"),
+            "restart reconciliation must publish an explicit resolution record");
+    require(!std::filesystem::exists(root / "active" / ("ext_" + std::to_string(config.ext_id))),
+            "resolved restart incident must release identifiers only after publication");
+    std::filesystem::remove_all(root);
+}
+
+void test_restart_reconciliation_retains_working_locks() {
+    const auto root = make_temp_root("restart_retains");
+    auto config = base_config(root, "restart-retains");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {possibly_sent()};
+    transport.poll_results = {{.deadline_reached = true}};
+    const auto initial = run_script(config, transport, clock);
+    require(initial.orphan_incident_written, "working restart fixture must leave an orphan journal");
+
+    private_state::OwnOrderSnapshot working;
+    working.public_order_id = 9001;
+    working.private_order_id = 9001;
+    working.ext_id = config.ext_id;
+    working.client_code = config.client_code;
+    working.public_amount = 1;
+    working.private_amount = 1;
+    working.public_amount_rest = 1;
+    working.private_amount_rest = 1;
+    working.public_action = 1;
+    working.private_action = 1;
+    working.from_user_book = true;
+    const std::vector orders{working};
+    const std::vector<private_state::OwnTradeSnapshot> trades;
+    const auto reconciliation = reconcile_unfinished_run(config, orders, trades);
+    require(reconciliation.ok && reconciliation.run_found && !reconciliation.resolved && reconciliation.locks_retained,
+            "restart reconciliation must retain locks while the order remains working");
+    std::filesystem::remove_all(root);
+}
+
+void test_restart_reconciliation_rejects_mismatch_and_corruption() {
+    const auto terminal_order = [] {
+        private_state::OwnOrderSnapshot terminal;
+        terminal.public_order_id = 9001;
+        terminal.private_order_id = 9001;
+        terminal.ext_id = 7001;
+        terminal.client_code = "C01";
+        terminal.public_amount = 1;
+        terminal.private_amount = 1;
+        terminal.public_amount_rest = 0;
+        terminal.private_amount_rest = 0;
+        terminal.public_action = 0;
+        terminal.private_action = 0;
+        terminal.from_user_book = true;
+        return terminal;
+    };
+
+    {
+        const auto root = make_temp_root("restart_mismatched_config");
+        auto config = base_config(root, "restart-mismatched-config");
+        authorize_live(config);
+        FakeClock clock;
+        ScriptTransport transport(clock);
+        transport.post_results = {possibly_sent()};
+        transport.poll_results = {{.deadline_reached = true}};
+        const auto initial = run_script(config, transport, clock);
+        require(initial.orphan_incident_written, "mismatch fixture must leave an unfinished journal");
+        auto mismatched = config;
+        ++mismatched.ext_id;
+        const auto order = terminal_order();
+        const std::vector orders{order};
+        const std::vector<private_state::OwnTradeSnapshot> trades;
+        const auto reconciliation = reconcile_unfinished_run(mismatched, orders, trades);
+        require(!reconciliation.ok && reconciliation.locks_retained &&
+                    std::filesystem::exists(root / "active" / "ext_7001"),
+                "mismatched restart identity must retain the original locks");
+        std::filesystem::remove_all(root);
+    }
+
+    {
+        const auto root = make_temp_root("restart_reply_id_mismatch");
+        auto config = base_config(root, "restart-reply-id-mismatch");
+        authorize_live(config);
+        FakeClock clock;
+        ScriptTransport transport(clock);
+        transport.post_results = {possibly_sent()};
+        transport.poll_results = {{.deadline_reached = true}};
+        const auto initial = run_script(config, transport, clock);
+        require(initial.orphan_incident_written, "reply-id fixture must leave an unfinished journal");
+        auto journal = read_text(initial.journal_path);
+        const auto marker = std::string("\"add_reply_order_id\": 0");
+        const auto position = journal.find(marker);
+        require(position != std::string::npos, "reply-id fixture must expose the historical Add reply field");
+        journal.replace(position, marker.size(), "\"add_reply_order_id\": 9999");
+        write_text(initial.journal_path, journal);
+        const auto order = terminal_order();
+        const std::vector orders{order};
+        const std::vector<private_state::OwnTradeSnapshot> trades;
+        const auto reconciliation = reconcile_unfinished_run(config, orders, trades);
+        require(!reconciliation.ok && reconciliation.locks_retained,
+                "historical Add reply identity mismatch must retain locks");
+        std::filesystem::remove_all(root);
+    }
+
+    {
+        const auto root = make_temp_root("restart_malformed_journal");
+        auto config = base_config(root, "restart-malformed-journal");
+        authorize_live(config);
+        FakeClock clock;
+        ScriptTransport transport(clock);
+        transport.post_results = {possibly_sent()};
+        transport.poll_results = {{.deadline_reached = true}};
+        const auto initial = run_script(config, transport, clock);
+        require(initial.orphan_incident_written, "malformed fixture must leave an unfinished journal");
+        write_text(initial.journal_path, "{ malformed journal\n");
+        const auto order = terminal_order();
+        const std::vector orders{order};
+        const std::vector<private_state::OwnTradeSnapshot> trades;
+        const auto reconciliation = reconcile_unfinished_run(config, orders, trades);
+        require(!reconciliation.ok && reconciliation.locks_retained, "malformed restart journal must retain locks");
+        std::filesystem::remove_all(root);
+    }
+}
+
 std::filesystem::path journal_temp_path(const std::filesystem::path& root, std::string_view run_id) {
     return root / run_id / "journal.json.tmp";
 }
@@ -1120,6 +1304,9 @@ int main() {
         test_polling_failure_after_possible_submission();
         test_source_provenance_scenarios();
         test_duplicate_ext_id_refusal_and_orphan_journal();
+        test_restart_reconciliation_resolves_consistent_terminal();
+        test_restart_reconciliation_retains_working_locks();
+        test_restart_reconciliation_rejects_mismatch_and_corruption();
         test_full_fill_with_identity_conflict_is_unresolved();
         test_cancelled_with_contradictory_add_identity_is_unresolved();
         test_terminal_after_exact_ext_recovery_with_prior_inconsistency_is_unresolved();

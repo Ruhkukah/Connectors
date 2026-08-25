@@ -550,6 +550,22 @@ struct Plaza2PrivateStateProjector::Impl {
             rebuild_instruments();
             rebuild_matching_map();
             break;
+        case StreamCode::kFortsSessionstateRepl:
+            for (auto& [unused_id, session] : sessions_by_id) {
+                static_cast<void>(unused_id);
+                session.has_current_status = false;
+                session.current_status = 0;
+            }
+            rebuild_sessions();
+            break;
+        case StreamCode::kFortsInstrumentstateRepl:
+            for (auto& [unused_id, instrument] : instruments_by_isin) {
+                static_cast<void>(unused_id);
+                instrument.has_current_status = false;
+                instrument.current_status = 0;
+            }
+            rebuild_instruments();
+            break;
         default:
             break;
         }
@@ -582,6 +598,22 @@ struct Plaza2PrivateStateProjector::Impl {
             ensure_stage_copy(staged.instruments, instruments_by_isin).clear();
             ensure_stage_copy(staged.matching_map, matching_by_base_contract).clear();
             staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
+            break;
+        case StreamCode::kFortsSessionstateRepl:
+            for (auto& [unused_id, session] : ensure_stage_copy(staged.sessions, sessions_by_id)) {
+                static_cast<void>(unused_id);
+                session.has_current_status = false;
+                session.current_status = 0;
+            }
+            staged.touched_streams.insert(StreamCode::kFortsSessionstateRepl);
+            break;
+        case StreamCode::kFortsInstrumentstateRepl:
+            for (auto& [unused_id, instrument] : ensure_stage_copy(staged.instruments, instruments_by_isin)) {
+                static_cast<void>(unused_id);
+                instrument.has_current_status = false;
+                instrument.current_status = 0;
+            }
+            staged.touched_streams.insert(StreamCode::kFortsInstrumentstateRepl);
             break;
         default:
             break;
@@ -962,6 +994,58 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.trade_period_access = row.i64(FieldCode::kFortsRefdataReplFutInstrumentsTradePeriodAccess);
     }
 
+    void apply_future_session_contents_row(const RowReader& row) {
+        auto& instruments = ensure_staged_instruments();
+        staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
+        const auto isin_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsIsinId);
+        auto& instrument = instruments[isin_id];
+        instrument.isin_id = isin_id;
+        instrument.sess_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsSessId);
+        instrument.kind = InstrumentKind::kFuture;
+        instrument.isin = row.text(FieldCode::kFortsRefdataReplFutSessContentsIsin);
+        instrument.short_isin = row.text(FieldCode::kFortsRefdataReplFutSessContentsShortIsin);
+        instrument.name = row.text(FieldCode::kFortsRefdataReplFutSessContentsName);
+        instrument.base_contract_code = row.text(FieldCode::kFortsRefdataReplFutSessContentsBaseContractCode);
+        instrument.inst_term = row.i32(FieldCode::kFortsRefdataReplFutSessContentsInstTerm);
+        instrument.roundto = row.i32(FieldCode::kFortsRefdataReplFutSessContentsRoundto);
+        instrument.lot_volume = row.i32(FieldCode::kFortsRefdataReplFutSessContentsLotVolume);
+        instrument.trade_mode_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsTradeModeId);
+        instrument.state = row.i32(FieldCode::kFortsRefdataReplFutSessContentsState);
+        instrument.signs = row.i32(FieldCode::kFortsRefdataReplFutSessContentsSigns);
+        instrument.is_spread = row.boolean(FieldCode::kFortsRefdataReplFutSessContentsIsSpread);
+        instrument.min_step = row.text(FieldCode::kFortsRefdataReplFutSessContentsMinStep);
+        instrument.step_price = row.text(FieldCode::kFortsRefdataReplFutSessContentsStepPrice);
+        instrument.settlement_price = row.text(FieldCode::kFortsRefdataReplFutSessContentsSettlementPrice);
+        instrument.last_trade_date = row.i64(FieldCode::kFortsRefdataReplFutSessContentsLastTradeDate);
+        instrument.group_mask = row.i64(FieldCode::kFortsRefdataReplFutSessContentsGroupMask);
+        instrument.trade_period_access = row.i64(FieldCode::kFortsRefdataReplFutSessContentsTradePeriodAccess);
+        instrument.current_session_member = row.i32(FieldCode::kFortsRefdataReplFutSessContentsReplAct) == 0;
+        instrument.current_session_state = instrument.state;
+    }
+
+    void apply_session_status_row(const RowReader& row) {
+        auto& sessions = ensure_staged_sessions();
+        staged.touched_streams.insert(StreamCode::kFortsSessionstateRepl);
+        const auto sess_id = row.i32(FieldCode::kFortsSessionstateReplSessionStateSessId);
+        auto& session = sessions[sess_id];
+        session.sess_id = sess_id;
+        session.has_current_status = true;
+        session.current_status = row.i32(FieldCode::kFortsSessionstateReplSessionStatePublicState);
+        if (session.state == 0) {
+            session.state = session.current_status;
+        }
+    }
+
+    void apply_instrument_status_row(const RowReader& row) {
+        auto& instruments = ensure_staged_instruments();
+        staged.touched_streams.insert(StreamCode::kFortsInstrumentstateRepl);
+        const auto isin_id = row.i32(FieldCode::kFortsInstrumentstateReplInstrumentStateIsinId);
+        auto& instrument = instruments[isin_id];
+        instrument.isin_id = isin_id;
+        instrument.has_current_status = true;
+        instrument.current_status = row.i32(FieldCode::kFortsInstrumentstateReplInstrumentStatePublicState);
+    }
+
     void apply_option_instrument_row(const RowReader& row) {
         auto& instruments = ensure_staged_instruments();
         const auto isin_id = row.i32(FieldCode::kFortsRefdataReplOptSessContentsIsinId);
@@ -1114,6 +1198,15 @@ struct Plaza2PrivateStateProjector::Impl {
             break;
         case TableCode::kFortsRefdataReplFutInstruments:
             apply_future_instrument_row(row);
+            break;
+        case TableCode::kFortsRefdataReplFutSessContents:
+            apply_future_session_contents_row(row);
+            break;
+        case TableCode::kFortsSessionstateReplSessionState:
+            apply_session_status_row(row);
+            break;
+        case TableCode::kFortsInstrumentstateReplInstrumentState:
+            apply_instrument_status_row(row);
             break;
         case TableCode::kFortsRefdataReplOptSessContents:
             apply_option_instrument_row(row);

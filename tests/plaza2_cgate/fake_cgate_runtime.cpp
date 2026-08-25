@@ -38,6 +38,7 @@ constexpr std::uint32_t kStateActive = 2;
 constexpr std::uint32_t kStateError = 3;
 
 constexpr std::uint32_t kCgMsgOpen = 0x100;
+constexpr std::uint32_t kCgMsgClose = 0x101;
 constexpr std::uint32_t kCgMsgData = 0x110;
 constexpr std::uint32_t kCgMsgStreamData = 0x120;
 constexpr std::uint32_t kCgMsgTnBegin = 0x200;
@@ -251,6 +252,7 @@ struct FakeConnection {
     std::vector<FakeListener*> listeners;
     std::vector<FakeReply> pending_replies;
     bool script_emitted{false};
+    bool liveness_event_emitted{false};
 };
 
 struct FakePublisher {
@@ -266,6 +268,7 @@ struct FakePublisherMessage {
 };
 
 bool g_env_open = false;
+bool g_cancel_after_cleanup = false;
 std::unordered_map<void*, FakePublisherMessage*> g_publisher_messages;
 
 std::uint32_t configured_result(const char* variable) {
@@ -313,6 +316,47 @@ std::size_t size_for_value_class(ValueClass value_class) {
     return 8;
 }
 
+std::size_t publisher_payload_size(std::string_view message_name) {
+    // Sizes are the reviewed generated TEST command layouts used by the
+    // offline trade codec golden fixtures. The fake runtime only models these
+    // three command families; it never accepts a live broker payload.
+    if (message_name == "AddOrder") {
+        return 112;
+    }
+    if (message_name == "DelOrder") {
+        return 20;
+    }
+    if (message_name == "DelUserOrders") {
+        return 49;
+    }
+    return 8;
+}
+
+template <typename T> void write_reply_scalar(std::vector<std::byte>& payload, std::size_t offset, T value) {
+    if (offset + sizeof(T) <= payload.size()) {
+        std::memcpy(payload.data() + offset, &value, sizeof(T));
+    }
+}
+
+std::vector<std::byte> make_trade_reply(std::string_view message_name) {
+    const bool add = message_name == "AddOrder";
+    const bool recovery = message_name == "DelUserOrders";
+    std::vector<std::byte> payload(4 + 255 + (add ? 8 : 4));
+    const auto* code_text = std::getenv("MOEX_FAKE_PUB_REPLY_CODE");
+    const auto code = code_text != nullptr && std::string_view(code_text) == "reject" ? 1 : 0;
+    write_reply_scalar(payload, 0, static_cast<std::int32_t>(code));
+    const std::string message = code == 0 ? "OK" : "REJECTED";
+    std::memcpy(payload.data() + 4, message.data(), std::min<std::size_t>(message.size(), 254));
+    if (add) {
+        const auto* id_text = std::getenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
+        const auto order_id = id_text == nullptr ? std::int64_t{20003} : std::strtoll(id_text, nullptr, 10);
+        write_reply_scalar(payload, 4 + 255, order_id);
+    } else {
+        write_reply_scalar(payload, 4 + 255, static_cast<std::int32_t>(recovery ? 1 : 0));
+    }
+    return payload;
+}
+
 template <typename T> void write_scalar(std::byte* dest, T value, std::size_t size) {
     std::memset(dest, 0, size);
     std::memcpy(dest, &value, std::min(size, sizeof(T)));
@@ -335,7 +379,7 @@ CgTime make_cg_time(std::uint64_t unix_seconds) {
     return value;
 }
 
-std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
+std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
     using enum FakeValueKind;
     using enum StreamCode;
     using enum TableCode;
@@ -428,7 +472,7 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                          .signed_value = 1700003600},
                         {.field_code = FieldCode::kFortsRefdataReplSessionState,
                          .kind = SignedInteger,
-                         .signed_value = 2},
+                         .signed_value = 1},
                     },
             },
             {
@@ -463,13 +507,66 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                         {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId,
                          .kind = SignedInteger,
                          .signed_value = 4},
-                        {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsMinStep, .kind = Text, .text = "10"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsMinStep, .kind = Text, .text = "250"},
                         {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsStepPrice,
                          .kind = Text,
                          .text = "12.5"},
                         {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsSettlementPrice,
                          .kind = Text,
                          .text = "105000.5"},
+                    },
+            },
+            {
+                .table_code = kFortsRefdataReplFutSessContents,
+                .rev = 3,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsReplId,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 3101},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsReplRev,
+                         .kind = SignedInteger,
+                         .signed_value = 3},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsReplAct,
+                         .kind = SignedInteger,
+                         .signed_value = 0},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsSessId,
+                         .kind = SignedInteger,
+                         .signed_value = 321},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsIsinId,
+                         .kind = SignedInteger,
+                         .signed_value = 1001},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsShortIsin,
+                         .kind = Text,
+                         .text = "RIH6"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsIsin,
+                         .kind = Text,
+                         .text = "RTS-6.26"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsName,
+                         .kind = Text,
+                         .text = "RTS Jun 2026"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsBaseContractCode,
+                         .kind = Text,
+                         .text = "RTS"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsRoundto,
+                         .kind = SignedInteger,
+                         .signed_value = 2},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsMinStep, .kind = Text, .text = "250"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsLotVolume,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsTradeModeId,
+                         .kind = SignedInteger,
+                         .signed_value = 4},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsState,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsGroupMask,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsTradePeriodAccess,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
                     },
             },
             {
@@ -483,6 +580,56 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                         {.field_code = FieldCode::kFortsRefdataReplInstr2matchingMapMatchingId,
                          .kind = SignedInteger,
                          .signed_value = 3},
+                    },
+            },
+        };
+    case kFortsSessionstateRepl:
+        return {
+            {
+                .table_code = kFortsSessionstateReplSessionState,
+                .rev = 1,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsSessionstateReplSessionStateReplId,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 4101},
+                        {.field_code = FieldCode::kFortsSessionstateReplSessionStateReplRev,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsSessionstateReplSessionStateReplAct,
+                         .kind = SignedInteger,
+                         .signed_value = 0},
+                        {.field_code = FieldCode::kFortsSessionstateReplSessionStateSessId,
+                         .kind = SignedInteger,
+                         .signed_value = 321},
+                        {.field_code = FieldCode::kFortsSessionstateReplSessionStatePublicState,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                    },
+            },
+        };
+    case kFortsInstrumentstateRepl:
+        return {
+            {
+                .table_code = kFortsInstrumentstateReplInstrumentState,
+                .rev = 1,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsInstrumentstateReplInstrumentStateReplId,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 4201},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplInstrumentStateReplRev,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplInstrumentStateReplAct,
+                         .kind = SignedInteger,
+                         .signed_value = 0},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplInstrumentStateIsinId,
+                         .kind = SignedInteger,
+                         .signed_value = 1001},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplInstrumentStatePublicState,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
                     },
             },
         };
@@ -515,7 +662,7 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                          .signed_value = 1001},
                         {.field_code = FieldCode::kFortsPosReplPositionAccountType,
                          .kind = SignedInteger,
-                         .signed_value = 1},
+                         .signed_value = 2},
                         {.field_code = FieldCode::kFortsPosReplPositionXpos, .kind = SignedInteger, .signed_value = 4},
                         {.field_code = FieldCode::kFortsPosReplPositionWaprice, .kind = Text, .text = "104950.25"},
                     },
@@ -754,10 +901,202 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     }
 }
 
+const FakeFieldValue* find_field(const FakeMessageScript& message, FieldCode code) {
+    for (const auto& field : message.fields) {
+        if (field.field_code == code) {
+            return &field;
+        }
+    }
+    return nullptr;
+}
+
+FakeFieldValue* find_field(FakeMessageScript& message, FieldCode code) {
+    for (auto& field : message.fields) {
+        if (field.field_code == code) {
+            return &field;
+        }
+    }
+    return nullptr;
+}
+
+bool fake_flag(const char* name) {
+    const auto* value = std::getenv(name);
+    return value != nullptr && *value != '\0' && std::string_view(value) != "0";
+}
+
+std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
+    auto script = base_script_for_stream(stream_code);
+    using enum FieldCode;
+    using enum TableCode;
+
+    if (stream_code == StreamCode::kFortsAggrRepl) {
+        if (fake_flag("MOEX_FAKE_AGGR_ONE_SIDED")) {
+            std::erase_if(script, [](const auto& message) {
+                const auto* direction = find_field(message, kFortsAggrReplOrdersAggrDir);
+                return direction != nullptr && direction->signed_value == 2;
+            });
+        }
+        if (fake_flag("MOEX_FAKE_AGGR_MULTI_INSTRUMENT")) {
+            const auto original = script;
+            for (const auto& source : original) {
+                FakeMessageScript other = source;
+                if (auto* isin = find_field(other, kFortsAggrReplOrdersAggrIsinId)) {
+                    isin->signed_value = 2002;
+                }
+                if (auto* price = find_field(other, kFortsAggrReplOrdersAggrPrice)) {
+                    price->text =
+                        find_field(source, kFortsAggrReplOrdersAggrDir)->signed_value == 1 ? "10000000" : "10001000";
+                }
+                if (auto* repl = find_field(other, kFortsAggrReplOrdersAggrReplId)) {
+                    repl->unsigned_value += 100;
+                }
+                script.push_back(std::move(other));
+            }
+        }
+    } else if (stream_code == StreamCode::kFortsRefdataRepl) {
+        if (fake_flag("MOEX_FAKE_MISSING_INSTRUMENT")) {
+            std::erase_if(script, [](const auto& message) {
+                return message.table_code == kFortsRefdataReplFutInstruments ||
+                       message.table_code == kFortsRefdataReplFutSessContents;
+            });
+        }
+    } else if (stream_code == StreamCode::kFortsSessionstateRepl) {
+        if (fake_flag("MOEX_FAKE_MISSING_SESSION")) {
+            for (auto& message : script) {
+                if (auto* sess = find_field(message, kFortsSessionstateReplSessionStateSessId)) {
+                    sess->signed_value = 999;
+                }
+            }
+        }
+        if (fake_flag("MOEX_FAKE_SCHEDULED_SESSION") || fake_flag("MOEX_FAKE_NONTRADABLE_SESSION")) {
+            for (auto& message : script) {
+                if (auto* state = find_field(message, kFortsSessionstateReplSessionStatePublicState)) {
+                    state->signed_value = 0;
+                }
+            }
+        } else if (fake_flag("MOEX_FAKE_SUSPENDED_SESSION")) {
+            for (auto& message : script) {
+                if (auto* state = find_field(message, kFortsSessionstateReplSessionStatePublicState)) {
+                    state->signed_value = 2;
+                }
+            }
+        } else if (fake_flag("MOEX_FAKE_COMPLETED_SESSION")) {
+            for (auto& message : script) {
+                if (auto* state = find_field(message, kFortsSessionstateReplSessionStatePublicState)) {
+                    state->signed_value = 4;
+                }
+            }
+        }
+    } else if (stream_code == StreamCode::kFortsInstrumentstateRepl) {
+        if (fake_flag("MOEX_FAKE_MISSING_INSTRUMENT")) {
+            for (auto& message : script) {
+                if (auto* isin = find_field(message, kFortsInstrumentstateReplInstrumentStateIsinId)) {
+                    isin->signed_value = 999999;
+                }
+            }
+        }
+    } else if (stream_code == StreamCode::kFortsPartRepl) {
+        if (fake_flag("MOEX_FAKE_MISSING_LIMITS")) {
+            for (auto& message : script) {
+                if (auto* limits_set = find_field(message, kFortsPartReplPartLimitsSet)) {
+                    limits_set->signed_value = 0;
+                }
+            }
+        }
+        if (fake_flag("MOEX_FAKE_WRONG_LIMIT_CLIENT")) {
+            for (auto& message : script) {
+                if (auto* client = find_field(message, kFortsPartReplPartClientCode)) {
+                    client->text = "OTHER";
+                }
+            }
+        }
+    } else if (stream_code == StreamCode::kFortsPosRepl) {
+        if (fake_flag("MOEX_FAKE_MISSING_POSITION")) {
+            std::erase_if(script, [](const auto& message) { return message.table_code == kFortsPosReplPosition; });
+        } else if (fake_flag("MOEX_FAKE_ZERO_POSITION")) {
+            for (auto& message : script) {
+                if (auto* position = find_field(message, kFortsPosReplPositionXpos)) {
+                    position->signed_value = 0;
+                }
+            }
+        }
+        if (fake_flag("MOEX_FAKE_WRONG_POSITION_ACCOUNT_TYPE")) {
+            for (auto& message : script) {
+                if (auto* account_type = find_field(message, kFortsPosReplPositionAccountType)) {
+                    account_type->signed_value = 1;
+                }
+            }
+        }
+    } else if (stream_code == StreamCode::kFortsUserorderbookRepl) {
+        if (fake_flag("MOEX_FAKE_MISSING_ORDER")) {
+            std::erase_if(script, [](const auto& message) {
+                return message.table_code == kFortsUserorderbookReplOrdersCurrentday;
+            });
+        }
+        if (fake_flag("MOEX_FAKE_FULL_FILL") || fake_flag("MOEX_FAKE_CANCELLED_ORDER") || g_cancel_after_cleanup) {
+            for (auto& message : script) {
+                if (message.table_code != kFortsUserorderbookReplOrdersCurrentday) {
+                    continue;
+                }
+                if (auto* public_rest = find_field(message, kFortsUserorderbookReplOrdersCurrentdayPublicAmountRest)) {
+                    public_rest->signed_value = 0;
+                }
+                if (auto* private_rest =
+                        find_field(message, kFortsUserorderbookReplOrdersCurrentdayPrivateAmountRest)) {
+                    private_rest->signed_value = 0;
+                }
+                const auto action = fake_flag("MOEX_FAKE_FULL_FILL") ? 2 : 0;
+                if (auto* public_action = find_field(message, kFortsUserorderbookReplOrdersCurrentdayPublicAction)) {
+                    public_action->signed_value = action;
+                }
+                if (auto* private_action = find_field(message, kFortsUserorderbookReplOrdersCurrentdayPrivateAction)) {
+                    private_action->signed_value = action;
+                }
+            }
+        }
+        if (fake_flag("MOEX_FAKE_IDENTITY_CONFLICT")) {
+            for (std::size_t index = 0; index < script.size(); ++index) {
+                const auto source = script[index];
+                if (source.table_code != kFortsUserorderbookReplOrdersCurrentday) {
+                    continue;
+                }
+                auto conflicting = source;
+                if (auto* private_id = find_field(conflicting, kFortsUserorderbookReplOrdersCurrentdayPrivateOrderId)) {
+                    private_id->signed_value = 29999;
+                }
+                script.push_back(std::move(conflicting));
+                break;
+            }
+        }
+    }
+    if (const auto* client_override = std::getenv("MOEX_FAKE_CLIENT_CODE"); client_override != nullptr) {
+        const std::string replacement(client_override);
+        const std::array client_fields = {
+            kFortsPartReplPartClientCode,
+            kFortsPosReplPositionClientCode,
+            kFortsUserorderbookReplOrdersCurrentdayClientCode,
+            kFortsTradeReplOrdersLogClientCode,
+            kFortsTradeReplUserDealCodeBuy,
+            kFortsTradeReplUserDealCodeSell,
+        };
+        for (auto& message : script) {
+            for (const auto field_code : client_fields) {
+                if (auto* field = find_field(message, field_code)) {
+                    if (fake_flag("MOEX_FAKE_WRONG_LIMIT_CLIENT") && field_code == kFortsPartReplPartClientCode) {
+                        continue;
+                    }
+                    field->text = replacement;
+                }
+            }
+        }
+    }
+    return script;
+}
+
 StreamCode stream_code_from_settings(std::string_view settings) {
-    if (settings.find("FORTS_AGGR5_REPL") != std::string_view::npos ||
-        settings.find("FORTS_AGGR20_REPL") != std::string_view::npos ||
-        settings.find("FORTS_AGGR50_REPL") != std::string_view::npos) {
+    if (settings.find(std::string_view{"FORTS_AGGR5_REPL"}) != std::string_view::npos ||
+        settings.find(std::string_view{"FORTS_AGGR20_REPL"}) != std::string_view::npos ||
+        settings.find(std::string_view{"FORTS_AGGR50_REPL"}) != std::string_view::npos) {
         return StreamCode::kFortsAggrRepl;
     }
     for (const auto& descriptor : StreamDescriptors()) {
@@ -772,7 +1111,7 @@ bool relative_scheme_path_forbidden(std::string_view settings) {
     if (std::getenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME") == nullptr) {
         return false;
     }
-    return settings.find("|FILE|scheme/forts_scheme.ini|") != std::string_view::npos;
+    return settings.find(std::string_view{"|FILE|scheme/forts_scheme.ini|"}) != std::string_view::npos;
 }
 
 bool emit_clear_deleted_inside_transaction() {
@@ -1030,6 +1369,10 @@ void detach_listener(FakeConnection* connection, FakeListener* listener) {
 
 extern "C" {
 
+const char* moex_fake_cgate_runtime_v1() {
+    return "moex_fake_cgate_runtime_v1";
+}
+
 std::uint32_t cg_env_open(const char* settings) {
     if (settings == nullptr || *settings == '\0') {
         return kCgErrInvalidArgument;
@@ -1066,6 +1409,7 @@ std::uint32_t cg_conn_destroy(void* conn) {
             listener->connection = nullptr;
         }
     }
+    g_cancel_after_cleanup = false;
     delete connection;
     return kCgErrOk;
 }
@@ -1102,16 +1446,48 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrIncorrectState;
     }
 
+    if (connection->script_emitted && connection->pending_replies.empty() && !connection->liveness_event_emitted) {
+        const bool private_liveness =
+            fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_PRIVATE_LIFENUM_AFTER_READY");
+        const bool aggr_liveness =
+            fake_flag("MOEX_FAKE_AGGR_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_AGGR_LIFENUM_AFTER_READY");
+        if (private_liveness || aggr_liveness) {
+            for (auto* listener : connection->listeners) {
+                if (listener == nullptr || listener->reply_listener || listener->state != kStateActive) {
+                    continue;
+                }
+                const bool is_aggr = listener->stream_code == StreamCode::kFortsAggrRepl;
+                if ((is_aggr && !aggr_liveness) || (!is_aggr && !private_liveness)) {
+                    continue;
+                }
+                if ((is_aggr && fake_flag("MOEX_FAKE_AGGR_CLOSE_AFTER_READY")) ||
+                    (!is_aggr && fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY"))) {
+                    if (const auto result = emit_simple_message(*listener, kCgMsgClose); result != kCgErrOk) {
+                        return result;
+                    }
+                } else {
+                    CgDataLifeNum life_num{.life_number = 8, .flags = 0};
+                    if (const auto result =
+                            emit_simple_message(*listener, kCgMsgP2replLifenum, &life_num, sizeof(life_num));
+                        result != kCgErrOk) {
+                        return result;
+                    }
+                }
+            }
+            connection->liveness_event_emitted = true;
+            return kCgErrOk;
+        }
+    }
     if (connection->script_emitted && connection->pending_replies.empty()) {
         return kCgErrTimeout;
     }
 
     bool emitted_any = false;
-    for (auto* listener : connection->listeners) {
+    const auto emit_listener = [&](FakeListener* listener) -> std::uint32_t {
         if (listener == nullptr || listener->state != kStateActive ||
             (!listener->reply_listener && listener->script_emitted) || listener->callback == nullptr ||
             listener->callback_data == nullptr) {
-            continue;
+            return kCgErrOk;
         }
         if (listener->reply_listener) {
             for (const auto& reply : connection->pending_replies) {
@@ -1120,7 +1496,7 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
                 }
                 emitted_any = true;
             }
-            continue;
+            return kCgErrOk;
         }
         const auto result = emit_script(*listener);
         if (result != kCgErrOk) {
@@ -1128,6 +1504,17 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         }
         listener->script_emitted = true;
         emitted_any = true;
+        return kCgErrOk;
+    };
+    const auto reply_first = fake_flag("MOEX_FAKE_REPLY_BEFORE_REPLICATION");
+    for (const auto pass_reply : {reply_first, !reply_first}) {
+        for (auto* listener : connection->listeners) {
+            if (listener != nullptr && listener->reply_listener == pass_reply) {
+                if (const auto result = emit_listener(listener); result != kCgErrOk) {
+                    return result;
+                }
+            }
+        }
     }
 
     if (!emitted_any) {
@@ -1152,6 +1539,10 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
     }
     if (relative_scheme_path_forbidden(settings)) {
+        return kCgErrInvalidArgument;
+    }
+    if (std::string_view(settings).find(std::string_view{"p2mqreply://"}) != std::string_view::npos &&
+        fake_flag("MOEX_FAKE_DISABLE_REPLY_LISTENER")) {
         return kCgErrInvalidArgument;
     }
 
@@ -1235,6 +1626,9 @@ std::uint32_t cg_pub_new(void* conn, const char* settings, void** pubptr) {
     if (conn == nullptr || settings == nullptr || pubptr == nullptr) {
         return kCgErrInvalidArgument;
     }
+    if (fake_flag("MOEX_FAKE_DISABLE_PUBLISHER")) {
+        return kCgErrInvalidArgument;
+    }
     auto* publisher = new FakePublisher{};
     publisher->connection = static_cast<FakeConnection*>(conn);
     publisher->settings = settings;
@@ -1283,7 +1677,7 @@ std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void
     }
     auto* owned = new FakePublisherMessage{};
     owned->name = static_cast<const char*>(id);
-    owned->payload.resize(8);
+    owned->payload.resize(publisher_payload_size(owned->name));
     owned->message.type = kCgMsgData;
     owned->message.data_size = owned->payload.size();
     owned->message.data = owned->payload.data();
@@ -1301,18 +1695,63 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
     if (result == kCgErrOk && (flags & 1U) != 0U) {
         const auto* typed_publisher = static_cast<FakePublisher*>(publisher);
         const auto* typed_message = static_cast<CgMsgData*>(message);
+        const std::string_view message_name =
+            typed_message->msg_name == nullptr ? std::string_view{} : typed_message->msg_name;
+        const bool add = message_name == "AddOrder";
+        const bool recovery = message_name == "DelUserOrders";
+        if ((recovery && fake_flag("MOEX_FAKE_CANCEL_AFTER_RECOVERY")) ||
+            (message_name == "DelOrder" && fake_flag("MOEX_FAKE_CANCEL_AFTER_DEL"))) {
+            g_cancel_after_cleanup = true;
+            for (auto* listener : typed_publisher->connection->listeners) {
+                if (listener != nullptr && !listener->reply_listener) {
+                    listener->script_emitted = false;
+                }
+            }
+        }
+        auto reply_message_id = add ? 179U : recovery ? 186U : 177U;
+        const auto* family = std::getenv("MOEX_FAKE_PUB_REPLY_FAMILY");
+        if (family != nullptr) {
+            if (std::string_view(family) == "add") {
+                reply_message_id = 179U;
+            } else if (std::string_view(family) == "del") {
+                reply_message_id = 177U;
+            } else if (std::string_view(family) == "recovery") {
+                reply_message_id = 186U;
+            } else if (std::string_view(family) == "wrong") {
+                reply_message_id = add ? 177U : 179U;
+            }
+        }
+        auto reply_payload = make_trade_reply(message_name);
+        if (fake_flag("MOEX_FAKE_PUB_REPLY_MALFORMED") && !reply_payload.empty()) {
+            reply_payload.resize(3);
+        }
         typed_publisher->connection->pending_replies.push_back({
-            .message_id = typed_message->msg_name != nullptr && std::string_view(typed_message->msg_name) == "AddOrder"
-                              ? 179U
-                              : 177U,
-            .message_name =
-                typed_message->msg_name != nullptr && std::string_view(typed_message->msg_name) == "AddOrder"
-                    ? "AddOrderReply"
-                    : "DelOrderReply",
+            .message_id = reply_message_id,
+            .message_name = add        ? "AddOrderReply"
+                            : recovery ? "DelUserOrdersReply"
+                                       : "DelOrderReply",
             .user_id = typed_message->user_id,
-            .payload = std::vector<std::byte>(16),
-            .timed_out = configured_reply_timeout(),
+            .payload = reply_payload,
+            .timed_out = configured_reply_timeout() || (add && fake_flag("MOEX_FAKE_PUB_REPLY_TIMEOUT_ADD_ONLY")),
         });
+        if (fake_flag("MOEX_FAKE_PUB_DUPLICATE_REPLY")) {
+            auto contradictory = reply_payload;
+            if (add && contradictory.size() >= 4 + 255 + sizeof(std::int64_t)) {
+                std::int64_t order_id = 0;
+                std::memcpy(&order_id, contradictory.data() + 4 + 255, sizeof(order_id));
+                ++order_id;
+                std::memcpy(contradictory.data() + 4 + 255, &order_id, sizeof(order_id));
+            }
+            typed_publisher->connection->pending_replies.push_back({
+                .message_id = reply_message_id,
+                .message_name = add        ? "AddOrderReply"
+                                : recovery ? "DelUserOrdersReply"
+                                           : "DelOrderReply",
+                .user_id = typed_message->user_id,
+                .payload = std::move(contradictory),
+                .timed_out = configured_reply_timeout() || (add && fake_flag("MOEX_FAKE_PUB_REPLY_TIMEOUT_ADD_ONLY")),
+            });
+        }
     }
     return result;
 }

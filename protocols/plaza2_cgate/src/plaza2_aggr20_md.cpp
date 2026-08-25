@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <exception>
 #include <filesystem>
 #include <optional>
@@ -279,14 +280,20 @@ class Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
 
 } // namespace
 
+Plaza2Aggr20BookProjector::Plaza2Aggr20BookProjector(NowFn now)
+    : now_(now ? std::move(now) : NowFn{[] { return Clock::now(); }}) {}
+
 void Plaza2Aggr20BookProjector::reset() {
     staged_rows_.clear();
+    affected_isin_ids_.clear();
     committed_ = {};
+    instrument_snapshots_.clear();
     transaction_open_ = false;
 }
 
 void Plaza2Aggr20BookProjector::begin_transaction() {
     staged_rows_.clear();
+    affected_isin_ids_.clear();
     transaction_open_ = true;
 }
 
@@ -310,6 +317,7 @@ Plaza2Error Plaza2Aggr20BookProjector::on_row(std::span<const Plaza2DecodedField
     level.moment = unsigned_field(fields, FieldCode::kFortsAggrReplOrdersAggrMoment).value_or(0);
     level.moment_ns = unsigned_field(fields, FieldCode::kFortsAggrReplOrdersAggrMomentNs).value_or(0);
     level.synth_volume = text_field(fields, FieldCode::kFortsAggrReplOrdersAggrSynthVolume);
+    affected_isin_ids_.insert(level.isin_id);
     staged_rows_.push_back(std::move(level));
     return {};
 }
@@ -327,6 +335,8 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
         auto existing = std::find_if(committed_.levels.begin(), committed_.levels.end(), [&](const auto& level) {
             return level.isin_id == row.isin_id && level.dir == row.dir && level.price_scaled == row.price_scaled;
         });
+        committed_.last_repl_id = std::max(committed_.last_repl_id, row.repl_id);
+        committed_.last_repl_rev = std::max(committed_.last_repl_rev, row.repl_rev);
         if (row.volume <= 0) {
             if (existing != committed_.levels.end()) {
                 committed_.levels.erase(existing);
@@ -338,18 +348,67 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
         } else {
             *existing = row;
         }
-        committed_.last_repl_id = std::max(committed_.last_repl_id, row.repl_id);
-        committed_.last_repl_rev = std::max(committed_.last_repl_rev, row.repl_rev);
     }
 
     committed_.row_count = committed_.levels.size();
+    committed_.committed_at = now_();
+    committed_.exchange_moment = 0;
+    committed_.exchange_moment_ns = 0;
     committed_.bid_depth_levels = 0;
     committed_.ask_depth_levels = 0;
     committed_.top_bid.reset();
     committed_.top_ask.reset();
+    // Rebuild the diagnostic/global view from the committed levels, but only
+    // refresh instrument-scoped freshness for instruments touched by this
+    // transaction.  An unrelated instrument update must not make the target
+    // BBO look newer than its last local row.
     std::set<std::int64_t> instruments;
+    for (const auto& isin_id : affected_isin_ids_) {
+        Plaza2Aggr20InstrumentSnapshot scoped;
+        if (const auto previous = instrument_snapshots_.find(isin_id); previous != instrument_snapshots_.end()) {
+            scoped = previous->second;
+        }
+        scoped.isin_id = isin_id;
+        for (const auto& row : staged_rows_) {
+            if (row.isin_id != isin_id) {
+                continue;
+            }
+            // Keep the last relevant replication metadata even when this row
+            // is a deletion and no level remains in the visible book.
+            scoped.last_repl_id = std::max(scoped.last_repl_id, row.repl_id);
+            scoped.last_repl_rev = std::max(scoped.last_repl_rev, row.repl_rev);
+            scoped.exchange_moment = std::max(scoped.exchange_moment, row.moment);
+            scoped.exchange_moment_ns = std::max(scoped.exchange_moment_ns, row.moment_ns);
+        }
+        scoped.row_count = 0;
+        scoped.bid_depth_levels = 0;
+        scoped.ask_depth_levels = 0;
+        scoped.top_bid.reset();
+        scoped.top_ask.reset();
+        for (const auto& level : committed_.levels) {
+            if (level.isin_id != isin_id) {
+                continue;
+            }
+            scoped.row_count += 1;
+            if (level.dir == 1) {
+                scoped.bid_depth_levels += 1;
+                if (!scoped.top_bid.has_value() || level.price_scaled > scoped.top_bid->price_scaled) {
+                    scoped.top_bid = level;
+                }
+            } else if (level.dir == 2) {
+                scoped.ask_depth_levels += 1;
+                if (!scoped.top_ask.has_value() || level.price_scaled < scoped.top_ask->price_scaled) {
+                    scoped.top_ask = level;
+                }
+            }
+        }
+        scoped.committed_at = committed_.committed_at;
+        instrument_snapshots_[isin_id] = std::move(scoped);
+    }
     for (const auto& level : committed_.levels) {
         instruments.insert(level.isin_id);
+        committed_.exchange_moment = std::max(committed_.exchange_moment, level.moment);
+        committed_.exchange_moment_ns = std::max(committed_.exchange_moment_ns, level.moment_ns);
         if (level.dir == 1) {
             committed_.bid_depth_levels += 1;
             if (!committed_.top_bid.has_value() || level.price_scaled > committed_.top_bid->price_scaled) {
@@ -364,17 +423,27 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
     }
     committed_.instrument_count = instruments.size();
     staged_rows_.clear();
+    affected_isin_ids_.clear();
     transaction_open_ = false;
     return {};
 }
 
 void Plaza2Aggr20BookProjector::rollback() {
     staged_rows_.clear();
+    affected_isin_ids_.clear();
     transaction_open_ = false;
 }
 
 const Plaza2Aggr20Snapshot& Plaza2Aggr20BookProjector::snapshot() const noexcept {
     return committed_;
+}
+
+std::optional<Plaza2Aggr20InstrumentSnapshot> Plaza2Aggr20BookProjector::snapshot_for_isin(std::int64_t isin_id) const {
+    const auto it = instrument_snapshots_.find(isin_id);
+    if (it == instrument_snapshots_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
 }
 
 bool Plaza2Aggr20BookProjector::transaction_open() const noexcept {

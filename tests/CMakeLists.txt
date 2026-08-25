@@ -439,6 +439,23 @@ add_test(
     NAME plaza2_order_lifecycle_scenarios_test
     COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_order_lifecycle_scenarios_test")
 
+add_executable(plaza2_trade_transport_scenarios_test
+    ${MOEX_SOURCE_ROOT}/tests/plaza2_trade/plaza2_trade_transport_scenarios_test.cpp)
+target_link_libraries(plaza2_trade_transport_scenarios_test
+    PRIVATE
+        plaza2_runtime_test_support
+        moex_plaza2_trade_order_lifecycle)
+target_include_directories(plaza2_trade_transport_scenarios_test
+    PRIVATE
+        "${MOEX_SOURCE_ROOT}/tests/plaza2_trade")
+target_compile_features(plaza2_trade_transport_scenarios_test PRIVATE cxx_std_20)
+set_property(TARGET plaza2_trade_transport_scenarios_test
+    PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME plaza2_trade_transport_scenarios_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_trade_transport_scenarios_test"
+            "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+
 add_executable(plaza2_generated_metadata_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_generated_metadata_test.cpp)
 target_link_libraries(plaza2_generated_metadata_test
@@ -518,6 +535,7 @@ set_target_properties(plaza2_fake_cgate_runtime PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests"
     RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests"
     OUTPUT_NAME "plaza2_fake_cgate_runtime")
+add_dependencies(plaza2_trade_transport_scenarios_test plaza2_fake_cgate_runtime)
 
 function(moex_add_plaza2_cgate_test target_name source_file)
     add_executable(${target_name} "${source_file}")
@@ -756,6 +774,7 @@ if(DOTNET_EXECUTABLE)
                 -- "$<TARGET_FILE:moex_phase0_abi>"
                    "${MOEX_SOURCE_ROOT}/tests/fixtures/shadow_replay/synthetic_replay.txt")
         set_tests_properties(dotnet_abi_smoke PROPERTIES
+            RUN_SERIAL TRUE
             ENVIRONMENT
                 "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
 
@@ -767,6 +786,7 @@ if(DOTNET_EXECUTABLE)
                 -- "$<TARGET_FILE:moex_phase0_abi>"
                    "${MOEX_SOURCE_ROOT}/tests/fixtures/shadow_replay/synthetic_replay.txt")
         set_tests_properties(dotnet_abi_policy PROPERTIES
+            RUN_SERIAL TRUE
             ENVIRONMENT
                 "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
 
@@ -814,7 +834,7 @@ foreach(test_name IN LISTS moex_registered_tests)
         set_property(TEST "${test_name}" APPEND PROPERTY LABELS unit)
     endif()
     if(test_name MATCHES "^twime_.*_test$" OR
-       test_name MATCHES "^(phase0_selfcheck|plaza2_order_lifecycle_scenarios_test)$" OR
+       test_name MATCHES "^(phase0_selfcheck|plaza2_order_lifecycle_scenarios_test|plaza2_trade_transport_scenarios_test)$" OR
        test_name MATCHES "^(plaza2_runtime_adapter_test|plaza2_runtime_probe_test|plaza2_trade_no_send_guard_test)$")
         set_property(TEST "${test_name}" APPEND PROPERTY LABELS sanitizer)
     endif()

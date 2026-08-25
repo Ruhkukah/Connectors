@@ -83,9 +83,16 @@ struct OrderLifecyclePollResult {
     std::vector<OrderObservation> observations;
 };
 
+struct PreSendPlan;
+
 class OrderLifecycleTransport {
   public:
     virtual ~OrderLifecycleTransport() = default;
+    // The controller binds the exact, already-authorized static plan before
+    // opening a journal or allowing any transport-side AddOrder path.  A
+    // transport-neutral scripted implementation may accept this binding as a
+    // no-op; concrete transports must retain and enforce the bound identity.
+    [[nodiscard]] virtual plaza2::cgate::Plaza2Error bind_authorized_plan(const PreSendPlan& plan) = 0;
     [[nodiscard]] virtual plaza2::cgate::Plaza2PublisherMessageResult post(const Plaza2TradeEncodedCommand& command,
                                                                            std::uint32_t user_id) = 0;
     [[nodiscard]] virtual plaza2::cgate::Plaza2PublisherMessageResult
@@ -118,7 +125,6 @@ struct OrderSmokeSnapshot {
     std::int64_t aggr20_source_revision{0};
     std::string aggr20_observed_at_utc;
     std::uint64_t aggr20_age_ms{0};
-    std::uint64_t max_aggr20_age_ms{0};
     std::string trading_day;
     std::string session_id;
     std::string session_state;
@@ -133,6 +139,8 @@ struct OrderSmokePolicy {
     std::string version;
     std::string sha256;
     std::uint32_t max_distance_ticks{0};
+    std::uint64_t max_aggr20_age_ms{0};
+    bool require_zero_starting_position{false};
 };
 
 struct OrderLifecycleConfig {
@@ -199,7 +207,11 @@ struct PreSendPlan {
     bool ok{false};
     PreSendFailure failure{PreSendFailure::None};
     std::string message;
+    // The canonical hash is an authorization hash for static order intent. It
+    // deliberately excludes dynamic market/session observations; those belong
+    // in the execution-safety receipt produced immediately before posting.
     std::string canonical_json;
+    std::string reviewed_evidence_json;
     std::string sha256;
     Plaza2TradeEncodedCommand add_command;
     Plaza2TradeEncodedCommand exact_ext_id_recovery_command;
@@ -208,6 +220,24 @@ struct PreSendPlan {
 [[nodiscard]] PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config);
 [[nodiscard]] bool write_pre_send_plan(const std::filesystem::path& output_directory, const PreSendPlan& plan,
                                        std::string& error);
+
+struct RestartReconciliationResult {
+    bool ok{true};
+    bool run_found{false};
+    bool resolved{false};
+    bool locks_retained{true};
+    OrderLifecycleState state{OrderLifecycleState::UnresolvedOrphanIncident};
+    std::filesystem::path journal_path;
+    std::string message;
+};
+
+// Read-only startup reconciliation over a previously unfinished local run.
+// It never submits a command. Locks are removed only after a fresh, matching
+// terminal observation and a published resolution record.
+[[nodiscard]] RestartReconciliationResult
+reconcile_unfinished_run(const OrderLifecycleConfig& config,
+                         std::span<const plaza2::private_state::OwnOrderSnapshot> orders,
+                         std::span<const plaza2::private_state::OwnTradeSnapshot> trades);
 
 struct OrderLifecycleResult {
     bool ok{false};

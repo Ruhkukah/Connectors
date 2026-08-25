@@ -129,6 +129,10 @@ struct Plaza2RuntimeProbeReport {
     bool runtime_root_present{false};
     bool runtime_library_present{false};
     bool runtime_library_loadable{false};
+    // V1 fake/offline transport boundary.  This is deliberately a symbol
+    // exported only by the test CGate DSO; a compatible real runtime must not
+    // satisfy the TEST transport host.
+    bool fake_runtime_marker_present{false};
     bool trading_capable{false};
     bool scheme_file_present{false};
     bool config_dir_present{false};

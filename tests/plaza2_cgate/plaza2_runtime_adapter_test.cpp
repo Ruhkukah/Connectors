@@ -102,31 +102,32 @@ int main(int argc, char** argv) {
         require(!reply_listener.create(connection, kNoStreamCode, "p2mqreply://;ref=PUB", &reply_capture),
                 "untyped reply listener create should succeed");
         require(!reply_listener.open({}), "untyped reply listener open should succeed");
-        const std::array<std::byte, 8> payload{};
+        const std::array<std::byte, 112> add_payload{};
+        const std::array<std::byte, 20> del_payload{};
 
         ::setenv("MOEX_FAKE_PUB_MSGNEW_RESULT", "internal", 1);
-        const auto allocation_failure = publisher.post_by_message_name("AddOrder", payload, 701, true);
+        const auto allocation_failure = publisher.post_by_message_name("AddOrder", add_payload, 701, true);
         require(allocation_failure.certainty == Plaza2SubmissionCertainty::DefinitelyNotSent &&
                     allocation_failure.allocation_error && !allocation_failure.post_invoked,
                 "message allocation failure should be definitely not sent");
         ::unsetenv("MOEX_FAKE_PUB_MSGNEW_RESULT");
 
         ::setenv("MOEX_FAKE_PUB_POST_RESULT", "timeout", 1);
-        const auto ambiguous = publisher.post_by_message_name("AddOrder", payload, 702, true);
+        const auto ambiguous = publisher.post_by_message_name("AddOrder", add_payload, 702, true);
         require(ambiguous.certainty == Plaza2SubmissionCertainty::PossiblySent && ambiguous.post_error,
                 "publisher timeout should preserve possible-submission certainty");
         ::unsetenv("MOEX_FAKE_PUB_POST_RESULT");
 
         ::setenv("MOEX_FAKE_PUB_MSGFREE_RESULT", "internal", 1);
-        const auto posted_free_failure = publisher.post_by_message_name("AddOrder", payload, 703, true);
+        const auto posted_free_failure = publisher.post_by_message_name("AddOrder", add_payload, 703, true);
         require(posted_free_failure.certainty == Plaza2SubmissionCertainty::Posted && posted_free_failure.free_error &&
                     !posted_free_failure.post_error,
                 "message-free failure must not erase a successful post");
         ::unsetenv("MOEX_FAKE_PUB_MSGFREE_RESULT");
 
         ::setenv("MOEX_FAKE_PUB_REPLY_MODE", "timeout", 1);
-        const auto add_timeout = publisher.post_by_message_name("AddOrder", payload, 704, true);
-        const auto del_timeout = publisher.post_by_message_name("DelOrder", payload, 705, true);
+        const auto add_timeout = publisher.post_by_message_name("AddOrder", add_payload, 704, true);
+        const auto del_timeout = publisher.post_by_message_name("DelOrder", del_payload, 705, true);
         require(add_timeout.certainty == Plaza2SubmissionCertainty::Posted &&
                     del_timeout.certainty == Plaza2SubmissionCertainty::Posted,
                 "timeout fixtures should model successfully posted commands awaiting replies");
@@ -141,7 +142,7 @@ int main(int argc, char** argv) {
         require(reply_capture.events[0].kind == Plaza2ListenerEventKind::StreamData &&
                     reply_capture.events[0].user_id == 703 && reply_capture.events[0].message_id == 179 &&
                     reply_capture.events[0].message_name == "AddOrderReply" &&
-                    reply_capture.events[0].payload.size() == 16,
+                    reply_capture.events[0].payload.size() == 267,
                 "reply listener must expose the exact publisher user_id and raw reply payload");
         require(reply_capture.events[1].kind == Plaza2ListenerEventKind::Timeout &&
                     reply_capture.events[1].user_id == 704 && reply_capture.events[1].message_id == 0 &&
