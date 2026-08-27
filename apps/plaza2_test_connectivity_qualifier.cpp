@@ -460,6 +460,22 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     boolean("status_streams_ready", snapshot.status_streams_ready);
     boolean("p2mqreply_open", snapshot.p2mqreply_open);
     boolean("publisher_open", snapshot.publisher_open);
+    const auto* userbook_health = [&]() -> const moex::plaza2::private_state::StreamHealthSnapshot* {
+        for (const auto& stream : qualifier.private_session().projector().stream_health()) {
+            if (stream.stream_code == StreamCode::kFortsUserorderbookRepl) {
+                return &stream;
+            }
+        }
+        return nullptr;
+    }();
+    boolean("userorderbook_publication_state_available",
+            userbook_health != nullptr && userbook_health->has_publication_state);
+    number("userorderbook_publication_state", userbook_health == nullptr ? 0 : userbook_health->publication_state);
+    number("userorderbook_trades_rev", userbook_health == nullptr ? 0 : userbook_health->last_trades_rev);
+    number("userorderbook_trades_lifenum", userbook_health == nullptr ? 0 : userbook_health->last_trades_lifenum);
+    number("userorderbook_info_moment", userbook_health == nullptr ? 0 : userbook_health->last_info_moment);
+    boolean("userorderbook_periodic_snapshot_consistent",
+            userbook_health != nullptr && userbook_health->periodic_snapshot_consistent);
     boolean("participant_limit_unique", snapshot.participant_limit_unique);
     boolean("participant_limits_set", snapshot.participant_limits_set);
     number("applicable_position_count", snapshot.applicable_position_count);
@@ -501,6 +517,7 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
                 ",\"opened\":" + (stream.opened ? "true" : "false") +
                 ",\"online\":" + (stream.online ? "true" : "false") +
                 ",\"snapshot_complete\":" + (stream.snapshot_complete ? "true" : "false") +
+                ",\"periodic_snapshot_consistent\":" + (stream.periodic_snapshot_consistent ? "true" : "false") +
                 ",\"required_online\":" + (stream.required_online ? "true" : "false") + "}";
     }
     json += "],\n";

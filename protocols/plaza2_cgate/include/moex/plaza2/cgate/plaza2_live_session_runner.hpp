@@ -61,6 +61,7 @@ struct Plaza2LiveStreamStatus {
     bool online{false};
     bool snapshot_complete{false};
     bool required_online{true};
+    bool periodic_snapshot_consistent{false};
 };
 
 struct Plaza2LiveStateCounts {

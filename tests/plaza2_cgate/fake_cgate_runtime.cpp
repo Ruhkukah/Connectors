@@ -254,6 +254,8 @@ struct FakeConnection {
     std::vector<FakeReply> pending_replies;
     bool script_emitted{false};
     bool liveness_event_emitted{false};
+    bool userbook_periodic_clear_emitted{false};
+    bool userbook_periodic_info_emitted{false};
 };
 
 struct FakePublisher {
@@ -688,6 +690,25 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
     case kFortsUserorderbookRepl:
         return {
             {
+                .table_code = kFortsUserorderbookReplInfo,
+                .rev = 6,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsUserorderbookReplInfoPublicationState,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsUserorderbookReplInfoTradesRev,
+                         .kind = SignedInteger,
+                         .signed_value = 1001},
+                        {.field_code = FieldCode::kFortsUserorderbookReplInfoTradesLifenum,
+                         .kind = SignedInteger,
+                         .signed_value = 7},
+                        {.field_code = FieldCode::kFortsUserorderbookReplInfoMoment,
+                         .kind = Timestamp,
+                         .unsigned_value = 1700000002},
+                    },
+            },
+            {
                 .table_code = kFortsUserorderbookReplOrdersCurrentday,
                 .rev = 7,
                 .fields =
@@ -1076,6 +1097,13 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                 break;
             }
         }
+        if (fake_flag("MOEX_FAKE_USERORDERBOOK_PERIODIC_REFRESH")) {
+            // Keep regular table descriptors in the negotiated scheme so the
+            // refresh can address them by table index without adding initial
+            // rows to the ordinary fixture replay.
+            script.push_back({.table_code = kFortsUserorderbookReplOrders, .rev = 9});
+            script.push_back({.table_code = kFortsUserorderbookReplMultilegOrders, .rev = 10});
+        }
     }
     if (const auto* client_override = std::getenv("MOEX_FAKE_CLIENT_CODE"); client_override != nullptr) {
         const std::string replacement(client_override);
@@ -1356,6 +1384,11 @@ std::uint32_t emit_script(FakeListener& listener) {
         }
     }
     for (const auto& message : script) {
+        if (fake_flag("MOEX_FAKE_USERORDERBOOK_PERIODIC_REFRESH") &&
+            (message.table_code == TableCode::kFortsUserorderbookReplOrders ||
+             message.table_code == TableCode::kFortsUserorderbookReplMultilegOrders)) {
+            continue;
+        }
         if (const auto result = emit_stream_message(listener, message); result != kCgErrOk) {
             return result;
         }
@@ -1433,6 +1466,9 @@ std::uint32_t cg_conn_open(void* conn, const char*) {
     }
     connection->state = kStateActive;
     connection->script_emitted = false;
+    connection->liveness_event_emitted = false;
+    connection->userbook_periodic_clear_emitted = false;
+    connection->userbook_periodic_info_emitted = false;
     return kCgErrOk;
 }
 
@@ -1452,6 +1488,59 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
     auto* connection = static_cast<FakeConnection*>(conn);
     if (connection->state != kStateActive) {
         return kCgErrIncorrectState;
+    }
+
+    if (connection->script_emitted && connection->pending_replies.empty() &&
+        fake_flag("MOEX_FAKE_USERORDERBOOK_PERIODIC_REFRESH")) {
+        FakeListener* userbook = nullptr;
+        for (auto* listener : connection->listeners) {
+            if (listener != nullptr && !listener->reply_listener && listener->state == kStateActive &&
+                listener->stream_code == StreamCode::kFortsUserorderbookRepl) {
+                userbook = listener;
+                break;
+            }
+        }
+        if (userbook == nullptr) {
+            return kCgErrIncorrectState;
+        }
+        if (!connection->userbook_periodic_clear_emitted) {
+            for (const auto table_code :
+                 {TableCode::kFortsUserorderbookReplOrders, TableCode::kFortsUserorderbookReplMultilegOrders}) {
+                const auto* plan = find_message_plan(*userbook, table_code);
+                if (plan == nullptr) {
+                    return kCgErrIncorrectState;
+                }
+                auto clear_deleted = make_clear_deleted_payload(static_cast<std::uint32_t>(plan->msg_index), 9, 0);
+                if (const auto result = emit_simple_message(*userbook, kCgMsgP2replClearDeleted, clear_deleted.data(),
+                                                            clear_deleted.size());
+                    result != kCgErrOk) {
+                    return result;
+                }
+            }
+            connection->userbook_periodic_clear_emitted = true;
+            return kCgErrOk;
+        }
+        if (!connection->userbook_periodic_info_emitted) {
+            const auto script = script_for_stream(StreamCode::kFortsUserorderbookRepl);
+            const auto info = std::ranges::find_if(script, [](const auto& message) {
+                return message.table_code == TableCode::kFortsUserorderbookReplInfo;
+            });
+            if (info == script.end()) {
+                return kCgErrIncorrectState;
+            }
+            if (const auto result = emit_simple_message(*userbook, kCgMsgTnBegin); result != kCgErrOk) {
+                return result;
+            }
+            if (const auto result = emit_stream_message(*userbook, *info); result != kCgErrOk) {
+                return result;
+            }
+            if (const auto result = emit_simple_message(*userbook, kCgMsgTnCommit); result != kCgErrOk) {
+                return result;
+            }
+            connection->userbook_periodic_info_emitted = true;
+            connection->liveness_event_emitted = true;
+            return kCgErrOk;
+        }
     }
 
     if (connection->script_emitted && connection->pending_replies.empty() && !connection->liveness_event_emitted) {

@@ -1,6 +1,6 @@
-# PLAZA II TEST connectivity qualification V1.1
+# PLAZA II TEST connectivity qualification V1.2
 
-PR #28 is a target-specific, read-only qualification path for the MOEX
+PR #29 is a target-specific, read-only qualification correction on top of PR #28 for the MOEX
 PLAZA II TEST environment. It remains separate from
 `Plaza2TestTradeTransport`, which is fake-only. The PR includes the
 read-only qualifier executable; it does not include an order path.
@@ -59,6 +59,20 @@ override and is recorded as `listener_url_mode=explicit_override`; omitted
 known streams are recorded as `negotiated`. Settings and credentials are not
 written to the receipt.
 
+## USERORDERBOOK periodic readiness
+
+Initial listener health and periodic snapshot consistency are separate facts.
+`P2REPL_ONLINE` establishes `online=true` and
+`initial_snapshot_complete=true`; a subsequent `P2REPL_CLEARDELETED` is a
+table/revision mutation and does not make the listener leave ONLINE. For
+`FORTS_USERORDERBOOK_REPL`, only a committed regular `info` row with
+`publication_state=1` establishes `periodic_snapshot_consistent=true`.
+Regular orders/multileg-orders/info clears invalidate that marker until the
+next committed regular info row. A `publication_state=0` row, an
+`info_currentday` row, an uncommitted row, changed LifeNum, or CLOSE cannot
+certify periodic readiness. Other private streams retain their existing
+conservative ONLINE/snapshot requirements.
+
 ## Runtime and readiness gates
 
 `Plaza2RuntimeProbe` records the installed library fingerprint, version
@@ -115,18 +129,18 @@ remained active. No router or authentication configuration was changed.
 
 | Check | Result |
 | --- | ---: |
-| Full CTest | 157/157 pass |
-| Changed-target ASan/UBSan set | 4/4 pass |
-| Source style check | pass |
-| Repository style check | pass |
-| ABI smoke/policy | pass |
-| No-send/privacy checks | pass |
-| GitHub connector-validation | pass |
-| Requested GitHub sanitizer rerun | pass; prior TWIME failure classified as an unrelated timing flake |
-| `git diff --check` | pass |
+| Full CTest | pending final PR #29 validation |
+| Changed-target ASan/UBSan set | pending final PR #29 validation |
+| Source style check | pending final PR #29 validation |
+| Repository style check | pending final PR #29 validation |
+| ABI smoke/policy | pending final PR #29 validation |
+| No-send/privacy checks | pending final PR #29 validation |
+| GitHub connector-validation | pending final PR #29 validation |
+| Requested GitHub sanitizer rerun | pending final PR #29 validation |
+| `git diff --check` | pending final PR #29 validation |
 | Live orders or publisher messages | none |
 
 The order-lifecycle wording remains **atomic local journal; no power-loss
 durability claimed**. No durable orphan-journal claim is made. No new target,
-profile, wrapper, or script was added; PR #28 includes the read-only
+profile, wrapper, or script was added; PR #29 includes only the read-only
 qualifier executable.

@@ -222,11 +222,11 @@ int main() {
 
         const auto* userbook_stream = find_stream(streams, StreamCode::kFortsUserorderbookRepl);
         require(userbook_stream != nullptr, "user-orderbook stream health should exist");
-        require(userbook_stream->has_publication_state && userbook_stream->publication_state == 1,
-                "user-orderbook publication state should be projected");
-        require(userbook_stream->last_trades_rev == 1001 && userbook_stream->last_trades_lifenum == 7,
-                "user-orderbook trade markers should be projected");
-        require(userbook_stream->last_server_time == 1700000002, "user-orderbook server time should be projected");
+        require(!userbook_stream->has_publication_state && !userbook_stream->periodic_snapshot_consistent,
+                "current-day publication state must not certify the regular user-orderbook snapshot");
+        require(userbook_stream->last_trades_rev == 0 && userbook_stream->last_trades_lifenum == 0,
+                "current-day trade markers must not replace regular user-orderbook markers");
+        require(userbook_stream->last_server_time == 0, "current-day server time must not replace regular metadata");
 
         const auto* pos_stream = find_stream(streams, StreamCode::kFortsPosRepl);
         require(pos_stream != nullptr, "position stream health should exist");

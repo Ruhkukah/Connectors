@@ -56,6 +56,9 @@ struct StreamHealthSnapshot {
     std::int64_t last_event_id{0};
     std::int32_t last_event_type{0};
     std::string last_message;
+    // USERORDERBOOK periodic consistency is distinct from initial ONLINE.
+    // It is established only by a committed regular info publication_state=1 row.
+    bool periodic_snapshot_consistent{false};
 };
 
 struct TradingSessionSnapshot {
@@ -244,6 +247,10 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::span<const PositionSnapshot> positions() const;
     [[nodiscard]] std::span<const OwnOrderSnapshot> own_orders() const;
     [[nodiscard]] std::span<const OwnTradeSnapshot> own_trades() const;
+
+    // A table-scoped USERORDERBOOK refresh makes the periodic snapshot
+    // inconsistent while preserving listener ONLINE/currentness.
+    void invalidate_periodic_snapshot(generated::StreamCode stream_code);
 
     void on_event(const fake::ScenarioSpec& scenario, const fake::EventSpec& event,
                   const fake::EngineState& state) override;

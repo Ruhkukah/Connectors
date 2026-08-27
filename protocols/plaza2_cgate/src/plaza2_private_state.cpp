@@ -368,6 +368,8 @@ struct StagedState {
     std::optional<std::vector<StreamHealthSnapshot>> stream_health;
     std::optional<SourceRevisionRows> source_revisions;
     std::unordered_set<StreamCode, EnumClassHash> touched_streams;
+    bool userbook_regular_info_seen{false};
+    std::int32_t userbook_regular_info_publication_state{0};
 };
 
 void reset_stream_watermarks(StreamHealthSnapshot& health) {
@@ -382,6 +384,7 @@ void reset_stream_watermarks(StreamHealthSnapshot& health) {
     health.last_event_id = 0;
     health.last_event_type = 0;
     health.last_message.clear();
+    health.periodic_snapshot_consistent = false;
 }
 
 } // namespace
@@ -464,6 +467,33 @@ struct Plaza2PrivateStateProjector::Impl {
                   [](const StreamHealthSnapshot& lhs, const StreamHealthSnapshot& rhs) {
                       return static_cast<std::uint32_t>(lhs.stream_code) < static_cast<std::uint32_t>(rhs.stream_code);
                   });
+    }
+
+    void invalidate_periodic_snapshot(StreamCode stream_code) {
+        if (stream_code != StreamCode::kFortsUserorderbookRepl) {
+            return;
+        }
+        auto& target = staged.active ? ensure_staged_stream_health() : stream_health;
+        auto& health = ensure_stream_health(target, stream_code);
+        health.periodic_snapshot_consistent = false;
+        if (staged.active) {
+            staged.userbook_regular_info_seen = false;
+        }
+    }
+
+    void invalidate_closed_stream(StreamCode stream_code) {
+        const auto invalidate = [](StreamHealthSnapshot& health) {
+            health.online = false;
+            health.snapshot_complete = false;
+            health.periodic_snapshot_consistent = false;
+        };
+        if (stream_code == fake::kNoStreamCode) {
+            for (auto& health : stream_health) {
+                invalidate(health);
+            }
+            return;
+        }
+        invalidate(ensure_stream_health(stream_health, stream_code));
     }
 
     std::vector<StreamHealthSnapshot>& ensure_staged_stream_health() {
@@ -775,8 +805,14 @@ struct Plaza2PrivateStateProjector::Impl {
                 return;
             }
             staged.touched_streams.insert(stream_code);
-            auto& health = ensure_stream_health(ensure_staged_stream_health(), stream_code);
+            auto& health = staged.active ? ensure_stream_health(ensure_staged_stream_health(), stream_code)
+                                         : ensure_stream_health(stream_health, stream_code);
             reset_stream_watermarks(health);
+            if (stream_code == StreamCode::kFortsUserorderbookRepl) {
+                if (staged.active) {
+                    staged.userbook_regular_info_seen = false;
+                }
+            }
         };
 
         const auto clear_orders = [&](bool trade_source, bool user_source, bool current_day_source) {
@@ -1657,6 +1693,11 @@ struct Plaza2PrivateStateProjector::Impl {
         if (moment_field.has_value()) {
             health.last_info_moment = row.i64(*moment_field);
         }
+        if (stream_code == StreamCode::kFortsUserorderbookRepl && moment_field.has_value()) {
+            staged.userbook_regular_info_seen = true;
+            staged.userbook_regular_info_publication_state =
+                publication_state_field.has_value() ? row.i32(*publication_state_field) : 0;
+        }
     }
 
     void apply_row(const fake::EventSpec& event, const RowReader& row) {
@@ -1702,11 +1743,9 @@ struct Plaza2PrivateStateProjector::Impl {
                 std::nullopt, FieldCode::kFortsUserorderbookReplInfoMoment);
             break;
         case TableCode::kFortsUserorderbookReplInfoCurrentday:
-            apply_info_row(StreamCode::kFortsUserorderbookRepl, row,
-                           FieldCode::kFortsUserorderbookReplInfoCurrentdayPublicationState,
-                           FieldCode::kFortsUserorderbookReplInfoCurrentdayTradesRev,
-                           FieldCode::kFortsUserorderbookReplInfoCurrentdayTradesLifenum,
-                           FieldCode::kFortsUserorderbookReplInfoCurrentdayServerTime, std::nullopt);
+            // The current-day table is not the periodic snapshot marker.  Its
+            // publication_state must never certify regular USERORDERBOOK.
+            staged.touched_streams.insert(StreamCode::kFortsUserorderbookRepl);
             break;
         case TableCode::kFortsPosReplPosition:
             apply_position_row(row);
@@ -1806,6 +1845,10 @@ struct Plaza2PrivateStateProjector::Impl {
             source_revisions = std::move(*staged.source_revisions);
         }
         sync_base_health(state);
+        if (staged.userbook_regular_info_seen) {
+            auto& health = ensure_stream_health(stream_health, StreamCode::kFortsUserorderbookRepl);
+            health.periodic_snapshot_consistent = staged.userbook_regular_info_publication_state == 1;
+        }
         for (const auto stream_code : staged.touched_streams) {
             auto& health = ensure_stream_health(stream_health, stream_code);
             health.last_commit_sequence = state.commit_count;
@@ -1926,6 +1969,10 @@ std::span<const OwnTradeSnapshot> Plaza2PrivateStateProjector::own_trades() cons
     return impl_->trade_snapshots;
 }
 
+void Plaza2PrivateStateProjector::invalidate_periodic_snapshot(generated::StreamCode stream_code) {
+    impl_->invalidate_periodic_snapshot(stream_code);
+}
+
 void Plaza2PrivateStateProjector::on_event(const fake::ScenarioSpec&, const fake::EventSpec& event,
                                            const fake::EngineState& state) {
     switch (event.kind) {
@@ -1934,6 +1981,7 @@ void Plaza2PrivateStateProjector::on_event(const fake::ScenarioSpec&, const fake
         break;
     case fake::EventKind::kClose:
         impl_->sync_base_health(state);
+        impl_->invalidate_closed_stream(event.stream_code);
         break;
     case fake::EventKind::kSnapshotBegin:
         impl_->sync_base_health(state);

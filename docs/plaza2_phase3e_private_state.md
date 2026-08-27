@@ -110,6 +110,9 @@ Invalidation is explicit and stream-owned.
   - clears only the committed domains owned by the target stream
   - preserves unrelated domains
   - preserves the stream’s accumulated `clear_deleted_count`
+  - does not by itself make a listener leave ONLINE; USERORDERBOOK periodic
+    readiness is separately invalidated until a committed regular `info`
+    `publication_state=1` row arrives
 
 Current stream ownership boundaries:
 
