@@ -36,6 +36,7 @@ enum class Plaza2ErrorCode : std::uint16_t {
     CallbackFailed,
     ProbeIncompatible,
     UnknownRuntimeResult,
+    SendDisabledPreSendPhase,
 };
 
 enum class Plaza2ProbeIssueCode : std::uint16_t {

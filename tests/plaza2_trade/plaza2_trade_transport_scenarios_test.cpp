@@ -813,6 +813,70 @@ int main(int argc, char** argv) {
         require(!absent.has_value(), "missing target instrument must remain absent");
         require(transport.host().stop().code == cgate::Plaza2ErrorCode::None, "TEST host must stop cleanly");
 
+        {
+            ScopedEnv no_active_order("MOEX_FAKE_MISSING_ORDER", "1");
+            auto live_config = prepared_config(fixture, add, recovery);
+            live_config.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend;
+            live_config.host.endpoint_host = "127.0.0.1";
+            live_config.host.arm_state.test_plaza2_armed = true;
+            live_config.host.publisher_name = "PRE_SEND_TEST";
+            live_config.host.publisher_settings = "p2mq://FORTS_SRV;category=FORTS_MSG;name=PRE_SEND_TEST;timeout=5000";
+            live_config.host.p2mqreply_settings = "p2mqreply://;ref=PRE_SEND_TEST";
+            Plaza2TestTradeTransport live_transport(std::move(live_config));
+            bind_test_plan(live_transport, plan);
+            const auto disabled = live_transport.post(add, 701);
+            require(disabled.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        !disabled.post_invoked &&
+                        disabled.validation_error.code == cgate::Plaza2ErrorCode::SendDisabledPreSendPhase &&
+                        disabled.validation_error.message == "SEND_DISABLED_PRE_SEND_PHASE",
+                    "LiveTestPreSend must stop below cg_pub_msgnew/cg_pub_post with a typed result");
+            require(live_transport.host().publisher_open() && live_transport.host().p2mqreply_open() &&
+                        live_transport.last_execution_safety_receipt().has_value() &&
+                        live_transport.last_execution_safety_receipt()->userorderbook_periodic_snapshot_consistent,
+                    "LiveTestPreSend must complete the exact pre-send receipt before the disabled post barrier");
+            require(live_transport.host().stop().code == cgate::Plaza2ErrorCode::None,
+                    "LiveTestPreSend host must stop cleanly");
+        }
+
+        {
+            ScopedEnv no_active_order("MOEX_FAKE_MISSING_ORDER", "1");
+            ScopedEnv missing_position("MOEX_FAKE_MISSING_POSITION", "1");
+            ScopedEnv flat_trade_replay("MOEX_FAKE_FLAT_TRADE_REPLAY", "1");
+            auto flat_config = prepared_config(fixture, add, recovery);
+            flat_config.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend;
+            flat_config.host.endpoint_host = "127.0.0.1";
+            flat_config.host.arm_state.test_plaza2_armed = true;
+            flat_config.host.publisher_name = "FLAT_REPLAY_TEST";
+            flat_config.host.publisher_settings =
+                "p2mq://FORTS_SRV;category=FORTS_MSG;name=FLAT_REPLAY_TEST;timeout=5000";
+            flat_config.host.p2mqreply_settings = "p2mqreply://;ref=FLAT_REPLAY_TEST";
+            flat_config.host.trade_replay_from_pos_anchor = true;
+            flat_config.authorized_intent->require_zero_starting_position = true;
+            flat_config.authorized_intent->canonical_json =
+                canonical_authorized_order_intent_json(*flat_config.authorized_intent);
+            flat_config.authorized_intent->sha256 = authorized_order_intent_sha256(*flat_config.authorized_intent);
+            const auto flat_plan = bound_plan(*flat_config.authorized_intent, add, recovery);
+            Plaza2TestTradeTransport flat_transport(std::move(flat_config));
+            bind_test_plan(flat_transport, flat_plan);
+            const auto disabled = flat_transport.post(add, 701);
+            require(disabled.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        disabled.validation_error.code == cgate::Plaza2ErrorCode::SendDisabledPreSendPhase,
+                    "POS plus anchored empty TRADE replay must reach the disabled pre-send barrier");
+            const auto& receipt = flat_transport.last_execution_safety_receipt();
+            require(receipt.has_value() &&
+                        receipt->position_evidence_class == PositionEvidenceClass::FlatByPosSnapshotAndTradeReplay &&
+                        receipt->zero_starting_position_proven && receipt->position_snapshot_complete &&
+                        receipt->trade_replay_complete && receipt->position_trades_rev == 44 &&
+                        receipt->position_trades_lifenum == 7 && receipt->position_server_time == 1700000001 &&
+                        receipt->participant_user_deal_count == 0 &&
+                        receipt->participant_user_multileg_deal_count == 0 && receipt->reconstructed_target_xpos == 0 &&
+                        receipt->active_own_order_count == 0,
+                    "flatness receipt must bind POS anchor, empty participant replay, reconstructed xpos, and order "
+                    "census");
+            require(flat_transport.host().stop().code == cgate::Plaza2ErrorCode::None,
+                    "flatness pre-send host must stop cleanly");
+        }
+
         test_target_preflight_refusals(fixture);
         test_authorized_payload_binding(fixture);
         test_replication_epoch_gates(fixture);

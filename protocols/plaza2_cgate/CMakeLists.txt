@@ -94,6 +94,7 @@ target_compile_features(moex_plaza2_cgate_private_state PUBLIC cxx_std_20)
 add_library(moex_plaza2_cgate_live_session STATIC
     src/plaza2_credential_provider.cpp
     src/plaza2_manual_operator_gate.cpp
+    src/plaza2_private_state_bridge.cpp
     src/plaza2_live_session_runner.cpp)
 
 target_link_libraries(moex_plaza2_cgate_live_session

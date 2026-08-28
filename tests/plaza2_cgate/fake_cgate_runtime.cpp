@@ -682,8 +682,8 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .kind = SignedInteger,
                          .signed_value = 7},
                         {.field_code = FieldCode::kFortsPosReplInfoServerTime,
-                         .kind = SignedInteger,
-                         .signed_value = 1700000001},
+                         .kind = Timestamp,
+                         .unsigned_value = 1700000001},
                     },
             },
         };
@@ -913,8 +913,8 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                 .fields =
                     {
                         {.field_code = FieldCode::kFortsTradeReplHeartbeatServerTime,
-                         .kind = SignedInteger,
-                         .signed_value = 1700000007},
+                         .kind = Timestamp,
+                         .unsigned_value = 1700000007},
                     },
             },
         };
@@ -950,6 +950,13 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     auto script = base_script_for_stream(stream_code);
     using enum FieldCode;
     using enum TableCode;
+
+    if (stream_code == StreamCode::kFortsTradeRepl && fake_flag("MOEX_FAKE_FLAT_TRADE_REPLAY")) {
+        std::erase_if(script, [](const auto& message) {
+            return message.table_code == kFortsTradeReplUserDeal ||
+                   message.table_code == kFortsTradeReplUserMultilegDeal;
+        });
+    }
 
     if (stream_code == StreamCode::kFortsAggrRepl) {
         if (fake_flag("MOEX_FAKE_AGGR_ONE_SIDED")) {
@@ -1603,7 +1610,14 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         }
     }
     if (connection->script_emitted && connection->pending_replies.empty()) {
-        return kCgErrTimeout;
+        const bool pending_new_listener =
+            std::any_of(connection->listeners.begin(), connection->listeners.end(), [](const auto* listener) {
+                return listener != nullptr && !listener->reply_listener && listener->state == kStateActive &&
+                       !listener->script_emitted;
+            });
+        if (!pending_new_listener) {
+            return kCgErrTimeout;
+        }
     }
 
     bool emitted_any = false;

@@ -50,7 +50,9 @@ logs, certification logs, or broker latency/topology data. See
 
 ### Not live-order ready
 
-- No live PLAZA order transport exists.
+- No send-capable live PLAZA order transport exists; the guarded
+  `LiveTestPreSend` boundary can only validate read-side state and stop before
+  publisher message allocation/posting.
 - No production connectivity or live application order routing is enabled.
 - A future TEST-order exercise requires a separately reviewed transport,
   authoritative runtime evidence, and explicit authorization.
@@ -59,7 +61,8 @@ logs, certification logs, or broker latency/topology data. See
 
 - `protocols/`: TWIME SBE and PLAZA II CGate protocol/runtime components.
 - `connectors/`: TWIME session logic, PLAZA private-state reconciliation, and
-  the offline PLAZA trade lifecycle.
+  the TEST-only PLAZA trade lifecycle with an offline and no-send live
+  pre-send boundary.
 - `apps/`: offline and explicitly guarded operator runners.
 - `tests/`: logical CTest cases and semantic shared test runners.
 - `spec-lock/`: pinned public artifacts and reviewed local scheme locks.

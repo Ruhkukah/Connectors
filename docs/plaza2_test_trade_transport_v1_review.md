@@ -1,29 +1,36 @@
-# PLAZA II TEST trade transport V1.2 review
+# PLAZA II TEST trade transport V1.3 / PR #30 review
 
 ## Scope and stop gate
 
-This increment starts from merged-main `cc43c16` (PR #26). It adds a
-TEST-only, fake-runtime transport path for offline semantic tests and closes
-the V1.2 authorization-continuity gate on PR #27. It does not
-add a live operator runner, a broker executable, a Python/VPS wrapper, a
-production transport, or a network command. The transport host refuses a
-non-TEST runtime and is exercised only with the repository fake CGate runtime
-and loopback fixture.
+This increment starts from merged-main `610dbfd` (PR #29). It keeps the
+TEST-only boundary but adds the narrow `OfflineFake` and `LiveTestPreSend`
+host modes. The latter may open a real TEST session and all read-side/private
+services, but its post barrier is physically below publisher message
+allocation and posting. There is still no production mode, broker executable,
+Python/VPS wrapper, or live order command.
 
-No MOEX endpoint, broker account, CGate production runtime, TEST credential,
-software key, `cg_pub_post` against a real runtime, or TEST order was used.
+No order, `cg_pub_msgnew`, or `cg_pub_post` was used. Offline validation uses
+the repository fake CGate runtime; any live pre-send observation is read-only
+and requires the explicit TEST operator arms.
 
 ## One-session host
 
 `Plaza2TestSessionHost` owns one `Plaza2Env`, one connection, the five private
 replication listeners, the current-day `SESSIONSTATE` and `INSTRUMENTSTATE`
 status listeners, the AGGR20 listener, one untyped `p2mqreply` listener, and
-one publisher. Startup probes the runtime and requires the private
-`moex_fake_cgate_runtime_v1` marker before opening the environment;
-shutdown closes and destroys publisher/listeners in reverse dependency order,
+one publisher. `OfflineFake` requires the loopback connection and the private
+`moex_fake_cgate_runtime_v1` marker. `LiveTestPreSend` validates the TEST
+operator gate and may use a real runtime. Publisher creation/opening precedes
+the matching reply listener, and both are bound to explicit settings with one
+unique publisher name (`p2mq://...;name=N` and `p2mqreply://;ref=N`).
+Shutdown closes and destroys publisher/listeners in reverse dependency order,
 then the connection and environment. Private state, AGGR20 state, reply
-correlation, and publisher operations therefore share one fake connection and
-one event-processing loop.
+correlation, and publisher operations share one connection and one event loop.
+
+The private callback bridge is shared with `Plaza2LiveSessionRunner`. It
+preserves per-stream LifeNum invalidation, table/revision/flags-scoped
+CLEARDELETED, transaction visibility, USERORDERBOOK periodic consistency,
+CLOSE invalidation, and the runtime row `replRev`.
 
 `Plaza2TestTradeTransport` implements `OrderLifecycleTransport`. The lifecycle
 controller binds one exact `PreSendPlan` after plan-hash validation and before
@@ -44,7 +51,11 @@ has been atomically published. Loopback alone is not treated as evidence of a
 fake runtime. The canonical fixed policy includes `max_aggr20_age_ms` and
 `require_zero_starting_position`; transport configuration may only apply a
 stricter age/position override. The receipt records the authorized maximum and
-zero-position policy alongside observed local age and the selected position row.
+zero-position policy alongside observed local age and a typed position-evidence
+class. A zero starting position is accepted only from an exact zero POS row or
+from a complete POS snapshot plus an anchored, current TRADE replay with zero
+participant deals and zero active own orders; a missing POS row by itself
+remains unresolved.
 The receipt is derived from the current committed projectors immediately before
 the post and contains the target BBO, local monotonic age, exchange evidence,
 session/instrument state, exact client limit-row hash, stream readiness,
@@ -78,11 +89,14 @@ not authorize a post. Target readiness also requires current-day
 `fut_sess_contents` membership, current session and instrument status rows, a
 futures min-step, the exact session in state `1` (running; Add + Cancel
 allowed), every required private stream and AGGR20 epoch online and
-snapshot-complete, exactly one matching seven-symbol client limit row with
-`limits_set=true`, and (when requested) exactly one matching client position
-row with the authorized seven-symbol participant, expected `account_type` (`2`
-for a normal client, locked BF semantics `1` for client code `000`), and
-`xpos=0`.
+snapshot-complete, USERORDERBOOK `periodic_snapshot_consistent=true`, exactly
+one matching seven-symbol client limit row with `limits_set=true`, and (when
+requested) either exactly one matching client position row with the authorized
+seven-symbol participant, expected `account_type` (`2` for a normal client,
+locked BF semantics `1` for client code `000`), and `xpos=0`, or the accepted
+POS-anchor/TRADE-replay evidence class described above. The receipt also binds
+the POS anchor fields, replay completion and participant deal counts, the
+reconstructed target `xpos`, and the active own-order census.
 
 ## Profile and ABI controls
 
@@ -120,6 +134,9 @@ actual concrete transport and fake CGate runtime for:
   missing or non-tradable session, missing or wrong client limit row, non-zero starting
   position, marketable and out-of-distance prices, unavailable
   p2mqreply/publisher, and receipt-persistence refusal;
+- LiveTestPreSend's typed no-send barrier after a complete receipt, including
+  publisher/reply identity validation and the POS-anchor flatness
+  reconstruction fixture;
 - cleanup posting after the target AGGR20 has become stale.
 
 The existing lifecycle scenario executable retains the transport-neutral V2
@@ -155,20 +172,43 @@ evidence may remain market-safe.
 
 ## Verification and stop
 
-The final offline validation was green:
+The final offline validation is recorded here after the bounded checks:
 
 | Check | Result |
 |---|---:|
-| Full CTest | 155/155 pass |
-| PLAZA label | 45/45 pass |
-| TWIME label | 74/74 pass |
-| Sanitizer label | 66/66 pass |
-| .NET ABI checks | 2/2 pass |
-| Changed-target ASan/UBSan | 3/3 pass |
-| No-test/no-operator minimal build | 57/57 build steps |
-| `git diff --check`, source/repo style, Unicode | pass |
-| Native offline plan/privacy check | pass |
-| MOEX/broker/network/live order activity | none |
+| Full CTest | 157/157 passed |
+| PLAZA label | 47/47 passed |
+| TWIME label | 74/74 passed |
+| Sanitizer label | 66/66 passed (ASan leak detection disabled for AppleClang) |
+| .NET ABI checks | 2/2 passed |
+| Changed-target ASan/UBSan | 3/3 passed (ASan leak detection disabled for AppleClang) |
+| No-test/no-operator minimal build | passed |
+| `git diff --check`, source/repo style, Unicode | passed |
+| Native offline plan/privacy check | passed |
+| MOEX/broker/network/live order activity | no order, `cg_pub_msgnew`, or `cg_pub_post`; publisher/reply open-only observation stopped `NOT_READY` |
 
-Do not start the live TEST transport. This branch is ready for a draft review
-PR only; it does not authorize a live order.
+The offline transport is ready for review. The bounded LiveTestPreSend gate,
+if run after the offline checks, may open the TEST read-side services and
+publisher/reply objects, persist one redacted receipt, and invoke only the
+typed `SEND_DISABLED_PRE_SEND_PHASE` barrier. It must prove zero publisher
+message allocations/posts and never authorizes a live order. PR #31 and any
+send-capable transport remain out of scope.
+
+## Bounded T1 pre-send observation
+
+The read-only `LiveTestPreSend` observation on 2026-08-28 at approximately
+18:15 UTC used one generated publisher identity for both `p2mq` and
+`p2mqreply`. The publisher reached ACTIVE and the matching reply listener
+reached ACTIVE; no publisher message allocation or post was attempted. POS,
+TRADE, USERORDERBOOK, PART, SESSIONSTATE, and INSTRUMENTSTATE reached the
+observed states reported by the temporary operator probe, with
+`USERORDERBOOK.periodic_snapshot_consistent=true` and no active own orders.
+
+The gate was not order-ready in this external T1 window: REFDATA did not
+reach snapshot-complete/ONLINE before the bounded stop, the candidate
+`RIU6` mapped to session `11695` whose session and instrument public states
+were both `0`, and no target two-sided AGGR20 BBO was available. Consequently
+there is no execution-safety receipt and the typed post barrier was not
+entered. This is an external `NOT_READY` result, not a relaxed repository
+gate; a future order-ready window must satisfy every existing condition before
+the disabled barrier can be exercised.

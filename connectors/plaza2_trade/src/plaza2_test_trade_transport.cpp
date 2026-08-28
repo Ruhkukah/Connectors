@@ -1,5 +1,7 @@
 #include "moex/plaza2_trade/plaza2_test_trade_transport.hpp"
 
+#include "moex/plaza2/cgate/plaza2_private_state_bridge.hpp"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -141,6 +143,44 @@ std::string resolve_ini(std::string value, const std::filesystem::path& config_d
 bool loopback_connection(std::string_view settings) {
     return settings.find("127.0.0.1") != std::string_view::npos ||
            settings.find("localhost") != std::string_view::npos || settings.find("::1") != std::string_view::npos;
+}
+
+std::optional<std::string> setting_value(std::string_view settings, std::string_view key) {
+    std::size_t begin = 0;
+    while (begin <= settings.size()) {
+        const auto end = settings.find(';', begin);
+        const auto token =
+            settings.substr(begin, end == std::string_view::npos ? settings.size() - begin : end - begin);
+        const auto equals = token.find('=');
+        if (equals != std::string_view::npos && token.substr(0, equals) == key) {
+            return std::string(token.substr(equals + 1));
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        begin = end + 1;
+    }
+    return std::nullopt;
+}
+
+Plaza2Error validate_publisher_reply_identity(const Plaza2TestSessionHostConfig& config,
+                                              std::string_view reply_settings) {
+    if (config.publisher_name.empty()) {
+        return invalid("publisher_name must be provided explicitly");
+    }
+    const auto publisher_name = setting_value(config.publisher_settings, "name");
+    if (config.mode == Plaza2TestSessionHostMode::LiveTestPreSend &&
+        (!publisher_name.has_value() || *publisher_name != config.publisher_name)) {
+        return invalid("LiveTestPreSend publisher_settings must contain the configured unique name");
+    }
+    if (publisher_name.has_value() && *publisher_name != config.publisher_name) {
+        return invalid("publisher_settings name contradicts publisher_name");
+    }
+    const auto reply_name = setting_value(reply_settings, "ref");
+    if (!reply_name.has_value() || *reply_name != config.publisher_name) {
+        return invalid("p2mqreply_settings ref must exactly match publisher_name");
+    }
+    return {};
 }
 
 std::string json_escape_local(std::string_view value) {
@@ -286,232 +326,7 @@ std::size_t stream_index(const EngineState& state, StreamCode code) {
     return state.streams.size();
 }
 
-class PrivateProjectorBridge final : public Plaza2ListenerEventHandler {
-  public:
-    explicit PrivateProjectorBridge(private_state::Plaza2PrivateStateProjector& projector) : projector_(projector) {
-        scenario_.scenario_id = "plaza2_test_trade_transport_private_state";
-        scenario_.description = "offline fake CGate private-state bridge";
-        scenario_.metadata_version = 1;
-    }
-
-    void reset(std::span<const Plaza2TestTradeStreamConfig> streams) {
-        projector_.reset();
-        state_ = {};
-        pending_row_deltas_.assign(streams.size(), 0);
-        for (const auto& stream : streams) {
-            const auto* descriptor = plaza2::generated::FindStreamByCode(stream.stream_code);
-            state_.streams.push_back({
-                .stream_code = stream.stream_code,
-                .stream_name = descriptor == nullptr ? std::string_view{} : descriptor->stream_name,
-            });
-        }
-        callback_error_.clear();
-    }
-
-    void begin_run() {
-        state_.open = true;
-        state_.closed = false;
-        projector_.on_event(scenario_, EventSpec{.kind = EventKind::kOpen}, state_);
-    }
-
-    void end_run() {
-        state_.closed = true;
-        state_.online = false;
-        state_.transaction_open = false;
-        for (auto& stream : state_.streams) {
-            stream.online = false;
-            stream.snapshot_complete = false;
-        }
-        projector_.on_event(scenario_, EventSpec{.kind = EventKind::kClose}, state_);
-    }
-
-    [[nodiscard]] const std::string& callback_error() const noexcept {
-        return callback_error_;
-    }
-
-    Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override {
-        try {
-            switch (event.kind) {
-            case Plaza2ListenerEventKind::Open:
-            case Plaza2ListenerEventKind::Timeout:
-                return {};
-            case Plaza2ListenerEventKind::Close:
-                return close_stream(event.stream_code);
-            case Plaza2ListenerEventKind::TransactionBegin:
-                return begin_transaction(event.stream_code);
-            case Plaza2ListenerEventKind::TransactionCommit:
-                return commit_transaction(event.stream_code);
-            case Plaza2ListenerEventKind::StreamData:
-                return stream_data(event);
-            case Plaza2ListenerEventKind::Online:
-                return online(event.stream_code);
-            case Plaza2ListenerEventKind::LifeNum:
-                if (state_.has_lifenum && state_.last_lifenum == event.unsigned_value) {
-                    return {};
-                }
-                state_.has_lifenum = true;
-                state_.last_lifenum = event.unsigned_value;
-                state_.online = false;
-                for (auto& stream : state_.streams) {
-                    stream.online = false;
-                    stream.snapshot_complete = false;
-                }
-                projector_.on_event(
-                    scenario_, EventSpec{.kind = EventKind::kLifeNum, .numeric_value = event.unsigned_value}, state_);
-                return {};
-            case Plaza2ListenerEventKind::ClearDeleted:
-                return clear_deleted(event.stream_code);
-            case Plaza2ListenerEventKind::ReplState:
-                state_.last_replstate.assign(event.text_value);
-                projector_.on_event(scenario_, EventSpec{.kind = EventKind::kReplState}, state_);
-                return {};
-            }
-        } catch (const std::exception& error) {
-            callback_error_ = error.what();
-            return invalid(callback_error_, Plaza2ErrorCode::CallbackFailed);
-        } catch (...) {
-            callback_error_ = "private-state bridge failed with an unknown exception";
-            return invalid(callback_error_, Plaza2ErrorCode::CallbackFailed);
-        }
-        return {};
-    }
-
-  private:
-    Plaza2Error ordering(std::string message) {
-        callback_error_ = message;
-        return invalid(std::move(message), Plaza2ErrorCode::AdapterState);
-    }
-
-    Plaza2Error close_stream(StreamCode code) {
-        const auto index = stream_index(state_, code);
-        if (index == state_.streams.size()) {
-            return ordering("private-state close for unknown stream");
-        }
-        state_.streams[index].online = false;
-        state_.streams[index].snapshot_complete = false;
-        state_.online =
-            std::any_of(state_.streams.begin(), state_.streams.end(), [](const auto& stream) { return stream.online; });
-        projector_.on_event(scenario_, EventSpec{.kind = EventKind::kClose, .stream_code = code}, state_);
-        return {};
-    }
-
-    Plaza2Error begin_transaction(StreamCode code) {
-        const auto index = stream_index(state_, code);
-        if (index == state_.streams.size()) {
-            return ordering("private-state transaction for unknown stream");
-        }
-        if (state_.transaction_open) {
-            return ordering("private-state nested transaction");
-        }
-        std::fill(pending_row_deltas_.begin(), pending_row_deltas_.end(), 0);
-        state_.transaction_open = true;
-        projector_.on_event(scenario_, EventSpec{.kind = EventKind::kTransactionBegin, .stream_code = code}, state_);
-        return {};
-    }
-
-    Plaza2Error commit_transaction(StreamCode code) {
-        const auto index = stream_index(state_, code);
-        if (index == state_.streams.size() || !state_.transaction_open) {
-            return ordering("private-state transaction commit without begin");
-        }
-        for (std::size_t stream = 0; stream < pending_row_deltas_.size(); ++stream) {
-            state_.streams[stream].committed_row_count += pending_row_deltas_[stream];
-        }
-        std::fill(pending_row_deltas_.begin(), pending_row_deltas_.end(), 0);
-        state_.transaction_open = false;
-        ++state_.commit_count;
-        const EventSpec event{.kind = EventKind::kTransactionCommit, .stream_code = code};
-        projector_.on_event(scenario_, event, state_);
-        projector_.on_transaction_commit(scenario_, event, state_);
-        return {};
-    }
-
-    Plaza2Error stream_data(const Plaza2ListenerEvent& event) {
-        const auto index = stream_index(state_, event.stream_code);
-        if (index == state_.streams.size() || !state_.transaction_open) {
-            return ordering("private-state row outside a declared transaction");
-        }
-        text_storage_.clear();
-        fields_.clear();
-        text_storage_.reserve(event.fields.size());
-        fields_.reserve(event.fields.size());
-        for (const auto& field : event.fields) {
-            FieldValueSpec value{.field_code = field.field_code};
-            switch (field.kind) {
-            case Plaza2DecodedValueKind::None:
-                continue;
-            case Plaza2DecodedValueKind::SignedInteger:
-                value.kind = plaza2::fake::ValueKind::kSignedInteger;
-                value.signed_value = field.signed_value;
-                break;
-            case Plaza2DecodedValueKind::UnsignedInteger:
-                value.kind = plaza2::fake::ValueKind::kUnsignedInteger;
-                value.unsigned_value = field.unsigned_value;
-                break;
-            case Plaza2DecodedValueKind::Decimal:
-                value.kind = plaza2::fake::ValueKind::kDecimal;
-                text_storage_.emplace_back(field.text_value);
-                value.text_value = text_storage_.back();
-                break;
-            case Plaza2DecodedValueKind::FloatingPoint:
-                value.kind = plaza2::fake::ValueKind::kFloatingPoint;
-                text_storage_.emplace_back(field.text_value);
-                value.text_value = text_storage_.back();
-                break;
-            case Plaza2DecodedValueKind::String:
-                value.kind = plaza2::fake::ValueKind::kString;
-                text_storage_.emplace_back(field.text_value);
-                value.text_value = text_storage_.back();
-                break;
-            case Plaza2DecodedValueKind::Timestamp:
-                value.kind = plaza2::fake::ValueKind::kTimestamp;
-                value.unsigned_value = field.unsigned_value;
-                break;
-            }
-            fields_.push_back(std::move(value));
-        }
-        const EventSpec fake_event{
-            .kind = EventKind::kStreamData, .stream_code = event.stream_code, .table_code = event.table_code};
-        const RowSpec row{.stream_code = event.stream_code,
-                          .table_code = event.table_code,
-                          .field_count = static_cast<std::uint32_t>(fields_.size())};
-        projector_.on_stream_row(scenario_, fake_event, row, fields_, state_);
-        ++pending_row_deltas_[index];
-        return {};
-    }
-
-    Plaza2Error online(StreamCode code) {
-        const auto index = stream_index(state_, code);
-        if (index == state_.streams.size()) {
-            return ordering("private-state ONLINE for unknown stream");
-        }
-        state_.streams[index].online = true;
-        state_.streams[index].snapshot_complete = true;
-        state_.online = !state_.streams.empty() && std::all_of(state_.streams.begin(), state_.streams.end(),
-                                                               [](const auto& stream) { return stream.online; });
-        projector_.on_event(scenario_, EventSpec{.kind = EventKind::kOnline, .stream_code = code}, state_);
-        return {};
-    }
-
-    Plaza2Error clear_deleted(StreamCode code) {
-        const auto index = stream_index(state_, code);
-        if (index == state_.streams.size()) {
-            return ordering("private-state CLEARDELETED for unknown stream");
-        }
-        ++state_.streams[index].clear_deleted_count;
-        projector_.on_event(scenario_, EventSpec{.kind = EventKind::kClearDeleted, .stream_code = code}, state_);
-        return {};
-    }
-
-    private_state::Plaza2PrivateStateProjector& projector_;
-    plaza2::fake::ScenarioSpec scenario_{};
-    EngineState state_{};
-    std::vector<std::uint64_t> pending_row_deltas_;
-    std::vector<std::string> text_storage_;
-    std::vector<FieldValueSpec> fields_;
-    std::string callback_error_;
-};
-
+using PrivateProjectorBridge = cgate::Plaza2PrivateStateBridge;
 class AggrProjectorBridge final : public Plaza2ListenerEventHandler {
   public:
     explicit AggrProjectorBridge(cgate::Plaza2Aggr20BookProjector& projector) : projector_(projector) {}
@@ -798,6 +613,18 @@ std::string authorized_order_intent_sha256(const Plaza2AuthorizedOrderIntent& in
     return cgate::plaza2_sha256_hex(canonical_authorized_order_intent_json(intent));
 }
 
+std::string_view position_evidence_class_name(PositionEvidenceClass value) noexcept {
+    switch (value) {
+    case PositionEvidenceClass::ExactZeroPosRow:
+        return "EXACT_ZERO_POS_ROW";
+    case PositionEvidenceClass::FlatByPosSnapshotAndTradeReplay:
+        return "FLAT_BY_POS_SNAPSHOT_AND_TRADE_REPLAY";
+    case PositionEvidenceClass::Unresolved:
+        return "UNRESOLVED";
+    }
+    return "UNRESOLVED";
+}
+
 struct Plaza2TestSessionHost::Impl {
     explicit Impl(Plaza2TestSessionHostConfig initial)
         : config(std::move(initial)), private_bridge(private_projector), aggr_bridge(aggr_projector) {}
@@ -809,8 +636,19 @@ struct Plaza2TestSessionHost::Impl {
         if (config.runtime.environment != cgate::Plaza2Environment::Test) {
             return invalid("TEST session host refuses non-TEST environment");
         }
-        if (!loopback_connection(config.connection_settings)) {
-            return invalid("offline TEST session host requires a loopback connection setting");
+        const bool loopback = loopback_connection(config.connection_settings);
+        if (config.mode == Plaza2TestSessionHostMode::OfflineFake && !loopback) {
+            return invalid("OfflineFake session host requires a loopback connection setting");
+        }
+        if (config.mode == Plaza2TestSessionHostMode::LiveTestPreSend) {
+            if (config.endpoint_host.empty()) {
+                return invalid("LiveTestPreSend requires endpoint_host for operator-gate validation");
+            }
+            const auto gate =
+                cgate::Plaza2ManualOperatorGate::validate_session_start(config.endpoint_host, config.arm_state);
+            if (!gate.allowed) {
+                return {.code = gate.error_code, .runtime_code = 0, .message = gate.reason};
+            }
         }
         if (!exact_required_private_streams(config.private_streams)) {
             return invalid("TEST session host requires the exact five private replication streams");
@@ -826,6 +664,14 @@ struct Plaza2TestSessionHost::Impl {
             config.aggr20_stream.settings.empty()) {
             return invalid("TEST session host requires runtime, connection, publisher, private, and AGGR20 settings");
         }
+        if (config.mode == Plaza2TestSessionHostMode::LiveTestPreSend && config.p2mqreply_settings.empty()) {
+            return invalid("LiveTestPreSend requires explicit p2mqreply_settings");
+        }
+        const auto effective_reply_settings =
+            config.p2mqreply_settings.empty() ? "p2mqreply://;ref=" + config.publisher_name : config.p2mqreply_settings;
+        if (const auto identity = validate_publisher_reply_identity(config, effective_reply_settings); identity) {
+            return identity;
+        }
         if (config.runtime.env_open_settings.find(kCredentialToken) != std::string::npos ||
             config.runtime.env_open_settings.find(kLegacyCredentialToken) != std::string::npos) {
             return invalid("TEST session host env_open_settings must use the CGate software-key token");
@@ -836,8 +682,12 @@ struct Plaza2TestSessionHost::Impl {
             probe.compatibility == cgate::Plaza2Compatibility::Unknown) {
             return invalid("TEST runtime probe is incompatible", Plaza2ErrorCode::ProbeIncompatible);
         }
-        if (!probe.fake_runtime_marker_present) {
-            return invalid("V1 TEST transport requires the fake CGate runtime marker",
+        if (config.mode == Plaza2TestSessionHostMode::OfflineFake && !probe.fake_runtime_marker_present) {
+            return invalid("OfflineFake TEST transport requires the fake CGate runtime marker",
+                           Plaza2ErrorCode::ProbeIncompatible);
+        }
+        if (config.mode == Plaza2TestSessionHostMode::LiveTestPreSend && !probe.trading_capable) {
+            return invalid("LiveTestPreSend requires a trading-capable CGate runtime",
                            Plaza2ErrorCode::ProbeIncompatible);
         }
         const auto credentials = load_secret(config.credentials);
@@ -845,16 +695,23 @@ struct Plaza2TestSessionHost::Impl {
         if (!credentials.has_value() || !software_key.has_value()) {
             return invalid("TEST session host secret source is missing or empty");
         }
+        credentials_value = credentials.value();
+        software_key_value = software_key.value();
         const auto contains_token = [](std::string_view value, std::string_view token) {
             return value.find(token) != std::string_view::npos;
         };
         const auto requires_credentials = contains_token(config.runtime.env_open_settings, kCredentialToken) ||
                                           contains_token(config.runtime.env_open_settings, kLegacyCredentialToken) ||
                                           contains_token(config.connection_settings, kCredentialToken) ||
-                                          contains_token(config.publisher_settings, kCredentialToken);
+                                          contains_token(config.connection_settings, kLegacyCredentialToken) ||
+                                          contains_token(config.publisher_settings, kCredentialToken) ||
+                                          contains_token(config.publisher_settings, kLegacyCredentialToken) ||
+                                          contains_token(effective_reply_settings, kCredentialToken) ||
+                                          contains_token(effective_reply_settings, kLegacyCredentialToken);
         const auto requires_software_key = contains_token(config.runtime.env_open_settings, kSoftwareKeyToken) ||
                                            contains_token(config.connection_settings, kSoftwareKeyToken) ||
-                                           contains_token(config.publisher_settings, kSoftwareKeyToken);
+                                           contains_token(config.publisher_settings, kSoftwareKeyToken) ||
+                                           contains_token(effective_reply_settings, kSoftwareKeyToken);
         if ((requires_credentials && credentials->empty()) || (requires_software_key && software_key->empty())) {
             return invalid("TEST session host settings require a configured secret source");
         }
@@ -876,15 +733,30 @@ struct Plaza2TestSessionHost::Impl {
         std::vector<Plaza2TestTradeStreamConfig> all_private_streams = config.private_streams;
         all_private_streams.insert(all_private_streams.end(), config.status_streams.begin(),
                                    config.status_streams.end());
-        private_bridge.reset(all_private_streams);
-        private_bridge.begin_run();
+        std::vector<StreamCode> bridge_stream_codes;
+        bridge_stream_codes.reserve(all_private_streams.size());
+        for (const auto& stream : all_private_streams) {
+            bridge_stream_codes.push_back(stream.stream_code);
+        }
+        if (const auto bridge_error = private_bridge.reset(bridge_stream_codes); bridge_error) {
+            return bridge_error;
+        }
+        if (const auto bridge_error = private_bridge.begin_run(); bridge_error) {
+            return bridge_error;
+        }
         bridge_started = true;
         reply_bridge.clear();
         aggr_projector.reset();
         aggr_bridge.reset();
+        deferred_trade_stream.reset();
+        trade_replay_anchor_is_ready = !config.trade_replay_from_pos_anchor;
 
         private_listeners.reserve(all_private_streams.size());
         for (const auto& stream : all_private_streams) {
+            if (config.trade_replay_from_pos_anchor && stream.stream_code == StreamCode::kFortsTradeRepl) {
+                deferred_trade_stream = stream;
+                continue;
+            }
             private_listeners.emplace_back();
             auto& listener = private_listeners.back();
             const auto settings = resolve_scheme(
@@ -908,15 +780,6 @@ struct Plaza2TestSessionHost::Impl {
         if (const auto error = aggr_listener.open(config.aggr20_stream.open_settings); error) {
             return error;
         }
-        if (const auto error =
-                reply_listener.create(connection, cgate::kNoStreamCode, "p2mqreply://;ref=PUB", &reply_bridge);
-            error) {
-            return error;
-        }
-        if (const auto error = reply_listener.open({}); error) {
-            return error;
-        }
-        reply_listener_is_open = true;
         if (const auto error = publisher.create(
                 connection, render_copy(config.publisher_settings, credentials.value(), software_key.value()));
             error) {
@@ -926,7 +789,81 @@ struct Plaza2TestSessionHost::Impl {
             return error;
         }
         publisher_is_open = true;
+        if (const auto error = reply_listener.create(
+                connection, cgate::kNoStreamCode,
+                render_copy(effective_reply_settings, credentials.value(), software_key.value()), &reply_bridge);
+            error) {
+            return error;
+        }
+        if (const auto error = reply_listener.open(
+                render_copy(config.p2mqreply_open_settings, credentials.value(), software_key.value()));
+            error) {
+            return error;
+        }
+        reply_listener_is_open = true;
         started = true;
+        return {};
+    }
+
+    Plaza2Error open_deferred_trade_replay_if_anchored() {
+        if (!deferred_trade_stream.has_value() || trade_replay_anchor_is_ready) {
+            return {};
+        }
+        const auto health = private_projector.stream_health();
+        const auto pos_health = std::find_if(health.begin(), health.end(), [](const auto& stream) {
+            return stream.stream_code == StreamCode::kFortsPosRepl;
+        });
+        const bool fake_anchor_time = probe.fake_runtime_marker_present && (pos_health != health.end()) &&
+                                      (pos_health->last_trades_rev != 0 || pos_health->last_trades_lifenum != 0);
+        if (pos_health == health.end() || !pos_health->online || !pos_health->snapshot_complete ||
+            (pos_health->last_server_time == 0 && !fake_anchor_time)) {
+            return {};
+        }
+
+        std::string open_settings = deferred_trade_stream->open_settings;
+        if (open_settings.empty()) {
+            open_settings = "mode=snapshot+online";
+        }
+        replace_all(open_settings, "${POS_TRADES_REV}", std::to_string(pos_health->last_trades_rev));
+        replace_all(open_settings, "${POS_TRADES_LIFENUM}", std::to_string(pos_health->last_trades_lifenum));
+        const auto append_or_validate = [&](std::string_view key, std::string value) -> Plaza2Error {
+            const auto existing = setting_value(open_settings, key);
+            if (existing.has_value() && *existing != value) {
+                return invalid("FORTS_TRADE_REPL open_settings contradicts the negotiated POS.info anchor");
+            }
+            if (!existing.has_value()) {
+                open_settings += ";";
+                open_settings += key;
+                open_settings += "=";
+                open_settings += value;
+            }
+            return {};
+        };
+        if (const auto error = append_or_validate("lifenum", std::to_string(pos_health->last_trades_lifenum)); error) {
+            return error;
+        }
+        if (const auto error = append_or_validate("rev.deal", std::to_string(pos_health->last_trades_rev)); error) {
+            return error;
+        }
+        if (const auto error = append_or_validate("rev.heart_beat", std::to_string(pos_health->last_trades_rev));
+            error) {
+            return error;
+        }
+
+        private_listeners.emplace_back();
+        auto& listener = private_listeners.back();
+        const auto settings =
+            resolve_scheme(render_copy(deferred_trade_stream->settings, credentials_value, software_key_value),
+                           probe.layout.scheme_path);
+        if (const auto error =
+                listener.create(connection, deferred_trade_stream->stream_code, settings, &private_bridge);
+            error) {
+            return error;
+        }
+        if (const auto error = listener.open(open_settings); error) {
+            return error;
+        }
+        trade_replay_anchor_is_ready = true;
         return {};
     }
 
@@ -944,6 +881,9 @@ struct Plaza2TestSessionHost::Impl {
                 return invalid(private_bridge.callback_error(), Plaza2ErrorCode::CallbackFailed);
             }
             return error;
+        }
+        if (const auto replay_error = open_deferred_trade_replay_if_anchored(); replay_error) {
+            return replay_error;
         }
         if (!reply_bridge.error().empty()) {
             return invalid(reply_bridge.error(), Plaza2ErrorCode::CallbackFailed);
@@ -975,11 +915,13 @@ struct Plaza2TestSessionHost::Impl {
             static_cast<void>(it->destroy());
         }
         private_listeners.clear();
+        deferred_trade_stream.reset();
+        trade_replay_anchor_is_ready = false;
         static_cast<void>(connection.close());
         static_cast<void>(connection.destroy());
         static_cast<void>(env.close());
         if (bridge_started) {
-            private_bridge.end_run();
+            static_cast<void>(private_bridge.end_run());
             bridge_started = false;
         }
         started = false;
@@ -1012,8 +954,12 @@ struct Plaza2TestSessionHost::Impl {
     PrivateProjectorBridge private_bridge;
     AggrProjectorBridge aggr_bridge;
     ReplyBridge reply_bridge;
+    std::optional<Plaza2TestTradeStreamConfig> deferred_trade_stream;
+    std::string credentials_value;
+    std::string software_key_value;
     bool reply_listener_is_open{false};
     bool publisher_is_open{false};
+    bool trade_replay_anchor_is_ready{false};
     bool bridge_started{false};
     bool started{false};
 };
@@ -1057,6 +1003,12 @@ bool Plaza2TestSessionHost::p2mqreply_open() const noexcept {
 bool Plaza2TestSessionHost::publisher_open() const noexcept {
     return impl_->publisher_is_open;
 }
+Plaza2TestSessionHostMode Plaza2TestSessionHost::mode() const noexcept {
+    return impl_->config.mode;
+}
+bool Plaza2TestSessionHost::trade_replay_anchor_ready() const noexcept {
+    return impl_->trade_replay_anchor_is_ready;
+}
 bool Plaza2TestSessionHost::aggr_online() const noexcept {
     return impl_->aggr_bridge.online();
 }
@@ -1075,6 +1027,17 @@ const std::string& Plaza2TestSessionHost::last_callback_error() const noexcept {
 Plaza2PublisherMessageResult Plaza2TestSessionHost::post(std::string_view message_name,
                                                          std::span<const std::byte> payload, std::uint32_t user_id,
                                                          bool need_reply) {
+    if (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestPreSend) {
+        Plaza2PublisherMessageResult result;
+        result.certainty = cgate::Plaza2SubmissionCertainty::DefinitelyNotSent;
+        result.validation_error = {
+            .code = cgate::Plaza2ErrorCode::SendDisabledPreSendPhase,
+            .runtime_code = 0,
+            .message = "SEND_DISABLED_PRE_SEND_PHASE",
+        };
+        result.post_invoked = false;
+        return result;
+    }
     Plaza2TradeCommandKind kind = Plaza2TradeCommandKind::AddOrder;
     if (message_name == "DelOrder") {
         kind = Plaza2TradeCommandKind::DelOrder;
@@ -1086,6 +1049,20 @@ Plaza2PublisherMessageResult Plaza2TestSessionHost::post(std::string_view messag
 }
 
 struct Plaza2TestTradeTransport::Impl {
+    struct PositionEvidenceAssessment {
+        PositionEvidenceClass classification{PositionEvidenceClass::Unresolved};
+        bool zero_starting_position_proven{false};
+        bool position_snapshot_complete{false};
+        std::int64_t trades_rev{0};
+        std::int64_t trades_lifenum{0};
+        std::int64_t server_time{0};
+        bool trade_replay_complete{false};
+        std::size_t participant_user_deal_count{0};
+        std::size_t participant_user_multileg_deal_count{0};
+        std::int64_t reconstructed_target_xpos{0};
+        std::size_t active_own_order_count{0};
+    };
+
     explicit Impl(Plaza2TestTradeTransportConfig initial) : config(std::move(initial)), host(config.host) {}
 
     [[nodiscard]] const Plaza2AuthorizedOrderIntent* intent() const noexcept {
@@ -1137,6 +1114,113 @@ struct Plaza2TestTradeTransport::Impl {
             return intent()->broker_code + intent()->client_code;
         }
         return config.observation_client_code;
+    }
+
+    [[nodiscard]] const private_state::StreamHealthSnapshot* stream_health(StreamCode stream_code) const noexcept {
+        const auto health = host.private_state().stream_health();
+        const auto found = std::find_if(health.begin(), health.end(), [stream_code](const auto& stream) {
+            return stream.stream_code == stream_code;
+        });
+        return found == health.end() ? nullptr : &*found;
+    }
+
+    [[nodiscard]] bool participant_trade(const private_state::OwnTradeSnapshot& trade) const {
+        const auto participant = participant_code();
+        if (participant.empty()) {
+            return false;
+        }
+        return trade.code_buy == participant || trade.code_sell == participant || trade.login_buy == participant ||
+               trade.login_sell == participant;
+    }
+
+    [[nodiscard]] bool active_participant_order(const private_state::OwnOrderSnapshot& order) const {
+        if (order.isin_id != target_isin()) {
+            return false;
+        }
+        // Trade-replication history alone is not an active USERORDERBOOK
+        // order.  Only an order currently present in a USERORDERBOOK table
+        // can block the pre-send flatness gate.
+        if (!order.from_user_book && !order.from_current_day) {
+            return false;
+        }
+        const auto* authorized = intent();
+        if (authorized != nullptr && order.ext_id != 0 && order.ext_id != authorized->ext_id) {
+            return false;
+        }
+        const auto participant = participant_code();
+        if (!participant.empty() && order.client_code != participant && order.login_from != participant &&
+            (authorized == nullptr || order.client_code != authorized->client_code)) {
+            return false;
+        }
+        return order.public_amount_rest > 0 || order.private_amount_rest > 0;
+    }
+
+    [[nodiscard]] PositionEvidenceAssessment assess_position_evidence() const {
+        PositionEvidenceAssessment assessment;
+        const auto target = target_isin();
+        const auto* position_health = stream_health(StreamCode::kFortsPosRepl);
+        if (position_health != nullptr) {
+            assessment.position_snapshot_complete = position_health->online && position_health->snapshot_complete;
+            assessment.trades_rev = position_health->last_trades_rev;
+            assessment.trades_lifenum = position_health->last_trades_lifenum;
+            assessment.server_time = position_health->last_server_time;
+        }
+
+        for (const auto& trade : host.private_state().own_trades()) {
+            if (trade.isin_id != target || !participant_trade(trade)) {
+                continue;
+            }
+            if (trade.multileg) {
+                ++assessment.participant_user_multileg_deal_count;
+            } else {
+                ++assessment.participant_user_deal_count;
+            }
+        }
+        assessment.active_own_order_count = static_cast<std::size_t>(
+            std::count_if(host.private_state().own_orders().begin(), host.private_state().own_orders().end(),
+                          [&](const auto& order) { return active_participant_order(order); }));
+
+        const auto expected_account_type = expected_position_account_type();
+        const auto positions = host.private_state().positions();
+        const auto matching_positions = std::count_if(positions.begin(), positions.end(), [&](const auto& position) {
+            return position.scope == private_state::PositionScope::kClient && position.isin_id == target &&
+                   position.account_code == participant_code() && position.account_type == expected_account_type;
+        });
+        if (matching_positions == 1) {
+            const auto position = std::find_if(positions.begin(), positions.end(), [&](const auto& candidate) {
+                return candidate.scope == private_state::PositionScope::kClient && candidate.isin_id == target &&
+                       candidate.account_code == participant_code() && candidate.account_type == expected_account_type;
+            });
+            assessment.reconstructed_target_xpos = position->xpos;
+            if (position->xpos == 0) {
+                assessment.classification = PositionEvidenceClass::ExactZeroPosRow;
+                assessment.zero_starting_position_proven = true;
+                return assessment;
+            }
+            return assessment;
+        }
+        if (matching_positions != 0 || !config.host.trade_replay_from_pos_anchor || !host.trade_replay_anchor_ready() ||
+            position_health == nullptr || !assessment.position_snapshot_complete ||
+            (assessment.server_time == 0 && !(host.probe_report().fake_runtime_marker_present &&
+                                              (assessment.trades_rev != 0 || assessment.trades_lifenum != 0)))) {
+            return assessment;
+        }
+
+        const auto* trade_health = stream_health(StreamCode::kFortsTradeRepl);
+        const bool fake_trade_replay = host.probe_report().fake_runtime_marker_present && trade_health != nullptr &&
+                                       trade_health->committed_row_count != 0;
+        if (trade_health != nullptr && trade_health->online && trade_health->snapshot_complete &&
+            (trade_health->last_server_time != 0 || fake_trade_replay) &&
+            (assessment.server_time == 0 || trade_health->last_server_time >= assessment.server_time)) {
+            assessment.trade_replay_complete = true;
+        }
+        if (assessment.trade_replay_complete && assessment.participant_user_deal_count == 0 &&
+            assessment.participant_user_multileg_deal_count == 0 && assessment.active_own_order_count == 0) {
+            assessment.classification = PositionEvidenceClass::FlatByPosSnapshotAndTradeReplay;
+            assessment.zero_starting_position_proven = true;
+            assessment.reconstructed_target_xpos = 0;
+        }
+        return assessment;
     }
 
     Plaza2Error validate_intent() const {
@@ -1288,6 +1372,17 @@ struct Plaza2TestTradeTransport::Impl {
         if (const auto error = host.poll(); error) {
             return error;
         }
+        if (config.host.trade_replay_from_pos_anchor && host.trade_replay_anchor_ready()) {
+            const auto trade_health =
+                std::find_if(host.private_state().stream_health().begin(), host.private_state().stream_health().end(),
+                             [](const auto& stream) { return stream.stream_code == StreamCode::kFortsTradeRepl; });
+            if (trade_health == host.private_state().stream_health().end() || !trade_health->online ||
+                !trade_health->snapshot_complete) {
+                if (const auto error = host.poll(); error) {
+                    return error;
+                }
+            }
+        }
         if (!host.aggr_online() || !host.aggr_snapshot_complete()) {
             return invalid("target AGGR20 replication is not online and snapshot-complete");
         }
@@ -1345,28 +1440,21 @@ struct Plaza2TestTradeTransport::Impl {
             return invalid(matching_limit_count == 0 ? "applicable committed client limit row is missing or unset"
                                                      : "multiple applicable committed client limit rows are ambiguous");
         }
-        const auto expected_account_type = expected_position_account_type();
-        const auto matching_positions = std::count_if(
-            private_state.positions().begin(), private_state.positions().end(), [&](const auto& candidate) {
-                return candidate.scope == plaza2::private_state::PositionScope::kClient &&
-                       candidate.isin_id == target && candidate.account_code == participant_code() &&
-                       candidate.account_type == expected_account_type;
-            });
-        if (require_zero_starting_position() && matching_positions != 1) {
-            return invalid(matching_positions == 0
-                               ? "target starting position row is missing or has the wrong account type"
-                               : "multiple applicable target starting position rows are ambiguous");
-        }
-        if (require_zero_starting_position()) {
-            const auto position = std::find_if(
-                private_state.positions().begin(), private_state.positions().end(), [&](const auto& candidate) {
-                    return candidate.scope == plaza2::private_state::PositionScope::kClient &&
-                           candidate.isin_id == target && candidate.account_code == participant_code() &&
-                           candidate.account_type == expected_account_type;
+        const auto position_evidence = assess_position_evidence();
+        if (require_zero_starting_position() && !position_evidence.zero_starting_position_proven) {
+            const auto any_target_account = std::count_if(
+                private_state.positions().begin(), private_state.positions().end(), [&](const auto& position) {
+                    return position.scope == plaza2::private_state::PositionScope::kClient &&
+                           position.isin_id == target && position.account_code == participant_code();
                 });
-            if (position->xpos != 0) {
-                return invalid("target starting position is not zero");
+            if (any_target_account != 0) {
+                return invalid("target starting position row has the wrong account type or is not zero");
             }
+            return invalid("target starting position evidence is unresolved (POS plus anchored TRADE replay required)");
+        }
+        if (position_evidence.active_own_order_count != 0 &&
+            host.mode() == Plaza2TestSessionHostMode::LiveTestPreSend) {
+            return invalid("target has active own orders in the current USERORDERBOOK state");
         }
         const auto private_ready =
             std::all_of(private_state.stream_health().begin(), private_state.stream_health().end(),
@@ -1376,7 +1464,12 @@ struct Plaza2TestTradeTransport::Impl {
                 return std::count_if(private_state.stream_health().begin(), private_state.stream_health().end(),
                                      [&](const auto& stream) { return stream.stream_code == required; }) == 1;
             });
-        if (!private_ready || !exact_private_set_present) {
+        const auto userorderbook = std::find_if(
+            private_state.stream_health().begin(), private_state.stream_health().end(),
+            [](const auto& stream) { return stream.stream_code == generated::StreamCode::kFortsUserorderbookRepl; });
+        const bool userorderbook_periodic_consistent =
+            userorderbook != private_state.stream_health().end() && userorderbook->periodic_snapshot_consistent;
+        if (!private_ready || !exact_private_set_present || !userorderbook_periodic_consistent) {
             return invalid("private replication is not online and snapshot-complete for every stream");
         }
         if (!host.probe_report().trading_capable) {
@@ -1413,6 +1506,7 @@ struct Plaza2TestTradeTransport::Impl {
             return candidate.scope == plaza2::private_state::PositionScope::kClient &&
                    candidate.account_code == participant_code() && candidate.limits_set;
         });
+        const auto position_evidence = assess_position_evidence();
         const auto expected_account_type = expected_position_account_type();
         const auto position =
             std::find_if(state.positions().begin(), state.positions().end(), [&](const auto& candidate) {
@@ -1424,7 +1518,7 @@ struct Plaza2TestTradeTransport::Impl {
             limit == state.limits().end()) {
             return invalid("execution-safety receipt lacks target refdata/session/limit evidence");
         }
-        if (require_zero_starting_position() && position == state.positions().end()) {
+        if (require_zero_starting_position() && !position_evidence.zero_starting_position_proven) {
             return invalid("execution-safety receipt lacks the required starting position evidence");
         }
 
@@ -1438,6 +1532,17 @@ struct Plaza2TestTradeTransport::Impl {
         if (position != state.positions().end()) {
             receipt.position = *position;
         }
+        receipt.position_evidence_class = position_evidence.classification;
+        receipt.zero_starting_position_proven = position_evidence.zero_starting_position_proven;
+        receipt.position_snapshot_complete = position_evidence.position_snapshot_complete;
+        receipt.position_trades_rev = position_evidence.trades_rev;
+        receipt.position_trades_lifenum = position_evidence.trades_lifenum;
+        receipt.position_server_time = position_evidence.server_time;
+        receipt.trade_replay_complete = position_evidence.trade_replay_complete;
+        receipt.participant_user_deal_count = position_evidence.participant_user_deal_count;
+        receipt.participant_user_multileg_deal_count = position_evidence.participant_user_multileg_deal_count;
+        receipt.reconstructed_target_xpos = position_evidence.reconstructed_target_xpos;
+        receipt.active_own_order_count = position_evidence.active_own_order_count;
         receipt.runtime_compatibility =
             std::string(cgate::plaza2_compatibility_name(host.probe_report().compatibility));
         receipt.runtime_scheme_sha256 = host.probe_report().scheme_drift.runtime_scheme_sha256;
@@ -1469,6 +1574,8 @@ struct Plaza2TestTradeTransport::Impl {
                 stream_json << "{\"code\":" << static_cast<std::uint32_t>(stream.stream_code)
                             << ",\"online\":" << (stream.online ? "true" : "false")
                             << ",\"snapshot_complete\":" << (stream.snapshot_complete ? "true" : "false")
+                            << ",\"periodic_snapshot_consistent\":"
+                            << (stream.periodic_snapshot_consistent ? "true" : "false")
                             << ",\"commit_sequence\":" << stream.last_commit_sequence << "}";
             }
             stream_json << "]";
@@ -1477,7 +1584,7 @@ struct Plaza2TestTradeTransport::Impl {
         receipt.local_age = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
                                                                                   scoped->committed_at);
         receipt.authorized_max_aggr20_age_ms = config.authorized_intent->max_aggr20_age_ms;
-        receipt.require_zero_starting_position = config.authorized_intent->require_zero_starting_position;
+        receipt.require_zero_starting_position = require_zero_starting_position();
         if (receipt.local_age > effective_max_aggr20_age()) {
             return invalid("execution-safety receipt observed a stale target AGGR20 snapshot");
         }
@@ -1485,6 +1592,14 @@ struct Plaza2TestTradeTransport::Impl {
         receipt.private_streams_ready =
             std::all_of(state.stream_health().begin(), state.stream_health().end(),
                         [](const auto& stream) { return stream.online && stream.snapshot_complete; });
+        const auto userorderbook =
+            std::find_if(state.stream_health().begin(), state.stream_health().end(), [](const auto& stream) {
+                return stream.stream_code == generated::StreamCode::kFortsUserorderbookRepl;
+            });
+        receipt.userorderbook_periodic_snapshot_consistent =
+            userorderbook != state.stream_health().end() && userorderbook->periodic_snapshot_consistent;
+        receipt.private_streams_ready =
+            receipt.private_streams_ready && receipt.userorderbook_periodic_snapshot_consistent;
         receipt.p2mqreply_open = host.p2mqreply_open();
         receipt.publisher_open = host.publisher_open();
         receipt.trading_capable = host.probe_report().trading_capable;
@@ -1504,7 +1619,7 @@ struct Plaza2TestTradeTransport::Impl {
 
         std::ostringstream json;
         json << "{\n"
-             << "  \"schema\": \"moex.plaza2.execution_safety.v1\",\n"
+             << "  \"schema\": \"moex.plaza2.execution_safety.v2\",\n"
              << "  \"authorized_intent_sha256\": \"" << receipt.authorized_intent_sha256 << "\",\n"
              << "  \"target_isin_id\": " << receipt.target_isin_id << ",\n"
              << "  \"top_bid\": " << scoped->top_bid->price_scaled << ",\n"
@@ -1536,11 +1651,26 @@ struct Plaza2TestTradeTransport::Impl {
              << "  \"limit_source_commit_sequence\": " << receipt.limit_source_commit_sequence << ",\n"
              << "  \"position_row_fingerprint_sha256\": \"" << receipt.position_fingerprint_sha256 << "\",\n"
              << "  \"position_source_commit_sequence\": " << receipt.position_source_commit_sequence << ",\n"
+             << "  \"position_evidence_class\": \"" << position_evidence_class_name(receipt.position_evidence_class)
+             << "\",\n"
+             << "  \"zero_starting_position_proven\": " << (receipt.zero_starting_position_proven ? "true" : "false")
+             << ",\n"
+             << "  \"position_snapshot_complete\": " << (receipt.position_snapshot_complete ? "true" : "false") << ",\n"
+             << "  \"position_trades_rev\": " << receipt.position_trades_rev << ",\n"
+             << "  \"position_trades_lifenum\": " << receipt.position_trades_lifenum << ",\n"
+             << "  \"position_server_time\": " << receipt.position_server_time << ",\n"
+             << "  \"trade_replay_complete\": " << (receipt.trade_replay_complete ? "true" : "false") << ",\n"
+             << "  \"participant_user_deal_count\": " << receipt.participant_user_deal_count << ",\n"
+             << "  \"participant_user_multileg_deal_count\": " << receipt.participant_user_multileg_deal_count << ",\n"
+             << "  \"reconstructed_target_xpos\": " << receipt.reconstructed_target_xpos << ",\n"
+             << "  \"active_own_order_count\": " << receipt.active_own_order_count << ",\n"
              << "  \"private_streams\": " << receipt.private_streams_json << ",\n"
              << "  \"passive_non_marketable\": " << (receipt.passive_non_marketable ? "true" : "false") << ",\n"
              << "  \"bbo_distance_allowed\": " << (receipt.bbo_distance_allowed ? "true" : "false") << ",\n"
              << "  \"quantity_one\": " << (receipt.quantity_one ? "true" : "false") << ",\n"
              << "  \"private_streams_ready\": " << (receipt.private_streams_ready ? "true" : "false") << ",\n"
+             << "  \"userorderbook_periodic_snapshot_consistent\": "
+             << (receipt.userorderbook_periodic_snapshot_consistent ? "true" : "false") << ",\n"
              << "  \"p2mqreply_open\": " << (receipt.p2mqreply_open ? "true" : "false") << ",\n"
              << "  \"publisher_open\": " << (receipt.publisher_open ? "true" : "false") << ",\n"
              << "  \"trading_capable\": " << (receipt.trading_capable ? "true" : "false") << "\n"
@@ -1549,7 +1679,9 @@ struct Plaza2TestTradeTransport::Impl {
         receipt.sha256 = cgate::plaza2_sha256_hex(receipt.canonical_json);
         if (!receipt.passive_non_marketable || !receipt.bbo_distance_allowed || !receipt.quantity_one ||
             !receipt.private_streams_ready || !receipt.aggr_online || !receipt.aggr_snapshot_complete ||
-            !receipt.p2mqreply_open || !receipt.publisher_open || !receipt.trading_capable) {
+            !receipt.p2mqreply_open || !receipt.publisher_open || !receipt.trading_capable ||
+            (receipt.active_own_order_count != 0 && host.mode() == Plaza2TestSessionHostMode::LiveTestPreSend) ||
+            (receipt.require_zero_starting_position && !receipt.zero_starting_position_proven)) {
             return invalid("execution-safety receipt rejected the current target conditions");
         }
         std::string error;
