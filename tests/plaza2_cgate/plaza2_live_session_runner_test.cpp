@@ -2,6 +2,7 @@
 
 #include "plaza2_runtime_test_support.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
