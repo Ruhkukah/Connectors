@@ -121,7 +121,8 @@ qualified count was zero. The authorized-participant POS census contained no
 rows, which remains **NOT PROVEN ZERO**, not an inferred zero position.
 
 The implementation/live-tested SHA is `dbbbb07446e2a8a3c580a5bf7f9b9c75617cc7c4`;
-the final PR SHA is `a64daffb4fd32bd00880979f9288750b7d00b27d`. The live
+the final PR implementation SHA is `b88dfe4c85dca72a28f9dd9c3ea468453f4e5574` (the regular-table predicate
+amendment). The live
 USERORDERBOOK periodic-cycle receipt is
 `/home/azgaldov/moex/tmp/pr29-periodic-gate-a-20260827T202303Z/evidence3/plaza2_test_connectivity_receipt.json`
 with SHA-256
