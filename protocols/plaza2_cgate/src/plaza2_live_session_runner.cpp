@@ -436,7 +436,7 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         // CLEARDELETED is a table/revision mutation.  It does not mean that
         // the listener left ONLINE; periodic USERORDERBOOK consistency is
         // tracked independently by the private-state projector.
-        projector_.invalidate_periodic_snapshot(stream_code);
+        projector_.invalidate_periodic_snapshot(stream_code, event.table_code);
         pending_clear_deleted_[index].push_back({
             .stream_code = stream_code,
             .table_code = event.table_code,

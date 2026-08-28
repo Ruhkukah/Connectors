@@ -387,6 +387,17 @@ void reset_stream_watermarks(StreamHealthSnapshot& health) {
     health.periodic_snapshot_consistent = false;
 }
 
+bool is_regular_userorderbook_snapshot_table(TableCode table_code) {
+    switch (table_code) {
+    case TableCode::kFortsUserorderbookReplOrders:
+    case TableCode::kFortsUserorderbookReplMultilegOrders:
+    case TableCode::kFortsUserorderbookReplInfo:
+        return true;
+    default:
+        return false;
+    }
+}
+
 } // namespace
 
 struct Plaza2PrivateStateProjector::Impl {
@@ -469,8 +480,9 @@ struct Plaza2PrivateStateProjector::Impl {
                   });
     }
 
-    void invalidate_periodic_snapshot(StreamCode stream_code) {
-        if (stream_code != StreamCode::kFortsUserorderbookRepl) {
+    void invalidate_periodic_snapshot(StreamCode stream_code, TableCode table_code) {
+        if (stream_code != StreamCode::kFortsUserorderbookRepl ||
+            !is_regular_userorderbook_snapshot_table(table_code)) {
             return;
         }
         auto& target = staged.active ? ensure_staged_stream_health() : stream_health;
@@ -805,11 +817,13 @@ struct Plaza2PrivateStateProjector::Impl {
                 return;
             }
             staged.touched_streams.insert(stream_code);
-            auto& health = staged.active ? ensure_stream_health(ensure_staged_stream_health(), stream_code)
-                                         : ensure_stream_health(stream_health, stream_code);
-            reset_stream_watermarks(health);
-            if (stream_code == StreamCode::kFortsUserorderbookRepl) {
-                if (staged.active) {
+            const bool regular_userbook_table = stream_code != StreamCode::kFortsUserorderbookRepl ||
+                                                is_regular_userorderbook_snapshot_table(table_code);
+            if (regular_userbook_table) {
+                auto& health = staged.active ? ensure_stream_health(ensure_staged_stream_health(), stream_code)
+                                             : ensure_stream_health(stream_health, stream_code);
+                reset_stream_watermarks(health);
+                if (stream_code == StreamCode::kFortsUserorderbookRepl && staged.active) {
                     staged.userbook_regular_info_seen = false;
                 }
             }
@@ -1969,8 +1983,9 @@ std::span<const OwnTradeSnapshot> Plaza2PrivateStateProjector::own_trades() cons
     return impl_->trade_snapshots;
 }
 
-void Plaza2PrivateStateProjector::invalidate_periodic_snapshot(generated::StreamCode stream_code) {
-    impl_->invalidate_periodic_snapshot(stream_code);
+void Plaza2PrivateStateProjector::invalidate_periodic_snapshot(generated::StreamCode stream_code,
+                                                               generated::TableCode table_code) {
+    impl_->invalidate_periodic_snapshot(stream_code, table_code);
 }
 
 void Plaza2PrivateStateProjector::on_event(const fake::ScenarioSpec&, const fake::EventSpec& event,

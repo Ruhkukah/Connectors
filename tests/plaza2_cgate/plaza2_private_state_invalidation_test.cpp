@@ -284,6 +284,19 @@ int main() {
                     "regular USERORDERBOOK info evidence should be retained");
         }
 
+        clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplOrdersCurrentday);
+        clear_userbook_table(userbook_projector, userbook_state,
+                             TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday);
+        clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplInfoCurrentday);
+        {
+            const auto& health = require_userbook_health(userbook_projector);
+            require(health.online && health.snapshot_complete && health.periodic_snapshot_consistent,
+                    "current-day USERORDERBOOK clears must preserve regular periodic readiness");
+            require(health.has_publication_state && health.publication_state == 1 && health.last_trades_rev == 42 &&
+                        health.last_trades_lifenum == 7 && health.last_info_moment == 1700000042,
+                    "current-day USERORDERBOOK clears must preserve regular periodic evidence");
+        }
+
         clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplOrders);
         clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplMultilegOrders);
         {

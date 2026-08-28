@@ -248,9 +248,9 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::span<const OwnOrderSnapshot> own_orders() const;
     [[nodiscard]] std::span<const OwnTradeSnapshot> own_trades() const;
 
-    // A table-scoped USERORDERBOOK refresh makes the periodic snapshot
+    // A regular-table-scoped USERORDERBOOK refresh makes the periodic snapshot
     // inconsistent while preserving listener ONLINE/currentness.
-    void invalidate_periodic_snapshot(generated::StreamCode stream_code);
+    void invalidate_periodic_snapshot(generated::StreamCode stream_code, generated::TableCode table_code);
 
     void on_event(const fake::ScenarioSpec& scenario, const fake::EventSpec& event,
                   const fake::EngineState& state) override;
