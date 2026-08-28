@@ -97,7 +97,10 @@ class QualificationAggr20Bridge final : public Plaza2ListenerEventHandler {
 };
 
 bool is_stream_ready(const Plaza2LiveStreamStatus& stream) {
-    return stream.created && stream.opened && (!stream.required_online || (stream.online && stream.snapshot_complete));
+    const bool initial_ready = !stream.required_online || (stream.online && stream.snapshot_complete);
+    const bool periodic_ready =
+        stream.stream_code != generated::StreamCode::kFortsUserorderbookRepl || stream.periodic_snapshot_consistent;
+    return stream.created && stream.opened && initial_ready && periodic_ready;
 }
 
 const Plaza2LiveStreamStatus* find_stream(std::span<const Plaza2LiveStreamStatus> streams, std::string_view label) {

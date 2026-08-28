@@ -7,15 +7,21 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <string_view>
+#include <vector>
 
 namespace {
 
 using moex::plaza2::fake::EngineState;
 using moex::plaza2::fake::EventKind;
 using moex::plaza2::fake::EventSpec;
+using moex::plaza2::fake::FieldValueSpec;
 using moex::plaza2::fake::FindScenarioById;
 using moex::plaza2::fake::Plaza2FakeEngine;
+using moex::plaza2::fake::RowSpec;
+using moex::plaza2::fake::ValueKind;
 using moex::plaza2::fake::ViewForScenario;
+using moex::plaza2::generated::FieldCode;
 using moex::plaza2::generated::StreamCode;
 using moex::plaza2::generated::TableCode;
 using moex::plaza2::private_state::InstrumentSnapshot;
@@ -65,6 +71,59 @@ void run_or_throw(const char* scenario_id, Plaza2PrivateStateProjector* projecto
     if (result.error) {
         throw std::runtime_error(std::string(scenario_id) + " replay failed: " + result.error.message);
     }
+}
+
+const StreamHealthSnapshot& require_userbook_health(const Plaza2PrivateStateProjector& projector) {
+    const auto* health = find_stream(projector.stream_health(), StreamCode::kFortsUserorderbookRepl);
+    require(health != nullptr, "USERORDERBOOK stream health should exist");
+    return *health;
+}
+
+void commit_userbook_info(Plaza2PrivateStateProjector& projector, EngineState& state, std::int32_t publication_state,
+                          bool current_day) {
+    const auto table_code =
+        current_day ? TableCode::kFortsUserorderbookReplInfoCurrentday : TableCode::kFortsUserorderbookReplInfo;
+    const auto publication_field = current_day ? FieldCode::kFortsUserorderbookReplInfoCurrentdayPublicationState
+                                               : FieldCode::kFortsUserorderbookReplInfoPublicationState;
+    const auto trades_rev_field = current_day ? FieldCode::kFortsUserorderbookReplInfoCurrentdayTradesRev
+                                              : FieldCode::kFortsUserorderbookReplInfoTradesRev;
+    const auto trades_lifenum_field = current_day ? FieldCode::kFortsUserorderbookReplInfoCurrentdayTradesLifenum
+                                                  : FieldCode::kFortsUserorderbookReplInfoTradesLifenum;
+    const auto moment_or_server_field = current_day ? FieldCode::kFortsUserorderbookReplInfoCurrentdayServerTime
+                                                    : FieldCode::kFortsUserorderbookReplInfoMoment;
+    const std::vector<FieldValueSpec> fields = {
+        {.field_code = publication_field, .kind = ValueKind::kSignedInteger, .signed_value = publication_state},
+        {.field_code = trades_rev_field, .kind = ValueKind::kSignedInteger, .signed_value = 42},
+        {.field_code = trades_lifenum_field, .kind = ValueKind::kSignedInteger, .signed_value = 7},
+        {.field_code = moment_or_server_field, .kind = ValueKind::kSignedInteger, .signed_value = 1700000042},
+    };
+    state.transaction_open = true;
+    state.streams.front().online = true;
+    state.streams.front().snapshot_complete = true;
+    const EventSpec begin{.kind = EventKind::kTransactionBegin, .stream_code = StreamCode::kFortsUserorderbookRepl};
+    projector.on_event({}, begin, state);
+    const EventSpec data{.kind = EventKind::kStreamData,
+                         .stream_code = StreamCode::kFortsUserorderbookRepl,
+                         .table_code = table_code,
+                         .signed_value = 42};
+    const RowSpec row{.stream_code = StreamCode::kFortsUserorderbookRepl,
+                      .table_code = table_code,
+                      .field_count = static_cast<std::uint32_t>(fields.size())};
+    projector.on_stream_row({}, data, row, fields, state);
+    state.transaction_open = false;
+    state.commit_count += 1;
+    state.streams.front().committed_row_count += 1;
+    const EventSpec commit{.kind = EventKind::kTransactionCommit, .stream_code = StreamCode::kFortsUserorderbookRepl};
+    projector.on_event({}, commit, state);
+    projector.on_transaction_commit({}, commit, state);
+}
+
+void clear_userbook_table(Plaza2PrivateStateProjector& projector, EngineState& state, TableCode table_code) {
+    const EventSpec clear{.kind = EventKind::kClearDeleted,
+                          .stream_code = StreamCode::kFortsUserorderbookRepl,
+                          .table_code = table_code,
+                          .signed_value = 42};
+    projector.on_event({}, clear, state);
 }
 
 } // namespace
@@ -193,6 +252,145 @@ int main() {
         require(pos_lifenum_projector.positions().empty(), "POS LifeNum must invalidate POS state");
         require(!pos_lifenum_projector.limits().empty() && !pos_lifenum_projector.instruments().empty(),
                 "POS LifeNum must preserve PART and REFDATA state");
+
+        // USERORDERBOOK initial ONLINE and periodic consistency are separate
+        // facts.  A periodic ClearDeleted keeps the listener current while
+        // making readiness fail until a committed regular info row certifies
+        // publication_state=1.
+        Plaza2PrivateStateProjector userbook_projector;
+        EngineState userbook_state{};
+        userbook_state.open = true;
+        userbook_state.streams.push_back({
+            .stream_code = StreamCode::kFortsUserorderbookRepl,
+            .stream_name = "FORTS_USERORDERBOOK_REPL",
+        });
+        userbook_projector.on_event(
+            {}, EventSpec{.kind = EventKind::kOpen, .stream_code = StreamCode::kFortsUserorderbookRepl},
+            userbook_state);
+        commit_userbook_info(userbook_projector, userbook_state, 1, false);
+        userbook_state.online = true;
+        userbook_state.streams.front().online = true;
+        userbook_state.streams.front().snapshot_complete = true;
+        userbook_projector.on_event(
+            {}, EventSpec{.kind = EventKind::kOnline, .stream_code = StreamCode::kFortsUserorderbookRepl},
+            userbook_state);
+        {
+            const auto& health = require_userbook_health(userbook_projector);
+            require(
+                health.online && health.snapshot_complete && health.periodic_snapshot_consistent,
+                "regular info publication_state=1 plus ONLINE should make USERORDERBOOK current and periodic-ready");
+            require(health.has_publication_state && health.publication_state == 1 && health.last_trades_rev == 42 &&
+                        health.last_trades_lifenum == 7 && health.last_info_moment == 1700000042,
+                    "regular USERORDERBOOK info evidence should be retained");
+        }
+
+        clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplOrdersCurrentday);
+        clear_userbook_table(userbook_projector, userbook_state,
+                             TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday);
+        clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplInfoCurrentday);
+        {
+            const auto& health = require_userbook_health(userbook_projector);
+            require(health.online && health.snapshot_complete && health.periodic_snapshot_consistent,
+                    "current-day USERORDERBOOK clears must preserve regular periodic readiness");
+            require(health.has_publication_state && health.publication_state == 1 && health.last_trades_rev == 42 &&
+                        health.last_trades_lifenum == 7 && health.last_info_moment == 1700000042,
+                    "current-day USERORDERBOOK clears must preserve regular periodic evidence");
+        }
+
+        clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplOrders);
+        clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplMultilegOrders);
+        {
+            const auto& health = require_userbook_health(userbook_projector);
+            require(health.online && health.snapshot_complete && !health.periodic_snapshot_consistent,
+                    "periodic ClearDeleted must preserve ONLINE while invalidating periodic consistency");
+        }
+
+        commit_userbook_info(userbook_projector, userbook_state, 0, false);
+        require(!require_userbook_health(userbook_projector).periodic_snapshot_consistent,
+                "regular publication_state=0 must remain periodic-inconsistent");
+
+        commit_userbook_info(userbook_projector, userbook_state, 1, false);
+        require(require_userbook_health(userbook_projector).online &&
+                    require_userbook_health(userbook_projector).periodic_snapshot_consistent,
+                "committed regular publication_state=1 must restore periodic readiness without ONLINE");
+
+        clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplOrders);
+        commit_userbook_info(userbook_projector, userbook_state, 1, false);
+        require(require_userbook_health(userbook_projector).periodic_snapshot_consistent,
+                "committed regular info after a periodic clear must restore readiness");
+
+        clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplOrders);
+        userbook_state.transaction_open = true;
+        const EventSpec uncommitted_begin{.kind = EventKind::kTransactionBegin,
+                                          .stream_code = StreamCode::kFortsUserorderbookRepl};
+        userbook_projector.on_event({}, uncommitted_begin, userbook_state);
+        const std::vector<FieldValueSpec> uncommitted_fields = {
+            {.field_code = FieldCode::kFortsUserorderbookReplInfoPublicationState,
+             .kind = ValueKind::kSignedInteger,
+             .signed_value = 1},
+            {.field_code = FieldCode::kFortsUserorderbookReplInfoTradesRev,
+             .kind = ValueKind::kSignedInteger,
+             .signed_value = 43},
+            {.field_code = FieldCode::kFortsUserorderbookReplInfoTradesLifenum,
+             .kind = ValueKind::kSignedInteger,
+             .signed_value = 7},
+            {.field_code = FieldCode::kFortsUserorderbookReplInfoMoment,
+             .kind = ValueKind::kSignedInteger,
+             .signed_value = 1700000043},
+        };
+        const EventSpec uncommitted_data{.kind = EventKind::kStreamData,
+                                         .stream_code = StreamCode::kFortsUserorderbookRepl,
+                                         .table_code = TableCode::kFortsUserorderbookReplInfo};
+        const RowSpec uncommitted_row{.stream_code = StreamCode::kFortsUserorderbookRepl,
+                                      .table_code = TableCode::kFortsUserorderbookReplInfo,
+                                      .field_count = static_cast<std::uint32_t>(uncommitted_fields.size())};
+        userbook_projector.on_stream_row({}, uncommitted_data, uncommitted_row, uncommitted_fields, userbook_state);
+        require(!require_userbook_health(userbook_projector).periodic_snapshot_consistent,
+                "uncommitted regular publication_state=1 must not restore periodic readiness");
+        userbook_state.transaction_open = false;
+        userbook_state.commit_count += 1;
+        const EventSpec uncommitted_commit{.kind = EventKind::kTransactionCommit,
+                                           .stream_code = StreamCode::kFortsUserorderbookRepl};
+        userbook_projector.on_transaction_commit({}, uncommitted_commit, userbook_state);
+        require(require_userbook_health(userbook_projector).periodic_snapshot_consistent,
+                "committed regular publication_state=1 must restore periodic readiness");
+
+        clear_userbook_table(userbook_projector, userbook_state, TableCode::kFortsUserorderbookReplOrders);
+        commit_userbook_info(userbook_projector, userbook_state, 1, true);
+        {
+            const auto& health = require_userbook_health(userbook_projector);
+            require(health.online && health.snapshot_complete && !health.periodic_snapshot_consistent,
+                    "current-day publication_state=1 must not restore an incomplete regular periodic snapshot");
+            require(!health.has_publication_state && health.last_trades_rev == 0 && health.last_trades_lifenum == 0,
+                    "current-day info must not replace regular USERORDERBOOK evidence");
+        }
+
+        userbook_state.streams.front().online = false;
+        userbook_state.streams.front().snapshot_complete = false;
+        userbook_state.online = false;
+        userbook_projector.on_event({},
+                                    EventSpec{.kind = EventKind::kLifeNum,
+                                              .stream_code = StreamCode::kFortsUserorderbookRepl,
+                                              .numeric_value = 7},
+                                    userbook_state);
+        userbook_projector.on_event({},
+                                    EventSpec{.kind = EventKind::kLifeNum,
+                                              .stream_code = StreamCode::kFortsUserorderbookRepl,
+                                              .numeric_value = 8},
+                                    userbook_state);
+        {
+            const auto& health = require_userbook_health(userbook_projector);
+            require(!health.online && !health.snapshot_complete && !health.periodic_snapshot_consistent,
+                    "changed USERORDERBOOK LifeNum must invalidate currentness and periodic consistency");
+        }
+        userbook_projector.on_event(
+            {}, EventSpec{.kind = EventKind::kClose, .stream_code = StreamCode::kFortsUserorderbookRepl},
+            userbook_state);
+        {
+            const auto& health = require_userbook_health(userbook_projector);
+            require(!health.online && !health.snapshot_complete && !health.periodic_snapshot_consistent,
+                    "USERORDERBOOK CLOSE must invalidate currentness and periodic consistency");
+        }
 
         return 0;
     } catch (const std::exception& error) {

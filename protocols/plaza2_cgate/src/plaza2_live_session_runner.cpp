@@ -163,6 +163,7 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         state_.transaction_open = false;
         for (auto& stream : state_.streams) {
             stream.online = false;
+            stream.snapshot_complete = false;
         }
         const EventSpec event{.kind = EventKind::kClose};
         projector_.on_event(scenario_, event, state_);
@@ -227,8 +228,14 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         const auto index = stream_index(state_, stream_code);
         if (index < state_.streams.size()) {
             state_.streams[index].online = false;
+            state_.streams[index].snapshot_complete = false;
         }
         recompute_online();
+        const EventSpec fake_event{
+            .kind = EventKind::kClose,
+            .stream_code = stream_code,
+        };
+        projector_.on_event(scenario_, fake_event, state_);
         return {};
     }
 
@@ -426,9 +433,10 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
             return ordering_error("PLAZA II live bridge received P2REPL_CLEARDELETED for an undeclared stream");
         }
         state_.streams[index].clear_deleted_count += 1;
-        state_.streams[index].online = false;
-        state_.streams[index].snapshot_complete = false;
-        recompute_online();
+        // CLEARDELETED is a table/revision mutation.  It does not mean that
+        // the listener left ONLINE; periodic USERORDERBOOK consistency is
+        // tracked independently by the private-state projector.
+        projector_.invalidate_periodic_snapshot(stream_code, event.table_code);
         pending_clear_deleted_[index].push_back({
             .stream_code = stream_code,
             .table_code = event.table_code,
@@ -509,7 +517,6 @@ class HealthTrackingHandler final : public Plaza2ListenerEventHandler {
             }
             switch (event.kind) {
             case Plaza2ListenerEventKind::Close:
-            case Plaza2ListenerEventKind::ClearDeleted:
                 stream.online = false;
                 stream.snapshot_complete = false;
                 break;
@@ -935,6 +942,17 @@ struct Plaza2LiveSessionRunner::Impl {
         health.resume_markers = projector.resume_markers();
         health.last_resync_reason = projector_bridge.last_resync_reason();
 
+        const auto projected_streams = projector.stream_health();
+        for (auto& status : health.streams) {
+            status.periodic_snapshot_consistent = false;
+            for (const auto& projected : projected_streams) {
+                if (projected.stream_code == status.stream_code) {
+                    status.periodic_snapshot_consistent = projected.periodic_snapshot_consistent;
+                    break;
+                }
+            }
+        }
+
         health.counts.session_count = projector.sessions().size();
         health.counts.instrument_count = projector.instruments().size();
         health.counts.matching_map_count = projector.matching_map().size();
@@ -945,8 +963,10 @@ struct Plaza2LiveSessionRunner::Impl {
         health.ready =
             health.runtime_probe_ok && health.scheme_drift_ok && (!config.open_publisher || health.publisher_opened) &&
             std::all_of(health.streams.begin(), health.streams.end(), [](const Plaza2LiveStreamStatus& stream) {
-                return stream.created && stream.opened &&
-                       (!stream.required_online || (stream.online && stream.snapshot_complete));
+                const bool initial_ready = !stream.required_online || (stream.online && stream.snapshot_complete);
+                const bool periodic_ready = stream.stream_code != generated::StreamCode::kFortsUserorderbookRepl ||
+                                            stream.periodic_snapshot_consistent;
+                return stream.created && stream.opened && initial_ready && periodic_ready;
             });
     }
 

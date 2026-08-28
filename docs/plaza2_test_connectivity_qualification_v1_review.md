@@ -1,9 +1,9 @@
-# PLAZA II TEST connectivity qualification V1.1
+# PLAZA II TEST connectivity qualification V1.2
 
-PR #28 is a target-specific, read-only qualification path for the MOEX
+PR #29 is a target-specific, read-only qualification correction on top of PR #28 for the MOEX
 PLAZA II TEST environment. It remains separate from
 `Plaza2TestTradeTransport`, which is fake-only. The PR includes the
-read-only qualifier executable; it does not include an order path.
+existing read-only qualifier; it does not include an order path.
 
 ## Safety boundary
 
@@ -59,6 +59,22 @@ override and is recorded as `listener_url_mode=explicit_override`; omitted
 known streams are recorded as `negotiated`. Settings and credentials are not
 written to the receipt.
 
+## USERORDERBOOK periodic readiness
+
+Initial listener health and periodic snapshot consistency are separate facts.
+`P2REPL_ONLINE` establishes `online=true` and
+`initial_snapshot_complete=true`; a subsequent `P2REPL_CLEARDELETED` is a
+table/revision mutation and does not make the listener leave ONLINE. For
+`FORTS_USERORDERBOOK_REPL`, only a committed regular `info` row with
+`publication_state=1` establishes `periodic_snapshot_consistent=true`.
+Regular orders/multileg-orders/info clears invalidate that marker until the
+next committed regular info row. A `publication_state=0` row, an
+`info_currentday` row, an uncommitted row, changed LifeNum, or CLOSE cannot
+certify periodic readiness. Current-day orders/multileg-orders/info clears
+remain independent and preserve the regular publication marker and its
+`trades_rev`, `trades_lifenum`, and `moment` evidence. Other private streams
+retain their existing conservative ONLINE/snapshot requirements.
+
 ## Runtime and readiness gates
 
 `Plaza2RuntimeProbe` records the installed library fingerprint, version
@@ -104,6 +120,17 @@ members, but zero instruments with `SESSIONSTATE.public_state == 1`; the final
 qualified count was zero. The authorized-participant POS census contained no
 rows, which remains **NOT PROVEN ZERO**, not an inferred zero position.
 
+The implementation/live-tested SHA is `dbbbb07446e2a8a3c580a5bf7f9b9c75617cc7c4`;
+the final PR implementation SHA is `b88dfe4c85dca72a28f9dd9c3ea468453f4e5574` (the regular-table predicate
+amendment). The live
+USERORDERBOOK periodic-cycle receipt is
+`/home/azgaldov/moex/tmp/pr29-periodic-gate-a-20260827T202303Z/evidence3/plaza2_test_connectivity_receipt.json`
+with SHA-256
+`0ecdc1005a7ad084e2886204d240e759dbf4d5db30069c3b28ce264210ef43c7`.
+That read-only run recorded `connectivity_ready=true`,
+`publisher_ready=true`, `market_state_ready=false`, and
+`add_order_qualified=false`.
+
 ## Control plane and T0
 
 A temporary official-sample derivative created/opened/observed/closed
@@ -122,11 +149,12 @@ remained active. No router or authentication configuration was changed.
 | ABI smoke/policy | pass |
 | No-send/privacy checks | pass |
 | GitHub connector-validation | pass |
-| Requested GitHub sanitizer rerun | pass; prior TWIME failure classified as an unrelated timing flake |
+| GitHub component-sanitizers | pass |
 | `git diff --check` | pass |
+| Live USERORDERBOOK periodic cycle | pass; listener remained online |
 | Live orders or publisher messages | none |
 
 The order-lifecycle wording remains **atomic local journal; no power-loss
 durability claimed**. No durable orphan-journal claim is made. No new target,
-profile, wrapper, or script was added; PR #28 includes the read-only
-qualifier executable.
+profile, wrapper, or script was added; PR #29 adds no new executable and does
+not enable the live trade transport.

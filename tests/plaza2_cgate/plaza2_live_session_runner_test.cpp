@@ -2,6 +2,7 @@
 
 #include "plaza2_runtime_test_support.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -68,6 +69,7 @@ int main(int argc, char** argv) {
 
         using namespace moex::plaza2::cgate;
         using namespace moex::plaza2::test;
+        using moex::plaza2::generated::StreamCode;
 
         const auto fake_library = std::filesystem::path(argv[1]);
         const auto fixture_root = make_temp_directory("plaza2_live_session_runner_test");
@@ -81,6 +83,7 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME", "1", 1);
         ::setenv("MOEX_FAKE_CGATE_CLEAR_DELETED_INSIDE_TRANSACTION", "1", 1);
         ::setenv("MOEX_FAKE_CGATE_CLEAR_DELETED_UNKNOWN_TABLE", "1", 1);
+        ::setenv("MOEX_FAKE_USERORDERBOOK_PERIODIC_REFRESH", "1", 1);
 
         Plaza2LiveSessionRunner runner(make_config(fixture));
         const auto start = runner.start();
@@ -96,6 +99,31 @@ int main(int argc, char** argv) {
             }
         }
         require(ready, "runner should reach ready state after deterministic fake replay");
+
+        const auto userbook_initial =
+            std::find_if(runner.health_snapshot().streams.begin(), runner.health_snapshot().streams.end(),
+                         [](const auto& stream) { return stream.stream_code == StreamCode::kFortsUserorderbookRepl; });
+        require(userbook_initial != runner.health_snapshot().streams.end() && userbook_initial->online &&
+                    userbook_initial->snapshot_complete && userbook_initial->periodic_snapshot_consistent,
+                "initial USERORDERBOOK ONLINE plus regular info should be ready");
+
+        require(runner.poll_once().ok, "periodic ClearDeleted poll should succeed");
+        const auto userbook_after_clear =
+            std::find_if(runner.health_snapshot().streams.begin(), runner.health_snapshot().streams.end(),
+                         [](const auto& stream) { return stream.stream_code == StreamCode::kFortsUserorderbookRepl; });
+        require(userbook_after_clear != runner.health_snapshot().streams.end() && userbook_after_clear->online &&
+                    userbook_after_clear->snapshot_complete && !userbook_after_clear->periodic_snapshot_consistent,
+                "periodic ClearDeleted must preserve USERORDERBOOK ONLINE while invalidating periodic readiness");
+        require(!runner.health_snapshot().ready, "runner readiness must fail during the periodic refresh gap");
+
+        require(runner.poll_once().ok, "periodic regular-info poll should succeed");
+        const auto userbook_after_info =
+            std::find_if(runner.health_snapshot().streams.begin(), runner.health_snapshot().streams.end(),
+                         [](const auto& stream) { return stream.stream_code == StreamCode::kFortsUserorderbookRepl; });
+        require(userbook_after_info != runner.health_snapshot().streams.end() && userbook_after_info->online &&
+                    userbook_after_info->snapshot_complete && userbook_after_info->periodic_snapshot_consistent,
+                "committed regular publication_state=1 must restore periodic readiness without ONLINE");
+        require(runner.health_snapshot().ready, "runner readiness must recover after the periodic regular info commit");
 
         const auto& health = runner.health_snapshot();
         require(health.runtime_probe_ok, "health should report runtime probe success");
@@ -144,6 +172,7 @@ int main(int argc, char** argv) {
         ::unsetenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME");
         ::unsetenv("MOEX_FAKE_CGATE_CLEAR_DELETED_INSIDE_TRANSACTION");
         ::unsetenv("MOEX_FAKE_CGATE_CLEAR_DELETED_UNKNOWN_TABLE");
+        ::unsetenv("MOEX_FAKE_USERORDERBOOK_PERIODIC_REFRESH");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
