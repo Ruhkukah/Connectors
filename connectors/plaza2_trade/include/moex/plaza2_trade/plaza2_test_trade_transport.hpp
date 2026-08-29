@@ -70,6 +70,12 @@ enum class PositionEvidenceClass : std::uint8_t {
 
 [[nodiscard]] std::string_view position_evidence_class_name(PositionEvidenceClass value) noexcept;
 
+struct Plaza2TradeReplayAnchor {
+    std::int64_t trades_rev{0};
+    std::int64_t trades_lifenum{0};
+    std::int64_t server_time{0};
+};
+
 [[nodiscard]] std::string canonical_authorized_order_intent_json(const Plaza2AuthorizedOrderIntent& intent);
 [[nodiscard]] std::string authorized_order_intent_sha256(const Plaza2AuthorizedOrderIntent& intent);
 
@@ -99,6 +105,7 @@ struct Plaza2ExecutionSafetyReceipt {
     std::size_t participant_user_multileg_deal_count{0};
     std::int64_t reconstructed_target_xpos{0};
     std::size_t active_own_order_count{0};
+    std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used;
     bool userorderbook_periodic_snapshot_consistent{false};
     std::optional<plaza2::private_state::PositionSnapshot> position;
     std::string position_fingerprint_sha256;
@@ -176,6 +183,7 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] bool publisher_open() const noexcept;
     [[nodiscard]] Plaza2TestSessionHostMode mode() const noexcept;
     [[nodiscard]] bool trade_replay_anchor_ready() const noexcept;
+    [[nodiscard]] std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used() const noexcept;
 
     struct ReplyEvent {
         std::uint32_t user_id{0};

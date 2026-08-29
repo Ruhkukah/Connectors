@@ -863,6 +863,11 @@ struct Plaza2TestSessionHost::Impl {
         if (const auto error = listener.open(open_settings); error) {
             return error;
         }
+        trade_replay_anchor_used = Plaza2TradeReplayAnchor{
+            .trades_rev = pos_health->last_trades_rev,
+            .trades_lifenum = pos_health->last_trades_lifenum,
+            .server_time = pos_health->last_server_time,
+        };
         trade_replay_anchor_is_ready = true;
         return {};
     }
@@ -916,6 +921,7 @@ struct Plaza2TestSessionHost::Impl {
         }
         private_listeners.clear();
         deferred_trade_stream.reset();
+        trade_replay_anchor_used.reset();
         trade_replay_anchor_is_ready = false;
         static_cast<void>(connection.close());
         static_cast<void>(connection.destroy());
@@ -955,6 +961,7 @@ struct Plaza2TestSessionHost::Impl {
     AggrProjectorBridge aggr_bridge;
     ReplyBridge reply_bridge;
     std::optional<Plaza2TestTradeStreamConfig> deferred_trade_stream;
+    std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used;
     std::string credentials_value;
     std::string software_key_value;
     bool reply_listener_is_open{false};
@@ -1009,6 +1016,9 @@ Plaza2TestSessionHostMode Plaza2TestSessionHost::mode() const noexcept {
 bool Plaza2TestSessionHost::trade_replay_anchor_ready() const noexcept {
     return impl_->trade_replay_anchor_is_ready;
 }
+std::optional<Plaza2TradeReplayAnchor> Plaza2TestSessionHost::trade_replay_anchor_used() const noexcept {
+    return impl_->trade_replay_anchor_used;
+}
 bool Plaza2TestSessionHost::aggr_online() const noexcept {
     return impl_->aggr_bridge.online();
 }
@@ -1061,6 +1071,7 @@ struct Plaza2TestTradeTransport::Impl {
         std::size_t participant_user_multileg_deal_count{0};
         std::int64_t reconstructed_target_xpos{0};
         std::size_t active_own_order_count{0};
+        std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used;
     };
 
     explicit Impl(Plaza2TestTradeTransportConfig initial) : config(std::move(initial)), host(config.host) {}
@@ -1143,13 +1154,9 @@ struct Plaza2TestTradeTransport::Impl {
         if (!order.from_user_book && !order.from_current_day) {
             return false;
         }
-        const auto* authorized = intent();
-        if (authorized != nullptr && order.ext_id != 0 && order.ext_id != authorized->ext_id) {
-            return false;
-        }
         const auto participant = participant_code();
         if (!participant.empty() && order.client_code != participant && order.login_from != participant &&
-            (authorized == nullptr || order.client_code != authorized->client_code)) {
+            (intent() == nullptr || order.client_code != intent()->client_code)) {
             return false;
         }
         return order.public_amount_rest > 0 || order.private_amount_rest > 0;
@@ -1200,9 +1207,15 @@ struct Plaza2TestTradeTransport::Impl {
             return assessment;
         }
         if (matching_positions != 0 || !config.host.trade_replay_from_pos_anchor || !host.trade_replay_anchor_ready() ||
-            position_health == nullptr || !assessment.position_snapshot_complete ||
+            !host.trade_replay_anchor_used().has_value() || position_health == nullptr ||
+            !assessment.position_snapshot_complete ||
             (assessment.server_time == 0 && !(host.probe_report().fake_runtime_marker_present &&
                                               (assessment.trades_rev != 0 || assessment.trades_lifenum != 0)))) {
+            return assessment;
+        }
+        assessment.trade_replay_anchor_used = host.trade_replay_anchor_used();
+        if (assessment.trades_rev != assessment.trade_replay_anchor_used->trades_rev ||
+            assessment.trades_lifenum != assessment.trade_replay_anchor_used->trades_lifenum) {
             return assessment;
         }
 
@@ -1543,6 +1556,7 @@ struct Plaza2TestTradeTransport::Impl {
         receipt.participant_user_multileg_deal_count = position_evidence.participant_user_multileg_deal_count;
         receipt.reconstructed_target_xpos = position_evidence.reconstructed_target_xpos;
         receipt.active_own_order_count = position_evidence.active_own_order_count;
+        receipt.trade_replay_anchor_used = position_evidence.trade_replay_anchor_used;
         receipt.runtime_compatibility =
             std::string(cgate::plaza2_compatibility_name(host.probe_report().compatibility));
         receipt.runtime_scheme_sha256 = host.probe_report().scheme_drift.runtime_scheme_sha256;
@@ -1664,7 +1678,15 @@ struct Plaza2TestTradeTransport::Impl {
              << "  \"participant_user_multileg_deal_count\": " << receipt.participant_user_multileg_deal_count << ",\n"
              << "  \"reconstructed_target_xpos\": " << receipt.reconstructed_target_xpos << ",\n"
              << "  \"active_own_order_count\": " << receipt.active_own_order_count << ",\n"
-             << "  \"private_streams\": " << receipt.private_streams_json << ",\n"
+             << "  \"trade_replay_anchor_used\": ";
+        if (receipt.trade_replay_anchor_used.has_value()) {
+            json << "{\"trades_rev\": " << receipt.trade_replay_anchor_used->trades_rev
+                 << ", \"trades_lifenum\": " << receipt.trade_replay_anchor_used->trades_lifenum
+                 << ", \"server_time\": " << receipt.trade_replay_anchor_used->server_time << "},\n";
+        } else {
+            json << "null,\n";
+        }
+        json << "  \"private_streams\": " << receipt.private_streams_json << ",\n"
              << "  \"passive_non_marketable\": " << (receipt.passive_non_marketable ? "true" : "false") << ",\n"
              << "  \"bbo_distance_allowed\": " << (receipt.bbo_distance_allowed ? "true" : "false") << ",\n"
              << "  \"quantity_one\": " << (receipt.quantity_one ? "true" : "false") << ",\n"

@@ -868,6 +868,10 @@ int main(int argc, char** argv) {
                         receipt->zero_starting_position_proven && receipt->position_snapshot_complete &&
                         receipt->trade_replay_complete && receipt->position_trades_rev == 44 &&
                         receipt->position_trades_lifenum == 7 && receipt->position_server_time == 1700000001 &&
+                        receipt->trade_replay_anchor_used.has_value() &&
+                        receipt->trade_replay_anchor_used->trades_rev == 44 &&
+                        receipt->trade_replay_anchor_used->trades_lifenum == 7 &&
+                        receipt->trade_replay_anchor_used->server_time == 1700000001 &&
                         receipt->participant_user_deal_count == 0 &&
                         receipt->participant_user_multileg_deal_count == 0 && receipt->reconstructed_target_xpos == 0 &&
                         receipt->active_own_order_count == 0,
@@ -875,6 +879,61 @@ int main(int argc, char** argv) {
                     "census");
             require(flat_transport.host().stop().code == cgate::Plaza2ErrorCode::None,
                     "flatness pre-send host must stop cleanly");
+        }
+
+        {
+            ScopedEnv alternate_ext_id("MOEX_FAKE_ACTIVE_ORDER_ALT_EXT_ID", "1");
+            auto live_config = prepared_config(fixture, add, recovery);
+            live_config.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend;
+            live_config.host.endpoint_host = "127.0.0.1";
+            live_config.host.arm_state.test_plaza2_armed = true;
+            live_config.host.publisher_name = "ACTIVE_ORDER_ALT_EXT_TEST";
+            live_config.host.publisher_settings =
+                "p2mq://FORTS_SRV;category=FORTS_MSG;name=ACTIVE_ORDER_ALT_EXT_TEST;timeout=5000";
+            live_config.host.p2mqreply_settings = "p2mqreply://;ref=ACTIVE_ORDER_ALT_EXT_TEST";
+            Plaza2TestTradeTransport live_transport(std::move(live_config));
+            bind_test_plan(live_transport, plan);
+            const auto blocked = live_transport.post(add, 701);
+            require(blocked.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !blocked.post_invoked &&
+                        contains_text(blocked.validation_error.message, "active own orders"),
+                    "an active same-participant order with another ext_id must block the pre-send gate");
+            require(live_transport.last_execution_safety_receipt() == std::nullopt,
+                    "active own-order refusal must precede execution-safety receipt persistence");
+            require(live_transport.host().stop().code == cgate::Plaza2ErrorCode::None,
+                    "active own-order pre-send host must stop cleanly");
+        }
+
+        for (const auto drift_kind : {std::string_view("rev"), std::string_view("lifenum")}) {
+            ScopedEnv missing_position("MOEX_FAKE_MISSING_POSITION", "1");
+            ScopedEnv flat_trade_replay("MOEX_FAKE_FLAT_TRADE_REPLAY", "1");
+            ScopedEnv anchor_drift("MOEX_FAKE_POS_ANCHOR_DRIFT", std::string(drift_kind).c_str());
+            auto drift_config = prepared_config(fixture, add, recovery);
+            drift_config.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend;
+            drift_config.host.endpoint_host = "127.0.0.1";
+            drift_config.host.arm_state.test_plaza2_armed = true;
+            drift_config.host.publisher_name = "POS_ANCHOR_DRIFT_TEST";
+            drift_config.host.publisher_settings =
+                "p2mq://FORTS_SRV;category=FORTS_MSG;name=POS_ANCHOR_DRIFT_TEST;timeout=5000";
+            drift_config.host.p2mqreply_settings = "p2mqreply://;ref=POS_ANCHOR_DRIFT_TEST";
+            drift_config.host.trade_replay_from_pos_anchor = true;
+            drift_config.authorized_intent->require_zero_starting_position = true;
+            drift_config.authorized_intent->canonical_json =
+                canonical_authorized_order_intent_json(*drift_config.authorized_intent);
+            drift_config.authorized_intent->sha256 = authorized_order_intent_sha256(*drift_config.authorized_intent);
+            const auto drift_plan = bound_plan(*drift_config.authorized_intent, add, recovery);
+            Plaza2TestTradeTransport drift_transport(std::move(drift_config));
+            bind_test_plan(drift_transport, drift_plan);
+            const auto blocked = drift_transport.post(add, 701);
+            require(blocked.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !blocked.post_invoked &&
+                        contains_text(blocked.validation_error.message, "starting position"),
+                    "a changed POS replay anchor must fail closed for " + std::string(drift_kind));
+            require(drift_transport.last_execution_safety_receipt() == std::nullopt,
+                    "changed POS replay anchor must prevent receipt persistence");
+            const auto anchor = drift_transport.host().trade_replay_anchor_used();
+            require(anchor.has_value() && anchor->trades_rev == 44 && anchor->trades_lifenum == 7,
+                    "deferred TRADE must retain the original POS replay anchor");
+            require(drift_transport.host().stop().code == cgate::Plaza2ErrorCode::None,
+                    "POS anchor drift pre-send host must stop cleanly");
         }
 
         test_target_preflight_refusals(fixture);
