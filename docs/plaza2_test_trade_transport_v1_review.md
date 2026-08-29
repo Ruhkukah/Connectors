@@ -71,6 +71,16 @@ persists the immutable `{trades_rev, trades_lifenum, server_time}` POS anchor it
 used. Flat replay is accepted only while the current POS revision/lifenum still
 match that anchor; either change fails closed and does not auto-reanchor.
 
+MOEX TEST does not reconcile `FORTS_USERORDERBOOK_REPL` with
+`FORTS_TRADE_REPL`. They are independent evidence surfaces: USERORDERBOOK is
+used only for the current own-order snapshot in the pre-send active-order
+census, while TRADE `orders_log` and `user_deal` are used for lifecycle
+correlation and POS-anchored participant-trade replay. Projected order rows
+therefore retain separate source identities even when the streams reuse an
+`ext_id` or exchange order id. No TEST readiness, lifecycle consistency, or
+position result may be made inconsistent merely because the two surfaces have
+different identities, amounts/rest, states, row counts, or revisions.
+
 The reply bridge accepts only active fixed user IDs, retains the raw payload,
 decodes the locked message family with `Plaza2TradeCodec`, and reports timeout
 with only the originating user ID. Unknown users, malformed payloads, wrong

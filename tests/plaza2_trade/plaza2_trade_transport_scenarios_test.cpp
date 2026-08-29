@@ -244,14 +244,16 @@ OrderLifecycleConfig make_controller_config(const std::filesystem::path& root) {
 OrderLifecycleResult run_concrete_controller_case(const moex::plaza2::test::RuntimeFixturePaths& fixture,
                                                   const char* order_mode, const char* reply_order_id,
                                                   bool identity_conflict, bool cancel_after_del = false,
-                                                  bool mismatched_policy = false, bool* host_started = nullptr) {
+                                                  bool mismatched_policy = false, bool* host_started = nullptr,
+                                                  bool userbook_identity_conflict = false) {
     std::optional<ScopedEnv> mode;
     if (order_mode != nullptr) {
         mode.emplace("MOEX_FAKE_FULL_FILL", std::string_view(order_mode) == "full" ? "1" : nullptr);
     }
     ScopedEnv cancelled("MOEX_FAKE_CANCELLED_ORDER",
                         order_mode != nullptr && std::string_view(order_mode) == "cancel" ? "1" : nullptr);
-    ScopedEnv conflict("MOEX_FAKE_IDENTITY_CONFLICT", identity_conflict ? "1" : nullptr);
+    ScopedEnv trade_conflict("MOEX_FAKE_TRADE_IDENTITY_CONFLICT", identity_conflict ? "1" : nullptr);
+    ScopedEnv userbook_conflict("MOEX_FAKE_IDENTITY_CONFLICT", userbook_identity_conflict ? "1" : nullptr);
     ScopedEnv reply_id("MOEX_FAKE_PUB_REPLY_ORDER_ID", reply_order_id);
     ScopedEnv client_code("MOEX_FAKE_CLIENT_CODE", "BRK1C01");
     ScopedEnv cancel_after_del_env("MOEX_FAKE_CANCEL_AFTER_DEL", cancel_after_del ? "1" : nullptr);
@@ -259,7 +261,9 @@ OrderLifecycleResult run_concrete_controller_case(const moex::plaza2::test::Runt
     const Plaza2TradeCodec codec;
     auto config = make_controller_config(fixture.root);
     config.run_id = std::string("concrete-") + (order_mode == nullptr ? "working" : order_mode) +
-                    (identity_conflict ? "-conflict" : "-consistent") +
+                    (identity_conflict            ? "-trade-conflict"
+                     : userbook_identity_conflict ? "-userbook-conflict"
+                                                  : "-consistent") +
                     (reply_order_id == nullptr ? "-default" : reply_order_id);
     const auto dry = [&]() {
         auto copy = config;
@@ -576,6 +580,12 @@ void test_multi_instrument_and_terminal_controller(const moex::plaza2::test::Run
                         !result.evidence_consistent && !result.ok,
                     "full fill with identity conflict must remain unresolved through concrete transport: " +
                         result.message + " / add=" + result.add_submission.validation_error.message);
+    }
+    {
+        const auto result = run_concrete_controller_case(fixture, "full", "20003", false, false, false, nullptr, true);
+        expect_case(result.state == OrderLifecycleState::Filled && result.market_safe_terminal && result.ok,
+                    "TEST USERORDERBOOK identity divergence must not invalidate TRADE lifecycle evidence: " +
+                        result.message);
     }
     {
         bool host_started = false;

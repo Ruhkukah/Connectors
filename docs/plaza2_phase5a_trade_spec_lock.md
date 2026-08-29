@@ -148,8 +148,8 @@ must already be known or deliberately supplied by an operator-local config:
 - Client code and broker/firm context from operator config and/or private reference state.
 - Limits from `FORTS_PART_REPL.part` for optional pre-check planning.
 - Positions from `FORTS_POS_REPL.position` for later risk and reconciliation context.
-- Active order ids from `FORTS_USERORDERBOOK_REPL.orders` and `FORTS_TRADE_REPL.orders_log` for
-  cancel and move commands.
+- Current active-order census from `FORTS_USERORDERBOOK_REPL.orders`; lifecycle and
+  confirmation order ids from `FORTS_TRADE_REPL.orders_log`.
 - Price step, lot size, and quantity rules from reference/instrument state before Phase 5B command
   encoding can be considered safe.
 
@@ -166,14 +166,17 @@ matrix/protocol_inventory/plaza2_trade_confirmation_map.yaml
 Phase 5A maps transaction commands to existing private replication surfaces:
 
 - Add/accept/reject:
-  `FORTS_TRADE_REPL.orders_log`, `FORTS_USERORDERBOOK_REPL.orders`,
-  `FORTS_REJECTEDORDERS_REPL.rejected_orders`
+  `FORTS_TRADE_REPL.orders_log`, `FORTS_REJECTEDORDERS_REPL.rejected_orders`
 - Cancel/delete:
-  `FORTS_TRADE_REPL.orders_log`, `FORTS_USERORDERBOOK_REPL.orders`
+  `FORTS_TRADE_REPL.orders_log`
 - Move/replace:
-  `FORTS_TRADE_REPL.orders_log`, `FORTS_USERORDERBOOK_REPL.orders`
+  `FORTS_TRADE_REPL.orders_log`
 - Fills/trades resulting from orders:
   `FORTS_TRADE_REPL.user_deal`, and `FORTS_TRADE_REPL.user_multileg_deal` where applicable
+
+`FORTS_USERORDERBOOK_REPL` remains an independent TEST surface for the
+pre-send active-own-order census only; it is not a second confirmation source
+to reconcile against TRADE.
 
 The Phase 3E private-state engine already projects the core confirmation tables for orders and
 trades. `FORTS_REJECTEDORDERS_REPL.rejected_orders` is present in reviewed metadata but is not part

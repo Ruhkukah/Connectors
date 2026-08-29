@@ -122,6 +122,14 @@ Current stream ownership boundaries:
 - `FORTS_PART_REPL`: limits
 - `FORTS_REFDATA_REPL`: sessions, instruments, matching map
 
+In the MOEX TEST contour these order sources are deliberately independent.
+The projector keeps same-identity rows from TRADE and USERORDERBOOK separate;
+regular/current-day tables remain one USERORDERBOOK surface. Consumers must
+use USERORDERBOOK rows only for the pre-send active-own-order census and use
+TRADE rows/deals for lifecycle or POS-anchored trade evidence. The projector
+does not infer a cross-stream identity, state, amount/rest, fill, count, or
+revision comparison.
+
 ## Snapshot API Shape
 
 `Plaza2PrivateStateProjector` exposes committed read-only snapshots only.

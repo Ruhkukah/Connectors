@@ -952,11 +952,67 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     using enum FieldCode;
     using enum TableCode;
 
-    if (stream_code == StreamCode::kFortsTradeRepl && fake_flag("MOEX_FAKE_FLAT_TRADE_REPLAY")) {
-        std::erase_if(script, [](const auto& message) {
-            return message.table_code == kFortsTradeReplUserDeal ||
-                   message.table_code == kFortsTradeReplUserMultilegDeal;
-        });
+    if (stream_code == StreamCode::kFortsTradeRepl) {
+        if (fake_flag("MOEX_FAKE_FLAT_TRADE_REPLAY")) {
+            std::erase_if(script, [](const auto& message) {
+                return message.table_code == kFortsTradeReplUserDeal ||
+                       message.table_code == kFortsTradeReplUserMultilegDeal;
+            });
+        }
+        // Lifecycle evidence is sourced from TRADE orders_log. Keep the
+        // concrete fake's fill/cancel transitions on that surface; the
+        // USERORDERBOOK flags below independently exercise the TEST census.
+        if (fake_flag("MOEX_FAKE_FULL_FILL") || fake_flag("MOEX_FAKE_CANCELLED_ORDER") || g_cancel_after_cleanup) {
+            for (auto& message : script) {
+                if (message.table_code != kFortsTradeReplOrdersLog &&
+                    message.table_code != kFortsTradeReplMultilegOrdersLog) {
+                    continue;
+                }
+                const auto public_rest_field = message.table_code == kFortsTradeReplMultilegOrdersLog
+                                                   ? kFortsTradeReplMultilegOrdersLogPublicAmountRest
+                                                   : kFortsTradeReplOrdersLogPublicAmountRest;
+                const auto private_rest_field = message.table_code == kFortsTradeReplMultilegOrdersLog
+                                                    ? kFortsTradeReplMultilegOrdersLogPrivateAmountRest
+                                                    : kFortsTradeReplOrdersLogPrivateAmountRest;
+                const auto public_action_field = message.table_code == kFortsTradeReplMultilegOrdersLog
+                                                     ? kFortsTradeReplMultilegOrdersLogPublicAction
+                                                     : kFortsTradeReplOrdersLogPublicAction;
+                const auto private_action_field = message.table_code == kFortsTradeReplMultilegOrdersLog
+                                                      ? kFortsTradeReplMultilegOrdersLogPrivateAction
+                                                      : kFortsTradeReplOrdersLogPrivateAction;
+                if (auto* public_rest = find_field(message, public_rest_field)) {
+                    public_rest->signed_value = 0;
+                }
+                if (auto* private_rest = find_field(message, private_rest_field)) {
+                    private_rest->signed_value = 0;
+                }
+                const auto action = fake_flag("MOEX_FAKE_FULL_FILL") ? 2 : 0;
+                if (auto* public_action = find_field(message, public_action_field)) {
+                    public_action->signed_value = action;
+                }
+                if (auto* private_action = find_field(message, private_action_field)) {
+                    private_action->signed_value = action;
+                }
+            }
+        }
+        if (fake_flag("MOEX_FAKE_TRADE_IDENTITY_CONFLICT")) {
+            for (std::size_t index = 0; index < script.size(); ++index) {
+                const auto source = script[index];
+                if (source.table_code != kFortsTradeReplOrdersLog &&
+                    source.table_code != kFortsTradeReplMultilegOrdersLog) {
+                    continue;
+                }
+                auto conflicting = source;
+                const auto private_id_field = source.table_code == kFortsTradeReplMultilegOrdersLog
+                                                  ? kFortsTradeReplMultilegOrdersLogPrivateOrderId
+                                                  : kFortsTradeReplOrdersLogPrivateOrderId;
+                if (auto* private_id = find_field(conflicting, private_id_field)) {
+                    private_id->signed_value = 29999;
+                }
+                script.push_back(std::move(conflicting));
+                break;
+            }
+        }
     }
 
     if (stream_code == StreamCode::kFortsAggrRepl) {

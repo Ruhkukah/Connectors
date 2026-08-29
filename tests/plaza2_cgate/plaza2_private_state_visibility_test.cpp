@@ -97,7 +97,9 @@ int main() {
         require(!listener.visible_before_commit, "committed projection must remain hidden until TN_COMMIT");
         require(listener.committed_sessions == 1, "session state should become visible on commit");
         require(listener.committed_instruments == 3, "instrument state should become visible on commit");
-        require(listener.committed_orders == 2, "own-order state should become visible on commit");
+        require(
+            listener.committed_orders == 3,
+            "independent TRADE, regular USERORDERBOOK, and current-day order state should become visible on commit");
         require(listener.committed_trades == 1, "own-trade state should become visible on commit");
 
         return 0;

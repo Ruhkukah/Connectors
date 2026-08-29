@@ -85,9 +85,21 @@ const PositionSnapshot* find_position(std::span<const PositionSnapshot> position
     return nullptr;
 }
 
-const OwnOrderSnapshot* find_order(std::span<const OwnOrderSnapshot> orders, std::int64_t private_order_id) {
+enum class OrderSource {
+    Any,
+    Trade,
+    UserBook,
+    CurrentDay,
+};
+
+const OwnOrderSnapshot* find_order(std::span<const OwnOrderSnapshot> orders, std::int64_t private_order_id,
+                                   OrderSource source = OrderSource::Any) {
     for (const auto& order : orders) {
-        if (order.private_order_id == private_order_id) {
+        const bool source_matches = source == OrderSource::Any ||
+                                    (source == OrderSource::Trade && order.from_trade_repl) ||
+                                    (source == OrderSource::UserBook && order.from_user_book) ||
+                                    (source == OrderSource::CurrentDay && order.from_current_day);
+        if (order.private_order_id == private_order_id && source_matches) {
             return &order;
         }
     }
@@ -179,7 +191,7 @@ int main() {
         require(position->last_deal_id == 9001, "last deal id should be projected");
 
         const auto orders = projector.own_orders();
-        require(orders.size() == 2, "two committed own orders should be projected");
+        require(orders.size() == 3, "each committed TEST order surface should remain independently projected");
 
         const auto* live_order = find_order(orders, 20001);
         require(live_order != nullptr, "user-orderbook-only order should be projected");
@@ -188,15 +200,23 @@ int main() {
         require(!live_order->from_current_day, "live order should not claim current-day source");
         require(live_order->price == "100500", "user-orderbook price should be projected");
 
-        const auto* merged_order = find_order(orders, 20003);
-        require(merged_order != nullptr, "merged current-day/trade order should be projected");
-        require(merged_order->from_trade_repl, "trade source should be retained");
-        require(!merged_order->from_user_book, "current-day order should not claim live-userbook source");
-        require(merged_order->from_current_day, "current-day source should be retained");
-        require(merged_order->price == "102500", "trade delta should override current-day price");
-        require(merged_order->public_amount_rest == 5, "trade delta should override public amount rest");
-        require(merged_order->private_amount_rest == 4, "trade delta should override private amount rest");
-        require(merged_order->id_deal == 9001, "trade-linked order should retain deal id");
+        const auto* current_day_order = find_order(orders, 20003, OrderSource::CurrentDay);
+        require(current_day_order != nullptr, "current-day USERORDERBOOK order should remain independently projected");
+        require(!current_day_order->from_trade_repl && !current_day_order->from_user_book,
+                "current-day order must not claim the TRADE or regular USERORDERBOOK surface");
+        require(current_day_order->price == "102250", "current-day order fields must remain unchanged");
+        require(current_day_order->public_amount_rest == 7 && current_day_order->private_amount_rest == 6,
+                "current-day order amount/rest must not be overwritten by TRADE");
+        require(current_day_order->id_deal == 0, "current-day order must not inherit TRADE deal identity");
+
+        const auto* trade_order = find_order(orders, 20003, OrderSource::Trade);
+        require(trade_order != nullptr, "TRADE order should remain independently projected");
+        require(!trade_order->from_user_book && !trade_order->from_current_day,
+                "TRADE order must not claim USERORDERBOOK sources");
+        require(trade_order->price == "102500", "TRADE order fields must remain unchanged");
+        require(trade_order->public_amount_rest == 5 && trade_order->private_amount_rest == 4,
+                "TRADE order amount/rest must not be overwritten by USERORDERBOOK");
+        require(trade_order->id_deal == 9001, "TRADE order must retain its deal identity");
 
         const auto trades = projector.own_trades();
         require(trades.size() == 1, "one committed own trade should be projected");

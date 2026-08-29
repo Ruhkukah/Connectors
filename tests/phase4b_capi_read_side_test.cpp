@@ -291,19 +291,28 @@ void test_private_snapshot_export_and_no_mutation_on_read() {
     require(std::string(limits.front().money_free) == "125000.5", "limit money_free must be exported");
 
     uint32_t order_count = 0;
-    require(moex_get_plaza2_own_order_count(guard.handle, &order_count) == MOEX_RESULT_OK && order_count == 2U,
-            "own order count must reflect committed snapshot");
+    require(moex_get_plaza2_own_order_count(guard.handle, &order_count) == MOEX_RESULT_OK && order_count == 3U,
+            "own order count must include each independent TEST order surface");
     std::vector<MoexPlaza2OwnOrderItem> orders(order_count);
     require(moex_copy_plaza2_own_order_items(guard.handle, orders.data(), order_count, &written) == MOEX_RESULT_OK,
             "own order copy must succeed");
-    bool found_merged_order = false;
+    bool found_trade_order = false;
+    bool found_current_day_order = false;
     for (const auto& item : orders) {
-        if (item.private_order_id == 20003) {
-            found_merged_order = true;
-            require(std::string(item.price_text) == "102500", "merged order price must be exported");
+        if (item.private_order_id == 20003 && item.from_trade_repl != 0U) {
+            found_trade_order = true;
+            require(item.from_user_book == 0U && item.from_current_day == 0U,
+                    "TRADE order must not claim USERORDERBOOK provenance");
+            require(std::string(item.price_text) == "102500", "TRADE order price must be exported");
+        }
+        if (item.private_order_id == 20003 && item.from_current_day != 0U) {
+            found_current_day_order = true;
+            require(item.from_trade_repl == 0U && item.from_user_book == 0U,
+                    "current-day order must not claim TRADE or regular USERORDERBOOK provenance");
+            require(std::string(item.price_text) == "102250", "current-day order price must be preserved");
         }
     }
-    require(found_merged_order, "merged own order must be exported");
+    require(found_trade_order && found_current_day_order, "independent own-order surfaces must be exported");
 
     require(guard.handle->plaza2_private_state->stream_health().size() == native_stream_count_before,
             "read calls must not mutate native private stream state");
@@ -314,14 +323,14 @@ void test_private_snapshot_export_and_no_mutation_on_read() {
     require(moex_copy_plaza2_own_order_items(guard.handle, orders_again.data(), order_count, &written) ==
                 MOEX_RESULT_OK,
             "repeat own order copy must succeed");
-    bool found_repeat_merged_order = false;
+    bool found_repeat_trade_order = false;
     for (const auto& item : orders_again) {
-        if (item.private_order_id == 20003) {
-            found_repeat_merged_order = true;
-            require(std::string(item.price_text) == "102500", "repeat reads must remain deterministic");
+        if (item.private_order_id == 20003 && item.from_trade_repl != 0U) {
+            found_repeat_trade_order = true;
+            require(std::string(item.price_text) == "102500", "repeat TRADE reads must remain deterministic");
         }
     }
-    require(found_repeat_merged_order, "repeat read must still include merged order");
+    require(found_repeat_trade_order, "repeat read must still include the TRADE order");
 }
 
 void test_reconciler_export_and_divergence_status() {

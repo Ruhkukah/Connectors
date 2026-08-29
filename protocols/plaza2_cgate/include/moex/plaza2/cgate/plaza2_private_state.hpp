@@ -166,6 +166,10 @@ struct PositionSnapshot {
 };
 
 struct OwnOrderSnapshot {
+    // TRADE and USERORDERBOOK are independent MOEX TEST evidence surfaces.
+    // A snapshot is never a cross-stream merge: the source flags identify the
+    // surface that supplied this row (regular/current-day are one
+    // USERORDERBOOK surface).
     bool multileg{false};
     std::int64_t public_order_id{0};
     std::int64_t private_order_id{0};

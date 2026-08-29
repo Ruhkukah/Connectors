@@ -68,6 +68,17 @@ retains every ext/add/cancel/recovery lock. Evidence consistency is sticky:
 once false, no later observation or recovery response can restore it in the
 same run. Restart-time reconciliation is the future clearing mechanism.
 
+For the MOEX TEST contour, `FORTS_USERORDERBOOK_REPL` and
+`FORTS_TRADE_REPL` are independent surfaces, not two replicas of one order.
+USERORDERBOOK contributes only the current own-order snapshot used by the
+pre-send active-order census. Lifecycle observations and ordinary AddOrder
+reply/replication identity checks use the TRADE order surface (plus its own
+deals), and POS-anchored position replay uses TRADE independently. A TEST
+USERORDERBOOK-versus-TRADE difference in identity, existence, amount/rest,
+fill/lifecycle state, row count, or revision is not lifecycle inconsistency and
+must not fail position qualification. This exception does not relax any
+reply/replication check for an order actually submitted by the connector.
+
 DelOrder is still encoded only from the accepted AddOrder reply ID. Public or
 private replication IDs are never guessed into DelOrder. Conflicting ordinary
 replies, reply/replication ID mismatch, contradictory rejection/order evidence,

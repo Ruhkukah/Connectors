@@ -1464,8 +1464,15 @@ PlazaCommittedSnapshotInput make_plaza_committed_snapshot(const Plaza2PrivateSta
         snapshot.source_health.invalidation_reason = "connector_not_online";
     }
 
+    // The TEST venue exposes USERORDERBOOK as a separate pre-send census
+    // surface.  TWIME/PLAZA lifecycle reconciliation must consume the TRADE
+    // order surface only; otherwise the two non-reconciled TEST views can
+    // produce duplicate identifiers or a false divergence.
     snapshot.orders.reserve(projector.own_orders().size());
     for (const auto& order : projector.own_orders()) {
+        if (!order.from_trade_repl || order.from_user_book || order.from_current_day) {
+            continue;
+        }
         snapshot.orders.push_back({
             .multileg = order.multileg,
             .public_order_id = order.public_order_id,

@@ -849,7 +849,17 @@ void push_issue(std::vector<Plaza2ProbeIssue>& issues, Plaza2ProbeIssueCode code
 [[nodiscard]] std::unique_ptr<RuntimeApi, RuntimeLibraryCloser>
 load_runtime_api(const std::filesystem::path& library_path, std::vector<std::string>* resolved_symbols,
                  std::vector<Plaza2ProbeIssue>* issues) {
-    const auto* handle = ::dlopen(library_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    int dlopen_flags = RTLD_NOW | RTLD_LOCAL;
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    // Apple ASan keeps global-variable shadow state for instrumented dylibs
+    // across dlclose/dlopen cycles. Keep sanitizer-loaded runtimes resident so
+    // repeated TEST fixture hosts do not turn valid metadata reads into stale
+    // global-buffer reports; production builds retain normal unloading.
+    dlopen_flags |= RTLD_NODELETE;
+#endif
+#endif
+    const auto* handle = ::dlopen(library_path.c_str(), dlopen_flags);
     if (handle == nullptr) {
         if (issues != nullptr) {
             push_issue(*issues, Plaza2ProbeIssueCode::MissingLibrary, true, library_path.string(),
