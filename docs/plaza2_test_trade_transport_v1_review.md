@@ -241,13 +241,25 @@ whose SHA-256 is
 the copied plan is
 `evidence/pr30-live-pre-send/cru6_pre_send_plan_82ecd8b0.json`.
 
-`LiveTestPreSend` was then run with that exact SHA in a fresh single-host
-control. CGate opened the publisher and matching `p2mqreply`, but the fresh
-host did not receive a complete REFDATA/TRADE snapshot (the target instrument
-remained incomplete), so preflight stopped before execution-safety receipt
-persistence. It returned `DefinitelyNotSent` with `post_invoked=false`; no
-`cg_pub_msgnew` or `cg_pub_post` occurred. The redacted control log is
+The first `LiveTestPreSend` control with that exact SHA (09:06 UTC) was run
+before the temporary driver enforced its readiness stop. Its actual output
+was `target_ready=0`, followed by the concrete cross-check refusal
+`operator target tick size contradicts authoritative instrument min_step`;
+it did not produce a receipt. The redacted log is
 `evidence/pr30-live-pre-send/cru6_transport_only_20260829T090608Z.log`.
-The T1 router remained the same process throughout. This is an external
-snapshot-availability/reopen condition, not a weakened connector gate, and no
-successful live execution-safety receipt is claimed by this run.
+
+A follow-up diagnostic now prints the fresh-host evidence and stops before
+bind/pre-send whenever `target_ready=0`. It observed target `sess_id=0`, no
+current-session membership or instrument status, an empty authoritative
+`min_step` (configured `0.00100` parses to `1000`, instrument parses as
+invalid), REFDATA `online=0/snapshot_complete=0/rows=0`, and TRADE
+`online=0/snapshot_complete=0`. POS was online and complete with the retained
+anchor `{trades_rev=2317518659, trades_lifenum=66739,
+server_time=1787966677}`, USERORDERBOOK was online/complete and periodically
+consistent, and AGGR20 was two-sided and fresh. The driver stopped with
+`TARGET_READY_STOP target_ready=0; no bind or pre-send call`; its redacted log
+is `evidence/pr30-live-pre-send/cru6_tick_diagnostic_20260829T113843Z.log`.
+This classifies the fresh-host result as `REFDATA_NOT_CURRENT`, not a parser
+or connector tick mismatch. No `cg_pub_msgnew` or `cg_pub_post` occurred, the
+T1 router remained the same process, and no successful live execution-safety
+receipt is claimed by these runs.
