@@ -1,4 +1,4 @@
-# PLAZA II TEST trade transport V1.3 / PR #30 review
+# PLAZA II TEST trade transport V1.4 / PR #30 review
 
 ## Scope and stop gate
 
@@ -62,6 +62,14 @@ session/instrument state, exact client limit-row hash, stream readiness,
 publisher/reply-listener state, trading capability, passive-price and distance
 checks, and quantity-one policy. DelOrder and exact-ext recovery deliberately
 skip this entry gate so cleanup remains available after market-data staleness.
+
+The pre-send active-order census is independent of the proposed `ext_id`: any
+positive-rest order for the same participant and target that is present in the
+current USERORDERBOOK/current-day tables blocks the gate, even when its `ext_id`
+belongs to an earlier run. When deferred `FORTS_TRADE_REPL` is opened, the host
+persists the immutable `{trades_rev, trades_lifenum, server_time}` POS anchor it
+used. Flat replay is accepted only while the current POS revision/lifenum still
+match that anchor; either change fails closed and does not auto-reanchor.
 
 The reply bridge accepts only active fixed user IDs, retains the raw payload,
 decodes the locked message family with `Plaza2TradeCodec`, and reports timeout
@@ -137,6 +145,10 @@ actual concrete transport and fake CGate runtime for:
 - LiveTestPreSend's typed no-send barrier after a complete receipt, including
   publisher/reply identity validation and the POS-anchor flatness
   reconstruction fixture;
+- a same-participant active USERORDERBOOK order with a different `ext_id`,
+  which must block pre-send; and unchanged, revision-drift, and LifeNum-drift
+  POS-anchor fixtures, which retain the original anchor and fail closed on
+  either drift;
 - cleanup posting after the target AGGR20 has become stale.
 
 The existing lifecycle scenario executable retains the transport-neutral V2
@@ -157,7 +169,11 @@ journal/host startup, and the transport refuses AddOrder unless its payload,
 recovery command, identifiers, profile, environment, and fixed entry policy
 match that bound plan. Dynamic BBO, timestamps, session state, local age, and
 position observations remain receipt evidence rather than authorization-hash
-inputs.
+inputs. The deferred TRADE reconstruction is additionally bound to the exact
+POS `{trades_rev, trades_lifenum, server_time}` anchor captured when that
+listener opened; a later POS revision or LifeNum is an unresolved mismatch, not
+a reason to re-anchor during the same run. The active own-order census never
+uses the proposed `ext_id` as a filter.
 
 The transport may release no identifier lock merely because a terminal-looking
 row arrived. For any order that may have existed, a `Filled` or `Cancelled`
@@ -181,7 +197,7 @@ The final offline validation is recorded here after the bounded checks:
 | TWIME label | 74/74 passed |
 | Sanitizer label | 66/66 passed (ASan leak detection disabled for AppleClang) |
 | .NET ABI checks | 2/2 passed |
-| Changed-target ASan/UBSan | 3/3 passed (ASan leak detection disabled for AppleClang) |
+| Changed-target ASan/UBSan | 4/4 passed (ASan leak detection disabled for AppleClang) |
 | No-test/no-operator minimal build | passed |
 | `git diff --check`, source/repo style, Unicode | passed |
 | Native offline plan/privacy check | passed |
@@ -212,3 +228,26 @@ there is no execution-safety receipt and the typed post barrier was not
 entered. This is an external `NOT_READY` result, not a relaxed repository
 gate; a future order-ready window must satisfy every existing condition before
 the disabled barrier can be exercised.
+
+## CRU6 plan and transport-only follow-up (2026-08-29)
+
+The successful read-only discovery observation selected CRU6 as `CNY-9.26`
+(`isin_id=4433036`, `sess_id=11695`, `min_step=0.00100`) with session and
+instrument public state `1`, a two-sided AGGR20 book, enabled PART limits, zero
+POS rows, zero participant trades, and zero active own orders. The existing
+builder/dry-run path produced the canonical quantity-one passive TEST plan
+whose SHA-256 is
+`82ecd8b0cdcaceb8b6eb5772392531fb04b6f84394a48bd95ca141113ecce6aa`;
+the copied plan is
+`evidence/pr30-live-pre-send/cru6_pre_send_plan_82ecd8b0.json`.
+
+`LiveTestPreSend` was then run with that exact SHA in a fresh single-host
+control. CGate opened the publisher and matching `p2mqreply`, but the fresh
+host did not receive a complete REFDATA/TRADE snapshot (the target instrument
+remained incomplete), so preflight stopped before execution-safety receipt
+persistence. It returned `DefinitelyNotSent` with `post_invoked=false`; no
+`cg_pub_msgnew` or `cg_pub_post` occurred. The redacted control log is
+`evidence/pr30-live-pre-send/cru6_transport_only_20260829T090608Z.log`.
+The T1 router remained the same process throughout. This is an external
+snapshot-availability/reopen condition, not a weakened connector gate, and no
+successful live execution-safety receipt is claimed by this run.

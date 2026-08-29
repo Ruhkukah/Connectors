@@ -1,0 +1,26 @@
+{
+  "schema": "moex.plaza2.reviewed_execution_evidence.v1",
+  "authorized_intent_sha256": "82ecd8b0cdcaceb8b6eb5772392531fb04b6f84394a48bd95ca141113ecce6aa",
+  "reviewed_evidence": {
+    "tick_size": "0.00100",
+    "top_bid": "13.05500",
+    "top_ask": "13.05600",
+    "market_data_source": "live.FORTS_AGGR20_REPL",
+    "aggr20_source_sequence": 1880,
+    "aggr20_source_revision": 220599,
+    "aggr20_observed_at_utc": "live-current",
+    "aggr20_age_ms": 0,
+    "max_aggr20_age_ms": 5000,
+    "trading_day": "live-current",
+    "session_id": "11695",
+    "session_state": "running",
+    "tradable_session": true,
+    "refdata_source": "live.FORTS_REFDATA_REPL",
+    "refdata_source_sequence": 154,
+    "refdata_source_revision": 154,
+    "instrument_exists": true,
+    "limits_source": "live.FORTS_PART_REPL",
+    "limits_commit_sequence": 7,
+    "limits_snapshot_applicable": true
+  }
+}
