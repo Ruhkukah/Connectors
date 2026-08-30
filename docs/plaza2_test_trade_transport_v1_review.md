@@ -207,7 +207,7 @@ The final offline validation is recorded here after the bounded checks:
 | TWIME label | 74/74 passed |
 | Sanitizer label | 66/66 passed (ASan leak detection disabled for AppleClang) |
 | .NET ABI checks | 2/2 passed |
-| Changed-target ASan/UBSan | 4/4 passed (ASan leak detection disabled for AppleClang) |
+| Changed-target ASan/UBSan | 12/12 passed (ASan leak detection disabled for AppleClang) |
 | No-test/no-operator minimal build | passed |
 | `git diff --check`, source/repo style, Unicode | passed |
 | Native offline plan/privacy check | passed |
