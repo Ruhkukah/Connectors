@@ -774,6 +774,64 @@ int main(int argc, char** argv) {
         transport_config.authorized_intent->sha256 =
             authorized_order_intent_sha256(*transport_config.authorized_intent);
         const auto plan = bound_plan(*transport_config.authorized_intent, add, recovery);
+
+        {
+            ScopedEnv refdata_open_error("MOEX_FAKE_REFDATA_OPEN_ERROR_ONCE", "1");
+            auto host_config = make_config(fixture).host;
+            Plaza2TestSessionHost host(std::move(host_config));
+            require(!host.start(), "initial REFDATA ERROR fixture must start asynchronously");
+            require(!host.poll(), "initial REFDATA ERROR must be observed without failing the host");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1050));
+            require(!host.poll(), "REFDATA retry must reopen after the required delay");
+            require(!host.poll(), "reopened REFDATA must process its initial snapshot");
+            const auto health = host.private_state().stream_health();
+            const auto refdata = std::ranges::find_if(health, [](const auto& stream) {
+                return stream.stream_code == generated::StreamCode::kFortsRefdataRepl;
+            });
+            require(refdata != health.end() && refdata->online && refdata->snapshot_complete,
+                    "OPEN -> ERROR -> delayed reopen -> ACTIVE must complete REFDATA snapshot readiness");
+            require(!host.stop(), "REFDATA retry host must stop cleanly");
+        }
+
+        {
+            ScopedEnv trade_open_error("MOEX_FAKE_TRADE_OPEN_ERROR_ONCE", "1");
+            auto host_config = make_config(fixture).host;
+            host_config.trade_replay_from_pos_anchor = true;
+            Plaza2TestSessionHost host(std::move(host_config));
+            require(!host.start(), "anchored TRADE retry fixture must start");
+            require(!host.poll(), "POS must select the immutable TRADE replay anchor");
+            const auto selected = host.trade_replay_anchor_used();
+            require(selected.has_value() && selected->trades_rev == 44 && selected->trades_lifenum == 7 &&
+                        !host.trade_replay_anchor_ready(),
+                    "accepted cg_lsn_open must not itself establish TRADE replay readiness");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1050));
+            require(!host.poll(), "TRADE retry must reuse the selected POS anchor after the required delay");
+            require(!host.poll(), "reopened TRADE must process its anchored snapshot");
+            const auto retained = host.trade_replay_anchor_used();
+            require(host.trade_replay_anchor_ready() && retained.has_value() && retained->trades_rev == 44 &&
+                        retained->trades_lifenum == 7,
+                    "same-anchor TRADE retry must become ready only after ACTIVE plus ONLINE snapshot completion");
+            require(!host.stop(), "TRADE retry host must stop cleanly");
+        }
+
+        {
+            ScopedEnv trade_open_drift("MOEX_FAKE_TRADE_OPEN_ERROR_POS_DRIFT", "1");
+            auto host_config = make_config(fixture).host;
+            host_config.trade_replay_from_pos_anchor = true;
+            Plaza2TestSessionHost host(std::move(host_config));
+            require(!host.start(), "TRADE anchor-drift fixture must start");
+            require(!host.poll(), "first TRADE open failure must retain the selected anchor");
+            const auto selected = host.trade_replay_anchor_used();
+            require(selected.has_value() && selected->trades_rev == 44 && selected->trades_lifenum == 7 &&
+                        !host.trade_replay_anchor_ready(),
+                    "failed TRADE open must retain but not declare the immutable anchor ready");
+            const auto drift = host.poll();
+            require(drift && contains_text(drift.message, "immutable POS.info anchor") &&
+                        !host.trade_replay_anchor_ready(),
+                    "TRADE open failure plus POS anchor drift must fail closed without re-anchoring");
+            require(!host.stop(), "TRADE anchor-drift host must stop cleanly");
+        }
+
         Plaza2TestTradeTransport transport(std::move(transport_config));
         bind_test_plan(transport, plan);
         const auto posted = transport.post(add, 701);
@@ -935,7 +993,8 @@ int main(int argc, char** argv) {
             bind_test_plan(drift_transport, drift_plan);
             const auto blocked = drift_transport.post(add, 701);
             require(blocked.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !blocked.post_invoked &&
-                        contains_text(blocked.validation_error.message, "starting position"),
+                        (contains_text(blocked.validation_error.message, "starting position") ||
+                         contains_text(blocked.validation_error.message, "immutable POS.info anchor")),
                     "a changed POS replay anchor must fail closed for " + std::string(drift_kind));
             require(drift_transport.last_execution_safety_receipt() == std::nullopt,
                     "changed POS replay anchor must prevent receipt persistence");

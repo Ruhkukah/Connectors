@@ -245,6 +245,7 @@ struct FakeListener {
     std::unique_ptr<OwnedScheme> scheme;
     std::vector<MessagePlan> message_plans;
     bool script_emitted{false};
+    std::uint32_t open_attempt_count{0};
 };
 
 struct FakeConnection {
@@ -257,6 +258,7 @@ struct FakeConnection {
     bool userbook_periodic_clear_emitted{false};
     bool userbook_periodic_info_emitted{false};
     bool pos_anchor_drift_emitted{false};
+    bool trade_open_error_seen{false};
 };
 
 struct FakePublisher {
@@ -1564,6 +1566,44 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrIncorrectState;
     }
 
+    if (fake_flag("MOEX_FAKE_TRADE_OPEN_ERROR_POS_DRIFT") && !connection->pos_anchor_drift_emitted) {
+        FakeListener* pos_listener = nullptr;
+        bool trade_open_failed = connection->trade_open_error_seen;
+        for (auto* listener : connection->listeners) {
+            if (listener == nullptr || listener->reply_listener) {
+                continue;
+            }
+            if (listener->stream_code == StreamCode::kFortsPosRepl && listener->state == kStateActive) {
+                pos_listener = listener;
+            } else if (listener->stream_code == StreamCode::kFortsTradeRepl && listener->state == kStateError) {
+                trade_open_failed = true;
+            }
+        }
+        if (pos_listener != nullptr && trade_open_failed) {
+            const auto script = script_for_stream(StreamCode::kFortsPosRepl);
+            const auto info = std::ranges::find_if(
+                script, [](const auto& message) { return message.table_code == TableCode::kFortsPosReplInfo; });
+            if (info == script.end()) {
+                return kCgErrIncorrectState;
+            }
+            auto drifted = *info;
+            if (auto* rev = find_field(drifted, FieldCode::kFortsPosReplInfoTradesRev)) {
+                rev->signed_value = 45;
+            }
+            if (const auto result = emit_simple_message(*pos_listener, kCgMsgTnBegin); result != kCgErrOk) {
+                return result;
+            }
+            if (const auto result = emit_stream_message(*pos_listener, drifted); result != kCgErrOk) {
+                return result;
+            }
+            if (const auto result = emit_simple_message(*pos_listener, kCgMsgTnCommit); result != kCgErrOk) {
+                return result;
+            }
+            connection->pos_anchor_drift_emitted = true;
+            return kCgErrOk;
+        }
+    }
+
     if (connection->script_emitted && connection->pending_replies.empty() &&
         fake_flag("MOEX_FAKE_USERORDERBOOK_PERIODIC_REFRESH")) {
         FakeListener* userbook = nullptr;
@@ -1844,6 +1884,19 @@ std::uint32_t cg_lsn_open(void* listener, const char*) {
         return kCgErrInvalidArgument;
     }
     auto* typed = static_cast<FakeListener*>(listener);
+    ++typed->open_attempt_count;
+    const bool refdata_error_once =
+        typed->stream_code == StreamCode::kFortsRefdataRepl && fake_flag("MOEX_FAKE_REFDATA_OPEN_ERROR_ONCE");
+    const bool trade_error_once =
+        typed->stream_code == StreamCode::kFortsTradeRepl &&
+        (fake_flag("MOEX_FAKE_TRADE_OPEN_ERROR_ONCE") || fake_flag("MOEX_FAKE_TRADE_OPEN_ERROR_POS_DRIFT"));
+    if (typed->open_attempt_count == 1 && (refdata_error_once || trade_error_once)) {
+        typed->state = kStateError;
+        if (trade_error_once && typed->connection != nullptr) {
+            typed->connection->trade_open_error_seen = true;
+        }
+        return kCgErrOk;
+    }
     typed->state = kStateActive;
     return emit_simple_message(*typed, kCgMsgOpen);
 }

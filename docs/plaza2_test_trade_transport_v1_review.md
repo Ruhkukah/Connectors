@@ -155,6 +155,9 @@ actual concrete transport and fake CGate runtime for:
 - LiveTestPreSend's typed no-send barrier after a complete receipt, including
   publisher/reply identity validation and the POS-anchor flatness
   reconstruction fixture;
+- truthful asynchronous listener readiness, a delayed initial REFDATA reopen,
+  a same-anchor delayed TRADE reopen, and fail-closed TRADE recovery when the
+  POS revision changes before retry;
 - a same-participant active USERORDERBOOK order with a different `ext_id`,
   which must block pre-send; and unchanged, revision-drift, and LifeNum-drift
   POS-anchor fixtures, which retain the original anchor and fail closed on
@@ -181,9 +184,11 @@ match that bound plan. Dynamic BBO, timestamps, session state, local age, and
 position observations remain receipt evidence rather than authorization-hash
 inputs. The deferred TRADE reconstruction is additionally bound to the exact
 POS `{trades_rev, trades_lifenum, server_time}` anchor captured when that
-listener opened; a later POS revision or LifeNum is an unresolved mismatch, not
-a reason to re-anchor during the same run. The active own-order census never
-uses the proposed `ext_id` as a filter.
+listener open was requested. An accepted `cg_lsn_open` call is not replay
+readiness: the selected anchor becomes ready only when the listener is ACTIVE
+and TRADE has completed its snapshot and reached ONLINE. A later POS revision
+or LifeNum is an unresolved mismatch, not a reason to re-anchor during the same
+run. The active own-order census never uses the proposed `ext_id` as a filter.
 
 The transport may release no identifier lock merely because a terminal-looking
 row arrived. For any order that may have existed, a `Filled` or `Cancelled`
@@ -207,7 +212,7 @@ The final offline validation is recorded here after the bounded checks:
 | TWIME label | 74/74 passed |
 | Sanitizer label | 66/66 passed (ASan leak detection disabled for AppleClang) |
 | .NET ABI checks | 2/2 passed |
-| Changed-target ASan/UBSan | 12/12 passed (ASan leak detection disabled for AppleClang) |
+| Changed-target ASan/UBSan | 5/5 current amendment; frozen-head 12/12 passed (ASan leak detection disabled for AppleClang) |
 | No-test/no-operator minimal build | passed |
 | `git diff --check`, source/repo style, Unicode | passed |
 | Native offline plan/privacy check | passed |
@@ -273,3 +278,39 @@ This classifies the fresh-host result as `REFDATA_NOT_CURRENT`, not a parser
 or connector tick mismatch. No `cg_pub_msgnew` or `cg_pub_post` occurred, the
 T1 router remained the same process, and no successful live execution-safety
 receipt is claimed by these runs.
+
+## Async-open diagnosis and bounded initial recovery (2026-08-31)
+
+The complete execution-host P2Log changes the preliminary diagnosis. The
+listeners did not enter ERROR and were not stuck in OPENING. The connection
+reached ACTIVE at log timestamp `13:35:17.801`; REFDATA changed from CLOSED to
+OPENING at `13:35:17.833`, then to ACTIVE at `13:35:20.163`; and TRADE changed
+from CLOSED to OPENING at `13:35:22.267`, then to ACTIVE at `13:35:24.416`.
+The host began closing at approximately `13:35:25.35`, less than one second
+after TRADE became ACTIVE and before REFDATA/TRADE delivered the ONLINE and
+snapshot-complete evidence used by the projector. No ERROR transition was
+recorded for either listener.
+
+The actual defect was therefore premature readiness: immediately after the
+deferred `cg_lsn_open` request returned OK, the host marked the anchored TRADE
+replay ready. The temporary execution driver used that value in its warm-up
+predicate, exited the observation loop, and stopped a healthy asynchronous
+open before the snapshots completed. This was not a CRU6, TEST-stream
+reconciliation, position-policy, or exchange-availability failure.
+
+The host now preserves exact open settings and supervises the numeric CGate
+state for the required private/status listeners. OPENING is allowed to
+progress; an ERROR before the initial snapshot is closed and reopened no
+sooner than one second later. This deliberately narrow recovery does not
+attempt mid-run resynchronization: ERROR after a completed initial snapshot
+fails closed. Deferred TRADE retains its originally selected POS revision and
+LifeNum, retries only with the exact same settings while that anchor is still
+current, and fails closed instead of re-anchoring if POS changes.
+
+Deterministic fake-runtime regressions cover REFDATA initial ERROR followed by
+delayed reopen and ONLINE, TRADE initial ERROR followed by same-anchor reopen
+and ONLINE, and TRADE ERROR followed by POS-anchor drift. They also assert that
+an accepted TRADE open request leaves `trade_replay_anchor_ready=false` until
+ACTIVE plus snapshot-complete/ONLINE evidence exists. This correction neither
+allocates nor posts a publisher message. A new live no-send receipt is still
+required before PR #30's live merge gate is met.

@@ -73,6 +73,11 @@ constexpr std::string_view kCredentialToken = "${MOEX_PLAZA2_TEST_CREDENTIALS}";
 constexpr std::string_view kLegacyCredentialToken = "${PLAZA2_TEST_CREDENTIALS}";
 constexpr std::string_view kSoftwareKeyToken = "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
 constexpr std::string_view kRelativeSchemeToken = "|FILE|scheme/forts_scheme.ini|";
+constexpr std::uint32_t kCgStateClosed = 0;
+constexpr std::uint32_t kCgStateOpening = 1;
+constexpr std::uint32_t kCgStateActive = 2;
+constexpr std::uint32_t kCgStateError = 3;
+constexpr auto kListenerReopenDelay = std::chrono::seconds(1);
 
 Plaza2Error invalid(std::string message, Plaza2ErrorCode code = Plaza2ErrorCode::InvalidConfiguration) {
     return {.code = code, .runtime_code = 0, .message = std::move(message)};
@@ -626,6 +631,18 @@ std::string_view position_evidence_class_name(PositionEvidenceClass value) noexc
 }
 
 struct Plaza2TestSessionHost::Impl {
+    struct ManagedPrivateListener {
+        ManagedPrivateListener(StreamCode code, std::string settings)
+            : stream_code(code), open_settings(std::move(settings)) {}
+
+        StreamCode stream_code{};
+        cgate::Plaza2Listener listener;
+        std::string open_settings;
+        std::chrono::steady_clock::time_point reopen_not_before{};
+        bool reopen_pending{false};
+        bool snapshot_completed_once{false};
+    };
+
     explicit Impl(Plaza2TestSessionHostConfig initial)
         : config(std::move(initial)), private_bridge(private_projector), aggr_bridge(aggr_projector) {}
 
@@ -757,14 +774,15 @@ struct Plaza2TestSessionHost::Impl {
                 deferred_trade_stream = stream;
                 continue;
             }
-            private_listeners.emplace_back();
-            auto& listener = private_listeners.back();
+            private_listeners.emplace_back(stream.stream_code, stream.open_settings);
+            auto& managed = private_listeners.back();
             const auto settings = resolve_scheme(
                 render_copy(stream.settings, credentials.value(), software_key.value()), probe.layout.scheme_path);
-            if (const auto error = listener.create(connection, stream.stream_code, settings, &private_bridge); error) {
+            if (const auto error = managed.listener.create(connection, stream.stream_code, settings, &private_bridge);
+                error) {
                 return error;
             }
-            if (const auto error = listener.open(stream.open_settings); error) {
+            if (const auto error = managed.listener.open(managed.open_settings); error) {
                 return error;
             }
         }
@@ -806,7 +824,7 @@ struct Plaza2TestSessionHost::Impl {
     }
 
     Plaza2Error open_deferred_trade_replay_if_anchored() {
-        if (!deferred_trade_stream.has_value() || trade_replay_anchor_is_ready) {
+        if (!deferred_trade_stream.has_value() || trade_listener_index.has_value()) {
             return {};
         }
         const auto health = private_projector.stream_health();
@@ -850,25 +868,122 @@ struct Plaza2TestSessionHost::Impl {
             return error;
         }
 
-        private_listeners.emplace_back();
-        auto& listener = private_listeners.back();
+        private_listeners.emplace_back(deferred_trade_stream->stream_code, open_settings);
+        auto& managed = private_listeners.back();
         const auto settings =
             resolve_scheme(render_copy(deferred_trade_stream->settings, credentials_value, software_key_value),
                            probe.layout.scheme_path);
         if (const auto error =
-                listener.create(connection, deferred_trade_stream->stream_code, settings, &private_bridge);
+                managed.listener.create(connection, deferred_trade_stream->stream_code, settings, &private_bridge);
             error) {
             return error;
         }
-        if (const auto error = listener.open(open_settings); error) {
+        if (const auto error = managed.listener.open(managed.open_settings); error) {
             return error;
         }
+        trade_listener_index = private_listeners.size() - 1;
         trade_replay_anchor_used = Plaza2TradeReplayAnchor{
             .trades_rev = pos_health->last_trades_rev,
             .trades_lifenum = pos_health->last_trades_lifenum,
             .server_time = pos_health->last_server_time,
         };
-        trade_replay_anchor_is_ready = true;
+        // cg_lsn_open only initiates an asynchronous open. The immutable POS
+        // anchor is selected here, but replay readiness is established only
+        // after TRADE is ACTIVE and its snapshot has reached ONLINE.
+        trade_replay_anchor_is_ready = false;
+        return {};
+    }
+
+    [[nodiscard]] const private_state::StreamHealthSnapshot* stream_health(StreamCode code) const noexcept {
+        const auto health = private_projector.stream_health();
+        const auto found =
+            std::find_if(health.begin(), health.end(), [&](const auto& stream) { return stream.stream_code == code; });
+        return found == health.end() ? nullptr : &*found;
+    }
+
+    [[nodiscard]] bool pos_anchor_matches_selected() const noexcept {
+        if (!trade_replay_anchor_used.has_value()) {
+            return false;
+        }
+        const auto* pos = stream_health(StreamCode::kFortsPosRepl);
+        return pos != nullptr && pos->online && pos->snapshot_complete &&
+               pos->last_trades_rev == trade_replay_anchor_used->trades_rev &&
+               pos->last_trades_lifenum == trade_replay_anchor_used->trades_lifenum;
+    }
+
+    Plaza2Error supervise_initial_listener_opens() {
+        const auto now = std::chrono::steady_clock::now();
+        for (auto& managed : private_listeners) {
+            const auto* health = stream_health(managed.stream_code);
+            managed.snapshot_completed_once =
+                managed.snapshot_completed_once || (health != nullptr && health->online && health->snapshot_complete);
+
+            std::uint32_t state = kCgStateClosed;
+            if (const auto error = managed.listener.state(state); error) {
+                return error;
+            }
+            if (state == kCgStateActive || state == kCgStateOpening) {
+                continue;
+            }
+            if (state == kCgStateError) {
+                if (managed.snapshot_completed_once) {
+                    return invalid("replication listener entered ERROR after completing its initial snapshot; "
+                                   "mid-run recovery is intentionally out of scope",
+                                   Plaza2ErrorCode::AdapterState);
+                }
+                if (managed.stream_code == StreamCode::kFortsTradeRepl && !pos_anchor_matches_selected()) {
+                    trade_replay_anchor_is_ready = false;
+                    return invalid("FORTS_TRADE_REPL entered ERROR and the immutable POS replay anchor changed",
+                                   Plaza2ErrorCode::AdapterState);
+                }
+                if (const auto error = private_bridge.on_plaza2_listener_event(Plaza2ListenerEvent{
+                        .kind = Plaza2ListenerEventKind::Close, .stream_code = managed.stream_code});
+                    error) {
+                    return error;
+                }
+                if (const auto error = managed.listener.close(); error) {
+                    return error;
+                }
+                managed.reopen_pending = true;
+                managed.reopen_not_before = now + kListenerReopenDelay;
+                continue;
+            }
+            if (state == kCgStateClosed && managed.reopen_pending && now >= managed.reopen_not_before) {
+                if (managed.stream_code == StreamCode::kFortsTradeRepl && !pos_anchor_matches_selected()) {
+                    trade_replay_anchor_is_ready = false;
+                    return invalid("FORTS_TRADE_REPL retry refused because the immutable POS replay anchor changed",
+                                   Plaza2ErrorCode::AdapterState);
+                }
+                if (const auto error = managed.listener.open(managed.open_settings); error) {
+                    managed.reopen_not_before = now + kListenerReopenDelay;
+                    continue;
+                }
+                managed.reopen_pending = false;
+            }
+        }
+        return {};
+    }
+
+    Plaza2Error update_trade_replay_readiness() {
+        if (!config.trade_replay_from_pos_anchor) {
+            trade_replay_anchor_is_ready = true;
+            return {};
+        }
+        trade_replay_anchor_is_ready = false;
+        if (!trade_listener_index.has_value() || !trade_replay_anchor_used.has_value()) {
+            return {};
+        }
+        if (!pos_anchor_matches_selected()) {
+            return invalid("FORTS_TRADE_REPL replay no longer matches its immutable POS.info anchor",
+                           Plaza2ErrorCode::AdapterState);
+        }
+        std::uint32_t state = kCgStateClosed;
+        if (const auto error = private_listeners[*trade_listener_index].listener.state(state); error) {
+            return error;
+        }
+        const auto* trade = stream_health(StreamCode::kFortsTradeRepl);
+        trade_replay_anchor_is_ready =
+            state == kCgStateActive && trade != nullptr && trade->online && trade->snapshot_complete;
         return {};
     }
 
@@ -889,6 +1004,12 @@ struct Plaza2TestSessionHost::Impl {
         }
         if (const auto replay_error = open_deferred_trade_replay_if_anchored(); replay_error) {
             return replay_error;
+        }
+        if (const auto listener_error = supervise_initial_listener_opens(); listener_error) {
+            return listener_error;
+        }
+        if (const auto readiness_error = update_trade_replay_readiness(); readiness_error) {
+            return readiness_error;
         }
         if (!reply_bridge.error().empty()) {
             return invalid(reply_bridge.error(), Plaza2ErrorCode::CallbackFailed);
@@ -916,11 +1037,12 @@ struct Plaza2TestSessionHost::Impl {
         static_cast<void>(aggr_listener.close());
         static_cast<void>(aggr_listener.destroy());
         for (auto it = private_listeners.rbegin(); it != private_listeners.rend(); ++it) {
-            static_cast<void>(it->close());
-            static_cast<void>(it->destroy());
+            static_cast<void>(it->listener.close());
+            static_cast<void>(it->listener.destroy());
         }
         private_listeners.clear();
         deferred_trade_stream.reset();
+        trade_listener_index.reset();
         trade_replay_anchor_used.reset();
         trade_replay_anchor_is_ready = false;
         static_cast<void>(connection.close());
@@ -954,13 +1076,14 @@ struct Plaza2TestSessionHost::Impl {
     cgate::Plaza2Publisher publisher;
     cgate::Plaza2Listener reply_listener;
     cgate::Plaza2Listener aggr_listener;
-    std::vector<cgate::Plaza2Listener> private_listeners;
+    std::vector<ManagedPrivateListener> private_listeners;
     private_state::Plaza2PrivateStateProjector private_projector;
     cgate::Plaza2Aggr20BookProjector aggr_projector;
     PrivateProjectorBridge private_bridge;
     AggrProjectorBridge aggr_bridge;
     ReplyBridge reply_bridge;
     std::optional<Plaza2TestTradeStreamConfig> deferred_trade_stream;
+    std::optional<std::size_t> trade_listener_index;
     std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used;
     std::string credentials_value;
     std::string software_key_value;
@@ -1384,6 +1507,15 @@ struct Plaza2TestTradeTransport::Impl {
         }
         if (const auto error = host.poll(); error) {
             return error;
+        }
+        if (config.host.trade_replay_from_pos_anchor && host.trade_replay_anchor_used().has_value() &&
+            !host.trade_replay_anchor_ready()) {
+            // The first poll can select the POS anchor and only initiate the
+            // asynchronous TRADE open. Give the newly created listener one
+            // process turn; readiness still requires ACTIVE plus ONLINE.
+            if (const auto error = host.poll(); error) {
+                return error;
+            }
         }
         if (config.host.trade_replay_from_pos_anchor && host.trade_replay_anchor_ready()) {
             const auto trade_health =
