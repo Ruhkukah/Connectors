@@ -314,3 +314,24 @@ an accepted TRADE open request leaves `trade_replay_anchor_ready=false` until
 ACTIVE plus snapshot-complete/ONLINE evidence exists. This correction neither
 allocates nor posts a publisher message. A new live no-send receipt is still
 required before PR #30's live merge gate is met.
+
+The exact-head weekday retry at `6f15da99e4e1cbcfbc5089445c63b1f778af79e1`
+then exercised the new supervisor against T1 at approximately 14:19-14:21
+MSK. The connection, publisher, reply listener, and AGGR20 listener became
+ACTIVE. Each of USERORDERBOOK, POS, PART, REFDATA, SESSIONSTATE, and
+INSTRUMENTSTATE was opened between three and four times as CGate alternated
+between OPENING/ACTIVE and `MQ:TIMEOUT` ERROR while the underlying services
+were unavailable. This proves the bounded reopen path operated; it did not
+make unavailable Exchange services current.
+
+The final observation was therefore `OBSERVATION_READY=0`: REFDATA, POS,
+TRADE, and USERORDERBOOK were not online/snapshot-complete; no immutable POS
+anchor existed, so TRADE was never opened; and the last scoped CRU6 AGGR20 BBO
+was stale. The driver stopped before bind or pre-send. The redacted log is
+`evidence/pr30-live-pre-send/cru6_async_open_retry_6f15da9_20260831T1420MSK.log`
+with SHA-256
+`1d18eef096d1f136ee9e2483749c302420f902747bec032562b05664dad3dae9`.
+The client operation log contained zero `cg_pub_msgnew` and zero `cg_pub_post`
+calls, and router PID/start time was unchanged. This is
+`T1_REQUIRED_REPLICATION_SERVICES_NOT_READY`, not a successful Gate A or a
+reason to weaken readiness.
