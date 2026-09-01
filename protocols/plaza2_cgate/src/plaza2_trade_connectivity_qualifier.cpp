@@ -45,6 +45,14 @@ class QualificationAggr20Bridge final : public Plaza2ListenerEventHandler {
         return snapshot_complete_;
     }
 
+    [[nodiscard]] bool has_lifenum() const noexcept {
+        return has_lifenum_;
+    }
+
+    [[nodiscard]] std::uint64_t last_lifenum() const noexcept {
+        return last_lifenum_;
+    }
+
     Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override {
         switch (event.kind) {
         case Plaza2ListenerEventKind::Open:
@@ -301,6 +309,9 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         snapshot.target_aggr20_age_ms = 0;
         snapshot.target_aggr20_repl_id = 0;
         snapshot.target_aggr20_repl_rev = 0;
+        snapshot.aggr20_has_lifenum = aggr_bridge.has_lifenum();
+        snapshot.aggr20_lifenum = aggr_bridge.last_lifenum();
+        snapshot.aggr20_row_count = aggr_projector.snapshot().row_count;
         snapshot.participant_limit_unique = false;
         snapshot.participant_limits_set = false;
         snapshot.applicable_position_count = 0;

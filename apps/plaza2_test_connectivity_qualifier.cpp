@@ -35,6 +35,7 @@ struct Args {
     fs::path config_dir;
     std::string env_open_settings;
     std::string expected_spectra_release;
+    std::string expected_runtime_library_sha256;
     std::string expected_scheme_sha256;
     std::string connection_settings;
     std::string connection_open_settings;
@@ -141,6 +142,8 @@ std::optional<Args> parse_args(int argc, char** argv) {
         } else if (argument == "--env-open-settings" && take_value(index, argc, argv, args.env_open_settings)) {
         } else if (argument == "--expected-spectra-release" &&
                    take_value(index, argc, argv, args.expected_spectra_release)) {
+        } else if (argument == "--expected-runtime-library-sha256" &&
+                   take_value(index, argc, argv, args.expected_runtime_library_sha256)) {
         } else if (argument == "--expected-scheme-sha256" &&
                    take_value(index, argc, argv, args.expected_scheme_sha256)) {
         } else if (argument == "--connection-settings" && take_value(index, argc, argv, args.connection_settings)) {
@@ -260,6 +263,7 @@ Plaza2TradeConnectivityQualifierConfig make_config(const Args& args) {
     config.session.runtime.config_dir = args.config_dir;
     config.session.runtime.env_open_settings = args.env_open_settings;
     config.session.runtime.expected_spectra_release = args.expected_spectra_release;
+    config.session.runtime.expected_runtime_library_sha256 = args.expected_runtime_library_sha256;
     config.session.runtime.expected_scheme_sha256 = args.expected_scheme_sha256;
     config.session.connection_settings = args.connection_settings;
     config.session.connection_open_settings = args.connection_open_settings;
@@ -400,9 +404,11 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     field("os", build_os());
     field("arch", build_arch());
     field("profile_id", args.profile_id);
+    field("environment", "TEST");
     field("endpoint_host", args.endpoint_host);
     number("endpoint_port", args.endpoint_port);
     field("runtime_library_sha256", probe.runtime_library_sha256);
+    field("cgate_runtime_version", probe.runtime_version);
     field("runtime_library_path", probe.layout.library_path.string());
     field("runtime_root", probe.layout.runtime_root.string());
     field("scheme_path", probe.layout.scheme_path.string());
@@ -415,6 +421,7 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     field("runtime_version_observed",
           probe.layout.version_markers.spectra_release + "/" + probe.layout.version_markers.dds_version);
     boolean("runtime_library_loadable", probe.runtime_library_loadable);
+    boolean("runtime_identity_recognized", probe.runtime_identity_recognized);
     boolean("runtime_trading_capable", snapshot.runtime_trading_capable);
     boolean("abi_subset_compatible", probe.runtime_library_loadable);
     boolean("scheme_subset_compatible", probe.scheme_drift.compatibility != Plaza2Compatibility::Incompatible);
@@ -460,14 +467,17 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     boolean("status_streams_ready", snapshot.status_streams_ready);
     boolean("p2mqreply_open", snapshot.p2mqreply_open);
     boolean("publisher_open", snapshot.publisher_open);
-    const auto* userbook_health = [&]() -> const moex::plaza2::private_state::StreamHealthSnapshot* {
+    const auto stream_health = [&](StreamCode code) -> const moex::plaza2::private_state::StreamHealthSnapshot* {
         for (const auto& stream : qualifier.private_session().projector().stream_health()) {
-            if (stream.stream_code == StreamCode::kFortsUserorderbookRepl) {
+            if (stream.stream_code == code) {
                 return &stream;
             }
         }
         return nullptr;
-    }();
+    };
+    const auto* userbook_health = stream_health(StreamCode::kFortsUserorderbookRepl);
+    const auto* pos_health = stream_health(StreamCode::kFortsPosRepl);
+    const auto* trade_health = stream_health(StreamCode::kFortsTradeRepl);
     boolean("userorderbook_publication_state_available",
             userbook_health != nullptr && userbook_health->has_publication_state);
     number("userorderbook_publication_state", userbook_health == nullptr ? 0 : userbook_health->publication_state);
@@ -476,6 +486,12 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     number("userorderbook_info_moment", userbook_health == nullptr ? 0 : userbook_health->last_info_moment);
     boolean("userorderbook_periodic_snapshot_consistent",
             userbook_health != nullptr && userbook_health->periodic_snapshot_consistent);
+    number("pos_trades_rev", pos_health == nullptr ? 0 : pos_health->last_trades_rev);
+    number("pos_trades_lifenum", pos_health == nullptr ? 0 : pos_health->last_trades_lifenum);
+    number("pos_server_time", pos_health == nullptr ? 0 : pos_health->last_server_time);
+    number("pos_committed_row_count", pos_health == nullptr ? 0 : pos_health->committed_row_count);
+    number("trade_server_time", trade_health == nullptr ? 0 : trade_health->last_server_time);
+    number("trade_committed_row_count", trade_health == nullptr ? 0 : trade_health->committed_row_count);
     boolean("participant_limit_unique", snapshot.participant_limit_unique);
     boolean("participant_limits_set", snapshot.participant_limits_set);
     number("applicable_position_count", snapshot.applicable_position_count);
@@ -512,11 +528,19 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
         if (index != 0)
             json += ", ";
         const auto& stream = health.streams[index];
+        const bool has_lifenum =
+            stream.stream_code == StreamCode::kFortsAggrRepl ? snapshot.aggr20_has_lifenum : stream.has_lifenum;
+        const auto lifenum =
+            stream.stream_code == StreamCode::kFortsAggrRepl ? snapshot.aggr20_lifenum : stream.last_lifenum;
+        const auto row_count =
+            stream.stream_code == StreamCode::kFortsAggrRepl ? snapshot.aggr20_row_count : stream.committed_row_count;
         json += "{\"name\":\"" + json_escape(stream.stream_name) + "\",\"listener_url_mode\":\"" +
                 json_escape(stream.listener_url_mode) + "\",\"created\":" + (stream.created ? "true" : "false") +
                 ",\"opened\":" + (stream.opened ? "true" : "false") +
                 ",\"online\":" + (stream.online ? "true" : "false") +
                 ",\"snapshot_complete\":" + (stream.snapshot_complete ? "true" : "false") +
+                ",\"has_lifenum\":" + (has_lifenum ? "true" : "false") + ",\"lifenum\":" + std::to_string(lifenum) +
+                ",\"row_count\":" + std::to_string(row_count) +
                 ",\"periodic_snapshot_consistent\":" + (stream.periodic_snapshot_consistent ? "true" : "false") +
                 ",\"required_online\":" + (stream.required_online ? "true" : "false") + "}";
     }

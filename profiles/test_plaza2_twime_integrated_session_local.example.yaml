@@ -52,12 +52,16 @@ plaza2_repl_test:
     library_path: PLAZA2_LIBRARY_PATH_PLACEHOLDER
     scheme_dir: PLAZA2_SCHEME_DIR_PLACEHOLDER
     config_dir: PLAZA2_CONFIG_DIR_PLACEHOLDER
-    env_open_settings: ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}
-    expected_spectra_release: SPECTRA93
-    expected_scheme_sha256: ""
+    env_open_settings: ini=config/t1.ini;key=${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}
+    expected_spectra_release: SPECTRA9.9.0
+    expected_runtime_library_sha256: f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f
+    expected_scheme_sha256: 7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746
   credentials:
     source: file
     file_path: /secure/local/moex/plaza2_test_credentials.txt
+  software_key:
+    source: file
+    file_path: /secure/local/moex/plaza2_cgate_software_key.txt
   session:
     connection_settings: p2tcp://TEST_PLAZA2_ENDPOINT_HOST_PLACEHOLDER:4001;app_name=connectors_phase4c_plaza2
     connection_open_settings: ""

@@ -1,0 +1,48 @@
+{
+  "spectra_release": "SPECTRA9.9.0",
+  "dds_version": "990.1.6.42744",
+  "classification": "CONSUMED_REPLICATION_FIELDS_COMPATIBLE_WITH_REVIEWED_WARNINGS",
+  "schemes": {
+    "forts_scheme.ini": {"sha256": "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746"},
+    "refdata.ini": {"sha256": "6a59a24a05875c0b578c386bf37852e6543be25de8875eaebda26ab85cedfaa7"},
+    "pos.ini": {"sha256": "614bfe96ecc4b5ae98d2766c3186e8ff5ceec63ea1393d2d1e07ebd15e7e9ba0"},
+    "part.ini": {"sha256": "01fdb798cd0f3c9f98200372e86a696c37360b4829bcdb448dd42320131eb8f7"},
+    "userorderbook.ini": {"sha256": "50e78266bbc4c6f1f4212aa2aa11b3e90f147bbd68cbb245d2f7495310b568af"},
+    "trades.ini": {"sha256": "db76a398d7dedc9a118216a4603d928c7e6669af08e6445f4c0dbf021b544897"},
+    "orders_aggr.ini": {"sha256": "2c1a062f93cee01352023572726538ec6dcacc768a0b5f82e5fffdbd5c005514"},
+    "sessionstate.ini": {"sha256": "1b28f988e9304d57edfafd71cbec10f000c43c18f837195193546823304d2e81"},
+    "instrumentstate.ini": {"sha256": "74420bb2bf41da63564b18ba36af287d2d51e4841f0b8f962a9eeca942bde2ce"}
+  },
+  "reviewed_absent_fields": [
+    "FORTS_PART_REPL.part.vm_intercl",
+    "FORTS_PART_REPL.part.premium_intercl",
+    "FORTS_REFDATA_REPL.fut_instruments.step_price_interclr",
+    "FORTS_REFDATA_REPL.session.inter_cl_begin",
+    "FORTS_REFDATA_REPL.session.inter_cl_end",
+    "FORTS_REFDATA_REPL.session.inter_cl_state"
+  ],
+  "compatible_additions_on_consumed_tables": [
+    "FORTS_PART_REPL.part.moment",
+    "FORTS_PART_REPL.part.premium_blocked",
+    "FORTS_USERORDERBOOK_REPL.orders.prevorder_id",
+    "FORTS_USERORDERBOOK_REPL.orders_currentday.prevorder_id",
+    "FORTS_TRADE_REPL.orders_log.prevorder_id"
+  ],
+  "unchanged_consumed_surfaces": [
+    "FORTS_POS_REPL.position",
+    "FORTS_POS_REPL.info",
+    "FORTS_SESSIONSTATE_REPL.session_state",
+    "FORTS_INSTRUMENTSTATE_REPL.instrument_state",
+    "FORTS_AGGR20_REPL.orders_aggr"
+  ],
+  "semantics": {
+    "userorderbook_trade_cross_stream_reconciliation": false,
+    "pos_trade_anchor_required": true,
+    "unknown_missing_or_changed_consumed_field_is_fatal": true
+  },
+  "notes": [
+    "The six reviewed fields removed by SPECTRA 9.9 are not used by current readiness or position gates; retained public state members default to zero or empty when absent.",
+    "All other missing or type-changed fields on required tables remain fatal.",
+    "Raw vendor schemes are not committed."
+  ]
+}

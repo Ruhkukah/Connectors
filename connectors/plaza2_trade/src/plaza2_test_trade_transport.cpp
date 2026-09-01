@@ -176,7 +176,7 @@ bool valid_hex_sha256(std::string_view value) {
            std::all_of(value.begin(), value.end(), [](unsigned char ch) { return std::isxdigit(ch) != 0; });
 }
 
-// Locked PLAZA II 9.3 AddOrder semantics.  State 0 is scheduled, 2 is
+// Reviewed PLAZA II 9.3/9.9 AddOrder semantics. State 0 is scheduled, 2 is
 // suspended, and 4 is completed; all are cancellation-only or closed.
 bool add_order_allowed_status(std::int32_t state) noexcept {
     return state == 1; // running: Add + Cancel allowed

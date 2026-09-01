@@ -34,6 +34,7 @@ struct RunnerArgs {
     fs::path config_dir;
     std::string env_open_settings;
     std::string expected_spectra_release;
+    std::string expected_runtime_library_sha256;
     std::string expected_scheme_sha256;
     std::string connection_settings;
     std::string connection_open_settings;
@@ -136,6 +137,8 @@ std::optional<RunnerArgs> parse_args(int argc, char** argv) {
             args.env_open_settings = argv[++index];
         } else if (argument == "--expected-spectra-release" && index + 1 < argc) {
             args.expected_spectra_release = argv[++index];
+        } else if (argument == "--expected-runtime-library-sha256" && index + 1 < argc) {
+            args.expected_runtime_library_sha256 = argv[++index];
         } else if (argument == "--expected-scheme-sha256" && index + 1 < argc) {
             args.expected_scheme_sha256 = argv[++index];
         } else if (argument == "--connection-settings" && index + 1 < argc) {
@@ -264,6 +267,7 @@ Plaza2Aggr20MdConfig make_config(const RunnerArgs& args) {
     config.runtime.config_dir = args.config_dir;
     config.runtime.env_open_settings = args.env_open_settings;
     config.runtime.expected_spectra_release = args.expected_spectra_release;
+    config.runtime.expected_runtime_library_sha256 = args.expected_runtime_library_sha256;
     config.runtime.expected_scheme_sha256 = args.expected_scheme_sha256;
     config.connection_settings = args.connection_settings;
     config.connection_open_settings = args.connection_open_settings;

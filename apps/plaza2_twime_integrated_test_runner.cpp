@@ -57,6 +57,7 @@ struct RunnerArgs {
     fs::path plaza_config_dir;
     std::string plaza_env_open_settings;
     std::string plaza_expected_spectra_release;
+    std::string plaza_expected_runtime_library_sha256;
     std::string plaza_expected_scheme_sha256;
     std::string plaza_connection_settings;
     std::string plaza_connection_open_settings;
@@ -66,6 +67,9 @@ struct RunnerArgs {
     Plaza2CredentialSource plaza_credentials_source{Plaza2CredentialSource::None};
     std::string plaza_credentials_env_var;
     fs::path plaza_credentials_file;
+    Plaza2CredentialSource plaza_software_key_source{Plaza2CredentialSource::None};
+    std::string plaza_software_key_env_var;
+    fs::path plaza_software_key_file;
 
     bool armed_test_network{false};
     bool armed_test_session{false};
@@ -337,6 +341,10 @@ std::optional<RunnerArgs> parse_args(int argc, char** argv) {
             args.plaza_expected_spectra_release = argv[++index];
             continue;
         }
+        if (argument == "--plaza-expected-runtime-library-sha256" && index + 1 < argc) {
+            args.plaza_expected_runtime_library_sha256 = argv[++index];
+            continue;
+        }
         if (argument == "--plaza-expected-scheme-sha256" && index + 1 < argc) {
             args.plaza_expected_scheme_sha256 = argv[++index];
             continue;
@@ -396,6 +404,28 @@ std::optional<RunnerArgs> parse_args(int argc, char** argv) {
         }
         if (argument == "--plaza-credentials-file" && index + 1 < argc) {
             args.plaza_credentials_file = argv[++index];
+            continue;
+        }
+        if (argument == "--plaza-software-key-source" && index + 1 < argc) {
+            const std::string source = argv[++index];
+            if (source == "none") {
+                args.plaza_software_key_source = Plaza2CredentialSource::None;
+            } else if (source == "env") {
+                args.plaza_software_key_source = Plaza2CredentialSource::Env;
+            } else if (source == "file") {
+                args.plaza_software_key_source = Plaza2CredentialSource::File;
+            } else {
+                std::cerr << "invalid --plaza-software-key-source value\n";
+                return std::nullopt;
+            }
+            continue;
+        }
+        if (argument == "--plaza-software-key-env-var" && index + 1 < argc) {
+            args.plaza_software_key_env_var = argv[++index];
+            continue;
+        }
+        if (argument == "--plaza-software-key-file" && index + 1 < argc) {
+            args.plaza_software_key_file = argv[++index];
             continue;
         }
         if (argument == "--armed-test-network") {
@@ -516,6 +546,7 @@ Plaza2TwimeIntegratedTestConfig make_config(const RunnerArgs& args) {
     config.plaza.runtime.config_dir = args.plaza_config_dir;
     config.plaza.runtime.env_open_settings = args.plaza_env_open_settings;
     config.plaza.runtime.expected_spectra_release = args.plaza_expected_spectra_release;
+    config.plaza.runtime.expected_runtime_library_sha256 = args.plaza_expected_runtime_library_sha256;
     config.plaza.runtime.expected_scheme_sha256 = args.plaza_expected_scheme_sha256;
     config.plaza.connection_settings = args.plaza_connection_settings;
     config.plaza.connection_open_settings = args.plaza_connection_open_settings;
@@ -523,6 +554,9 @@ Plaza2TwimeIntegratedTestConfig make_config(const RunnerArgs& args) {
     config.plaza.credentials.source = args.plaza_credentials_source;
     config.plaza.credentials.env_var = args.plaza_credentials_env_var;
     config.plaza.credentials.file_path = args.plaza_credentials_file;
+    config.plaza.software_key.source = args.plaza_software_key_source;
+    config.plaza.software_key.env_var = args.plaza_software_key_env_var;
+    config.plaza.software_key.file_path = args.plaza_software_key_file;
 
     for (const auto& [stream_name, settings] : args.plaza_stream_settings) {
         const auto stream_code = stream_code_from_name(stream_name);

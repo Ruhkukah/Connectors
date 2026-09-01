@@ -43,6 +43,17 @@ RUNTIME_SCHEME_ALIASES = {
     "PART": "FORTS_PART_REPL",
 }
 
+REVIEWED_ABSENT_FIELDS_BY_RELEASE = {
+    "SPECTRA9.9.0": {
+        ("FORTS_PART_REPL", "part", "vm_intercl"),
+        ("FORTS_PART_REPL", "part", "premium_intercl"),
+        ("FORTS_REFDATA_REPL", "fut_instruments", "step_price_interclr"),
+        ("FORTS_REFDATA_REPL", "session", "inter_cl_begin"),
+        ("FORTS_REFDATA_REPL", "session", "inter_cl_end"),
+        ("FORTS_REFDATA_REPL", "session", "inter_cl_state"),
+    }
+}
+
 
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
@@ -139,13 +150,19 @@ def compatible_type(reviewed_type: str, runtime_type: str) -> bool:
 
 
 def material_required_drift(
-    key: tuple[str, str], runtime_fields: list[dict[str, str]], reviewed_fields: list[dict[str, str]]
+    key: tuple[str, str],
+    runtime_fields: list[dict[str, str]],
+    reviewed_fields: list[dict[str, str]],
+    spectra_release: str,
 ) -> bool:
     if key not in REQUIRED_TABLES:
         return False
     runtime_by_name = {field["field_name"]: field["type_token"] for field in runtime_fields}
+    reviewed_absent = REVIEWED_ABSENT_FIELDS_BY_RELEASE.get(spectra_release, set())
     for field in reviewed_fields:
         runtime_type = runtime_by_name.get(field["field_name"])
+        if runtime_type is None and (key[0], key[1], field["field_name"]) in reviewed_absent:
+            continue
         if runtime_type is None or not compatible_type(field["type_token"], runtime_type):
             return True
     return False
@@ -197,7 +214,12 @@ def build_reports(runtime_scheme: Path, metadata_path: Path, report_path: str | 
         if not drift:
             continue
         target = ignored_drift
-        if material_required_drift(key, runtime_fields, reviewed_fields):
+        if material_required_drift(
+            key,
+            runtime_fields,
+            reviewed_fields,
+            runtime["markers"].get("spectra_release", ""),
+        ):
             target = fatal_drift
         elif row["classification"] == "warning_only":
             target = warning_drift

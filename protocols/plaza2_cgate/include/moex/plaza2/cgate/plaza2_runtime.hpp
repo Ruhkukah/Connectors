@@ -90,6 +90,7 @@ struct Plaza2Settings {
     std::string application_name_scope{"plaza2"};
     std::uint32_t application_instance{0};
     std::string expected_spectra_release;
+    std::string expected_runtime_library_sha256;
     std::string expected_scheme_sha256;
 };
 
@@ -124,6 +125,7 @@ struct Plaza2RuntimeProbeReport {
     Plaza2Compatibility compatibility{Plaza2Compatibility::Unknown};
     Plaza2RuntimeLayout layout;
     Plaza2SchemeDriftReport scheme_drift;
+    std::string runtime_version;
     std::string runtime_library_sha256;
     std::vector<std::string> resolved_symbols;
     std::vector<Plaza2ProbeIssue> issues;
@@ -134,6 +136,7 @@ struct Plaza2RuntimeProbeReport {
     // exported only by the test CGate DSO; a compatible real runtime must not
     // satisfy the TEST transport host.
     bool fake_runtime_marker_present{false};
+    bool runtime_identity_recognized{false};
     bool trading_capable{false};
     bool scheme_file_present{false};
     bool config_dir_present{false};
