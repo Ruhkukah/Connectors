@@ -19,17 +19,17 @@ they are not a mechanical `93` to `99` replacement.
 
 | Path | Symbol or lock | Existing CGate 9.3 assumption | CGate 9.9 disposition |
 | --- | --- | --- | --- |
-| `protocols/plaza2_cgate/src/plaza2_runtime.cpp` | handwritten CGate constants and callback structs | comments bind the consumed ABI to the CGate 9.3 header | Compare constants, sizes, alignments, and offsets against both headers; retain layouts only if identical and relabel the reviewed ABI set |
-| `protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_runtime.hpp` | `Plaza2Settings`, `Plaza2RuntimeProbeReport` | release and scheme hash are checked, but the runtime library version/hash is only reported | Requires an explicit current-T1 runtime identity lock and fail-closed unknown combinations |
-| `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp` | AddOrder state interpretation | comment identifies the verified semantics as 9.3 | Compare the consumed 9.9 transactional fields and values; update the qualification label only if unchanged |
-| `spec-lock/test/plaza2/runtime_scheme/` | runtime manifest and derived scheme signature | exact `cgate_9.3.0.1687`, `SPECTRA93`, and 9.3 `forts_scheme.ini` hash | Preserve as historical provenance; add a release-qualified 9.9 current-T1 lock and regenerated derived reports |
-| `spec-lock/test/plaza2/trade/manifest.yaml` | transaction and private replication source hashes | exact 9.3 message/scheme hashes and `SPECTRA93` markers | Preserve as historical provenance; add a release-qualified 9.9 manifest after consumed-field comparison |
-| `tools/plaza2_runtime_scheme_lock.py` | required consumed replication tables and compatible integer widths | reviewed metadata is compared with one supplied vendor runtime scheme | Logic is version-neutral; run it against 9.9 and commit the derived release-qualified output |
+| `protocols/plaza2_cgate/src/plaza2_runtime.cpp` | CGate ABI structs/constants | ABI comment names 9.3 | Compare both headers; retain only identical layouts. |
+| `plaza2_runtime.hpp` | Runtime settings/report | Library identity only reported | Add an exact current-T1 identity lock. |
+| `plaza2_test_trade_transport.cpp` | AddOrder state comment | Semantics named 9.3 | Relabel only after 9.9 field comparison. |
+| `runtime_scheme/` | Runtime scheme lock | SPECTRA93 hash | Preserve it; add a release-qualified 9.9 lock. |
+| `trade/manifest.yaml` | Transaction lock | SPECTRA93 hashes | Preserve it; add a compared 9.9 manifest. |
+| `plaza2_runtime_scheme_lock.py` | Consumed scheme check | One vendor scheme | Run unchanged logic against 9.9. |
 | `tools/plaza2_phase5a_trade_materialize.py` | hard-coded 9.3 source fingerprints | materializes the historical 9.3 trade spec lock | Keep historical generator stable; do not overwrite its provenance with 9.9 |
-| `tools/plaza2_phase3a_materialize.py`, `spec-lock/{test,prod}/plaza2/manifest.yaml` | Phase 3A documentation locks | reviewed 9.3 documentation inputs, including production | Historical documentation provenance; unchanged, especially production |
-| `profiles/test_plaza2_*` and local examples | `expected_spectra_release: SPECTRA93` | current TEST examples select the obsolete T1 release | Current TEST templates/examples require the reviewed 9.9 release and runtime identity; production profiles remain unchanged |
-| `tests/plaza2_cgate/*`, `tests/plaza2_trade/*`, `tests/plaza2_twime_integrated/*` | fixture release markers | most synthetic fixtures identify as `SPECTRA93` | Keep historical compatibility tests where useful; add explicit 9.9 acceptance and unknown/mixed-combination rejection tests; update tests tied to current TEST templates |
-| `docs/plaza2_phase4e_runtime_scheme_lock.md`, `docs/plaza2_phase5a_trade_spec_lock.md`, `docs/plaza2_phase5d_aggr20_market_data_bringup.md`, `docs/plaza2_test_connectivity_qualification_v1_review.md`, `docs/plaza2_order_lifecycle_v2_review.md`, `docs/plaza2_test_trade_transport_v1_review.md` | historical review claims | describe the then-installed and reviewed CGate 9.3 stack | Preserve as historical review evidence; this document supersedes 9.3 only for current T1 qualification |
+| Phase 3A locks/manifests | Documentation inputs | Include production 9.3 evidence | Preserve unchanged. |
+| `profiles/test_plaza2_*` | TEST runtime selection | Select SPECTRA93 | Select exact reviewed 9.9; leave production unchanged. |
+| PLAZA/TWIME tests | Fixture release markers | Mostly SPECTRA93 | Keep history; add 9.9 and mixed-identity rejection cases. |
+| Existing PLAZA review docs | Historical review claims | Describe the qualified 9.3 stack | Preserve as dated evidence; supersede only current T1. |
 | `docs/evidence/plaza2_test_t1_qualification_20260825/` | prior live receipt | exact SPECTRA93/CGate 9.3 fingerprint | Preserve unchanged as dated evidence; it is no longer current-T1 authority |
 
 The remaining inventory searches found no committed CGate vendor binary,
@@ -102,7 +102,7 @@ The exact implementation head exercised live was
 `e02694f3f7d873eef089da678765d7d36e55a80b`. The redacted receipt is
 `docs/evidence/plaza2_cgate99_t1_runtime_qualification_20260901/cgate99_connector_parity_receipt.json`
 with SHA-256
-`ca193dfe09c1615aa96cdc150f67fc8462d176aedcde0122ef70c8c6fdf29b03`.
+`76c21df7eb749d28dda48f82c2622bfa5e1f83c4071388a5008f9c5504e34cce`.
 Every live control had `cg_pub_msgnew=0`, `cg_pub_post=0`, and no order.
 
 ## TEST router disposition

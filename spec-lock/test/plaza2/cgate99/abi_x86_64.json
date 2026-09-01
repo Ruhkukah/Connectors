@@ -37,8 +37,24 @@
   },
   "layouts": {
     "cg_msg_t": {"sizeof": 32, "alignof": 8, "offsets": {"type": 0, "data_size": 8, "data": 16, "owner_id": 24}},
-    "cg_msg_streamdata_t": {"sizeof": 88, "alignof": 8, "offsets": {"type": 0, "data_size": 8, "data": 16, "owner_id": 24, "msg_index": 32, "msg_id": 40, "msg_name": 48, "rev": 56, "num_nulls": 64, "nulls": 72, "user_id": 80}},
-    "cg_msg_data_t": {"sizeof": 80, "alignof": 8, "offsets": {"type": 0, "data_size": 8, "data": 16, "owner_id": 24, "msg_index": 32, "msg_id": 40, "msg_name": 48, "user_id": 56, "user_ptr": 56, "addr": 64, "ref_msg": 72}},
+    "cg_msg_streamdata_t": {
+      "sizeof": 88,
+      "alignof": 8,
+      "offsets": {
+        "type": 0, "data_size": 8, "data": 16, "owner_id": 24,
+        "msg_index": 32, "msg_id": 40, "msg_name": 48, "rev": 56,
+        "num_nulls": 64, "nulls": 72, "user_id": 80
+      }
+    },
+    "cg_msg_data_t": {
+      "sizeof": 80,
+      "alignof": 8,
+      "offsets": {
+        "type": 0, "data_size": 8, "data": 16, "owner_id": 24,
+        "msg_index": 32, "msg_id": 40, "msg_name": 48, "user_id": 56,
+        "user_ptr": 56, "addr": 64, "ref_msg": 72
+      }
+    },
     "cg_time_t": {"sizeof": 10, "alignof": 2, "offsets": {"year": 0, "month": 2, "day": 3, "hour": 4, "minute": 5, "second": 6, "msec": 8}},
     "cg_data_cleardeleted_t": {"sizeof": 16, "alignof": 4, "offsets": {"table_idx": 0, "table_rev": 4, "flags": 12}},
     "cg_data_lifenum_t": {"sizeof": 8, "alignof": 4, "offsets": {"life_number": 0, "flags": 4}}

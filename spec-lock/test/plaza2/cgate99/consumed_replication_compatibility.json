@@ -41,7 +41,8 @@
     "unknown_missing_or_changed_consumed_field_is_fatal": true
   },
   "notes": [
-    "The six reviewed fields removed by SPECTRA 9.9 are not used by current readiness or position gates; retained public state members default to zero or empty when absent.",
+    "The six reviewed SPECTRA 9.9 removals are not used by readiness or position gates.",
+    "Retained public state members default to zero or empty when those fields are absent.",
     "All other missing or type-changed fields on required tables remain fatal.",
     "Raw vendor schemes are not committed."
   ]

@@ -46,14 +46,39 @@
     "pos_trade_anchor_required": true
   },
   "streams": [
-    {"name": "FORTS_TRADE_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 83473},
-    {"name": "FORTS_USERORDERBOOK_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 2, "periodic_snapshot_consistent": true},
-    {"name": "FORTS_POS_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 39},
-    {"name": "FORTS_PART_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 73019, "row_count": 38},
-    {"name": "FORTS_REFDATA_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 101386954, "row_count": 30227},
-    {"name": "FORTS_SESSIONSTATE_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 39},
-    {"name": "FORTS_INSTRUMENTSTATE_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 22780},
-    {"name": "FORTS_AGGR20_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 4443}
+    {
+      "name": "FORTS_TRADE_REPL", "created": true, "opened": true, "online": true,
+      "snapshot_complete": true, "lifenum": 66739, "row_count": 83473
+    },
+    {
+      "name": "FORTS_USERORDERBOOK_REPL", "created": true, "opened": true, "online": true,
+      "snapshot_complete": true, "lifenum": 66739, "row_count": 2,
+      "periodic_snapshot_consistent": true
+    },
+    {
+      "name": "FORTS_POS_REPL", "created": true, "opened": true, "online": true,
+      "snapshot_complete": true, "lifenum": 66739, "row_count": 39
+    },
+    {
+      "name": "FORTS_PART_REPL", "created": true, "opened": true, "online": true,
+      "snapshot_complete": true, "lifenum": 73019, "row_count": 38
+    },
+    {
+      "name": "FORTS_REFDATA_REPL", "created": true, "opened": true, "online": true,
+      "snapshot_complete": true, "lifenum": 101386954, "row_count": 30227
+    },
+    {
+      "name": "FORTS_SESSIONSTATE_REPL", "created": true, "opened": true, "online": true,
+      "snapshot_complete": true, "lifenum": 66739, "row_count": 39
+    },
+    {
+      "name": "FORTS_INSTRUMENTSTATE_REPL", "created": true, "opened": true, "online": true,
+      "snapshot_complete": true, "lifenum": 66739, "row_count": 22780
+    },
+    {
+      "name": "FORTS_AGGR20_REPL", "created": true, "opened": true, "online": true,
+      "snapshot_complete": true, "lifenum": 66739, "row_count": 4443
+    }
   ],
   "official_state_transition_control": {
     "REFDATA": ["CLOSED", "OPENING", "ACTIVE"],
