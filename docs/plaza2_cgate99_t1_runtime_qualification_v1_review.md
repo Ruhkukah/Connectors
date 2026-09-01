@@ -67,6 +67,9 @@ remain outside the repository.
   TRADE anchor coherence remains mandatory.
 - Runtime acceptance is release-keyed and hash-locked. An unknown or mixed
   library/scheme identity is rejected.
+- The deterministic fake runtime now exposes the reviewed raw object-state ABI:
+  `CLOSED=0`, `ERROR=1`, `OPENING=2`, and `ACTIVE=3`. The adapter regression
+  checks all four values against the committed 9.9 ABI lock.
 
 ## Validation
 
@@ -78,6 +81,7 @@ remain outside the repository.
 | .NET ABI and no-send selection | 4/4 passed |
 | Minimal no-test/no-operator build | passed |
 | Linux changed-target ASan/UBSan with leak detection | 7/7 passed |
+| Fake-state amendment changed-target ASan/UBSan | 1/1 passed |
 | Source/repository style and Unicode guard | passed through full CTest |
 | `git diff --check` | passed |
 | Credential/privacy scan | no secret or broker endpoint added |
@@ -88,6 +92,10 @@ Apple ASan cannot run with `detect_leaks=1`; the authoritative Linux run used
 sanitizer label otherwise passed except for an intermittent Apple loader report
 inside compiler-generated globals of the repeatedly loaded fake CGate dynamic
 library. The same affected transport target passed under Linux ASan/UBSan.
+The final fake-state-only amendment passed its changed runtime-adapter target
+under Apple ASan/UBSan with leak detection disabled; final-head Linux CI remains
+the authoritative leak-enabled sanitizer gate. No additional live T1 run was
+required because the amendment changes only the deterministic test runtime.
 
 ## Live 9.9 parity
 
@@ -104,6 +112,12 @@ The exact implementation head exercised live was
 with SHA-256
 `76c21df7eb749d28dda48f82c2622bfa5e1f83c4071388a5008f9c5504e34cce`.
 Every live control had `cg_pub_msgnew=0`, `cg_pub_post=0`, and no order.
+
+## PR #30 integration note
+
+Frozen PR #30 contains a pre-merge async-listener supervisor written against
+the old fake-state mapping. After PR #31 merges, PR #30 must be amended to use
+the reviewed CGate state values before any 9.9 `LiveTestPreSend` run.
 
 ## TEST router disposition
 

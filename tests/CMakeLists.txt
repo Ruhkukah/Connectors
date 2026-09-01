@@ -553,6 +553,7 @@ endfunction()
 moex_add_plaza2_cgate_test(plaza2_runtime_probe_test ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_runtime_probe_test.cpp)
 moex_add_plaza2_cgate_test(plaza2_scheme_drift_test ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_scheme_drift_test.cpp)
 moex_add_plaza2_cgate_test(plaza2_runtime_adapter_test ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_runtime_adapter_test.cpp)
+target_compile_definitions(plaza2_runtime_adapter_test PRIVATE MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
 
 add_executable(plaza2_manual_operator_gate_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_manual_operator_gate_test.cpp)

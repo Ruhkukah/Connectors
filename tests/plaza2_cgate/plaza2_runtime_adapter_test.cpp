@@ -6,7 +6,10 @@
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -39,6 +42,16 @@ struct ReplyCapture final : moex::plaza2::cgate::Plaza2ListenerEventHandler {
 
     std::vector<Captured> events;
 };
+
+std::string read_text(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("failed to open reviewed ABI lock: " + path.string());
+    }
+    std::ostringstream text;
+    text << input.rdbuf();
+    return text.str();
+}
 
 } // namespace
 
@@ -76,7 +89,7 @@ int main(int argc, char** argv) {
         require(!connection.open({}), "connection open should succeed");
 
         std::uint32_t connection_state = 0;
-        require(!connection.state(connection_state) && connection_state == 2, "fake connection should become active");
+        require(!connection.state(connection_state) && connection_state == 3, "fake connection should become active");
 
         std::uint32_t process_code = 0;
         require(!connection.process(0, &process_code), "timeout process should not be treated as error");
@@ -85,10 +98,37 @@ int main(int argc, char** argv) {
         Plaza2Listener listener;
         require(!listener.create(connection, "p2repl://FORTS_TRADE_REPL;scheme=|FILE|scheme/forts_scheme.ini|TRADES"),
                 "listener create should succeed");
-        require(!listener.open({}), "listener open should succeed");
 
-        std::uint32_t listener_state = 0;
-        require(!listener.state(listener_state) && listener_state == 2, "fake listener should become active");
+        const auto abi_lock = read_text(std::filesystem::path(MOEX_SOURCE_ROOT) / "spec-lock" / "test" / "plaza2" /
+                                        "cgate99" / "abi_x86_64.json");
+        require(abi_lock.find("\"CG_STATE_CLOSED\": 0") != std::string::npos &&
+                    abi_lock.find("\"CG_STATE_ERROR\": 1") != std::string::npos &&
+                    abi_lock.find("\"CG_STATE_OPENING\": 2") != std::string::npos &&
+                    abi_lock.find("\"CG_STATE_ACTIVE\": 3") != std::string::npos,
+                "reviewed CGate 9.9 ABI state lock should retain the expected raw values");
+
+        std::uint32_t listener_state = 99;
+        require(!listener.state(listener_state) && listener_state == 0,
+                "new fake listener should expose CG_STATE_CLOSED=0");
+
+        ::setenv("MOEX_FAKE_LSN_OPENING_STATE", "1", 1);
+        require(!listener.open({}), "listener open should succeed");
+        ::unsetenv("MOEX_FAKE_LSN_OPENING_STATE");
+        require(!listener.state(listener_state) && listener_state == 2,
+                "opening fake listener should expose CG_STATE_OPENING=2");
+        require(!listener.close(), "opening listener close should succeed");
+
+        ::setenv("MOEX_FAKE_LSN_ERROR_STATE", "1", 1);
+        require(!listener.open({}), "forced-error listener open should return its modeled state");
+        ::unsetenv("MOEX_FAKE_LSN_ERROR_STATE");
+        require(!listener.state(listener_state) && listener_state == 1,
+                "forced-error fake listener should expose CG_STATE_ERROR=1");
+        require(!listener.close(), "forced-error listener close should succeed");
+
+        require(!listener.open({}), "listener active open should succeed");
+
+        require(!listener.state(listener_state) && listener_state == 3,
+                "active fake listener should expose CG_STATE_ACTIVE=3");
 
         const auto publisher_timeout = translate_plaza2_result("cg_pub_post", 131075);
         require(publisher_timeout && publisher_timeout.code == Plaza2ErrorCode::RuntimeCallFailed,
