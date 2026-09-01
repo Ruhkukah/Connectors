@@ -98,8 +98,12 @@ POS-anchored TRADE replay. USERORDERBOOK periodic consistency was true.
 Publisher and its same-name p2mqreply listener opened successfully. Runtime
 identity was `6.102.0.6118` / `SPECTRA9.9.0`; fatal scheme drift was zero.
 
-The final exact-head receipt and hash are recorded in a follow-up evidence-only
-commit. Every live control had `cg_pub_msgnew=0`, `cg_pub_post=0`, and no order.
+The exact implementation head exercised live was
+`e02694f3f7d873eef089da678765d7d36e55a80b`. The redacted receipt is
+`docs/evidence/plaza2_cgate99_t1_runtime_qualification_20260901/cgate99_connector_parity_receipt.json`
+with SHA-256
+`ca193dfe09c1615aa96cdc150f67fc8462d176aedcde0122ef70c8c6fdf29b03`.
+Every live control had `cg_pub_msgnew=0`, `cg_pub_post=0`, and no order.
 
 ## TEST router disposition
 

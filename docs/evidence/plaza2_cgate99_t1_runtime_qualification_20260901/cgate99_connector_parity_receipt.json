@@ -1,0 +1,121 @@
+{
+  "schema": "moex.plaza2.cgate99_connector_parity_receipt.v1",
+  "classification": "CGATE99_CONNECTOR_PARITY_PASS",
+  "timestamp_utc": "2026-09-01T12:40:32Z",
+  "source_git_sha": "e02694f3f7d873eef089da678765d7d36e55a80b",
+  "environment": "TEST",
+  "official_control": {
+    "classification": "OFFICIAL_9_9_REPLICATION_READY",
+    "utc_start": "2026-09-01T09:04:17Z",
+    "utc_end": "2026-09-01T09:06:38Z"
+  },
+  "runtime": {
+    "package": "cgate_9.9.0-2008_amd64.deb",
+    "package_sha256": "15047b505bfdb2c73c6ec6c4457ddf05b690a234cf98c41f085d8b07c7e60eb2",
+    "distribution": "cgate_linux_amd64-9.9.1853.zip",
+    "distribution_sha256": "49da634749203a919e69132594198348652acb5e731416c8a39bb34969364ce2",
+    "router_version": "P2MQRouter-229.123.0.7233",
+    "router_sha256": "6ea6ad50d6e3300fee99e43900eb22a21c207166f2455d2fc850f7e30bc91423",
+    "library_version": "6.102.0.6118",
+    "library_sha256": "f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f",
+    "cgate_header_sha256": "b057b537034b23e960f27477dab6738ba5d751ac698287a40d8f95ba7a1ef78f",
+    "spectra_release": "SPECTRA9.9.0",
+    "dds_version": "990.1.6.42744",
+    "runtime_identity_recognized": true,
+    "runtime_probe_ok": true,
+    "fatal_drift_count": 0,
+    "warning_drift_count": 194
+  },
+  "schemes": {
+    "forts_scheme.ini": "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746",
+    "forts_messages.ini": "c155e22ad539e2ed97974a4ad94b3e07239057a66e2d52cf1ff64d0b24dec876",
+    "refdata.ini": "6a59a24a05875c0b578c386bf37852e6543be25de8875eaebda26ab85cedfaa7",
+    "pos.ini": "614bfe96ecc4b5ae98d2766c3186e8ff5ceec63ea1393d2d1e07ebd15e7e9ba0",
+    "part.ini": "01fdb798cd0f3c9f98200372e86a696c37360b4829bcdb448dd42320131eb8f7",
+    "userorderbook.ini": "50e78266bbc4c6f1f4212aa2aa11b3e90f147bbd68cbb245d2f7495310b568af",
+    "trades.ini": "db76a398d7dedc9a118216a4603d928c7e6669af08e6445f4c0dbf021b544897",
+    "orders_aggr.ini": "2c1a062f93cee01352023572726538ec6dcacc768a0b5f82e5fffdbd5c005514",
+    "sessionstate.ini": "1b28f988e9304d57edfafd71cbec10f000c43c18f837195193546823304d2e81",
+    "instrumentstate.ini": "74420bb2bf41da63564b18ba36af287d2d51e4841f0b8f962a9eeca942bde2ce"
+  },
+  "compatibility": {
+    "consumed_abi": "CONSUMED_ABI_BYTE_LAYOUT_UNCHANGED",
+    "transactional_messages": "CONSUMED_TRANSACTION_ABI_BYTE_FOR_BYTE_COMPATIBLE_WITH_SPECTRA93",
+    "replication": "CONSUMED_REPLICATION_FIELDS_COMPATIBLE_WITH_REVIEWED_WARNINGS",
+    "userorderbook_trade_cross_stream_reconciliation": false,
+    "pos_trade_anchor_required": true
+  },
+  "streams": [
+    {"name": "FORTS_TRADE_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 83473},
+    {"name": "FORTS_USERORDERBOOK_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 2, "periodic_snapshot_consistent": true},
+    {"name": "FORTS_POS_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 39},
+    {"name": "FORTS_PART_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 73019, "row_count": 38},
+    {"name": "FORTS_REFDATA_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 101386954, "row_count": 30227},
+    {"name": "FORTS_SESSIONSTATE_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 39},
+    {"name": "FORTS_INSTRUMENTSTATE_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 22780},
+    {"name": "FORTS_AGGR20_REPL", "created": true, "opened": true, "online": true, "snapshot_complete": true, "lifenum": 66739, "row_count": 4443}
+  ],
+  "official_state_transition_control": {
+    "REFDATA": ["CLOSED", "OPENING", "ACTIVE"],
+    "AGGR20": ["CLOSED", "OPENING", "ACTIVE"],
+    "POS": ["CLOSED", "OPENING", "ACTIVE"],
+    "PART": ["CLOSED", "OPENING", "ACTIVE"]
+  },
+  "pos_trade_anchor": {
+    "pos_trades_rev": 2323296650,
+    "pos_trades_lifenum": 66739,
+    "pos_server_time": 1788225985,
+    "trade_open_lifenum": 66739,
+    "trade_open_rev_deal": 2323296650,
+    "trade_open_rev_heart_beat": 2323296650,
+    "immutable_anchor_match": true
+  },
+  "target": {
+    "isin": "CRU6",
+    "isin_id": 4433036,
+    "min_step": "0.00100",
+    "two_sided_aggr20": true,
+    "aggr20_age_ms": 239
+  },
+  "control_plane": {
+    "publisher_created": true,
+    "publisher_open": true,
+    "publisher_state": "ACTIVE",
+    "p2mqreply_created_after_publisher": true,
+    "p2mqreply_open": true,
+    "same_unique_ref": true
+  },
+  "readiness": {
+    "private_streams_ready": true,
+    "status_streams_ready": true,
+    "connectivity_ready": true,
+    "market_state_ready": true,
+    "publisher_ready": true,
+    "account_state_ready": false,
+    "add_order_qualified": false
+  },
+  "router_service": {
+    "unit": "cgate99-t1.service",
+    "enabled": true,
+    "active": true,
+    "pid": 3031619,
+    "start_time": "2026-09-01T15:03:25+03:00",
+    "listen_port": 4101,
+    "legacy_cgate93_service_enabled": false,
+    "legacy_cgate93_service_active": false,
+    "matched_router_library_schemes": true
+  },
+  "p2log": {
+    "window_local": "2026-09-01T15:39:46+03:00/2026-09-01T15:40:32+03:00",
+    "error_or_warning_count": 0,
+    "terminal_event": "explicit local close; publisher ACTIVE to CLOSED"
+  },
+  "safety": {
+    "cg_pub_msgnew": 0,
+    "cg_pub_post": 0,
+    "publisher_message_allocation": 0,
+    "order_submitted": 0,
+    "pr30_modified": false
+  },
+  "source_receipt_sha256": "c3b3bd60631baba77cdac73cc1f8dacad6151beb3642b4381a5aecfdb4cb4efc"
+}
