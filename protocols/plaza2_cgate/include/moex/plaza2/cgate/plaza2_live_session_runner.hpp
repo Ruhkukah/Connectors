@@ -60,6 +60,9 @@ struct Plaza2LiveStreamStatus {
     bool opened{false};
     bool online{false};
     bool snapshot_complete{false};
+    bool has_lifenum{false};
+    std::uint64_t last_lifenum{0};
+    std::uint64_t committed_row_count{0};
     bool required_online{true};
     bool periodic_snapshot_consistent{false};
 };

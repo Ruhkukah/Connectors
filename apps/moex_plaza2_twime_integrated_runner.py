@@ -62,6 +62,7 @@ def main() -> int:
     plaza_endpoint = plaza.get("endpoint") or {}
     plaza_runtime = plaza.get("runtime") or {}
     plaza_credentials = plaza.get("credentials") or {}
+    plaza_software_key = plaza.get("software_key") or {}
     plaza_session = plaza.get("session") or {}
     plaza_listeners = plaza.get("listeners") or {}
 
@@ -111,6 +112,8 @@ def main() -> int:
         str(plaza_session.get("process_timeout_ms", 50)),
         "--plaza-credentials-source",
         str(plaza_credentials.get("source", "none")),
+        "--plaza-software-key-source",
+        str(plaza_software_key.get("source", "none")),
         "--reconciler-stale-after-steps",
         str(
             args.reconciler_stale_after_steps
@@ -139,6 +142,9 @@ def main() -> int:
     config_dir = str(plaza_runtime.get("config_dir", ""))
     if config_dir:
         command.extend(["--plaza-config-dir", config_dir])
+    expected_runtime_hash = str(plaza_runtime.get("expected_runtime_library_sha256", ""))
+    if expected_runtime_hash:
+        command.extend(["--plaza-expected-runtime-library-sha256", expected_runtime_hash])
     expected_hash = str(plaza_runtime.get("expected_scheme_sha256", ""))
     if expected_hash:
         command.extend(["--plaza-expected-scheme-sha256", expected_hash])
@@ -154,6 +160,12 @@ def main() -> int:
         command.extend(["--plaza-credentials-env-var", plaza_env])
     if plaza_file:
         command.extend(["--plaza-credentials-file", plaza_file])
+    plaza_software_key_env = str(plaza_software_key.get("env_var", ""))
+    plaza_software_key_file = str(plaza_software_key.get("file_path", ""))
+    if plaza_software_key_env:
+        command.extend(["--plaza-software-key-env-var", plaza_software_key_env])
+    if plaza_software_key_file:
+        command.extend(["--plaza-software-key-file", plaza_software_key_file])
 
     for stream_name, stream_config in plaza_listeners.items():
         settings = str((stream_config or {}).get("settings", ""))

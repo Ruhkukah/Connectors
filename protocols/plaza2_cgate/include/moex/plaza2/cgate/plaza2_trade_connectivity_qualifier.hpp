@@ -70,6 +70,9 @@ struct Plaza2QualificationSnapshot {
     std::uint32_t target_aggr20_age_ms{0};
     std::uint64_t target_aggr20_repl_id{0};
     std::int64_t target_aggr20_repl_rev{0};
+    bool aggr20_has_lifenum{false};
+    std::uint64_t aggr20_lifenum{0};
+    std::size_t aggr20_row_count{0};
 
     bool participant_limit_unique{false};
     bool participant_limits_set{false};

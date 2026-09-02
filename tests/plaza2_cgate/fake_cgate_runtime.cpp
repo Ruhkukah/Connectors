@@ -34,9 +34,9 @@ constexpr std::uint32_t kCgErrIncorrectState = kCgRangeBegin + 5;
 constexpr std::uint32_t kCgErrBufferTooSmall = kCgRangeBegin + 7;
 
 constexpr std::uint32_t kStateClosed = 0;
-constexpr std::uint32_t kStateOpening = 1;
-constexpr std::uint32_t kStateActive = 2;
-constexpr std::uint32_t kStateError = 3;
+constexpr std::uint32_t kStateError = 1;
+constexpr std::uint32_t kStateOpening = 2;
+constexpr std::uint32_t kStateActive = 3;
 
 constexpr std::uint32_t kCgMsgOpen = 0x100;
 constexpr std::uint32_t kCgMsgClose = 0x101;
@@ -1895,6 +1895,14 @@ std::uint32_t cg_lsn_open(void* listener, const char*) {
         if (trade_error_once && typed->connection != nullptr) {
             typed->connection->trade_open_error_seen = true;
         }
+        return kCgErrOk;
+    }
+    if (fake_flag("MOEX_FAKE_LSN_OPENING_STATE")) {
+        typed->state = kStateOpening;
+        return kCgErrOk;
+    }
+    if (fake_flag("MOEX_FAKE_LSN_ERROR_STATE")) {
+        typed->state = kStateError;
         return kCgErrOk;
     }
     typed->state = kStateActive;

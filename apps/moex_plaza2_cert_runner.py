@@ -85,6 +85,9 @@ def main() -> int:
     expected_release = str(runtime.get("expected_spectra_release", ""))
     if expected_release:
         command.extend(["--expected-spectra-release", expected_release])
+    expected_runtime_hash = str(runtime.get("expected_runtime_library_sha256", ""))
+    if expected_runtime_hash:
+        command.extend(["--expected-runtime-library-sha256", expected_runtime_hash])
     expected_hash = str(runtime.get("expected_scheme_sha256", ""))
     if expected_hash:
         command.extend(["--expected-scheme-sha256", expected_hash])

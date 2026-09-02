@@ -16,6 +16,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -81,6 +82,30 @@ constexpr std::array<std::string_view, 14> kRequiredTradingSymbols = {
     "cg_lsn_getstate", "cg_pub_new",    "cg_pub_open",    "cg_pub_close",   "cg_pub_destroy",
     "cg_pub_getstate", "cg_pub_msgnew", "cg_pub_post",    "cg_pub_msgfree",
 };
+
+struct ReviewedRuntimeIdentity {
+    std::string_view spectra_release;
+    std::string_view scheme_sha256;
+    std::string_view library_sha256;
+    std::string_view runtime_version;
+};
+
+// Exact, reviewed TEST runtime identities. SPECTRA93 remains supported as
+// historical provenance; SPECTRA9.9.0 is the current T1 qualification target.
+constexpr std::array<ReviewedRuntimeIdentity, 2> kReviewedRuntimeIdentities = {{
+    {
+        "SPECTRA93",
+        "cc3ab53b792eb1354b17615612abf173158e2f9dd78604bc47a121badf54b1c2",
+        "c1a1752026806a6c7364326ab29794d0b85c1f9db26ec3fdbb509190e5b0a4a2",
+        "6.93.1.5675",
+    },
+    {
+        "SPECTRA9.9.0",
+        "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746",
+        "f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f",
+        "6.102.0.6118",
+    },
+}};
 
 constexpr std::array<std::string_view, 4> kLibraryFilenameCandidates = {
 #if defined(__APPLE__)
@@ -231,7 +256,7 @@ struct CgMsgStreamData {
     std::uint64_t user_id;
 };
 
-// Locked MOEX CGate 9.3 cgate.h layout: the current cg_msg_data_t includes
+// Reviewed MOEX CGate 9.3 and 9.9 cgate.h layout: cg_msg_data_t includes
 // owner_id and msg_index/msg_id/msg_name/user_id/addr/ref_msg; it has no
 // revision or presence-map fields.
 struct CgMsgData {
@@ -592,6 +617,26 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
     const auto runtime_integer_size = integer_type_size(runtime_type);
     return reviewed_integer_size.has_value() && runtime_integer_size.has_value() &&
            *reviewed_integer_size == *runtime_integer_size;
+}
+
+[[nodiscard]] bool is_reviewed_absent_field(std::string_view spectra_release, const SchemeTableKey& table,
+                                            std::string_view field_name) {
+    if (spectra_release != "SPECTRA9.9.0") {
+        return false;
+    }
+    static constexpr std::array<std::tuple<std::string_view, std::string_view, std::string_view>, 6>
+        kSpectra99RemovedFields = {{
+            {"FORTS_PART_REPL", "part", "vm_intercl"},
+            {"FORTS_PART_REPL", "part", "premium_intercl"},
+            {"FORTS_REFDATA_REPL", "fut_instruments", "step_price_interclr"},
+            {"FORTS_REFDATA_REPL", "session", "inter_cl_begin"},
+            {"FORTS_REFDATA_REPL", "session", "inter_cl_end"},
+            {"FORTS_REFDATA_REPL", "session", "inter_cl_state"},
+        }};
+    return std::ranges::any_of(kSpectra99RemovedFields, [&](const auto& field) {
+        return std::get<0>(field) == table.stream_name && std::get<1>(field) == table.table_name &&
+               std::get<2>(field) == field_name;
+    });
 }
 
 [[nodiscard]] bool parse_runtime_scheme(const std::filesystem::path& scheme_path, ParsedRuntimeScheme& out_scheme,
@@ -1038,6 +1083,10 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
             bool material_required_drift = false;
             for (const auto& field : reviewed_it->second.fields) {
                 const auto runtime_field_it = runtime_fields.find(field.field_name);
+                if (runtime_field_it == runtime_fields.end() &&
+                    is_reviewed_absent_field(parsed.markers.spectra_release, table_name, field.field_name)) {
+                    continue;
+                }
                 if (runtime_field_it == runtime_fields.end() ||
                     !compatible_runtime_field_type(field.type_token, runtime_field_it->second)) {
                     material_required_drift = true;
@@ -1494,7 +1543,7 @@ struct Plaza2ListenerCallbackState {
                     .message = "CG_MSG_P2MQ_TIMEOUT is only valid on an untyped CGate reply listener",
                 });
             }
-            // Current MOEX CGate 9.3 cgate.h: timeout uses cg_msg_data_t;
+            // Reviewed MOEX CGate 9.3/9.9 cgate.h: timeout uses cg_msg_data_t;
             // only the originating uint32 user_id is contractually meaningful.
             const auto* payload = static_cast<const CgMsgData*>(raw_msg);
             const auto event = Plaza2ListenerEvent{
@@ -1744,6 +1793,13 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
         report.runtime_library_present = std::filesystem::exists(*library_path);
         if (report.runtime_library_present) {
             report.runtime_library_sha256 = sha256_hex(*library_path);
+            if (!settings.expected_runtime_library_sha256.empty() &&
+                report.runtime_library_sha256 != settings.expected_runtime_library_sha256) {
+                push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, true,
+                           library_path->filename().string(),
+                           "runtime library hash mismatch: expected " + settings.expected_runtime_library_sha256 +
+                               ", got " + report.runtime_library_sha256);
+            }
         }
         auto library_issues = std::vector<Plaza2ProbeIssue>{};
         auto resolved_symbols = std::vector<std::string>{};
@@ -1782,6 +1838,25 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
             report.scheme_drift = compare_runtime_scheme(report.layout.scheme_path, settings);
             report.issues.insert(report.issues.end(), report.scheme_drift.issues.begin(),
                                  report.scheme_drift.issues.end());
+        }
+    }
+
+    if (report.fake_runtime_marker_present) {
+        report.runtime_identity_recognized = true;
+        report.runtime_version = "fake-runtime-v1";
+    } else if (report.runtime_library_loadable && report.scheme_file_present) {
+        for (const auto& identity : kReviewedRuntimeIdentities) {
+            if (report.layout.version_markers.spectra_release == identity.spectra_release &&
+                report.scheme_drift.runtime_scheme_sha256 == identity.scheme_sha256 &&
+                report.runtime_library_sha256 == identity.library_sha256) {
+                report.runtime_identity_recognized = true;
+                report.runtime_version = identity.runtime_version;
+                break;
+            }
+        }
+        if (!report.runtime_identity_recognized) {
+            push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedVersion, true, "runtime identity",
+                       "CGate library and SPECTRA scheme combination is not an exact reviewed runtime identity");
         }
     }
 

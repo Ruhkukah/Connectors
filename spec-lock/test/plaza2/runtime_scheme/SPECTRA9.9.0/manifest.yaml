@@ -1,0 +1,26 @@
+version: 1
+environment: test
+polygon: t1
+status: current
+runtime_source: isolated_official_distribution
+package:
+  filename: cgate_9.9.0-2008_amd64.deb
+  sha256: 15047b505bfdb2c73c6ec6c4457ddf05b690a234cf98c41f085d8b07c7e60eb2
+distribution:
+  filename: cgate_linux_amd64-9.9.1853.zip
+  sha256: 49da634749203a919e69132594198348652acb5e731416c8a39bb34969364ce2
+runtime:
+  version: 6.102.0.6118
+  library_sha256: f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f
+  cgate_header_sha256: b057b537034b23e960f27477dab6738ba5d751ac698287a40d8f95ba7a1ef78f
+  scheme_path: /opt/moex/cgate/scheme/latest/forts_scheme.ini
+  scheme_sha256: 7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746
+  detected_release_marker: SPECTRA9.9.0
+  dds_version: 990.1.6.42744
+router:
+  version: P2MQRouter-229.123.0.7233
+  binary_sha256: 6ea6ad50d6e3300fee99e43900eb22a21c207166f2455d2fc850f7e30bc91423
+notes:
+  - Raw vendor runtime files are intentionally not committed.
+  - Historical SPECTRA93 locks remain unchanged in the parent directory.
+  - Credential files, auth configs, endpoints, and raw router configuration remain untracked.

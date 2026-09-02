@@ -74,9 +74,9 @@ constexpr std::string_view kLegacyCredentialToken = "${PLAZA2_TEST_CREDENTIALS}"
 constexpr std::string_view kSoftwareKeyToken = "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
 constexpr std::string_view kRelativeSchemeToken = "|FILE|scheme/forts_scheme.ini|";
 constexpr std::uint32_t kCgStateClosed = 0;
-constexpr std::uint32_t kCgStateOpening = 1;
-constexpr std::uint32_t kCgStateActive = 2;
-constexpr std::uint32_t kCgStateError = 3;
+constexpr std::uint32_t kCgStateError = 1;
+constexpr std::uint32_t kCgStateOpening = 2;
+constexpr std::uint32_t kCgStateActive = 3;
 constexpr auto kListenerReopenDelay = std::chrono::seconds(1);
 
 Plaza2Error invalid(std::string message, Plaza2ErrorCode code = Plaza2ErrorCode::InvalidConfiguration) {
@@ -221,7 +221,7 @@ bool valid_hex_sha256(std::string_view value) {
            std::all_of(value.begin(), value.end(), [](unsigned char ch) { return std::isxdigit(ch) != 0; });
 }
 
-// Locked PLAZA II 9.3 AddOrder semantics.  State 0 is scheduled, 2 is
+// Reviewed PLAZA II 9.3/9.9 AddOrder semantics. State 0 is scheduled, 2 is
 // suspended, and 4 is completed; all are cancellation-only or closed.
 bool add_order_allowed_status(std::int32_t state) noexcept {
     return state == 1; // running: Add + Cancel allowed
