@@ -2,12 +2,13 @@
 
 ## Scope and stop gate
 
-This increment starts from merged-main `610dbfd` (PR #29). It keeps the
-TEST-only boundary but adds the narrow `OfflineFake` and `LiveTestPreSend`
-host modes. The latter may open a real TEST session and all read-side/private
-services, but its post barrier is physically below publisher message
-allocation and posting. There is still no production mode, broker executable,
-Python/VPS wrapper, or live order command.
+This increment started from merged-main `610dbfd` (PR #29) and now includes
+merged-main `6b00796` (PR #31, the CGate 9.9 T1 runtime prerequisite). It keeps
+the TEST-only boundary but adds the narrow `OfflineFake` and
+`LiveTestPreSend` host modes. The latter may open a real TEST session and all
+read-side/private services, but its post barrier is physically below publisher
+message allocation and posting. There is still no production mode, broker
+executable, Python/VPS wrapper, or live order command.
 
 No order, `cg_pub_msgnew`, or `cg_pub_post` was used. Offline validation uses
 the repository fake CGate runtime; any live pre-send observation is read-only
@@ -124,9 +125,10 @@ The private TEST profile uses
 variable. The private runner rejects the exchange credential token in the
 CGate software-key setting. No secret value is stored in Git.
 
-The runtime adapter continues to use the locked MOEX CGate 9.3 ABI:
-`CG_MSG_DATA` and `CG_MSG_P2MQ_TIMEOUT` are decoded through the current
-`cg_msg_data_t` layout, including `owner_id`; no ABI layout was changed.
+The runtime adapter uses the reviewed MOEX CGate 9.3/9.9-compatible ABI:
+`CG_MSG_DATA` and `CG_MSG_P2MQ_TIMEOUT` are decoded through the reviewed
+`cg_msg_data_t` layout, including `owner_id`. The object-state ABI is
+`CLOSED=0`, `ERROR=1`, `OPENING=2`, and `ACTIVE=3`; no ABI layout was changed.
 
 ## Offline semantic coverage
 
@@ -222,8 +224,8 @@ The offline transport is ready for review. The bounded LiveTestPreSend gate,
 if run after the offline checks, may open the TEST read-side services and
 publisher/reply objects, persist one redacted receipt, and invoke only the
 typed `SEND_DISABLED_PRE_SEND_PHASE` barrier. It must prove zero publisher
-message allocations/posts and never authorizes a live order. PR #31 and any
-send-capable transport remain out of scope.
+message allocations/posts and never authorizes a live order. PR #31 is now the
+merged 9.9 prerequisite; any send-capable transport remains out of scope.
 
 ## Bounded T1 pre-send observation
 
@@ -314,6 +316,18 @@ an accepted TRADE open request leaves `trade_replay_anchor_ready=false` until
 ACTIVE plus snapshot-complete/ONLINE evidence exists. This correction neither
 allocates nor posts a publisher message. A new live no-send receipt is still
 required before PR #30's live merge gate is met.
+
+After PR #31 merged, its new `main` was merged into this branch without
+rewriting PR #30 history. The async-listener supervisor was corrected to the
+reviewed CGate object states: `CLOSED=0`, `ERROR=1`, `OPENING=2`, and
+`ACTIVE=3`. The existing deterministic REFDATA initial-open retry, same-anchor
+TRADE retry, POS-anchor-drift refusal, and no-send scenarios pass against the
+corrected fake runtime. No live run was performed for this correction.
+
+All earlier CRU6 plans, including `82ecd8b0...` and `3dea722d...`, are obsolete
+and must not be reused. A future 9.9 observation may create a new quantity-one
+passive plan only after every observation gate is current, and must then stop
+for explicit authorization of that exact new SHA.
 
 The exact-head weekday retry at `6f15da99e4e1cbcfbc5089445c63b1f778af79e1`
 then exercised the new supervisor against T1 at approximately 14:19-14:21
