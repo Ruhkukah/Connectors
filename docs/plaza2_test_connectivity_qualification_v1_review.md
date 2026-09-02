@@ -85,7 +85,8 @@ review.
 `market_state_ready` requires target FUTURES refdata and current-session
 membership, `SESSIONSTATE.public_state == 1`,
 `INSTRUMENTSTATE.public_state == 1`, a valid min step and trade mode, and a
-fresh two-sided AGGR20 BBO. `account_state_ready` requires one exact client
+fresh two-sided, strictly uncrossed (`bid < ask`) AGGR20 BBO.
+`account_state_ready` requires one exact client
 PART row with `limits_set=true` and one exact client POS row with the expected
 account type. `add_order_qualified` is informational only and never
 authorizes an order.

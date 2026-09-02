@@ -508,6 +508,8 @@ moex_add_plaza2_private_state_test(plaza2_private_state_visibility_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_private_state_visibility_test.cpp)
 moex_add_plaza2_private_state_test(plaza2_private_state_invalidation_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_private_state_invalidation_test.cpp)
+moex_add_plaza2_private_state_test(plaza2_private_state_provenance_test
+    ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_private_state_provenance_test.cpp)
 
 add_library(plaza2_runtime_test_support STATIC
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_runtime_test_support.cpp)

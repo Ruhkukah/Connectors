@@ -127,8 +127,8 @@ int main(int argc, char** argv) {
                 "target instrument evidence mismatch");
         require(result.target_instrument_status == 1 && result.target_instrument_add_capable,
                 "target instrument should be add-capable only at public_state=1");
-        require(result.target_aggr20_two_sided && result.target_aggr20_repl_id == 2102 &&
-                    result.target_aggr20_repl_rev == 22,
+        require(result.target_aggr20_two_sided && result.target_aggr20_uncrossed &&
+                    result.target_aggr20_repl_id == 2102 && result.target_aggr20_repl_rev == 22,
                 "target AGGR20 evidence mismatch");
         require(result.participant_limit_unique && result.participant_limits_set,
                 "participant limit evidence mismatch");
@@ -177,10 +177,10 @@ int main(int argc, char** argv) {
                         !removed.target_current_session_member && removed.target_min_step.empty() &&
                         removed.target_trade_mode_id == 0 && !removed.target_session_status_available &&
                         !removed.target_instrument_status_available && !removed.target_refdata_present &&
-                        !removed.target_aggr20_two_sided && removed.target_aggr20_repl_id == 0 &&
-                        removed.target_aggr20_repl_rev == 0 && removed.applicable_position_count == 0 &&
-                        !removed.position_identity_exact && removed.position_account_type == 0 &&
-                        removed.position_xpos == 0,
+                        !removed.target_aggr20_two_sided && !removed.target_aggr20_uncrossed &&
+                        removed.target_aggr20_repl_id == 0 && removed.target_aggr20_repl_rev == 0 &&
+                        removed.applicable_position_count == 0 && !removed.position_identity_exact &&
+                        removed.position_account_type == 0 && removed.position_xpos == 0,
                     "refresh must clear all target-derived evidence after target removal");
             ::unsetenv("MOEX_FAKE_REMOVE_TARGET_AFTER_READY");
         }
@@ -205,6 +205,22 @@ int main(int argc, char** argv) {
                         wrong_health.last_error_code != Plaza2ErrorCode::None,
                     "wrong scheme failure should identify the affected listener and runtime error");
             ::unsetenv("MOEX_FAKE_WRONG_SCHEME_OVERRIDE");
+        }
+
+        {
+            ::setenv("MOEX_FAKE_AGGR_CROSSED", "1", 1);
+            Plaza2TradeConnectivityQualifier crossed_qualifier(make_config(fixture));
+            require(crossed_qualifier.start().ok, "crossed-book qualification start should succeed");
+            require(crossed_qualifier.poll_once().ok, "crossed-book qualification poll should succeed");
+            const auto& crossed = crossed_qualifier.qualification();
+            require(crossed.target_aggr20_two_sided && !crossed.target_aggr20_uncrossed,
+                    "crossed AGGR20 fixture should remain two-sided but fail uncrossed validation");
+            require(!crossed.market_state_ready && !crossed.add_order_qualified,
+                    "crossed AGGR20 BBO must fail market and add-order qualification");
+            require(std::find(crossed.failure_reasons.begin(), crossed.failure_reasons.end(),
+                              "target AGGR20 BBO is crossed or locked") != crossed.failure_reasons.end(),
+                    "crossed AGGR20 BBO should have an explicit failure reason");
+            ::unsetenv("MOEX_FAKE_AGGR_CROSSED");
         }
 
         const auto run_status_case = [&](const char* flag, const char* label) {
