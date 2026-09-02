@@ -178,6 +178,15 @@ class LiveProjectorBridge final : public Plaza2ListenerEventHandler {
         return last_resync_reason_;
     }
 
+    std::optional<std::uint64_t> stream_lifenum(StreamCode stream_code) const {
+        const auto known_stream = std::ranges::find_if(
+            stream_lifenums_, [stream_code](const auto& entry) { return entry.first == stream_code; });
+        if (known_stream == stream_lifenums_.end()) {
+            return std::nullopt;
+        }
+        return known_stream->second;
+    }
+
     Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override {
         try {
             return handle_event(event);
@@ -945,9 +954,13 @@ struct Plaza2LiveSessionRunner::Impl {
         const auto projected_streams = projector.stream_health();
         for (auto& status : health.streams) {
             status.periodic_snapshot_consistent = false;
+            const auto lifenum = projector_bridge.stream_lifenum(status.stream_code);
+            status.has_lifenum = lifenum.has_value();
+            status.last_lifenum = lifenum.value_or(0);
             for (const auto& projected : projected_streams) {
                 if (projected.stream_code == status.stream_code) {
                     status.periodic_snapshot_consistent = projected.periodic_snapshot_consistent;
+                    status.committed_row_count = projected.committed_row_count;
                     break;
                 }
             }

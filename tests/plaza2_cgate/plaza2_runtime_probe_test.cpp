@@ -33,6 +33,8 @@ int main(int argc, char** argv) {
         require(report.runtime_root_present, "runtime root should be present");
         require(report.runtime_library_present && report.runtime_library_loadable, "fake runtime library should load");
         require(report.runtime_library_sha256.size() == 64, "runtime library SHA-256 fingerprint should be recorded");
+        require(report.runtime_identity_recognized && report.runtime_version == "fake-runtime-v1",
+                "offline fake runtime identity should be explicit");
         require(report.scheme_file_present, "runtime scheme file should be detected");
         require(report.config_dir_present, "config directory should be detected");
         require(report.layout.version_markers.spectra_release == "SPECTRA93", "spectra release marker mismatch");
@@ -54,6 +56,23 @@ int main(int argc, char** argv) {
         require(std::ranges::find(Plaza2RuntimeProbe::required_trading_symbols(), "cg_pub_post") !=
                     Plaza2RuntimeProbe::required_trading_symbols().end(),
                 "trading capability must explicitly require publisher symbols");
+
+        Plaza2Settings exact_hash_settings = settings;
+        exact_hash_settings.expected_runtime_library_sha256 = report.runtime_library_sha256;
+        const auto exact_hash_report = Plaza2RuntimeProbe::probe(exact_hash_settings);
+        require(exact_hash_report.compatibility == Plaza2Compatibility::Compatible,
+                "exact runtime library hash should be accepted");
+
+        Plaza2Settings incorrect_hash_settings = settings;
+        incorrect_hash_settings.expected_runtime_library_sha256 = std::string(64, '0');
+        const auto incorrect_hash_report = Plaza2RuntimeProbe::probe(incorrect_hash_settings);
+        require(incorrect_hash_report.compatibility == Plaza2Compatibility::Incompatible,
+                "incorrect runtime library hash must fail closed");
+        require(std::ranges::any_of(incorrect_hash_report.issues,
+                                    [](const auto& issue) {
+                                        return issue.code == Plaza2ProbeIssueCode::FileHashMismatch && issue.fatal;
+                                    }),
+                "incorrect runtime library hash should report a fatal mismatch");
 
         Plaza2Settings scoped_config_settings = settings;
         scoped_config_settings.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";

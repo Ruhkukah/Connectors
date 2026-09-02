@@ -1,0 +1,31 @@
+version: 1
+environment: test
+profile: t1
+scope: plaza2_transactional_trading_spec_lock
+status: current
+raw_vendor_files_committed: false
+artifacts:
+  - name: forts_messages.ini
+    sha256: c155e22ad539e2ed97974a4ad94b3e07239057a66e2d52cf1ff64d0b24dec876
+    spectra_release: SPECTRA9.9.0
+    dds_version: 990.1.6.42744
+  - name: forts_scheme.ini
+    sha256: 7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746
+    spectra_release: SPECTRA9.9.0
+classification: CONSUMED_TRANSACTION_ABI_BYTE_FOR_BYTE_COMPATIBLE_WITH_SPECTRA93
+consumed_messages:
+  - {name: AddOrder, msgid: 474, replies: [179, 99, 100], payload_size: 112}
+  - {name: DelOrder, msgid: 461, replies: [177, 99, 100], payload_size: 20}
+  - {name: DelUserOrders, msgid: 466, replies: [186, 99, 100], payload_size: 49}
+  - {name: FORTS_MSG179, msgid: 179, payload_size: 267}
+  - {name: FORTS_MSG177, msgid: 177, payload_size: 263}
+  - {name: FORTS_MSG186, msgid: 186, payload_size: 263}
+  - {name: FORTS_MSG99, msgid: 99, payload_size: 136}
+  - {name: FORTS_MSG100, msgid: 100, payload_size: 259}
+safety:
+  live_order_sending: false
+  publisher_message_allocation: false
+  publisher_posting: false
+notes:
+  - Field names, order, widths, message IDs, and reply mappings for every consumed message match the historical SPECTRA93 lock.
+  - Raw vendor schemes, credentials, authentication files, and endpoints are not committed.

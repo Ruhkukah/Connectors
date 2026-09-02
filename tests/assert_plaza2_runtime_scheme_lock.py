@@ -13,12 +13,18 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def write_runtime_scheme(metadata: dict, path: Path, drop_field: tuple[str, str] | None = None) -> None:
+def write_runtime_scheme(
+    metadata: dict,
+    path: Path,
+    drop_field: tuple[str, str] | None = None,
+    spectra_release: str = "SPECTRA93",
+    reviewed_absent_fields: set[tuple[str, str, str]] | None = None,
+) -> None:
     fields_by_table: dict[tuple[str, str], list[dict]] = {}
     for field in metadata["fields"]:
         fields_by_table.setdefault((field["stream_name"], field["table_name"]), []).append(field)
     lines = [
-        "; Spectra release: SPECTRA93",
+        f"; Spectra release: {spectra_release}",
         "; DDS version: 93.0.0.0",
         "; Target polygon: test",
         "",
@@ -28,6 +34,8 @@ def write_runtime_scheme(metadata: dict, path: Path, drop_field: tuple[str, str]
         lines.append(f"[table:{key[0]}:{key[1]}]")
         skipped = False
         for field in fields_by_table[key]:
+            if reviewed_absent_fields and (key[0], key[1], field["field_name"]) in reviewed_absent_fields:
+                continue
             if drop_field == key and not skipped:
                 skipped = True
                 continue
@@ -94,6 +102,29 @@ def main() -> int:
         fatal_run = run_tool(root, fatal_scheme, tmp / "fatal")
         require(fatal_run.returncode == 2, "fatal drift should produce incompatible tool exit")
         assert_report(tmp / "fatal", "Incompatible", 1)
+
+        spectra99_scheme = tmp / "spectra99.ini"
+        reviewed_absent_fields = {
+            ("FORTS_PART_REPL", "part", "vm_intercl"),
+            ("FORTS_PART_REPL", "part", "premium_intercl"),
+            ("FORTS_REFDATA_REPL", "fut_instruments", "step_price_interclr"),
+            ("FORTS_REFDATA_REPL", "session", "inter_cl_begin"),
+            ("FORTS_REFDATA_REPL", "session", "inter_cl_end"),
+            ("FORTS_REFDATA_REPL", "session", "inter_cl_state"),
+        }
+        write_runtime_scheme(
+            metadata,
+            spectra99_scheme,
+            spectra_release="SPECTRA9.9.0",
+            reviewed_absent_fields=reviewed_absent_fields,
+        )
+        spectra99_run = run_tool(root, spectra99_scheme, tmp / "spectra99")
+        require(spectra99_run.returncode == 0, spectra99_run.stderr)
+        spectra99_diff = assert_report(tmp / "spectra99", "CompatibleWithWarnings", 0)
+        require(
+            all(row["classification"] == "required" for row in spectra99_diff["warning_drift"]),
+            "reviewed SPECTRA 9.9 removals should remain visible as required-table warnings",
+        )
     return 0
 
 

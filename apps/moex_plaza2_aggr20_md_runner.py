@@ -81,6 +81,7 @@ def main() -> int:
         ("--scheme-dir", "scheme_dir"),
         ("--config-dir", "config_dir"),
         ("--expected-spectra-release", "expected_spectra_release"),
+        ("--expected-runtime-library-sha256", "expected_runtime_library_sha256"),
         ("--expected-scheme-sha256", "expected_scheme_sha256"),
     ):
         value = str(runtime.get(key, ""))
