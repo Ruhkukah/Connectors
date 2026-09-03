@@ -460,6 +460,7 @@ void write_receipt(const fs::path& path, const Args& args, const Plaza2TradeConn
     number("target_trade_mode_id", snapshot.target_trade_mode_id);
     boolean("target_refdata_present", snapshot.target_refdata_present);
     boolean("target_aggr20_two_sided", snapshot.target_aggr20_two_sided);
+    boolean("target_aggr20_uncrossed", snapshot.target_aggr20_uncrossed);
     number("target_aggr20_age_ms", snapshot.target_aggr20_age_ms);
     number("target_aggr20_repl_id", snapshot.target_aggr20_repl_id);
     number("target_aggr20_repl_rev", snapshot.target_aggr20_repl_rev);

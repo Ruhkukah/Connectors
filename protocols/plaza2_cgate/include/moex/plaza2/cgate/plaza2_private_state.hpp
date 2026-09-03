@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -59,6 +60,19 @@ struct StreamHealthSnapshot {
     // USERORDERBOOK periodic consistency is distinct from initial ONLINE.
     // It is established only by a committed regular info publication_state=1 row.
     bool periodic_snapshot_consistent{false};
+};
+
+// Exchange-native provenance for one committed source row.  repl_rev is
+// meaningful only within lifenum; callers must retain both values when
+// recording a readiness or execution-safety receipt.
+struct SourceRowProvenance {
+    generated::StreamCode stream_code{fake::kNoStreamCode};
+    generated::TableCode table_code{fake::kNoTableCode};
+    std::int64_t repl_rev{0};
+    std::uint64_t lifenum{0};
+    bool present{false};
+
+    bool operator==(const SourceRowProvenance&) const = default;
 };
 
 struct TradingSessionSnapshot {
@@ -251,6 +265,15 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::span<const PositionSnapshot> positions() const;
     [[nodiscard]] std::span<const OwnOrderSnapshot> own_orders() const;
     [[nodiscard]] std::span<const OwnTradeSnapshot> own_trades() const;
+
+    // Typed REFDATA provenance queries for the rows used to qualify a futures
+    // target.  The optional is empty when the requested row is not currently
+    // committed in the current REFDATA LifeNum epoch.
+    [[nodiscard]] std::optional<SourceRowProvenance> instrument_source_provenance(generated::TableCode table_code,
+                                                                                  std::int32_t isin_id) const;
+    [[nodiscard]] std::optional<SourceRowProvenance> session_source_provenance(generated::TableCode table_code,
+                                                                               std::int32_t sess_id) const;
+    [[nodiscard]] std::optional<std::uint64_t> refdata_lifenum() const;
 
     // A regular-table-scoped USERORDERBOOK refresh makes the periodic snapshot
     // inconsistent while preserving listener ONLINE/currentness.

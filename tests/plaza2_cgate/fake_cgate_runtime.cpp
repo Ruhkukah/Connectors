@@ -1024,6 +1024,16 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                 return direction != nullptr && direction->signed_value == 2;
             });
         }
+        if (fake_flag("MOEX_FAKE_AGGR_CROSSED")) {
+            for (auto& message : script) {
+                const auto* direction = find_field(message, kFortsAggrReplOrdersAggrDir);
+                auto* price = find_field(message, kFortsAggrReplOrdersAggrPrice);
+                if (direction == nullptr || price == nullptr) {
+                    continue;
+                }
+                price->text = direction->signed_value == 1 ? "102750" : "102500";
+            }
+        }
         if (fake_flag("MOEX_FAKE_AGGR_MULTI_INSTRUMENT")) {
             const auto original = script;
             for (const auto& source : original) {

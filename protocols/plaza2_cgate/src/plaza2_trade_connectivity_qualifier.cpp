@@ -309,6 +309,7 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         snapshot.target_aggr20_age_ms = 0;
         snapshot.target_aggr20_repl_id = 0;
         snapshot.target_aggr20_repl_rev = 0;
+        snapshot.target_aggr20_uncrossed = false;
         snapshot.aggr20_has_lifenum = aggr_bridge.has_lifenum();
         snapshot.aggr20_lifenum = aggr_bridge.last_lifenum();
         snapshot.aggr20_row_count = aggr_projector.snapshot().row_count;
@@ -350,6 +351,9 @@ struct Plaza2TradeConnectivityQualifier::Impl {
             const auto target_book = aggr_projector.snapshot_for_isin(target->isin_id);
             if (target_book.has_value()) {
                 snapshot.target_aggr20_two_sided = target_book->top_bid.has_value() && target_book->top_ask.has_value();
+                snapshot.target_aggr20_uncrossed =
+                    snapshot.target_aggr20_two_sided &&
+                    target_book->top_bid->price_scaled < target_book->top_ask->price_scaled;
                 snapshot.target_aggr20_repl_id = target_book->last_repl_id;
                 snapshot.target_aggr20_repl_rev = target_book->last_repl_rev;
                 if (target_book->committed_at != Plaza2Aggr20BookProjector::Clock::time_point{}) {
@@ -387,7 +391,7 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         snapshot.market_state_ready = health.runtime_probe_ok && health.scheme_drift_ok &&
                                       snapshot.target_refdata_present && snapshot.target_session_add_capable &&
                                       snapshot.target_instrument_add_capable && snapshot.target_aggr20_two_sided &&
-                                      aggr_age_ok;
+                                      snapshot.target_aggr20_uncrossed && aggr_age_ok;
         snapshot.account_state_ready =
             snapshot.participant_limit_unique && snapshot.participant_limits_set && snapshot.position_identity_exact;
         snapshot.publisher_ready = snapshot.publisher_open && snapshot.runtime_trading_capable;
@@ -409,6 +413,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         add_failure(snapshot, snapshot.target_instrument_add_capable,
                     "target INSTRUMENTSTATE public_state is not add-capable (1)");
         add_failure(snapshot, snapshot.target_aggr20_two_sided, "target AGGR20 BBO is not two-sided");
+        add_failure(snapshot, !snapshot.target_aggr20_two_sided || snapshot.target_aggr20_uncrossed,
+                    "target AGGR20 BBO is crossed or locked");
         add_failure(snapshot, aggr_age_ok, "target AGGR20 evidence is missing, unversioned, stale, or offline");
         add_failure(snapshot, snapshot.participant_limit_unique && snapshot.participant_limits_set,
                     "participant limit identity is missing, ambiguous, or limits_set=false");

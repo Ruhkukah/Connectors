@@ -546,6 +546,45 @@ struct Plaza2PrivateStateProjector::Impl {
         return staged.active ? ensure_staged_source_revisions() : source_revisions;
     }
 
+    std::optional<SourceRowProvenance> refdata_source_provenance(TableCode table_code, std::int32_t row_id) const {
+        switch (table_code) {
+        case TableCode::kFortsRefdataReplFutInstruments:
+        case TableCode::kFortsRefdataReplFutSessContents:
+        case TableCode::kFortsRefdataReplSession:
+            break;
+        default:
+            return std::nullopt;
+        }
+
+        const auto lifenum = lifenums_by_stream.find(StreamCode::kFortsRefdataRepl);
+        if (lifenum == lifenums_by_stream.end()) {
+            return std::nullopt;
+        }
+        const auto table_it = source_revisions.find(table_code);
+        if (table_it == source_revisions.end()) {
+            return std::nullopt;
+        }
+        const auto row_it = table_it->second.find(revision_key(row_id));
+        if (row_it == table_it->second.end()) {
+            return std::nullopt;
+        }
+        return SourceRowProvenance{
+            .stream_code = StreamCode::kFortsRefdataRepl,
+            .table_code = table_code,
+            .repl_rev = row_it->second,
+            .lifenum = lifenum->second,
+            .present = true,
+        };
+    }
+
+    std::optional<std::uint64_t> refdata_lifenum() const {
+        const auto lifenum = lifenums_by_stream.find(StreamCode::kFortsRefdataRepl);
+        if (lifenum == lifenums_by_stream.end()) {
+            return std::nullopt;
+        }
+        return lifenum->second;
+    }
+
     void record_source_revision(TableCode table_code, std::string key, std::int64_t revision) {
         if (key.empty()) {
             return;
@@ -2022,6 +2061,27 @@ std::span<const OwnOrderSnapshot> Plaza2PrivateStateProjector::own_orders() cons
 
 std::span<const OwnTradeSnapshot> Plaza2PrivateStateProjector::own_trades() const {
     return impl_->trade_snapshots;
+}
+
+std::optional<SourceRowProvenance>
+Plaza2PrivateStateProjector::instrument_source_provenance(generated::TableCode table_code, std::int32_t isin_id) const {
+    if (table_code != generated::TableCode::kFortsRefdataReplFutInstruments &&
+        table_code != generated::TableCode::kFortsRefdataReplFutSessContents) {
+        return std::nullopt;
+    }
+    return impl_->refdata_source_provenance(table_code, isin_id);
+}
+
+std::optional<SourceRowProvenance>
+Plaza2PrivateStateProjector::session_source_provenance(generated::TableCode table_code, std::int32_t sess_id) const {
+    if (table_code != generated::TableCode::kFortsRefdataReplSession) {
+        return std::nullopt;
+    }
+    return impl_->refdata_source_provenance(table_code, sess_id);
+}
+
+std::optional<std::uint64_t> Plaza2PrivateStateProjector::refdata_lifenum() const {
+    return impl_->refdata_lifenum();
 }
 
 void Plaza2PrivateStateProjector::invalidate_periodic_snapshot(generated::StreamCode stream_code,
