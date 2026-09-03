@@ -1182,6 +1182,14 @@ Plaza2PublisherMessageResult Plaza2TestSessionHost::post(std::string_view messag
 }
 
 struct Plaza2TestTradeTransport::Impl {
+    struct TargetRefdataProvenanceAssessment {
+        std::uint64_t current_lifenum{0};
+        std::optional<private_state::SourceRowProvenance> fut_instruments;
+        std::optional<private_state::SourceRowProvenance> fut_sess_contents;
+        std::optional<private_state::SourceRowProvenance> session;
+        bool ready{false};
+    };
+
     struct PositionEvidenceAssessment {
         PositionEvidenceClass classification{PositionEvidenceClass::Unresolved};
         bool zero_starting_position_proven{false};
@@ -1256,6 +1264,34 @@ struct Plaza2TestTradeTransport::Impl {
             return stream.stream_code == stream_code;
         });
         return found == health.end() ? nullptr : &*found;
+    }
+
+    [[nodiscard]] TargetRefdataProvenanceAssessment target_refdata_provenance() const {
+        TargetRefdataProvenanceAssessment result;
+        if (target_isin() <= 0 || target_isin() > std::numeric_limits<std::int32_t>::max()) {
+            return result;
+        }
+        const auto& state = host.private_state();
+        const auto lifenum = state.refdata_lifenum();
+        result.fut_instruments = state.instrument_source_provenance(
+            generated::TableCode::kFortsRefdataReplFutInstruments, static_cast<std::int32_t>(target_isin()));
+        result.fut_sess_contents = state.instrument_source_provenance(
+            generated::TableCode::kFortsRefdataReplFutSessContents, static_cast<std::int32_t>(target_isin()));
+        result.session =
+            state.session_source_provenance(generated::TableCode::kFortsRefdataReplSession, config.target_session_id);
+        if (!lifenum.has_value()) {
+            return result;
+        }
+        result.current_lifenum = *lifenum;
+        const auto current = [&](const auto& provenance, generated::TableCode expected_table) {
+            return provenance.has_value() && provenance->present &&
+                   provenance->stream_code == StreamCode::kFortsRefdataRepl &&
+                   provenance->table_code == expected_table && provenance->lifenum == result.current_lifenum;
+        };
+        result.ready = current(result.fut_instruments, generated::TableCode::kFortsRefdataReplFutInstruments) &&
+                       current(result.fut_sess_contents, generated::TableCode::kFortsRefdataReplFutSessContents) &&
+                       current(result.session, generated::TableCode::kFortsRefdataReplSession);
+        return result;
     }
 
     [[nodiscard]] bool participant_trade(const private_state::OwnTradeSnapshot& trade) const {
@@ -1535,6 +1571,9 @@ struct Plaza2TestTradeTransport::Impl {
         if (!scoped.has_value() || !scoped->top_bid.has_value() || !scoped->top_ask.has_value()) {
             return invalid("target AGGR20 snapshot is missing or not two-sided");
         }
+        if (scoped->top_bid->price_scaled >= scoped->top_ask->price_scaled) {
+            return invalid("target AGGR20 BBO is crossed or locked");
+        }
         if (std::chrono::steady_clock::now() - scoped->committed_at > effective_max_aggr20_age()) {
             return invalid("target AGGR20 snapshot is stale");
         }
@@ -1570,6 +1609,10 @@ struct Plaza2TestTradeTransport::Impl {
                 !session->has_current_status) {
                 return invalid("target trading session is missing or not tradable");
             }
+        }
+        const auto target_provenance = target_refdata_provenance();
+        if (!target_provenance.ready) {
+            return invalid("target REFDATA rows lack exact current-LifeNum provenance");
         }
         const auto matching_limit_count =
             std::count_if(private_state.limits().begin(), private_state.limits().end(), [&](const auto& candidate) {
@@ -1641,7 +1684,11 @@ struct Plaza2TestTradeTransport::Impl {
         if (!scoped.has_value() || !scoped->top_bid.has_value() || !scoped->top_ask.has_value()) {
             return invalid("cannot persist execution-safety receipt without a two-sided target BBO");
         }
+        if (scoped->top_bid->price_scaled >= scoped->top_ask->price_scaled) {
+            return invalid("cannot persist execution-safety receipt with a crossed or locked target BBO");
+        }
         const auto& state = host.private_state();
+        const auto target_provenance = target_refdata_provenance();
         const auto instrument = std::find_if(state.instruments().begin(), state.instruments().end(),
                                              [&](const auto& candidate) { return candidate.isin_id == target; });
         const auto session = std::find_if(state.sessions().begin(), state.sessions().end(), [&](const auto& candidate) {
@@ -1659,7 +1706,7 @@ struct Plaza2TestTradeTransport::Impl {
                        candidate.isin_id == target && candidate.account_code == participant_code() &&
                        candidate.account_type == expected_account_type;
             });
-        if (instrument == state.instruments().end() || session == state.sessions().end() ||
+        if (!target_provenance.ready || instrument == state.instruments().end() || session == state.sessions().end() ||
             limit == state.limits().end()) {
             return invalid("execution-safety receipt lacks target refdata/session/limit evidence");
         }
@@ -1670,6 +1717,11 @@ struct Plaza2TestTradeTransport::Impl {
         Plaza2ExecutionSafetyReceipt receipt;
         receipt.authorized_intent_sha256 = config.authorized_intent->sha256;
         receipt.target_isin_id = target;
+        receipt.target_refdata_lifenum = target_provenance.current_lifenum;
+        receipt.target_fut_instruments_provenance = *target_provenance.fut_instruments;
+        receipt.target_fut_sess_contents_provenance = *target_provenance.fut_sess_contents;
+        receipt.target_session_provenance = *target_provenance.session;
+        receipt.target_refdata_provenance_ready = true;
         receipt.aggr20 = scoped;
         receipt.instrument = *instrument;
         receipt.session = *session;
@@ -1735,6 +1787,7 @@ struct Plaza2TestTradeTransport::Impl {
             return invalid("execution-safety receipt observed a stale target AGGR20 snapshot");
         }
         receipt.quantity_one = config.authorized_intent->quantity == 1;
+        receipt.target_aggr20_uncrossed = scoped->top_bid->price_scaled < scoped->top_ask->price_scaled;
         receipt.private_streams_ready =
             std::all_of(state.stream_health().begin(), state.stream_health().end(),
                         [](const auto& stream) { return stream.online && stream.snapshot_complete; });
@@ -1765,9 +1818,27 @@ struct Plaza2TestTradeTransport::Impl {
 
         std::ostringstream json;
         json << "{\n"
-             << "  \"schema\": \"moex.plaza2.execution_safety.v2\",\n"
+             << "  \"schema\": \"moex.plaza2.execution_safety.v3\",\n"
              << "  \"authorized_intent_sha256\": \"" << receipt.authorized_intent_sha256 << "\",\n"
              << "  \"target_isin_id\": " << receipt.target_isin_id << ",\n"
+             << "  \"target_refdata_lifenum\": " << receipt.target_refdata_lifenum << ",\n"
+             << "  \"target_fut_instruments_provenance\": {\"stream_code\":"
+             << static_cast<std::uint32_t>(receipt.target_fut_instruments_provenance.stream_code)
+             << ",\"table_code\":" << static_cast<std::uint32_t>(receipt.target_fut_instruments_provenance.table_code)
+             << ",\"isin_id\":" << receipt.target_isin_id
+             << ",\"repl_rev\":" << receipt.target_fut_instruments_provenance.repl_rev
+             << ",\"lifenum\":" << receipt.target_fut_instruments_provenance.lifenum << ",\"present\":true},\n"
+             << "  \"target_fut_sess_contents_provenance\": {\"stream_code\":"
+             << static_cast<std::uint32_t>(receipt.target_fut_sess_contents_provenance.stream_code)
+             << ",\"table_code\":" << static_cast<std::uint32_t>(receipt.target_fut_sess_contents_provenance.table_code)
+             << ",\"isin_id\":" << receipt.target_isin_id
+             << ",\"repl_rev\":" << receipt.target_fut_sess_contents_provenance.repl_rev
+             << ",\"lifenum\":" << receipt.target_fut_sess_contents_provenance.lifenum << ",\"present\":true},\n"
+             << "  \"target_session_provenance\": {\"stream_code\":"
+             << static_cast<std::uint32_t>(receipt.target_session_provenance.stream_code)
+             << ",\"table_code\":" << static_cast<std::uint32_t>(receipt.target_session_provenance.table_code)
+             << ",\"sess_id\":" << session->sess_id << ",\"repl_rev\":" << receipt.target_session_provenance.repl_rev
+             << ",\"lifenum\":" << receipt.target_session_provenance.lifenum << ",\"present\":true},\n"
              << "  \"top_bid\": " << scoped->top_bid->price_scaled << ",\n"
              << "  \"top_ask\": " << scoped->top_ask->price_scaled << ",\n"
              << "  \"aggr20_repl_id\": " << scoped->last_repl_id << ",\n"
@@ -1819,6 +1890,9 @@ struct Plaza2TestTradeTransport::Impl {
             json << "null,\n";
         }
         json << "  \"private_streams\": " << receipt.private_streams_json << ",\n"
+             << "  \"target_refdata_provenance_ready\": "
+             << (receipt.target_refdata_provenance_ready ? "true" : "false") << ",\n"
+             << "  \"target_aggr20_uncrossed\": " << (receipt.target_aggr20_uncrossed ? "true" : "false") << ",\n"
              << "  \"passive_non_marketable\": " << (receipt.passive_non_marketable ? "true" : "false") << ",\n"
              << "  \"bbo_distance_allowed\": " << (receipt.bbo_distance_allowed ? "true" : "false") << ",\n"
              << "  \"quantity_one\": " << (receipt.quantity_one ? "true" : "false") << ",\n"
@@ -1831,7 +1905,8 @@ struct Plaza2TestTradeTransport::Impl {
              << "}\n";
         receipt.canonical_json = json.str();
         receipt.sha256 = cgate::plaza2_sha256_hex(receipt.canonical_json);
-        if (!receipt.passive_non_marketable || !receipt.bbo_distance_allowed || !receipt.quantity_one ||
+        if (!receipt.target_refdata_provenance_ready || !receipt.target_aggr20_uncrossed ||
+            !receipt.passive_non_marketable || !receipt.bbo_distance_allowed || !receipt.quantity_one ||
             !receipt.private_streams_ready || !receipt.aggr_online || !receipt.aggr_snapshot_complete ||
             !receipt.p2mqreply_open || !receipt.publisher_open || !receipt.trading_capable ||
             (receipt.active_own_order_count != 0 && host.mode() == Plaza2TestSessionHostMode::LiveTestPreSend) ||

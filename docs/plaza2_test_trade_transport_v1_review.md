@@ -3,7 +3,8 @@
 ## Scope and stop gate
 
 This increment started from merged-main `610dbfd` (PR #29) and now includes
-merged-main `6b00796` (PR #31, the CGate 9.9 T1 runtime prerequisite). It keeps
+merged-main `cc2494d` (PR #32, including the CGate 9.9 prerequisite and typed
+REFDATA row provenance). It keeps
 the TEST-only boundary but adds the narrow `OfflineFake` and
 `LiveTestPreSend` host modes. The latter may open a real TEST session and all
 read-side/private services, but its post barrier is physically below publisher
@@ -61,7 +62,12 @@ The receipt is derived from the current committed projectors immediately before
 the post and contains the target BBO, local monotonic age, exchange evidence,
 session/instrument state, exact client limit-row hash, stream readiness,
 publisher/reply-listener state, trading capability, passive-price and distance
-checks, and quantity-one policy. DelOrder and exact-ext recovery deliberately
+checks, and quantity-one policy. It also freezes the three typed target
+REFDATA records (`fut_instruments[isin_id]`, `fut_sess_contents[isin_id]`, and
+`session[sess_id]`) with their table codes, typed identities, `replRev`, and
+current REFDATA LifeNum. All three records must belong to the same current
+LifeNum. The stream-wide `last_commit_sequence` is not accepted as target-row
+provenance and may legitimately be zero. DelOrder and exact-ext recovery deliberately
 skip this entry gate so cleanup remains available after market-data staleness.
 
 The pre-send active-order census is independent of the proposed `ext_id`: any
@@ -102,8 +108,9 @@ into an order decision. Each scoped commit carries:
 
 There is no operator-supplied age field in this projector path. A transaction
 updates scoped freshness only for affected `isin_id` values; unrelated
-instrument traffic cannot refresh the target. A missing, one-sided, deleted,
-stale, non-tradable, or non-target instrument is not a ready target and must
+instrument traffic cannot refresh the target. A missing, one-sided,
+crossed/locked, deleted, stale, non-tradable, or non-target instrument is not a
+ready target and must
 not authorize a post. Target readiness also requires current-day
 `fut_sess_contents` membership, current session and instrument status rows, a
 futures min-step, the exact session in state `1` (running; Add + Cancel
@@ -150,7 +157,7 @@ actual concrete transport and fake CGate runtime for:
   zero-position policy continuity, correct normal-client account type, and
   wrong-account-type zero-position refusal;
 - two instrument AGGR20 isolation and target-only freshness, one-sided/stale/
-  absent targets, scheduled/running/suspended/completed session states,
+  crossed/locked/absent targets, scheduled/running/suspended/completed session states,
   missing or non-tradable session, missing or wrong client limit row, non-zero starting
   position, marketable and out-of-distance prices, unavailable
   p2mqreply/publisher, and receipt-persistence refusal;
@@ -192,6 +199,13 @@ and TRADE has completed its snapshot and reached ONLINE. A later POS revision
 or LifeNum is an unresolved mismatch, not a reason to re-anchor during the same
 run. The active own-order census never uses the proposed `ext_id` as a filter.
 
+Target identity is qualified from exact committed REFDATA rows, not from a
+stream-wide activity counter. The `fut_instruments` row for the target, its
+`fut_sess_contents` membership row, and the target `session` row must all be
+present in the current REFDATA LifeNum, and the execution-safety receipt binds
+each row's typed key, table code, `replRev`, and LifeNum. A missing row, a mixed
+epoch, or a crossed/locked BBO remains a hard pre-send refusal.
+
 The transport may release no identifier lock merely because a terminal-looking
 row arrived. For any order that may have existed, a `Filled` or `Cancelled`
 terminal is market-safe only when all correlated evidence is consistent. An
@@ -209,12 +223,12 @@ The final offline validation is recorded here after the bounded checks:
 
 | Check | Result |
 |---|---:|
-| Full CTest | 157/157 passed |
-| PLAZA label | 47/47 passed |
+| Full CTest | 158/158 passed |
+| PLAZA label | 48/48 passed |
 | TWIME label | 74/74 passed |
 | Sanitizer label | 66/66 passed (ASan leak detection disabled for AppleClang) |
 | .NET ABI checks | 2/2 passed |
-| Changed-target ASan/UBSan | 5/5 current amendment; frozen-head 12/12 passed (ASan leak detection disabled for AppleClang) |
+| Changed-target ASan/UBSan | 5/5 passed (ASan leak detection disabled for AppleClang) |
 | No-test/no-operator minimal build | passed |
 | `git diff --check`, source/repo style, Unicode | passed |
 | Native offline plan/privacy check | passed |

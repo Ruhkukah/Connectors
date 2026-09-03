@@ -82,6 +82,10 @@ struct Plaza2TradeReplayAnchor {
 struct Plaza2ExecutionSafetyReceipt {
     std::string authorized_intent_sha256;
     std::int64_t target_isin_id{0};
+    std::uint64_t target_refdata_lifenum{0};
+    plaza2::private_state::SourceRowProvenance target_fut_instruments_provenance;
+    plaza2::private_state::SourceRowProvenance target_fut_sess_contents_provenance;
+    plaza2::private_state::SourceRowProvenance target_session_provenance;
     std::optional<plaza2::cgate::Plaza2Aggr20InstrumentSnapshot> aggr20;
     std::optional<plaza2::private_state::InstrumentSnapshot> instrument;
     std::optional<plaza2::private_state::TradingSessionSnapshot> session;
@@ -114,6 +118,8 @@ struct Plaza2ExecutionSafetyReceipt {
     std::chrono::milliseconds local_age{0};
     std::uint64_t authorized_max_aggr20_age_ms{0};
     bool require_zero_starting_position{false};
+    bool target_refdata_provenance_ready{false};
+    bool target_aggr20_uncrossed{false};
     bool passive_non_marketable{false};
     bool bbo_distance_allowed{false};
     bool quantity_one{false};

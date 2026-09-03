@@ -319,11 +319,17 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
     const auto add = encoded_add(codec);
     const auto recovery = encoded_recovery(codec);
     const std::vector<std::pair<const char*, std::string_view>> cases = {
-        {"MOEX_FAKE_AGGR_ONE_SIDED", "two-sided"},     {"MOEX_FAKE_MISSING_INSTRUMENT", "absent"},
-        {"MOEX_FAKE_MISSING_SESSION", "session"},      {"MOEX_FAKE_NONTRADABLE_SESSION", "session"},
-        {"MOEX_FAKE_SCHEDULED_SESSION", "session"},    {"MOEX_FAKE_SUSPENDED_SESSION", "session"},
-        {"MOEX_FAKE_COMPLETED_SESSION", "session"},    {"MOEX_FAKE_MISSING_LIMITS", "limit"},
-        {"MOEX_FAKE_WRONG_LIMIT_CLIENT", "limit"},     {"MOEX_FAKE_DISABLE_REPLY_LISTENER", "cg_lsn_new"},
+        {"MOEX_FAKE_AGGR_ONE_SIDED", "two-sided"},
+        {"MOEX_FAKE_AGGR_CROSSED", "crossed or locked"},
+        {"MOEX_FAKE_MISSING_INSTRUMENT", "absent"},
+        {"MOEX_FAKE_MISSING_SESSION", "session"},
+        {"MOEX_FAKE_NONTRADABLE_SESSION", "session"},
+        {"MOEX_FAKE_SCHEDULED_SESSION", "session"},
+        {"MOEX_FAKE_SUSPENDED_SESSION", "session"},
+        {"MOEX_FAKE_COMPLETED_SESSION", "session"},
+        {"MOEX_FAKE_MISSING_LIMITS", "limit"},
+        {"MOEX_FAKE_WRONG_LIMIT_CLIENT", "limit"},
+        {"MOEX_FAKE_DISABLE_REPLY_LISTENER", "cg_lsn_new"},
         {"MOEX_FAKE_DISABLE_PUBLISHER", "cg_pub_new"},
     };
     for (const auto& [variable, expected] : cases) {
@@ -843,11 +849,40 @@ int main(int argc, char** argv) {
         require(transport.last_execution_safety_receipt().has_value() &&
                     transport.last_execution_safety_receipt()->passive_non_marketable &&
                     transport.last_execution_safety_receipt()->bbo_distance_allowed &&
+                    transport.last_execution_safety_receipt()->target_aggr20_uncrossed &&
+                    transport.last_execution_safety_receipt()->target_refdata_provenance_ready &&
+                    transport.last_execution_safety_receipt()->target_refdata_lifenum == 7 &&
+                    transport.last_execution_safety_receipt()->target_fut_instruments_provenance.stream_code ==
+                        generated::StreamCode::kFortsRefdataRepl &&
+                    transport.last_execution_safety_receipt()->target_fut_instruments_provenance.present &&
+                    transport.last_execution_safety_receipt()->target_fut_instruments_provenance.table_code ==
+                        generated::TableCode::kFortsRefdataReplFutInstruments &&
+                    transport.last_execution_safety_receipt()->target_fut_instruments_provenance.repl_rev == 2 &&
+                    transport.last_execution_safety_receipt()->target_fut_instruments_provenance.lifenum == 7 &&
+                    transport.last_execution_safety_receipt()->target_fut_sess_contents_provenance.table_code ==
+                        generated::TableCode::kFortsRefdataReplFutSessContents &&
+                    transport.last_execution_safety_receipt()->target_fut_sess_contents_provenance.present &&
+                    transport.last_execution_safety_receipt()->target_fut_sess_contents_provenance.repl_rev == 3 &&
+                    transport.last_execution_safety_receipt()->target_fut_sess_contents_provenance.lifenum == 7 &&
+                    transport.last_execution_safety_receipt()->target_session_provenance.table_code ==
+                        generated::TableCode::kFortsRefdataReplSession &&
+                    transport.last_execution_safety_receipt()->target_session_provenance.present &&
+                    transport.last_execution_safety_receipt()->target_session_provenance.repl_rev == 1 &&
+                    transport.last_execution_safety_receipt()->target_session_provenance.lifenum == 7 &&
                     transport.last_execution_safety_receipt()->aggr_online &&
                     transport.last_execution_safety_receipt()->aggr_snapshot_complete &&
                     transport.last_execution_safety_receipt()->authorized_max_aggr20_age_ms == 5000 &&
                     !transport.last_execution_safety_receipt()->require_zero_starting_position,
-                "execution-safety receipt must record passive and BBO-distance checks");
+                "execution-safety receipt must freeze exact current-LifeNum target provenance and BBO checks");
+        require(transport.last_execution_safety_receipt()->canonical_json.find(
+                    "\"schema\": \"moex.plaza2.execution_safety.v3\"") != std::string::npos &&
+                    transport.last_execution_safety_receipt()->canonical_json.find(
+                        "\"target_fut_instruments_provenance\"") != std::string::npos &&
+                    transport.last_execution_safety_receipt()->canonical_json.find(
+                        "\"target_fut_sess_contents_provenance\"") != std::string::npos &&
+                    transport.last_execution_safety_receipt()->canonical_json.find("\"target_session_provenance\"") !=
+                        std::string::npos,
+                "canonical execution-safety receipt must persist all three typed target provenance records");
 
         const auto first_poll = transport.poll(std::chrono::steady_clock::now() + std::chrono::seconds(1));
         require(first_poll.ok, "first fake CGate poll should succeed");
