@@ -10,6 +10,7 @@ This phase implements:
 - deterministic numeric `TableCode`-based row projection
 - explicit staging between `TN_BEGIN` and `TN_COMMIT`
 - explicit committed read-only snapshots
+- retained in-memory table/row-scoped Exchange `replRev` provenance for target REFDATA
 - per-stream in-memory health and watermark tracking
 - fake-engine-driven deterministic replay tests
 
@@ -114,6 +115,16 @@ Invalidation is explicit and stream-owned.
     readiness is separately invalidated until a committed regular `info`
     `publication_state=1` row arrives
 
+`StreamHealthSnapshot.last_commit_sequence` is a stream-wide local watermark.
+It is intentionally reset by a table-scoped `CLEARDELETED`, so it cannot prove
+that a surviving row in another table is still the row version used for a
+target decision.  The projector therefore retains the existing
+`SourceRevisionRows` entries as the source of Exchange provenance for the
+current in-memory replication epoch. This does not claim power-loss durability.
+Each committed target receipt binds `table_code`, typed row identity, and
+`repl_rev` to the current `FORTS_REFDATA_REPL` LifeNum epoch.  A changed
+REFDATA LifeNum clears those entries before a new snapshot is rebuilt.
+
 Current stream ownership boundaries:
 
 - `FORTS_TRADE_REPL`: trade-owned order source and own trades
@@ -138,6 +149,15 @@ Available accessors:
 - `positions()`
 - `own_orders()`
 - `own_trades()`
+- `instrument_source_provenance(TableCode, isin_id)` for
+  `fut_instruments` and `fut_sess_contents`
+- `session_source_provenance(TableCode, sess_id)` for `session`
+- `refdata_lifenum()` for the current REFDATA replication epoch
+
+The typed provenance accessors return an empty optional when the row is not
+committed in the current LifeNum epoch.  They do not expose the projector’s
+internal string-key encoding and do not use stream-wide commit sequence or
+row counts as evidence.
 
 The API returns `const` references or `std::span<const ...>` views. Staged state is not exposed.
 
@@ -182,6 +202,11 @@ New Phase 3E tests:
 - `plaza2_private_state_invalidation_test`
   - selective `P2REPL_CLEARDELETED` behavior
   - `P2REPL_LIFENUM` invalidation across committed private-state domains
+- `plaza2_private_state_provenance_test`
+  - typed CRU6-like `fut_instruments`, `fut_sess_contents`, and `session`
+    provenance
+  - atomic row update visibility, selective clears, LifeNum invalidation,
+    status-only independence, clone preservation, and reset clearing
 
 Existing Phase 3D scenario parser/materializer/rule tests continue to validate deterministic replay inputs and illegal lifecycle ordering.
 
@@ -189,7 +214,7 @@ Existing Phase 3D scenario parser/materializer/rule tests continue to validate d
 
 - No persistence is implemented yet; resume markers are in-memory only.
 - Settlement-account limits and positions remain deferred.
-- Reference-data projection is intentionally narrow and limited to the tables needed for the shipped snapshot surface.
+- Reference-data projection is intentionally narrow and limited to the tables needed for the shipped snapshot surface; only the target futures/session provenance rows are exposed.
 - No live runtime wiring is added here; Phase 3E is validated primarily through the fake engine.
 - `replAct` row deletion semantics are not interpreted yet beyond explicit `CLEARDELETED` and `LIFENUM` invalidation.
 
