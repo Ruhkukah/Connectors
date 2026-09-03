@@ -413,7 +413,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         add_failure(snapshot, snapshot.target_instrument_add_capable,
                     "target INSTRUMENTSTATE public_state is not add-capable (1)");
         add_failure(snapshot, snapshot.target_aggr20_two_sided, "target AGGR20 BBO is not two-sided");
-        add_failure(snapshot, snapshot.target_aggr20_uncrossed, "target AGGR20 BBO is crossed or locked");
+        add_failure(snapshot, !snapshot.target_aggr20_two_sided || snapshot.target_aggr20_uncrossed,
+                    "target AGGR20 BBO is crossed or locked");
         add_failure(snapshot, aggr_age_ok, "target AGGR20 evidence is missing, unversioned, stale, or offline");
         add_failure(snapshot, snapshot.participant_limit_unique && snapshot.participant_limits_set,
                     "participant limit identity is missing, ambiguous, or limits_set=false");

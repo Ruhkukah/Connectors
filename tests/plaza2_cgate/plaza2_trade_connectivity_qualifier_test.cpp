@@ -208,6 +208,23 @@ int main(int argc, char** argv) {
         }
 
         {
+            ::setenv("MOEX_FAKE_AGGR_ONE_SIDED", "1", 1);
+            Plaza2TradeConnectivityQualifier one_sided_qualifier(make_config(fixture));
+            require(one_sided_qualifier.start().ok, "one-sided-book qualification start should succeed");
+            require(one_sided_qualifier.poll_once().ok, "one-sided-book qualification poll should succeed");
+            const auto& one_sided = one_sided_qualifier.qualification();
+            require(!one_sided.target_aggr20_two_sided && !one_sided.target_aggr20_uncrossed,
+                    "one-sided AGGR20 fixture should fail two-sided and uncrossed validation");
+            require(std::find(one_sided.failure_reasons.begin(), one_sided.failure_reasons.end(),
+                              "target AGGR20 BBO is not two-sided") != one_sided.failure_reasons.end(),
+                    "one-sided AGGR20 BBO should report the missing-side failure");
+            require(std::find(one_sided.failure_reasons.begin(), one_sided.failure_reasons.end(),
+                              "target AGGR20 BBO is crossed or locked") == one_sided.failure_reasons.end(),
+                    "one-sided AGGR20 BBO must not be described as crossed or locked");
+            ::unsetenv("MOEX_FAKE_AGGR_ONE_SIDED");
+        }
+
+        {
             ::setenv("MOEX_FAKE_AGGR_CROSSED", "1", 1);
             Plaza2TradeConnectivityQualifier crossed_qualifier(make_config(fixture));
             require(crossed_qualifier.start().ok, "crossed-book qualification start should succeed");

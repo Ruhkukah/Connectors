@@ -91,43 +91,39 @@ struct InitialScenario {
         add_simple(EventKind::kOpen);
         add_simple(EventKind::kLifeNum, StreamCode::kFortsRefdataRepl, 7);
         add_simple(EventKind::kTransactionBegin, StreamCode::kFortsRefdataRepl);
-        add_row(
-            StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutInstruments, 10,
-            {
-                signed_field(FieldCode::kFortsRefdataReplFutInstrumentsIsinId, 1001),
-                text_field(FieldCode::kFortsRefdataReplFutInstrumentsIsin, "TARGET-OLD"),
-                text_field(FieldCode::kFortsRefdataReplFutInstrumentsShortIsin, "TGT6"),
-                text_field(FieldCode::kFortsRefdataReplFutInstrumentsName, "Target old"),
-                text_field(FieldCode::kFortsRefdataReplFutInstrumentsMinStep, "250"),
-                signed_field(FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId, 4),
-            });
-        add_row(
-            StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutSessContents, 20,
-            {
-                signed_field(FieldCode::kFortsRefdataReplFutSessContentsIsinId, 1001),
-                signed_field(FieldCode::kFortsRefdataReplFutSessContentsSessId, 321),
-                signed_field(FieldCode::kFortsRefdataReplFutSessContentsReplAct, 0),
-                signed_field(FieldCode::kFortsRefdataReplFutSessContentsState, 1),
-                text_field(FieldCode::kFortsRefdataReplFutSessContentsIsin, "TARGET-OLD"),
-                text_field(FieldCode::kFortsRefdataReplFutSessContentsShortIsin, "TGT6"),
-                text_field(FieldCode::kFortsRefdataReplFutSessContentsName, "Target old"),
-                text_field(FieldCode::kFortsRefdataReplFutSessContentsMinStep, "250"),
-                signed_field(FieldCode::kFortsRefdataReplFutSessContentsTradeModeId, 4),
-            });
-        add_row(
-            StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplSession, 30,
-            {
-                signed_field(FieldCode::kFortsRefdataReplSessionSessId, 321),
-                signed_field(FieldCode::kFortsRefdataReplSessionBegin, 1700000000),
-                signed_field(FieldCode::kFortsRefdataReplSessionEnd, 1700003600),
-                signed_field(FieldCode::kFortsRefdataReplSessionState, 1),
-            });
-        add_row(
-            StreamCode::kFortsInstrumentstateRepl, TableCode::kFortsInstrumentstateReplInstrumentState, 40,
-            {
-                signed_field(FieldCode::kFortsInstrumentstateReplInstrumentStateIsinId, 1001),
-                signed_field(FieldCode::kFortsInstrumentstateReplInstrumentStatePublicState, 1),
-            });
+        add_row(StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutInstruments, 10,
+                {
+                    signed_field(FieldCode::kFortsRefdataReplFutInstrumentsIsinId, 1001),
+                    text_field(FieldCode::kFortsRefdataReplFutInstrumentsIsin, "TARGET-OLD"),
+                    text_field(FieldCode::kFortsRefdataReplFutInstrumentsShortIsin, "TGT6"),
+                    text_field(FieldCode::kFortsRefdataReplFutInstrumentsName, "Target old"),
+                    text_field(FieldCode::kFortsRefdataReplFutInstrumentsMinStep, "250"),
+                    signed_field(FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId, 4),
+                });
+        add_row(StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutSessContents, 20,
+                {
+                    signed_field(FieldCode::kFortsRefdataReplFutSessContentsIsinId, 1001),
+                    signed_field(FieldCode::kFortsRefdataReplFutSessContentsSessId, 321),
+                    signed_field(FieldCode::kFortsRefdataReplFutSessContentsReplAct, 0),
+                    signed_field(FieldCode::kFortsRefdataReplFutSessContentsState, 1),
+                    text_field(FieldCode::kFortsRefdataReplFutSessContentsIsin, "TARGET-OLD"),
+                    text_field(FieldCode::kFortsRefdataReplFutSessContentsShortIsin, "TGT6"),
+                    text_field(FieldCode::kFortsRefdataReplFutSessContentsName, "Target old"),
+                    text_field(FieldCode::kFortsRefdataReplFutSessContentsMinStep, "250"),
+                    signed_field(FieldCode::kFortsRefdataReplFutSessContentsTradeModeId, 4),
+                });
+        add_row(StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplSession, 30,
+                {
+                    signed_field(FieldCode::kFortsRefdataReplSessionSessId, 321),
+                    signed_field(FieldCode::kFortsRefdataReplSessionBegin, 1700000000),
+                    signed_field(FieldCode::kFortsRefdataReplSessionEnd, 1700003600),
+                    signed_field(FieldCode::kFortsRefdataReplSessionState, 1),
+                });
+        add_row(StreamCode::kFortsInstrumentstateRepl, TableCode::kFortsInstrumentstateReplInstrumentState, 40,
+                {
+                    signed_field(FieldCode::kFortsInstrumentstateReplInstrumentStateIsinId, 1001),
+                    signed_field(FieldCode::kFortsInstrumentstateReplInstrumentStatePublicState, 1),
+                });
         add_simple(EventKind::kTransactionCommit, StreamCode::kFortsRefdataRepl);
     }
 
@@ -187,8 +183,8 @@ void begin_transaction(Plaza2PrivateStateProjector& projector, EngineState& stat
     projector.on_event({}, EventSpec{.kind = EventKind::kTransactionBegin, .stream_code = stream_code}, state);
 }
 
-void stage_row(Plaza2PrivateStateProjector& projector, EngineState& state, StreamCode stream_code,
-               TableCode table_code, std::int64_t revision, std::initializer_list<FieldValueSpec> row_fields) {
+void stage_row(Plaza2PrivateStateProjector& projector, EngineState& state, StreamCode stream_code, TableCode table_code,
+               std::int64_t revision, std::initializer_list<FieldValueSpec> row_fields) {
     const std::vector<FieldValueSpec> fields(row_fields);
     const EventSpec event{
         .kind = EventKind::kStreamData,
@@ -218,12 +214,13 @@ void commit_transaction(Plaza2PrivateStateProjector& projector, EngineState& sta
 
 void clear_table(Plaza2PrivateStateProjector& projector, EngineState& state, StreamCode stream_code,
                  TableCode table_code, std::int64_t clear_revision) {
-    projector.on_event({}, EventSpec{
-                              .kind = EventKind::kClearDeleted,
-                              .stream_code = stream_code,
-                              .table_code = table_code,
-                              .signed_value = clear_revision,
-                          },
+    projector.on_event({},
+                       EventSpec{
+                           .kind = EventKind::kClearDeleted,
+                           .stream_code = stream_code,
+                           .table_code = table_code,
+                           .signed_value = clear_revision,
+                       },
                        state);
 }
 
@@ -231,11 +228,12 @@ void set_lifenum(Plaza2PrivateStateProjector& projector, EngineState& state, Str
                  std::uint64_t lifenum) {
     state.has_lifenum = true;
     state.last_lifenum = lifenum;
-    projector.on_event({}, EventSpec{
-                              .kind = EventKind::kLifeNum,
-                              .stream_code = stream_code,
-                              .numeric_value = lifenum,
-                          },
+    projector.on_event({},
+                       EventSpec{
+                           .kind = EventKind::kLifeNum,
+                           .stream_code = stream_code,
+                           .numeric_value = lifenum,
+                       },
                        state);
 }
 
@@ -263,21 +261,20 @@ int main() {
             TableCode::kFortsRefdataReplFutInstruments, 10, 7, "fut_instruments provenance should be present");
         const auto fut_session_contents = require_provenance(
             projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutSessContents, 1001),
-            TableCode::kFortsRefdataReplFutSessContents, 20, 7,
-            "fut_sess_contents provenance should be present");
+            TableCode::kFortsRefdataReplFutSessContents, 20, 7, "fut_sess_contents provenance should be present");
         require(fut_instruments.repl_rev != fut_session_contents.repl_rev,
                 "merged CRU6-like instrument tables must retain independent revisions");
-        static_cast<void>(require_provenance(
-            projector.session_source_provenance(TableCode::kFortsRefdataReplSession, 321),
-            TableCode::kFortsRefdataReplSession, 30, 7, "session provenance should be present"));
+        static_cast<void>(
+            require_provenance(projector.session_source_provenance(TableCode::kFortsRefdataReplSession, 321),
+                               TableCode::kFortsRefdataReplSession, 30, 7, "session provenance should be present"));
         require(!projector.instrument_source_provenance(TableCode::kFortsRefdataReplSession, 1001).has_value(),
                 "typed instrument query must reject the session table");
 
         EngineState state = result.state;
-        const auto old_instruments_provenance = projector.instrument_source_provenance(
-            TableCode::kFortsRefdataReplFutInstruments, 1001);
-        const auto old_session_contents_provenance = projector.instrument_source_provenance(
-            TableCode::kFortsRefdataReplFutSessContents, 1001);
+        const auto old_instruments_provenance =
+            projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutInstruments, 1001);
+        const auto old_session_contents_provenance =
+            projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutSessContents, 1001);
 
         // A status-only update is a separate stream/table and must not alter
         // either REFDATA source revision.
@@ -299,8 +296,7 @@ int main() {
         // Update values and source revision together, but expose both only at
         // the transaction commit boundary.
         begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
-        stage_row(projector, state, StreamCode::kFortsRefdataRepl,
-                  TableCode::kFortsRefdataReplFutInstruments, 50,
+        stage_row(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutInstruments, 50,
                   {
                       signed_field(FieldCode::kFortsRefdataReplFutInstrumentsIsinId, 1001),
                       text_field(FieldCode::kFortsRefdataReplFutInstrumentsIsin, "TARGET-NEW"),
@@ -328,21 +324,19 @@ int main() {
 
         // CLEARDELETED on another table and a non-deleting threshold for the
         // same table must leave the target receipt unchanged.
-        clear_table(projector, state, StreamCode::kFortsRefdataRepl,
-                    TableCode::kFortsRefdataReplInstr2matchingMap, std::numeric_limits<std::int64_t>::max());
+        clear_table(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplInstr2matchingMap,
+                    std::numeric_limits<std::int64_t>::max());
         require_provenance(projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutInstruments, 1001),
                            TableCode::kFortsRefdataReplFutInstruments, 50, 7,
                            "unrelated-table CLEARDELETED must not alter target provenance");
-        clear_table(projector, state, StreamCode::kFortsRefdataRepl,
-                    TableCode::kFortsRefdataReplFutInstruments, 50);
+        clear_table(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutInstruments, 50);
         require_provenance(projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutInstruments, 1001),
                            TableCode::kFortsRefdataReplFutInstruments, 50, 7,
                            "clear threshold at the row revision must preserve target provenance");
 
         // A deleting threshold removes the addressed source row even though
         // the merged instrument remains supplied by other tables.
-        clear_table(projector, state, StreamCode::kFortsRefdataRepl,
-                    TableCode::kFortsRefdataReplFutInstruments, 51);
+        clear_table(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutInstruments, 51);
         require(!projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutInstruments, 1001).has_value(),
                 "deleting fut_instruments CLEARDELETED must remove its provenance");
         require(find_instrument(projector.instruments(), 1001) != nullptr,
@@ -351,8 +345,8 @@ int main() {
                            TableCode::kFortsRefdataReplFutSessContents, 20, 7,
                            "clearing fut_instruments must preserve independent fut_sess_contents provenance");
 
-        clear_table(projector, state, StreamCode::kFortsRefdataRepl,
-                    TableCode::kFortsRefdataReplFutSessContents, std::numeric_limits<std::int64_t>::max());
+        clear_table(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutSessContents,
+                    std::numeric_limits<std::int64_t>::max());
         require(!projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutSessContents, 1001).has_value(),
                 "MAX fut_sess_contents CLEARDELETED must remove its provenance");
         clear_table(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplSession,
@@ -363,16 +357,14 @@ int main() {
         // Rebuild all target rows in the old epoch, then prove that a changed
         // REFDATA LifeNum invalidates every old source receipt.
         begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
-        stage_row(projector, state, StreamCode::kFortsRefdataRepl,
-                  TableCode::kFortsRefdataReplFutInstruments, 60,
+        stage_row(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutInstruments, 60,
                   {
                       signed_field(FieldCode::kFortsRefdataReplFutInstrumentsIsinId, 1001),
                       text_field(FieldCode::kFortsRefdataReplFutInstrumentsIsin, "TARGET-EPOCH-7"),
                       text_field(FieldCode::kFortsRefdataReplFutInstrumentsMinStep, "250"),
                       signed_field(FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId, 4),
                   });
-        stage_row(projector, state, StreamCode::kFortsRefdataRepl,
-                  TableCode::kFortsRefdataReplFutSessContents, 70,
+        stage_row(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutSessContents, 70,
                   {
                       signed_field(FieldCode::kFortsRefdataReplFutSessContentsIsinId, 1001),
                       signed_field(FieldCode::kFortsRefdataReplFutSessContentsSessId, 321),
@@ -392,22 +384,21 @@ int main() {
         require(projector.refdata_lifenum().has_value() && projector.refdata_lifenum().value() == 8,
                 "changed REFDATA LifeNum should be exposed immediately");
         require(!projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutInstruments, 1001).has_value() &&
-                    !projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutSessContents, 1001).has_value() &&
+                    !projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutSessContents, 1001)
+                         .has_value() &&
                     !projector.session_source_provenance(TableCode::kFortsRefdataReplSession, 321).has_value(),
                 "changed REFDATA LifeNum must invalidate all old target provenance");
 
         // Rebuild in the new epoch and prove clone/reset semantics.
         begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
-        stage_row(projector, state, StreamCode::kFortsRefdataRepl,
-                  TableCode::kFortsRefdataReplFutInstruments, 90,
+        stage_row(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutInstruments, 90,
                   {
                       signed_field(FieldCode::kFortsRefdataReplFutInstrumentsIsinId, 1001),
                       text_field(FieldCode::kFortsRefdataReplFutInstrumentsIsin, "TARGET-EPOCH-8"),
                       text_field(FieldCode::kFortsRefdataReplFutInstrumentsMinStep, "250"),
                       signed_field(FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId, 4),
                   });
-        stage_row(projector, state, StreamCode::kFortsRefdataRepl,
-                  TableCode::kFortsRefdataReplFutSessContents, 91,
+        stage_row(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutSessContents, 91,
                   {
                       signed_field(FieldCode::kFortsRefdataReplFutSessContentsIsinId, 1001),
                       signed_field(FieldCode::kFortsRefdataReplFutSessContentsSessId, 321),
@@ -429,12 +420,12 @@ int main() {
                            TableCode::kFortsRefdataReplFutSessContents, 91, 8,
                            "clone must preserve independent session-contents provenance");
         require_provenance(clone.session_source_provenance(TableCode::kFortsRefdataReplSession, 321),
-                           TableCode::kFortsRefdataReplSession, 92, 8,
-                           "clone must preserve session provenance");
+                           TableCode::kFortsRefdataReplSession, 92, 8, "clone must preserve session provenance");
         projector.reset();
-        require(!projector.refdata_lifenum().has_value() && projector.instruments().empty() &&
-                    !projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutInstruments, 1001).has_value(),
-                "reset must clear LifeNum, target state, and provenance");
+        require(
+            !projector.refdata_lifenum().has_value() && projector.instruments().empty() &&
+                !projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutInstruments, 1001).has_value(),
+            "reset must clear LifeNum, target state, and provenance");
         require(clone.refdata_lifenum().has_value() && clone.refdata_lifenum().value() == 8,
                 "reset of the original must not mutate a clone");
 
