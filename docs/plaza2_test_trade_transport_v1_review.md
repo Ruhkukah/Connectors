@@ -46,6 +46,16 @@ message name, preserves CGate's `DefinitelyNotSent`, `PossiblySent`, and
 replication plus correlated replies. A publisher timeout remains uncertainty;
 it is never converted into a rejection or cancellation.
 
+For a live operator handoff, the same transport may instead start and warm its
+single host before a plan exists. `install_authorized_intent()` then accepts one
+candidate only after the host is started and the existing intent validation has
+passed; a rejected candidate leaves the slot empty, while a successful install
+is immutable. Constructor-supplied intents, duplicate/replacement installs,
+and installs after plan binding are rejected. The method performs no bind,
+preflight, receipt write, publisher allocation, or post, so plan generation,
+authorization, binding, and the physical no-send barrier can all use one
+continuously pumped host.
+
 AddOrder is accepted only after a recomputed canonical authorized intent (with
 payload, participant, identifier, profile, and fixed entry-policy fingerprints)
 binds the encoded command byte-for-byte and the target-specific execution-safety receipt
@@ -156,6 +166,10 @@ actual concrete transport and fake CGate runtime for:
   transport policy-SHA mismatch before host startup, canonical age and
   zero-position policy continuity, correct normal-client account type, and
   wrong-account-type zero-position refusal;
+- one-shot late authorized-intent installation after host start, including
+  validation rollback, duplicate/replacement rejection, constructor-intent
+  protection, post-bind closure, and the unchanged LiveTestPreSend no-send
+  barrier;
 - two instrument AGGR20 isolation and target-only freshness, one-sided/stale/
   crossed/locked/absent targets, scheduled/running/suspended/completed session states,
   missing or non-tradable session, missing or wrong client limit row, non-zero starting
@@ -186,12 +200,14 @@ verified resolution record before releasing locks.
 ## Final invariant
 
 There is exactly one human-authorized static intent from plan creation through
-the concrete transport post: the controller binds the canonical plan SHA before
-journal/host startup, and the transport refuses AddOrder unless its payload,
-recovery command, identifiers, profile, environment, and fixed entry policy
-match that bound plan. Dynamic BBO, timestamps, session state, local age, and
-position observations remain receipt evidence rather than authorization-hash
-inputs. The deferred TRADE reconstruction is additionally bound to the exact
+the concrete transport post. In the controller-started path, the controller
+binds the canonical plan SHA before journal/host startup; in the live operator
+handoff path, one started transport host installs one validated intent exactly
+once before that same binding. The transport refuses AddOrder unless its
+payload, recovery command, identifiers, profile, environment, and fixed entry
+policy match the bound plan. Dynamic BBO, timestamps, session state, local age,
+and position observations remain receipt evidence rather than authorization-
+hash inputs. The deferred TRADE reconstruction is additionally bound to the exact
 POS `{trades_rev, trades_lifenum, server_time}` anchor captured when that
 listener open was requested. An accepted `cg_lsn_open` call is not replay
 readiness: the selected anchor becomes ready only when the listener is ACTIVE

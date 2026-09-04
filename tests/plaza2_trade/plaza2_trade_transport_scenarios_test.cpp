@@ -525,6 +525,143 @@ void test_authorized_payload_binding(const moex::plaza2::test::RuntimeFixturePat
     }
 }
 
+void test_late_authorized_intent_installation(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
+    const Plaza2TradeCodec codec;
+    const auto add = encoded_add(codec);
+    const auto recovery = encoded_recovery(codec);
+    const auto prepared = prepared_config(fixture, add, recovery);
+    const auto valid_intent = *prepared.authorized_intent;
+    const auto plan = bound_plan(valid_intent, add, recovery);
+    const auto without_intent = [&]() {
+        auto config = prepared_config(fixture, add, recovery);
+        config.authorized_intent.reset();
+        return config;
+    };
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        const auto before_start = transport.install_authorized_intent(valid_intent);
+        expect_case(before_start && contains_text(before_start.message, "started host"),
+                    "late intent installation must require a started host");
+        expect_case(!transport.host().start(), "late intent host must start after a pre-start rejection");
+        const auto installed = transport.install_authorized_intent(valid_intent);
+        expect_case(!installed, "valid late intent must install on the already-started host: " + installed.message);
+        const auto binding = transport.bind_authorized_plan(plan);
+        expect_case(!binding, "a valid late intent must bind its exact plan: " + binding.message);
+        expect_case(!transport.host().stop(), "late intent host must stop cleanly");
+    }
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "invalid-install fixture host must start");
+        auto invalid_intent = valid_intent;
+        invalid_intent.sha256 = std::string(64, 'a');
+        const auto rejected = transport.install_authorized_intent(std::move(invalid_intent));
+        expect_case(rejected && contains_text(rejected.message, "SHA-256"),
+                    "invalid late intent must fail existing validation");
+        const auto installed = transport.install_authorized_intent(valid_intent);
+        expect_case(!installed, "a failed installation must leave the slot available for a valid intent");
+        const auto binding = transport.bind_authorized_plan(plan);
+        expect_case(!binding, "valid intent after a failed installation must bind exactly");
+        expect_case(!transport.host().stop(), "invalid-install fixture host must stop cleanly");
+    }
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "duplicate-install fixture host must start");
+        expect_case(!transport.install_authorized_intent(valid_intent), "first late intent installation must succeed");
+        const auto duplicate = transport.install_authorized_intent(valid_intent);
+        expect_case(duplicate && contains_text(duplicate.message, "already installed"),
+                    "identical late intent installation must be rejected");
+        expect_case(!transport.bind_authorized_plan(plan), "the original intent must remain bindable after rejection");
+        expect_case(!transport.host().stop(), "duplicate-install fixture host must stop cleanly");
+    }
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "replacement-install fixture host must start");
+        expect_case(!transport.install_authorized_intent(valid_intent),
+                    "initial replacement fixture install must succeed");
+        auto replacement = valid_intent;
+        replacement.profile_id = "different-profile";
+        replacement.canonical_json = canonical_authorized_order_intent_json(replacement);
+        replacement.sha256 = authorized_order_intent_sha256(replacement);
+        const auto rejected = transport.install_authorized_intent(std::move(replacement));
+        expect_case(rejected && contains_text(rejected.message, "already installed"),
+                    "different late intent replacement must be rejected");
+        expect_case(!transport.bind_authorized_plan(plan),
+                    "replacement rejection must leave the first intent unchanged");
+        expect_case(!transport.host().stop(), "replacement-install fixture host must stop cleanly");
+    }
+
+    {
+        auto config = prepared_config(fixture, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "constructor-intent fixture host must start");
+        const auto rejected = transport.install_authorized_intent(valid_intent);
+        expect_case(rejected && contains_text(rejected.message, "already installed"),
+                    "constructor-supplied intent must not be replaceable");
+        expect_case(!transport.bind_authorized_plan(plan), "constructor-supplied intent must remain bindable");
+        expect_case(!transport.host().stop(), "constructor-intent fixture host must stop cleanly");
+    }
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        const auto rejected = transport.bind_authorized_plan(plan);
+        expect_case(rejected && contains_text(rejected.message, "validated authorized intent"),
+                    "binding with no intent must retain its existing fail-closed behavior");
+    }
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "post-bind fixture host must start");
+        expect_case(!transport.install_authorized_intent(valid_intent), "post-bind fixture install must succeed");
+        expect_case(!transport.bind_authorized_plan(plan), "post-bind fixture must bind its exact plan");
+        auto replacement = valid_intent;
+        replacement.profile_id = "post-bind-replacement";
+        replacement.canonical_json = canonical_authorized_order_intent_json(replacement);
+        replacement.sha256 = authorized_order_intent_sha256(replacement);
+        const auto rejected = transport.install_authorized_intent(std::move(replacement));
+        expect_case(rejected && contains_text(rejected.message, "after plan binding"),
+                    "intent installation must remain closed after plan binding");
+        expect_case(!transport.host().stop(), "post-bind fixture host must stop cleanly");
+    }
+
+    {
+        ScopedEnv no_active_order("MOEX_FAKE_MISSING_ORDER", "1");
+        auto config = without_intent();
+        config.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend;
+        config.host.endpoint_host = "127.0.0.1";
+        config.host.arm_state.test_plaza2_armed = true;
+        config.host.publisher_name = "LATE_INTENT_PRE_SEND_TEST";
+        config.host.publisher_settings =
+            "p2mq://FORTS_SRV;category=FORTS_MSG;name=LATE_INTENT_PRE_SEND_TEST;timeout=5000";
+        config.host.p2mqreply_settings = "p2mqreply://;ref=LATE_INTENT_PRE_SEND_TEST";
+        config.execution_safety_receipt_path = fixture.root / "late_intent_execution_safety.json";
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "late-intent LiveTestPreSend host must start");
+        expect_case(!transport.install_authorized_intent(valid_intent),
+                    "late intent must install before the no-send barrier test");
+        expect_case(!transport.bind_authorized_plan(plan), "late intent must bind before the no-send barrier test");
+        const auto disabled = transport.post(add, valid_intent.add_user_id);
+        expect_case(disabled.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        !disabled.post_invoked &&
+                        disabled.validation_error.code == cgate::Plaza2ErrorCode::SendDisabledPreSendPhase &&
+                        disabled.validation_error.message == "SEND_DISABLED_PRE_SEND_PHASE",
+                    "late intent installation must not bypass the physical LiveTestPreSend barrier");
+        expect_case(transport.last_execution_safety_receipt().has_value() &&
+                        transport.last_execution_safety_receipt()->userorderbook_periodic_snapshot_consistent,
+                    "late intent no-send path must persist the normal execution-safety receipt first");
+        expect_case(!transport.host().stop(), "late-intent LiveTestPreSend host must stop cleanly");
+    }
+}
+
 void test_replication_epoch_gates(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
     const Plaza2TradeCodec codec;
     const auto add = encoded_add(codec);
@@ -1042,6 +1179,7 @@ int main(int argc, char** argv) {
 
         test_target_preflight_refusals(fixture);
         test_authorized_payload_binding(fixture);
+        test_late_authorized_intent_installation(fixture);
         test_replication_epoch_gates(fixture);
         test_reply_bridge_fail_closed(fixture);
         test_multi_instrument_and_terminal_controller(fixture);

@@ -240,6 +240,10 @@ class Plaza2TestTradeTransport final : public OrderLifecycleTransport {
     Plaza2TestTradeTransport(Plaza2TestTradeTransport&&) noexcept;
     Plaza2TestTradeTransport& operator=(Plaza2TestTradeTransport&&) noexcept;
 
+    // Install the one human-authorized intent after this transport's already
+    // started host has been warmed.  The slot is one-shot and immutable;
+    // constructor-supplied intents remain the only alternative.
+    [[nodiscard]] plaza2::cgate::Plaza2Error install_authorized_intent(Plaza2AuthorizedOrderIntent intent);
     [[nodiscard]] plaza2::cgate::Plaza2Error bind_authorized_plan(const PreSendPlan& plan) override;
     [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult post(const Plaza2TradeEncodedCommand& command,
                                                                    std::uint32_t user_id) override;

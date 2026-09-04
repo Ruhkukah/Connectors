@@ -1489,6 +1489,28 @@ struct Plaza2TestTradeTransport::Impl {
         return {};
     }
 
+    Plaza2Error install_authorized_intent(Plaza2AuthorizedOrderIntent candidate) {
+        if (!bound_authorized_plan_sha256.empty()) {
+            return invalid("authorized intent installation is closed after plan binding");
+        }
+        if (config.authorized_intent.has_value()) {
+            return invalid("authorized intent is already installed and immutable");
+        }
+        if (!host.started()) {
+            return invalid("authorized intent installation requires a started host");
+        }
+
+        // The slot is known to be empty above.  Roll it back on every
+        // validation failure so a rejected candidate cannot poison a later
+        // valid installation.
+        config.authorized_intent = std::move(candidate);
+        if (const auto validation = validate_intent(); validation) {
+            config.authorized_intent.reset();
+            return validation;
+        }
+        return {};
+    }
+
     Plaza2Error validate_add_payload(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) const {
         const auto* authorized = intent();
         if (authorized == nullptr || command.command_kind != Plaza2TradeCommandKind::AddOrder || command.msgid != 474 ||
@@ -2052,6 +2074,10 @@ Plaza2TestTradeTransport& Plaza2TestTradeTransport::operator=(Plaza2TestTradeTra
 
 Plaza2Error Plaza2TestTradeTransport::bind_authorized_plan(const PreSendPlan& plan) {
     return impl_->bind_authorized_plan(plan);
+}
+
+Plaza2Error Plaza2TestTradeTransport::install_authorized_intent(Plaza2AuthorizedOrderIntent intent) {
+    return impl_->install_authorized_intent(std::move(intent));
 }
 
 Plaza2PublisherMessageResult Plaza2TestTradeTransport::post(const Plaza2TradeEncodedCommand& command,
