@@ -1,0 +1,9 @@
+head=b499edc6f5e2e99f50a3376b88dbf2bdb5790699
+host_count=1
+authorization_sha256=171b54f4c74eb2326c9e895d0869a7449185a9880ef56bb2620aba4bac8d29b3
+execution_safety_receipt=present
+send_disabled_barrier=PASS
+certainty=0
+post_invoked=0
+publisher_message_allocation_or_post=0
+orders=0

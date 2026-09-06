@@ -29,6 +29,17 @@ Plan `70a099cc...` and its pending run are retired; they are not qualification
 evidence for the corrected projector. Actual publisher posting remains
 physically disabled.
 
+Fresh live qualification on implementation `b499edc6f5e2e99f50a3376b88dbf2bdb5790699`
+passed on 2026-09-06. The same host installed/bound new plan `171b54f4...`,
+persisted execution-safety v3, and reached `SEND_DISABLED_PRE_SEND_PHASE` /
+`DefinitelyNotSent` / `post_invoked=false`, then closed cleanly. CRU6 session
+11700 had a fresh execution BBO of 12.918 / 12.919 (1062 ms old); the fixed
+SELL quantity-1 price 12.921 was passive and two ticks away. All receipt gates
+passed. Exact implementation-head GitHub CI also passed both jobs.
+See [the final live evidence](evidence/plaza2_pr30_send_disabled_20260906/README.md).
+This closes the declared live no-send merge gate, not actual order or
+certification testing. Final merge review remains required.
+
 ## Scope and stop gate
 
 This increment started from merged-main `610dbfd` (PR #29) and now includes
