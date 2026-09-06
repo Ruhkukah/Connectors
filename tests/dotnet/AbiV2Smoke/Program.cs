@@ -45,6 +45,52 @@ if (library.AbiVersion != 2 || library.Layout.Count != 9)
     throw new InvalidOperationException("V2 version/layout validation failed");
 }
 
+using (var lifetimeLibrary = MoexNativeHostV2Library.Load(libraryPath))
+{
+    var lifetimeOptions = new MoexNativeHostV2CreateOptions
+    {
+        Purpose = MoexConnectorHostPurposeV2.Qualify,
+        RuntimeRoot = fixtureRoot,
+        LibraryPath = fakeLibrary,
+        SchemeDirectory = schemeDirectory,
+        ConfigDirectory = configDirectory,
+        EnvironmentSettingsVariable = "MOEX_CABI_V2_ENV",
+        CredentialsVariable = "MOEX_CABI_V2_CREDENTIALS",
+        SoftwareKeyVariable = "MOEX_CABI_V2_KEY",
+        BrokerCodeVariable = "MOEX_CABI_V2_BROKER",
+        ClientCodeVariable = "MOEX_CABI_V2_CLIENT",
+        ExpectedRelease = "SPECTRA93",
+        IsinId = 1001,
+        SessionId = 321,
+        ArmedTestNetwork = true,
+        ArmedTestSession = true,
+        ArmedTestPlaza2 = true
+    };
+
+    using (var lifetimeHost = lifetimeLibrary.CreateHost(lifetimeOptions))
+    {
+        var refused = false;
+        try
+        {
+            lifetimeLibrary.Dispose();
+        }
+        catch (InvalidOperationException)
+        {
+            refused = true;
+        }
+
+        if (!refused)
+        {
+            throw new InvalidOperationException("V2 library unloaded while a host handle was alive");
+        }
+
+        lifetimeHost.Start();
+        lifetimeHost.Stop();
+    }
+
+    lifetimeLibrary.Dispose();
+}
+
 using (var qualify = library.CreateHost(options))
 {
     qualify.Start();
@@ -99,14 +145,66 @@ options = new MoexNativeHostV2CreateOptions
     ArmedTestSession = true,
     ArmedTestPlaza2 = true,
     ArmedTestOrderSend = true,
+    Side = 2,
     Price = "103000",
     BaseContractCode = "RTS",
+    ExtId = 79,
+    AddUserId = 701,
+    CancelUserId = 702,
+    RecoveryUserId = 703,
     JournalRoot = Path.Combine(fixtureRoot, "order-journals"),
     ReceiptPath = Path.Combine(fixtureRoot, "order-receipt.json"),
     ProfileId = "managed-v2-order",
     ProfileFingerprint = new string('e', 64),
     RunId = "managed-v2-order"
 };
+
+var missingPrice = new MoexNativeHostV2CreateOptions
+{
+    Purpose = MoexConnectorHostPurposeV2.OrderTest,
+    RuntimeRoot = fixtureRoot,
+    LibraryPath = fakeLibrary,
+    SchemeDirectory = schemeDirectory,
+    ConfigDirectory = configDirectory,
+    EnvironmentSettingsVariable = "MOEX_CABI_V2_ENV",
+    CredentialsVariable = "MOEX_CABI_V2_CREDENTIALS",
+    SoftwareKeyVariable = "MOEX_CABI_V2_KEY",
+    BrokerCodeVariable = "MOEX_CABI_V2_BROKER",
+    ClientCodeVariable = "MOEX_CABI_V2_CLIENT",
+    ExpectedRelease = "SPECTRA93",
+    IsinId = 1001,
+    SessionId = 321,
+    ArmedTestNetwork = true,
+    ArmedTestSession = true,
+    ArmedTestPlaza2 = true,
+    ArmedTestOrderSend = true,
+    Side = 2,
+    BaseContractCode = "RTS",
+    ExtId = 79,
+    AddUserId = 701,
+    CancelUserId = 702,
+    RecoveryUserId = 703,
+    JournalRoot = Path.Combine(fixtureRoot, "missing-price-journals"),
+    ReceiptPath = Path.Combine(fixtureRoot, "missing-price-receipt.json"),
+    ProfileId = "managed-v2-missing-price",
+    ProfileFingerprint = new string('e', 64),
+    RunId = "managed-v2-missing-price"
+};
+
+var missingPriceRejected = false;
+try
+{
+    library.CreateHost(missingPrice);
+}
+catch (ArgumentException)
+{
+    missingPriceRejected = true;
+}
+
+if (!missingPriceRejected)
+{
+    throw new InvalidOperationException("managed OrderTest accepted a missing price");
+}
 
 using (var order = library.CreateHost(options))
 {

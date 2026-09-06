@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace MoexConnector.AlorEngine;
 
@@ -28,14 +29,14 @@ public sealed class MoexNativeHostV2CreateOptions
     public bool ArmedTestSession { get; init; }
     public bool ArmedTestPlaza2 { get; init; }
     public bool ArmedTestOrderSend { get; init; }
-    public uint Side { get; init; } = 2;
+    public uint Side { get; init; }
     public string? Price { get; init; }
     public string? BaseContractCode { get; init; }
     public string? Comment { get; init; }
-    public int ExtId { get; init; } = 79;
-    public uint AddUserId { get; init; } = 701;
-    public uint CancelUserId { get; init; } = 702;
-    public uint RecoveryUserId { get; init; } = 703;
+    public int ExtId { get; init; }
+    public uint AddUserId { get; init; }
+    public uint CancelUserId { get; init; }
+    public uint RecoveryUserId { get; init; }
     public string? RunId { get; init; }
     public string? JournalRoot { get; init; }
     public string? ReceiptPath { get; init; }
@@ -48,6 +49,7 @@ public sealed class MoexNativeHostV2CreateOptions
 public sealed class MoexNativeHostV2Library : IDisposable
 {
     private readonly IntPtr _libraryHandle;
+    private int _hostCount;
     private bool _disposed;
 
     private MoexNativeHostV2Library(string libraryPath)
@@ -146,6 +148,7 @@ public sealed class MoexNativeHostV2Library : IDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         ThrowIfDisposed();
+        ValidateCreateOptions(options);
         using var arena = new NativeUtf8Arena();
         var request = new MoexNativeInteropV2.NativeCreateParams
         {
@@ -190,6 +193,7 @@ public sealed class MoexNativeHostV2Library : IDisposable
 
         var result = CreateHostNative(ref request, out var handle);
         MoexNativeLibrary.EnsureSuccess("moex_v2_create_host", result);
+        Interlocked.Increment(ref _hostCount);
         return new MoexNativeHostV2Handle(this, handle);
     }
 
@@ -200,14 +204,60 @@ public sealed class MoexNativeHostV2Library : IDisposable
             return;
         }
 
+        if (Volatile.Read(ref _hostCount) != 0)
+        {
+            throw new InvalidOperationException("Dispose all V2 host handles before disposing the native library.");
+        }
+
         NativeLibrary.Free(_libraryHandle);
         _disposed = true;
         GC.SuppressFinalize(this);
     }
 
+    internal void NotifyHostReleased() => Interlocked.Decrement(ref _hostCount);
+
     internal static void EnsureSuccess(string operation, MoexResult result) => MoexNativeLibrary.EnsureSuccess(operation, result);
 
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+    internal void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+
+    private static void ValidateCreateOptions(MoexNativeHostV2CreateOptions options)
+    {
+        if (options.Purpose != MoexConnectorHostPurposeV2.OrderTest)
+        {
+            return;
+        }
+
+        if (options.Side is not (1U or 2U))
+        {
+            throw new ArgumentException("OrderTest requires an explicit BUY or SELL side.", nameof(options));
+        }
+
+        RequireNonEmpty(options.Price, nameof(options.Price));
+        RequireNonEmpty(options.BaseContractCode, nameof(options.BaseContractCode));
+        if (options.ExtId <= 0)
+        {
+            throw new ArgumentException("OrderTest requires a positive ext_id.", nameof(options.ExtId));
+        }
+
+        if (options.AddUserId == 0 || options.CancelUserId == 0 || options.RecoveryUserId == 0)
+        {
+            throw new ArgumentException("OrderTest requires positive Add/Cancel/Recovery user IDs.", nameof(options));
+        }
+
+        RequireNonEmpty(options.RunId, nameof(options.RunId));
+        RequireNonEmpty(options.JournalRoot, nameof(options.JournalRoot));
+        RequireNonEmpty(options.ReceiptPath, nameof(options.ReceiptPath));
+        RequireNonEmpty(options.ProfileId, nameof(options.ProfileId));
+        RequireNonEmpty(options.ProfileFingerprint, nameof(options.ProfileFingerprint));
+    }
+
+    private static void RequireNonEmpty(string? value, string name)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            throw new ArgumentException("OrderTest requires this field.", name);
+        }
+    }
 
     private T GetExport<T>(string name) where T : Delegate
     {

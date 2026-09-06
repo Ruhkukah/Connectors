@@ -141,13 +141,20 @@ public sealed class MoexNativeHostV2Handle : IDisposable
         }
 
         var handle = _handle;
-        _handle = IntPtr.Zero;
-        MoexNativeHostV2Library.EnsureSuccess("moex_v2_destroy_host", _library.DestroyHost(handle));
+        var result = _library.DestroyHost(handle);
+        if (result == MoexResult.Ok)
+        {
+            _handle = IntPtr.Zero;
+            _library.NotifyHostReleased();
+        }
+
+        MoexNativeHostV2Library.EnsureSuccess("moex_v2_destroy_host", result);
         GC.SuppressFinalize(this);
     }
 
     private void EnsureHandle()
     {
+        _library.ThrowIfDisposed();
         ObjectDisposedException.ThrowIf(_handle == IntPtr.Zero, this);
     }
 }

@@ -198,6 +198,12 @@ void require_active_order_refusal(const ParamsStrings& strings) {
     ::setenv("MOEX_FAKE_MISSING_ORDER", "1", 1);
 }
 
+void require_order_test_create_rejection(MoexConnectorHostCreateParamsV2 params, const char* label) {
+    MoexConnectorHostHandleV2 handle = nullptr;
+    test::require(moex_v2_create_host(&params, &handle) == MOEX_RESULT_INVALID_ARGUMENT && handle == nullptr,
+                  std::string("OrderTest missing explicit field rejected: ") + label);
+}
+
 Plaza2HostConfigInputs direct_inputs(const ParamsStrings& strings, const std::filesystem::path& fixture_root,
                                      HostPurpose purpose) {
     Plaza2HostConfigInputs inputs;
@@ -357,6 +363,61 @@ int main(int argc, char** argv) {
         auto wrong_session = strings.make(false);
         wrong_session.session_id = 999999;
         require_qualification_refusal_with_params(wrong_session, "wrong session");
+
+        // QUALIFY may omit executable order identity/receipt fields; the host
+        // supplies inert values because it cannot authorize or submit.
+        auto qualify_without_order_fields = strings.make(false);
+        qualify_without_order_fields.side = 0;
+        qualify_without_order_fields.price = nullptr;
+        qualify_without_order_fields.base_contract_code = nullptr;
+        qualify_without_order_fields.ext_id = 0;
+        qualify_without_order_fields.add_user_id = 0;
+        qualify_without_order_fields.cancel_user_id = 0;
+        qualify_without_order_fields.recovery_user_id = 0;
+        qualify_without_order_fields.run_id = nullptr;
+        qualify_without_order_fields.journal_root = nullptr;
+        qualify_without_order_fields.receipt_path = nullptr;
+        qualify_without_order_fields.profile_id = nullptr;
+        qualify_without_order_fields.profile_fingerprint = nullptr;
+        MoexConnectorHostHandleV2 qualify_without_handle = nullptr;
+        test::require(moex_v2_create_host(&qualify_without_order_fields, &qualify_without_handle) == MOEX_RESULT_OK,
+                      "qualify omits order fields");
+        test::require(moex_v2_destroy_host(qualify_without_handle) == MOEX_RESULT_OK,
+                      "qualify without order fields destroy");
+
+        auto missing_price = strings.make(true);
+        missing_price.price = nullptr;
+        require_order_test_create_rejection(missing_price, "price");
+        auto missing_base_contract = strings.make(true);
+        missing_base_contract.base_contract_code = nullptr;
+        require_order_test_create_rejection(missing_base_contract, "base contract");
+        auto missing_ext_id = strings.make(true);
+        missing_ext_id.ext_id = 0;
+        require_order_test_create_rejection(missing_ext_id, "ext id");
+        auto missing_add_user = strings.make(true);
+        missing_add_user.add_user_id = 0;
+        require_order_test_create_rejection(missing_add_user, "add user id");
+        auto missing_cancel_user = strings.make(true);
+        missing_cancel_user.cancel_user_id = 0;
+        require_order_test_create_rejection(missing_cancel_user, "cancel user id");
+        auto missing_recovery_user = strings.make(true);
+        missing_recovery_user.recovery_user_id = 0;
+        require_order_test_create_rejection(missing_recovery_user, "recovery user id");
+        auto missing_run_id = strings.make(true);
+        missing_run_id.run_id = nullptr;
+        require_order_test_create_rejection(missing_run_id, "run id");
+        auto missing_journal_root = strings.make(true);
+        missing_journal_root.journal_root = nullptr;
+        require_order_test_create_rejection(missing_journal_root, "journal root");
+        auto missing_receipt = strings.make(true);
+        missing_receipt.receipt_path = nullptr;
+        require_order_test_create_rejection(missing_receipt, "receipt path");
+        auto missing_profile_id = strings.make(true);
+        missing_profile_id.profile_id = nullptr;
+        require_order_test_create_rejection(missing_profile_id, "profile id");
+        auto missing_profile_fingerprint = strings.make(true);
+        missing_profile_fingerprint.profile_fingerprint = nullptr;
+        require_order_test_create_rejection(missing_profile_fingerprint, "profile fingerprint");
 
         auto order_params = strings.make(true);
         test::require(moex_v2_create_host(&order_params, &handle) == MOEX_RESULT_OK, "order-test create");

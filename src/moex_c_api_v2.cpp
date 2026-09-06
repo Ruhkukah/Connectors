@@ -280,7 +280,14 @@ MoexResult moex_v2_create_host(const MoexConnectorHostCreateParamsV2* params, Mo
             if (!required_string(value))
                 return MOEX_RESULT_INVALID_ARGUMENT;
         }
-        if (params->side != 1U && params->side != 2U)
+        const bool order_test = params->purpose == MOEX_V2_PURPOSE_ORDER_TEST;
+        if ((params->side != 0U && params->side != 1U && params->side != 2U) || (order_test && params->side == 0U))
+            return MOEX_RESULT_INVALID_ARGUMENT;
+        if (order_test && (!required_string(params->price) || !required_string(params->base_contract_code) ||
+                           params->ext_id <= 0 || params->add_user_id == 0 || params->cancel_user_id == 0 ||
+                           params->recovery_user_id == 0 || !required_string(params->run_id) ||
+                           !required_string(params->journal_root) || !required_string(params->receipt_path) ||
+                           !required_string(params->profile_id) || !required_string(params->profile_fingerprint)))
             return MOEX_RESULT_INVALID_ARGUMENT;
         const auto* env_settings = environment_value(params->env_settings_env_var);
         const auto* broker_code = environment_value(params->broker_code_env_var);
