@@ -174,7 +174,7 @@ Plaza2Error validate_publisher_reply_identity(const Plaza2TestSessionHostConfig&
         return invalid("publisher_name must be provided explicitly");
     }
     const auto publisher_name = setting_value(config.publisher_settings, "name");
-    if (config.mode == Plaza2TestSessionHostMode::LiveTestPreSend &&
+    if (config.mode != Plaza2TestSessionHostMode::OfflineFake &&
         (!publisher_name.has_value() || *publisher_name != config.publisher_name)) {
         return invalid("LiveTestPreSend publisher_settings must contain the configured unique name");
     }
@@ -514,16 +514,15 @@ std::string fixed_payload_string(std::span<const std::byte> payload, std::size_t
 }
 
 std::optional<DecodedAddPayload> decode_add_payload(std::span<const std::byte> payload) {
-    // Reviewed AddOrder(474) ABI: broker[4], isin i4, client[3], dir i4,
-    // type i4, amount i4, price[17], comment[20], broker_to[20], ext_id i4.
-    if (payload.size() < 112) {
+    // Official CGate 9.9 AddOrder(474): cN occupies N+1 bytes, pack(4).
+    if (payload.size() != 128) {
         return std::nullopt;
     }
-    const auto isin = read_little_endian<std::int32_t>(payload, 4);
-    const auto side = read_little_endian<std::int32_t>(payload, 11);
-    const auto type = read_little_endian<std::int32_t>(payload, 15);
-    const auto amount = read_little_endian<std::int32_t>(payload, 19);
-    const auto ext_id = read_little_endian<std::int32_t>(payload, 80);
+    const auto isin = read_little_endian<std::int32_t>(payload, 8);
+    const auto side = read_little_endian<std::int32_t>(payload, 16);
+    const auto type = read_little_endian<std::int32_t>(payload, 20);
+    const auto amount = read_little_endian<std::int32_t>(payload, 24);
+    const auto ext_id = read_little_endian<std::int32_t>(payload, 88);
     if (!isin || !side || !type || !amount || !ext_id ||
         (*side != static_cast<std::int32_t>(Plaza2TradeSide::Buy) &&
          *side != static_cast<std::int32_t>(Plaza2TradeSide::Sell)) ||
@@ -534,11 +533,11 @@ std::optional<DecodedAddPayload> decode_add_payload(std::span<const std::byte> p
     return DecodedAddPayload{
         .broker_code = fixed_payload_string(payload, 0, 4),
         .isin_id = *isin,
-        .client_code = fixed_payload_string(payload, 8, 3),
+        .client_code = fixed_payload_string(payload, 12, 3),
         .side = static_cast<Plaza2TradeSide>(*side),
         .order_type = static_cast<Plaza2TradeOrderType>(*type),
         .amount = *amount,
-        .price = fixed_payload_string(payload, 23, 17),
+        .price = fixed_payload_string(payload, 28, 17),
         .ext_id = *ext_id,
     };
 }
@@ -554,21 +553,21 @@ struct DecodedRecoveryPayload {
 };
 
 std::optional<DecodedRecoveryPayload> decode_recovery_payload(std::span<const std::byte> payload) {
-    if (payload.size() < 49) {
+    if (payload.size() != 60) {
         return std::nullopt;
     }
-    const auto buy_sell = read_little_endian<std::int32_t>(payload, 4);
-    const auto ext_id = read_little_endian<std::int32_t>(payload, 40);
-    const auto isin_id = read_little_endian<std::int32_t>(payload, 44);
-    const auto mask = read_little_endian<std::int8_t>(payload, 48);
+    const auto buy_sell = read_little_endian<std::int32_t>(payload, 8);
+    const auto ext_id = read_little_endian<std::int32_t>(payload, 48);
+    const auto isin_id = read_little_endian<std::int32_t>(payload, 52);
+    const auto mask = read_little_endian<std::int8_t>(payload, 56);
     if (!buy_sell || !ext_id || !isin_id || !mask) {
         return std::nullopt;
     }
     return DecodedRecoveryPayload{
         .broker_code = fixed_payload_string(payload, 0, 4),
         .buy_sell = *buy_sell,
-        .client_code = fixed_payload_string(payload, 12, 3),
-        .base_contract_code = fixed_payload_string(payload, 15, 25),
+        .client_code = fixed_payload_string(payload, 16, 3),
+        .base_contract_code = fixed_payload_string(payload, 20, 25),
         .ext_id = *ext_id,
         .isin_id = *isin_id,
         .instrument_mask = *mask,
@@ -653,11 +652,30 @@ struct Plaza2TestSessionHost::Impl {
         if (config.runtime.environment != cgate::Plaza2Environment::Test) {
             return invalid("TEST session host refuses non-TEST environment");
         }
+        if (config.mode != Plaza2TestSessionHostMode::OfflineFake &&
+            config.mode != Plaza2TestSessionHostMode::LiveTestPreSend &&
+            config.mode != Plaza2TestSessionHostMode::LiveTestAuthorizedSend) {
+            return invalid("unknown TEST host mode");
+        }
+        if (config.mode == Plaza2TestSessionHostMode::LiveTestAuthorizedSend) {
+            if (!config.trade_replay_from_pos_anchor) {
+                return invalid("authorized TEST send requires POS-anchored TRADE replay");
+            }
+            if (!config.arm_state.test_order_send_armed || !config.arm_state.test_network_armed ||
+                !config.arm_state.test_session_armed || !config.arm_state.test_plaza2_armed) {
+                return invalid("authorized TEST send requires all TEST arms and test_order_send_armed");
+            }
+            // First-order scope: only the separately provisioned local T1 router.
+            if (config.endpoint_host != "127.0.0.1" ||
+                !config.connection_settings.starts_with("p2tcp://127.0.0.1:4101;")) {
+                return invalid("authorized TEST send requires the explicit local T1 endpoint");
+            }
+        }
         const bool loopback = loopback_connection(config.connection_settings);
         if (config.mode == Plaza2TestSessionHostMode::OfflineFake && !loopback) {
             return invalid("OfflineFake session host requires a loopback connection setting");
         }
-        if (config.mode == Plaza2TestSessionHostMode::LiveTestPreSend) {
+        if (config.mode != Plaza2TestSessionHostMode::OfflineFake) {
             if (config.endpoint_host.empty()) {
                 return invalid("LiveTestPreSend requires endpoint_host for operator-gate validation");
             }
@@ -681,7 +699,7 @@ struct Plaza2TestSessionHost::Impl {
             config.aggr20_stream.settings.empty()) {
             return invalid("TEST session host requires runtime, connection, publisher, private, and AGGR20 settings");
         }
-        if (config.mode == Plaza2TestSessionHostMode::LiveTestPreSend && config.p2mqreply_settings.empty()) {
+        if (config.mode != Plaza2TestSessionHostMode::OfflineFake && config.p2mqreply_settings.empty()) {
             return invalid("LiveTestPreSend requires explicit p2mqreply_settings");
         }
         const auto effective_reply_settings =
@@ -703,7 +721,7 @@ struct Plaza2TestSessionHost::Impl {
             return invalid("OfflineFake TEST transport requires the fake CGate runtime marker",
                            Plaza2ErrorCode::ProbeIncompatible);
         }
-        if (config.mode == Plaza2TestSessionHostMode::LiveTestPreSend && !probe.trading_capable) {
+        if (config.mode != Plaza2TestSessionHostMode::OfflineFake && !probe.trading_capable) {
             return invalid("LiveTestPreSend requires a trading-capable CGate runtime",
                            Plaza2ErrorCode::ProbeIncompatible);
         }
@@ -1133,6 +1151,9 @@ bool Plaza2TestSessionHost::p2mqreply_open() const noexcept {
 bool Plaza2TestSessionHost::publisher_open() const noexcept {
     return impl_->publisher_is_open;
 }
+cgate::Plaza2PublisherCallCounts Plaza2TestSessionHost::publisher_call_counts() const noexcept {
+    return impl_->publisher.call_counts();
+}
 Plaza2TestSessionHostMode Plaza2TestSessionHost::mode() const noexcept {
     return impl_->config.mode;
 }
@@ -1160,6 +1181,17 @@ const std::string& Plaza2TestSessionHost::last_callback_error() const noexcept {
 Plaza2PublisherMessageResult Plaza2TestSessionHost::post(std::string_view message_name,
                                                          std::span<const std::byte> payload, std::uint32_t user_id,
                                                          bool need_reply) {
+    if (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestAuthorizedSend) {
+        Plaza2PublisherMessageResult result;
+        result.validation_error = invalid("authorized TEST send requires the validated trade transport");
+        return result;
+    }
+    return post_validated(message_name, payload, user_id, need_reply);
+}
+
+Plaza2PublisherMessageResult Plaza2TestSessionHost::post_validated(std::string_view message_name,
+                                                                   std::span<const std::byte> payload,
+                                                                   std::uint32_t user_id, bool need_reply) {
     if (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestPreSend) {
         Plaza2PublisherMessageResult result;
         result.certainty = cgate::Plaza2SubmissionCertainty::DefinitelyNotSent;
@@ -1169,6 +1201,12 @@ Plaza2PublisherMessageResult Plaza2TestSessionHost::post(std::string_view messag
             .message = "SEND_DISABLED_PRE_SEND_PHASE",
         };
         result.post_invoked = false;
+        return result;
+    }
+    if (!impl_->started || (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestAuthorizedSend &&
+                            !impl_->config.arm_state.test_order_send_armed)) {
+        Plaza2PublisherMessageResult result;
+        result.validation_error = invalid("publisher requires a started, explicitly armed TEST host");
         return result;
     }
     Plaza2TradeCommandKind kind = Plaza2TradeCommandKind::AddOrder;
@@ -1419,6 +1457,11 @@ struct Plaza2TestTradeTransport::Impl {
              authorized->instrument_mask != 4)) {
             return invalid("authorized intent is incomplete or not a one-contract TEST intent");
         }
+        if (host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend &&
+            (!authorized->require_zero_starting_position || authorized->max_distance_ticks > 4 ||
+             authorized->max_aggr20_age_ms > 5000)) {
+            return invalid("authorized TEST send requires zero position, max four ticks and max 5000 ms");
+        }
         const auto canonical = canonical_authorized_order_intent_json(*authorized);
         if (!authorized->canonical_json.empty() && authorized->canonical_json != canonical) {
             return invalid("authorized intent canonical JSON does not match its fields");
@@ -1662,8 +1705,7 @@ struct Plaza2TestTradeTransport::Impl {
             }
             return invalid("target starting position evidence is unresolved (POS plus anchored TRADE replay required)");
         }
-        if (position_evidence.active_own_order_count != 0 &&
-            host.mode() == Plaza2TestSessionHostMode::LiveTestPreSend) {
+        if (position_evidence.active_own_order_count != 0 && host.mode() != Plaza2TestSessionHostMode::OfflineFake) {
             return invalid("target has active own orders in the current USERORDERBOOK state");
         }
         const auto private_ready =
@@ -1824,6 +1866,9 @@ struct Plaza2TestTradeTransport::Impl {
         receipt.p2mqreply_open = host.p2mqreply_open();
         receipt.publisher_open = host.publisher_open();
         receipt.trading_capable = host.probe_report().trading_capable;
+        receipt.test_order_send_armed = config.host.arm_state.test_order_send_armed;
+        receipt.send_mode =
+            host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend ? "LiveTestAuthorizedSend" : "";
 
         const auto price = parse_scaled_decimal(config.authorized_intent->price);
         const auto tick = parse_scaled_decimal(instrument->min_step);
@@ -1925,13 +1970,21 @@ struct Plaza2TestTradeTransport::Impl {
              << "  \"publisher_open\": " << (receipt.publisher_open ? "true" : "false") << ",\n"
              << "  \"trading_capable\": " << (receipt.trading_capable ? "true" : "false") << "\n"
              << "}\n";
-        receipt.canonical_json = json.str();
+        auto serialized = json.str();
+        if (host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend) {
+            const auto schema = serialized.find("moex.plaza2.execution_safety.v3");
+            serialized.replace(schema, std::string("moex.plaza2.execution_safety.v3").size(),
+                               "moex.plaza2.execution_safety.v4");
+            serialized.insert(serialized.rfind("\n}"),
+                              ",\n  \"send_mode\": \"LiveTestAuthorizedSend\",\n  \"test_order_send_armed\": true");
+        }
+        receipt.canonical_json = std::move(serialized);
         receipt.sha256 = cgate::plaza2_sha256_hex(receipt.canonical_json);
         if (!receipt.target_refdata_provenance_ready || !receipt.target_aggr20_uncrossed ||
             !receipt.passive_non_marketable || !receipt.bbo_distance_allowed || !receipt.quantity_one ||
             !receipt.private_streams_ready || !receipt.aggr_online || !receipt.aggr_snapshot_complete ||
             !receipt.p2mqreply_open || !receipt.publisher_open || !receipt.trading_capable ||
-            (receipt.active_own_order_count != 0 && host.mode() == Plaza2TestSessionHostMode::LiveTestPreSend) ||
+            (receipt.active_own_order_count != 0 && host.mode() != Plaza2TestSessionHostMode::OfflineFake) ||
             (receipt.require_zero_starting_position && !receipt.zero_starting_position_proven)) {
             return invalid("execution-safety receipt rejected the current target conditions");
         }
@@ -1944,6 +1997,49 @@ struct Plaza2TestTradeTransport::Impl {
     }
 
     Plaza2PublisherMessageResult submit(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) {
+        if (host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend) {
+            const auto refuse = [](std::string reason) {
+                Plaza2PublisherMessageResult result;
+                result.validation_error = invalid(std::move(reason));
+                return result;
+            };
+            const bool add = command.command_kind == Plaza2TradeCommandKind::AddOrder;
+            const bool cancel = command.command_kind == Plaza2TradeCommandKind::DelOrder;
+            const bool recovery = command.command_kind == Plaza2TradeCommandKind::DelUserOrders;
+            if ((!add && !cancel && !recovery) ||
+                command.command_name != (add      ? "AddOrder"
+                                         : cancel ? "DelOrder"
+                                                  : "DelUserOrders") ||
+                command.msgid != (add      ? 474
+                                  : cancel ? 461
+                                           : 466)) {
+                return refuse("TEST command name/id/kind mismatch");
+            }
+            if (cancel) {
+                if (!intent() || !cancel_order_id || cancel_identity_conflict) {
+                    return refuse("cancel requires an unambiguous correlated Add reply order_id");
+                }
+                DelOrderRequest request;
+                request.broker_code = intent()->broker_code;
+                request.client_code = intent()->client_code;
+                request.isin_id = intent()->isin_id;
+                request.order_id = *cancel_order_id;
+                const auto expected = Plaza2TradeCodec{}.encode(Plaza2TradeCommandRequest{request});
+                if (!expected.validation.ok() || expected.payload != command.payload) {
+                    return refuse("cancel payload differs from the correlated authorized order");
+                }
+            }
+            bool* attempted = command.command_kind == Plaza2TradeCommandKind::AddOrder   ? &add_attempted
+                              : command.command_kind == Plaza2TradeCommandKind::DelOrder ? &cancel_attempted
+                                                                                         : &recovery_attempted;
+            if (*attempted || (command.command_kind != Plaza2TradeCommandKind::AddOrder && !order_may_exist)) {
+                Plaza2PublisherMessageResult result;
+                result.validation_error =
+                    invalid("one TEST Add/cancel/recovery attempt maximum; cleanup requires possible order");
+                return result;
+            }
+            *attempted = true; // Never retry even a definitely-not-sent validation/allocation failure.
+        }
         if (!command.validation.ok() || command.command_name.empty()) {
             Plaza2PublisherMessageResult result;
             result.validation_error = {.code = cgate::Plaza2ErrorCode::InvalidConfiguration,
@@ -1994,7 +2090,11 @@ struct Plaza2TestTradeTransport::Impl {
                 return result;
             }
         }
-        return host.post(command.command_name, command.payload, user_id, true);
+        const auto result = host.post_validated(command.command_name, command.payload, user_id, true);
+        if (command.command_kind == Plaza2TradeCommandKind::AddOrder) {
+            order_may_exist = result.certainty != cgate::Plaza2SubmissionCertainty::DefinitelyNotSent;
+        }
+        return result;
     }
 
     OrderLifecyclePollResult collect(bool process) {
@@ -2039,8 +2139,17 @@ struct Plaza2TestTradeTransport::Impl {
                 reply.order_id = decoded.order_id;
             }
             result.replies.push_back(reply);
+            if (host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend && intent() &&
+                event.message_id == 179 && reply.user_id == intent()->add_user_id && reply.accepted &&
+                !reply.timed_out && reply.order_id && *reply.order_id > 0) {
+                if (cancel_order_id && *cancel_order_id != *reply.order_id) {
+                    cancel_identity_conflict = true;
+                }
+                cancel_order_id = reply.order_id;
+            }
         }
-        if (config.observation_ext_id != 0) {
+        if (config.observation_ext_id != 0 ||
+            (host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend && intent() != nullptr)) {
             const auto observation =
                 observe_order(intent() != nullptr ? intent()->ext_id : config.observation_ext_id, participant_code(),
                               intent() != nullptr ? intent()->side : config.observation_side,
@@ -2051,7 +2160,9 @@ struct Plaza2TestTradeTransport::Impl {
                 // Replication uses the seven-symbol participant identity
                 // (broker_code + client_code); lifecycle correlation remains
                 // keyed by the authorized three-symbol AddOrder client code.
-                if (!config.observation_client_code.empty()) {
+                if (host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend && intent()) {
+                    normalized.client_code = intent()->client_code;
+                } else if (!config.observation_client_code.empty()) {
                     normalized.client_code = config.observation_client_code;
                 }
                 result.observations.push_back(std::move(normalized));
@@ -2064,6 +2175,12 @@ struct Plaza2TestTradeTransport::Impl {
     Plaza2TestSessionHost host;
     std::optional<Plaza2ExecutionSafetyReceipt> last_receipt;
     std::string bound_authorized_plan_sha256;
+    bool add_attempted{false};
+    bool cancel_attempted{false};
+    bool recovery_attempted{false};
+    bool order_may_exist{false};
+    std::optional<std::int64_t> cancel_order_id;
+    bool cancel_identity_conflict{false};
 };
 
 Plaza2TestTradeTransport::Plaza2TestTradeTransport(Plaza2TestTradeTransportConfig config)

@@ -1,4 +1,5 @@
 #include "plaza2_trade_test_support.hpp"
+#include "plaza2_trade_official_wire_test_support.hpp"
 
 #include <iostream>
 
@@ -19,6 +20,10 @@ void assert_golden(const char* fixture, const Plaza2TradeCommandRequest& request
     const Plaza2TradeCodec codec;
     const auto encoded = codec.encode(request);
     require(encoded.validation.ok(), "golden command should encode");
+    require(encoded.payload ==
+                std::visit([](const auto& value) { return moex::plaza2_trade::test_support::official_wire(value); },
+                           request),
+            "payload must match independent official CGate pack(4) structure");
     require(bytes_to_hex(encoded.payload) == fixture_text(fixture), "encoded command bytes differ from golden fixture");
 }
 
@@ -38,12 +43,26 @@ void test_deterministic_repeated_encoding() {
     require(first.msgid == 474, "AddOrder msgid should come from Phase 5A lock");
 }
 
+void test_all_official_command_layouts() {
+    using namespace moex::plaza2_trade::test_support;
+    const Plaza2TradeCodec codec;
+    for (const auto& request : std::vector<Plaza2TradeCommandRequest>{
+             make_add_order(), make_iceberg_add_order(), make_del_order(), make_iceberg_del_order(), make_move_order(),
+             make_iceberg_move_order(), make_del_user_orders(), make_del_orders_by_bf_limit(), make_cod_heartbeat()}) {
+        const auto encoded = codec.encode(request);
+        require(encoded.validation.ok(), "official-layout command must validate");
+        require(encoded.payload == std::visit([](const auto& value) { return official_wire(value); }, request),
+                "all existing command bytes must match official layout");
+    }
+}
+
 } // namespace
 
 int main() {
     try {
         test_golden_encodings();
         test_deterministic_repeated_encoding();
+        test_all_official_command_layouts();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

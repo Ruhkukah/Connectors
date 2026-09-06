@@ -2299,6 +2299,7 @@ Plaza2PublisherMessageResult Plaza2Publisher::post_by_message_name(std::string_v
 
     void* raw_msg = nullptr;
     const std::string copied_name(message_name);
+    ++call_counts_.msgnew;
     const auto allocation_result = shared_->api->pub_msgnew(handle_, kCgKeyName, copied_name.c_str(), &raw_msg);
     outcome.allocation_error = translate_plaza2_result("cg_pub_msgnew", allocation_result);
     if (outcome.allocation_error) {
@@ -2316,6 +2317,7 @@ Plaza2PublisherMessageResult Plaza2Publisher::post_by_message_name(std::string_v
         std::memcpy(msg->data, payload.data(), payload.size());
         msg->user_id = user_id;
         outcome.post_invoked = true;
+        ++call_counts_.post;
         const auto post_result = shared_->api->pub_post(handle_, raw_msg, need_reply ? kCgPubNeedReply : 0U);
         outcome.post_error = translate_plaza2_result("cg_pub_post", post_result);
         outcome.certainty =

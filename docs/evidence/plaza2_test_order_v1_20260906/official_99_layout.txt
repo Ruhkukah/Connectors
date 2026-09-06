@@ -1,0 +1,54 @@
+Official schemetool output excerpt: blank lines and embedded scheme string omitted.
+#ifndef _message_H_
+#define _message_H_
+// Scheme "message" description
+#pragma pack(push, 4)
+    struct AddOrder
+    {
+        char broker_code[5]; // c4
+        signed int isin_id; // i4
+        char client_code[4]; // c3
+        signed int dir; // i4
+        signed int type; // i4
+        signed int amount; // i4
+        char price[18]; // c17
+        char comment[21]; // c20
+        char broker_to[21]; // c20
+        signed int ext_id; // i4
+        signed int is_check_limit; // i4
+        char date_exp[9]; // c8
+        signed int dont_check_money; // i4
+        char match_ref[11]; // c10
+        signed char ncc_request; // i1
+        char compliance_id[2]; // c1
+    };
+    const size_t sizeof_AddOrder = 128;
+    const size_t AddOrder_index = 0;
+    const unsigned int AddOrder_msgid = 0x000001da;
+    struct DelOrder
+    {
+        char broker_code[5]; // c4
+        signed long long order_id; // i8
+        signed char ncc_request; // i1
+        char client_code[4]; // c3
+        signed int isin_id; // i4
+    };
+    const size_t sizeof_DelOrder = 28;
+    const size_t DelOrder_index = 1;
+    const unsigned int DelOrder_msgid = 0x000001cd;
+    struct DelUserOrders
+    {
+        char broker_code[5]; // c4
+        signed int buy_sell; // i4
+        signed int non_system; // i4
+        char code[4]; // c3
+        char base_contract_code[26]; // c25
+        signed int ext_id; // i4
+        signed int isin_id; // i4
+        signed char instrument_mask; // i1
+    };
+    const size_t sizeof_DelUserOrders = 60;
+    const size_t DelUserOrders_index = 2;
+    const unsigned int DelUserOrders_msgid = 0x000001d2;
+#pragma pack(pop)
+#endif //_message_H_

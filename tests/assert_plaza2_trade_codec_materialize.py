@@ -51,8 +51,11 @@ def main() -> int:
         require(command_item["offline_only"] is True, "generated command should be offline-only")
         require(command_item["sendable"] is False, "generated command must not be sendable")
         require(command_item["fields"], "generated command missing fields")
-        require(command_item["encoded_payload_size"] == sum(field["encoded_size"] for field in command_item["fields"]),
-                "encoded payload size mismatch")
+        official_sizes = {"AddOrder": 128, "IcebergAddOrder": 104, "DelOrder": 28, "IcebergDelOrder": 24,
+                          "MoveOrder": 104, "IcebergMoveOrder": 56, "DelUserOrders": 60,
+                          "DelOrdersByBFLimit": 5, "CODHeartbeat": 4}
+        require(command_item["encoded_payload_size"] == official_sizes[command_item["command_name"]],
+                "encoded payload size differs from official CGate 9.9 schemetool")
 
     print("Phase 5B PLAZA II trade codec materialize assertions passed")
     return 0

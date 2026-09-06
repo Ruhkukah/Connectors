@@ -57,7 +57,9 @@ The validator does not perform pre-trade risk, limit checks, position checks, se
 Encoding is deterministic and locale-independent:
 
 - `i1`, `i4`, and `i8` fields encode as little-endian signed integers.
-- `cN` fields encode as fixed-width printable ASCII with zero padding.
+- `cN` fields occupy N+1 bytes: printable ASCII, zero padding and a terminating byte.
+- Fields and final record size follow official CGate `pack(4)` alignment; integer
+  alignment is capped at four bytes. A character-only record retains alignment one.
 - Price fields remain fixed-width decimal text because the locked command surface records them as `c17`.
 - Missing optional numeric fields encode as zero.
 - Missing optional fixed-width character fields encode as zero-filled buffers.
@@ -79,6 +81,13 @@ The encoded output is `Plaza2TradeEncodedCommand`, containing command name, mess
 - `FORTS_MSG100`
 The decoder reports message id, message name, status category, raw code fields, order id fields, queue/penalty fields, amount/count fields, and message text where present.
 Unknown or short payloads fail closed with explicit validation status.
+`FORTS_MSG99` has a `c128` message (129 storage bytes, 140-byte record); ordinary
+reply message fields use `c255` (256 storage bytes).
+
+The original compact concatenation model was corrected during PR33's first
+TEST publisher exercise. Current golden bytes are derived from the official
+CGate 9.9 generated structures in `tests/plaza2_trade/fixtures/cgate99_messages.hpp`,
+not from the production encoder. Prior compact payload hashes are obsolete.
 
 ## Golden Fixtures
 Golden fixtures live under `tests/plaza2_trade/fixtures/`.

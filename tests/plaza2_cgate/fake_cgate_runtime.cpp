@@ -1,3 +1,4 @@
+#include "../plaza2_trade/fixtures/cgate99_messages.hpp"
 #include "plaza2_generated_metadata.hpp"
 
 #include <algorithm>
@@ -275,6 +276,8 @@ struct FakePublisherMessage {
 
 bool g_env_open = false;
 bool g_cancel_after_cleanup = false;
+std::uint64_t g_pub_msgnew_calls = 0;
+std::uint64_t g_pub_post_calls = 0;
 std::unordered_map<void*, FakePublisherMessage*> g_publisher_messages;
 
 std::uint32_t configured_result(const char* variable) {
@@ -327,13 +330,13 @@ std::size_t publisher_payload_size(std::string_view message_name) {
     // offline trade codec golden fixtures. The fake runtime only models these
     // three command families; it never accepts a live broker payload.
     if (message_name == "AddOrder") {
-        return 112;
+        return sizeof(official_cgate99::AddOrder);
     }
     if (message_name == "DelOrder") {
-        return 20;
+        return sizeof(official_cgate99::DelOrder);
     }
     if (message_name == "DelUserOrders") {
-        return 49;
+        return sizeof(official_cgate99::DelUserOrders);
     }
     return 8;
 }
@@ -347,7 +350,7 @@ template <typename T> void write_reply_scalar(std::vector<std::byte>& payload, s
 std::vector<std::byte> make_trade_reply(std::string_view message_name) {
     const bool add = message_name == "AddOrder";
     const bool recovery = message_name == "DelUserOrders";
-    std::vector<std::byte> payload(4 + 255 + (add ? 8 : 4));
+    std::vector<std::byte> payload(4 + sizeof(official_cgate99::FORTS_MSG179::message) + (add ? 8 : 4));
     const auto* code_text = std::getenv("MOEX_FAKE_PUB_REPLY_CODE");
     const auto code = code_text != nullptr && std::string_view(code_text) == "reject" ? 1 : 0;
     write_reply_scalar(payload, 0, static_cast<std::int32_t>(code));
@@ -356,9 +359,10 @@ std::vector<std::byte> make_trade_reply(std::string_view message_name) {
     if (add) {
         const auto* id_text = std::getenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
         const auto order_id = id_text == nullptr ? std::int64_t{20003} : std::strtoll(id_text, nullptr, 10);
-        write_reply_scalar(payload, 4 + 255, order_id);
+        write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message), order_id);
     } else {
-        write_reply_scalar(payload, 4 + 255, static_cast<std::int32_t>(recovery ? 1 : 0));
+        write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message),
+                           static_cast<std::int32_t>(recovery ? 1 : 0));
     }
     return payload;
 }
@@ -1992,6 +1996,7 @@ std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
 }
 
 std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void** msgptr) {
+    ++g_pub_msgnew_calls;
     if (publisher == nullptr || id == nullptr || msgptr == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2011,6 +2016,7 @@ std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void
 }
 
 std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
+    ++g_pub_post_calls;
     if (publisher == nullptr || message == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2059,11 +2065,14 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
         });
         if (fake_flag("MOEX_FAKE_PUB_DUPLICATE_REPLY")) {
             auto contradictory = reply_payload;
-            if (add && contradictory.size() >= 4 + 255 + sizeof(std::int64_t)) {
+            if (add &&
+                contradictory.size() >= 4 + sizeof(official_cgate99::FORTS_MSG179::message) + sizeof(std::int64_t)) {
                 std::int64_t order_id = 0;
-                std::memcpy(&order_id, contradictory.data() + 4 + 255, sizeof(order_id));
+                std::memcpy(&order_id, contradictory.data() + 4 + sizeof(official_cgate99::FORTS_MSG179::message),
+                            sizeof(order_id));
                 ++order_id;
-                std::memcpy(contradictory.data() + 4 + 255, &order_id, sizeof(order_id));
+                std::memcpy(contradictory.data() + 4 + sizeof(official_cgate99::FORTS_MSG179::message), &order_id,
+                            sizeof(order_id));
             }
             typed_publisher->connection->pending_replies.push_back({
                 .message_id = reply_message_id,
@@ -2113,3 +2122,11 @@ std::uint32_t cg_getstr(const char*, const void* data, char* buffer, std::size_t
 }
 
 } // extern "C"
+
+extern "C" void moex_fake_reset_publisher_counts() {
+    g_pub_msgnew_calls = 0;
+    g_pub_post_calls = 0;
+}
+extern "C" std::uint64_t moex_fake_publisher_count(std::uint32_t which) {
+    return which == 0 ? g_pub_msgnew_calls : g_pub_post_calls;
+}

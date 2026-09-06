@@ -11,6 +11,7 @@ struct Plaza2RuntimeArmState {
     bool test_network_armed{false};
     bool test_session_armed{false};
     bool test_plaza2_armed{false};
+    bool test_order_send_armed{false};
 };
 
 struct Plaza2ManualOperatorGateResult {

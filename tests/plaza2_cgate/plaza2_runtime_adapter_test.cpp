@@ -142,8 +142,8 @@ int main(int argc, char** argv) {
         require(!reply_listener.create(connection, kNoStreamCode, "p2mqreply://;ref=PUB", &reply_capture),
                 "untyped reply listener create should succeed");
         require(!reply_listener.open({}), "untyped reply listener open should succeed");
-        const std::array<std::byte, 112> add_payload{};
-        const std::array<std::byte, 20> del_payload{};
+        const std::array<std::byte, 128> add_payload{};
+        const std::array<std::byte, 28> del_payload{};
 
         ::setenv("MOEX_FAKE_PUB_MSGNEW_RESULT", "internal", 1);
         const auto allocation_failure = publisher.post_by_message_name("AddOrder", add_payload, 701, true);
@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
         require(reply_capture.events[0].kind == Plaza2ListenerEventKind::StreamData &&
                     reply_capture.events[0].user_id == 703 && reply_capture.events[0].message_id == 179 &&
                     reply_capture.events[0].message_name == "AddOrderReply" &&
-                    reply_capture.events[0].payload.size() == 267,
+                    reply_capture.events[0].payload.size() == 268,
                 "reply listener must expose the exact publisher user_id and raw reply payload");
         require(reply_capture.events[1].kind == Plaza2ListenerEventKind::Timeout &&
                     reply_capture.events[1].user_id == 704 && reply_capture.events[1].message_id == 0 &&
