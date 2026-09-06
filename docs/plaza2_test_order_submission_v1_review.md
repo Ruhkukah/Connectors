@@ -11,7 +11,8 @@ CGate 9.9 stack. Implementation approval alone is not order authorization.
 The initial work order required separate exact-SHA approval; the user later
 superseded that handoff by explicitly delegating fresh plan selection and this
 one TEST exercise, as recorded below. Prior retired plans remain retired.
-No exchange order was submitted; the attempted lifecycle stopped before post.
+The first attempt stopped before post; after the wire-layout correction, the
+bounded TEST Add/cancel lifecycle succeeded, as recorded below.
 
 ## Bounded send boundary
 
@@ -104,7 +105,8 @@ payload-size check is also possible. The confirmed layout defect must be fixed
 and independently tested before another submission attempt.
 
 Evidence: `docs/evidence/plaza2_test_order_v1_20260906/`.
-PR remains draft; **actual TEST order lifecycle qualification has not passed**.
+At that first stop, actual TEST lifecycle qualification had not passed. The
+successful corrected run below supersedes that operational disposition.
 
 ### Wire-layout correction
 
@@ -129,6 +131,26 @@ ASan/UBSan combined selection 109/109, including ABI/no-send/style/Unicode and
 diff checks. macOS leak detector remains disabled; ASan and UBSan are enabled.
 The prior receipt's exact bytes are preserved as `execution_safety_v4.canonical.bin`;
 its JSON sibling is a readable formatting copy.
+
+### Corrected actual TEST lifecycle: PASS
+
+Source `ffc5df7f00000f1babc2a2df9cc5d9c950cdb5c1`, CGate 9.9, current session
+11700, CRU6 SELL LIMIT 1 at 12.91600. All dynamic gates passed and the exact
+fresh plan was bound under the user's delegated TEST authorization.
+
+MOEX accepted AddOrder; correlated order ID `2087468678403610015` matched TRADE
+evidence. Existing controller transitions were Posted -> Working ->
+CancelPending -> Working -> Cancelled. Exactly one DelOrder was posted.
+Remaining quantity=0, executed quantity=0; no recovery, fill or opposite order.
+
+Application calls: msgnew=2, post=2 (one Add, one cancel). Add allocation/post/free
+codes=0, runtime payload size=128, encoded payload size=128. Final journal is
+finished, consistent and market-safe, with no residual identifier lock files.
+Router PID 3031619 remained unchanged; qualification host stopped normally.
+
+Evidence: `docs/evidence/plaza2_test_order_success_20260906/README.md`.
+This meets the bounded actual TEST lifecycle exercise, not full certification
+or production readiness. PR remains draft for independent final review.
 
 ## First live exercise procedure
 

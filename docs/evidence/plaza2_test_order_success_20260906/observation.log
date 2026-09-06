@@ -1,0 +1,64 @@
+HEAD=ffc5df7f00000f1babc2a2df9cc5d9c950cdb5c1
+HOST_COUNT=1
+WORKING_DIRECTORY=/home/azgaldov/moex/tmp/test-order-v1/read-side/1788697231-3375388
+TARGET_CODE=CRU6 TARGET_ISIN_ID=4433036 OPERATOR_TARGET_SESSION_ID=11700
+HOST_START code=0 message=
+PROGRESS polls=0 ready=0 reason=private/status streams are not all ONLINE and snapshot-complete
+OBSERVATION_READY=1 polls=273 reason=ready
+STREAM FORTS_POS_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=36 commit=14 trades_rev=2337138078 trades_lifenum=66739 server_time=1788656401
+STREAM FORTS_PART_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=34 commit=9 trades_rev=0 trades_lifenum=0 server_time=1788688757
+STREAM FORTS_SESSIONSTATE_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=36 commit=1 trades_rev=0 trades_lifenum=0 server_time=0
+STREAM FORTS_INSTRUMENTSTATE_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=22881 commit=8 trades_rev=0 trades_lifenum=0 server_time=0
+STREAM FORTS_TRADE_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=163711 commit=133 trades_rev=0 trades_lifenum=0 server_time=1788708034
+STREAM FORTS_USERORDERBOOK_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=1 rows=2 commit=6 trades_rev=2338041596 trades_lifenum=66739 server_time=0
+STREAM FORTS_REFDATA_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=30275 commit=0 trades_rev=0 trades_lifenum=0 server_time=0
+TARGET isin=CNY-9.26 isin_id=4433036 sess_id=11700 min_step=0.00100 member=1 instrument_status=1
+SESSION sess_id=11700 state=1 current_status=1
+BBO target_isin_id=4433036 bid=12.90900 ask=12.91500 repl_id=680 repl_rev=1326216
+LIMIT participant_present=true limits_set=1
+POSITION rows=0 OWN_TRADES participant_count=0 OWN_ORDERS rows=0 p2mqreply_open=1 publisher_open=1
+ANCHOR present trades_rev=2337138078 trades_lifenum=66739 server_time=1788656401
+POS_INFO trades_rev=2337138078 trades_lifenum=66739 server_time=1788656401
+TRADE_STATUS online=1 snapshot_complete=1 server_time=1788708034
+REFDATA_LIFENUM=101386961
+PROVENANCE fut_instruments present=1 repl_rev=125 lifenum=101386961
+PROVENANCE fut_sess_contents present=1 repl_rev=3309 lifenum=101386961
+PROVENANCE session present=1 repl_rev=6 lifenum=101386961
+POSITION_ROWS total=0 participant_trades=0 active_own_orders=0
+PLAN_READY ok=1 message=pre-send plan validated
+PLAN_SHA256=d530759ff6e8f8d5f987999739512bf3fe187a3156b7ac817f8dbe8db4a35819
+ADD_PAYLOAD_SHA256=2622b4c15e8feac5a98c7d8781e799f8eb55f9636dd8e6982d3a6991bd2a9f4e
+RECOVERY_PAYLOAD_SHA256=99e010f32f53e688a919253a3c1e53c076cd876d16c97f7bc3e0512f01995404
+TARGET_SESSION_ID=11700
+BBO bid=12.90900 ask=12.91500 chosen_price=12.91600 age_ms=2491
+AUTHORIZATION_FILE=/home/azgaldov/moex/tmp/test-order-v1/read-side/1788697231-3375388/authorized_plan.sha256
+TEST_ORDER_NEW_PLAN_AUTHORIZATION_REQUIRED; write exactly the lowercase PLAN_SHA256 to the file; no bind or pre-send call
+=== REAL TEST ORDER AUTHORIZATION REQUEST ===
+PR_HEAD=ffc5df7f00000f1babc2a2df9cc5d9c950cdb5c1
+ISIN_ID=4433036
+EXT_ID=992072619
+ADD_USER_ID=992072619
+CANCEL_USER_ID=992072620
+RECOVERY_USER_ID=992072621
+ADD_PAYLOAD_SHA256=2622b4c15e8feac5a98c7d8781e799f8eb55f9636dd8e6982d3a6991bd2a9f4e
+RECOVERY_PAYLOAD_SHA256=99e010f32f53e688a919253a3c1e53c076cd876d16c97f7bc3e0512f01995404
+AGGR_AGE_MS=2491
+PLAN_SHA256=d530759ff6e8f8d5f987999739512bf3fe187a3156b7ac817f8dbe8db4a35819
+SESSION=11700
+SIDE=SELL
+QTY=1
+PRICE=12.91600
+BBO_AT_GENERATION=12.90900 / 12.91500
+DISTANCE_TICKS=1
+AUTH_FILE=/home/azgaldov/moex/tmp/test-order-v1/read-side/1788697231-3375388/authorized_plan.sha256
+==================================
+EXACT_PLAN_AUTHORIZATION_RECEIVED sha256=d530759ff6e8f8d5f987999739512bf3fe187a3156b7ac817f8dbe8db4a35819
+WAITING_FOR_EXECUTION_READY
+AUTH_WAIT seconds=0 authorized=1 structural_valid=1 execution_ready=1 aggr_age_ms=2492 cg_pub_msgnew=0 cg_pub_post=0 reason=ready
+INTENT_INSTALL code=0 message=
+INTENT_INSTALL_OK
+FINAL_STATE=cancelled ok=1 message=remaining order quantity was factually cancelled
+cg_pub_msgnew=2
+cg_pub_post=2
+JOURNAL=/home/azgaldov/moex/tmp/test-order-v1/read-side/1788697231-3375388/journals/test-order-1788697231-3375388/journal.json
+ARTIFACT_DIR=/home/azgaldov/moex/tmp/test-order-v1/read-side/1788697231-3375388

@@ -1,6 +1,6 @@
 {
     "schema": "moex.plaza2.execution_safety.v4",
-    "authorized_intent_sha256": "81e40b34db8d8bdba34377cda06012f7c4d5fc97dc0eaeefe0a097dfa376ad8d",
+    "authorized_intent_sha256": "d530759ff6e8f8d5f987999739512bf3fe187a3156b7ac817f8dbe8db4a35819",
     "target_isin_id": 4433036,
     "target_refdata_lifenum": 101386961,
     "target_fut_instruments_provenance": {
@@ -27,15 +27,15 @@
         "lifenum": 101386961,
         "present": true
     },
-    "top_bid": 12910000,
-    "top_ask": 12914000,
+    "top_bid": 12909000,
+    "top_ask": 12915000,
     "aggr20_repl_id": 680,
-    "aggr20_repl_rev": 1287536,
-    "local_age_ms": 4334,
+    "aggr20_repl_rev": 1326216,
+    "local_age_ms": 2493,
     "authorized_max_aggr20_age_ms": 5000,
     "require_zero_starting_position": true,
-    "exchange_moment": 1788706503,
-    "exchange_moment_ns": 1788695703051839376,
+    "exchange_moment": 1788708033,
+    "exchange_moment_ns": 1788697233708759495,
     "aggr_online": true,
     "aggr_snapshot_complete": true,
     "session_id": 11700,
@@ -54,7 +54,7 @@
     "limit_row_fingerprint_sha256": "03f468e3416f6bb7a21d975973235e46f55dbc8e994e4f1defc1220a2b720c59",
     "limit_source_commit_sequence": 9,
     "position_row_fingerprint_sha256": "",
-    "position_source_commit_sequence": 22,
+    "position_source_commit_sequence": 14,
     "position_evidence_class": "FLAT_BY_POS_SNAPSHOT_AND_TRADE_REPLAY",
     "zero_starting_position_proven": true,
     "position_snapshot_complete": true,
@@ -77,7 +77,7 @@
             "online": true,
             "snapshot_complete": true,
             "periodic_snapshot_consistent": false,
-            "commit_sequence": 22
+            "commit_sequence": 14
         },
         {
             "code": 691290039,
@@ -105,7 +105,7 @@
             "online": true,
             "snapshot_complete": true,
             "periodic_snapshot_consistent": false,
-            "commit_sequence": 132
+            "commit_sequence": 133
         },
         {
             "code": 2555675420,

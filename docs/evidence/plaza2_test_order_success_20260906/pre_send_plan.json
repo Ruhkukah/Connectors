@@ -1,0 +1,31 @@
+{
+  "schema": "moex.plaza2.authorized_order_intent.v1",
+  "profile_id": "plaza2_test_order_v1",
+  "profile_fingerprint": "600cd50fe072c932aea7e9be68c654e7eab78273238e3e953b4d2a3fd380802d",
+  "environment": "test",
+  "command": "AddOrder",
+  "message_id": 474,
+  "payload_sha256": "2622b4c15e8feac5a98c7d8781e799f8eb55f9636dd8e6982d3a6991bd2a9f4e",
+  "recovery_message_id": 466,
+  "recovery_payload_sha256": "99e010f32f53e688a919253a3c1e53c076cd876d16c97f7bc3e0512f01995404",
+  "add_user_id": 992072619,
+  "cancel_user_id": 992072620,
+  "recovery_user_id": 992072621,
+  "ext_id": 992072619,
+  "isin_id": 4433036,
+  "base_contract_code": "CNY",
+  "instrument_mask": 1,
+  "side": "sell",
+  "order_type": "limit",
+  "price": "12.91600",
+  "quantity": 1,
+  "client_code_sha256": "ccff01ea26600e66feed8288c81871ff1022e0283d97bb5a6131449931560380",
+  "broker_code_sha256": "f42c701a6a4a289f8d03d4f92bae72d3579154be44b5c4225170347ec494706d",
+  "smoke_policy": {
+    "version": "plaza2-test-order-v1",
+    "sha256": "6cc0a49ff22fb9f2d67b1a15aaded07b647b5b084e0d4fcbe43ebc9b057eebfe",
+    "max_distance_ticks": 4,
+    "max_aggr20_age_ms": 5000,
+    "require_zero_starting_position": true
+  }
+}
