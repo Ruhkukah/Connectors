@@ -100,7 +100,7 @@ All tests use the instrumented fake CGate library. No vendor runtime was loaded.
 | Check | Result |
 | --- | --- |
 | Full CTest, including existing ABI/no-send/privacy/style tests | 160/160 passed |
-| Changed-target ASan/UBSan: host, CLI, transport scenarios | 3/3 passed |
+| Changed-target ASan/UBSan: host, CLI, transport and runner harness | 10/10 passed |
 | Repository/source style and diff checks | Passed |
 | GitHub connector-validation and component-sanitizers | Required before merge |
 
@@ -116,6 +116,19 @@ zero allocations/posts, crossed-book refusal, and a complete fake Add/cancel
 with exactly two allocations/posts and a persisted execution-safety receipt.
 The sanitizer CI target list includes both new binaries. Local macOS sanitizer
 execution disables unsupported leak detection; CI retains Linux leak detection.
+
+### CI harness amendment
+
+The initial head's Linux connector-validation job passed. Both sanitizer
+attempts passed the host/CLI/PLAZA cases but failed the existing TWIME runner
+test's expected-state wait. Investigation found a test scheduler issue:
+256 non-blocking polls advanced a manual clock without yielding to the real
+TCP server thread. A deliberate 20ms ACK delay reproduced the same failure
+locally. A 1ms yield in the test pump made that delayed-reply case pass ten
+consecutive runs. The original poll budget, virtual-clock advancement,
+protocol assertions and runtime deadlines remain unchanged. Only the test
+helper and delayed-reply regression changed; there is no TWIME runtime or
+host integration change. Full CTest and changed-target sanitizers were rerun.
 
 C ABI v2 is the separate next increment after this PR merges. It must use this
 same facade and retain existing sized-layout, event and managed ownership work.
