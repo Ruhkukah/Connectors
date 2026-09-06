@@ -40,6 +40,18 @@ See [the final live evidence](evidence/plaza2_pr30_send_disabled_20260906/README
 This closes the declared live no-send merge gate, not actual order or
 certification testing. Final merge review remains required.
 
+The canonical receipt is preserved byte-for-byte as
+`execution_safety_v3.canonical.bin`; the adjacent `.pretty.json` is only a
+semantically identical display copy. The qualification harness received the
+exact candidate SHA; general TEST permission is not recorded as exact-plan
+human approval. No independent vendor-call counters are claimed.
+
+Separate post-merge item: the standalone Phase-5D `Plaza2Aggr20MdRunner`
+listener bridge ignores LifeNum. Review its epoch invalidation before using
+that standalone runner operationally. This is not the PR #30 transport bridge,
+which resets the AGGR projector and invalidates readiness on LifeNum; no
+standalone-runner behavior is changed by this evidence-only cleanup.
+
 ## Scope and stop gate
 
 This increment started from merged-main `610dbfd` (PR #29) and now includes

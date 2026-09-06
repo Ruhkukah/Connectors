@@ -19,10 +19,11 @@ Result: LIVE_TEST_PRE_SEND_PASS. No actual TEST order was submitted.
   SEND_DISABLED_PRE_SEND_PHASE / DefinitelyNotSent / post_invoked=false.
 - Close completed with code 0. No host remains awaiting authorization.
 
-Authorization basis: the user authorized all TEST exercises and then explicitly
-requested the fix and actual testing. That authorization was applied only to
-this new physically send-disabled candidate, not inherited from a retired plan
-and not used to enable actual publisher posting.
+Authorization record: the qualification harness received the exact candidate
+SHA shown above. The conversation contains general permission to perform TEST
+exercises, not an explicit human authorization quoting this new exact SHA.
+The harness event is not evidence of exact-plan human approval. Actual order
+submission was not tested and was not authorized by this qualification.
 
 Zero application cg_pub_msgnew/cg_pub_post calls and zero orders follow from the
 verified LiveTestPreSend return-before-publisher path and the observed barrier;
@@ -39,6 +40,22 @@ CGate target capture (52 target commits including snapshot, 50 after ONLINE)
 and retained 40 levels, matching the independent row-ID reconstruction, rather
 than the old 41. The two-commit synthetic false-cross fixture now retains two
 levels with BBO 12.927 / 12.928, not 12.936 / 12.928.
+
+Evidence representation:
+
+- `execution_safety_v3.canonical.bin`: exact original UTF-8 canonical JSON bytes;
+  this is the receipt-hash artifact, not a proprietary binary encoding.
+- `execution_safety_v3.pretty.json`: parsed, readable display copy; semantically
+  identical, but not the receipt-hash artifact.
+- `pre_send_plan.json`: unchanged canonical plan bytes and plan hash.
+
+The `evidence_head` locator in `run_receipt.txt` resolves to the commit containing
+that receipt. A literal self-containing commit SHA cannot be embedded in its
+own contents. Resolve it from the repository root with:
+
+```sh
+git log -1 --format=%H -- docs/evidence/plaza2_pr30_send_disabled_20260906/run_receipt.txt
+```
 
 The runtime log has only its local run-directory paths redacted. Canonical plan
 and execution receipt bytes are unchanged. Old plans 122d0b1e..., 401b0b1c...,
