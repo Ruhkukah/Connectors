@@ -1,5 +1,34 @@
 # PLAZA II TEST trade transport V1.4 / PR #30 review
 
+## 2026-09-06 AGGR20 replication-slot correction
+
+The read-only T1 diagnosis found that a row can change price under the same
+`replID` (observed row 664 moving between 12.950 and 12.931). The installed
+MOEX 9.9 specification states that a price/volume/direction update replaces
+the previous price level. Keying the projector by price and side retained
+obsolete levels and could manufacture a crossed book.
+
+The projector now replaces/deletes by `replID`; zero volume and nonzero
+`replAct` remove that slot, and an instrument reassignment refreshes both
+affected instrument snapshots. Transaction staging/rollback and the existing
+reset paths remain intact. No lifecycle, authorization, publisher, or market
+readiness gate is weakened.
+
+Regression coverage includes the exact false-cross mechanism, side changes,
+identity-based deletion with changed price/side, tombstones, multiple updates
+to one slot, rollback, instrument reassignment, and reset. The multi-instrument
+fake fixture also now changes the signed `replID` field, ensuring distinct
+slots; its previous unsigned-field mutation had no effect on encoded IDs.
+
+Changed-target ASan/UBSan: 5/5 passed. The first complete parallel CTest run
+after fixture correction encountered the unrelated TWIME establish-timeout
+test. The final unchanged-code sequential full CTest passed 158/158, including
+the no-send, style, and ABI checks; `git diff --check` passed. Fresh live
+qualification remains a separate gate.
+Plan `70a099cc...` and its pending run are retired; they are not qualification
+evidence for the corrected projector. Actual publisher posting remains
+physically disabled.
+
 ## Scope and stop gate
 
 This increment started from merged-main `610dbfd` (PR #29) and now includes

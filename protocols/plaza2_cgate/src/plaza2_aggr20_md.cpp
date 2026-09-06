@@ -311,6 +311,9 @@ Plaza2Error Plaza2Aggr20BookProjector::on_row(std::span<const Plaza2DecodedField
     level.price = text_field(fields, FieldCode::kFortsAggrReplOrdersAggrPrice);
     level.price_scaled = decimal_to_scaled(level.price);
     level.volume = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrVolume).value_or(0);
+    if (signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrReplAct).value_or(0) != 0) {
+        level.volume = 0;
+    }
     level.dir = static_cast<std::int32_t>(signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrDir).value_or(0));
     level.repl_id = unsigned_field(fields, FieldCode::kFortsAggrReplOrdersAggrReplId).value_or(0);
     level.repl_rev = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrReplRev).value_or(0);
@@ -333,8 +336,13 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
 
     for (const auto& row : staged_rows_) {
         auto existing = std::find_if(committed_.levels.begin(), committed_.levels.end(), [&](const auto& level) {
-            return level.isin_id == row.isin_id && level.dir == row.dir && level.price_scaled == row.price_scaled;
+            // AGGR rows are mutable replication slots, not immutable price levels.
+            // A price, side, or instrument change replaces the previous slot.
+            return level.repl_id == row.repl_id;
         });
+        if (existing != committed_.levels.end()) {
+            affected_isin_ids_.insert(existing->isin_id);
+        }
         committed_.last_repl_id = std::max(committed_.last_repl_id, row.repl_id);
         committed_.last_repl_rev = std::max(committed_.last_repl_rev, row.repl_rev);
         if (row.volume <= 0) {

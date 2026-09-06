@@ -1046,7 +1046,7 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                         find_field(source, kFortsAggrReplOrdersAggrDir)->signed_value == 1 ? "10000000" : "10001000";
                 }
                 if (auto* repl = find_field(other, kFortsAggrReplOrdersAggrReplId)) {
-                    repl->unsigned_value += 100;
+                    repl->signed_value += 100;
                 }
                 script.push_back(std::move(other));
             }

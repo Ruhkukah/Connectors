@@ -712,6 +712,8 @@ void test_multi_instrument_and_terminal_controller(const moex::plaza2::test::Run
                     "multi-instrument target should remain postable from scoped BBO");
         const auto scoped = transport.host().aggr20_projector().snapshot_for_isin(1001);
         const auto global = transport.host().aggr20_projector().snapshot();
+        expect_case(global.row_count == 4 && scoped.has_value() && scoped->row_count == 2,
+                    "multi-instrument fixture must have four distinct replication slots");
         expect_case(scoped.has_value() && global.top_bid.has_value() && scoped->top_bid.has_value() &&
                         global.top_bid->price_scaled != scoped->top_bid->price_scaled,
                     "global diagnostic BBO must not be reused as the target scoped BBO");
