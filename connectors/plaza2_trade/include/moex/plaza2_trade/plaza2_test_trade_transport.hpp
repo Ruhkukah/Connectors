@@ -47,6 +47,7 @@ struct Plaza2AuthorizedOrderIntent {
     std::string base_contract_code;
     Plaza2TradeSide side{Plaza2TradeSide::Buy};
     std::string price;
+    std::string comment;
     std::int64_t quantity{1};
     std::int32_t ext_id{0};
     std::uint32_t add_user_id{0};

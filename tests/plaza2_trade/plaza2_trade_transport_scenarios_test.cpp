@@ -84,6 +84,7 @@ Plaza2TestTradeTransportConfig make_config(const moex::plaza2::test::RuntimeFixt
         .base_contract_code = "RTS",
         .side = Plaza2TradeSide::Sell,
         .price = "103000",
+        .comment = "offline",
         .quantity = 1,
         .ext_id = 79,
         .add_user_id = 701,

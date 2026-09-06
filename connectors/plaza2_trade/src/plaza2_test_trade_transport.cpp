@@ -598,6 +598,7 @@ std::string canonical_authorized_order_intent_json(const Plaza2AuthorizedOrderIn
          << "  \"side\": \"" << (intent.side == Plaza2TradeSide::Buy ? "buy" : "sell") << "\",\n"
          << "  \"order_type\": \"limit\",\n"
          << "  \"price\": \"" << json_escape_local(intent.price) << "\",\n"
+         << "  \"comment\": \"" << json_escape_local(intent.comment) << "\",\n"
          << "  \"quantity\": " << intent.quantity << ",\n"
          << "  \"client_code_sha256\": \"" << intent_fingerprint(intent, false) << "\",\n"
          << "  \"broker_code_sha256\": \"" << intent_fingerprint(intent, true) << "\",\n"

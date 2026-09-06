@@ -588,6 +588,15 @@ bool definitive_add_rejection(const LifecycleEvidence& evidence) {
            !evidence.observation.has_value();
 }
 
+bool definitive_cancel_rejection(const LifecycleEvidence& evidence) {
+    return evidence.cancel_reply.has_value() && !evidence.cancel_reply->timed_out && !evidence.cancel_reply->accepted;
+}
+
+bool definitive_recovery_rejection(const LifecycleEvidence& evidence) {
+    return evidence.recovery_reply.has_value() && !evidence.recovery_reply->timed_out &&
+           !evidence.recovery_reply->accepted;
+}
+
 bool reply_id_matches_observation(std::int64_t reply_id, const OrderObservation& observation) {
     return reply_id != 0 && (reply_id == observation.public_order_id || reply_id == observation.private_order_id ||
                              contains_id(observation.public_order_id_aliases, reply_id) ||
@@ -999,6 +1008,7 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     json << "  \"side\": \"" << (config.side == Plaza2TradeSide::Buy ? "buy" : "sell") << "\",\n";
     json << "  \"order_type\": \"limit\",\n";
     json << "  \"price\": \"" << json_escape(config.price) << "\",\n";
+    json << "  \"comment\": \"" << json_escape(config.comment) << "\",\n";
     json << "  \"quantity\": 1,\n";
     json << "  \"client_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.client_code) << "\",\n";
     json << "  \"broker_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.broker_code) << "\",\n";
@@ -1151,8 +1161,12 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
         return result;
     }
 
-    const auto observation =
-        observe_order(config.ext_id, config.client_code, config.side, config.quantity, orders, trades);
+    auto observation = observe_order(config.ext_id, config.client_code, config.side, config.quantity, orders, trades);
+    if (!observation.has_value() && !config.broker_code.empty() && !config.client_code.empty()) {
+        const auto participant = config.broker_code + config.client_code;
+        if (participant != config.client_code)
+            observation = observe_order(config.ext_id, participant, config.side, config.quantity, orders, trades);
+    }
     if (!observation.has_value() || !observation_terminal(observation) || observation->identity_conflict) {
         result.state = observation.has_value() ? observation->state : OrderLifecycleState::UnresolvedOrphanIncident;
         result.message = observation.has_value() && observation->identity_conflict
@@ -1469,7 +1483,21 @@ struct PersistentOrderController::Impl {
             return finish(OrderLifecycleState::UnresolvedOrphanIncident, false, true,
                           "order evidence became inconsistent; epoch is fail-closed");
         }
-        if (observation_working(evidence.observation)) {
+        if (cancel_requested || recovery_requested) {
+            if ((cancel_requested && definitive_cancel_rejection(evidence)) ||
+                (recovery_requested && definitive_recovery_rejection(evidence))) {
+                return finish(OrderLifecycleState::UnresolvedOrphanIncident, false, true,
+                              cancel_requested
+                                  ? "DelOrder was definitively rejected while the order remains nonterminal"
+                                  : "exact-ext recovery was definitively rejected while the order remains nonterminal");
+            }
+            // A cancel/recovery command is an application state, not merely a
+            // reflection of the latest replicated row.  Keep it visible while
+            // the command is unresolved, while still retaining the newest
+            // quantities/evidence in the result and journal.
+            lifecycle_state = OrderLifecycleState::CancelPending;
+            journal->record_state(lifecycle_state);
+        } else if (observation_working(evidence.observation)) {
             lifecycle_state = evidence.observation->state;
             journal->record_state(lifecycle_state);
         } else if (accepted_add_reply_has_id(evidence)) {

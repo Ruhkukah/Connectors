@@ -464,6 +464,9 @@ int main(int argc, char** argv) {
                           fake.count(1) == posts,
                       "second order-test refused");
         const auto journal_root = std::filesystem::path(strings.journal_root);
+        std::error_code cleanup_error;
+        std::filesystem::remove_all(journal_root / strings.run_id, cleanup_error);
+        test::require(!cleanup_error, "remove completed one-shot journal before orphan-lock fixture");
         const auto active_root = journal_root / "active";
         std::filesystem::create_directories(active_root);
         for (const auto* name : {"ext_79", "user_701", "user_702", "user_703"})

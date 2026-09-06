@@ -248,12 +248,28 @@ int main(int argc, char** argv) {
             warm(host);
             test::require(env_open_count() == 1 && connection_new_count() == 1, "one warm CGate session");
 
-            const auto first_plan = host.plan();
+            const ConnectorHostOrderRequest first_request{.side = Plaza2TradeSide::Sell,
+                                                          .price = "103000",
+                                                          .base_contract_code = "RTS",
+                                                          .comment = "persistent-sell-a",
+                                                          .quantity = 1};
+            const ConnectorHostOrderRequest second_request{.side = Plaza2TradeSide::Buy,
+                                                           .price = "102250",
+                                                           .base_contract_code = "RTS",
+                                                           .comment = "persistent-buy-b",
+                                                           .quantity = 1};
+            const ConnectorHostOrderRequest third_request{.side = Plaza2TradeSide::Sell,
+                                                          .price = "103250",
+                                                          .base_contract_code = "RTS",
+                                                          .comment = "persistent-sell-c",
+                                                          .quantity = 1};
+            const auto first_plan = host.plan_order(first_request);
             test::require(first_plan.ok, "persistent first plan");
-            test::require(static_cast<bool>(host.begin_order(first_plan.canonical_json, std::string(64, '0'))) &&
-                              !host.snapshot().order_epoch_active && count(0) == 0 && count(1) == 0,
-                          "wrong persistent authorization opens no epoch");
-            test::require(!host.begin_order(first_plan.canonical_json, first_plan.sha256),
+            test::require(
+                static_cast<bool>(host.begin_order(first_request, first_plan.canonical_json, std::string(64, '0'))) &&
+                    !host.snapshot().order_epoch_active && count(0) == 0 && count(1) == 0,
+                "wrong persistent authorization opens no epoch");
+            test::require(!host.begin_order(first_request, first_plan.canonical_json, first_plan.sha256),
                           "persistent first authorization");
             test::require(host.snapshot().order_epoch_active && host.snapshot().order_authorized &&
                               !host.snapshot().order_submission_attempted,
@@ -264,8 +280,9 @@ int main(int argc, char** argv) {
             const auto posts_after_first_add = count(1);
             test::require(!host.submit_order().ok && count(1) == posts_after_first_add,
                           "persistent second Add in one epoch is refused");
-            test::require(static_cast<bool>(host.begin_order(first_plan.canonical_json, first_plan.sha256)),
-                          "new order while Add is pending is refused");
+            test::require(
+                static_cast<bool>(host.begin_order(first_request, first_plan.canonical_json, first_plan.sha256)),
+                "new order while Add is pending is refused");
             auto first_working = host.poll_order();
             test::require(!first_working.ok && first_working.state == OrderLifecycleState::Working,
                           "persistent first order returns Working state=" +
@@ -292,12 +309,17 @@ int main(int argc, char** argv) {
 
             ::setenv("MOEX_FAKE_EXT_ID", "80", 1);
             ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20103", 1);
-            const auto second_plan = host.plan();
-            test::require(second_plan.ok && second_plan.sha256 != first_plan.sha256, "fresh epoch plan authorization");
-            test::require(static_cast<bool>(host.begin_order(first_plan.canonical_json, first_plan.sha256)) &&
-                              !host.snapshot().order_epoch_active,
-                          "old epoch authorization cannot open the next epoch");
-            test::require(!host.begin_order(second_plan.canonical_json, second_plan.sha256),
+            const auto second_plan = host.plan_order(second_request);
+            test::require(second_plan.ok && second_plan.sha256 != first_plan.sha256 &&
+                              second_plan.canonical_json.find("persistent-buy-b") != std::string::npos &&
+                              second_plan.canonical_json.find("102250") != std::string::npos &&
+                              second_plan.canonical_json.find("buy") != std::string::npos,
+                          "fresh epoch application terms change the canonical plan: " + second_plan.message);
+            test::require(
+                static_cast<bool>(host.begin_order(second_request, first_plan.canonical_json, first_plan.sha256)) &&
+                    !host.snapshot().order_epoch_active,
+                "old epoch authorization cannot open the next epoch");
+            test::require(!host.begin_order(second_request, second_plan.canonical_json, second_plan.sha256),
                           "persistent second authorization");
             test::require(!host.submit_order().ok, "persistent second Add submitted");
             OrderLifecycleResult second_working;
@@ -322,9 +344,9 @@ int main(int argc, char** argv) {
             ::setenv("MOEX_FAKE_EXT_ID", "81", 1);
             ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20203", 1);
             ::setenv("MOEX_FAKE_FULL_FILL", "1", 1);
-            const auto third_plan = host.plan();
+            const auto third_plan = host.plan_order(third_request);
             test::require(third_plan.ok && third_plan.sha256 != second_plan.sha256, "filled epoch plan authorization");
-            test::require(!host.begin_order(third_plan.canonical_json, third_plan.sha256),
+            test::require(!host.begin_order(third_request, third_plan.canonical_json, third_plan.sha256),
                           "persistent filled epoch authorization");
             test::require(!host.submit_order().ok, "persistent filled Add submitted");
             const auto third_terminal = host.poll_order();
@@ -340,6 +362,312 @@ int main(int argc, char** argv) {
             ::unsetenv("MOEX_FAKE_FLAT_TRADE_REPLAY");
             ::unsetenv("MOEX_FAKE_FULL_FILL");
         }
+        {
+            // A cancel command is an application state.  A still-working
+            // TRADE row must not make CancelPending regress to Working.
+            reset();
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
+            ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "cancel-pending-host";
+            c.order.journal_root = fixture.root / "cancel-pending-journals";
+            ConnectorHost host(std::move(c));
+            warm(host);
+            const ConnectorHostOrderRequest request{.side = Plaza2TradeSide::Sell,
+                                                    .price = "103000",
+                                                    .base_contract_code = "RTS",
+                                                    .comment = "cancel-pending",
+                                                    .quantity = 1};
+            const auto plan = host.plan_order(request);
+            test::require(plan.ok && !host.begin_order(request, plan.canonical_json, plan.sha256),
+                          "cancel-pending epoch authorization");
+            const auto cancel_pending_submit = host.submit_order();
+            const auto cancel_pending_working = host.poll_order();
+            test::require(!cancel_pending_submit.ok &&
+                              (cancel_pending_working.state == OrderLifecycleState::Working ||
+                               cancel_pending_working.state == OrderLifecycleState::PartiallyFilled),
+                          "cancel-pending order reaches Working: submit=" + cancel_pending_submit.message +
+                              " poll=" + cancel_pending_working.message +
+                              " state=" + std::string(order_lifecycle_state_name(cancel_pending_working.state)));
+            test::require(host.cancel_current_order().state == OrderLifecycleState::CancelPending,
+                          "explicit cancel enters CancelPending");
+            const auto still_pending = host.poll_order();
+            test::require(!still_pending.ok && still_pending.state == OrderLifecycleState::CancelPending,
+                          "Working TRADE evidence does not regress CancelPending");
+            ::setenv("MOEX_FAKE_FORCE_TRADE_TERMINAL", "1", 1);
+            const auto cancelled = host.poll_order();
+            test::require(cancelled.ok && cancelled.state == OrderLifecycleState::Cancelled,
+                          "cancel-pending epoch eventually reaches terminal evidence");
+            test::require(!host.finish_order_epoch(), "cancel-pending epoch finishes safely");
+            ::unsetenv("MOEX_FAKE_FORCE_TRADE_TERMINAL");
+        }
+        {
+            // A definitive non-timeout cancel rejection while TRADE remains
+            // Working is an unresolved orphan, not a second-cancel invitation.
+            reset();
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_REJECT_DEL", "1", 1);
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "cancel-rejected-host";
+            c.order.journal_root = fixture.root / "cancel-rejected-journals";
+            const auto journal_root = c.order.journal_root;
+            ConnectorHost host(std::move(c));
+            warm(host);
+            const ConnectorHostOrderRequest request{.side = Plaza2TradeSide::Sell,
+                                                    .price = "103000",
+                                                    .base_contract_code = "RTS",
+                                                    .comment = "cancel-rejected",
+                                                    .quantity = 1};
+            const auto plan = host.plan_order(request);
+            test::require(plan.ok && !host.begin_order(request, plan.canonical_json, plan.sha256),
+                          "cancel-rejected epoch authorization");
+            const auto rejected_submit = host.submit_order();
+            const auto rejected_working = host.poll_order();
+            test::require(!rejected_submit.ok && (rejected_working.state == OrderLifecycleState::Working ||
+                                                  rejected_working.state == OrderLifecycleState::PartiallyFilled),
+                          "cancel-rejected order reaches Working");
+            test::require(host.cancel_current_order().state == OrderLifecycleState::CancelPending,
+                          "rejected cancel initially remains pending");
+            const auto orphan = host.poll_order();
+            test::require(!orphan.ok && !orphan.market_safe_terminal &&
+                              orphan.state == OrderLifecycleState::UnresolvedOrphanIncident &&
+                              !host.snapshot().new_order_allowed,
+                          "definitive cancel rejection is fail-closed");
+            for (const auto* name : {"ext_79", "user_701", "user_702", "user_703"})
+                test::require(std::filesystem::is_directory(journal_root / "active" / name),
+                              "definitive cancel rejection retains identifier locks");
+            test::require(static_cast<bool>(host.finish_order_epoch()), "unsafe rejected-cancel epoch cannot finish");
+            ::unsetenv("MOEX_FAKE_PUB_REPLY_REJECT_DEL");
+        }
+        {
+            // A crash after the pre-send checkpoint must restore the exact
+            // epoch identity and block a second Add until reconciliation.
+            reset();
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
+            ::unsetenv("MOEX_FAKE_FULL_FILL");
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "restart-persistent-host";
+            c.order.journal_root = fixture.root / "restart-persistent-journals";
+            const auto journal_root = c.order.journal_root;
+            const ConnectorHostOrderRequest request{.side = Plaza2TradeSide::Sell,
+                                                    .price = "103000",
+                                                    .base_contract_code = "RTS",
+                                                    .comment = "restart-epoch",
+                                                    .quantity = 1};
+            {
+                ConnectorHost host(std::move(c));
+                warm(host);
+                const auto plan = host.plan_order(request);
+                test::require(plan.ok && !host.begin_order(request, plan.canonical_json, plan.sha256),
+                              "restart epoch authorization");
+                const auto restart_submit = host.submit_order();
+                const auto restart_working = host.poll_order();
+                test::require(!restart_submit.ok && (restart_working.state == OrderLifecycleState::Working ||
+                                                     restart_working.state == OrderLifecycleState::PartiallyFilled),
+                              "restart epoch reaches Working");
+                test::require(std::filesystem::is_directory(journal_root / "active" / "ext_79"),
+                              "restart epoch retains ext lock before destruction");
+                std::ifstream checkpoint(journal_root / "persistent_session.json");
+                const std::string checkpoint_text(std::istreambuf_iterator<char>(checkpoint), {});
+                test::require(checkpoint &&
+                                  checkpoint_text.find("\"phase\": \"add_may_have_been_sent\"") != std::string::npos &&
+                                  checkpoint_text.find("\"ext_id\": 79") != std::string::npos &&
+                                  checkpoint_text.find("\"comment\": \"restart-epoch\"") != std::string::npos &&
+                                  checkpoint_text.find("\"plan_sha256\": \"") != std::string::npos,
+                              "restart checkpoint records the exact active epoch terms and hashes");
+            }
+            // Use the same original base configuration and journal root.
+            // Rebuild the exact restart configuration explicitly.
+            {
+                auto restart_config = config_for(fixture);
+                restart_config.purpose = HostPurpose::OrderTest;
+                restart_config.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+                restart_config.transport.host.arm_state.test_order_send_armed = true;
+                restart_config.order.run_id = "restart-persistent-host";
+                restart_config.order.journal_root = journal_root;
+                ConnectorHost restarted(std::move(restart_config));
+                test::require(restarted.snapshot().order_epoch_active && !restarted.snapshot().new_order_allowed,
+                              "restart restores the active epoch checkpoint");
+                const auto restart_start = restarted.start();
+                test::require(!restart_start, "restart host starts for reconciliation: " + restart_start.message);
+                for (int i = 0; i < 8 && !restarted.snapshot().observation_ready; ++i)
+                    test::require(!restarted.poll(), "restart host poll");
+                const auto blocked_plan = restarted.plan_order(request);
+                test::require(!blocked_plan.ok && static_cast<bool>(restarted.begin_order(request, "", "")),
+                              "restart blocks plan and begin before reconciliation");
+                const auto unresolved = restarted.reconcile();
+                test::require(unresolved.run_found && !unresolved.resolved && restarted.snapshot().order_epoch_active,
+                              "Working restart evidence remains unresolved and locked");
+            }
+            ::setenv("MOEX_FAKE_FULL_FILL", "1", 1);
+            auto terminal_config = config_for(fixture);
+            terminal_config.purpose = HostPurpose::OrderTest;
+            terminal_config.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            terminal_config.transport.host.arm_state.test_order_send_armed = true;
+            terminal_config.order.run_id = "restart-persistent-host";
+            terminal_config.order.journal_root = journal_root;
+            ConnectorHost terminal_host(std::move(terminal_config));
+            test::require(!terminal_host.start(), "terminal restart host starts");
+            for (int i = 0; i < 8 && !terminal_host.snapshot().observation_ready; ++i)
+                test::require(!terminal_host.poll(), "terminal restart host poll");
+            const auto resolved = terminal_host.reconcile();
+            test::require(resolved.ok && resolved.resolved && !terminal_host.snapshot().order_epoch_active &&
+                              terminal_host.snapshot().new_order_allowed,
+                          "terminal restart evidence resolves the exact epoch: ok=" + std::to_string(resolved.ok) +
+                              " resolved=" + std::to_string(resolved.resolved) + " msg=" + resolved.message +
+                              " snap=" + render_snapshot(terminal_host.snapshot(), true));
+            const auto next_plan = terminal_host.plan_order(request);
+            test::require(next_plan.ok && next_plan.canonical_json.find("\"ext_id\": 80") != std::string::npos,
+                          "post-restart next epoch uses advanced identifiers");
+            test::require(!terminal_host.stop(), "restarted host stops after reconciliation");
+            ::unsetenv("MOEX_FAKE_FULL_FILL");
+        }
+        {
+            // If the process stops after publishing the pre-send checkpoint
+            // but before a usable journal exists, the checkpoint remains a
+            // conservative active epoch and cannot authorize another Add.
+            reset();
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "checkpoint-without-journal";
+            c.order.journal_root = fixture.root / "checkpoint-without-journal";
+            const auto journal_root = c.order.journal_root;
+            const ConnectorHostOrderRequest request{.side = Plaza2TradeSide::Sell,
+                                                    .price = "103000",
+                                                    .base_contract_code = "RTS",
+                                                    .comment = "checkpoint-only",
+                                                    .quantity = 1};
+            {
+                ConnectorHost host(std::move(c));
+                warm(host);
+                const auto plan = host.plan_order(request);
+                test::require(plan.ok && !host.begin_order(request, plan.canonical_json, plan.sha256),
+                              "checkpoint-only epoch authorization");
+                const auto submitted = host.submit_order();
+                test::require(!submitted.ok && std::filesystem::exists(journal_root / "persistent_session.json"),
+                              "checkpoint-only Add attempt publishes its checkpoint");
+                std::error_code remove_error;
+                std::filesystem::remove(journal_root / "checkpoint-without-journal" / "journal.json", remove_error);
+                test::require(!remove_error, "checkpoint-only fixture removes the usable journal");
+            }
+            auto restart_config = config_for(fixture);
+            restart_config.purpose = HostPurpose::OrderTest;
+            restart_config.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            restart_config.transport.host.arm_state.test_order_send_armed = true;
+            restart_config.order.run_id = "checkpoint-without-journal";
+            restart_config.order.journal_root = journal_root;
+            ConnectorHost restarted(std::move(restart_config));
+            test::require(restarted.snapshot().order_epoch_active && !restarted.snapshot().new_order_allowed,
+                          "checkpoint-only restart remains blocked");
+            test::require(!restarted.start(), "checkpoint-only restart starts for reconciliation");
+            for (int i = 0; i < 8 && !restarted.snapshot().observation_ready; ++i)
+                test::require(!restarted.poll(), "checkpoint-only restart poll");
+            const auto unresolved = restarted.reconcile();
+            test::require(unresolved.run_found && !unresolved.resolved && unresolved.locks_retained &&
+                              !restarted.snapshot().new_order_allowed && count(1) == 1,
+                          "checkpoint without journal never authorizes a second Add");
+            ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+            ::unsetenv("MOEX_FAKE_EXT_ID");
+            ::unsetenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
+        }
+        {
+            // A timeout does not prove cancellation.  The epoch remains
+            // CancelPending and cannot authorize another Add.
+            reset();
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_TIMEOUT_DEL", "1", 1);
+            ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "cancel-timeout-host";
+            c.order.journal_root = fixture.root / "cancel-timeout-journals";
+            ConnectorHost host(std::move(c));
+            warm(host);
+            const ConnectorHostOrderRequest request{.side = Plaza2TradeSide::Sell,
+                                                    .price = "103000",
+                                                    .base_contract_code = "RTS",
+                                                    .comment = "cancel-timeout",
+                                                    .quantity = 1};
+            const auto plan = host.plan_order(request);
+            test::require(plan.ok && !host.begin_order(request, plan.canonical_json, plan.sha256),
+                          "cancel-timeout epoch authorization");
+            static_cast<void>(host.submit_order());
+            static_cast<void>(host.poll_order());
+            test::require(host.cancel_current_order().state == OrderLifecycleState::CancelPending,
+                          "timeout cancel enters CancelPending");
+            const auto timeout = host.poll_order();
+            test::require(!timeout.ok && timeout.state == OrderLifecycleState::CancelPending &&
+                              !host.snapshot().new_order_allowed,
+                          "cancel timeout remains unresolved and blocks a new epoch");
+            ::unsetenv("MOEX_FAKE_PUB_REPLY_TIMEOUT_DEL");
+        }
+        {
+            // Exact-ext recovery has the same fail-closed command semantics.
+            reset();
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
+            ::setenv("MOEX_FAKE_MISSING_TRADE_ORDER", "1", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_REJECT_RECOVERY", "1", 1);
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "recovery-rejected-host";
+            c.order.journal_root = fixture.root / "recovery-rejected-journals";
+            const auto journal_root = c.order.journal_root;
+            ConnectorHost host(std::move(c));
+            warm(host);
+            const ConnectorHostOrderRequest request{.side = Plaza2TradeSide::Sell,
+                                                    .price = "103000",
+                                                    .base_contract_code = "RTS",
+                                                    .comment = "recovery-rejected",
+                                                    .quantity = 1};
+            const auto plan = host.plan_order(request);
+            test::require(plan.ok && !host.begin_order(request, plan.canonical_json, plan.sha256),
+                          "recovery-rejected epoch authorization");
+            static_cast<void>(host.submit_order());
+            static_cast<void>(host.poll_order());
+            const auto recovery_pending = host.cancel_current_order();
+            test::require(!recovery_pending.ok && recovery_pending.state == OrderLifecycleState::CancelPending,
+                          "explicit cancel enters recovery CancelPending");
+            const auto recovery_orphan = host.poll_order();
+            test::require(!recovery_orphan.ok && !recovery_orphan.market_safe_terminal &&
+                              recovery_orphan.state == OrderLifecycleState::UnresolvedOrphanIncident &&
+                              std::filesystem::is_directory(journal_root / "active" / "ext_79"),
+                          "definitive recovery rejection is fail-closed with locks retained");
+            ::unsetenv("MOEX_FAKE_MISSING_TRADE_ORDER");
+            ::unsetenv("MOEX_FAKE_PUB_REPLY_REJECT_RECOVERY");
+        }
+        ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+        ::unsetenv("MOEX_FAKE_EXT_ID");
+        ::unsetenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
+        ::unsetenv("MOEX_FAKE_PUB_REPLY_REJECT_DEL");
+        ::unsetenv("MOEX_FAKE_FORCE_TRADE_TERMINAL");
         dlclose(library);
         test::remove_tree(root);
         std::cout << "connector host scenarios passed\n";
