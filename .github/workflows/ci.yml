@@ -137,6 +137,7 @@ jobs:
           plaza2_trade_transport_scenarios_test
           connector_host_test
           moexctl
+          moex_c_api_v2_test
 
       - name: Run critical component sanitizer tests
         env:

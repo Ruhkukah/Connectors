@@ -53,8 +53,8 @@ file(MAKE_DIRECTORY "${MOEX_TOOLS_BUILD_DIR}")
 file(MAKE_DIRECTORY "${MOEX_APPS_BUILD_DIR}")
 file(MAKE_DIRECTORY "${MOEX_TEST_OUTPUT_DIR}")
 
-add_library(moex_phase0_core STATIC src/phase0_core.cpp)
-add_library(moex_phase0_abi SHARED src/phase0_core.cpp)
+add_library(moex_phase0_core STATIC src/phase0_core.cpp src/moex_c_api_v2.cpp)
+add_library(moex_phase0_abi SHARED src/phase0_core.cpp src/moex_c_api_v2.cpp)
 foreach(target_name IN ITEMS moex_phase0_core moex_phase0_abi)
     target_include_directories(${target_name} PUBLIC "${MOEX_SOURCE_ROOT}/include")
     target_compile_features(${target_name} PUBLIC cxx_std_20)
@@ -76,8 +76,29 @@ add_subdirectory(connectors/plaza2_twime_reconciler)
 add_subdirectory(connectors/plaza2_trade)
 add_subdirectory(connectors/connector_host)
 
+# The shared V1/V2 ABI library embeds the ConnectorHost static dependency
+# closure.  Keep that closure position-independent on ELF platforms; the
+# static-only test targets remain behaviorally unchanged.
+set_target_properties(
+    moex_phase0_core
+    moex_plaza2_cgate_metadata
+    moex_plaza2_cgate_runtime
+    moex_plaza2_cgate_fake_engine
+    moex_plaza2_cgate_private_state
+    moex_plaza2_cgate_live_session
+    moex_plaza2_cgate_aggr20_md
+    moex_plaza2_trade_offline_codec
+    moex_plaza2_trade_order_lifecycle
+    moex_twime_sbe
+    moex_twime_trade
+    moex_plaza2_twime_reconciler
+    moex_connector_host
+    PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 target_link_libraries(moex_phase0_core PUBLIC moex_plaza2_cgate_private_state moex_plaza2_twime_reconciler)
 target_link_libraries(moex_phase0_abi PUBLIC moex_plaza2_cgate_private_state moex_plaza2_twime_reconciler)
+target_link_libraries(moex_phase0_core PUBLIC moex_connector_host)
+target_link_libraries(moex_phase0_abi PUBLIC moex_connector_host)
 
 if(BUILD_TESTING OR MOEX_BUILD_OPERATOR_TOOLS)
     add_subdirectory(apps)

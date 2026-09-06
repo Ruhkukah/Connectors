@@ -11,6 +11,10 @@ public enum MoexResult
     AlreadyStarted = 4,
     NotStarted = 5,
     Overflow = 6,
+    NullPointer = 7,
+    BufferTooSmall = 8,
+    SnapshotUnavailable = 9,
+    TranslationFailed = 10,
     InternalError = 255
 }
 
