@@ -457,7 +457,7 @@ void test_post_success_plus_free_failure() {
             "successful post certainty must remain posted");
     require(transport.commands.size() == 2, "working order should receive one DelOrder");
     std::int64_t del_order_id = 0;
-    std::memcpy(&del_order_id, transport.commands[1].payload.data() + 4, sizeof(del_order_id));
+    std::memcpy(&del_order_id, transport.commands[1].payload.data() + 8, sizeof(del_order_id));
     require(del_order_id == 9001, "DelOrder must use the accepted AddOrder reply ID");
     std::filesystem::remove_all(root);
 }

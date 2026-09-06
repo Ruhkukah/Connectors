@@ -1070,13 +1070,13 @@ int main(int argc, char** argv) {
         const Plaza2TradeCodec codec;
         const auto add = codec.encode(Plaza2TradeCommandRequest{add_request()});
         test_authorized_send(fixture);
-        require(add.validation.ok() && add.payload.size() == 112,
+        require(add.validation.ok() && add.payload.size() == 128,
                 "AddOrder fixture must use reviewed payload size (got " + std::to_string(add.payload.size()) + ", " +
                     add.validation.message + ")");
         auto transport_config = make_config(fixture);
         transport_config.authorized_intent->add_payload_sha256 = cgate::plaza2_sha256_hex(add.payload);
         const auto recovery = codec.encode(Plaza2TradeCommandRequest{recovery_request()});
-        require(recovery.validation.ok() && recovery.payload.size() == 49,
+        require(recovery.validation.ok() && recovery.payload.size() == 60,
                 "exact-ext recovery fixture must use reviewed payload size");
         transport_config.authorized_intent->recovery_payload_sha256 = cgate::plaza2_sha256_hex(recovery.payload);
         transport_config.authorized_intent->canonical_json =

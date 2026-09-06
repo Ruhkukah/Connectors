@@ -106,6 +106,30 @@ and independently tested before another submission attempt.
 Evidence: `docs/evidence/plaza2_test_order_v1_20260906/`.
 PR remains draft; **actual TEST order lifecycle qualification has not passed**.
 
+### Wire-layout correction
+
+The codec now follows official CGate 9.9 cN+1 storage and pack(4) alignment for
+all nine already-implemented command families. This does not enable additional
+send modes or command families. Transport intent decoding uses the corrected
+AddOrder/recovery offsets. Reply decoding uses c255+terminator storage and the
+separate FORTS_MSG99 c128 layout. Generated metadata now includes actual offsets
+and aligned record sizes. Previous payload hashes cannot authorize corrected
+payloads; the delegated live exercise generates a new plan.
+
+Independent test structures come from installed official schemetool output;
+all command bytes are compared to those structures, and full-width reply text,
+order IDs, cancel amount, recovery count and flood reply are checked. Fake
+allocation sizes now use those official structures, eliminating the former
+codec/fake shared mistaken size assumptions. Packed members are copied without
+binding misaligned references. The operator driver also records allocation,
+post/free return codes and both payload sizes for the next live result.
+
+Correction validation: full CTest 158/158, PLAZA 48/48, sanitizer label 66/66,
+ASan/UBSan combined selection 109/109, including ABI/no-send/style/Unicode and
+diff checks. macOS leak detector remains disabled; ASan and UBSan are enabled.
+The prior receipt's exact bytes are preserved as `execution_safety_v4.canonical.bin`;
+its JSON sibling is a readable formatting copy.
+
 ## First live exercise procedure
 
 Use one continuously pumped host with current authoritative session ID and

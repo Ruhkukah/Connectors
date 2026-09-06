@@ -1,4 +1,5 @@
 #include "plaza2_trade_test_support.hpp"
+#include "plaza2_trade_official_wire_test_support.hpp"
 
 #include <cstring>
 #include <iostream>
@@ -20,7 +21,7 @@ template <typename T> void append_le(std::vector<std::byte>& out, T value) {
 
 void append_message(std::vector<std::byte>& out, std::string_view value) {
     const auto start = out.size();
-    out.resize(start + 255, std::byte{0});
+    out.resize(start + 256, std::byte{0});
     std::memcpy(out.data() + start, value.data(), value.size());
 }
 
@@ -59,6 +60,7 @@ void test_error_decoding() {
     append_le<std::int32_t>(flood, 3);
     append_le<std::int32_t>(flood, 10);
     append_message(flood, "flood");
+    flood.resize(sizeof(official_cgate99::FORTS_MSG99));
 
     const Plaza2TradeCodec codec;
     Plaza2TradeValidationResult validation;
@@ -90,6 +92,37 @@ void test_unknown_and_short_replies_fail_closed() {
     require(validation.code == Plaza2TradeValidationCode::BufferTooSmall, "short reply should fail closed");
 }
 
+void test_official_reply_layouts() {
+    using namespace moex::plaza2_trade::test_support;
+    const Plaza2TradeCodec codec;
+    official_cgate99::FORTS_MSG179 add{};
+    add.order_id = 0x102030405060708LL;
+    std::memset(add.message, 'X', 255);
+    Plaza2TradeValidationResult validation;
+    const auto accepted = codec.decode_reply(179, wire_bytes(add), validation);
+    require(validation.ok() && accepted.order_id == std::int64_t{add.order_id} && accepted.message.size() == 255,
+            "official Add reply offset and full c255 text must decode");
+    auto truncated = wire_bytes(add);
+    truncated.pop_back();
+    static_cast<void>(codec.decode_reply(179, truncated, validation));
+    require(!validation.ok(), "old compact Add reply length must fail closed");
+    official_cgate99::FORTS_MSG177 cancel{};
+    cancel.amount = 12345;
+    const auto cancelled = codec.decode_reply(177, wire_bytes(cancel), validation);
+    require(validation.ok() && cancelled.amount == cancel.amount, "official cancel amount offset");
+    official_cgate99::FORTS_MSG186 recovery{};
+    recovery.num_orders = 6789;
+    const auto recovered = codec.decode_reply(186, wire_bytes(recovery), validation);
+    require(validation.ok() && recovered.num_orders == recovery.num_orders, "official recovery count offset");
+    official_cgate99::FORTS_MSG99 flood{};
+    flood.queue_size = 3;
+    flood.penalty_remain = 10;
+    std::memset(flood.message, 'Y', 128);
+    const auto refused = codec.decode_reply(99, wire_bytes(flood), validation);
+    require(validation.ok() && refused.queue_size == 3 && refused.penalty_remain == 10 && refused.message.size() == 128,
+            "official flood reply c128 and padding");
+}
+
 } // namespace
 
 int main() {
@@ -98,6 +131,7 @@ int main() {
         test_move_reply_decoding();
         test_error_decoding();
         test_unknown_and_short_replies_fail_closed();
+        test_official_reply_layouts();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

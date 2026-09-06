@@ -14,10 +14,15 @@ namespace moex::plaza2_trade {
 
 namespace {
 
-constexpr std::size_t kReplyMessageLength = 255;
+constexpr std::size_t kReplyMessageLength = 256; // CGate c255 includes its terminating byte.
+
+void align_payload(std::vector<std::byte>& out, std::size_t alignment) {
+    out.resize((out.size() + alignment - 1) / alignment * alignment, std::byte{0});
+}
 
 template <typename T> void append_le(std::vector<std::byte>& out, T value) {
     static_assert(std::is_integral_v<T>);
+    align_payload(out, std::min<std::size_t>(sizeof(T), 4)); // Official scheme uses pack(4).
     using Unsigned = std::make_unsigned_t<T>;
     auto raw = static_cast<Unsigned>(value);
     if constexpr (std::endian::native != std::endian::little) {
@@ -41,6 +46,8 @@ template <typename T> void append_le(std::vector<std::byte>& out, T value) {
 
 template <typename T> std::optional<T> load_le(std::span<const std::byte> bytes, std::size_t& offset) {
     static_assert(std::is_integral_v<T>);
+    constexpr auto alignment = std::min<std::size_t>(sizeof(T), 4);
+    offset = (offset + alignment - 1) / alignment * alignment;
     if (offset + sizeof(T) > bytes.size()) {
         return std::nullopt;
     }
@@ -174,7 +181,7 @@ Plaza2TradeValidationResult validate_order_type(const std::optional<Plaza2TradeO
 
 void append_string(std::vector<std::byte>& out, const std::optional<std::string>& value, std::size_t width) {
     const auto start = out.size();
-    out.resize(start + width, std::byte{0});
+    out.resize(start + width + 1, std::byte{0});
     if (value) {
         std::memcpy(out.data() + start, value->data(), value->size());
     }
@@ -678,6 +685,9 @@ Plaza2TradeEncodedCommand Plaza2TradeCodec::encode(const Plaza2TradeCommandReque
             }
         },
         request);
+    if (encoded.command_kind != Plaza2TradeCommandKind::DelOrdersByBFLimit) {
+        align_payload(encoded.payload, 4);
+    }
     return encoded;
 }
 
@@ -747,10 +757,10 @@ Plaza2TradeDecodedReply Plaza2TradeCodec::decode_reply(std::int32_t msgid, std::
         break;
     case 99:
         reply.message_name = "FORTS_MSG99";
-        if (auto queue = read_i4(); queue && offset + 4 + kReplyMessageLength <= payload.size()) {
+        if (auto queue = read_i4(); queue && payload.size() >= 140) {
             reply.queue_size = *queue;
             reply.penalty_remain = read_i4();
-            reply.message = read_message();
+            reply.message = read_string(payload, offset, 129); // FORTS_MSG99 uses c128, not c255.
             reply.status = Plaza2TradeReplyStatusCategory::BusinessRejection;
             return reply;
         }

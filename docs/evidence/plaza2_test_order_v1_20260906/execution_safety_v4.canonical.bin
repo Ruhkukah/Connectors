@@ -3,30 +3,9 @@
   "authorized_intent_sha256": "81e40b34db8d8bdba34377cda06012f7c4d5fc97dc0eaeefe0a097dfa376ad8d",
   "target_isin_id": 4433036,
   "target_refdata_lifenum": 101386961,
-  "target_fut_instruments_provenance": {
-    "stream_code": 4096455455,
-    "table_code": 1956699083,
-    "isin_id": 4433036,
-    "repl_rev": 125,
-    "lifenum": 101386961,
-    "present": true
-  },
-  "target_fut_sess_contents_provenance": {
-    "stream_code": 4096455455,
-    "table_code": 2984491968,
-    "isin_id": 4433036,
-    "repl_rev": 3309,
-    "lifenum": 101386961,
-    "present": true
-  },
-  "target_session_provenance": {
-    "stream_code": 4096455455,
-    "table_code": 3627922065,
-    "sess_id": 11700,
-    "repl_rev": 6,
-    "lifenum": 101386961,
-    "present": true
-  },
+  "target_fut_instruments_provenance": {"stream_code":4096455455,"table_code":1956699083,"isin_id":4433036,"repl_rev":125,"lifenum":101386961,"present":true},
+  "target_fut_sess_contents_provenance": {"stream_code":4096455455,"table_code":2984491968,"isin_id":4433036,"repl_rev":3309,"lifenum":101386961,"present":true},
+  "target_session_provenance": {"stream_code":4096455455,"table_code":3627922065,"sess_id":11700,"repl_rev":6,"lifenum":101386961,"present":true},
   "top_bid": 12910000,
   "top_ask": 12914000,
   "aggr20_repl_id": 680,
@@ -35,7 +14,7 @@
   "authorized_max_aggr20_age_ms": 5000,
   "require_zero_starting_position": true,
   "exchange_moment": 1788706503,
-  "exchange_moment_ns": 1788695703051839500,
+  "exchange_moment_ns": 1788695703051839376,
   "aggr_online": true,
   "aggr_snapshot_complete": true,
   "session_id": 11700,
@@ -66,62 +45,8 @@
   "participant_user_multileg_deal_count": 0,
   "reconstructed_target_xpos": 0,
   "active_own_order_count": 0,
-  "trade_replay_anchor_used": {
-    "trades_rev": 2337138078,
-    "trades_lifenum": 66739,
-    "server_time": 1788656401
-  },
-  "private_streams": [
-    {
-      "code": 507437698,
-      "online": true,
-      "snapshot_complete": true,
-      "periodic_snapshot_consistent": false,
-      "commit_sequence": 22
-    },
-    {
-      "code": 691290039,
-      "online": true,
-      "snapshot_complete": true,
-      "periodic_snapshot_consistent": false,
-      "commit_sequence": 9
-    },
-    {
-      "code": 1282335427,
-      "online": true,
-      "snapshot_complete": true,
-      "periodic_snapshot_consistent": false,
-      "commit_sequence": 1
-    },
-    {
-      "code": 1403882346,
-      "online": true,
-      "snapshot_complete": true,
-      "periodic_snapshot_consistent": false,
-      "commit_sequence": 8
-    },
-    {
-      "code": 1933900742,
-      "online": true,
-      "snapshot_complete": true,
-      "periodic_snapshot_consistent": false,
-      "commit_sequence": 132
-    },
-    {
-      "code": 2555675420,
-      "online": true,
-      "snapshot_complete": true,
-      "periodic_snapshot_consistent": true,
-      "commit_sequence": 6
-    },
-    {
-      "code": 4096455455,
-      "online": true,
-      "snapshot_complete": true,
-      "periodic_snapshot_consistent": false,
-      "commit_sequence": 0
-    }
-  ],
+  "trade_replay_anchor_used": {"trades_rev": 2337138078, "trades_lifenum": 66739, "server_time": 1788656401},
+  "private_streams": [{"code":507437698,"online":true,"snapshot_complete":true,"periodic_snapshot_consistent":false,"commit_sequence":22},{"code":691290039,"online":true,"snapshot_complete":true,"periodic_snapshot_consistent":false,"commit_sequence":9},{"code":1282335427,"online":true,"snapshot_complete":true,"periodic_snapshot_consistent":false,"commit_sequence":1},{"code":1403882346,"online":true,"snapshot_complete":true,"periodic_snapshot_consistent":false,"commit_sequence":8},{"code":1933900742,"online":true,"snapshot_complete":true,"periodic_snapshot_consistent":false,"commit_sequence":132},{"code":2555675420,"online":true,"snapshot_complete":true,"periodic_snapshot_consistent":true,"commit_sequence":6},{"code":4096455455,"online":true,"snapshot_complete":true,"periodic_snapshot_consistent":false,"commit_sequence":0}],
   "target_refdata_provenance_ready": true,
   "target_aggr20_uncrossed": true,
   "passive_non_marketable": true,

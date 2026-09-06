@@ -1,17 +1,8 @@
-
+Official schemetool output excerpt: blank lines and embedded scheme string omitted.
 #ifndef _message_H_
 #define _message_H_
-
-
-
 // Scheme "message" description
-
-
 #pragma pack(push, 4)
-
-    static const char message_scheme_string[] = "|STRING|XeNqllMtuwjAQRff9iiibbGghlJIgEVCl7rvq2nLsCVj4QW0Hkb-vE1HygoBgGfvOzfjMY7k-Cu4dQBumZOKHbxPfA0kUZXKT-LnNXmN_vXpZGrIFAaulxSkHT2IBSfBJ6bemoANPmA2jSTCLZsFqmTHg9CRJtdqBRs4PAs8We3dEZsG4LWKGScTov4D1BIQzkLbt8t4VUaavO5Tn12-xULm01-_3mpH6z2HUy08JAbUBmU66ihMHqwY0cLRtCh6FDOfcJv7E7yFDriBkhzgTzN4XQ7EFBMf9OYW4h1CVlCtfoSQU9_kKbMkWachqQr23SUKc4jcHUycbDpk6pHvOsCTQYEKaIV4Z4phpfAo5-x8wz913GPQEzhJMLYgWo8ViFE6qdMdVa7c7_At4p8Pn4SMdrkqTZnHj5wHdMxMXJ-tJZtFtZj8GdMXNNMDNHwGX5gUywPn12ZRKIlMYC2JgfwxCSrEBl4Z0jyYdoNOP54b0xl5j0lidl6sDCWx2jcI_XaZ4fqFM49MW_wOnl_cc";
-
-
     struct AddOrder
     {
         char broker_code[5]; // c4
@@ -30,16 +21,10 @@
         char match_ref[11]; // c10
         signed char ncc_request; // i1
         char compliance_id[2]; // c1
-        
     };
-
-
     const size_t sizeof_AddOrder = 128;
     const size_t AddOrder_index = 0;
-
     const unsigned int AddOrder_msgid = 0x000001da;
-
-
     struct DelOrder
     {
         char broker_code[5]; // c4
@@ -47,16 +32,10 @@
         signed char ncc_request; // i1
         char client_code[4]; // c3
         signed int isin_id; // i4
-        
     };
-
-
     const size_t sizeof_DelOrder = 28;
     const size_t DelOrder_index = 1;
-
     const unsigned int DelOrder_msgid = 0x000001cd;
-
-
     struct DelUserOrders
     {
         char broker_code[5]; // c4
@@ -67,21 +46,9 @@
         signed int ext_id; // i4
         signed int isin_id; // i4
         signed char instrument_mask; // i1
-        
     };
-
-
     const size_t sizeof_DelUserOrders = 60;
     const size_t DelUserOrders_index = 2;
-
     const unsigned int DelUserOrders_msgid = 0x000001d2;
-
-
 #pragma pack(pop)
-
-
-
-
-
-
 #endif //_message_H_

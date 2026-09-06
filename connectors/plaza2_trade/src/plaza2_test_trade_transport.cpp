@@ -514,16 +514,15 @@ std::string fixed_payload_string(std::span<const std::byte> payload, std::size_t
 }
 
 std::optional<DecodedAddPayload> decode_add_payload(std::span<const std::byte> payload) {
-    // Reviewed AddOrder(474) ABI: broker[4], isin i4, client[3], dir i4,
-    // type i4, amount i4, price[17], comment[20], broker_to[20], ext_id i4.
-    if (payload.size() < 112) {
+    // Official CGate 9.9 AddOrder(474): cN occupies N+1 bytes, pack(4).
+    if (payload.size() != 128) {
         return std::nullopt;
     }
-    const auto isin = read_little_endian<std::int32_t>(payload, 4);
-    const auto side = read_little_endian<std::int32_t>(payload, 11);
-    const auto type = read_little_endian<std::int32_t>(payload, 15);
-    const auto amount = read_little_endian<std::int32_t>(payload, 19);
-    const auto ext_id = read_little_endian<std::int32_t>(payload, 80);
+    const auto isin = read_little_endian<std::int32_t>(payload, 8);
+    const auto side = read_little_endian<std::int32_t>(payload, 16);
+    const auto type = read_little_endian<std::int32_t>(payload, 20);
+    const auto amount = read_little_endian<std::int32_t>(payload, 24);
+    const auto ext_id = read_little_endian<std::int32_t>(payload, 88);
     if (!isin || !side || !type || !amount || !ext_id ||
         (*side != static_cast<std::int32_t>(Plaza2TradeSide::Buy) &&
          *side != static_cast<std::int32_t>(Plaza2TradeSide::Sell)) ||
@@ -534,11 +533,11 @@ std::optional<DecodedAddPayload> decode_add_payload(std::span<const std::byte> p
     return DecodedAddPayload{
         .broker_code = fixed_payload_string(payload, 0, 4),
         .isin_id = *isin,
-        .client_code = fixed_payload_string(payload, 8, 3),
+        .client_code = fixed_payload_string(payload, 12, 3),
         .side = static_cast<Plaza2TradeSide>(*side),
         .order_type = static_cast<Plaza2TradeOrderType>(*type),
         .amount = *amount,
-        .price = fixed_payload_string(payload, 23, 17),
+        .price = fixed_payload_string(payload, 28, 17),
         .ext_id = *ext_id,
     };
 }
@@ -554,21 +553,21 @@ struct DecodedRecoveryPayload {
 };
 
 std::optional<DecodedRecoveryPayload> decode_recovery_payload(std::span<const std::byte> payload) {
-    if (payload.size() < 49) {
+    if (payload.size() != 60) {
         return std::nullopt;
     }
-    const auto buy_sell = read_little_endian<std::int32_t>(payload, 4);
-    const auto ext_id = read_little_endian<std::int32_t>(payload, 40);
-    const auto isin_id = read_little_endian<std::int32_t>(payload, 44);
-    const auto mask = read_little_endian<std::int8_t>(payload, 48);
+    const auto buy_sell = read_little_endian<std::int32_t>(payload, 8);
+    const auto ext_id = read_little_endian<std::int32_t>(payload, 48);
+    const auto isin_id = read_little_endian<std::int32_t>(payload, 52);
+    const auto mask = read_little_endian<std::int8_t>(payload, 56);
     if (!buy_sell || !ext_id || !isin_id || !mask) {
         return std::nullopt;
     }
     return DecodedRecoveryPayload{
         .broker_code = fixed_payload_string(payload, 0, 4),
         .buy_sell = *buy_sell,
-        .client_code = fixed_payload_string(payload, 12, 3),
-        .base_contract_code = fixed_payload_string(payload, 15, 25),
+        .client_code = fixed_payload_string(payload, 16, 3),
+        .base_contract_code = fixed_payload_string(payload, 20, 25),
         .ext_id = *ext_id,
         .isin_id = *isin_id,
         .instrument_mask = *mask,
