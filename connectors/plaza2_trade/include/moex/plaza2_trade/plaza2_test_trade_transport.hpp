@@ -293,6 +293,10 @@ class Plaza2TestTradeTransport final : public OrderLifecycleTransport {
 
   private:
     friend class moex::connector_host::ConnectorHost;
+    // ConnectorHost installs the receipt for a persistent epoch before the
+    // lifecycle can allocate or post its AddOrder message.  The operation is
+    // intentionally private so application code cannot redirect audit output.
+    [[nodiscard]] plaza2::cgate::Plaza2Error set_execution_safety_receipt_path_for_epoch(std::filesystem::path path);
     // ConnectorHost calls this only after PersistentOrderController has
     // recorded a safe terminal epoch. It clears order-local state while the
     // underlying Plaza2TestSessionHost remains started and warm.

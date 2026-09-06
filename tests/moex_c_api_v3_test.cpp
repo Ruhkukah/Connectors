@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -140,6 +141,11 @@ void require_result_header(MoexPersistentOrderResultV3& value) {
     value.struct_size = sizeof(value);
     value.abi_version = MOEX_C_ABI_V3_VERSION;
 }
+
+std::string read_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -256,6 +262,15 @@ int main(int argc, char** argv) {
                           result.market_safe_terminal != 0,
                       "epoch one Cancelled");
         test::require(moex_v3_finish_order_epoch(handle) == MOEX_RESULT_OK, "epoch one finish");
+        const auto epoch_one_directory = std::filesystem::path(strings.journal) / "cabi-v3-test-epoch-1";
+        const auto epoch_one_journal = epoch_one_directory / "journal.json";
+        const auto epoch_one_receipt = epoch_one_directory / "execution_safety.json";
+        test::require(std::filesystem::exists(epoch_one_journal) && std::filesystem::exists(epoch_one_receipt),
+                      "epoch one journal and execution receipt exist");
+        const auto epoch_one_receipt_bytes = read_file(epoch_one_receipt);
+        test::require(epoch_one_receipt_bytes.find("\"authorized_intent_sha256\": \"" +
+                                                   std::string(first_plan.plan_sha256) + "\"") != std::string::npos,
+                      "epoch one receipt binds epoch one plan SHA");
 
         ::setenv("MOEX_FAKE_EXT_ID", "80", 1);
         ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20103", 1);
@@ -286,6 +301,17 @@ int main(int argc, char** argv) {
         }
         test::require(result.ok != 0 && result.lifecycle_state == MOEX_V3_ORDER_CANCELLED, "epoch two Cancelled");
         test::require(moex_v3_finish_order_epoch(handle) == MOEX_RESULT_OK, "epoch two finish");
+        const auto epoch_two_directory = std::filesystem::path(strings.journal) / "cabi-v3-test-epoch-2";
+        const auto epoch_two_receipt = epoch_two_directory / "execution_safety.json";
+        test::require(std::filesystem::exists(epoch_two_directory / "journal.json") &&
+                          std::filesystem::exists(epoch_two_receipt),
+                      "epoch two journal and execution receipt exist");
+        const auto epoch_two_receipt_bytes = read_file(epoch_two_receipt);
+        test::require(epoch_two_receipt_bytes.find("\"authorized_intent_sha256\": \"" +
+                                                   std::string(second_plan.plan_sha256) + "\"") != std::string::npos,
+                      "epoch two receipt binds epoch two plan SHA");
+        test::require(read_file(epoch_one_receipt) == epoch_one_receipt_bytes,
+                      "epoch two does not overwrite epoch one receipt");
         test::require(fake.count(0) == 4 && fake.count(1) == 4,
                       "one Add and one cancel per epoch msgnew=" + std::to_string(fake.count(0)) +
                           " post=" + std::to_string(fake.count(1)));

@@ -33,6 +33,13 @@ cached bytes, while successful begin/finish/stop and reconciliation resolution
 invalidate the cache. Native `ConnectorHost` remains authoritative and
 recomputes readiness during begin.
 
+Persistent epochs install their execution-safety receipt path before the
+controller can submit: `<journal_root>/<epoch_run_id>/execution_safety.json`.
+The private transport hook accepts that path only before any AddOrder attempt
+or uncertainty, so the transport remains authoritative and receipt-write
+failure remains fail-closed before publisher allocation. The configured base
+receipt path remains unchanged for the one-shot `OrderTest` surface.
+
 Snapshots preserve host/observation state, target and session status, BBO and
 age, row-level REFDATA provenance, POS/TRADE anchor and position evidence,
 independent USERORDERBOOK periodic state, active-order census, epoch flags,
@@ -66,6 +73,8 @@ reconciliation remains callable through V3. A separately created terminal
 journal is then recovered through V3 with a deliberately crossed current
 book, zero additional publisher calls, released locks, and an explicit
 reconciliation result.
+The test also verifies that both epoch-local receipts bind their own plan SHA
+and that completing epoch two leaves epoch one's receipt bytes unchanged.
 
 The managed smoke independently validates all layouts, native-library lifetime
 protection, the same two-epoch sequence, exact byte plans, host-managed

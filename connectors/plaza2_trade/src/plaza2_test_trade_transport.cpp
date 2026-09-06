@@ -1244,7 +1244,9 @@ struct Plaza2TestTradeTransport::Impl {
         std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used;
     };
 
-    explicit Impl(Plaza2TestTradeTransportConfig initial) : config(std::move(initial)), host(config.host) {}
+    explicit Impl(Plaza2TestTradeTransportConfig initial)
+        : config(std::move(initial)), base_execution_safety_receipt_path(config.execution_safety_receipt_path),
+          host(config.host) {}
 
     [[nodiscard]] const Plaza2AuthorizedOrderIntent* intent() const noexcept {
         return config.authorized_intent.has_value() ? &*config.authorized_intent : nullptr;
@@ -2177,6 +2179,7 @@ struct Plaza2TestTradeTransport::Impl {
     }
 
     Plaza2TestTradeTransportConfig config;
+    std::filesystem::path base_execution_safety_receipt_path;
     Plaza2TestSessionHost host;
     std::optional<Plaza2ExecutionSafetyReceipt> last_receipt;
     std::string bound_authorized_plan_sha256;
@@ -2203,6 +2206,20 @@ Plaza2Error Plaza2TestTradeTransport::install_authorized_intent(Plaza2Authorized
     return impl_->install_authorized_intent(std::move(intent));
 }
 
+Plaza2Error Plaza2TestTradeTransport::set_execution_safety_receipt_path_for_epoch(std::filesystem::path path) {
+    if (path.empty() || path.filename().empty()) {
+        return invalid("persistent order epoch requires an explicit execution-safety receipt path");
+    }
+    if (impl_->add_attempted || impl_->order_may_exist || impl_->cancel_attempted || impl_->recovery_attempted) {
+        return invalid("execution-safety receipt path cannot change after an order attempt");
+    }
+    if (!impl_->host.started()) {
+        return invalid("execution-safety receipt path requires a started session host");
+    }
+    impl_->config.execution_safety_receipt_path = std::move(path);
+    return {};
+}
+
 void Plaza2TestTradeTransport::mark_order_epoch_terminal() noexcept {
     impl_->safe_terminal_epoch = true;
 }
@@ -2224,6 +2241,7 @@ Plaza2Error Plaza2TestTradeTransport::reset_order_epoch() {
     impl_->cancel_order_id.reset();
     impl_->cancel_identity_conflict = false;
     impl_->safe_terminal_epoch = false;
+    impl_->config.execution_safety_receipt_path = impl_->base_execution_safety_receipt_path;
     return {};
 }
 
