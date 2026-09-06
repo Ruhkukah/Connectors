@@ -259,6 +259,7 @@ struct FakeConnection {
     bool userbook_periodic_clear_emitted{false};
     bool userbook_periodic_info_emitted{false};
     bool pos_anchor_drift_emitted{false};
+    bool forced_trade_terminal_emitted{false};
     bool trade_open_error_seen{false};
 };
 
@@ -276,8 +277,11 @@ struct FakePublisherMessage {
 
 bool g_env_open = false;
 bool g_cancel_after_cleanup = false;
+std::uint32_t g_persistent_order_epoch = 0;
 std::uint64_t g_pub_msgnew_calls = 0;
 std::uint64_t g_pub_post_calls = 0;
+std::uint64_t g_env_open_count = 0;
+std::uint64_t g_conn_new_count = 0;
 std::unordered_map<void*, FakePublisherMessage*> g_publisher_messages;
 
 std::uint32_t configured_result(const char* variable) {
@@ -347,12 +351,16 @@ template <typename T> void write_reply_scalar(std::vector<std::byte>& payload, s
     }
 }
 
+bool fake_flag(const char* name);
+
 std::vector<std::byte> make_trade_reply(std::string_view message_name) {
     const bool add = message_name == "AddOrder";
     const bool recovery = message_name == "DelUserOrders";
     std::vector<std::byte> payload(4 + sizeof(official_cgate99::FORTS_MSG179::message) + (add ? 8 : 4));
     const auto* code_text = std::getenv("MOEX_FAKE_PUB_REPLY_CODE");
-    const auto code = code_text != nullptr && std::string_view(code_text) == "reject" ? 1 : 0;
+    const auto command_rejected = (message_name == "DelOrder" && fake_flag("MOEX_FAKE_PUB_REPLY_REJECT_DEL")) ||
+                                  (message_name == "DelUserOrders" && fake_flag("MOEX_FAKE_PUB_REPLY_REJECT_RECOVERY"));
+    const auto code = command_rejected || (code_text != nullptr && std::string_view(code_text) == "reject") ? 1 : 0;
     write_reply_scalar(payload, 0, static_cast<std::int32_t>(code));
     const std::string message = code == 0 ? "OK" : "REJECTED";
     std::memcpy(payload.data() + 4, message.data(), std::min<std::size_t>(message.size(), 254));
@@ -953,12 +961,22 @@ bool fake_flag(const char* name) {
     return value != nullptr && *value != '\0' && std::string_view(value) != "0";
 }
 
+bool persistent_order_session() {
+    return fake_flag("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+}
+
 std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     auto script = base_script_for_stream(stream_code);
     using enum FieldCode;
     using enum TableCode;
 
     if (stream_code == StreamCode::kFortsTradeRepl) {
+        if (fake_flag("MOEX_FAKE_MISSING_TRADE_ORDER")) {
+            std::erase_if(script, [](const auto& message) {
+                return message.table_code == kFortsTradeReplOrdersLog ||
+                       message.table_code == kFortsTradeReplMultilegOrdersLog;
+            });
+        }
         if (fake_flag("MOEX_FAKE_FLAT_TRADE_REPLAY")) {
             std::erase_if(script, [](const auto& message) {
                 return message.table_code == kFortsTradeReplUserDeal ||
@@ -1213,6 +1231,40 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                     }
                     field->text = replacement;
                 }
+            }
+        }
+    }
+    if (persistent_order_session()) {
+        const auto* ext_text = std::getenv("MOEX_FAKE_EXT_ID");
+        const auto ext_id = ext_text == nullptr ? std::int64_t{79} : std::strtoll(ext_text, nullptr, 10);
+        const auto order_id_delta = g_persistent_order_epoch == 0
+                                        ? std::int64_t{0}
+                                        : static_cast<std::int64_t>(g_persistent_order_epoch - 1U) * 100;
+        for (auto& message : script) {
+            if (stream_code == StreamCode::kFortsTradeRepl && message.table_code == kFortsTradeReplOrdersLog) {
+                if (auto* public_id = find_field(message, kFortsTradeReplOrdersLogPublicOrderId))
+                    public_id->signed_value += order_id_delta;
+                if (auto* private_id = find_field(message, kFortsTradeReplOrdersLogPrivateOrderId))
+                    private_id->signed_value += order_id_delta;
+                if (auto* ext = find_field(message, kFortsTradeReplOrdersLogExtId))
+                    ext->signed_value = ext_id;
+                if (auto* moment = find_field(message, kFortsTradeReplOrdersLogMoment))
+                    moment->signed_value += static_cast<std::int64_t>(g_persistent_order_epoch);
+                message.rev += g_persistent_order_epoch;
+            }
+            if (stream_code == StreamCode::kFortsUserorderbookRepl &&
+                message.table_code == kFortsUserorderbookReplOrdersCurrentday) {
+                if (auto* public_id = find_field(message, kFortsUserorderbookReplOrdersCurrentdayPublicOrderId))
+                    public_id->signed_value += order_id_delta;
+                if (auto* private_id = find_field(message, kFortsUserorderbookReplOrdersCurrentdayPrivateOrderId))
+                    private_id->signed_value += order_id_delta;
+                if (auto* ext = find_field(message, kFortsUserorderbookReplOrdersCurrentdayExtId))
+                    ext->signed_value = ext_id;
+                message.rev += g_persistent_order_epoch;
+            }
+            if (fake_flag("MOEX_FAKE_FORCE_TRADE_TERMINAL") &&
+                (stream_code == StreamCode::kFortsTradeRepl || stream_code == StreamCode::kFortsUserorderbookRepl)) {
+                message.rev += 1000;
             }
         }
     }
@@ -1509,6 +1561,7 @@ std::uint32_t cg_env_open(const char* settings) {
         return kCgErrInvalidArgument;
     }
     g_env_open = true;
+    ++g_env_open_count;
     return kCgErrOk;
 }
 
@@ -1526,6 +1579,9 @@ std::uint32_t cg_conn_new(const char* settings, void** connptr) {
     }
     auto* connection = new FakeConnection{};
     connection->settings = settings;
+    g_cancel_after_cleanup = false;
+    g_persistent_order_epoch = 0;
+    ++g_conn_new_count;
     *connptr = connection;
     return kCgErrOk;
 }
@@ -1616,6 +1672,19 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
             connection->pos_anchor_drift_emitted = true;
             return kCgErrOk;
         }
+    }
+
+    if (fake_flag("MOEX_FAKE_FORCE_TRADE_TERMINAL") && !connection->forced_trade_terminal_emitted) {
+        g_cancel_after_cleanup = true;
+        for (auto* listener : connection->listeners) {
+            if (listener == nullptr || listener->reply_listener || listener->state != kStateActive)
+                continue;
+            if (listener->stream_code == StreamCode::kFortsTradeRepl ||
+                listener->stream_code == StreamCode::kFortsUserorderbookRepl)
+                listener->script_emitted = false;
+        }
+        connection->forced_trade_terminal_emitted = true;
+        connection->script_emitted = false;
     }
 
     if (connection->script_emitted && connection->pending_replies.empty() &&
@@ -2037,6 +2106,14 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
                 }
             }
         }
+        if (add && persistent_order_session()) {
+            ++g_persistent_order_epoch;
+            g_cancel_after_cleanup = false;
+            for (auto* listener : typed_publisher->connection->listeners) {
+                if (listener != nullptr && !listener->reply_listener)
+                    listener->script_emitted = false;
+            }
+        }
         auto reply_message_id = add ? 179U : recovery ? 186U : 177U;
         const auto* family = std::getenv("MOEX_FAKE_PUB_REPLY_FAMILY");
         if (family != nullptr) {
@@ -2061,7 +2138,9 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
                                        : "DelOrderReply",
             .user_id = typed_message->user_id,
             .payload = reply_payload,
-            .timed_out = configured_reply_timeout() || (add && fake_flag("MOEX_FAKE_PUB_REPLY_TIMEOUT_ADD_ONLY")),
+            .timed_out = configured_reply_timeout() || (add && fake_flag("MOEX_FAKE_PUB_REPLY_TIMEOUT_ADD_ONLY")) ||
+                         (message_name == "DelOrder" && fake_flag("MOEX_FAKE_PUB_REPLY_TIMEOUT_DEL")) ||
+                         (message_name == "DelUserOrders" && fake_flag("MOEX_FAKE_PUB_REPLY_TIMEOUT_RECOVERY")),
         });
         if (fake_flag("MOEX_FAKE_PUB_DUPLICATE_REPLY")) {
             auto contradictory = reply_payload;
@@ -2081,7 +2160,9 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
                                            : "DelOrderReply",
                 .user_id = typed_message->user_id,
                 .payload = std::move(contradictory),
-                .timed_out = configured_reply_timeout() || (add && fake_flag("MOEX_FAKE_PUB_REPLY_TIMEOUT_ADD_ONLY")),
+                .timed_out = configured_reply_timeout() || (add && fake_flag("MOEX_FAKE_PUB_REPLY_TIMEOUT_ADD_ONLY")) ||
+                             (message_name == "DelOrder" && fake_flag("MOEX_FAKE_PUB_REPLY_TIMEOUT_DEL")) ||
+                             (message_name == "DelUserOrders" && fake_flag("MOEX_FAKE_PUB_REPLY_TIMEOUT_RECOVERY")),
             });
         }
     }
@@ -2126,7 +2207,15 @@ std::uint32_t cg_getstr(const char*, const void* data, char* buffer, std::size_t
 extern "C" void moex_fake_reset_publisher_counts() {
     g_pub_msgnew_calls = 0;
     g_pub_post_calls = 0;
+    g_env_open_count = 0;
+    g_conn_new_count = 0;
 }
 extern "C" std::uint64_t moex_fake_publisher_count(std::uint32_t which) {
     return which == 0 ? g_pub_msgnew_calls : g_pub_post_calls;
+}
+extern "C" std::uint64_t moex_fake_environment_open_count() {
+    return g_env_open_count;
+}
+extern "C" std::uint64_t moex_fake_connection_new_count() {
+    return g_conn_new_count;
 }

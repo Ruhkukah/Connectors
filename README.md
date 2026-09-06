@@ -20,6 +20,9 @@ logs, certification logs, or broker latency/topology data. See
 - A transport-neutral PLAZA order lifecycle with fail-closed AddOrder
   uncertainty, accepted-reply-ID cancellation, exact-ext recovery, atomic local
   journals, sticky evidence inconsistency, and identifier-lock retention.
+- Guarded native `ConnectorHost`/`moexctl` PLAZA TEST Add/cancel lifecycle
+  exercises, including the serial persistent-order-session semantics under
+  development in the native connector surface.
 - TWIME SBE codec, framing, session/recovery state, TCP transport, guarded TEST
   session runner, health, persistence, and certification scenarios.
 - Synthetic native C ABI, .NET SafeHandle adapter, ABI policy tests, and optional
@@ -48,14 +51,15 @@ logs, certification logs, or broker latency/topology data. See
   submission through the public product C ABI.
 - The public ABI remains the synthetic replay/shadow seam.
 
-### Not live-order ready
+### Order-routing boundary
 
-- No send-capable live PLAZA order transport exists; the guarded
-  `LiveTestPreSend` boundary can only validate read-side state and stop before
-  publisher message allocation/posting.
-- No production connectivity or live application order routing is enabled.
-- A future TEST-order exercise requires a separately reviewed transport,
-  authoritative runtime evidence, and explicit authorization.
+- The native `ConnectorHost` TEST surface has proven Add/cancel transport
+  semantics, but persistent application trading is still under development and
+  is not a production routing path.
+- The public C ABI V2 remains a bounded TEST `OrderTest` surface; it does not
+  expose the persistent order session.
+- No production connectivity or live application order routing is enabled, and
+  this repository does not claim exchange certification.
 
 ## Repository layout
 

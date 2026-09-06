@@ -27,6 +27,9 @@ enum class OrderLifecycleState : std::uint8_t {
     CancelPending = 7,
     Cancelled = 8,
     UnresolvedOrphanIncident = 9,
+    Idle = 10,
+    Authorized = 11,
+    AddPending = 12,
 };
 
 [[nodiscard]] std::string_view order_lifecycle_state_name(OrderLifecycleState state) noexcept;
@@ -233,7 +236,10 @@ struct RestartReconciliationResult {
 
 // Read-only startup reconciliation over a previously unfinished local run.
 // It never submits a command. Locks are removed only after a fresh, matching
-// terminal observation and a published resolution record.
+// terminal observation and a published resolution record. If a terminal
+// journal already proves a safe completed epoch and its locks are already
+// absent, reconciliation may resolve the stale checkpoint without rewriting
+// that immutable journal.
 [[nodiscard]] RestartReconciliationResult
 reconcile_unfinished_run(const OrderLifecycleConfig& config,
                          std::span<const plaza2::private_state::OwnOrderSnapshot> orders,
@@ -269,6 +275,41 @@ class OrderLifecycleController {
     OrderLifecycleConfig config_;
     OrderLifecycleTransport& transport_;
     OrderLifecycleClock& clock_;
+};
+
+// A persistent, serial-order application controller.  It reuses the same
+// OrderLifecycleTransport and therefore keeps the underlying PLAZA session
+// host warm while one order epoch is opened, submitted, polled, cancelled,
+// and closed before the next epoch begins.
+class PersistentOrderController final {
+  public:
+    PersistentOrderController(OrderLifecycleConfig config, OrderLifecycleTransport& transport,
+                              OrderLifecycleClock& clock);
+    ~PersistentOrderController();
+    PersistentOrderController(const PersistentOrderController&) = delete;
+    PersistentOrderController& operator=(const PersistentOrderController&) = delete;
+    PersistentOrderController(PersistentOrderController&&) noexcept;
+    PersistentOrderController& operator=(PersistentOrderController&&) noexcept;
+
+    // The caller must already have installed/bound the exact authorized plan
+    // in the transport.  This transition opens the application order epoch;
+    // it does not allocate or post a publisher message.
+    [[nodiscard]] plaza2::cgate::Plaza2Error begin(const PreSendPlan& plan);
+    [[nodiscard]] OrderLifecycleResult submit_order();
+    [[nodiscard]] OrderLifecycleResult poll_order();
+    [[nodiscard]] OrderLifecycleResult cancel_order();
+    [[nodiscard]] plaza2::cgate::Plaza2Error finish_order_epoch();
+
+    [[nodiscard]] bool active() const noexcept;
+    [[nodiscard]] bool authorized() const noexcept;
+    [[nodiscard]] bool submission_attempted() const noexcept;
+    [[nodiscard]] bool new_order_allowed() const noexcept;
+    [[nodiscard]] OrderLifecycleState state() const noexcept;
+    [[nodiscard]] const OrderLifecycleResult& last_result() const noexcept;
+
+  private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace moex::plaza2_trade

@@ -18,6 +18,10 @@
 #include <string_view>
 #include <vector>
 
+namespace moex::connector_host {
+class ConnectorHost;
+}
+
 namespace moex::plaza2_trade {
 
 struct Plaza2TestTradeStreamConfig {
@@ -43,6 +47,7 @@ struct Plaza2AuthorizedOrderIntent {
     std::string base_contract_code;
     Plaza2TradeSide side{Plaza2TradeSide::Buy};
     std::string price;
+    std::string comment;
     std::int64_t quantity{1};
     std::int32_t ext_id{0};
     std::uint32_t add_user_id{0};
@@ -287,6 +292,12 @@ class Plaza2TestTradeTransport final : public OrderLifecycleTransport {
     [[nodiscard]] Plaza2TargetEvidence inspect_target_evidence(std::string_view observation_client_code) const;
 
   private:
+    friend class moex::connector_host::ConnectorHost;
+    // ConnectorHost calls this only after PersistentOrderController has
+    // recorded a safe terminal epoch. It clears order-local state while the
+    // underlying Plaza2TestSessionHost remains started and warm.
+    void mark_order_epoch_terminal() noexcept;
+    [[nodiscard]] plaza2::cgate::Plaza2Error reset_order_epoch();
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

@@ -171,6 +171,50 @@ std::optional<std::int64_t> journal_integer_field(std::string_view text, std::st
     return parsed;
 }
 
+std::optional<bool> journal_boolean_field(std::string_view text, std::string_view key) {
+    const auto marker = std::string("\"") + std::string(key) + "\": ";
+    const auto begin = text.find(marker);
+    if (begin == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto value_begin = begin + marker.size();
+    const auto has_boundary = [&](std::size_t length) {
+        const auto value_end = value_begin + length;
+        return value_end >= text.size() || text[value_end] == ',' || text[value_end] == '\n' || text[value_end] == '}';
+    };
+    if (text.substr(value_begin, 4) == "true" && has_boundary(4)) {
+        return true;
+    }
+    if (text.substr(value_begin, 5) == "false" && has_boundary(5)) {
+        return false;
+    }
+    return std::nullopt;
+}
+
+std::optional<OrderLifecycleState> journal_state_field(std::string_view value) {
+    constexpr std::array states = {
+        OrderLifecycleState::DefinitelyNotSent,
+        OrderLifecycleState::PossiblySent,
+        OrderLifecycleState::Posted,
+        OrderLifecycleState::Rejected,
+        OrderLifecycleState::Working,
+        OrderLifecycleState::PartiallyFilled,
+        OrderLifecycleState::Filled,
+        OrderLifecycleState::CancelPending,
+        OrderLifecycleState::Cancelled,
+        OrderLifecycleState::UnresolvedOrphanIncident,
+        OrderLifecycleState::Idle,
+        OrderLifecycleState::Authorized,
+        OrderLifecycleState::AddPending,
+    };
+    for (const auto state : states) {
+        if (order_lifecycle_state_name(state) == value) {
+            return state;
+        }
+    }
+    return std::nullopt;
+}
+
 PreSendPlan fail_plan(PreSendFailure failure, std::string message) {
     return {
         .ok = false,
@@ -192,6 +236,53 @@ bool has_unfinished_identifier(const OrderLifecycleConfig& config) {
            std::filesystem::exists(user_lock_path(config, config.add_user_id)) ||
            std::filesystem::exists(user_lock_path(config, config.cancel_user_id)) ||
            std::filesystem::exists(user_lock_path(config, config.recovery_user_id));
+}
+
+struct StaticOrderCommandsResult {
+    bool ok{false};
+    std::string message;
+    Plaza2TradeEncodedCommand add_command;
+    Plaza2TradeEncodedCommand exact_ext_id_recovery_command;
+};
+
+StaticOrderCommandsResult build_static_order_commands(const OrderLifecycleConfig& config) {
+    AddOrderRequest request;
+    request.broker_code = config.broker_code;
+    request.isin_id = config.isin_id;
+    request.client_code = config.client_code;
+    request.dir = config.side;
+    request.type = config.order_type;
+    request.amount = config.quantity;
+    request.price = config.price;
+    request.comment = config.comment;
+    request.ext_id = config.ext_id;
+    request.is_check_limit = 1;
+
+    Plaza2TradeCodec codec;
+    auto command = codec.encode(Plaza2TradeCommandRequest{request});
+    if (!command.validation.ok()) {
+        return {.message = command.validation.message};
+    }
+
+    DelUserOrdersRequest recovery;
+    recovery.broker_code = config.broker_code;
+    recovery.buy_sell = config.side == Plaza2TradeSide::Buy ? 1 : 2;
+    recovery.non_system = 0;
+    recovery.code = config.client_code;
+    recovery.base_contract_code = config.base_contract_code;
+    recovery.ext_id = config.ext_id;
+    recovery.isin_id = config.isin_id;
+    recovery.instrument_mask = config.instrument_mask;
+    auto recovery_command = codec.encode(Plaza2TradeCommandRequest{recovery});
+    if (!recovery_command.validation.ok()) {
+        return {.message = "exact-ext_id recovery: " + recovery_command.validation.message};
+    }
+
+    return {
+        .ok = true,
+        .add_command = std::move(command),
+        .exact_ext_id_recovery_command = std::move(recovery_command),
+    };
 }
 
 std::string submission_certainty_name(cgate::Plaza2SubmissionCertainty certainty) {
@@ -588,6 +679,15 @@ bool definitive_add_rejection(const LifecycleEvidence& evidence) {
            !evidence.observation.has_value();
 }
 
+bool definitive_cancel_rejection(const LifecycleEvidence& evidence) {
+    return evidence.cancel_reply.has_value() && !evidence.cancel_reply->timed_out && !evidence.cancel_reply->accepted;
+}
+
+bool definitive_recovery_rejection(const LifecycleEvidence& evidence) {
+    return evidence.recovery_reply.has_value() && !evidence.recovery_reply->timed_out &&
+           !evidence.recovery_reply->accepted;
+}
+
 bool reply_id_matches_observation(std::int64_t reply_id, const OrderObservation& observation) {
     return reply_id != 0 && (reply_id == observation.public_order_id || reply_id == observation.private_order_id ||
                              contains_id(observation.public_order_id_aliases, reply_id) ||
@@ -695,6 +795,12 @@ std::string_view order_lifecycle_state_name(OrderLifecycleState state) noexcept 
         return "cancelled";
     case OrderLifecycleState::UnresolvedOrphanIncident:
         return "unresolved_orphan_incident";
+    case OrderLifecycleState::Idle:
+        return "idle";
+    case OrderLifecycleState::Authorized:
+        return "authorized";
+    case OrderLifecycleState::AddPending:
+        return "add_pending";
     }
     return "unresolved_orphan_incident";
 }
@@ -935,39 +1041,12 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
         return fail_plan(PreSendFailure::DuplicateIdentifier, "ext_id or user_id belongs to an unfinished run journal");
     }
 
-    AddOrderRequest request;
-    request.broker_code = config.broker_code;
-    request.isin_id = config.isin_id;
-    request.client_code = config.client_code;
-    request.dir = config.side;
-    request.type = config.order_type;
-    request.amount = config.quantity;
-    request.price = config.price;
-    request.comment = config.comment;
-    request.ext_id = config.ext_id;
-    request.is_check_limit = 1;
-    Plaza2TradeCodec codec;
-    auto command = codec.encode(Plaza2TradeCommandRequest{request});
-    if (!command.validation.ok()) {
-        return fail_plan(PreSendFailure::CommandValidationFailed, command.validation.message);
+    auto static_commands = build_static_order_commands(config);
+    if (!static_commands.ok) {
+        return fail_plan(PreSendFailure::CommandValidationFailed, static_commands.message);
     }
-    const auto payload_hash = cgate::plaza2_sha256_hex(command.payload);
-
-    DelUserOrdersRequest recovery;
-    recovery.broker_code = config.broker_code;
-    recovery.buy_sell = config.side == Plaza2TradeSide::Buy ? 1 : 2;
-    recovery.non_system = 0;
-    recovery.code = config.client_code;
-    recovery.base_contract_code = config.base_contract_code;
-    recovery.ext_id = config.ext_id;
-    recovery.isin_id = config.isin_id;
-    recovery.instrument_mask = config.instrument_mask;
-    auto recovery_command = codec.encode(Plaza2TradeCommandRequest{recovery});
-    if (!recovery_command.validation.ok()) {
-        return fail_plan(PreSendFailure::CommandValidationFailed,
-                         "exact-ext_id recovery: " + recovery_command.validation.message);
-    }
-    const auto recovery_payload_hash = cgate::plaza2_sha256_hex(recovery_command.payload);
+    const auto payload_hash = cgate::plaza2_sha256_hex(static_commands.add_command.payload);
+    const auto recovery_payload_hash = cgate::plaza2_sha256_hex(static_commands.exact_ext_id_recovery_command.payload);
 
     // Only static, human-authorized intent is hashed. Dynamic market/session
     // observations are written separately and are re-derived by the concrete
@@ -979,9 +1058,9 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     json << "  \"profile_fingerprint\": \"" << config.profile_fingerprint << "\",\n";
     json << "  \"environment\": \"test\",\n";
     json << "  \"command\": \"AddOrder\",\n";
-    json << "  \"message_id\": " << command.msgid << ",\n";
+    json << "  \"message_id\": " << static_commands.add_command.msgid << ",\n";
     json << "  \"payload_sha256\": \"" << payload_hash << "\",\n";
-    json << "  \"recovery_message_id\": " << recovery_command.msgid << ",\n";
+    json << "  \"recovery_message_id\": " << static_commands.exact_ext_id_recovery_command.msgid << ",\n";
     json << "  \"recovery_payload_sha256\": \"" << recovery_payload_hash << "\",\n";
     json << "  \"add_user_id\": " << config.add_user_id << ",\n";
     json << "  \"cancel_user_id\": " << config.cancel_user_id << ",\n";
@@ -993,6 +1072,7 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     json << "  \"side\": \"" << (config.side == Plaza2TradeSide::Buy ? "buy" : "sell") << "\",\n";
     json << "  \"order_type\": \"limit\",\n";
     json << "  \"price\": \"" << json_escape(config.price) << "\",\n";
+    json << "  \"comment\": \"" << json_escape(config.comment) << "\",\n";
     json << "  \"quantity\": 1,\n";
     json << "  \"client_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.client_code) << "\",\n";
     json << "  \"broker_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.broker_code) << "\",\n";
@@ -1042,8 +1122,8 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
         .message = "pre-send plan validated",
         .canonical_json = json.str(),
         .reviewed_evidence_json = evidence_json.str(),
-        .add_command = std::move(command),
-        .exact_ext_id_recovery_command = std::move(recovery_command),
+        .add_command = std::move(static_commands.add_command),
+        .exact_ext_id_recovery_command = std::move(static_commands.exact_ext_id_recovery_command),
     };
     plan.sha256 = cgate::plaza2_sha256_hex(plan.canonical_json);
     const auto intent_placeholder = std::string("\"authorized_intent_sha256\": \"PENDING\"");
@@ -1087,14 +1167,16 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
     RestartReconciliationResult result;
     result.journal_path = config.journal_root / config.run_id / "journal.json";
     const auto active = has_unfinished_identifier(config);
-    if (!active) {
+    const auto journal_exists = std::filesystem::exists(result.journal_path);
+    if (!active && !journal_exists) {
         result.run_found = false;
         result.locks_retained = false;
         result.message = "no unfinished identifier locks found";
         return result;
     }
     result.run_found = true;
-    if (!std::filesystem::exists(result.journal_path)) {
+    result.locks_retained = active;
+    if (!journal_exists) {
         result.ok = false;
         result.message = "unfinished identifier locks have no journal; retaining them";
         return result;
@@ -1122,19 +1204,18 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
     const auto journal_cancel_user = journal_integer_field(journal_text, "cancel_user_id");
     const auto journal_recovery_user = journal_integer_field(journal_text, "recovery_user_id");
     const auto journal_add_reply_id = journal_integer_field(journal_text, "add_reply_order_id");
-    auto plan_config = config;
-    plan_config.dry_run = true;
-    plan_config.send_test_order = false;
-    plan_config.authorized_plan_sha256.clear();
-    plan_config.journal_root = result.journal_path.parent_path() / "reconciliation_plan";
-    const auto plan = build_pre_send_plan(plan_config);
+    // Historical reconstruction verifies the exact command bytes that defined
+    // the completed epoch.  It does not authorize a current order; current
+    // execution gates remain exclusively in build_pre_send_plan() and the
+    // transport preflight.
+    const auto static_commands = build_static_order_commands(config);
     if (!schema.has_value() || *schema != "moex.plaza2.order_run_journal.v2" || !journal_run_id.has_value() ||
         *journal_run_id != config.run_id || !journal_profile_id.has_value() ||
         *journal_profile_id != config.profile_id || !journal_profile.has_value() ||
         *journal_profile != config.profile_fingerprint || !journal_payload.has_value() ||
-        !journal_recovery_payload.has_value() || !plan.ok ||
-        *journal_payload != cgate::plaza2_sha256_hex(plan.add_command.payload) ||
-        *journal_recovery_payload != cgate::plaza2_sha256_hex(plan.exact_ext_id_recovery_command.payload) ||
+        !journal_recovery_payload.has_value() || !static_commands.ok ||
+        *journal_payload != cgate::plaza2_sha256_hex(static_commands.add_command.payload) ||
+        *journal_recovery_payload != cgate::plaza2_sha256_hex(static_commands.exact_ext_id_recovery_command.payload) ||
         !journal_ext.has_value() || *journal_ext != config.ext_id || !journal_add_user.has_value() ||
         *journal_add_user != config.add_user_id || !journal_cancel_user.has_value() ||
         *journal_cancel_user != config.cancel_user_id || !journal_recovery_user.has_value() ||
@@ -1145,8 +1226,42 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
         return result;
     }
 
-    const auto observation =
-        observe_order(config.ext_id, config.client_code, config.side, config.quantity, orders, trades);
+    if (!active) {
+        const auto final_state_name = journal_string_field(journal_text, "final_state");
+        const auto final_state = final_state_name.has_value() ? journal_state_field(*final_state_name) : std::nullopt;
+        const auto finished = journal_boolean_field(journal_text, "finished");
+        const auto market_safe_terminal = journal_boolean_field(journal_text, "market_safe_terminal");
+        const auto evidence_consistent = journal_boolean_field(journal_text, "evidence_consistent");
+        const auto journal_degraded = journal_boolean_field(journal_text, "journal_degraded");
+        const auto orphan_incident = journal_boolean_field(journal_text, "orphan_incident");
+        const bool allowed_terminal =
+            final_state.has_value() &&
+            (*final_state == OrderLifecycleState::DefinitelyNotSent || *final_state == OrderLifecycleState::Rejected ||
+             *final_state == OrderLifecycleState::Filled || *final_state == OrderLifecycleState::Cancelled);
+        if (!final_state.has_value() || !allowed_terminal || !finished.value_or(false) ||
+            !market_safe_terminal.value_or(false) || !evidence_consistent.value_or(false) ||
+            journal_degraded.value_or(true) || orphan_incident.value_or(true)) {
+            result.ok = false;
+            result.resolved = false;
+            result.locks_retained = false;
+            result.message =
+                "historical journal without identifier locks does not prove a safe completed terminal epoch";
+            return result;
+        }
+        result.ok = true;
+        result.resolved = true;
+        result.locks_retained = false;
+        result.state = *final_state;
+        result.message = "journal already records a safe terminal run with released identifier locks";
+        return result;
+    }
+
+    auto observation = observe_order(config.ext_id, config.client_code, config.side, config.quantity, orders, trades);
+    if (!observation.has_value() && !config.broker_code.empty() && !config.client_code.empty()) {
+        const auto participant = config.broker_code + config.client_code;
+        if (participant != config.client_code)
+            observation = observe_order(config.ext_id, participant, config.side, config.quantity, orders, trades);
+    }
     if (!observation.has_value() || !observation_terminal(observation) || observation->identity_conflict) {
         result.state = observation.has_value() ? observation->state : OrderLifecycleState::UnresolvedOrphanIncident;
         result.message = observation.has_value() && observation->identity_conflict
@@ -1379,6 +1494,325 @@ OrderLifecycleResult OrderLifecycleController::run() {
               "factual cancellation";
     return finish_result(std::move(result), journal, OrderLifecycleState::UnresolvedOrphanIncident, false, true,
                          unresolved_message, evidence);
+}
+
+struct PersistentOrderController::Impl {
+    explicit Impl(OrderLifecycleConfig value, OrderLifecycleTransport& transport_value,
+                  OrderLifecycleClock& clock_value)
+        : config(std::move(value)), transport(transport_value), clock(clock_value) {}
+
+    [[nodiscard]] cgate::Plaza2Error error(std::string message) const {
+        return {.code = cgate::Plaza2ErrorCode::InvalidConfiguration, .message = std::move(message)};
+    }
+
+    [[nodiscard]] OrderLifecycleResult refusal(std::string message) const {
+        auto out = result;
+        out.ok = false;
+        out.message = std::move(message);
+        return out;
+    }
+
+    void sync_result() {
+        result.state = lifecycle_state;
+        result.evidence_consistent = evidence.consistent;
+        result.observation = evidence.observation;
+        result.add_reply = evidence.add_reply;
+        result.cancel_reply = evidence.cancel_reply;
+        result.recovery_reply = evidence.recovery_reply;
+        result.transitions = journal ? journal->states() : std::vector<OrderLifecycleState>{lifecycle_state};
+        if (journal) {
+            result.journal_path = journal->path();
+            result.journal_degraded = journal->degraded();
+            result.journal_ok = !result.journal_degraded;
+        }
+    }
+
+    [[nodiscard]] OrderLifecycleResult finish(OrderLifecycleState state, bool market_safe, bool orphan,
+                                              std::string message) {
+        lifecycle_state = state;
+        if (!journal) {
+            result.state = state;
+            result.market_safe_terminal = market_safe;
+            result.evidence_consistent = evidence.consistent;
+            result.message = std::move(message);
+            result.ok = market_safe && evidence.consistent;
+            terminal_finished = result.ok;
+            sync_result();
+            return result;
+        }
+        result.message = std::move(message);
+        const auto final_message = result.message;
+        result = finish_result(std::move(result), *journal, state, market_safe, orphan, final_message, evidence);
+        terminal_finished = result.ok;
+        sync_result();
+        return result;
+    }
+
+    [[nodiscard]] OrderLifecycleResult nonterminal(std::string message = {}) {
+        result.ok = false;
+        result.market_safe_terminal = false;
+        result.message = std::move(message);
+        sync_result();
+        return result;
+    }
+
+    [[nodiscard]] OrderLifecycleResult consume_one_poll() {
+        if (!journal) {
+            return refusal("order journal is not open");
+        }
+        const auto deadline = clock.now() + std::chrono::milliseconds(1);
+        const auto polled = transport.poll(deadline);
+        consume_poll(config, polled, evidence, *journal);
+        if (!polled.ok) {
+            return nonterminal(polled.error.empty() ? "order poll failed" : polled.error);
+        }
+        if (observation_terminal(evidence.observation)) {
+            const auto terminal = evidence.observation->state;
+            return finish(terminal, true, false,
+                          terminal == OrderLifecycleState::Filled ? "order reached Filled" : "order reached Cancelled");
+        }
+        if (definitive_add_rejection(evidence)) {
+            return finish(OrderLifecycleState::Rejected, true, false, "AddOrder reply rejected the command");
+        }
+        if (!evidence.consistent) {
+            return finish(OrderLifecycleState::UnresolvedOrphanIncident, false, true,
+                          "order evidence became inconsistent; epoch is fail-closed");
+        }
+        if (cancel_requested || recovery_requested) {
+            if ((cancel_requested && definitive_cancel_rejection(evidence)) ||
+                (recovery_requested && definitive_recovery_rejection(evidence))) {
+                return finish(OrderLifecycleState::UnresolvedOrphanIncident, false, true,
+                              cancel_requested
+                                  ? "DelOrder was definitively rejected while the order remains nonterminal"
+                                  : "exact-ext recovery was definitively rejected while the order remains nonterminal");
+            }
+            // A cancel/recovery command is an application state, not merely a
+            // reflection of the latest replicated row.  Keep it visible while
+            // the command is unresolved, while still retaining the newest
+            // quantities/evidence in the result and journal.
+            lifecycle_state = OrderLifecycleState::CancelPending;
+            journal->record_state(lifecycle_state);
+        } else if (observation_working(evidence.observation)) {
+            lifecycle_state = evidence.observation->state;
+            journal->record_state(lifecycle_state);
+        } else if (accepted_add_reply_has_id(evidence)) {
+            lifecycle_state = OrderLifecycleState::Posted;
+            journal->record_state(lifecycle_state);
+        } else {
+            lifecycle_state = result.add_submission.certainty == cgate::Plaza2SubmissionCertainty::PossiblySent
+                                  ? OrderLifecycleState::PossiblySent
+                                  : OrderLifecycleState::Posted;
+            journal->record_state(lifecycle_state);
+        }
+        return nonterminal("order epoch remains active");
+    }
+
+    OrderLifecycleConfig config;
+    OrderLifecycleTransport& transport;
+    OrderLifecycleClock& clock;
+    PreSendPlan plan;
+    std::unique_ptr<RunJournal> journal;
+    LifecycleEvidence evidence;
+    OrderLifecycleResult result;
+    OrderLifecycleState lifecycle_state{OrderLifecycleState::Idle};
+    bool active_epoch{false};
+    bool authorized_epoch{false};
+    bool submission_attempted_flag{false};
+    bool terminal_finished{false};
+    bool cancel_requested{false};
+    bool recovery_requested{false};
+};
+
+PersistentOrderController::PersistentOrderController(OrderLifecycleConfig config, OrderLifecycleTransport& transport,
+                                                     OrderLifecycleClock& clock)
+    : impl_(std::make_unique<Impl>(std::move(config), transport, clock)) {}
+
+PersistentOrderController::~PersistentOrderController() = default;
+PersistentOrderController::PersistentOrderController(PersistentOrderController&&) noexcept = default;
+PersistentOrderController& PersistentOrderController::operator=(PersistentOrderController&&) noexcept = default;
+
+cgate::Plaza2Error PersistentOrderController::begin(const PreSendPlan& plan) {
+    auto& p = *impl_;
+    if (p.active_epoch) {
+        return p.error("an order epoch is already active");
+    }
+    if (!plan.ok || plan.canonical_json.empty() || plan.sha256.empty()) {
+        return p.error("persistent order requires a valid exact authorized plan");
+    }
+    p.plan = plan;
+    p.result = {};
+    p.lifecycle_state = OrderLifecycleState::Authorized;
+    p.active_epoch = true;
+    p.authorized_epoch = true;
+    p.submission_attempted_flag = false;
+    p.terminal_finished = false;
+    p.cancel_requested = false;
+    p.recovery_requested = false;
+    p.evidence = {};
+    p.journal.reset();
+    p.sync_result();
+    return {};
+}
+
+OrderLifecycleResult PersistentOrderController::submit_order() {
+    auto& p = *impl_;
+    if (!p.active_epoch || !p.authorized_epoch) {
+        return p.refusal("begin_order and exact authorization are required");
+    }
+    if (p.submission_attempted_flag) {
+        return p.refusal("one AddOrder attempt maximum per order epoch");
+    }
+    if (p.lifecycle_state != OrderLifecycleState::Authorized) {
+        return p.refusal("order epoch is not in Authorized state");
+    }
+
+    p.journal = std::make_unique<RunJournal>();
+    std::string journal_error;
+    const auto payload_hash = cgate::plaza2_sha256_hex(p.plan.add_command.payload);
+    const auto recovery_payload_hash = cgate::plaza2_sha256_hex(p.plan.exact_ext_id_recovery_command.payload);
+    if (!p.journal->begin(p.config, payload_hash, recovery_payload_hash, journal_error)) {
+        p.lifecycle_state = OrderLifecycleState::DefinitelyNotSent;
+        p.result = {};
+        p.result.state = p.lifecycle_state;
+        p.result.journal_ok = false;
+        p.result.journal_degraded = true;
+        p.result.market_safe_terminal = true;
+        p.result.message = "journal_failure: " + journal_error;
+        p.result.transitions = {p.lifecycle_state};
+        p.terminal_finished = true;
+        return p.result;
+    }
+    p.result.journal_path = p.journal->path();
+    p.journal->record_state(OrderLifecycleState::Authorized);
+    p.lifecycle_state = OrderLifecycleState::AddPending;
+    p.journal->record_state(p.lifecycle_state);
+    p.sync_result();
+    p.result.add_submission = p.transport.post(p.plan.add_command, p.config.add_user_id);
+    p.journal->record_add_submission(p.result.add_submission);
+    p.submission_attempted_flag = true;
+    p.lifecycle_state = p.result.add_submission.certainty == cgate::Plaza2SubmissionCertainty::Posted
+                            ? OrderLifecycleState::Posted
+                        : p.result.add_submission.certainty == cgate::Plaza2SubmissionCertainty::PossiblySent
+                            ? OrderLifecycleState::PossiblySent
+                            : OrderLifecycleState::DefinitelyNotSent;
+    p.journal->record_state(p.lifecycle_state);
+    if (p.lifecycle_state == OrderLifecycleState::DefinitelyNotSent) {
+        return p.finish(OrderLifecycleState::DefinitelyNotSent, true, false, "AddOrder was definitely not sent");
+    }
+    return p.nonterminal("AddOrder attempt posted; poll_order is required for factual lifecycle evidence");
+}
+
+OrderLifecycleResult PersistentOrderController::poll_order() {
+    auto& p = *impl_;
+    if (!p.active_epoch || !p.submission_attempted_flag) {
+        return p.refusal("submit_order is required before poll_order");
+    }
+    if (p.terminal_finished || p.lifecycle_state == OrderLifecycleState::UnresolvedOrphanIncident) {
+        return p.result;
+    }
+    return p.consume_one_poll();
+}
+
+OrderLifecycleResult PersistentOrderController::cancel_order() {
+    auto& p = *impl_;
+    if (!p.active_epoch || !p.submission_attempted_flag) {
+        return p.refusal("submit_order is required before cancel_order");
+    }
+    if (p.terminal_finished || p.lifecycle_state == OrderLifecycleState::UnresolvedOrphanIncident) {
+        return p.result;
+    }
+    if (p.cancel_requested || p.recovery_requested) {
+        return p.refusal("one cancel or exact-ext recovery attempt maximum per order epoch");
+    }
+
+    // Give the persistent controller one read-side turn so the explicit
+    // cancel uses the same accepted Add reply identity checks as the one-shot
+    // lifecycle. It never cancels automatically from poll_order().
+    const auto observed = p.consume_one_poll();
+    if (p.terminal_finished || p.lifecycle_state == OrderLifecycleState::UnresolvedOrphanIncident) {
+        return observed;
+    }
+    if (usable_cancel_precondition(p.evidence)) {
+        DelOrderRequest cancel;
+        cancel.broker_code = p.config.broker_code;
+        cancel.order_id = *p.evidence.add_reply->order_id;
+        cancel.client_code = p.config.client_code;
+        cancel.isin_id = p.config.isin_id;
+        const auto command = Plaza2TradeCodec{}.encode(Plaza2TradeCommandRequest{cancel});
+        if (!command.validation.ok()) {
+            return p.finish(OrderLifecycleState::UnresolvedOrphanIncident, false, true,
+                            "DelOrder encoding failed after AddOrder became working");
+        }
+        p.cancel_requested = true;
+        p.result.cancel_submission = p.transport.post(command, p.config.cancel_user_id);
+        p.journal->record_cancel_submission(p.result.cancel_submission);
+        if (p.result.cancel_submission.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent) {
+            return p.finish(OrderLifecycleState::UnresolvedOrphanIncident, false, true,
+                            "DelOrder was definitely not sent and the working order remains unresolved");
+        }
+        p.lifecycle_state = OrderLifecycleState::CancelPending;
+        p.journal->record_state(p.lifecycle_state);
+        return p.nonterminal("DelOrder posted; poll_order is required for terminal evidence");
+    }
+
+    if (accepted_add_reply_has_id(p.evidence) && p.evidence.consistent && !p.evidence.observation.has_value()) {
+        // An accepted Add with no replicated order cannot be safely addressed
+        // by DelOrder. The existing exact-ext recovery is the only bounded
+        // cleanup path and is still initiated only by this explicit cancel.
+    } else if (p.lifecycle_state == OrderLifecycleState::Working ||
+               p.lifecycle_state == OrderLifecycleState::PartiallyFilled) {
+        return p.finish(OrderLifecycleState::UnresolvedOrphanIncident, false, true,
+                        "working order lacks an unambiguous correlated Add reply identity");
+    }
+
+    p.recovery_requested = true;
+    p.result.recovery_submission =
+        p.transport.post_exact_ext_id_recovery(p.plan.exact_ext_id_recovery_command, p.config.recovery_user_id);
+    p.journal->record_recovery_submission(p.result.recovery_submission);
+    if (p.result.recovery_submission.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent) {
+        return p.finish(OrderLifecycleState::UnresolvedOrphanIncident, false, true,
+                        "exact-ext recovery was definitely not sent and AddOrder remains unresolved");
+    }
+    p.lifecycle_state = OrderLifecycleState::CancelPending;
+    p.journal->record_state(p.lifecycle_state);
+    return p.nonterminal("exact-ext recovery posted; poll_order is required for terminal evidence");
+}
+
+cgate::Plaza2Error PersistentOrderController::finish_order_epoch() {
+    auto& p = *impl_;
+    if (!p.active_epoch) {
+        return p.error("no active order epoch");
+    }
+    if (!p.terminal_finished || !p.result.ok || p.lifecycle_state == OrderLifecycleState::UnresolvedOrphanIncident) {
+        return p.error("order epoch is not a safe terminal epoch");
+    }
+    p.active_epoch = false;
+    p.authorized_epoch = false;
+    return {};
+}
+
+bool PersistentOrderController::active() const noexcept {
+    return impl_->active_epoch;
+}
+
+bool PersistentOrderController::authorized() const noexcept {
+    return impl_->active_epoch && impl_->authorized_epoch;
+}
+
+bool PersistentOrderController::submission_attempted() const noexcept {
+    return impl_->submission_attempted_flag;
+}
+
+bool PersistentOrderController::new_order_allowed() const noexcept {
+    return !impl_->active_epoch;
+}
+
+OrderLifecycleState PersistentOrderController::state() const noexcept {
+    return impl_->lifecycle_state;
+}
+
+const OrderLifecycleResult& PersistentOrderController::last_result() const noexcept {
+    return impl_->result;
 }
 
 } // namespace moex::plaza2_trade

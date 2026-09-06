@@ -2,6 +2,9 @@
 
 #include "moex/plaza2_trade/plaza2_test_trade_transport.hpp"
 
+#include <cstdint>
+#include <string>
+
 namespace moex::connector_host {
 
 enum class ConnectorHostState { Created, Started, Ready, Stopping, Stopped, Failed };
@@ -13,6 +16,16 @@ struct Plaza2HostConfig {
     HostPurpose purpose{HostPurpose::Qualify};
     plaza2_trade::Plaza2TestTradeTransportConfig transport;
     plaza2_trade::OrderLifecycleConfig order;
+};
+
+// Application-selected terms for one serial TEST epoch.  Collision-prone
+// identifiers and the run identity remain host-managed.
+struct ConnectorHostOrderRequest {
+    plaza2_trade::Plaza2TradeSide side{plaza2_trade::Plaza2TradeSide::Buy};
+    std::string price;
+    std::string base_contract_code;
+    std::string comment;
+    std::int32_t quantity{1};
 };
 
 struct ConnectorHostSnapshot {
@@ -50,7 +63,13 @@ struct ConnectorHostSnapshot {
     std::size_t active_own_order_count{0};
     bool uob_periodic_consistent{false};
     bool limits_set{false};
+    bool order_epoch_active{false};
+    bool order_authorized{false};
+    bool order_submission_attempted{false};
+    bool new_order_allowed{false};
     std::optional<plaza2_trade::OrderLifecycleState> lifecycle_state;
+    std::optional<plaza2_trade::OrderReplyObservation> add_reply;
+    std::optional<plaza2_trade::OrderReplyObservation> cancel_reply;
     std::int64_t order_id{0};
     std::int64_t original_quantity{0};
     std::int64_t remaining_quantity{0};
@@ -77,10 +96,24 @@ class ConnectorHost final {
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] ConnectorHostSnapshot snapshot() const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan() const;
+    [[nodiscard]] plaza2_trade::PreSendPlan plan_order(const ConnectorHostOrderRequest& request) const;
     // Exact canonical bytes AND SHA are mandatory. The host constructs the
     // intent and lets the existing transport validate/bind it.
     [[nodiscard]] plaza2::cgate::Plaza2Error authorize(std::string_view canonical_plan, std::string_view sha256);
     [[nodiscard]] plaza2_trade::OrderLifecycleResult submit();
+    // Persistent application-order surface. The host remains started across
+    // serial order epochs; only the per-order lifecycle state is closed and
+    // reset after a safe terminal disposition.
+    [[nodiscard]] plaza2::cgate::Plaza2Error begin_order(const ConnectorHostOrderRequest& request,
+                                                         std::string_view canonical_plan, std::string_view sha256);
+    // Compatibility convenience for callers that intentionally reuse the
+    // current configured application terms; new application code should use
+    // the explicit request overload above.
+    [[nodiscard]] plaza2::cgate::Plaza2Error begin_order(std::string_view canonical_plan, std::string_view sha256);
+    [[nodiscard]] plaza2_trade::OrderLifecycleResult submit_order();
+    [[nodiscard]] plaza2_trade::OrderLifecycleResult poll_order();
+    [[nodiscard]] plaza2_trade::OrderLifecycleResult cancel_current_order();
+    [[nodiscard]] plaza2::cgate::Plaza2Error finish_order_epoch();
     [[nodiscard]] plaza2_trade::RestartReconciliationResult reconcile();
 
   private:
