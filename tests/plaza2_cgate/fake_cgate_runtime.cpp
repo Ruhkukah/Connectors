@@ -276,8 +276,11 @@ struct FakePublisherMessage {
 
 bool g_env_open = false;
 bool g_cancel_after_cleanup = false;
+std::uint32_t g_persistent_order_epoch = 0;
 std::uint64_t g_pub_msgnew_calls = 0;
 std::uint64_t g_pub_post_calls = 0;
+std::uint64_t g_env_open_count = 0;
+std::uint64_t g_conn_new_count = 0;
 std::unordered_map<void*, FakePublisherMessage*> g_publisher_messages;
 
 std::uint32_t configured_result(const char* variable) {
@@ -953,6 +956,10 @@ bool fake_flag(const char* name) {
     return value != nullptr && *value != '\0' && std::string_view(value) != "0";
 }
 
+bool persistent_order_session() {
+    return fake_flag("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+}
+
 std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     auto script = base_script_for_stream(stream_code);
     using enum FieldCode;
@@ -1213,6 +1220,36 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                     }
                     field->text = replacement;
                 }
+            }
+        }
+    }
+    if (persistent_order_session()) {
+        const auto* ext_text = std::getenv("MOEX_FAKE_EXT_ID");
+        const auto ext_id = ext_text == nullptr ? std::int64_t{79} : std::strtoll(ext_text, nullptr, 10);
+        const auto order_id_delta = g_persistent_order_epoch == 0
+                                        ? std::int64_t{0}
+                                        : static_cast<std::int64_t>(g_persistent_order_epoch - 1U) * 100;
+        for (auto& message : script) {
+            if (stream_code == StreamCode::kFortsTradeRepl && message.table_code == kFortsTradeReplOrdersLog) {
+                if (auto* public_id = find_field(message, kFortsTradeReplOrdersLogPublicOrderId))
+                    public_id->signed_value += order_id_delta;
+                if (auto* private_id = find_field(message, kFortsTradeReplOrdersLogPrivateOrderId))
+                    private_id->signed_value += order_id_delta;
+                if (auto* ext = find_field(message, kFortsTradeReplOrdersLogExtId))
+                    ext->signed_value = ext_id;
+                if (auto* moment = find_field(message, kFortsTradeReplOrdersLogMoment))
+                    moment->signed_value += static_cast<std::int64_t>(g_persistent_order_epoch);
+                message.rev += g_persistent_order_epoch;
+            }
+            if (stream_code == StreamCode::kFortsUserorderbookRepl &&
+                message.table_code == kFortsUserorderbookReplOrdersCurrentday) {
+                if (auto* public_id = find_field(message, kFortsUserorderbookReplOrdersCurrentdayPublicOrderId))
+                    public_id->signed_value += order_id_delta;
+                if (auto* private_id = find_field(message, kFortsUserorderbookReplOrdersCurrentdayPrivateOrderId))
+                    private_id->signed_value += order_id_delta;
+                if (auto* ext = find_field(message, kFortsUserorderbookReplOrdersCurrentdayExtId))
+                    ext->signed_value = ext_id;
+                message.rev += g_persistent_order_epoch;
             }
         }
     }
@@ -1509,6 +1546,7 @@ std::uint32_t cg_env_open(const char* settings) {
         return kCgErrInvalidArgument;
     }
     g_env_open = true;
+    ++g_env_open_count;
     return kCgErrOk;
 }
 
@@ -1526,6 +1564,8 @@ std::uint32_t cg_conn_new(const char* settings, void** connptr) {
     }
     auto* connection = new FakeConnection{};
     connection->settings = settings;
+    g_persistent_order_epoch = 0;
+    ++g_conn_new_count;
     *connptr = connection;
     return kCgErrOk;
 }
@@ -2037,6 +2077,14 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
                 }
             }
         }
+        if (add && persistent_order_session()) {
+            ++g_persistent_order_epoch;
+            g_cancel_after_cleanup = false;
+            for (auto* listener : typed_publisher->connection->listeners) {
+                if (listener != nullptr && !listener->reply_listener)
+                    listener->script_emitted = false;
+            }
+        }
         auto reply_message_id = add ? 179U : recovery ? 186U : 177U;
         const auto* family = std::getenv("MOEX_FAKE_PUB_REPLY_FAMILY");
         if (family != nullptr) {
@@ -2126,7 +2174,15 @@ std::uint32_t cg_getstr(const char*, const void* data, char* buffer, std::size_t
 extern "C" void moex_fake_reset_publisher_counts() {
     g_pub_msgnew_calls = 0;
     g_pub_post_calls = 0;
+    g_env_open_count = 0;
+    g_conn_new_count = 0;
 }
 extern "C" std::uint64_t moex_fake_publisher_count(std::uint32_t which) {
     return which == 0 ? g_pub_msgnew_calls : g_pub_post_calls;
+}
+extern "C" std::uint64_t moex_fake_environment_open_count() {
+    return g_env_open_count;
+}
+extern "C" std::uint64_t moex_fake_connection_new_count() {
+    return g_conn_new_count;
 }

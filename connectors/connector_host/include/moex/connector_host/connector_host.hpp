@@ -50,7 +50,13 @@ struct ConnectorHostSnapshot {
     std::size_t active_own_order_count{0};
     bool uob_periodic_consistent{false};
     bool limits_set{false};
+    bool order_epoch_active{false};
+    bool order_authorized{false};
+    bool order_submission_attempted{false};
+    bool new_order_allowed{false};
     std::optional<plaza2_trade::OrderLifecycleState> lifecycle_state;
+    std::optional<plaza2_trade::OrderReplyObservation> add_reply;
+    std::optional<plaza2_trade::OrderReplyObservation> cancel_reply;
     std::int64_t order_id{0};
     std::int64_t original_quantity{0};
     std::int64_t remaining_quantity{0};
@@ -81,6 +87,14 @@ class ConnectorHost final {
     // intent and lets the existing transport validate/bind it.
     [[nodiscard]] plaza2::cgate::Plaza2Error authorize(std::string_view canonical_plan, std::string_view sha256);
     [[nodiscard]] plaza2_trade::OrderLifecycleResult submit();
+    // Persistent application-order surface. The host remains started across
+    // serial order epochs; only the per-order lifecycle state is closed and
+    // reset after a safe terminal disposition.
+    [[nodiscard]] plaza2::cgate::Plaza2Error begin_order(std::string_view canonical_plan, std::string_view sha256);
+    [[nodiscard]] plaza2_trade::OrderLifecycleResult submit_order();
+    [[nodiscard]] plaza2_trade::OrderLifecycleResult poll_order();
+    [[nodiscard]] plaza2_trade::OrderLifecycleResult cancel_current_order();
+    [[nodiscard]] plaza2::cgate::Plaza2Error finish_order_epoch();
     [[nodiscard]] plaza2_trade::RestartReconciliationResult reconcile();
 
   private:

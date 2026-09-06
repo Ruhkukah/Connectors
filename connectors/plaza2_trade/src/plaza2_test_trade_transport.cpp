@@ -2185,6 +2185,7 @@ struct Plaza2TestTradeTransport::Impl {
     bool order_may_exist{false};
     std::optional<std::int64_t> cancel_order_id;
     bool cancel_identity_conflict{false};
+    bool safe_terminal_epoch{false};
 };
 
 Plaza2TestTradeTransport::Plaza2TestTradeTransport(Plaza2TestTradeTransportConfig config)
@@ -2199,6 +2200,30 @@ Plaza2Error Plaza2TestTradeTransport::bind_authorized_plan(const PreSendPlan& pl
 
 Plaza2Error Plaza2TestTradeTransport::install_authorized_intent(Plaza2AuthorizedOrderIntent intent) {
     return impl_->install_authorized_intent(std::move(intent));
+}
+
+void Plaza2TestTradeTransport::mark_order_epoch_terminal() noexcept {
+    impl_->safe_terminal_epoch = true;
+}
+
+Plaza2Error Plaza2TestTradeTransport::reset_order_epoch() {
+    if (!impl_->host.started()) {
+        return invalid("cannot reset an order epoch on a stopped Plaza2 session host");
+    }
+    if (!impl_->safe_terminal_epoch) {
+        return invalid("order epoch reset requires a published safe terminal disposition");
+    }
+    impl_->config.authorized_intent.reset();
+    impl_->last_receipt.reset();
+    impl_->bound_authorized_plan_sha256.clear();
+    impl_->add_attempted = false;
+    impl_->cancel_attempted = false;
+    impl_->recovery_attempted = false;
+    impl_->order_may_exist = false;
+    impl_->cancel_order_id.reset();
+    impl_->cancel_identity_conflict = false;
+    impl_->safe_terminal_epoch = false;
+    return {};
 }
 
 Plaza2PublisherMessageResult Plaza2TestTradeTransport::post(const Plaza2TradeEncodedCommand& command,

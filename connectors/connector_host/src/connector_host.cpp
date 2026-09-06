@@ -55,9 +55,21 @@ std::string_view host_state_name(ConnectorHostState state) noexcept {
 }
 
 struct ConnectorHost::Impl {
-    explicit Impl(Plaza2HostConfig value) : config(std::move(value)), transport(config.transport) {}
+    explicit Impl(Plaza2HostConfig value)
+        : config(std::move(value)), transport(config.transport), epoch_base_run_id(config.order.run_id),
+          epoch_base_ext_id(config.order.ext_id), epoch_base_add_user_id(config.order.add_user_id),
+          epoch_base_cancel_user_id(config.order.cancel_user_id),
+          epoch_base_recovery_user_id(config.order.recovery_user_id) {}
     Plaza2HostConfig config;
     Plaza2TestTradeTransport transport;
+    SystemOrderLifecycleClock clock;
+    std::unique_ptr<PersistentOrderController> persistent;
+    std::uint64_t epoch_counter{0};
+    std::string epoch_base_run_id;
+    std::int32_t epoch_base_ext_id{0};
+    std::uint32_t epoch_base_add_user_id{0};
+    std::uint32_t epoch_base_cancel_user_id{0};
+    std::uint32_t epoch_base_recovery_user_id{0};
     ConnectorHostState state{ConnectorHostState::Created};
     std::string error;
     std::string authorized_sha;
@@ -129,6 +141,9 @@ struct ConnectorHost::Impl {
                                         return row.scope == ps::PositionScope::kClient &&
                                                row.account_code == participant && row.limits_set;
                                     }) == 1;
+        out.order_epoch_active = persistent != nullptr && persistent->active();
+        out.order_authorized = persistent != nullptr && persistent->authorized();
+        out.order_submission_attempted = persistent != nullptr && persistent->submission_attempted();
         if (const auto bbo = host.aggr20_projector().snapshot_for_isin(out.target_isin_id)) {
             if (bbo->top_bid)
                 out.bid = bbo->top_bid->price;
@@ -149,13 +164,33 @@ struct ConnectorHost::Impl {
                                 out.active_own_order_count == 0 && host.aggr_online() &&
                                 host.aggr_snapshot_complete() && out.target_aggr20_uncrossed && out.bbo_age_ms >= 0 &&
                                 max_age > 0 && max_age <= 5000 && static_cast<std::uint64_t>(out.bbo_age_ms) <= max_age;
+        out.new_order_allowed = config.purpose == HostPurpose::OrderTest && out.observation_ready &&
+                                persistent == nullptr && authorized_sha.empty() && !submitted;
         out.last_error = error;
         if (out.state == ConnectorHostState::Ready && !out.observation_ready)
             out.state = ConnectorHostState::Started;
         if (out.last_error.empty() && host.started() && !out.observation_ready)
             out.last_error = "OBSERVATION_NOT_READY";
-        if (result) {
+        if (persistent != nullptr) {
+            const auto& current = persistent->last_result();
+            out.lifecycle_state = persistent->active() ? std::optional(current.state) : std::nullopt;
+            out.add_reply = current.add_reply;
+            out.cancel_reply = current.cancel_reply;
+            out.market_safe = current.market_safe_terminal;
+            out.evidence_consistent = current.evidence_consistent;
+            if (current.observation) {
+                const auto& row = *current.observation;
+                out.order_id = row.public_order_id != 0 ? row.public_order_id : row.private_order_id;
+                out.original_quantity = row.original_quantity;
+                out.remaining_quantity = row.remaining_quantity;
+                out.executed_quantity = row.executed_quantity;
+            } else if (current.add_reply && current.add_reply->order_id.has_value()) {
+                out.order_id = *current.add_reply->order_id;
+            }
+        } else if (result) {
             out.lifecycle_state = result->state;
+            out.add_reply = result->add_reply;
+            out.cancel_reply = result->cancel_reply;
             out.market_safe = result->market_safe_terminal;
             out.evidence_consistent = result->evidence_consistent;
             if (result->observation) {
@@ -205,6 +240,48 @@ struct ConnectorHost::Impl {
                 value.smoke.limits_commit_sequence = stream.last_commit_sequence;
         }
         return value;
+    }
+
+    cg::Plaza2Error authorize_candidate(const PreSendPlan& candidate, const OrderLifecycleConfig& order_config,
+                                        std::string_view canonical, std::string_view sha) {
+        if (candidate.canonical_json != canonical || candidate.sha256 != sha) {
+            error = "exact current canonical plan and authorization SHA required";
+            return invalid(error);
+        }
+        const auto& c = order_config;
+        Plaza2AuthorizedOrderIntent intent;
+        intent.sha256 = candidate.sha256;
+        intent.canonical_json = candidate.canonical_json;
+        intent.profile_id = c.profile_id;
+        intent.profile_fingerprint = c.profile_fingerprint;
+        intent.add_payload_sha256 = cg::plaza2_sha256_hex(candidate.add_command.payload);
+        intent.recovery_payload_sha256 = cg::plaza2_sha256_hex(candidate.exact_ext_id_recovery_command.payload);
+        intent.isin_id = c.isin_id;
+        intent.base_contract_code = c.base_contract_code;
+        intent.side = c.side;
+        intent.quantity = c.quantity;
+        intent.price = c.price;
+        intent.ext_id = c.ext_id;
+        intent.add_user_id = c.add_user_id;
+        intent.cancel_user_id = c.cancel_user_id;
+        intent.recovery_user_id = c.recovery_user_id;
+        intent.instrument_mask = c.instrument_mask;
+        intent.broker_code = c.broker_code;
+        intent.client_code = c.client_code;
+        intent.broker_code_sha256 = cg::plaza2_sha256_hex(c.broker_code);
+        intent.client_code_sha256 = cg::plaza2_sha256_hex(c.client_code);
+        intent.policy_version = c.policy.version;
+        intent.policy_sha256 = c.policy.sha256;
+        intent.max_distance_ticks = c.policy.max_distance_ticks;
+        intent.max_aggr20_age_ms = c.policy.max_aggr20_age_ms;
+        intent.require_zero_starting_position = c.policy.require_zero_starting_position;
+        if (auto value = transport.install_authorized_intent(std::move(intent)))
+            return value;
+        if (auto value = transport.bind_authorized_plan(candidate))
+            return value;
+        authorized_sha = candidate.sha256;
+        error.clear();
+        return {};
     }
 };
 
@@ -264,6 +341,8 @@ cg::Plaza2Error ConnectorHost::stop() {
     auto& p = *impl_;
     if (p.state == ConnectorHostState::Stopped)
         return {};
+    if (p.persistent != nullptr && p.persistent->active())
+        return invalid("finish or resolve the current order epoch before stopping the session host");
     p.state = ConnectorHostState::Stopping;
     if (auto error = p.transport.host().stop()) {
         p.state = ConnectorHostState::Failed;
@@ -290,52 +369,21 @@ PreSendPlan ConnectorHost::plan() const {
 
 cg::Plaza2Error ConnectorHost::authorize(std::string_view canonical, std::string_view sha) {
     auto& p = *impl_;
-    if (p.config.purpose != HostPurpose::OrderTest || p.submitted || !p.authorized_sha.empty())
+    if (p.config.purpose != HostPurpose::OrderTest || p.submitted || p.persistent != nullptr ||
+        !p.authorized_sha.empty())
         return invalid("authorization is unavailable for this host");
     const auto candidate = plan();
-    if (!candidate.ok || candidate.canonical_json != canonical || candidate.sha256 != sha) {
-        p.error = "exact current canonical plan and authorization SHA required";
+    if (!candidate.ok) {
+        p.error = candidate.message.empty() ? "OBSERVATION_NOT_READY" : candidate.message;
         return invalid(p.error);
     }
-    const auto& c = p.config.order;
-    Plaza2AuthorizedOrderIntent intent;
-    intent.sha256 = candidate.sha256;
-    intent.canonical_json = candidate.canonical_json;
-    intent.profile_id = c.profile_id;
-    intent.profile_fingerprint = c.profile_fingerprint;
-    intent.add_payload_sha256 = cg::plaza2_sha256_hex(candidate.add_command.payload);
-    intent.recovery_payload_sha256 = cg::plaza2_sha256_hex(candidate.exact_ext_id_recovery_command.payload);
-    intent.isin_id = c.isin_id;
-    intent.base_contract_code = c.base_contract_code;
-    intent.side = c.side;
-    intent.price = c.price;
-    intent.quantity = c.quantity;
-    intent.ext_id = c.ext_id;
-    intent.add_user_id = c.add_user_id;
-    intent.cancel_user_id = c.cancel_user_id;
-    intent.recovery_user_id = c.recovery_user_id;
-    intent.instrument_mask = c.instrument_mask;
-    intent.broker_code = c.broker_code;
-    intent.client_code = c.client_code;
-    intent.broker_code_sha256 = cg::plaza2_sha256_hex(c.broker_code);
-    intent.client_code_sha256 = cg::plaza2_sha256_hex(c.client_code);
-    intent.policy_version = c.policy.version;
-    intent.policy_sha256 = c.policy.sha256;
-    intent.max_distance_ticks = c.policy.max_distance_ticks;
-    intent.max_aggr20_age_ms = c.policy.max_aggr20_age_ms;
-    intent.require_zero_starting_position = c.policy.require_zero_starting_position;
-    if (auto error = p.transport.install_authorized_intent(std::move(intent)))
-        return error;
-    if (auto error = p.transport.bind_authorized_plan(candidate))
-        return error;
-    p.authorized_sha = candidate.sha256;
-    p.error.clear();
-    return {};
+    return p.authorize_candidate(candidate, p.config.order, canonical, sha);
 }
 
 OrderLifecycleResult ConnectorHost::submit() {
     auto& p = *impl_;
-    if (p.config.purpose != HostPurpose::OrderTest || p.authorized_sha.empty() || p.submitted)
+    if (p.config.purpose != HostPurpose::OrderTest || p.authorized_sha.empty() || p.submitted ||
+        p.persistent != nullptr)
         return {.message = "authorized one-shot order-test required"};
     if (poll() || !p.snapshot().observation_ready)
         return {.message = "OBSERVATION_NOT_READY"};
@@ -354,6 +402,89 @@ OrderLifecycleResult ConnectorHost::submit() {
     } else
         p.state = ConnectorHostState::Started;
     return *p.result;
+}
+
+cg::Plaza2Error ConnectorHost::begin_order(std::string_view canonical_plan, std::string_view sha256) {
+    auto& p = *impl_;
+    if (p.config.purpose != HostPurpose::OrderTest || p.submitted || p.persistent != nullptr ||
+        !p.authorized_sha.empty()) {
+        return invalid("a persistent order epoch is already active or unavailable for this host");
+    }
+    if (p.state != ConnectorHostState::Started && p.state != ConnectorHostState::Ready) {
+        return invalid("begin_order requires a started host");
+    }
+    if (!p.snapshot().observation_ready) {
+        return invalid("begin_order requires current observation readiness");
+    }
+    auto order = p.current_order();
+    const auto next_epoch = p.epoch_counter + 1;
+    order.run_id = p.epoch_base_run_id + "-epoch-" + std::to_string(next_epoch);
+    order.dry_run = true;
+    order.send_test_order = false;
+    order.any_arm_flag = false;
+    const auto candidate = build_pre_send_plan(order);
+    if (!candidate.ok) {
+        return invalid(candidate.message.empty() ? "OBSERVATION_NOT_READY" : candidate.message);
+    }
+    if (const auto authorization = p.authorize_candidate(candidate, order, canonical_plan, sha256)) {
+        return authorization;
+    }
+    p.epoch_counter = next_epoch;
+    p.config.order = order;
+    p.persistent = std::make_unique<PersistentOrderController>(p.config.order, p.transport, p.clock);
+    if (const auto begin = p.persistent->begin(candidate)) {
+        (void)p.transport.mark_order_epoch_terminal();
+        (void)p.transport.reset_order_epoch();
+        p.persistent.reset();
+        p.authorized_sha.clear();
+        return begin;
+    }
+    return {};
+}
+
+OrderLifecycleResult ConnectorHost::submit_order() {
+    auto& p = *impl_;
+    if (p.persistent == nullptr)
+        return {.message = "begin_order with an exact authorization is required"};
+    return p.persistent->submit_order();
+}
+
+OrderLifecycleResult ConnectorHost::poll_order() {
+    auto& p = *impl_;
+    if (p.persistent == nullptr)
+        return {.message = "begin_order with an exact authorization is required"};
+    return p.persistent->poll_order();
+}
+
+OrderLifecycleResult ConnectorHost::cancel_current_order() {
+    auto& p = *impl_;
+    if (p.persistent == nullptr)
+        return {.message = "begin_order with an exact authorization is required"};
+    return p.persistent->cancel_order();
+}
+
+cg::Plaza2Error ConnectorHost::finish_order_epoch() {
+    auto& p = *impl_;
+    if (p.persistent == nullptr)
+        return invalid("no active persistent order epoch");
+    if (const auto finish = p.persistent->finish_order_epoch())
+        return finish;
+    p.transport.mark_order_epoch_terminal();
+    if (const auto reset = p.transport.reset_order_epoch())
+        return reset;
+    p.persistent.reset();
+    p.authorized_sha.clear();
+    p.config.order.run_id = p.epoch_base_run_id;
+    const auto suffix = static_cast<std::int32_t>(p.epoch_counter);
+    p.config.order.ext_id = p.epoch_base_ext_id + suffix;
+    constexpr std::uint32_t kEpochUserIdStride = 16;
+    const auto user_offset = static_cast<std::uint32_t>(suffix) * kEpochUserIdStride;
+    p.config.order.add_user_id = p.epoch_base_add_user_id + user_offset;
+    p.config.order.cancel_user_id = p.epoch_base_cancel_user_id + user_offset;
+    p.config.order.recovery_user_id = p.epoch_base_recovery_user_id + user_offset;
+    p.result.reset();
+    p.error.clear();
+    return {};
 }
 
 RestartReconciliationResult ConnectorHost::reconcile() {
@@ -375,8 +506,10 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
             << " reply=" << s.reply_ready << "\nbbo=" << s.bid << '/' << s.ask << " age_ms=" << s.bbo_age_ms
             << "\nposition=" << position_evidence_class_name(s.position_evidence_class)
             << " active_own_orders=" << s.active_own_order_count << " uob_periodic=" << s.uob_periodic_consistent
-            << "\nmarket_safe=" << s.market_safe << " evidence_consistent=" << s.evidence_consistent
-            << "\nlast_error=" << s.last_error << '\n';
+            << "\norder_epoch_active=" << s.order_epoch_active << " order_authorized=" << s.order_authorized
+            << " order_submission_attempted=" << s.order_submission_attempted
+            << " new_order_allowed=" << s.new_order_allowed << "\nmarket_safe=" << s.market_safe
+            << " evidence_consistent=" << s.evidence_consistent << "\nlast_error=" << s.last_error << '\n';
         return out.str();
     }
     out << "{\"schema\":\"moex.connector-host.v1\",\"state\":" << quoted(host_state_name(s.state))
@@ -400,7 +533,9 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
         << ",\"trade_replay_complete\":" << s.trade_replay_complete
         << ",\"active_own_order_count\":" << s.active_own_order_count
         << ",\"uob_periodic_consistent\":" << s.uob_periodic_consistent << ",\"limits_set\":" << s.limits_set
-        << ",\"lifecycle_state\":"
+        << ",\"order_epoch_active\":" << s.order_epoch_active << ",\"order_authorized\":" << s.order_authorized
+        << ",\"order_submission_attempted\":" << s.order_submission_attempted
+        << ",\"new_order_allowed\":" << s.new_order_allowed << ",\"lifecycle_state\":"
         << (s.lifecycle_state ? quoted(order_lifecycle_state_name(*s.lifecycle_state)) : "null")
         << ",\"order_id\":" << s.order_id << ",\"original_quantity\":" << s.original_quantity
         << ",\"remaining_quantity\":" << s.remaining_quantity << ",\"executed_quantity\":" << s.executed_quantity

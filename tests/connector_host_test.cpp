@@ -108,7 +108,10 @@ int main(int argc, char** argv) {
         test::require(library != nullptr, "load fake");
         auto reset = reinterpret_cast<void (*)()>(dlsym(library, "moex_fake_reset_publisher_counts"));
         auto count = reinterpret_cast<std::uint64_t (*)(std::uint32_t)>(dlsym(library, "moex_fake_publisher_count"));
-        test::require(reset && count, "independent fake counters");
+        auto env_open_count = reinterpret_cast<std::uint64_t (*)()>(dlsym(library, "moex_fake_environment_open_count"));
+        auto connection_new_count =
+            reinterpret_cast<std::uint64_t (*)()>(dlsym(library, "moex_fake_connection_new_count"));
+        test::require(reset && count && env_open_count && connection_new_count, "independent fake counters");
         {
             reset();
             ConnectorHost host(config_for(fixture));
@@ -225,6 +228,117 @@ int main(int argc, char** argv) {
             const auto before = count(1);
             test::require(!host.submit().ok && count(1) == before, "no second Add");
             test::require(!host.stop(), "terminal stop");
+        }
+        {
+            reset();
+            ::unsetenv("MOEX_FAKE_TRADE_IDENTITY_CONFLICT");
+            ::unsetenv("MOEX_FAKE_FULL_FILL");
+            ::unsetenv("MOEX_FAKE_CANCEL_AFTER_RECOVERY");
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_CANCEL_AFTER_DEL", "1", 1);
+            ::setenv("MOEX_FAKE_FLAT_TRADE_REPLAY", "1", 1);
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "persistent-host";
+            c.order.journal_root = fixture.root / "persistent-journals";
+            ConnectorHost host(std::move(c));
+            warm(host);
+            test::require(env_open_count() == 1 && connection_new_count() == 1, "one warm CGate session");
+
+            const auto first_plan = host.plan();
+            test::require(first_plan.ok, "persistent first plan");
+            test::require(static_cast<bool>(host.begin_order(first_plan.canonical_json, std::string(64, '0'))) &&
+                              !host.snapshot().order_epoch_active && count(0) == 0 && count(1) == 0,
+                          "wrong persistent authorization opens no epoch");
+            test::require(!host.begin_order(first_plan.canonical_json, first_plan.sha256),
+                          "persistent first authorization");
+            test::require(host.snapshot().order_epoch_active && host.snapshot().order_authorized &&
+                              !host.snapshot().order_submission_attempted,
+                          "authorized epoch snapshot");
+            auto first_submit = host.submit_order();
+            test::require(!first_submit.ok && first_submit.state == OrderLifecycleState::Posted,
+                          "persistent first Add is not terminal");
+            const auto posts_after_first_add = count(1);
+            test::require(!host.submit_order().ok && count(1) == posts_after_first_add,
+                          "persistent second Add in one epoch is refused");
+            test::require(static_cast<bool>(host.begin_order(first_plan.canonical_json, first_plan.sha256)),
+                          "new order while Add is pending is refused");
+            auto first_working = host.poll_order();
+            test::require(!first_working.ok && first_working.state == OrderLifecycleState::Working,
+                          "persistent first order returns Working state=" +
+                              std::string(order_lifecycle_state_name(first_working.state)) +
+                              " message=" + first_working.message);
+            const auto posts_before_cancel = count(1);
+            test::require(host.poll_order().state == OrderLifecycleState::Working && count(1) == posts_before_cancel,
+                          "persistent poll does not cancel automatically");
+            const auto first_cancel = host.cancel_current_order();
+            test::require(!first_cancel.ok && first_cancel.state == OrderLifecycleState::CancelPending,
+                          "persistent explicit cancel pending");
+            const auto posts_after_first_cancel = count(1);
+            test::require(!host.cancel_current_order().ok && count(1) == posts_after_first_cancel,
+                          "persistent second cancel in one epoch is refused");
+            OrderLifecycleResult first_terminal;
+            for (int attempt = 0; attempt < 4 && first_terminal.state != OrderLifecycleState::Cancelled; ++attempt)
+                first_terminal = host.poll_order();
+            test::require(first_terminal.ok && first_terminal.state == OrderLifecycleState::Cancelled,
+                          "persistent first cancellation terminal");
+            test::require(static_cast<bool>(host.stop()), "active epoch blocks host stop");
+            test::require(!host.finish_order_epoch(), "first epoch closes safely");
+            test::require(env_open_count() == 1 && connection_new_count() == 1 && host.snapshot().new_order_allowed,
+                          "same warm session permits a fresh epoch");
+
+            ::setenv("MOEX_FAKE_EXT_ID", "80", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20103", 1);
+            const auto second_plan = host.plan();
+            test::require(second_plan.ok && second_plan.sha256 != first_plan.sha256, "fresh epoch plan authorization");
+            test::require(static_cast<bool>(host.begin_order(first_plan.canonical_json, first_plan.sha256)) &&
+                              !host.snapshot().order_epoch_active,
+                          "old epoch authorization cannot open the next epoch");
+            test::require(!host.begin_order(second_plan.canonical_json, second_plan.sha256),
+                          "persistent second authorization");
+            test::require(!host.submit_order().ok, "persistent second Add submitted");
+            OrderLifecycleResult second_working;
+            for (int attempt = 0; attempt < 3 && second_working.state != OrderLifecycleState::Working; ++attempt)
+                second_working = host.poll_order();
+            test::require(second_working.state == OrderLifecycleState::Working,
+                          "persistent second order returns Working state=" +
+                              std::string(order_lifecycle_state_name(second_working.state)) + " message=" +
+                              second_working.message + " snapshot=" + render_snapshot(host.snapshot(), true));
+            const auto second_still_working = host.poll_order();
+            test::require(second_still_working.state == OrderLifecycleState::Working,
+                          "persistent second order remains Working until cancel state=" +
+                              std::string(order_lifecycle_state_name(second_still_working.state)));
+            test::require(host.cancel_current_order().state == OrderLifecycleState::CancelPending,
+                          "persistent second explicit cancel");
+            OrderLifecycleResult second_terminal;
+            for (int attempt = 0; attempt < 4 && second_terminal.state != OrderLifecycleState::Cancelled; ++attempt)
+                second_terminal = host.poll_order();
+            test::require(second_terminal.ok && second_terminal.state == OrderLifecycleState::Cancelled,
+                          "persistent second cancellation terminal");
+            test::require(!host.finish_order_epoch(), "second epoch closes safely");
+            ::setenv("MOEX_FAKE_EXT_ID", "81", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20203", 1);
+            ::setenv("MOEX_FAKE_FULL_FILL", "1", 1);
+            const auto third_plan = host.plan();
+            test::require(third_plan.ok && third_plan.sha256 != second_plan.sha256, "filled epoch plan authorization");
+            test::require(!host.begin_order(third_plan.canonical_json, third_plan.sha256),
+                          "persistent filled epoch authorization");
+            test::require(!host.submit_order().ok, "persistent filled Add submitted");
+            const auto third_terminal = host.poll_order();
+            test::require(third_terminal.ok && third_terminal.state == OrderLifecycleState::Filled,
+                          "persistent filled epoch terminal");
+            test::require(!host.finish_order_epoch() && host.snapshot().new_order_allowed,
+                          "filled epoch permits the next safe epoch");
+            test::require(!host.stop(), "persistent warm host stop");
+            ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+            ::unsetenv("MOEX_FAKE_EXT_ID");
+            ::unsetenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
+            ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
+            ::unsetenv("MOEX_FAKE_FLAT_TRADE_REPLAY");
+            ::unsetenv("MOEX_FAKE_FULL_FILL");
         }
         dlclose(library);
         test::remove_tree(root);
