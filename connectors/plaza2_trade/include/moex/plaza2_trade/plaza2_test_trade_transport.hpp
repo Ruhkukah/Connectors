@@ -2,6 +2,7 @@
 
 #include "moex/plaza2/cgate/plaza2_aggr20_md.hpp"
 #include "moex/plaza2/cgate/plaza2_credential_provider.hpp"
+#include "moex/plaza2/cgate/plaza2_manual_operator_gate.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
 #include "moex/plaza2_trade/plaza2_order_lifecycle.hpp"
@@ -61,12 +62,30 @@ struct Plaza2AuthorizedOrderIntent {
     bool require_zero_starting_position{false};
 };
 
+enum class PositionEvidenceClass : std::uint8_t {
+    ExactZeroPosRow = 0,
+    FlatByPosSnapshotAndTradeReplay = 1,
+    Unresolved = 2,
+};
+
+[[nodiscard]] std::string_view position_evidence_class_name(PositionEvidenceClass value) noexcept;
+
+struct Plaza2TradeReplayAnchor {
+    std::int64_t trades_rev{0};
+    std::int64_t trades_lifenum{0};
+    std::int64_t server_time{0};
+};
+
 [[nodiscard]] std::string canonical_authorized_order_intent_json(const Plaza2AuthorizedOrderIntent& intent);
 [[nodiscard]] std::string authorized_order_intent_sha256(const Plaza2AuthorizedOrderIntent& intent);
 
 struct Plaza2ExecutionSafetyReceipt {
     std::string authorized_intent_sha256;
     std::int64_t target_isin_id{0};
+    std::uint64_t target_refdata_lifenum{0};
+    plaza2::private_state::SourceRowProvenance target_fut_instruments_provenance;
+    plaza2::private_state::SourceRowProvenance target_fut_sess_contents_provenance;
+    plaza2::private_state::SourceRowProvenance target_session_provenance;
     std::optional<plaza2::cgate::Plaza2Aggr20InstrumentSnapshot> aggr20;
     std::optional<plaza2::private_state::InstrumentSnapshot> instrument;
     std::optional<plaza2::private_state::TradingSessionSnapshot> session;
@@ -79,6 +98,19 @@ struct Plaza2ExecutionSafetyReceipt {
     bool aggr_snapshot_complete{false};
     std::string limit_fingerprint_sha256;
     std::uint64_t limit_source_commit_sequence{0};
+    PositionEvidenceClass position_evidence_class{PositionEvidenceClass::Unresolved};
+    bool zero_starting_position_proven{false};
+    bool position_snapshot_complete{false};
+    std::int64_t position_trades_rev{0};
+    std::int64_t position_trades_lifenum{0};
+    std::int64_t position_server_time{0};
+    bool trade_replay_complete{false};
+    std::size_t participant_user_deal_count{0};
+    std::size_t participant_user_multileg_deal_count{0};
+    std::int64_t reconstructed_target_xpos{0};
+    std::size_t active_own_order_count{0};
+    std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used;
+    bool userorderbook_periodic_snapshot_consistent{false};
     std::optional<plaza2::private_state::PositionSnapshot> position;
     std::string position_fingerprint_sha256;
     std::uint64_t position_source_commit_sequence{0};
@@ -86,6 +118,8 @@ struct Plaza2ExecutionSafetyReceipt {
     std::chrono::milliseconds local_age{0};
     std::uint64_t authorized_max_aggr20_age_ms{0};
     bool require_zero_starting_position{false};
+    bool target_refdata_provenance_ready{false};
+    bool target_aggr20_uncrossed{false};
     bool passive_non_marketable{false};
     bool bbo_distance_allowed{false};
     bool quantity_one{false};
@@ -97,10 +131,20 @@ struct Plaza2ExecutionSafetyReceipt {
     std::string sha256;
 };
 
+enum class Plaza2TestSessionHostMode : std::uint8_t {
+    OfflineFake = 0,
+    LiveTestPreSend = 1,
+};
+
 // This host is deliberately TEST-only and owns the one Env/connection used by
 // private replication, AGGR20, p2mqreply, and the publisher.
 struct Plaza2TestSessionHostConfig {
+    Plaza2TestSessionHostMode mode{Plaza2TestSessionHostMode::OfflineFake};
     plaza2::cgate::Plaza2Settings runtime{};
+    // Required for LiveTestPreSend so the operator gate validates the actual
+    // endpoint rather than guessing from an opaque connection URL.
+    std::string endpoint_host;
+    plaza2::cgate::Plaza2RuntimeArmState arm_state{};
     std::string connection_settings;
     std::string connection_open_settings;
     std::vector<Plaza2TestTradeStreamConfig> private_streams;
@@ -110,6 +154,12 @@ struct Plaza2TestSessionHostConfig {
     Plaza2TestTradeStreamConfig aggr20_stream;
     std::string publisher_settings;
     std::string publisher_open_settings;
+    std::string publisher_name{"PUB"};
+    std::string p2mqreply_settings;
+    std::string p2mqreply_open_settings;
+    // When enabled, FORTS_TRADE_REPL is opened after the negotiated POS.info
+    // anchor is available, using that exact trades_rev/lifenum anchor.
+    bool trade_replay_from_pos_anchor{false};
     plaza2::cgate::Plaza2CredentialConfig credentials{};
     plaza2::cgate::Plaza2CredentialConfig software_key{};
     std::uint32_t process_timeout_ms{50};
@@ -137,6 +187,9 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] bool aggr_snapshot_complete() const noexcept;
     [[nodiscard]] bool p2mqreply_open() const noexcept;
     [[nodiscard]] bool publisher_open() const noexcept;
+    [[nodiscard]] Plaza2TestSessionHostMode mode() const noexcept;
+    [[nodiscard]] bool trade_replay_anchor_ready() const noexcept;
+    [[nodiscard]] std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used() const noexcept;
 
     struct ReplyEvent {
         std::uint32_t user_id{0};
@@ -187,6 +240,10 @@ class Plaza2TestTradeTransport final : public OrderLifecycleTransport {
     Plaza2TestTradeTransport(Plaza2TestTradeTransport&&) noexcept;
     Plaza2TestTradeTransport& operator=(Plaza2TestTradeTransport&&) noexcept;
 
+    // Install the one human-authorized intent after this transport's already
+    // started host has been warmed.  The slot is one-shot and immutable;
+    // constructor-supplied intents remain the only alternative.
+    [[nodiscard]] plaza2::cgate::Plaza2Error install_authorized_intent(Plaza2AuthorizedOrderIntent intent);
     [[nodiscard]] plaza2::cgate::Plaza2Error bind_authorized_plan(const PreSendPlan& plan) override;
     [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult post(const Plaza2TradeEncodedCommand& command,
                                                                    std::uint32_t user_id) override;

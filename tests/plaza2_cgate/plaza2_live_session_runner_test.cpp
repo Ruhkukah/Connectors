@@ -138,7 +138,8 @@ int main(int argc, char** argv) {
         require(health.counts.matching_map_count == 1, "matching-map count mismatch");
         require(health.counts.limit_count == 1, "limit count mismatch");
         require(health.counts.position_count == 1, "position count mismatch");
-        require(health.counts.own_order_count == 1, "own-order count mismatch");
+        require(health.counts.own_order_count == 2,
+                "own-order count must preserve independent TRADE and USERORDERBOOK surfaces");
         require(health.counts.own_trade_count == 1, "own-trade count mismatch");
         require(health.resume_markers.has_lifenum && health.resume_markers.last_lifenum == 7,
                 "lifenum marker mismatch");

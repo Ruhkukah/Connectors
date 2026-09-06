@@ -245,6 +245,7 @@ struct FakeListener {
     std::unique_ptr<OwnedScheme> scheme;
     std::vector<MessagePlan> message_plans;
     bool script_emitted{false};
+    std::uint32_t open_attempt_count{0};
 };
 
 struct FakeConnection {
@@ -256,6 +257,8 @@ struct FakeConnection {
     bool liveness_event_emitted{false};
     bool userbook_periodic_clear_emitted{false};
     bool userbook_periodic_info_emitted{false};
+    bool pos_anchor_drift_emitted{false};
+    bool trade_open_error_seen{false};
 };
 
 struct FakePublisher {
@@ -682,8 +685,8 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .kind = SignedInteger,
                          .signed_value = 7},
                         {.field_code = FieldCode::kFortsPosReplInfoServerTime,
-                         .kind = SignedInteger,
-                         .signed_value = 1700000001},
+                         .kind = Timestamp,
+                         .unsigned_value = 1700000001},
                     },
             },
         };
@@ -913,8 +916,8 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                 .fields =
                     {
                         {.field_code = FieldCode::kFortsTradeReplHeartbeatServerTime,
-                         .kind = SignedInteger,
-                         .signed_value = 1700000007},
+                         .kind = Timestamp,
+                         .unsigned_value = 1700000007},
                     },
             },
         };
@@ -951,6 +954,69 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     using enum FieldCode;
     using enum TableCode;
 
+    if (stream_code == StreamCode::kFortsTradeRepl) {
+        if (fake_flag("MOEX_FAKE_FLAT_TRADE_REPLAY")) {
+            std::erase_if(script, [](const auto& message) {
+                return message.table_code == kFortsTradeReplUserDeal ||
+                       message.table_code == kFortsTradeReplUserMultilegDeal;
+            });
+        }
+        // Lifecycle evidence is sourced from TRADE orders_log. Keep the
+        // concrete fake's fill/cancel transitions on that surface; the
+        // USERORDERBOOK flags below independently exercise the TEST census.
+        if (fake_flag("MOEX_FAKE_FULL_FILL") || fake_flag("MOEX_FAKE_CANCELLED_ORDER") || g_cancel_after_cleanup) {
+            for (auto& message : script) {
+                if (message.table_code != kFortsTradeReplOrdersLog &&
+                    message.table_code != kFortsTradeReplMultilegOrdersLog) {
+                    continue;
+                }
+                const auto public_rest_field = message.table_code == kFortsTradeReplMultilegOrdersLog
+                                                   ? kFortsTradeReplMultilegOrdersLogPublicAmountRest
+                                                   : kFortsTradeReplOrdersLogPublicAmountRest;
+                const auto private_rest_field = message.table_code == kFortsTradeReplMultilegOrdersLog
+                                                    ? kFortsTradeReplMultilegOrdersLogPrivateAmountRest
+                                                    : kFortsTradeReplOrdersLogPrivateAmountRest;
+                const auto public_action_field = message.table_code == kFortsTradeReplMultilegOrdersLog
+                                                     ? kFortsTradeReplMultilegOrdersLogPublicAction
+                                                     : kFortsTradeReplOrdersLogPublicAction;
+                const auto private_action_field = message.table_code == kFortsTradeReplMultilegOrdersLog
+                                                      ? kFortsTradeReplMultilegOrdersLogPrivateAction
+                                                      : kFortsTradeReplOrdersLogPrivateAction;
+                if (auto* public_rest = find_field(message, public_rest_field)) {
+                    public_rest->signed_value = 0;
+                }
+                if (auto* private_rest = find_field(message, private_rest_field)) {
+                    private_rest->signed_value = 0;
+                }
+                const auto action = fake_flag("MOEX_FAKE_FULL_FILL") ? 2 : 0;
+                if (auto* public_action = find_field(message, public_action_field)) {
+                    public_action->signed_value = action;
+                }
+                if (auto* private_action = find_field(message, private_action_field)) {
+                    private_action->signed_value = action;
+                }
+            }
+        }
+        if (fake_flag("MOEX_FAKE_TRADE_IDENTITY_CONFLICT")) {
+            for (std::size_t index = 0; index < script.size(); ++index) {
+                const auto source = script[index];
+                if (source.table_code != kFortsTradeReplOrdersLog &&
+                    source.table_code != kFortsTradeReplMultilegOrdersLog) {
+                    continue;
+                }
+                auto conflicting = source;
+                const auto private_id_field = source.table_code == kFortsTradeReplMultilegOrdersLog
+                                                  ? kFortsTradeReplMultilegOrdersLogPrivateOrderId
+                                                  : kFortsTradeReplOrdersLogPrivateOrderId;
+                if (auto* private_id = find_field(conflicting, private_id_field)) {
+                    private_id->signed_value = 29999;
+                }
+                script.push_back(std::move(conflicting));
+                break;
+            }
+        }
+    }
+
     if (stream_code == StreamCode::kFortsAggrRepl) {
         if (fake_flag("MOEX_FAKE_AGGR_ONE_SIDED")) {
             std::erase_if(script, [](const auto& message) {
@@ -980,7 +1046,7 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                         find_field(source, kFortsAggrReplOrdersAggrDir)->signed_value == 1 ? "10000000" : "10001000";
                 }
                 if (auto* repl = find_field(other, kFortsAggrReplOrdersAggrReplId)) {
-                    repl->unsigned_value += 100;
+                    repl->signed_value += 100;
                 }
                 script.push_back(std::move(other));
             }
@@ -1071,6 +1137,16 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
             std::erase_if(script, [](const auto& message) {
                 return message.table_code == kFortsUserorderbookReplOrdersCurrentday;
             });
+        }
+        if (fake_flag("MOEX_FAKE_ACTIVE_ORDER_ALT_EXT_ID")) {
+            for (auto& message : script) {
+                if (message.table_code != kFortsUserorderbookReplOrdersCurrentday) {
+                    continue;
+                }
+                if (auto* ext_id = find_field(message, kFortsUserorderbookReplOrdersCurrentdayExtId)) {
+                    ext_id->signed_value = 877;
+                }
+            }
         }
         if (fake_flag("MOEX_FAKE_FULL_FILL") || fake_flag("MOEX_FAKE_CANCELLED_ORDER") || g_cancel_after_cleanup) {
             for (auto& message : script) {
@@ -1500,6 +1576,44 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrIncorrectState;
     }
 
+    if (fake_flag("MOEX_FAKE_TRADE_OPEN_ERROR_POS_DRIFT") && !connection->pos_anchor_drift_emitted) {
+        FakeListener* pos_listener = nullptr;
+        bool trade_open_failed = connection->trade_open_error_seen;
+        for (auto* listener : connection->listeners) {
+            if (listener == nullptr || listener->reply_listener) {
+                continue;
+            }
+            if (listener->stream_code == StreamCode::kFortsPosRepl && listener->state == kStateActive) {
+                pos_listener = listener;
+            } else if (listener->stream_code == StreamCode::kFortsTradeRepl && listener->state == kStateError) {
+                trade_open_failed = true;
+            }
+        }
+        if (pos_listener != nullptr && trade_open_failed) {
+            const auto script = script_for_stream(StreamCode::kFortsPosRepl);
+            const auto info = std::ranges::find_if(
+                script, [](const auto& message) { return message.table_code == TableCode::kFortsPosReplInfo; });
+            if (info == script.end()) {
+                return kCgErrIncorrectState;
+            }
+            auto drifted = *info;
+            if (auto* rev = find_field(drifted, FieldCode::kFortsPosReplInfoTradesRev)) {
+                rev->signed_value = 45;
+            }
+            if (const auto result = emit_simple_message(*pos_listener, kCgMsgTnBegin); result != kCgErrOk) {
+                return result;
+            }
+            if (const auto result = emit_stream_message(*pos_listener, drifted); result != kCgErrOk) {
+                return result;
+            }
+            if (const auto result = emit_simple_message(*pos_listener, kCgMsgTnCommit); result != kCgErrOk) {
+                return result;
+            }
+            connection->pos_anchor_drift_emitted = true;
+            return kCgErrOk;
+        }
+    }
+
     if (connection->script_emitted && connection->pending_replies.empty() &&
         fake_flag("MOEX_FAKE_USERORDERBOOK_PERIODIC_REFRESH")) {
         FakeListener* userbook = nullptr;
@@ -1613,7 +1727,14 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         }
     }
     if (connection->script_emitted && connection->pending_replies.empty()) {
-        return kCgErrTimeout;
+        const bool pending_new_listener =
+            std::any_of(connection->listeners.begin(), connection->listeners.end(), [](const auto* listener) {
+                return listener != nullptr && !listener->reply_listener && listener->state == kStateActive &&
+                       !listener->script_emitted;
+            });
+        if (!pending_new_listener) {
+            return kCgErrTimeout;
+        }
     }
 
     bool emitted_any = false;
@@ -1648,6 +1769,49 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
                     return result;
                 }
             }
+        }
+    }
+
+    if (fake_flag("MOEX_FAKE_POS_ANCHOR_DRIFT") && !connection->pos_anchor_drift_emitted) {
+        FakeListener* pos_listener = nullptr;
+        bool trade_replay_emitted = false;
+        for (auto* listener : connection->listeners) {
+            if (listener == nullptr || listener->reply_listener || listener->state != kStateActive) {
+                continue;
+            }
+            if (listener->stream_code == StreamCode::kFortsPosRepl) {
+                pos_listener = listener;
+            } else if (listener->stream_code == StreamCode::kFortsTradeRepl && listener->script_emitted) {
+                trade_replay_emitted = true;
+            }
+        }
+        if (pos_listener != nullptr && trade_replay_emitted) {
+            const auto script = script_for_stream(StreamCode::kFortsPosRepl);
+            const auto info = std::ranges::find_if(
+                script, [](const auto& message) { return message.table_code == TableCode::kFortsPosReplInfo; });
+            if (info == script.end()) {
+                return kCgErrIncorrectState;
+            }
+            auto drifted = *info;
+            const auto* drift_kind = std::getenv("MOEX_FAKE_POS_ANCHOR_DRIFT");
+            if (drift_kind != nullptr && std::string_view(drift_kind) == "lifenum") {
+                if (auto* lifenum = find_field(drifted, FieldCode::kFortsPosReplInfoTradesLifenum)) {
+                    lifenum->signed_value = 8;
+                }
+            } else if (auto* rev = find_field(drifted, FieldCode::kFortsPosReplInfoTradesRev)) {
+                rev->signed_value = 45;
+            }
+            if (const auto result = emit_simple_message(*pos_listener, kCgMsgTnBegin); result != kCgErrOk) {
+                return result;
+            }
+            if (const auto result = emit_stream_message(*pos_listener, drifted); result != kCgErrOk) {
+                return result;
+            }
+            if (const auto result = emit_simple_message(*pos_listener, kCgMsgTnCommit); result != kCgErrOk) {
+                return result;
+            }
+            connection->pos_anchor_drift_emitted = true;
+            emitted_any = true;
         }
     }
 
@@ -1730,6 +1894,19 @@ std::uint32_t cg_lsn_open(void* listener, const char*) {
         return kCgErrInvalidArgument;
     }
     auto* typed = static_cast<FakeListener*>(listener);
+    ++typed->open_attempt_count;
+    const bool refdata_error_once =
+        typed->stream_code == StreamCode::kFortsRefdataRepl && fake_flag("MOEX_FAKE_REFDATA_OPEN_ERROR_ONCE");
+    const bool trade_error_once =
+        typed->stream_code == StreamCode::kFortsTradeRepl &&
+        (fake_flag("MOEX_FAKE_TRADE_OPEN_ERROR_ONCE") || fake_flag("MOEX_FAKE_TRADE_OPEN_ERROR_POS_DRIFT"));
+    if (typed->open_attempt_count == 1 && (refdata_error_once || trade_error_once)) {
+        typed->state = kStateError;
+        if (trade_error_once && typed->connection != nullptr) {
+            typed->connection->trade_open_error_seen = true;
+        }
+        return kCgErrOk;
+    }
     if (fake_flag("MOEX_FAKE_LSN_OPENING_STATE")) {
         typed->state = kStateOpening;
         return kCgErrOk;

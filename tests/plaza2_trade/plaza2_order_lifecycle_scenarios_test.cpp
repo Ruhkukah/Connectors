@@ -774,15 +774,22 @@ void test_source_provenance_scenarios() {
         transport.post_results = {posted()};
         transport.poll_results = {{.replies = {accepted_add()}, .observations = {filled}}};
         const auto result = run_script(config, transport, clock);
-        require(result.state == OrderLifecycleState::Filled, "provenance scenario should finish filled");
-        require(result.observation->from_trade_replication == trade_source,
-                "trade replication provenance must be factual");
-        require(result.observation->from_user_orderbook == user_source, "user-orderbook provenance must be factual");
+        if (user_source) {
+            require(result.state == OrderLifecycleState::UnresolvedOrphanIncident && !result.observation.has_value() &&
+                        !result.ok,
+                    "USERORDERBOOK or cross-surface evidence must not resolve lifecycle state");
+        } else {
+            require(result.state == OrderLifecycleState::Filled, "provenance scenario should finish filled");
+            require(result.observation->from_trade_replication == trade_source,
+                    "trade replication provenance must be factual");
+            require(result.observation->from_user_orderbook == user_source,
+                    "user-orderbook provenance must be factual when carried by a lifecycle observation");
+        }
         std::filesystem::remove_all(root);
     };
     run_case("trade-only", true, false);
     run_case("userbook-only", false, true);
-    run_case("converged", true, true);
+    run_case("cross-surface-combined", true, true);
 }
 
 void test_duplicate_ext_id_refusal_and_orphan_journal() {
@@ -831,7 +838,7 @@ void test_restart_reconciliation_resolves_consistent_terminal() {
     terminal.private_amount_rest = 0;
     terminal.public_action = 0;
     terminal.private_action = 0;
-    terminal.from_user_book = true;
+    terminal.from_trade_repl = true;
     const std::vector orders{terminal};
     const std::vector<private_state::OwnTradeSnapshot> trades;
     const auto reconciliation = reconcile_unfinished_run(config, orders, trades);
@@ -867,7 +874,7 @@ void test_restart_reconciliation_retains_working_locks() {
     working.private_amount_rest = 1;
     working.public_action = 1;
     working.private_action = 1;
-    working.from_user_book = true;
+    working.from_trade_repl = true;
     const std::vector orders{working};
     const std::vector<private_state::OwnTradeSnapshot> trades;
     const auto reconciliation = reconcile_unfinished_run(config, orders, trades);
@@ -889,7 +896,7 @@ void test_restart_reconciliation_rejects_mismatch_and_corruption() {
         terminal.private_amount_rest = 0;
         terminal.public_action = 0;
         terminal.private_action = 0;
-        terminal.from_user_book = true;
+        terminal.from_trade_repl = true;
         return terminal;
     };
 
@@ -1175,6 +1182,64 @@ void test_observation_fill_is_never_cancelled() {
             "observation should retain matched own-trade evidence");
 }
 
+void test_moex_test_order_surfaces_are_independent() {
+    private_state::OwnOrderSnapshot trade_order;
+    trade_order.public_order_id = 9001;
+    trade_order.private_order_id = 9001;
+    trade_order.ext_id = 7001;
+    trade_order.client_code = "C01";
+    trade_order.public_amount = 1;
+    trade_order.private_amount = 1;
+    trade_order.public_amount_rest = 0;
+    trade_order.private_amount_rest = 0;
+    trade_order.public_action = 2;
+    trade_order.private_action = 2;
+    trade_order.from_trade_repl = true;
+
+    private_state::OwnOrderSnapshot userbook_order = trade_order;
+    userbook_order.public_order_id = 9002;
+    userbook_order.private_order_id = 9002;
+    userbook_order.public_amount_rest = 1;
+    userbook_order.private_amount_rest = 1;
+    userbook_order.public_action = 1;
+    userbook_order.private_action = 1;
+    userbook_order.from_trade_repl = false;
+    userbook_order.from_user_book = true;
+
+    const std::vector orders{trade_order, userbook_order};
+    const std::vector<private_state::OwnTradeSnapshot> trades;
+    const auto observed = observe_order(7001, "C01", Plaza2TradeSide::Buy, 1, orders, trades);
+    require(observed.has_value() && observed->state == OrderLifecycleState::Filled,
+            "lifecycle must use the TRADE surface when TEST USERORDERBOOK disagrees");
+    require(observed->public_order_id == 9001 && observed->private_order_id == 9001,
+            "USERORDERBOOK identifiers must not replace TRADE lifecycle identifiers");
+    require(!observed->identity_conflict && !observed->from_user_orderbook,
+            "independent TEST surfaces must not manufacture a lifecycle identity conflict");
+
+    const auto userbook_only =
+        observe_order(7001, "C01", Plaza2TradeSide::Buy, 1,
+                      std::span<const private_state::OwnOrderSnapshot>(&userbook_order, 1), trades);
+    require(!userbook_only.has_value(), "USERORDERBOOK alone is not lifecycle replication evidence");
+
+    const auto root = make_temp_root("independent_test_surfaces");
+    auto config = base_config(root, "independent-test-surfaces");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    auto userbook_observation = observation(OrderLifecycleState::Working, 0, 1, 1);
+    userbook_observation.public_order_id = 9002;
+    userbook_observation.private_order_id = 9002;
+    userbook_observation.from_trade_replication = false;
+    userbook_observation.from_user_orderbook = true;
+    auto trade_observation = observation(OrderLifecycleState::Filled, 1, 1, 0);
+    transport.post_results = {posted()};
+    transport.poll_results = {{.replies = {accepted_add()}, .observations = {userbook_observation, trade_observation}}};
+    const auto result = run_script(config, transport, clock);
+    require(result.ok && result.state == OrderLifecycleState::Filled && result.evidence_consistent,
+            "a disagreeing USERORDERBOOK observation must not make consistent TRADE lifecycle evidence fail");
+    std::filesystem::remove_all(root);
+}
+
 const private_state::StreamHealthSnapshot* find_stream(std::span<const private_state::StreamHealthSnapshot> streams,
                                                        generated::StreamCode code) {
     for (const auto& stream : streams) {
@@ -1237,10 +1302,10 @@ void test_private_projection_independent_stream_commits() {
     const std::vector user_fields = {
         fake::FieldValueSpec{.field_code = generated::FieldCode::kFortsUserorderbookReplOrdersPublicOrderId,
                              .kind = fake::ValueKind::kSignedInteger,
-                             .signed_value = 9001},
+                             .signed_value = 9002},
         fake::FieldValueSpec{.field_code = generated::FieldCode::kFortsUserorderbookReplOrdersPrivateOrderId,
                              .kind = fake::ValueKind::kSignedInteger,
-                             .signed_value = 9001},
+                             .signed_value = 9002},
         fake::FieldValueSpec{.field_code = generated::FieldCode::kFortsUserorderbookReplOrdersExtId,
                              .kind = fake::ValueKind::kSignedInteger,
                              .signed_value = 7001},
@@ -1262,9 +1327,19 @@ void test_private_projection_independent_stream_commits() {
             "user row must not change trade stream commit sequence");
     require(user_health != nullptr && user_health->last_commit_sequence == 2,
             "user row should advance user-orderbook commit sequence");
-    require(projector.own_orders().size() == 1 && projector.own_orders()[0].from_trade_repl &&
-                projector.own_orders()[0].from_user_book,
-            "matching source rows should converge into one canonical order with both provenances");
+    const auto projected_orders = projector.own_orders();
+    require(projected_orders.size() == 2,
+            "matching TEST source rows must remain two independent order-surface snapshots");
+    const auto trade_order = std::find_if(projected_orders.begin(), projected_orders.end(), [](const auto& order) {
+        return order.from_trade_repl && !order.from_user_book && !order.from_current_day;
+    });
+    const auto user_order = std::find_if(projected_orders.begin(), projected_orders.end(), [](const auto& order) {
+        return !order.from_trade_repl && order.from_user_book;
+    });
+    require(trade_order != projected_orders.end() && user_order != projected_orders.end() &&
+                !trade_order->identity_conflict && !user_order->identity_conflict &&
+                trade_order->private_order_id == 9001 && user_order->private_order_id == 9002,
+            "different TEST identities must remain independent without a cross-stream identity conflict");
 }
 
 void test_timeout_translation_and_sha256() {
@@ -1316,6 +1391,7 @@ int main() {
         test_journal_failure_after_terminal_cancellation();
         test_public_private_id_mismatch();
         test_observation_fill_is_never_cancelled();
+        test_moex_test_order_surfaces_are_independent();
         test_private_projection_independent_stream_commits();
         test_timeout_translation_and_sha256();
     } catch (const std::exception& error) {

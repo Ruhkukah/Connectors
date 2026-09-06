@@ -1,0 +1,15 @@
+DRY_PLAN ok=1 message=pre-send plan validated
+PLAN ok=1 message=pre-send plan validated
+PLAN_SHA256=82ecd8b0cdcaceb8b6eb5772392531fb04b6f84394a48bd95ca141113ecce6aa
+HOST_START code=0 message=
+HOST_WARMUP polls=900 target_ready=0 aggr_fresh=0
+PREFLIGHT target_isin_id=4433036 target_sess_id=0 target_current_session_member=0 instrument_current_status=0
+PREFLIGHT config.target_tick_size=0.00100 instrument.min_step= parse_scaled_decimal.config=1000 parse_scaled_decimal.instrument=INVALID
+PREFLIGHT REFDATA online=0 snapshot_complete=0 rows=0 commit_sequence=0 trades_rev=0 trades_lifenum=0 server_time=0
+PREFLIGHT POS online=0 snapshot_complete=0 rows=0 commit_sequence=0 trades_rev=0 trades_lifenum=0 server_time=0
+PREFLIGHT TRADE online=0 snapshot_complete=0 rows=0 commit_sequence=0 trades_rev=0 trades_lifenum=0 server_time=0
+PREFLIGHT USERORDERBOOK online=0 snapshot_complete=0 rows=0 commit_sequence=0 trades_rev=0 trades_lifenum=0 server_time=0 periodic_snapshot_consistent=0
+PREFLIGHT trade_replay_anchor_used absent
+PREFLIGHT AGGR20 bid=12.89000 ask=12.89600 age_ms=8164 repl_id=1880 repl_rev=2992420
+TARGET_READY_STOP target_ready=0; no bind or pre-send call
+FINAL_STOP code=0

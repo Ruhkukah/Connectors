@@ -22,6 +22,16 @@ using StreamCode = generated::StreamCode;
 using TableCode = generated::TableCode;
 using FieldCode = generated::FieldCode;
 
+// MOEX TEST does not reconcile the order views carried by TRADE and
+// USERORDERBOOK.  Keep the surface in the internal key so rows from the two
+// streams cannot accidentally become one order or manufacture an identity
+// conflict.
+enum class OrderSurface : std::uint8_t {
+    kUnspecified,
+    kTrade,
+    kUserOrderbook,
+};
+
 struct EnumClassHash {
     template <typename T> std::size_t operator()(T value) const {
         return std::hash<std::uint32_t>{}(static_cast<std::uint32_t>(value));
@@ -74,6 +84,7 @@ struct PositionKeyHash {
 };
 
 struct OrderKey {
+    OrderSurface surface{OrderSurface::kUnspecified};
     bool multileg{false};
     std::int64_t public_order_id{0};
     std::int64_t private_order_id{0};
@@ -81,7 +92,7 @@ struct OrderKey {
     std::string client_code;
 
     bool operator==(const OrderKey& other) const {
-        return multileg == other.multileg && public_order_id == other.public_order_id &&
+        return surface == other.surface && multileg == other.multileg && public_order_id == other.public_order_id &&
                private_order_id == other.private_order_id && ext_id == other.ext_id && client_code == other.client_code;
     }
 };
@@ -89,6 +100,7 @@ struct OrderKey {
 struct OrderKeyHash {
     std::size_t operator()(const OrderKey& key) const {
         std::size_t seed = 0;
+        hash_combine(seed, static_cast<std::uint8_t>(key.surface));
         hash_combine(seed, key.multileg);
         hash_combine(seed, key.public_order_id);
         hash_combine(seed, key.private_order_id);
@@ -263,6 +275,14 @@ bool has_identifier_alias(const std::vector<std::int64_t>& aliases, std::int64_t
 }
 
 bool order_identity_matches(const OwnOrderSnapshot& order, const OrderKey& incoming) {
+    const bool same_surface = incoming.surface == OrderSurface::kTrade
+                                  ? order.from_trade_repl && !order.from_user_book && !order.from_current_day
+                              : incoming.surface == OrderSurface::kUserOrderbook
+                                  ? !order.from_trade_repl && (order.from_user_book || order.from_current_day)
+                                  : true;
+    if (!same_surface) {
+        return false;
+    }
     if (order.multileg != incoming.multileg) {
         return false;
     }
@@ -734,7 +754,19 @@ struct Plaza2PrivateStateProjector::Impl {
                                                               if (lhs.client_code != rhs.client_code) {
                                                                   return lhs.client_code < rhs.client_code;
                                                               }
-                                                              return lhs.ext_id < rhs.ext_id;
+                                                              if (lhs.ext_id != rhs.ext_id) {
+                                                                  return lhs.ext_id < rhs.ext_id;
+                                                              }
+                                                              // Same identifiers can legitimately occur on the two
+                                                              // independent MOEX TEST surfaces. Keep their order
+                                                              // deterministic without coalescing their evidence.
+                                                              if (lhs.from_trade_repl != rhs.from_trade_repl) {
+                                                                  return lhs.from_trade_repl > rhs.from_trade_repl;
+                                                              }
+                                                              if (lhs.from_user_book != rhs.from_user_book) {
+                                                                  return lhs.from_user_book > rhs.from_user_book;
+                                                              }
+                                                              return lhs.from_current_day > rhs.from_current_day;
                                                           });
     }
 
@@ -874,6 +906,13 @@ struct Plaza2PrivateStateProjector::Impl {
                 return;
             }
             for (auto it = orders.begin(); it != orders.end();) {
+                const bool owns_requested_surface = (trade_source && it->second.from_trade_repl) ||
+                                                    (user_source && it->second.from_user_book) ||
+                                                    (current_day_source && it->second.from_current_day);
+                if (!owns_requested_surface) {
+                    ++it;
+                    continue;
+                }
                 const auto key = revision_key(it->second);
                 if (!source_row_is_stale(table_code, key, clear_revision)) {
                     ++it;
@@ -1280,6 +1319,7 @@ struct Plaza2PrivateStateProjector::Impl {
     void apply_trade_order_row(const RowReader& row, bool multileg) {
         auto& orders = ensure_staged_orders(StreamCode::kFortsTradeRepl);
         OrderKey key{
+            .surface = OrderSurface::kTrade,
             .multileg = multileg,
             .public_order_id = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPublicOrderId
                                                 : FieldCode::kFortsTradeReplOrdersLogPublicOrderId),
@@ -1432,6 +1472,7 @@ struct Plaza2PrivateStateProjector::Impl {
                                     : FieldCode::kFortsUserorderbookReplOrdersMomentNs);
 
         OrderKey key{
+            .surface = OrderSurface::kUserOrderbook,
             .multileg = multileg,
             .public_order_id = row.i64(public_order_id_field),
             .private_order_id = row.i64(private_order_id_field),

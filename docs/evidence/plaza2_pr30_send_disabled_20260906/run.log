@@ -1,0 +1,69 @@
+HEAD=b499edc6f5e2e99f50a3376b88dbf2bdb5790699
+HOST_COUNT=1
+WORKING_DIRECTORY=<RUN_DIR>
+TARGET_CODE=CRU6 TARGET_ISIN_ID=4433036 OPERATOR_TARGET_SESSION_ID=11700
+HOST_START code=0 message=
+PROGRESS polls=0 ready=0 reason=private/status streams are not all ONLINE and snapshot-complete
+OBSERVATION_READY=1 polls=271 reason=ready
+STREAM FORTS_POS_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=36 commit=26 trades_rev=2337138078 trades_lifenum=66739 server_time=1788656401
+STREAM FORTS_PART_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=34 commit=13 trades_rev=0 trades_lifenum=0 server_time=1788688757
+STREAM FORTS_SESSIONSTATE_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=36 commit=2 trades_rev=0 trades_lifenum=0 server_time=0
+STREAM FORTS_INSTRUMENTSTATE_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=22881 commit=8 trades_rev=0 trades_lifenum=0 server_time=0
+STREAM FORTS_TRADE_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=157953 commit=139 trades_rev=0 trades_lifenum=0 server_time=1788702276
+STREAM FORTS_USERORDERBOOK_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=1 rows=2 commit=1 trades_rev=2337815959 trades_lifenum=66739 server_time=0
+STREAM FORTS_REFDATA_REPL online=1 snapshot_complete=1 periodic_snapshot_consistent=0 rows=30275 commit=0 trades_rev=0 trades_lifenum=0 server_time=0
+TARGET isin=CNY-9.26 isin_id=4433036 sess_id=11700 min_step=0.00100 member=1 instrument_status=1
+SESSION sess_id=11700 state=1 current_status=1
+BBO target_isin_id=4433036 bid=12.91800 ask=12.92000 repl_id=680 repl_rev=1182821
+LIMIT participant_present=true limits_set=1
+POSITION rows=0 OWN_TRADES participant_count=0 OWN_ORDERS rows=0 p2mqreply_open=1 publisher_open=1
+ANCHOR present trades_rev=2337138078 trades_lifenum=66739 server_time=1788656401
+POS_INFO trades_rev=2337138078 trades_lifenum=66739 server_time=1788656401
+TRADE_STATUS online=1 snapshot_complete=1 server_time=1788702276
+REFDATA_LIFENUM=101386961
+PROVENANCE fut_instruments present=1 repl_rev=125 lifenum=101386961
+PROVENANCE fut_sess_contents present=1 repl_rev=3309 lifenum=101386961
+PROVENANCE session present=1 repl_rev=6 lifenum=101386961
+POSITION_ROWS total=0 participant_trades=0 active_own_orders=0
+PLAN_READY ok=1 message=pre-send plan validated
+PLAN_SHA256=171b54f4c74eb2326c9e895d0869a7449185a9880ef56bb2620aba4bac8d29b3
+ADD_PAYLOAD_SHA256=9bb0b806b75f08ee645c263bb219d7f75f9c25d0b850b470aa1e4aa0946dc002
+RECOVERY_PAYLOAD_SHA256=ef789b31749c5dc466ccc1d134beceec94f2863f4769ed909d220b3c31763841
+TARGET_SESSION_ID=11700
+BBO bid=12.91800 ask=12.92000 chosen_price=12.92100 age_ms=4894
+AUTHORIZATION_FILE=<RUN_DIR>/authorized_plan.sha256
+PR30_NEW_PLAN_AUTHORIZATION_REQUIRED; write exactly the lowercase PLAN_SHA256 to the file; no bind or pre-send call
+=== PR30 AUTHORIZATION REQUEST ===
+PLAN_SHA256=171b54f4c74eb2326c9e895d0869a7449185a9880ef56bb2620aba4bac8d29b3
+SESSION=11700
+SIDE=SELL
+QTY=1
+PRICE=12.92100
+BBO_AT_GENERATION=12.91800 / 12.92000
+DISTANCE_TICKS=1
+AUTH_FILE=<RUN_DIR>/authorized_plan.sha256
+==================================
+AUTH_WAIT seconds=0 authorized=0 structural_valid=1 execution_ready=1 aggr_age_ms=4896 reason=ready
+AUTH_WAIT seconds=5 authorized=0 structural_valid=1 execution_ready=1 aggr_age_ms=1090 reason=ready
+AUTH_WAIT seconds=10 authorized=0 structural_valid=1 execution_ready=1 aggr_age_ms=251 reason=ready
+AUTH_WAIT seconds=15 authorized=0 structural_valid=1 execution_ready=0 aggr_age_ms=5274 reason=target AGGR20 is stale
+AUTH_WAIT seconds=20 authorized=0 structural_valid=1 execution_ready=0 aggr_age_ms=10318 reason=target AGGR20 is stale
+AUTH_WAIT seconds=25 authorized=0 structural_valid=1 execution_ready=0 aggr_age_ms=15348 reason=target AGGR20 is stale
+AUTH_WAIT seconds=30 authorized=0 structural_valid=1 execution_ready=1 aggr_age_ms=403 reason=ready
+AUTH_WAIT seconds=35 authorized=0 structural_valid=1 execution_ready=0 aggr_age_ms=5441 reason=target AGGR20 is stale
+AUTH_WAIT seconds=40 authorized=0 structural_valid=1 execution_ready=1 aggr_age_ms=292 reason=ready
+AUTH_WAIT seconds=45 authorized=0 structural_valid=1 execution_ready=1 aggr_age_ms=302 reason=ready
+AUTH_WAIT seconds=50 authorized=0 structural_valid=1 execution_ready=0 aggr_age_ms=5344 reason=target AGGR20 is stale
+AUTH_WAIT seconds=55 authorized=0 structural_valid=1 execution_ready=1 aggr_age_ms=2256 reason=ready
+AUTH_WAIT seconds=60 authorized=0 structural_valid=1 execution_ready=0 aggr_age_ms=7298 reason=target AGGR20 is stale
+EXACT_PLAN_AUTHORIZATION_RECEIVED sha256=171b54f4c74eb2326c9e895d0869a7449185a9880ef56bb2620aba4bac8d29b3
+WAITING_FOR_EXECUTION_READY
+INTENT_INSTALL code=0 message=
+INTENT_INSTALL_OK
+BIND code=0 message=
+BIND_OK
+PRE_SEND certainty=0 post_invoked=0 validation_code=10 validation_message=SEND_DISABLED_PRE_SEND_PHASE
+RECEIPT schema=moex.plaza2.execution_safety.v3 authorized_intent_sha256=171b54f4c74eb2326c9e895d0869a7449185a9880ef56bb2620aba4bac8d29b3 target_refdata_provenance_ready=1 target_aggr20_uncrossed=1 zero_starting_position_proven=1 trade_replay_complete=1 active_own_order_count=0 userorderbook_periodic_snapshot_consistent=1
+FINAL_STOP code=0
+SEND_DISABLED_BARRIER=PASS
+ARTIFACT_DIR=<RUN_DIR>

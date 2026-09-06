@@ -512,6 +512,15 @@ void merge_reply(std::optional<OrderReplyObservation>& target, bool& timeout_obs
 
 bool reply_id_matches_observation(std::int64_t reply_id, const OrderObservation& observation);
 
+// In the MOEX TEST contour USERORDERBOOK is a pre-send census only.  It is
+// not lifecycle evidence and must never be allowed to replace or conflict
+// with the TRADE order surface.  Source-neutral observations remain accepted
+// for the transport-neutral scenario tests, but an observation carrying both
+// surfaces is rejected rather than treated as a reconciliation.
+bool lifecycle_observation_allowed(const OrderObservation& observation) {
+    return !observation.from_user_orderbook && !observation.from_current_day_snapshot;
+}
+
 void consume_poll(const OrderLifecycleConfig& config, const OrderLifecyclePollResult& poll, LifecycleEvidence& evidence,
                   RunJournal& journal) {
     for (const auto& reply : poll.replies) {
@@ -528,6 +537,9 @@ void consume_poll(const OrderLifecycleConfig& config, const OrderLifecyclePollRe
         }
     }
     for (const auto& observation : poll.observations) {
+        if (!lifecycle_observation_allowed(observation)) {
+            continue;
+        }
         if (observation.ext_id == config.ext_id && observation.client_code == config.client_code) {
             if (evidence.observation.has_value()) {
                 const auto public_conflict = evidence.observation->public_order_id != 0 &&
@@ -693,7 +705,11 @@ std::optional<OrderObservation> observe_order(std::int32_t ext_id, std::string_v
                                               std::span<const private_state::OwnTradeSnapshot> trades) {
     std::vector<const private_state::OwnOrderSnapshot*> matches;
     for (const auto& order : orders) {
-        if (order.ext_id == ext_id && order.client_code == client_code) {
+        // Lifecycle correlation is sourced from TRADE orders_log (and its
+        // own-deal tables). USERORDERBOOK is intentionally excluded; the
+        // TEST venue does not reconcile the two views.
+        if (order.ext_id == ext_id && order.client_code == client_code && order.from_trade_repl &&
+            !order.from_user_book && !order.from_current_day) {
             matches.push_back(&order);
         }
     }

@@ -244,14 +244,16 @@ OrderLifecycleConfig make_controller_config(const std::filesystem::path& root) {
 OrderLifecycleResult run_concrete_controller_case(const moex::plaza2::test::RuntimeFixturePaths& fixture,
                                                   const char* order_mode, const char* reply_order_id,
                                                   bool identity_conflict, bool cancel_after_del = false,
-                                                  bool mismatched_policy = false, bool* host_started = nullptr) {
+                                                  bool mismatched_policy = false, bool* host_started = nullptr,
+                                                  bool userbook_identity_conflict = false) {
     std::optional<ScopedEnv> mode;
     if (order_mode != nullptr) {
         mode.emplace("MOEX_FAKE_FULL_FILL", std::string_view(order_mode) == "full" ? "1" : nullptr);
     }
     ScopedEnv cancelled("MOEX_FAKE_CANCELLED_ORDER",
                         order_mode != nullptr && std::string_view(order_mode) == "cancel" ? "1" : nullptr);
-    ScopedEnv conflict("MOEX_FAKE_IDENTITY_CONFLICT", identity_conflict ? "1" : nullptr);
+    ScopedEnv trade_conflict("MOEX_FAKE_TRADE_IDENTITY_CONFLICT", identity_conflict ? "1" : nullptr);
+    ScopedEnv userbook_conflict("MOEX_FAKE_IDENTITY_CONFLICT", userbook_identity_conflict ? "1" : nullptr);
     ScopedEnv reply_id("MOEX_FAKE_PUB_REPLY_ORDER_ID", reply_order_id);
     ScopedEnv client_code("MOEX_FAKE_CLIENT_CODE", "BRK1C01");
     ScopedEnv cancel_after_del_env("MOEX_FAKE_CANCEL_AFTER_DEL", cancel_after_del ? "1" : nullptr);
@@ -259,7 +261,9 @@ OrderLifecycleResult run_concrete_controller_case(const moex::plaza2::test::Runt
     const Plaza2TradeCodec codec;
     auto config = make_controller_config(fixture.root);
     config.run_id = std::string("concrete-") + (order_mode == nullptr ? "working" : order_mode) +
-                    (identity_conflict ? "-conflict" : "-consistent") +
+                    (identity_conflict            ? "-trade-conflict"
+                     : userbook_identity_conflict ? "-userbook-conflict"
+                                                  : "-consistent") +
                     (reply_order_id == nullptr ? "-default" : reply_order_id);
     const auto dry = [&]() {
         auto copy = config;
@@ -315,11 +319,17 @@ void test_target_preflight_refusals(const moex::plaza2::test::RuntimeFixturePath
     const auto add = encoded_add(codec);
     const auto recovery = encoded_recovery(codec);
     const std::vector<std::pair<const char*, std::string_view>> cases = {
-        {"MOEX_FAKE_AGGR_ONE_SIDED", "two-sided"},     {"MOEX_FAKE_MISSING_INSTRUMENT", "absent"},
-        {"MOEX_FAKE_MISSING_SESSION", "session"},      {"MOEX_FAKE_NONTRADABLE_SESSION", "session"},
-        {"MOEX_FAKE_SCHEDULED_SESSION", "session"},    {"MOEX_FAKE_SUSPENDED_SESSION", "session"},
-        {"MOEX_FAKE_COMPLETED_SESSION", "session"},    {"MOEX_FAKE_MISSING_LIMITS", "limit"},
-        {"MOEX_FAKE_WRONG_LIMIT_CLIENT", "limit"},     {"MOEX_FAKE_DISABLE_REPLY_LISTENER", "cg_lsn_new"},
+        {"MOEX_FAKE_AGGR_ONE_SIDED", "two-sided"},
+        {"MOEX_FAKE_AGGR_CROSSED", "crossed or locked"},
+        {"MOEX_FAKE_MISSING_INSTRUMENT", "absent"},
+        {"MOEX_FAKE_MISSING_SESSION", "session"},
+        {"MOEX_FAKE_NONTRADABLE_SESSION", "session"},
+        {"MOEX_FAKE_SCHEDULED_SESSION", "session"},
+        {"MOEX_FAKE_SUSPENDED_SESSION", "session"},
+        {"MOEX_FAKE_COMPLETED_SESSION", "session"},
+        {"MOEX_FAKE_MISSING_LIMITS", "limit"},
+        {"MOEX_FAKE_WRONG_LIMIT_CLIENT", "limit"},
+        {"MOEX_FAKE_DISABLE_REPLY_LISTENER", "cg_lsn_new"},
         {"MOEX_FAKE_DISABLE_PUBLISHER", "cg_pub_new"},
     };
     for (const auto& [variable, expected] : cases) {
@@ -515,6 +525,143 @@ void test_authorized_payload_binding(const moex::plaza2::test::RuntimeFixturePat
     }
 }
 
+void test_late_authorized_intent_installation(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
+    const Plaza2TradeCodec codec;
+    const auto add = encoded_add(codec);
+    const auto recovery = encoded_recovery(codec);
+    const auto prepared = prepared_config(fixture, add, recovery);
+    const auto valid_intent = *prepared.authorized_intent;
+    const auto plan = bound_plan(valid_intent, add, recovery);
+    const auto without_intent = [&]() {
+        auto config = prepared_config(fixture, add, recovery);
+        config.authorized_intent.reset();
+        return config;
+    };
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        const auto before_start = transport.install_authorized_intent(valid_intent);
+        expect_case(before_start && contains_text(before_start.message, "started host"),
+                    "late intent installation must require a started host");
+        expect_case(!transport.host().start(), "late intent host must start after a pre-start rejection");
+        const auto installed = transport.install_authorized_intent(valid_intent);
+        expect_case(!installed, "valid late intent must install on the already-started host: " + installed.message);
+        const auto binding = transport.bind_authorized_plan(plan);
+        expect_case(!binding, "a valid late intent must bind its exact plan: " + binding.message);
+        expect_case(!transport.host().stop(), "late intent host must stop cleanly");
+    }
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "invalid-install fixture host must start");
+        auto invalid_intent = valid_intent;
+        invalid_intent.sha256 = std::string(64, 'a');
+        const auto rejected = transport.install_authorized_intent(std::move(invalid_intent));
+        expect_case(rejected && contains_text(rejected.message, "SHA-256"),
+                    "invalid late intent must fail existing validation");
+        const auto installed = transport.install_authorized_intent(valid_intent);
+        expect_case(!installed, "a failed installation must leave the slot available for a valid intent");
+        const auto binding = transport.bind_authorized_plan(plan);
+        expect_case(!binding, "valid intent after a failed installation must bind exactly");
+        expect_case(!transport.host().stop(), "invalid-install fixture host must stop cleanly");
+    }
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "duplicate-install fixture host must start");
+        expect_case(!transport.install_authorized_intent(valid_intent), "first late intent installation must succeed");
+        const auto duplicate = transport.install_authorized_intent(valid_intent);
+        expect_case(duplicate && contains_text(duplicate.message, "already installed"),
+                    "identical late intent installation must be rejected");
+        expect_case(!transport.bind_authorized_plan(plan), "the original intent must remain bindable after rejection");
+        expect_case(!transport.host().stop(), "duplicate-install fixture host must stop cleanly");
+    }
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "replacement-install fixture host must start");
+        expect_case(!transport.install_authorized_intent(valid_intent),
+                    "initial replacement fixture install must succeed");
+        auto replacement = valid_intent;
+        replacement.profile_id = "different-profile";
+        replacement.canonical_json = canonical_authorized_order_intent_json(replacement);
+        replacement.sha256 = authorized_order_intent_sha256(replacement);
+        const auto rejected = transport.install_authorized_intent(std::move(replacement));
+        expect_case(rejected && contains_text(rejected.message, "already installed"),
+                    "different late intent replacement must be rejected");
+        expect_case(!transport.bind_authorized_plan(plan),
+                    "replacement rejection must leave the first intent unchanged");
+        expect_case(!transport.host().stop(), "replacement-install fixture host must stop cleanly");
+    }
+
+    {
+        auto config = prepared_config(fixture, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "constructor-intent fixture host must start");
+        const auto rejected = transport.install_authorized_intent(valid_intent);
+        expect_case(rejected && contains_text(rejected.message, "already installed"),
+                    "constructor-supplied intent must not be replaceable");
+        expect_case(!transport.bind_authorized_plan(plan), "constructor-supplied intent must remain bindable");
+        expect_case(!transport.host().stop(), "constructor-intent fixture host must stop cleanly");
+    }
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        const auto rejected = transport.bind_authorized_plan(plan);
+        expect_case(rejected && contains_text(rejected.message, "validated authorized intent"),
+                    "binding with no intent must retain its existing fail-closed behavior");
+    }
+
+    {
+        auto config = without_intent();
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "post-bind fixture host must start");
+        expect_case(!transport.install_authorized_intent(valid_intent), "post-bind fixture install must succeed");
+        expect_case(!transport.bind_authorized_plan(plan), "post-bind fixture must bind its exact plan");
+        auto replacement = valid_intent;
+        replacement.profile_id = "post-bind-replacement";
+        replacement.canonical_json = canonical_authorized_order_intent_json(replacement);
+        replacement.sha256 = authorized_order_intent_sha256(replacement);
+        const auto rejected = transport.install_authorized_intent(std::move(replacement));
+        expect_case(rejected && contains_text(rejected.message, "after plan binding"),
+                    "intent installation must remain closed after plan binding");
+        expect_case(!transport.host().stop(), "post-bind fixture host must stop cleanly");
+    }
+
+    {
+        ScopedEnv no_active_order("MOEX_FAKE_MISSING_ORDER", "1");
+        auto config = without_intent();
+        config.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend;
+        config.host.endpoint_host = "127.0.0.1";
+        config.host.arm_state.test_plaza2_armed = true;
+        config.host.publisher_name = "LATE_INTENT_PRE_SEND_TEST";
+        config.host.publisher_settings =
+            "p2mq://FORTS_SRV;category=FORTS_MSG;name=LATE_INTENT_PRE_SEND_TEST;timeout=5000";
+        config.host.p2mqreply_settings = "p2mqreply://;ref=LATE_INTENT_PRE_SEND_TEST";
+        config.execution_safety_receipt_path = fixture.root / "late_intent_execution_safety.json";
+        Plaza2TestTradeTransport transport(std::move(config));
+        expect_case(!transport.host().start(), "late-intent LiveTestPreSend host must start");
+        expect_case(!transport.install_authorized_intent(valid_intent),
+                    "late intent must install before the no-send barrier test");
+        expect_case(!transport.bind_authorized_plan(plan), "late intent must bind before the no-send barrier test");
+        const auto disabled = transport.post(add, valid_intent.add_user_id);
+        expect_case(disabled.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        !disabled.post_invoked &&
+                        disabled.validation_error.code == cgate::Plaza2ErrorCode::SendDisabledPreSendPhase &&
+                        disabled.validation_error.message == "SEND_DISABLED_PRE_SEND_PHASE",
+                    "late intent installation must not bypass the physical LiveTestPreSend barrier");
+        expect_case(transport.last_execution_safety_receipt().has_value() &&
+                        transport.last_execution_safety_receipt()->userorderbook_periodic_snapshot_consistent,
+                    "late intent no-send path must persist the normal execution-safety receipt first");
+        expect_case(!transport.host().stop(), "late-intent LiveTestPreSend host must stop cleanly");
+    }
+}
+
 void test_replication_epoch_gates(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
     const Plaza2TradeCodec codec;
     const auto add = encoded_add(codec);
@@ -565,6 +712,8 @@ void test_multi_instrument_and_terminal_controller(const moex::plaza2::test::Run
                     "multi-instrument target should remain postable from scoped BBO");
         const auto scoped = transport.host().aggr20_projector().snapshot_for_isin(1001);
         const auto global = transport.host().aggr20_projector().snapshot();
+        expect_case(global.row_count == 4 && scoped.has_value() && scoped->row_count == 2,
+                    "multi-instrument fixture must have four distinct replication slots");
         expect_case(scoped.has_value() && global.top_bid.has_value() && scoped->top_bid.has_value() &&
                         global.top_bid->price_scaled != scoped->top_bid->price_scaled,
                     "global diagnostic BBO must not be reused as the target scoped BBO");
@@ -576,6 +725,12 @@ void test_multi_instrument_and_terminal_controller(const moex::plaza2::test::Run
                         !result.evidence_consistent && !result.ok,
                     "full fill with identity conflict must remain unresolved through concrete transport: " +
                         result.message + " / add=" + result.add_submission.validation_error.message);
+    }
+    {
+        const auto result = run_concrete_controller_case(fixture, "full", "20003", false, false, false, nullptr, true);
+        expect_case(result.state == OrderLifecycleState::Filled && result.market_safe_terminal && result.ok,
+                    "TEST USERORDERBOOK identity divergence must not invalidate TRADE lifecycle evidence: " +
+                        result.message);
     }
     {
         bool host_started = false;
@@ -764,6 +919,64 @@ int main(int argc, char** argv) {
         transport_config.authorized_intent->sha256 =
             authorized_order_intent_sha256(*transport_config.authorized_intent);
         const auto plan = bound_plan(*transport_config.authorized_intent, add, recovery);
+
+        {
+            ScopedEnv refdata_open_error("MOEX_FAKE_REFDATA_OPEN_ERROR_ONCE", "1");
+            auto host_config = make_config(fixture).host;
+            Plaza2TestSessionHost host(std::move(host_config));
+            require(!host.start(), "initial REFDATA ERROR fixture must start asynchronously");
+            require(!host.poll(), "initial REFDATA ERROR must be observed without failing the host");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1050));
+            require(!host.poll(), "REFDATA retry must reopen after the required delay");
+            require(!host.poll(), "reopened REFDATA must process its initial snapshot");
+            const auto health = host.private_state().stream_health();
+            const auto refdata = std::ranges::find_if(health, [](const auto& stream) {
+                return stream.stream_code == generated::StreamCode::kFortsRefdataRepl;
+            });
+            require(refdata != health.end() && refdata->online && refdata->snapshot_complete,
+                    "OPEN -> ERROR -> delayed reopen -> ACTIVE must complete REFDATA snapshot readiness");
+            require(!host.stop(), "REFDATA retry host must stop cleanly");
+        }
+
+        {
+            ScopedEnv trade_open_error("MOEX_FAKE_TRADE_OPEN_ERROR_ONCE", "1");
+            auto host_config = make_config(fixture).host;
+            host_config.trade_replay_from_pos_anchor = true;
+            Plaza2TestSessionHost host(std::move(host_config));
+            require(!host.start(), "anchored TRADE retry fixture must start");
+            require(!host.poll(), "POS must select the immutable TRADE replay anchor");
+            const auto selected = host.trade_replay_anchor_used();
+            require(selected.has_value() && selected->trades_rev == 44 && selected->trades_lifenum == 7 &&
+                        !host.trade_replay_anchor_ready(),
+                    "accepted cg_lsn_open must not itself establish TRADE replay readiness");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1050));
+            require(!host.poll(), "TRADE retry must reuse the selected POS anchor after the required delay");
+            require(!host.poll(), "reopened TRADE must process its anchored snapshot");
+            const auto retained = host.trade_replay_anchor_used();
+            require(host.trade_replay_anchor_ready() && retained.has_value() && retained->trades_rev == 44 &&
+                        retained->trades_lifenum == 7,
+                    "same-anchor TRADE retry must become ready only after ACTIVE plus ONLINE snapshot completion");
+            require(!host.stop(), "TRADE retry host must stop cleanly");
+        }
+
+        {
+            ScopedEnv trade_open_drift("MOEX_FAKE_TRADE_OPEN_ERROR_POS_DRIFT", "1");
+            auto host_config = make_config(fixture).host;
+            host_config.trade_replay_from_pos_anchor = true;
+            Plaza2TestSessionHost host(std::move(host_config));
+            require(!host.start(), "TRADE anchor-drift fixture must start");
+            require(!host.poll(), "first TRADE open failure must retain the selected anchor");
+            const auto selected = host.trade_replay_anchor_used();
+            require(selected.has_value() && selected->trades_rev == 44 && selected->trades_lifenum == 7 &&
+                        !host.trade_replay_anchor_ready(),
+                    "failed TRADE open must retain but not declare the immutable anchor ready");
+            const auto drift = host.poll();
+            require(drift && contains_text(drift.message, "immutable POS.info anchor") &&
+                        !host.trade_replay_anchor_ready(),
+                    "TRADE open failure plus POS anchor drift must fail closed without re-anchoring");
+            require(!host.stop(), "TRADE anchor-drift host must stop cleanly");
+        }
+
         Plaza2TestTradeTransport transport(std::move(transport_config));
         bind_test_plan(transport, plan);
         const auto posted = transport.post(add, 701);
@@ -775,11 +988,40 @@ int main(int argc, char** argv) {
         require(transport.last_execution_safety_receipt().has_value() &&
                     transport.last_execution_safety_receipt()->passive_non_marketable &&
                     transport.last_execution_safety_receipt()->bbo_distance_allowed &&
+                    transport.last_execution_safety_receipt()->target_aggr20_uncrossed &&
+                    transport.last_execution_safety_receipt()->target_refdata_provenance_ready &&
+                    transport.last_execution_safety_receipt()->target_refdata_lifenum == 7 &&
+                    transport.last_execution_safety_receipt()->target_fut_instruments_provenance.stream_code ==
+                        generated::StreamCode::kFortsRefdataRepl &&
+                    transport.last_execution_safety_receipt()->target_fut_instruments_provenance.present &&
+                    transport.last_execution_safety_receipt()->target_fut_instruments_provenance.table_code ==
+                        generated::TableCode::kFortsRefdataReplFutInstruments &&
+                    transport.last_execution_safety_receipt()->target_fut_instruments_provenance.repl_rev == 2 &&
+                    transport.last_execution_safety_receipt()->target_fut_instruments_provenance.lifenum == 7 &&
+                    transport.last_execution_safety_receipt()->target_fut_sess_contents_provenance.table_code ==
+                        generated::TableCode::kFortsRefdataReplFutSessContents &&
+                    transport.last_execution_safety_receipt()->target_fut_sess_contents_provenance.present &&
+                    transport.last_execution_safety_receipt()->target_fut_sess_contents_provenance.repl_rev == 3 &&
+                    transport.last_execution_safety_receipt()->target_fut_sess_contents_provenance.lifenum == 7 &&
+                    transport.last_execution_safety_receipt()->target_session_provenance.table_code ==
+                        generated::TableCode::kFortsRefdataReplSession &&
+                    transport.last_execution_safety_receipt()->target_session_provenance.present &&
+                    transport.last_execution_safety_receipt()->target_session_provenance.repl_rev == 1 &&
+                    transport.last_execution_safety_receipt()->target_session_provenance.lifenum == 7 &&
                     transport.last_execution_safety_receipt()->aggr_online &&
                     transport.last_execution_safety_receipt()->aggr_snapshot_complete &&
                     transport.last_execution_safety_receipt()->authorized_max_aggr20_age_ms == 5000 &&
                     !transport.last_execution_safety_receipt()->require_zero_starting_position,
-                "execution-safety receipt must record passive and BBO-distance checks");
+                "execution-safety receipt must freeze exact current-LifeNum target provenance and BBO checks");
+        require(transport.last_execution_safety_receipt()->canonical_json.find(
+                    "\"schema\": \"moex.plaza2.execution_safety.v3\"") != std::string::npos &&
+                    transport.last_execution_safety_receipt()->canonical_json.find(
+                        "\"target_fut_instruments_provenance\"") != std::string::npos &&
+                    transport.last_execution_safety_receipt()->canonical_json.find(
+                        "\"target_fut_sess_contents_provenance\"") != std::string::npos &&
+                    transport.last_execution_safety_receipt()->canonical_json.find("\"target_session_provenance\"") !=
+                        std::string::npos,
+                "canonical execution-safety receipt must persist all three typed target provenance records");
 
         const auto first_poll = transport.poll(std::chrono::steady_clock::now() + std::chrono::seconds(1));
         require(first_poll.ok, "first fake CGate poll should succeed");
@@ -813,8 +1055,133 @@ int main(int argc, char** argv) {
         require(!absent.has_value(), "missing target instrument must remain absent");
         require(transport.host().stop().code == cgate::Plaza2ErrorCode::None, "TEST host must stop cleanly");
 
+        {
+            ScopedEnv no_active_order("MOEX_FAKE_MISSING_ORDER", "1");
+            auto live_config = prepared_config(fixture, add, recovery);
+            live_config.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend;
+            live_config.host.endpoint_host = "127.0.0.1";
+            live_config.host.arm_state.test_plaza2_armed = true;
+            live_config.host.publisher_name = "PRE_SEND_TEST";
+            live_config.host.publisher_settings = "p2mq://FORTS_SRV;category=FORTS_MSG;name=PRE_SEND_TEST;timeout=5000";
+            live_config.host.p2mqreply_settings = "p2mqreply://;ref=PRE_SEND_TEST";
+            Plaza2TestTradeTransport live_transport(std::move(live_config));
+            bind_test_plan(live_transport, plan);
+            const auto disabled = live_transport.post(add, 701);
+            require(disabled.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        !disabled.post_invoked &&
+                        disabled.validation_error.code == cgate::Plaza2ErrorCode::SendDisabledPreSendPhase &&
+                        disabled.validation_error.message == "SEND_DISABLED_PRE_SEND_PHASE",
+                    "LiveTestPreSend must stop below cg_pub_msgnew/cg_pub_post with a typed result");
+            require(live_transport.host().publisher_open() && live_transport.host().p2mqreply_open() &&
+                        live_transport.last_execution_safety_receipt().has_value() &&
+                        live_transport.last_execution_safety_receipt()->userorderbook_periodic_snapshot_consistent,
+                    "LiveTestPreSend must complete the exact pre-send receipt before the disabled post barrier");
+            require(live_transport.host().stop().code == cgate::Plaza2ErrorCode::None,
+                    "LiveTestPreSend host must stop cleanly");
+        }
+
+        {
+            ScopedEnv no_active_order("MOEX_FAKE_MISSING_ORDER", "1");
+            ScopedEnv missing_position("MOEX_FAKE_MISSING_POSITION", "1");
+            ScopedEnv flat_trade_replay("MOEX_FAKE_FLAT_TRADE_REPLAY", "1");
+            auto flat_config = prepared_config(fixture, add, recovery);
+            flat_config.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend;
+            flat_config.host.endpoint_host = "127.0.0.1";
+            flat_config.host.arm_state.test_plaza2_armed = true;
+            flat_config.host.publisher_name = "FLAT_REPLAY_TEST";
+            flat_config.host.publisher_settings =
+                "p2mq://FORTS_SRV;category=FORTS_MSG;name=FLAT_REPLAY_TEST;timeout=5000";
+            flat_config.host.p2mqreply_settings = "p2mqreply://;ref=FLAT_REPLAY_TEST";
+            flat_config.host.trade_replay_from_pos_anchor = true;
+            flat_config.authorized_intent->require_zero_starting_position = true;
+            flat_config.authorized_intent->canonical_json =
+                canonical_authorized_order_intent_json(*flat_config.authorized_intent);
+            flat_config.authorized_intent->sha256 = authorized_order_intent_sha256(*flat_config.authorized_intent);
+            const auto flat_plan = bound_plan(*flat_config.authorized_intent, add, recovery);
+            Plaza2TestTradeTransport flat_transport(std::move(flat_config));
+            bind_test_plan(flat_transport, flat_plan);
+            const auto disabled = flat_transport.post(add, 701);
+            require(disabled.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        disabled.validation_error.code == cgate::Plaza2ErrorCode::SendDisabledPreSendPhase,
+                    "POS plus anchored empty TRADE replay must reach the disabled pre-send barrier");
+            const auto& receipt = flat_transport.last_execution_safety_receipt();
+            require(receipt.has_value() &&
+                        receipt->position_evidence_class == PositionEvidenceClass::FlatByPosSnapshotAndTradeReplay &&
+                        receipt->zero_starting_position_proven && receipt->position_snapshot_complete &&
+                        receipt->trade_replay_complete && receipt->position_trades_rev == 44 &&
+                        receipt->position_trades_lifenum == 7 && receipt->position_server_time == 1700000001 &&
+                        receipt->trade_replay_anchor_used.has_value() &&
+                        receipt->trade_replay_anchor_used->trades_rev == 44 &&
+                        receipt->trade_replay_anchor_used->trades_lifenum == 7 &&
+                        receipt->trade_replay_anchor_used->server_time == 1700000001 &&
+                        receipt->participant_user_deal_count == 0 &&
+                        receipt->participant_user_multileg_deal_count == 0 && receipt->reconstructed_target_xpos == 0 &&
+                        receipt->active_own_order_count == 0,
+                    "flatness receipt must bind POS anchor, empty participant replay, reconstructed xpos, and order "
+                    "census");
+            require(flat_transport.host().stop().code == cgate::Plaza2ErrorCode::None,
+                    "flatness pre-send host must stop cleanly");
+        }
+
+        {
+            ScopedEnv alternate_ext_id("MOEX_FAKE_ACTIVE_ORDER_ALT_EXT_ID", "1");
+            auto live_config = prepared_config(fixture, add, recovery);
+            live_config.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend;
+            live_config.host.endpoint_host = "127.0.0.1";
+            live_config.host.arm_state.test_plaza2_armed = true;
+            live_config.host.publisher_name = "ACTIVE_ORDER_ALT_EXT_TEST";
+            live_config.host.publisher_settings =
+                "p2mq://FORTS_SRV;category=FORTS_MSG;name=ACTIVE_ORDER_ALT_EXT_TEST;timeout=5000";
+            live_config.host.p2mqreply_settings = "p2mqreply://;ref=ACTIVE_ORDER_ALT_EXT_TEST";
+            Plaza2TestTradeTransport live_transport(std::move(live_config));
+            bind_test_plan(live_transport, plan);
+            const auto blocked = live_transport.post(add, 701);
+            require(blocked.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !blocked.post_invoked &&
+                        contains_text(blocked.validation_error.message, "active own orders"),
+                    "an active same-participant order with another ext_id must block the pre-send gate");
+            require(live_transport.last_execution_safety_receipt() == std::nullopt,
+                    "active own-order refusal must precede execution-safety receipt persistence");
+            require(live_transport.host().stop().code == cgate::Plaza2ErrorCode::None,
+                    "active own-order pre-send host must stop cleanly");
+        }
+
+        for (const auto drift_kind : {std::string_view("rev"), std::string_view("lifenum")}) {
+            ScopedEnv missing_position("MOEX_FAKE_MISSING_POSITION", "1");
+            ScopedEnv flat_trade_replay("MOEX_FAKE_FLAT_TRADE_REPLAY", "1");
+            ScopedEnv anchor_drift("MOEX_FAKE_POS_ANCHOR_DRIFT", std::string(drift_kind).c_str());
+            auto drift_config = prepared_config(fixture, add, recovery);
+            drift_config.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend;
+            drift_config.host.endpoint_host = "127.0.0.1";
+            drift_config.host.arm_state.test_plaza2_armed = true;
+            drift_config.host.publisher_name = "POS_ANCHOR_DRIFT_TEST";
+            drift_config.host.publisher_settings =
+                "p2mq://FORTS_SRV;category=FORTS_MSG;name=POS_ANCHOR_DRIFT_TEST;timeout=5000";
+            drift_config.host.p2mqreply_settings = "p2mqreply://;ref=POS_ANCHOR_DRIFT_TEST";
+            drift_config.host.trade_replay_from_pos_anchor = true;
+            drift_config.authorized_intent->require_zero_starting_position = true;
+            drift_config.authorized_intent->canonical_json =
+                canonical_authorized_order_intent_json(*drift_config.authorized_intent);
+            drift_config.authorized_intent->sha256 = authorized_order_intent_sha256(*drift_config.authorized_intent);
+            const auto drift_plan = bound_plan(*drift_config.authorized_intent, add, recovery);
+            Plaza2TestTradeTransport drift_transport(std::move(drift_config));
+            bind_test_plan(drift_transport, drift_plan);
+            const auto blocked = drift_transport.post(add, 701);
+            require(blocked.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !blocked.post_invoked &&
+                        (contains_text(blocked.validation_error.message, "starting position") ||
+                         contains_text(blocked.validation_error.message, "immutable POS.info anchor")),
+                    "a changed POS replay anchor must fail closed for " + std::string(drift_kind));
+            require(drift_transport.last_execution_safety_receipt() == std::nullopt,
+                    "changed POS replay anchor must prevent receipt persistence");
+            const auto anchor = drift_transport.host().trade_replay_anchor_used();
+            require(anchor.has_value() && anchor->trades_rev == 44 && anchor->trades_lifenum == 7,
+                    "deferred TRADE must retain the original POS replay anchor");
+            require(drift_transport.host().stop().code == cgate::Plaza2ErrorCode::None,
+                    "POS anchor drift pre-send host must stop cleanly");
+        }
+
         test_target_preflight_refusals(fixture);
         test_authorized_payload_binding(fixture);
+        test_late_authorized_intent_installation(fixture);
         test_replication_epoch_gates(fixture);
         test_reply_bridge_fail_closed(fixture);
         test_multi_instrument_and_terminal_controller(fixture);

@@ -1,0 +1,9 @@
+DRY_PLAN ok=1 message=pre-send plan validated
+PLAN ok=1 message=pre-send plan validated
+PLAN_SHA256=82ecd8b0cdcaceb8b6eb5772392531fb04b6f84394a48bd95ca141113ecce6aa
+HOST_START code=0 message=
+HOST_WARMUP polls=900 target_ready=0 aggr_fresh=1
+BIND code=0 message=
+PRE_SEND certainty=0 post_invoked=0 validation_code=1 validation_message=operator target tick size contradicts authoritative instrument min_step
+HOST publisher_open=1 p2mqreply_open=1
+FINAL_STOP code=0

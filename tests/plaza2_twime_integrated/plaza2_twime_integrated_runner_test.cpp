@@ -140,8 +140,10 @@ int main(int argc, char** argv) {
         integrated_test::require(health.evidence.readiness_summary_ready, "readiness evidence flag must be set");
         integrated_test::require(health.reconciled_order_count >= 1, "reconciled orders must be available");
         integrated_test::require(health.reconciled_trade_count >= 1, "reconciled trades must be available");
-        integrated_test::require(health.reconciler.total_diverged_orders >= 1,
-                                 "diverged order count must be reflected");
+        integrated_test::require(health.reconciler.total_diverged_orders == 0,
+                                 "TEST USERORDERBOOK-vs-TRADE differences must not create a TWIME divergence");
+        integrated_test::require(health.reconciler.total_confirmed_orders >= 1,
+                                 "TRADE-surface order should remain confirmed");
         integrated_test::require(health.reconciler.total_matched_trades >= 1, "matched trade count must be reflected");
 
         auto* handle = runner.abi_handle();
@@ -170,16 +172,15 @@ int main(int argc, char** argv) {
                                                                          &written) == MOEX_RESULT_OK,
                                  "reconciled order copy-out must succeed");
         integrated_test::require(written == reconciled_order_count, "reconciled order copy-out must write all items");
-        bool found_diverged_order = false;
+        bool found_trade_order = false;
         for (const auto& item : reconciled_orders) {
             if (item.twime_order_id == 20003 && item.plaza_private_order_id == 20003) {
-                found_diverged_order = true;
-                integrated_test::require(item.status == MOEX_PLAZA2_ORDER_STATUS_DIVERGED,
-                                         "diverged integrated order must preserve Diverged status");
+                found_trade_order = true;
+                integrated_test::require(item.status == MOEX_PLAZA2_ORDER_STATUS_CONFIRMED,
+                                         "TEST USERORDERBOOK-vs-TRADE difference must preserve Confirmed status");
             }
         }
-        integrated_test::require(found_diverged_order,
-                                 "expected diverged integrated order is missing from the ABI snapshot");
+        integrated_test::require(found_trade_order, "expected TRADE order is missing from the ABI snapshot");
 
         uint32_t reconciled_trade_count = 0;
         integrated_test::require(moex_get_plaza2_reconciled_trade_count(handle, &reconciled_trade_count) ==

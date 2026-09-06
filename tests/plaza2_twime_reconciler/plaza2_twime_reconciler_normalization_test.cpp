@@ -147,14 +147,17 @@ void test_plaza_snapshot_normalization() {
     const auto snapshot = make_plaza_committed_snapshot(projector, 55);
     require(snapshot.source_health.required_private_streams_ready, "Phase 3E snapshot should look ready");
     require(!snapshot.source_health.invalidated, "ready Phase 3E snapshot should not be marked invalid");
-    require(snapshot.orders.size() == 2, "Phase 3E snapshot should export committed own orders");
+    require(snapshot.orders.size() == 1,
+            "TEST TWIME reconciliation snapshot should export only the independent TRADE order surface");
     require(snapshot.trades.size() == 1, "Phase 3E snapshot should export committed own trades");
 
-    const auto merged_order = std::find_if(snapshot.orders.begin(), snapshot.orders.end(),
-                                           [](const auto& order) { return order.private_order_id == 20003; });
-    require(merged_order != snapshot.orders.end(), "snapshot should include the merged own order");
-    require(merged_order->price_mantissa == price_to_mantissa("102500"),
-            "PLAZA order price should normalize to decimal-5 mantissa");
+    const auto trade_order = std::find_if(snapshot.orders.begin(), snapshot.orders.end(), [](const auto& order) {
+        return order.private_order_id == 20003 && order.from_trade_repl && !order.from_user_book &&
+               !order.from_current_day;
+    });
+    require(trade_order != snapshot.orders.end(), "snapshot should include the TRADE order");
+    require(trade_order->price_mantissa == price_to_mantissa("102500"),
+            "TRADE order price should normalize to decimal-5 mantissa");
 
     const auto lifenum_projector = project_scenario("private_state_lifenum_invalidation");
     const auto invalidated = make_plaza_committed_snapshot(lifenum_projector, 56);
