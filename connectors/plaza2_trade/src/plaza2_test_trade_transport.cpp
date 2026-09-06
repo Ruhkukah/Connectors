@@ -1282,11 +1282,12 @@ struct Plaza2TestTradeTransport::Impl {
                (intent()->require_zero_starting_position || config.require_zero_starting_position);
     }
 
-    [[nodiscard]] std::int8_t expected_position_account_type() const noexcept {
+    [[nodiscard]] std::int8_t
+    expected_position_account_type(std::string_view observation_client_code = {}) const noexcept {
         // FORTS_POS_REPL uses account_type=1 for the brokerage-firm row and
         // account_type=2 for a normal client row. The locked BF form uses
         // client_code=000.
-        return intent() != nullptr && intent()->client_code == "000" ? 1 : 2;
+        return (intent() != nullptr ? intent()->client_code : observation_client_code) == "000" ? 1 : 2;
     }
 
     [[nodiscard]] std::string participant_code() const {
@@ -1341,7 +1342,8 @@ struct Plaza2TestTradeTransport::Impl {
                trade.login_sell == participant;
     }
 
-    [[nodiscard]] bool active_participant_order(const private_state::OwnOrderSnapshot& order) const {
+    [[nodiscard]] bool active_participant_order(const private_state::OwnOrderSnapshot& order,
+                                                std::string_view observation_client_code = {}) const {
         if (order.isin_id != target_isin()) {
             return false;
         }
@@ -1353,13 +1355,15 @@ struct Plaza2TestTradeTransport::Impl {
         }
         const auto participant = participant_code();
         if (!participant.empty() && order.client_code != participant && order.login_from != participant &&
-            (intent() == nullptr || order.client_code != intent()->client_code)) {
+            (intent() == nullptr || order.client_code != intent()->client_code) &&
+            (observation_client_code.empty() || order.client_code != observation_client_code)) {
             return false;
         }
         return order.public_amount_rest > 0 || order.private_amount_rest > 0;
     }
 
-    [[nodiscard]] PositionEvidenceAssessment assess_position_evidence() const {
+    [[nodiscard]] PositionEvidenceAssessment
+    assess_position_evidence(std::string_view observation_client_code = {}) const {
         PositionEvidenceAssessment assessment;
         const auto target = target_isin();
         const auto* position_health = stream_health(StreamCode::kFortsPosRepl);
@@ -1382,9 +1386,9 @@ struct Plaza2TestTradeTransport::Impl {
         }
         assessment.active_own_order_count = static_cast<std::size_t>(
             std::count_if(host.private_state().own_orders().begin(), host.private_state().own_orders().end(),
-                          [&](const auto& order) { return active_participant_order(order); }));
+                          [&](const auto& order) { return active_participant_order(order, observation_client_code); }));
 
-        const auto expected_account_type = expected_position_account_type();
+        const auto expected_account_type = expected_position_account_type(observation_client_code);
         const auto positions = host.private_state().positions();
         const auto matching_positions = std::count_if(positions.begin(), positions.end(), [&](const auto& position) {
             return position.scope == private_state::PositionScope::kClient && position.isin_id == target &&
@@ -2233,6 +2237,42 @@ Plaza2TestSessionHost& Plaza2TestTradeTransport::host() noexcept {
 const std::optional<Plaza2ExecutionSafetyReceipt>&
 Plaza2TestTradeTransport::last_execution_safety_receipt() const noexcept {
     return impl_->last_receipt;
+}
+
+Plaza2TargetEvidence Plaza2TestTradeTransport::inspect_target_evidence(std::string_view observation_client_code) const {
+    Plaza2TargetEvidence result;
+    const auto provenance = impl_->target_refdata_provenance();
+    result.target_isin_id = impl_->target_isin();
+    result.target_refdata_lifenum = provenance.current_lifenum;
+    result.target_refdata_provenance_ready = provenance.ready;
+    if (provenance.fut_instruments)
+        result.target_fut_instruments_provenance = *provenance.fut_instruments;
+    if (provenance.fut_sess_contents)
+        result.target_fut_sess_contents_provenance = *provenance.fut_sess_contents;
+    if (provenance.session)
+        result.target_session_provenance = *provenance.session;
+    const auto position = impl_->assess_position_evidence(observation_client_code);
+    result.position_evidence_class = position.classification;
+    result.zero_starting_position_proven = position.zero_starting_position_proven;
+    result.position_snapshot_complete = position.position_snapshot_complete;
+    result.position_trades_rev = position.trades_rev;
+    result.position_trades_lifenum = position.trades_lifenum;
+    result.position_server_time = position.server_time;
+    // Exact POS rows return early from position classification. Report replay
+    // readiness independently, including for that case; do not alter the
+    // established classification or send-path checks.
+    result.trade_replay_anchor_used = impl_->host.trade_replay_anchor_used();
+    const auto* trade = impl_->stream_health(generated::StreamCode::kFortsTradeRepl);
+    result.trade_replay_complete =
+        position.position_snapshot_complete && impl_->host.trade_replay_anchor_ready() &&
+        result.trade_replay_anchor_used && position.trades_rev == result.trade_replay_anchor_used->trades_rev &&
+        position.trades_lifenum == result.trade_replay_anchor_used->trades_lifenum && trade != nullptr &&
+        trade->online && trade->snapshot_complete &&
+        (trade->last_server_time != 0 ||
+         (impl_->host.probe_report().fake_runtime_marker_present && trade->committed_row_count != 0)) &&
+        (position.server_time == 0 || trade->last_server_time >= position.server_time);
+    result.active_own_order_count = position.active_own_order_count;
+    return result;
 }
 
 } // namespace moex::plaza2_trade

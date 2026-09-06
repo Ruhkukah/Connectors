@@ -35,6 +35,9 @@ int main() {
                         field.value = moex::twime_sbe::TwimeFieldValue::unsigned_integer(11);
                     }
                 }
+                // Exercise a real scheduling delay: a bounded non-blocking
+                // client pump must not exhaust its budget before this reply.
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 server.send_bytes(moex::twime_trade::test::encode_bytes(ack));
 
                 const auto terminate = server.receive_up_to(1024, std::chrono::milliseconds(3000));

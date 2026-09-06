@@ -238,6 +238,25 @@ struct Plaza2TestTradeTransportConfig {
     std::int64_t observation_quantity{1};
 };
 
+// Read-side values only, deliberately distinct from a persisted execution receipt.
+struct Plaza2TargetEvidence {
+    std::int64_t target_isin_id{0};
+    std::uint64_t target_refdata_lifenum{0};
+    bool target_refdata_provenance_ready{false};
+    plaza2::private_state::SourceRowProvenance target_fut_instruments_provenance;
+    plaza2::private_state::SourceRowProvenance target_fut_sess_contents_provenance;
+    plaza2::private_state::SourceRowProvenance target_session_provenance;
+    PositionEvidenceClass position_evidence_class{PositionEvidenceClass::Unresolved};
+    bool zero_starting_position_proven{false};
+    bool position_snapshot_complete{false};
+    std::int64_t position_trades_rev{0};
+    std::int64_t position_trades_lifenum{0};
+    std::int64_t position_server_time{0};
+    std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used;
+    bool trade_replay_complete{false};
+    std::size_t active_own_order_count{0};
+};
+
 class Plaza2TestTradeTransport final : public OrderLifecycleTransport {
   public:
     explicit Plaza2TestTradeTransport(Plaza2TestTradeTransportConfig config);
@@ -263,6 +282,9 @@ class Plaza2TestTradeTransport final : public OrderLifecycleTransport {
     [[nodiscard]] const Plaza2TestSessionHost& host() const noexcept;
     [[nodiscard]] Plaza2TestSessionHost& host() noexcept;
     [[nodiscard]] const std::optional<Plaza2ExecutionSafetyReceipt>& last_execution_safety_receipt() const noexcept;
+    // Read-only, unpersisted evidence view. This is not an execution receipt or
+    // an authorization and never polls, binds, allocates, or posts.
+    [[nodiscard]] Plaza2TargetEvidence inspect_target_evidence(std::string_view observation_client_code) const;
 
   private:
     struct Impl;

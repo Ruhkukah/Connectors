@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <thread>
 
 namespace moex::twime_trade::test {
 
@@ -78,6 +79,9 @@ inline void pump_runner_until(TwimeLiveSessionRunner& runner, ManualRunnerClock&
         const auto result = runner.poll_once();
         moex::twime_sbe::test::require(result.ok, "live session runner poll failed unexpectedly");
         clock.advance(step_ms);
+        // poll_once uses non-blocking sockets. Give the real server thread a
+        // scheduling opportunity; virtual time advancement is not an OS wait.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     moex::twime_sbe::test::require(false, "live session runner did not reach expected state");
 }

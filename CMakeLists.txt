@@ -74,6 +74,7 @@ add_subdirectory(protocols/plaza2_cgate)
 add_subdirectory(connectors/twime_trade)
 add_subdirectory(connectors/plaza2_twime_reconciler)
 add_subdirectory(connectors/plaza2_trade)
+add_subdirectory(connectors/connector_host)
 
 target_link_libraries(moex_phase0_core PUBLIC moex_plaza2_cgate_private_state moex_plaza2_twime_reconciler)
 target_link_libraries(moex_phase0_abi PUBLIC moex_plaza2_cgate_private_state moex_plaza2_twime_reconciler)

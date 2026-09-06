@@ -456,6 +456,15 @@ add_test(
     COMMAND "${MOEX_BUILD_ROOT}/tests/plaza2_trade_transport_scenarios_test"
             "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
 
+add_executable(connector_host_test ${MOEX_SOURCE_ROOT}/tests/connector_host_test.cpp)
+target_link_libraries(connector_host_test PRIVATE plaza2_runtime_test_support moex_connector_host)
+add_dependencies(connector_host_test plaza2_fake_cgate_runtime)
+add_test(NAME connector_host_test COMMAND connector_host_test "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+set_tests_properties(connector_host_test PROPERTIES LABELS "plaza2;sanitizer")
+add_test(NAME moexctl_test COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/assert_moexctl.py"
+    "$<TARGET_FILE:moexctl>" "$<TARGET_FILE:connector_host_test>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+set_tests_properties(moexctl_test PROPERTIES LABELS "plaza2;sanitizer")
+
 add_executable(plaza2_generated_metadata_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_generated_metadata_test.cpp)
 target_link_libraries(plaza2_generated_metadata_test

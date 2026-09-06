@@ -135,6 +135,8 @@ jobs:
           plaza2_runtime_probe_test
           plaza2_trade_no_send_guard_test
           plaza2_trade_transport_scenarios_test
+          connector_host_test
+          moexctl
 
       - name: Run critical component sanitizer tests
         env:
