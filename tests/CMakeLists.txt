@@ -487,6 +487,21 @@ target_include_directories(moex_c_api_v2_fixture PRIVATE "${MOEX_SOURCE_ROOT}/te
 target_compile_features(moex_c_api_v2_fixture PRIVATE cxx_std_20)
 set_property(TARGET moex_c_api_v2_fixture PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
 
+add_executable(moex_c_api_v3_test ${MOEX_SOURCE_ROOT}/tests/moex_c_api_v3_test.cpp)
+target_link_libraries(moex_c_api_v3_test
+    PRIVATE
+        moex_phase0_core
+        plaza2_runtime_test_support)
+target_include_directories(moex_c_api_v3_test
+    PRIVATE
+        "${MOEX_SOURCE_ROOT}/tests/plaza2_cgate")
+target_compile_features(moex_c_api_v3_test PRIVATE cxx_std_20)
+set_property(TARGET moex_c_api_v3_test PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(
+    NAME moex_c_api_v3_test
+    COMMAND "${MOEX_BUILD_ROOT}/tests/moex_c_api_v3_test" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+set_tests_properties(moex_c_api_v3_test PROPERTIES LABELS "cabi;plaza2;sanitizer")
+
 add_executable(plaza2_generated_metadata_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_generated_metadata_test.cpp)
 target_link_libraries(plaza2_generated_metadata_test
@@ -867,6 +882,45 @@ if(DOTNET_EXECUTABLE)
             DEPENDS moex_c_api_v2_fixture
             RUN_SERIAL TRUE
             ENVIRONMENT "${MOEX_CABI_V2_DOTNET_ENV}")
+
+        set(MOEX_CABI_V3_FIXTURE_DIR "${MOEX_TEST_OUTPUT_DIR}/cabi-v3-dotnet-fixture")
+        add_test(
+            NAME moex_c_api_v3_fixture
+            COMMAND "${MOEX_BUILD_ROOT}/tests/moex_c_api_v2_fixture"
+                "$<TARGET_FILE:plaza2_fake_cgate_runtime>"
+                "${MOEX_CABI_V3_FIXTURE_DIR}")
+        set_tests_properties(moex_c_api_v3_fixture PROPERTIES
+            RUN_SERIAL TRUE
+            LABELS "cabi;plaza2;integration")
+
+        add_test(
+            NAME dotnet_abi_v3_smoke
+            COMMAND "${DOTNET_EXECUTABLE}" run
+                --project "${MOEX_SOURCE_ROOT}/tests/dotnet/AbiV3Smoke/AbiV3Smoke.csproj"
+                --framework net10.0
+                -- "$<TARGET_FILE:moex_phase0_abi>"
+                   "${MOEX_CABI_V3_FIXTURE_DIR}")
+        set(MOEX_CABI_V3_DOTNET_ENV
+            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home"
+            "DOTNET_CLI_TELEMETRY_OPTOUT=1"
+            "DOTNET_NOLOGO=1"
+            "NUGET_PACKAGES=$ENV{HOME}/.nuget/packages"
+            "MOEX_CABI_V3_ENV=ini=config/t1.ini"
+            "MOEX_CABI_V3_BROKER=BRK1"
+            "MOEX_CABI_V3_CLIENT=C01"
+            "MOEX_CABI_V3_CREDENTIALS=fixture-placeholder"
+            "MOEX_CABI_V3_KEY=00000000"
+            "MOEX_FAKE_ZERO_POSITION=1"
+            "MOEX_FAKE_MISSING_ORDER=1"
+            "MOEX_FAKE_CLIENT_CODE=BRK1C01"
+            "MOEX_FAKE_PUB_REPLY_ORDER_ID=20003"
+            "MOEX_FAKE_CANCEL_AFTER_DEL=1"
+            "MOEX_FAKE_PERSISTENT_ORDER_SESSION=1"
+            "MOEX_FAKE_FLAT_TRADE_REPLAY=1")
+        set_tests_properties(dotnet_abi_v3_smoke PROPERTIES
+            DEPENDS moex_c_api_v3_fixture
+            RUN_SERIAL TRUE
+            ENVIRONMENT "${MOEX_CABI_V3_DOTNET_ENV}")
 
         add_test(
             NAME dotnet_abi_policy
