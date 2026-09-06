@@ -311,6 +311,11 @@ struct Plaza2PublisherMessageResult {
     bool post_invoked{false};
 };
 
+struct Plaza2PublisherCallCounts {
+    std::uint64_t msgnew{0};
+    std::uint64_t post{0};
+};
+
 class Plaza2Publisher {
   public:
     Plaza2Publisher() = default;
@@ -327,12 +332,16 @@ class Plaza2Publisher {
     [[nodiscard]] Plaza2PublisherMessageResult post_by_message_name(std::string_view message_name,
                                                                     std::span<const std::byte> payload,
                                                                     std::uint32_t user_id, bool need_reply);
+    [[nodiscard]] Plaza2PublisherCallCounts call_counts() const noexcept {
+        return call_counts_;
+    }
     [[nodiscard]] Plaza2Error close();
     [[nodiscard]] Plaza2Error destroy();
     [[nodiscard]] Plaza2Error state(std::uint32_t& out_state) const;
     [[nodiscard]] bool is_created() const noexcept;
 
   private:
+    Plaza2PublisherCallCounts call_counts_;
     std::shared_ptr<Plaza2RuntimeSharedState> shared_;
     void* handle_{nullptr};
 };

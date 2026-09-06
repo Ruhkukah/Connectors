@@ -127,6 +127,8 @@ struct Plaza2ExecutionSafetyReceipt {
     bool p2mqreply_open{false};
     bool publisher_open{false};
     bool trading_capable{false};
+    bool test_order_send_armed{false};
+    std::string send_mode;
     std::string canonical_json;
     std::string sha256;
 };
@@ -134,6 +136,7 @@ struct Plaza2ExecutionSafetyReceipt {
 enum class Plaza2TestSessionHostMode : std::uint8_t {
     OfflineFake = 0,
     LiveTestPreSend = 1,
+    LiveTestAuthorizedSend = 2,
 };
 
 // This host is deliberately TEST-only and owns the one Env/connection used by
@@ -187,6 +190,7 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] bool aggr_snapshot_complete() const noexcept;
     [[nodiscard]] bool p2mqreply_open() const noexcept;
     [[nodiscard]] bool publisher_open() const noexcept;
+    [[nodiscard]] plaza2::cgate::Plaza2PublisherCallCounts publisher_call_counts() const noexcept;
     [[nodiscard]] Plaza2TestSessionHostMode mode() const noexcept;
     [[nodiscard]] bool trade_replay_anchor_ready() const noexcept;
     [[nodiscard]] std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used() const noexcept;
@@ -206,6 +210,10 @@ class Plaza2TestSessionHost final {
     post(std::string_view message_name, std::span<const std::byte> payload, std::uint32_t user_id, bool need_reply);
 
   private:
+    friend class Plaza2TestTradeTransport;
+    [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult post_validated(std::string_view message_name,
+                                                                             std::span<const std::byte> payload,
+                                                                             std::uint32_t user_id, bool need_reply);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

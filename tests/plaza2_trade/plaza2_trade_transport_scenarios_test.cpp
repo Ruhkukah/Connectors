@@ -3,6 +3,8 @@
 #include "plaza2_runtime_test_support.hpp"
 
 #include <cstdlib>
+#include <dlfcn.h>
+#include <functional>
 #include <array>
 #include <filesystem>
 #include <iostream>
@@ -881,6 +883,168 @@ void test_reply_bridge_fail_closed(const moex::plaza2::test::RuntimeFixturePaths
     }
 }
 
+void test_authorized_send(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
+    void* library = dlopen(fixture.library_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    expect_case(library != nullptr, "instrumented fake runtime must load");
+    const auto reset = reinterpret_cast<void (*)()>(dlsym(library, "moex_fake_reset_publisher_counts"));
+    const auto count = reinterpret_cast<std::uint64_t (*)(std::uint32_t)>(dlsym(library, "moex_fake_publisher_count"));
+    expect_case(reset && count, "fake publisher counters must be available");
+    ScopedEnv zero("MOEX_FAKE_ZERO_POSITION", "1");
+    ScopedEnv no_orders("MOEX_FAKE_MISSING_ORDER", "1");
+    const Plaza2TradeCodec codec;
+    const auto add = encoded_add(codec);
+    const auto recovery = encoded_recovery(codec);
+    const auto configured = [&]() {
+        auto c = prepared_config(fixture, add, recovery);
+        c.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+        c.host.endpoint_host = "127.0.0.1";
+        c.host.connection_settings = "p2tcp://127.0.0.1:4101;app_name=authorized_send_test";
+        c.host.arm_state = {.test_network_armed = true,
+                            .test_session_armed = true,
+                            .test_plaza2_armed = true,
+                            .test_order_send_armed = true};
+        c.host.publisher_name = "AUTHORIZED_SEND_TEST";
+        c.host.publisher_settings = "p2mq://FORTS_SRV;category=FORTS_MSG;name=AUTHORIZED_SEND_TEST;timeout=5000";
+        c.host.p2mqreply_settings = "p2mqreply://;ref=AUTHORIZED_SEND_TEST";
+        c.host.trade_replay_from_pos_anchor = true;
+        c.authorized_intent->require_zero_starting_position = true;
+        c.authorized_intent->canonical_json = canonical_authorized_order_intent_json(*c.authorized_intent);
+        c.authorized_intent->sha256 = authorized_order_intent_sha256(*c.authorized_intent);
+        return c;
+    };
+    const auto negative = [&](std::string_view label,
+                              const std::function<void(Plaza2TestTradeTransportConfig&)>& mutate, bool bind = true,
+                              bool mismatch = false) {
+        reset();
+        auto c = configured();
+        const auto plan = bound_plan(*c.authorized_intent, add, recovery);
+        mutate(c);
+        Plaza2TestTradeTransport transport(std::move(c));
+        if (bind)
+            static_cast<void>(transport.bind_authorized_plan(plan));
+        auto command = add;
+        if (mismatch)
+            command.payload.back() ^= std::byte{1};
+        const auto result = transport.post(command, 701);
+        expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !result.post_invoked &&
+                        count(0) == 0 && count(1) == 0,
+                    std::string(label) + " must never allocate/post: " + result.validation_error.message);
+        expect_case(transport.host().publisher_call_counts().msgnew == 0 &&
+                        transport.host().publisher_call_counts().post == 0,
+                    "application and fake counters must agree on refusal");
+    };
+    negative("missing send arm", [](auto& c) { c.host.arm_state.test_order_send_armed = false; });
+    negative("missing network arm", [](auto& c) { c.host.arm_state.test_network_armed = false; });
+    negative("missing session arm", [](auto& c) { c.host.arm_state.test_session_armed = false; });
+    negative("missing plaza arm", [](auto& c) { c.host.arm_state.test_plaza2_armed = false; });
+    negative("production environment", [](auto& c) { c.host.runtime.environment = cgate::Plaza2Environment::Prod; });
+    negative("other endpoint", [](auto& c) { c.host.connection_settings = "p2tcp://production:4001"; });
+    negative("missing intent", [](auto& c) { c.authorized_intent.reset(); });
+    negative("missing POS anchor replay", [](auto& c) { c.host.trade_replay_from_pos_anchor = false; });
+    negative("invalid intent", [](auto& c) { c.authorized_intent->sha256 = std::string(64, 'a'); });
+    negative("unbound plan", [](auto&) {}, false);
+    negative("stale BBO", [](auto& c) { c.max_aggr20_age = std::chrono::milliseconds(-1); });
+    negative("wrong session", [](auto& c) { ++c.target_session_id; });
+    negative("quantity not one", [](auto& c) { c.authorized_intent->quantity = 2; });
+    negative("payload mismatch", [](auto&) {}, true, true);
+    negative("receipt persistence failure", [&](auto& c) { c.execution_safety_receipt_path = fixture.root; });
+    negative("send-disabled mode", [](auto& c) { c.host.mode = Plaza2TestSessionHostMode::LiveTestPreSend; });
+    negative("unknown mode", [](auto& c) { c.host.mode = static_cast<Plaza2TestSessionHostMode>(99); });
+    for (const char* flag : {"MOEX_FAKE_AGGR_CROSSED", "MOEX_FAKE_AGGR_ONE_SIDED", "MOEX_FAKE_NONTRADABLE_SESSION",
+                             "MOEX_FAKE_NONTRADABLE_INSTRUMENT", "MOEX_FAKE_MISSING_LIMITS"}) {
+        ScopedEnv bad(flag, "1");
+        negative(flag, [](auto&) {});
+    }
+    {
+        ScopedEnv nonzero("MOEX_FAKE_ZERO_POSITION", nullptr);
+        negative("nonzero position", [](auto&) {});
+    }
+    {
+        ScopedEnv active("MOEX_FAKE_MISSING_ORDER", nullptr);
+        negative("active UOB order", [](auto&) {});
+    }
+    {
+        reset();
+        auto c = configured();
+        const auto plan = bound_plan(*c.authorized_intent, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(c));
+        bind_test_plan(transport, plan);
+        const auto result = transport.post(add, 701);
+        expect_case(result.certainty == cgate::Plaza2SubmissionCertainty::Posted && count(0) == 1 && count(1) == 1,
+                    "explicit authorized send must allocate/post exactly once: " + result.validation_error.message);
+        const auto& receipt = transport.last_execution_safety_receipt();
+        expect_case(receipt && receipt->canonical_json.find("execution_safety.v4") != std::string::npos &&
+                        receipt->test_order_send_armed && receipt->send_mode == "LiveTestAuthorizedSend" &&
+                        std::filesystem::exists(fixture.root / "execution_safety.json"),
+                    "send-specific receipt must persist before posting");
+        const auto direct = transport.host().post(add.command_name, add.payload, 701, true);
+        expect_case(!direct.post_invoked && count(0) == 1 && count(1) == 1,
+                    "public host API must not bypass authorized transport");
+        const auto repeat = transport.post(add, 701);
+        expect_case(!repeat.post_invoked && count(0) == 1 && count(1) == 1, "second Add attempt must be refused");
+        expect_case(transport.host().publisher_call_counts().msgnew == 1 &&
+                        transport.host().publisher_call_counts().post == 1,
+                    "application counts must match fake function-entry counters");
+    }
+    {
+        reset();
+        ScopedEnv fail("MOEX_FAKE_PUB_MSGNEW_RESULT", "timeout");
+        auto c = configured();
+        const auto plan = bound_plan(*c.authorized_intent, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(c));
+        bind_test_plan(transport, plan);
+        const auto first = transport.post(add, 701);
+        expect_case(first.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && count(0) == 1 &&
+                        count(1) == 0,
+                    "allocation failure is definitely not sent");
+        const auto second = transport.post(add, 701);
+        expect_case(!second.post_invoked && count(0) == 1 && count(1) == 0, "allocation failure must not enable retry");
+    }
+    for (const int scenario : {0, 1, 2}) {
+        const bool filled = scenario == 1;
+        const bool uncertain = scenario == 2;
+        reset();
+        ScopedEnv full("MOEX_FAKE_FULL_FILL", filled ? "1" : nullptr);
+        ScopedEnv cancel("MOEX_FAKE_CANCEL_AFTER_DEL", filled ? nullptr : "1");
+        ScopedEnv timeout("MOEX_FAKE_PUB_REPLY_TIMEOUT_ADD_ONLY", uncertain ? "1" : nullptr);
+        ScopedEnv recovered("MOEX_FAKE_CANCEL_AFTER_RECOVERY", uncertain ? "1" : nullptr);
+        ScopedEnv reply("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003");
+        ScopedEnv client("MOEX_FAKE_CLIENT_CODE", "BRK1C01");
+        auto c = configured();
+        auto lifecycle = make_controller_config(fixture.root);
+        lifecycle.run_id = filled ? "authorized-filled" : uncertain ? "authorized-recovered" : "authorized-cancelled";
+        lifecycle.policy.sha256 = c.authorized_intent->policy_sha256;
+        lifecycle.policy.max_aggr20_age_ms = c.authorized_intent->max_aggr20_age_ms;
+        lifecycle.policy.require_zero_starting_position = true;
+        auto dry = lifecycle;
+        dry.dry_run = true;
+        dry.send_test_order = false;
+        const auto plan = build_pre_send_plan(dry);
+        expect_case(plan.ok && plan.sha256 == c.authorized_intent->sha256,
+                    "authorized controller must use identical canonical intent");
+        lifecycle.authorized_plan_sha256 = plan.sha256;
+        const auto intent = *c.authorized_intent;
+        c.authorized_intent.reset();
+        c.observation_ext_id = 0;
+        Plaza2TestTradeTransport transport(std::move(c));
+        expect_case(!transport.host().start(), "read-side host starts before intent installation");
+        expect_case(!transport.install_authorized_intent(intent), "late intent installation must succeed");
+        SystemOrderLifecycleClock clock;
+        OrderLifecycleController controller(lifecycle, transport, clock);
+        const auto result = controller.run();
+        expect_case(result.ok && result.evidence_consistent && result.market_safe_terminal &&
+                        result.state == (filled ? OrderLifecycleState::Filled : OrderLifecycleState::Cancelled),
+                    "authorized late-intent lifecycle must resolve consistently");
+        expect_case(count(0) == (filled ? 1U : 2U) && count(1) == (filled ? 1U : 2U),
+                    "lifecycle sends one Add and only a working order gets one cancel");
+        expect_case(result.recovery_submission.post_invoked == uncertain &&
+                        result.cancel_submission.post_invoked == (!filled && !uncertain),
+                    "uncertain Add uses exact recovery, never blind Add or cancel retry");
+        static_cast<void>(transport.host().stop());
+    }
+    dlclose(library);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -905,6 +1069,7 @@ int main(int argc, char** argv) {
 
         const Plaza2TradeCodec codec;
         const auto add = codec.encode(Plaza2TradeCommandRequest{add_request()});
+        test_authorized_send(fixture);
         require(add.validation.ok() && add.payload.size() == 112,
                 "AddOrder fixture must use reviewed payload size (got " + std::to_string(add.payload.size()) + ", " +
                     add.validation.message + ")");

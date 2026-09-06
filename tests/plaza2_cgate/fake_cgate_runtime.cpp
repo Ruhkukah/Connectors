@@ -275,6 +275,8 @@ struct FakePublisherMessage {
 
 bool g_env_open = false;
 bool g_cancel_after_cleanup = false;
+std::uint64_t g_pub_msgnew_calls = 0;
+std::uint64_t g_pub_post_calls = 0;
 std::unordered_map<void*, FakePublisherMessage*> g_publisher_messages;
 
 std::uint32_t configured_result(const char* variable) {
@@ -1992,6 +1994,7 @@ std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
 }
 
 std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void** msgptr) {
+    ++g_pub_msgnew_calls;
     if (publisher == nullptr || id == nullptr || msgptr == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2011,6 +2014,7 @@ std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void
 }
 
 std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
+    ++g_pub_post_calls;
     if (publisher == nullptr || message == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2113,3 +2117,11 @@ std::uint32_t cg_getstr(const char*, const void* data, char* buffer, std::size_t
 }
 
 } // extern "C"
+
+extern "C" void moex_fake_reset_publisher_counts() {
+    g_pub_msgnew_calls = 0;
+    g_pub_post_calls = 0;
+}
+extern "C" std::uint64_t moex_fake_publisher_count(std::uint32_t which) {
+    return which == 0 ? g_pub_msgnew_calls : g_pub_post_calls;
+}
