@@ -238,6 +238,53 @@ bool has_unfinished_identifier(const OrderLifecycleConfig& config) {
            std::filesystem::exists(user_lock_path(config, config.recovery_user_id));
 }
 
+struct StaticOrderCommandsResult {
+    bool ok{false};
+    std::string message;
+    Plaza2TradeEncodedCommand add_command;
+    Plaza2TradeEncodedCommand exact_ext_id_recovery_command;
+};
+
+StaticOrderCommandsResult build_static_order_commands(const OrderLifecycleConfig& config) {
+    AddOrderRequest request;
+    request.broker_code = config.broker_code;
+    request.isin_id = config.isin_id;
+    request.client_code = config.client_code;
+    request.dir = config.side;
+    request.type = config.order_type;
+    request.amount = config.quantity;
+    request.price = config.price;
+    request.comment = config.comment;
+    request.ext_id = config.ext_id;
+    request.is_check_limit = 1;
+
+    Plaza2TradeCodec codec;
+    auto command = codec.encode(Plaza2TradeCommandRequest{request});
+    if (!command.validation.ok()) {
+        return {.message = command.validation.message};
+    }
+
+    DelUserOrdersRequest recovery;
+    recovery.broker_code = config.broker_code;
+    recovery.buy_sell = config.side == Plaza2TradeSide::Buy ? 1 : 2;
+    recovery.non_system = 0;
+    recovery.code = config.client_code;
+    recovery.base_contract_code = config.base_contract_code;
+    recovery.ext_id = config.ext_id;
+    recovery.isin_id = config.isin_id;
+    recovery.instrument_mask = config.instrument_mask;
+    auto recovery_command = codec.encode(Plaza2TradeCommandRequest{recovery});
+    if (!recovery_command.validation.ok()) {
+        return {.message = "exact-ext_id recovery: " + recovery_command.validation.message};
+    }
+
+    return {
+        .ok = true,
+        .add_command = std::move(command),
+        .exact_ext_id_recovery_command = std::move(recovery_command),
+    };
+}
+
 std::string submission_certainty_name(cgate::Plaza2SubmissionCertainty certainty) {
     switch (certainty) {
     case cgate::Plaza2SubmissionCertainty::DefinitelyNotSent:
@@ -994,39 +1041,12 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
         return fail_plan(PreSendFailure::DuplicateIdentifier, "ext_id or user_id belongs to an unfinished run journal");
     }
 
-    AddOrderRequest request;
-    request.broker_code = config.broker_code;
-    request.isin_id = config.isin_id;
-    request.client_code = config.client_code;
-    request.dir = config.side;
-    request.type = config.order_type;
-    request.amount = config.quantity;
-    request.price = config.price;
-    request.comment = config.comment;
-    request.ext_id = config.ext_id;
-    request.is_check_limit = 1;
-    Plaza2TradeCodec codec;
-    auto command = codec.encode(Plaza2TradeCommandRequest{request});
-    if (!command.validation.ok()) {
-        return fail_plan(PreSendFailure::CommandValidationFailed, command.validation.message);
+    auto static_commands = build_static_order_commands(config);
+    if (!static_commands.ok) {
+        return fail_plan(PreSendFailure::CommandValidationFailed, static_commands.message);
     }
-    const auto payload_hash = cgate::plaza2_sha256_hex(command.payload);
-
-    DelUserOrdersRequest recovery;
-    recovery.broker_code = config.broker_code;
-    recovery.buy_sell = config.side == Plaza2TradeSide::Buy ? 1 : 2;
-    recovery.non_system = 0;
-    recovery.code = config.client_code;
-    recovery.base_contract_code = config.base_contract_code;
-    recovery.ext_id = config.ext_id;
-    recovery.isin_id = config.isin_id;
-    recovery.instrument_mask = config.instrument_mask;
-    auto recovery_command = codec.encode(Plaza2TradeCommandRequest{recovery});
-    if (!recovery_command.validation.ok()) {
-        return fail_plan(PreSendFailure::CommandValidationFailed,
-                         "exact-ext_id recovery: " + recovery_command.validation.message);
-    }
-    const auto recovery_payload_hash = cgate::plaza2_sha256_hex(recovery_command.payload);
+    const auto payload_hash = cgate::plaza2_sha256_hex(static_commands.add_command.payload);
+    const auto recovery_payload_hash = cgate::plaza2_sha256_hex(static_commands.exact_ext_id_recovery_command.payload);
 
     // Only static, human-authorized intent is hashed. Dynamic market/session
     // observations are written separately and are re-derived by the concrete
@@ -1038,9 +1058,9 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     json << "  \"profile_fingerprint\": \"" << config.profile_fingerprint << "\",\n";
     json << "  \"environment\": \"test\",\n";
     json << "  \"command\": \"AddOrder\",\n";
-    json << "  \"message_id\": " << command.msgid << ",\n";
+    json << "  \"message_id\": " << static_commands.add_command.msgid << ",\n";
     json << "  \"payload_sha256\": \"" << payload_hash << "\",\n";
-    json << "  \"recovery_message_id\": " << recovery_command.msgid << ",\n";
+    json << "  \"recovery_message_id\": " << static_commands.exact_ext_id_recovery_command.msgid << ",\n";
     json << "  \"recovery_payload_sha256\": \"" << recovery_payload_hash << "\",\n";
     json << "  \"add_user_id\": " << config.add_user_id << ",\n";
     json << "  \"cancel_user_id\": " << config.cancel_user_id << ",\n";
@@ -1102,8 +1122,8 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
         .message = "pre-send plan validated",
         .canonical_json = json.str(),
         .reviewed_evidence_json = evidence_json.str(),
-        .add_command = std::move(command),
-        .exact_ext_id_recovery_command = std::move(recovery_command),
+        .add_command = std::move(static_commands.add_command),
+        .exact_ext_id_recovery_command = std::move(static_commands.exact_ext_id_recovery_command),
     };
     plan.sha256 = cgate::plaza2_sha256_hex(plan.canonical_json);
     const auto intent_placeholder = std::string("\"authorized_intent_sha256\": \"PENDING\"");
@@ -1184,19 +1204,18 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
     const auto journal_cancel_user = journal_integer_field(journal_text, "cancel_user_id");
     const auto journal_recovery_user = journal_integer_field(journal_text, "recovery_user_id");
     const auto journal_add_reply_id = journal_integer_field(journal_text, "add_reply_order_id");
-    auto plan_config = config;
-    plan_config.dry_run = true;
-    plan_config.send_test_order = false;
-    plan_config.authorized_plan_sha256.clear();
-    plan_config.journal_root = result.journal_path.parent_path() / "reconciliation_plan";
-    const auto plan = build_pre_send_plan(plan_config);
+    // Historical reconstruction verifies the exact command bytes that defined
+    // the completed epoch.  It does not authorize a current order; current
+    // execution gates remain exclusively in build_pre_send_plan() and the
+    // transport preflight.
+    const auto static_commands = build_static_order_commands(config);
     if (!schema.has_value() || *schema != "moex.plaza2.order_run_journal.v2" || !journal_run_id.has_value() ||
         *journal_run_id != config.run_id || !journal_profile_id.has_value() ||
         *journal_profile_id != config.profile_id || !journal_profile.has_value() ||
         *journal_profile != config.profile_fingerprint || !journal_payload.has_value() ||
-        !journal_recovery_payload.has_value() || !plan.ok ||
-        *journal_payload != cgate::plaza2_sha256_hex(plan.add_command.payload) ||
-        *journal_recovery_payload != cgate::plaza2_sha256_hex(plan.exact_ext_id_recovery_command.payload) ||
+        !journal_recovery_payload.has_value() || !static_commands.ok ||
+        *journal_payload != cgate::plaza2_sha256_hex(static_commands.add_command.payload) ||
+        *journal_recovery_payload != cgate::plaza2_sha256_hex(static_commands.exact_ext_id_recovery_command.payload) ||
         !journal_ext.has_value() || *journal_ext != config.ext_id || !journal_add_user.has_value() ||
         *journal_add_user != config.add_user_id || !journal_cancel_user.has_value() ||
         *journal_cancel_user != config.cancel_user_id || !journal_recovery_user.has_value() ||

@@ -658,35 +658,61 @@ int main(int argc, char** argv) {
             ConnectorHost restarted(std::move(restart_config));
             test::require(restarted.snapshot().order_epoch_active && !restarted.snapshot().new_order_allowed,
                           "safe terminal restart initially restores the active checkpoint");
-            warm(restarted);
+            // Historical terminal recovery must not be coupled to the
+            // current market book.  Make the current AGGR20 deliberately
+            // crossed before restart; reconciliation still needs only the
+            // private replication and anchored TRADE surfaces.
+            ::setenv("MOEX_FAKE_AGGR_CROSSED", "1", 1);
+            test::require(!restarted.start(), "safe terminal crossed-book restart starts");
+            for (unsigned i = 0;
+                 i < 10 && !(restarted.snapshot().private_streams_ready && restarted.snapshot().trade_replay_complete);
+                 ++i) {
+                test::require(!restarted.poll(), "safe terminal crossed-book restart poll");
+            }
+            test::require(restarted.snapshot().private_streams_ready && restarted.snapshot().trade_replay_complete,
+                          "safe terminal crossed-book restart has current private replication");
             const auto msgnew_before_reconciliation = count(0);
             const auto post_before_reconciliation = count(1);
             const auto reconciliation = restarted.reconcile();
-            test::require(
-                reconciliation.ok && reconciliation.run_found && reconciliation.resolved &&
-                    !reconciliation.locks_retained && reconciliation.state == OrderLifecycleState::Cancelled &&
-                    !restarted.snapshot().order_epoch_active && restarted.snapshot().new_order_allowed &&
-                    count(0) == msgnew_before_reconciliation && count(1) == post_before_reconciliation,
-                "safe terminal no-lock journal resolves without publisher calls: " + reconciliation.message +
-                    " ok=" + std::to_string(reconciliation.ok) + " found=" + std::to_string(reconciliation.run_found) +
-                    " resolved=" + std::to_string(reconciliation.resolved) +
-                    " locks=" + std::to_string(reconciliation.locks_retained) +
-                    " state=" + std::string(order_lifecycle_state_name(reconciliation.state)) +
-                    " active=" + std::to_string(restarted.snapshot().order_epoch_active) +
-                    " allowed=" + std::to_string(restarted.snapshot().new_order_allowed) +
-                    " msgnew=" + std::to_string(count(0)) + " post=" + std::to_string(count(1)));
+            test::require(reconciliation.ok && reconciliation.run_found && reconciliation.resolved &&
+                              !reconciliation.locks_retained &&
+                              reconciliation.state == OrderLifecycleState::Cancelled &&
+                              !restarted.snapshot().order_epoch_active && !restarted.snapshot().new_order_allowed &&
+                              count(0) == msgnew_before_reconciliation && count(1) == post_before_reconciliation,
+                          "safe terminal no-lock journal resolves despite crossed AGGR20 without publisher calls: " +
+                              reconciliation.message + " ok=" + std::to_string(reconciliation.ok) +
+                              " found=" + std::to_string(reconciliation.run_found) +
+                              " resolved=" + std::to_string(reconciliation.resolved) +
+                              " locks=" + std::to_string(reconciliation.locks_retained) +
+                              " state=" + std::string(order_lifecycle_state_name(reconciliation.state)) +
+                              " active=" + std::to_string(restarted.snapshot().order_epoch_active) +
+                              " allowed=" + std::to_string(restarted.snapshot().new_order_allowed) +
+                              " msgnew=" + std::to_string(count(0)) + " post=" + std::to_string(count(1)));
             std::ifstream idle_checkpoint(journal_root / "persistent_session.json");
             const std::string idle_text(std::istreambuf_iterator<char>(idle_checkpoint), {});
             test::require(idle_checkpoint && idle_text.find("\"phase\": \"idle\"") != std::string::npos,
                           "safe terminal reconciliation advances the persistent checkpoint to idle");
-            const auto next_plan = restarted.plan_order(request);
+            test::require(!restarted.stop(), "safe terminal crossed-book restart stops after reconciliation");
+            ::unsetenv("MOEX_FAKE_AGGR_CROSSED");
+            auto restored_config = config_for(fixture);
+            restored_config.purpose = HostPurpose::OrderTest;
+            restored_config.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            restored_config.transport.host.arm_state.test_order_send_armed = true;
+            restored_config.order.run_id = "terminal-before-checkpoint";
+            restored_config.order.journal_root = journal_root;
+            ConnectorHost restored(std::move(restored_config));
+            warm(restored);
+            test::require(restored.snapshot().new_order_allowed,
+                          "safe terminal restart re-enables a new epoch after AGGR20 is restored");
+            const auto next_plan = restored.plan_order(request);
             test::require(next_plan.ok && next_plan.canonical_json.find("\"ext_id\": 80") != std::string::npos,
                           "safe terminal reconciliation advances to epoch-2 identifiers");
-            test::require(!restarted.stop(), "safe terminal restart stops after reconciliation");
+            test::require(!restored.stop(), "safe terminal restored host stops after reconciliation");
             ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
             ::unsetenv("MOEX_FAKE_EXT_ID");
             ::unsetenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
             ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
+            ::unsetenv("MOEX_FAKE_AGGR_CROSSED");
             ::unsetenv("MOEX_FAKE_TRADE_IDENTITY_CONFLICT");
         }
         {
@@ -710,6 +736,7 @@ int main(int argc, char** argv) {
                                                     .base_contract_code = "RTS",
                                                     .comment = "corrupt-journal",
                                                     .quantity = 1};
+            const auto journal_path = journal_root / "corrupt-terminal-journal-epoch-1" / "journal.json";
             {
                 ConnectorHost host(std::move(c));
                 warm(host);
@@ -730,7 +757,6 @@ int main(int argc, char** argv) {
                     cancelled = host.poll_order();
                 test::require(cancelled.ok && cancelled.state == OrderLifecycleState::Cancelled,
                               "corrupt-terminal journal reaches Cancelled");
-                const auto journal_path = journal_root / "corrupt-terminal-journal-epoch-1" / "journal.json";
                 std::ifstream input(journal_path);
                 const std::string original(std::istreambuf_iterator<char>(input), {});
                 test::require(static_cast<bool>(input), "corrupt-terminal journal can be read");
@@ -759,6 +785,21 @@ int main(int argc, char** argv) {
                               !restarted.snapshot().new_order_allowed && count(0) == msgnew_before_reconciliation &&
                               count(1) == post_before_reconciliation,
                           "corrupt no-lock journal remains unresolved and blocks a new Add: " + unresolved.message);
+            std::ifstream payload_input(journal_path);
+            const std::string corrupted(std::istreambuf_iterator<char>(payload_input), {});
+            test::require(static_cast<bool>(payload_input), "corrupt-terminal journal remains readable");
+            const auto payload_marker = corrupted.find("\"payload_sha256\": \"");
+            test::require(payload_marker != std::string::npos, "corrupt-terminal journal has payload hash");
+            const auto payload_begin = payload_marker + std::string("\"payload_sha256\": \"").size();
+            auto corrupted_payload = corrupted;
+            corrupted_payload.replace(payload_begin, 64, std::string(64, '0'));
+            test::write_text_file(journal_path, corrupted_payload);
+            const auto payload_unresolved = restarted.reconcile();
+            test::require(!payload_unresolved.ok && payload_unresolved.run_found && !payload_unresolved.resolved &&
+                              !payload_unresolved.locks_retained && restarted.snapshot().order_epoch_active &&
+                              !restarted.snapshot().new_order_allowed && count(0) == msgnew_before_reconciliation &&
+                              count(1) == post_before_reconciliation,
+                          "corrupt payload hash cannot resolve a no-lock journal: " + payload_unresolved.message);
             // The unresolved recovered epoch intentionally prevents stop.
             ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
             ::unsetenv("MOEX_FAKE_EXT_ID");
