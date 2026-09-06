@@ -591,6 +591,181 @@ int main(int argc, char** argv) {
             ::unsetenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
         }
         {
+            // A terminal journal releases its locks before the application
+            // advances the persistent checkpoint.  Restart must trust that
+            // exact, fully validated journal rather than deadlocking on the
+            // stale active checkpoint when the process crashes in between.
+            reset();
+            ::unsetenv("MOEX_FAKE_TRADE_IDENTITY_CONFLICT");
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
+            ::setenv("MOEX_FAKE_CANCEL_AFTER_DEL", "1", 1);
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "terminal-before-checkpoint";
+            c.order.journal_root = fixture.root / "terminal-before-checkpoint-journals";
+            const auto journal_root = c.order.journal_root;
+            const ConnectorHostOrderRequest request{.side = Plaza2TradeSide::Sell,
+                                                    .price = "103000",
+                                                    .base_contract_code = "RTS",
+                                                    .comment = "terminal-crash",
+                                                    .quantity = 1};
+            {
+                ConnectorHost host(std::move(c));
+                warm(host);
+                const auto plan = host.plan_order(request);
+                const auto authorization = host.begin_order(request, plan.canonical_json, plan.sha256);
+                test::require(plan.ok && !authorization, "terminal-before-checkpoint authorization: plan=" +
+                                                             plan.message + " auth=" + authorization.message);
+                test::require(!host.submit_order().ok, "terminal-before-checkpoint Add submitted");
+                const auto working = host.poll_order();
+                test::require(working.state == OrderLifecycleState::Working ||
+                                  working.state == OrderLifecycleState::PartiallyFilled,
+                              "terminal-before-checkpoint reaches a nonterminal state=" +
+                                  std::string(order_lifecycle_state_name(working.state)) +
+                                  " message=" + working.message);
+                test::require(host.cancel_current_order().state == OrderLifecycleState::CancelPending,
+                              "terminal-before-checkpoint enters CancelPending");
+                OrderLifecycleResult cancelled;
+                for (int attempt = 0; attempt < 4 && cancelled.state != OrderLifecycleState::Cancelled; ++attempt)
+                    cancelled = host.poll_order();
+                test::require(cancelled.ok && cancelled.state == OrderLifecycleState::Cancelled,
+                              "terminal-before-checkpoint reaches Cancelled");
+                test::require(!std::filesystem::exists(journal_root / "active" / "ext_79") &&
+                                  !std::filesystem::exists(journal_root / "active" / "user_701"),
+                              "terminal journal releases identifier locks before checkpoint advance");
+                std::ifstream journal(journal_root / "terminal-before-checkpoint-epoch-1" / "journal.json");
+                const std::string journal_text(std::istreambuf_iterator<char>(journal), {});
+                test::require(journal && journal_text.find("\"finished\": true") != std::string::npos &&
+                                  journal_text.find("\"market_safe_terminal\": true") != std::string::npos,
+                              "terminal journal is safely complete before simulated crash");
+                std::ifstream checkpoint(journal_root / "persistent_session.json");
+                const std::string checkpoint_text(std::istreambuf_iterator<char>(checkpoint), {});
+                test::require(checkpoint &&
+                                  checkpoint_text.find("\"phase\": \"add_may_have_been_sent\"") != std::string::npos,
+                              "crash leaves the persistent checkpoint active");
+                // Deliberately do not call finish_order_epoch().
+            }
+            auto restart_config = config_for(fixture);
+            restart_config.purpose = HostPurpose::OrderTest;
+            restart_config.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            restart_config.transport.host.arm_state.test_order_send_armed = true;
+            restart_config.order.run_id = "terminal-before-checkpoint";
+            restart_config.order.journal_root = journal_root;
+            ConnectorHost restarted(std::move(restart_config));
+            test::require(restarted.snapshot().order_epoch_active && !restarted.snapshot().new_order_allowed,
+                          "safe terminal restart initially restores the active checkpoint");
+            warm(restarted);
+            const auto msgnew_before_reconciliation = count(0);
+            const auto post_before_reconciliation = count(1);
+            const auto reconciliation = restarted.reconcile();
+            test::require(
+                reconciliation.ok && reconciliation.run_found && reconciliation.resolved &&
+                    !reconciliation.locks_retained && reconciliation.state == OrderLifecycleState::Cancelled &&
+                    !restarted.snapshot().order_epoch_active && restarted.snapshot().new_order_allowed &&
+                    count(0) == msgnew_before_reconciliation && count(1) == post_before_reconciliation,
+                "safe terminal no-lock journal resolves without publisher calls: " + reconciliation.message +
+                    " ok=" + std::to_string(reconciliation.ok) + " found=" + std::to_string(reconciliation.run_found) +
+                    " resolved=" + std::to_string(reconciliation.resolved) +
+                    " locks=" + std::to_string(reconciliation.locks_retained) +
+                    " state=" + std::string(order_lifecycle_state_name(reconciliation.state)) +
+                    " active=" + std::to_string(restarted.snapshot().order_epoch_active) +
+                    " allowed=" + std::to_string(restarted.snapshot().new_order_allowed) +
+                    " msgnew=" + std::to_string(count(0)) + " post=" + std::to_string(count(1)));
+            std::ifstream idle_checkpoint(journal_root / "persistent_session.json");
+            const std::string idle_text(std::istreambuf_iterator<char>(idle_checkpoint), {});
+            test::require(idle_checkpoint && idle_text.find("\"phase\": \"idle\"") != std::string::npos,
+                          "safe terminal reconciliation advances the persistent checkpoint to idle");
+            const auto next_plan = restarted.plan_order(request);
+            test::require(next_plan.ok && next_plan.canonical_json.find("\"ext_id\": 80") != std::string::npos,
+                          "safe terminal reconciliation advances to epoch-2 identifiers");
+            test::require(!restarted.stop(), "safe terminal restart stops after reconciliation");
+            ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+            ::unsetenv("MOEX_FAKE_EXT_ID");
+            ::unsetenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
+            ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
+            ::unsetenv("MOEX_FAKE_TRADE_IDENTITY_CONFLICT");
+        }
+        {
+            // Missing locks alone are never proof of safety: a corrupted
+            // terminal marker keeps the recovered checkpoint blocked.
+            reset();
+            ::unsetenv("MOEX_FAKE_TRADE_IDENTITY_CONFLICT");
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
+            ::setenv("MOEX_FAKE_CANCEL_AFTER_DEL", "1", 1);
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "corrupt-terminal-journal";
+            c.order.journal_root = fixture.root / "corrupt-terminal-journal-journals";
+            const auto journal_root = c.order.journal_root;
+            const ConnectorHostOrderRequest request{.side = Plaza2TradeSide::Sell,
+                                                    .price = "103000",
+                                                    .base_contract_code = "RTS",
+                                                    .comment = "corrupt-journal",
+                                                    .quantity = 1};
+            {
+                ConnectorHost host(std::move(c));
+                warm(host);
+                const auto plan = host.plan_order(request);
+                test::require(plan.ok && !host.begin_order(request, plan.canonical_json, plan.sha256),
+                              "corrupt-terminal journal authorization");
+                test::require(!host.submit_order().ok, "corrupt-terminal journal Add submitted");
+                const auto working = host.poll_order();
+                test::require(working.state == OrderLifecycleState::Working ||
+                                  working.state == OrderLifecycleState::PartiallyFilled,
+                              "corrupt-terminal journal reaches a nonterminal state=" +
+                                  std::string(order_lifecycle_state_name(working.state)) +
+                                  " message=" + working.message);
+                test::require(host.cancel_current_order().state == OrderLifecycleState::CancelPending,
+                              "corrupt-terminal journal enters CancelPending");
+                OrderLifecycleResult cancelled;
+                for (int attempt = 0; attempt < 4 && cancelled.state != OrderLifecycleState::Cancelled; ++attempt)
+                    cancelled = host.poll_order();
+                test::require(cancelled.ok && cancelled.state == OrderLifecycleState::Cancelled,
+                              "corrupt-terminal journal reaches Cancelled");
+                const auto journal_path = journal_root / "corrupt-terminal-journal-epoch-1" / "journal.json";
+                std::ifstream input(journal_path);
+                const std::string original(std::istreambuf_iterator<char>(input), {});
+                test::require(static_cast<bool>(input), "corrupt-terminal journal can be read");
+                const auto marker = original.find("\"finished\": true");
+                test::require(marker != std::string::npos, "corrupt-terminal journal has finished marker");
+                auto corrupted = original;
+                corrupted.replace(marker, std::string("\"finished\": true").size(), "\"finished\": false");
+                test::write_text_file(journal_path, corrupted);
+                test::require(!std::filesystem::exists(journal_root / "active" / "ext_79"),
+                              "corrupt-terminal journal still has no identifier locks");
+                // Deliberately do not call finish_order_epoch().
+            }
+            auto restart_config = config_for(fixture);
+            restart_config.purpose = HostPurpose::OrderTest;
+            restart_config.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            restart_config.transport.host.arm_state.test_order_send_armed = true;
+            restart_config.order.run_id = "corrupt-terminal-journal";
+            restart_config.order.journal_root = journal_root;
+            ConnectorHost restarted(std::move(restart_config));
+            warm(restarted);
+            const auto msgnew_before_reconciliation = count(0);
+            const auto post_before_reconciliation = count(1);
+            const auto unresolved = restarted.reconcile();
+            test::require(!unresolved.ok && unresolved.run_found && !unresolved.resolved &&
+                              !unresolved.locks_retained && restarted.snapshot().order_epoch_active &&
+                              !restarted.snapshot().new_order_allowed && count(0) == msgnew_before_reconciliation &&
+                              count(1) == post_before_reconciliation,
+                          "corrupt no-lock journal remains unresolved and blocks a new Add: " + unresolved.message);
+            // The unresolved recovered epoch intentionally prevents stop.
+            ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+            ::unsetenv("MOEX_FAKE_EXT_ID");
+            ::unsetenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
+            ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
+        }
+        {
             // A timeout does not prove cancellation.  The epoch remains
             // CancelPending and cannot authorize another Add.
             reset();

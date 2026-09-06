@@ -44,9 +44,11 @@ nonterminal TRADE evidence remains `CancelPending`; a definitive non-timeout
 command rejection becomes `UnresolvedOrphanIncident`, while a timeout remains
 pending. An uncertain or inconsistent epoch cannot be reset by the
 application. `finish_order_epoch()` succeeds only after an existing safe
-terminal result has been journaled; only then are the order-local intent,
-binding, attempt flags, and locks released for the next epoch. The read-side
-CGate host remains started throughout.
+terminal result has been journaled; it advances the persistent checkpoint and
+clears the order-local intent for the next epoch. The terminal journal itself
+releases identifier locks, so a crash between those two steps is handled by
+the immutable-journal restart path below. The read-side CGate host remains
+started throughout.
 
 Before any possible AddOrder publisher call, the host atomically checkpoints
 the epoch as `add_may_have_been_sent` under
@@ -57,7 +59,11 @@ checkpoint restores the exact epoch terms and identifiers, blocks planning and
 new AddOrder submission, and permits only the existing journal/TRADE
 reconciliation path to release locks. An `authorized` checkpoint with no
 possible Add is retired without carrying its plan authorization across the
-restart. No credentials are persisted.
+restart. If the process crashes after a safe terminal journal has already
+released its locks but before the checkpoint advances, reconciliation validates
+that exact immutable journal (including identity, payload, terminal,
+consistency, and degradation fields) and advances the checkpoint to `idle`
+without rewriting it. No credentials are persisted.
 
 The supported terminal dispositions remain `Rejected`, `Filled`,
 `Cancelled`, and `DefinitelyNotSent`. An orphan incident is fail-closed and
@@ -93,6 +99,10 @@ proves:
   unfinished epoch identity, cannot plan/begin/submit another Add, and only
   clears locks after factual terminal TRADE reconciliation; the next epoch uses
   the advanced checked identifiers.
+- a crash after factual `Cancelled` terminal journaling but before
+  `finish_order_epoch()` is resolved from the no-lock immutable journal,
+  advances to the next checked identifiers without publisher allocation, and a
+  corrupted terminal marker remains unresolved and blocks a new Add.
 
 The existing lifecycle scenario suite continues to cover `Filled`,
 `Rejected`, `DefinitelyNotSent`, `PartiallyFilled`, timeout uncertainty,

@@ -236,7 +236,10 @@ struct RestartReconciliationResult {
 
 // Read-only startup reconciliation over a previously unfinished local run.
 // It never submits a command. Locks are removed only after a fresh, matching
-// terminal observation and a published resolution record.
+// terminal observation and a published resolution record. If a terminal
+// journal already proves a safe completed epoch and its locks are already
+// absent, reconciliation may resolve the stale checkpoint without rewriting
+// that immutable journal.
 [[nodiscard]] RestartReconciliationResult
 reconcile_unfinished_run(const OrderLifecycleConfig& config,
                          std::span<const plaza2::private_state::OwnOrderSnapshot> orders,

@@ -171,6 +171,50 @@ std::optional<std::int64_t> journal_integer_field(std::string_view text, std::st
     return parsed;
 }
 
+std::optional<bool> journal_boolean_field(std::string_view text, std::string_view key) {
+    const auto marker = std::string("\"") + std::string(key) + "\": ";
+    const auto begin = text.find(marker);
+    if (begin == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto value_begin = begin + marker.size();
+    const auto has_boundary = [&](std::size_t length) {
+        const auto value_end = value_begin + length;
+        return value_end >= text.size() || text[value_end] == ',' || text[value_end] == '\n' || text[value_end] == '}';
+    };
+    if (text.substr(value_begin, 4) == "true" && has_boundary(4)) {
+        return true;
+    }
+    if (text.substr(value_begin, 5) == "false" && has_boundary(5)) {
+        return false;
+    }
+    return std::nullopt;
+}
+
+std::optional<OrderLifecycleState> journal_state_field(std::string_view value) {
+    constexpr std::array states = {
+        OrderLifecycleState::DefinitelyNotSent,
+        OrderLifecycleState::PossiblySent,
+        OrderLifecycleState::Posted,
+        OrderLifecycleState::Rejected,
+        OrderLifecycleState::Working,
+        OrderLifecycleState::PartiallyFilled,
+        OrderLifecycleState::Filled,
+        OrderLifecycleState::CancelPending,
+        OrderLifecycleState::Cancelled,
+        OrderLifecycleState::UnresolvedOrphanIncident,
+        OrderLifecycleState::Idle,
+        OrderLifecycleState::Authorized,
+        OrderLifecycleState::AddPending,
+    };
+    for (const auto state : states) {
+        if (order_lifecycle_state_name(state) == value) {
+            return state;
+        }
+    }
+    return std::nullopt;
+}
+
 PreSendPlan fail_plan(PreSendFailure failure, std::string message) {
     return {
         .ok = false,
@@ -1103,14 +1147,16 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
     RestartReconciliationResult result;
     result.journal_path = config.journal_root / config.run_id / "journal.json";
     const auto active = has_unfinished_identifier(config);
-    if (!active) {
+    const auto journal_exists = std::filesystem::exists(result.journal_path);
+    if (!active && !journal_exists) {
         result.run_found = false;
         result.locks_retained = false;
         result.message = "no unfinished identifier locks found";
         return result;
     }
     result.run_found = true;
-    if (!std::filesystem::exists(result.journal_path)) {
+    result.locks_retained = active;
+    if (!journal_exists) {
         result.ok = false;
         result.message = "unfinished identifier locks have no journal; retaining them";
         return result;
@@ -1158,6 +1204,36 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
         result.ok = false;
         result.message =
             "unfinished journal identity or payload does not match the reconciliation request; retaining locks";
+        return result;
+    }
+
+    if (!active) {
+        const auto final_state_name = journal_string_field(journal_text, "final_state");
+        const auto final_state = final_state_name.has_value() ? journal_state_field(*final_state_name) : std::nullopt;
+        const auto finished = journal_boolean_field(journal_text, "finished");
+        const auto market_safe_terminal = journal_boolean_field(journal_text, "market_safe_terminal");
+        const auto evidence_consistent = journal_boolean_field(journal_text, "evidence_consistent");
+        const auto journal_degraded = journal_boolean_field(journal_text, "journal_degraded");
+        const auto orphan_incident = journal_boolean_field(journal_text, "orphan_incident");
+        const bool allowed_terminal =
+            final_state.has_value() &&
+            (*final_state == OrderLifecycleState::DefinitelyNotSent || *final_state == OrderLifecycleState::Rejected ||
+             *final_state == OrderLifecycleState::Filled || *final_state == OrderLifecycleState::Cancelled);
+        if (!final_state.has_value() || !allowed_terminal || !finished.value_or(false) ||
+            !market_safe_terminal.value_or(false) || !evidence_consistent.value_or(false) ||
+            journal_degraded.value_or(true) || orphan_incident.value_or(true)) {
+            result.ok = false;
+            result.resolved = false;
+            result.locks_retained = false;
+            result.message =
+                "historical journal without identifier locks does not prove a safe completed terminal epoch";
+            return result;
+        }
+        result.ok = true;
+        result.resolved = true;
+        result.locks_retained = false;
+        result.state = *final_state;
+        result.message = "journal already records a safe terminal run with released identifier locks";
         return result;
     }
 
