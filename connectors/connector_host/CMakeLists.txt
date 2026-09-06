@@ -1,0 +1,4 @@
+add_library(moex_connector_host STATIC src/connector_host.cpp src/operator_config.cpp)
+target_include_directories(moex_connector_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(moex_connector_host PUBLIC moex_plaza2_trade_order_lifecycle)
+target_compile_features(moex_connector_host PUBLIC cxx_std_20)
