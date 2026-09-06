@@ -9,6 +9,10 @@ exact-SHA approval round. The temporary driver's delegated-authorization flag
 used the freshly generated canonical SHA; no previous authorization was reused.
 The legacy authorization-request wording in observation.log is informational,
 not evidence of a separate human approval/file. All transport gates remained.
+The direct user instruction and chronology are recorded in
+[authorization_source.md](authorization_source.md). No separate human approval
+of the final plan SHA was obtained; the accurate reviewed event description is
+`DELEGATED_PLAN_SELECTION_APPLIED`. The original log remains unchanged.
 
 CRU6, isin 4433036, session 11700: SELL LIMIT 1 at 12.91600.
 Generation BBO 12.90900 / 12.91500; one tick above ask, age 2491 ms.

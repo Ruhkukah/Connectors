@@ -11,6 +11,11 @@ CGate 9.9 stack. Implementation approval alone is not order authorization.
 The initial work order required separate exact-SHA approval; the user later
 superseded that handoff by explicitly delegating fresh plan selection and this
 one TEST exercise, as recorded below. Prior retired plans remain retired.
+The direct conversation source and chronology are recorded in
+`docs/evidence/plaza2_test_order_success_20260906/authorization_source.md`.
+No separate exact-SHA human approval of the successful plan was obtained.
+Its reviewed authorization event is `DELEGATED_PLAN_SELECTION_APPLIED`; the
+legacy raw log label is preserved, not presented as human approval evidence.
 The first attempt stopped before post; after the wire-layout correction, the
 bounded TEST Add/cancel lifecycle succeeded, as recorded below.
 
@@ -152,7 +157,13 @@ Evidence: `docs/evidence/plaza2_test_order_success_20260906/README.md`.
 This meets the bounded actual TEST lifecycle exercise, not full certification
 or production readiness. PR remains draft for independent final review.
 
-## First live exercise procedure
+## Original first-live procedure (superseded authorization handoff)
+
+The following is the originally prescribed procedure, retained as history.
+The later explicit user delegation superseded only its separate manual SHA
+approval step for the documented TEST exercise; all dynamic checks remained.
+It must not be read as a claim that the successful run obtained that separate
+approval, or as authorization for another order.
 
 Use one continuously pumped host with current authoritative session ID and
 fresh market/account/position evidence. Generate a fresh SELL quantity-one plan
@@ -173,3 +184,11 @@ before actual runtime function calls, not inferred from control flow. They do
 not count CGate/router internal traffic. The later live packet must include
 these counters, certainty, replies, TRADE observations, independent UOB census,
 receipt/journal hashes and router PID before/after.
+
+## Post-merge follow-up, outside PR33
+
+ReplyBridge currently fails closed on FORTS_MSG99/100 rather than explicitly
+surfacing their rate-limit/system meanings. This is a non-blocking follow-up,
+not a reason to repeat the bounded order exercise or expand this PR.
+The next engineering scope is operator CLI / ConnectorHost integration, then
+the AlorEngine C ABI surface, rather than further incremental smoke orders.
