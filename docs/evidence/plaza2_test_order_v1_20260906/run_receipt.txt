@@ -1,0 +1,17 @@
+head=39b1a39314be5a7166de0004c43d72255b455f49
+plan_sha256=81e40b34db8d8bdba34377cda06012f7c4d5fc97dc0eaeefe0a097dfa376ad8d
+host_count=1
+state=definitely_not_sent
+ok=1
+market_safe_terminal=1
+evidence_consistent=1
+journal_ok=1
+journal_degraded=0
+journal_path=/home/azgaldov/moex/tmp/test-order-v1/read-side/1788695702-3373063/journals/test-order-1788695702-3373063/journal.json
+add_certainty=0
+add_post_invoked=0
+cancel_post_invoked=0
+recovery_post_invoked=0
+cg_pub_msgnew=1
+cg_pub_post=0
+stop_code=0

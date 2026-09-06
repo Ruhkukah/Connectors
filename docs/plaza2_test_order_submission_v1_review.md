@@ -7,11 +7,11 @@ PR30 was merged normally at reviewed head
 `29eb19dfe32d71ccc7ec1ea20f7624917a99d24b`, preserving its evidence history.
 
 This increment prepares one passive CRU6 LIMIT contract on the isolated T1
-CGate 9.9 stack. Implementation approval is not order authorization. Every
-previous plan is retired. A fresh canonical plan and all 64 SHA-256 characters
-must receive explicit human authorization before its intent is installed and
-the lifecycle controller is invoked. No actual order has been authorized or
-submitted as part of this implementation validation.
+CGate 9.9 stack. Implementation approval alone is not order authorization.
+The initial work order required separate exact-SHA approval; the user later
+superseded that handoff by explicitly delegating fresh plan selection and this
+one TEST exercise, as recorded below. Prior retired plans remain retired.
+No exchange order was submitted; the attempted lifecycle stopped before post.
 
 ## Bounded send boundary
 
@@ -68,8 +68,43 @@ Python tooling was pointed at the same existing PyYAML-capable interpreter as
 the regular build. Initial unsupported-leak/Python-dependency invocations were
 environment setup failures, not test passes. No source fix was needed.
 
-Live read-side qualification and exact plan authorization are still pending.
-This document does not claim a successful real order lifecycle.
+## Live delegated exercise: publisher preparation blocked
+
+The user subsequently explicitly delegated fresh price/plan selection without
+another authorization round. The temporary operator driver applied that
+delegation to a newly generated qty-one passive CRU6 plan on the same pumped
+host; repository runtime code and every execution gate remained unchanged.
+The earlier manual-authorization candidates were retired without allocation.
+
+Implementation: `39b1a39314be5a7166de0004c43d72255b455f49`; both GitHub jobs passed.
+Session 11700, SELL 1 at 12.91500, generation BBO 12.91000 / 12.91400.
+Plan: `81e40b34db8d8bdba34377cda06012f7c4d5fc97dc0eaeefe0a097dfa376ad8d`.
+Receipt: `1a88c710a9bf426d7b9d261baacdb76cbcb0d374c1f1f09f766dde4609f58182`.
+
+All readiness gates passed; v4 persisted before allocation. Actual application
+counts: msgnew=1, post=0. Terminal classification: DefinitelyNotSent,
+market_safe_terminal=true, evidence_consistent=true, journal_ok=true.
+No Add reply, cancel, recovery, or exchange order. Router PID 3031619 unchanged.
+No second Add attempt was made. The controller's ok=true describes the safe
+terminal outcome, **not successful order submission**.
+
+Read-only investigation then found a real wire-layout defect. Running the
+installed official CGate 9.9 `schemetool makesrc -t AddOrder,DelOrder,DelUserOrders
+<official forts_messages.ini> message` produces pack(4) structures sized
+128 / 28 / 60 bytes. The connector encodes 112 / 20 / 49 bytes. Its fixed strings
+omit the extra terminating byte and integer fields omit structure alignment.
+Existing fake fixtures model those same incorrect compact sizes. This is a
+confirmed codec/runtime layout mismatch, not a market-readiness failure.
+
+The temporary result summary did not retain allocation_error or
+runtime_payload_size, so the exact runtime return and precise immediate refusal
+branch cannot be reconstructed from this receipt. Do not claim the allocation
+function itself failed: successful allocation followed by the existing
+payload-size check is also possible. The confirmed layout defect must be fixed
+and independently tested before another submission attempt.
+
+Evidence: `docs/evidence/plaza2_test_order_v1_20260906/`.
+PR remains draft; **actual TEST order lifecycle qualification has not passed**.
 
 ## First live exercise procedure
 
