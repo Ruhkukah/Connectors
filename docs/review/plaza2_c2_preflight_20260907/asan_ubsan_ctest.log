@@ -36,12 +36,12 @@ test 164
 164: Test command: /tmp/plaza2-cert-a/asan/tests/plaza2_ordlog_benchmark "/tmp/plaza2-cert-a/asan/tests/libplaza2_fake_cgate_runtime.dylib" "--smoke"
 164: Working Directory: /tmp/plaza2-cert-a/asan/tests
 164: Test timeout computed to be: 1500
-164: {"profile":"sustained_100k","messages_processed":10000,"elapsed_seconds":0.0233957,"msg_per_second":427428,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":2334042,"peak_process_rss_bytes":64946176,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":64,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
-164: {"profile":"sustained_200k","messages_processed":10000,"elapsed_seconds":0.0229215,"msg_per_second":436272,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":2280583,"peak_process_rss_bytes":101859328,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":64,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
-164: {"profile":"burst","messages_processed":10000,"elapsed_seconds":0.0229716,"msg_per_second":435320,"target_per_second":0,"queue_current":0,"queue_high_water":10000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":22197833,"peak_process_rss_bytes":138543104,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":64,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
-164: {"profile":"multi_instrument","messages_processed":10000,"elapsed_seconds":0.0232005,"msg_per_second":431026,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":2270542,"peak_process_rss_bytes":175210496,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":4096,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
-164: {"profile":"large_id_population","messages_processed":10000,"elapsed_seconds":0.0231715,"msg_per_second":431565,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":2269458,"peak_process_rss_bytes":211927040,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":4096,"id_population":1000000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
-4/5 Test #164: plaza2_ordlog_benchmark_smoke ......   Passed    0.35 sec
+164: {"profile":"sustained_100k","messages_processed":10000,"elapsed_seconds":0.0237138,"msg_per_second":421696,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":2340167,"peak_process_rss_bytes":64880640,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":64,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
+164: {"profile":"sustained_200k","messages_processed":10000,"elapsed_seconds":0.0232277,"msg_per_second":430520,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":2272000,"peak_process_rss_bytes":101744640,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":64,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
+164: {"profile":"burst","messages_processed":10000,"elapsed_seconds":0.0231306,"msg_per_second":432327,"target_per_second":0,"queue_current":0,"queue_high_water":10000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":22332041,"peak_process_rss_bytes":138428416,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":64,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
+164: {"profile":"multi_instrument","messages_processed":10000,"elapsed_seconds":0.0238018,"msg_per_second":420136,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":2421250,"peak_process_rss_bytes":175095808,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":4096,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
+164: {"profile":"large_id_population","messages_processed":10000,"elapsed_seconds":0.0236232,"msg_per_second":423312,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":2447917,"peak_process_rss_bytes":211812352,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":4096,"id_population":1000000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
+4/5 Test #164: plaza2_ordlog_benchmark_smoke ......   Passed    0.36 sec
 test 166
     Start 166: plaza2_c2_preflight_test
 
@@ -49,15 +49,15 @@ test 166
 166: Working Directory: /tmp/plaza2-cert-a/asan/tests
 166: Test timeout computed to be: 1500
 166: MODEL_ONLY PASS histories=99 snapshot_equivalences=1136 restart_equivalences=1136 illegal_properties=396 life_positions=6 close_error_positions=6 callback_pair_permutations=4 callback_faults=18
-5/5 Test #166: plaza2_c2_preflight_test ...........   Passed    6.49 sec
+5/5 Test #166: plaza2_c2_preflight_test ...........   Passed    6.61 sec
 
 100% tests passed, 0 tests failed out of 5
 
 Label Time Summary:
-c2_preflight    =   7.32 sec*proc (5 tests)
-plaza2          =   7.32 sec*proc (5 tests)
-sanitizer       =   7.15 sec*proc (4 tests)
+c2_preflight    =   7.45 sec*proc (5 tests)
+plaza2          =   7.45 sec*proc (5 tests)
+sanitizer       =   7.27 sec*proc (4 tests)
 tooling         =   0.18 sec*proc (1 test)
-unit            =   7.32 sec*proc (5 tests)
+unit            =   7.45 sec*proc (5 tests)
 
-Total Test time (real) =   7.33 sec
+Total Test time (real) =   7.46 sec

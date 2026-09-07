@@ -274,7 +274,7 @@ struct Consumer {
                 return i;
         throw std::runtime_error("unbound table");
     }
-    static std::uint32_t callback(void*, void* listener, const void* raw, void* context) {
+    static std::uint32_t callback(void*, void* listener, void* raw, void* context) {
         auto& self = *static_cast<Consumer*>(context);
         auto& m = self.model;
         const auto& message = *static_cast<const CgMsg*>(raw);
@@ -445,7 +445,7 @@ struct Driver {
                                  "FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL;snapshot.data=multileg_orders;online."
                                  "data=multileg_orders_log"
                                : "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL";
-        using Callback = std::uint32_t (*)(void*, void*, const void*, void*);
+        using Callback = CgListenerCallback;
         require(symbol<std::uint32_t (*)(void*, const char*, Callback, void*, void**)>("cg_lsn_new")(
                     connection, url, &Consumer::callback, &consumer, &listener) == 0,
                 "fake composite");

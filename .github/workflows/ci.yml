@@ -90,7 +90,13 @@ jobs:
         run: cmake -S . -B build
 
       - name: Build
-        run: cmake --build build
+        run: |
+          if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+            cmake --build build --parallel 2 --target \
+              plaza2_c2_preflight_test plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark
+          else
+            cmake --build build
+          fi
 
       - name: Run ctest
         run: |
@@ -113,6 +119,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install C2 codegen requirements
+        if: env.C2_PREFLIGHT_ONLY == 'true'
+        run: python -m pip install -r requirements.txt
+
       - name: Install clang
         run: sudo apt-get update && sudo apt-get install -y clang
 
@@ -128,7 +138,13 @@ jobs:
           -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
 
       - name: Build sanitizer targets
-        run: cmake --build build-asan --parallel 2
+        run: |
+          if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+            cmake --build build-asan --parallel 2 --target \
+              plaza2_c2_preflight_test plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark
+          else
+            cmake --build build-asan --parallel 2
+          fi
 
       - name: Run critical component sanitizer tests
         env:

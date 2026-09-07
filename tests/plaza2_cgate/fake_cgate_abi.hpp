@@ -121,3 +121,5 @@ struct CgDataLifeNum {
     std::uint32_t life_number;
     std::uint32_t flags;
 };
+
+using CgListenerCallback = std::uint32_t (*)(void*, void*, void*, void*);

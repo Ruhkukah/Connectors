@@ -116,8 +116,6 @@ struct FakeReply {
     bool timed_out{false};
 };
 
-using CgListenerCallback = std::uint32_t (*)(void* conn, void* listener, void* msg, void* data);
-
 struct FakeListener {
     std::uint32_t state{kStateClosed};
     std::string settings;
