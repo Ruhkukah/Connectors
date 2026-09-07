@@ -2,7 +2,7 @@
 
 - Main base: `22a9dfd0947ccde4645696974e1270099491e2c6`.
 - Stack/PR base: `585d199997ec65d4690cc9618350052509c9d83b` (PR #42).
-- Implementation and locally tested source head: `73fc9ab7b970c5f7538665b139534f71e2e9510c`.
+- Implementation and locally tested source head: `e66cadc0f3731d409758090713eeb9c082201fa1`.
 - Draft [PR #43](https://github.com/Ruhkukah/Connectors/pull/43), branch `codex/plaza2-c2-preflight-20260907`, based on
   `codex/plaza2-aggr-rec-20260907`. The subsequent closeout commit adds this receipt only; final review HEAD is reported on the PR.
 - PRs #38–42 remain unmerged. No T1, publisher calls, exchange orders, production L3 projector, public C ABI or managed API changes.
@@ -45,10 +45,17 @@ vendor-simulated composite. No extra FTP file is currently known to be required.
 | `cert/PLAZA2_CERT_MATRIX.md` | Preserve 96 distinct rows; attach preflight evidence without promoting production capability |
 | This report, `validation.json`, four logs | Source-bound evidence and limitations |
 
-The normal test suites remain configured. This PR's branch selects `c2_preflight` in both CI jobs to honor the literal
+The normal test suites remain configured. This PR's branch builds only the four required native targets and selects `c2_preflight` in both CI jobs to honor the literal
 no-publisher constraint, including fake publisher calls. Other PRs/main retain full suites. This is a focused regression result,
 not a requalification of the entire stack. Existing raw ORDLOG, wire checks and D0 smoke are included because they exercise
 shared fake-runtime changes without a publisher.
+
+## CI correction
+
+The initial Linux sanitizer run identified a `const void*` versus `void*` callback function-pointer mismatch in the new test
+driver and a missing PyYAML dependency for the selected codegen check. The fake library and consumer now share the exact
+callback typedef; the sanitizer job installs the existing requirements for this draft. Local results below were rerun after
+the correction. Neither issue affected production code. Final Linux status is attached to the exact PR head.
 
 ## Validation
 
