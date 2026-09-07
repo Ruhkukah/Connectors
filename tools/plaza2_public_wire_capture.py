@@ -17,7 +17,7 @@ def main() -> None:
         ('ordbook.ini', 'FORTS_ORDBOOK_REPL', 'Ordbook'),
     ]:
         raw = (root / filename).read_bytes()
-        source = raw.decode('ascii')
+        source = raw.decode('utf-8-sig').replace('\r\n', '\n')
         for index, name in enumerate(re.findall(r'^table=(\w+)', source, re.M)):
             block = source.split('[table:CustReplScheme:' + name + ']', 1)[1].split('[table:', 1)[0]
             fields = re.findall(r'^field=([^,\n]+),([^,\n]+)', block, re.M)
