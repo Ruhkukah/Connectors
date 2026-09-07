@@ -891,6 +891,17 @@ cg::Plaza2Error ConnectorHost::begin_order(const ConnectorHostOrderRequest& requ
     if (const auto authorization = p.authorize_candidate(candidate, order, canonical_plan, sha256)) {
         return authorization;
     }
+    // Persistent epochs share one ConnectorHost, so their execution-safety
+    // evidence must follow the same unique run identity as the journal.  The
+    // transport keeps this operation private and accepts it only before any
+    // AddOrder attempt or uncertainty exists.
+    const auto epoch_receipt_path = order.journal_root / order.run_id / "execution_safety.json";
+    if (const auto receipt_path = p.transport.set_execution_safety_receipt_path_for_epoch(epoch_receipt_path)) {
+        p.transport.mark_order_epoch_terminal();
+        (void)p.transport.reset_order_epoch();
+        p.authorized_sha.clear();
+        return receipt_path;
+    }
     std::string checkpoint_error;
     auto staged_checkpoint = order;
     const auto previous_epoch = p.epoch_counter;

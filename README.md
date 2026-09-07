@@ -25,8 +25,9 @@ logs, certification logs, or broker latency/topology data. See
   development in the native connector surface.
 - TWIME SBE codec, framing, session/recovery state, TCP transport, guarded TEST
   session runner, health, persistence, and certification scenarios.
-- Synthetic native C ABI, .NET SafeHandle adapter, ABI policy tests, and optional
-  AlorEngine shadow-replay harness.
+- Synthetic native C ABI V1/V2, the TEST-only persistent serial-order C ABI V3
+  and .NET SafeHandle adapter, ABI policy tests, and optional AlorEngine
+  shadow-replay harness.
 
 ### Offline-validated
 
@@ -45,11 +46,13 @@ logs, certification logs, or broker latency/topology data. See
 - These workflows are separate from the default offline validation path and do
   not authorize order submission.
 
-### Not yet wired to product C ABI
+### Not yet wired to product trading
 
-- PLAZA and TWIME protocol/session components are not exposed as live order
-  submission through the public product C ABI.
-- The public ABI remains the synthetic replay/shadow seam.
+- PLAZA and TWIME protocol/session components are not exposed as production or
+  live application order routing through the product surface.
+- C ABI V2 remains the bounded TEST `OrderTest` compatibility surface; C ABI V3
+  is the TEST-only persistent serial-order surface.
+- AlorEngine trading logic is not wired to the persistent V3 surface yet.
 
 ### Order-routing boundary
 
@@ -58,6 +61,8 @@ logs, certification logs, or broker latency/topology data. See
   is not a production routing path.
 - The public C ABI V2 remains a bounded TEST `OrderTest` surface; it does not
   expose the persistent order session.
+- C ABI V3 exposes the TEST-only persistent serial-order surface, but it is not
+  yet integrated with AlorEngine application trading.
 - No production connectivity or live application order routing is enabled, and
   this repository does not claim exchange certification.
 

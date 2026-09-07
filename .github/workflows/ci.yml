@@ -138,6 +138,7 @@ jobs:
           connector_host_test
           moexctl
           moex_c_api_v2_test
+          moex_c_api_v3_test
 
       - name: Run critical component sanitizer tests
         env:
