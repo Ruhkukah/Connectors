@@ -1844,7 +1844,8 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         const bool private_liveness =
             fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_PRIVATE_LIFENUM_AFTER_READY");
         const bool aggr_liveness =
-            fake_flag("MOEX_FAKE_AGGR_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_AGGR_LIFENUM_AFTER_READY");
+            fake_flag("MOEX_FAKE_AGGR_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_AGGR_LIFENUM_AFTER_READY") ||
+            fake_flag("MOEX_FAKE_AGGR_CLEAR_AFTER_READY") || fake_flag("MOEX_FAKE_AGGR_ERROR_AFTER_READY");
         if (private_liveness || aggr_liveness) {
             for (auto* listener : connection->listeners) {
                 if (listener == nullptr || listener->reply_listener || listener->state != kStateActive) {
@@ -1854,8 +1855,21 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
                 if ((is_aggr && !aggr_liveness) || (!is_aggr && !private_liveness)) {
                     continue;
                 }
+                if (is_aggr && fake_flag("MOEX_FAKE_AGGR_ERROR_AFTER_READY")) {
+                    listener->state = kStateError;
+                    continue;
+                }
+                if (is_aggr && fake_flag("MOEX_FAKE_AGGR_CLEAR_AFTER_READY")) {
+                    auto clear = make_clear_deleted_payload(0, 1, 0);
+                    if (const auto result =
+                            emit_simple_message(*listener, kCgMsgP2replClearDeleted, clear.data(), clear.size());
+                        result != kCgErrOk)
+                        return result;
+                    continue;
+                }
                 if ((is_aggr && fake_flag("MOEX_FAKE_AGGR_CLOSE_AFTER_READY")) ||
                     (!is_aggr && fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY"))) {
+                    listener->state = kStateClosed;
                     if (const auto result = emit_simple_message(*listener, kCgMsgClose); result != kCgErrOk) {
                         return result;
                     }
@@ -2047,6 +2061,8 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
     }
     auto* typed = static_cast<FakeListener*>(listener);
     typed->open_settings = settings ? settings : "";
+    if (typed->stream_code == StreamCode::kFortsAggrRepl)
+        typed->script_emitted = false;
     ++typed->open_attempt_count;
     const bool refdata_error_once =
         typed->stream_code == StreamCode::kFortsRefdataRepl && fake_flag("MOEX_FAKE_REFDATA_OPEN_ERROR_ONCE");

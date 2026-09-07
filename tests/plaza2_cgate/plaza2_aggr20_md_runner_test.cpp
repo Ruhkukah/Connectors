@@ -90,6 +90,37 @@ int main(int argc, char** argv) {
         const auto stop = runner.stop();
         require(stop.ok, "AGGR20 runner stop should succeed");
 
+        require(!runner.health_snapshot().ready && runner.health_snapshot().snapshot.row_count == 0,
+                "stop invalidates visible AGGR book and readiness");
+        for (const auto* scenario : {"MOEX_FAKE_AGGR_CLOSE_AFTER_READY", "MOEX_FAKE_AGGR_LIFENUM_AFTER_READY",
+                                     "MOEX_FAKE_AGGR_CLEAR_AFTER_READY", "MOEX_FAKE_AGGR_ERROR_AFTER_READY"}) {
+            auto now = std::chrono::steady_clock::time_point{};
+            auto config = make_config(fixture);
+            config.now = [&] { return now; };
+            Plaza2Aggr20MdRunner recovery(config);
+            require(recovery.start().ok && recovery.poll_once().ok && recovery.health_snapshot().ready,
+                    "recovery fixture reaches ready");
+            ::setenv(scenario, "1", 1);
+            require(recovery.poll_once().ok, "loss/ LifeNum callback is handled");
+            require(!recovery.health_snapshot().ready && recovery.health_snapshot().snapshot.row_count == 0,
+                    "loss/ LifeNum invalidates stale visible levels");
+            ::unsetenv(scenario);
+            if (std::string_view(scenario) != "MOEX_FAKE_AGGR_LIFENUM_AFTER_READY") {
+                require(recovery.health_snapshot().state == Plaza2Aggr20MdRunnerState::Recovering,
+                        "listener loss reports recovery");
+                now += std::chrono::milliseconds(999);
+                require(recovery.poll_once().ok && !recovery.health_snapshot().ready, "no reopen before bounded delay");
+                now += std::chrono::milliseconds(1);
+                require(recovery.poll_once().ok && recovery.health_snapshot().ready,
+                        "fresh snapshot after reopen restores readiness");
+                require(recovery.health_snapshot().snapshot.row_count == 2, "recovered book contains only fresh rows");
+            } else {
+                require(recovery.poll_once().ok && !recovery.health_snapshot().ready,
+                        "LifeNum cannot restore readiness without retransmission and ONLINE");
+            }
+            require(recovery.stop().ok, "recovery fixture stop");
+        }
+
         cleanup();
         ::unsetenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY");
         ::unsetenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME");

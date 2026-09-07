@@ -332,68 +332,6 @@ std::size_t stream_index(const EngineState& state, StreamCode code) {
 }
 
 using PrivateProjectorBridge = cgate::Plaza2PrivateStateBridge;
-class AggrProjectorBridge final : public Plaza2ListenerEventHandler {
-  public:
-    explicit AggrProjectorBridge(cgate::Plaza2Aggr20BookProjector& projector) : projector_(projector) {}
-
-    [[nodiscard]] bool online() const noexcept {
-        return online_;
-    }
-
-    [[nodiscard]] bool snapshot_complete() const noexcept {
-        return snapshot_complete_;
-    }
-
-    void reset() noexcept {
-        online_ = false;
-        snapshot_complete_ = false;
-    }
-
-    Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override {
-        switch (event.kind) {
-        case Plaza2ListenerEventKind::Open:
-        case Plaza2ListenerEventKind::Timeout:
-        case Plaza2ListenerEventKind::ReplState:
-            return {};
-        case Plaza2ListenerEventKind::LifeNum:
-            online_ = false;
-            snapshot_complete_ = false;
-            projector_.reset();
-            return {};
-        case Plaza2ListenerEventKind::Close:
-            online_ = false;
-            snapshot_complete_ = false;
-            projector_.reset();
-            return {};
-        case Plaza2ListenerEventKind::Online:
-            online_ = true;
-            snapshot_complete_ = true;
-            return {};
-        case Plaza2ListenerEventKind::TransactionBegin:
-            projector_.begin_transaction();
-            return {};
-        case Plaza2ListenerEventKind::StreamData:
-            if (event.table_code == plaza2::generated::TableCode::kFortsAggrReplOrdersAggr) {
-                return projector_.on_row(event.fields);
-            }
-            return {};
-        case Plaza2ListenerEventKind::TransactionCommit:
-            return projector_.commit();
-        case Plaza2ListenerEventKind::ClearDeleted:
-            projector_.reset();
-            snapshot_complete_ = false;
-            return {};
-        default:
-            return {};
-        }
-    }
-
-  private:
-    cgate::Plaza2Aggr20BookProjector& projector_;
-    bool online_{false};
-    bool snapshot_complete_{false};
-};
-
 class ReplyBridge final : public Plaza2ListenerEventHandler {
   public:
     using Event = Plaza2TestSessionHost::ReplyEvent;
@@ -1050,6 +988,10 @@ struct Plaza2TestSessionHost::Impl {
         if (const auto listener_error = supervise_initial_listener_opens(); listener_error) {
             return listener_error;
         }
+        if (const auto aggr_error = aggr_bridge.supervise(aggr_listener, std::chrono::steady_clock::now());
+            aggr_error) {
+            return aggr_error;
+        }
         if (const auto readiness_error = update_trade_replay_readiness(); readiness_error) {
             return readiness_error;
         }
@@ -1078,6 +1020,7 @@ struct Plaza2TestSessionHost::Impl {
         reply_listener_is_open = false;
         static_cast<void>(aggr_listener.close());
         static_cast<void>(aggr_listener.destroy());
+        aggr_bridge.reset();
         for (auto it = private_listeners.rbegin(); it != private_listeners.rend(); ++it) {
             static_cast<void>(it->listener.close());
             static_cast<void>(it->listener.destroy());
@@ -1123,7 +1066,7 @@ struct Plaza2TestSessionHost::Impl {
     private_state::Plaza2PrivateStateProjector private_projector;
     cgate::Plaza2Aggr20BookProjector aggr_projector;
     PrivateProjectorBridge private_bridge;
-    AggrProjectorBridge aggr_bridge;
+    cgate::Plaza2Aggr20ListenerBridge aggr_bridge;
     ReplyBridge reply_bridge;
     std::optional<Plaza2TestTradeStreamConfig> deferred_trade_stream;
     std::optional<std::size_t> trade_listener_index;

@@ -1,0 +1,162 @@
+Test project /tmp/plaza2-cert-a/asan
+      Start   3: twime_schema_inventory_test
+ 1/74 Test   #3: twime_schema_inventory_test .....................   Passed    0.05 sec
+      Start   4: twime_header_codec_test
+ 2/74 Test   #4: twime_header_codec_test .........................   Passed    0.03 sec
+      Start   5: twime_primitive_types_test
+ 3/74 Test   #5: twime_primitive_types_test ......................   Passed    0.03 sec
+      Start   6: twime_message_roundtrip_test
+ 4/74 Test   #6: twime_message_roundtrip_test ....................   Passed    0.03 sec
+      Start   7: twime_frame_assembler_test
+ 5/74 Test   #7: twime_frame_assembler_test ......................   Passed    0.03 sec
+      Start   8: twime_decode_error_test
+ 6/74 Test   #8: twime_decode_error_test .........................   Passed    0.03 sec
+      Start   9: twime_cert_log_formatter_test
+ 7/74 Test   #9: twime_cert_log_formatter_test ...................   Passed    0.03 sec
+      Start  10: twime_enum_set_validation_test
+ 8/74 Test  #10: twime_enum_set_validation_test ..................   Passed    0.03 sec
+      Start  11: twime_optional_string_policy_test
+ 9/74 Test  #11: twime_optional_string_policy_test ...............   Passed    0.03 sec
+      Start  12: twime_session_establish_test
+10/74 Test  #12: twime_session_establish_test ....................   Passed    0.04 sec
+      Start  13: twime_session_reject_test
+11/74 Test  #13: twime_session_reject_test .......................   Passed    0.03 sec
+      Start  14: twime_keepalive_ack_test
+12/74 Test  #14: twime_keepalive_ack_test ........................   Passed    0.03 sec
+      Start  15: twime_heartbeat_fake_clock_test
+13/74 Test  #15: twime_heartbeat_fake_clock_test .................   Passed    0.03 sec
+      Start  16: twime_heartbeat_rate_limit_test
+14/74 Test  #16: twime_heartbeat_rate_limit_test .................   Passed    0.03 sec
+      Start  17: twime_reconnect_timing_test
+15/74 Test  #17: twime_reconnect_timing_test .....................   Passed    0.03 sec
+      Start  18: twime_terminate_test
+16/74 Test  #18: twime_terminate_test ............................   Passed    0.03 sec
+      Start  19: twime_sequence_gap_test
+17/74 Test  #19: twime_sequence_gap_test .........................   Passed    0.03 sec
+      Start  20: twime_message_layer_rules_test
+18/74 Test  #20: twime_message_layer_rules_test ..................   Passed    0.03 sec
+      Start  21: twime_retransmit_request_test
+19/74 Test  #21: twime_retransmit_request_test ...................   Passed    0.03 sec
+      Start  22: twime_retransmit_limit_test
+20/74 Test  #22: twime_retransmit_limit_test .....................   Passed    0.03 sec
+      Start  23: twime_retransmission_test
+21/74 Test  #23: twime_retransmission_test .......................   Passed    0.03 sec
+      Start  24: twime_flood_reject_test
+22/74 Test  #24: twime_flood_reject_test .........................   Passed    0.03 sec
+      Start  25: twime_business_reject_test
+23/74 Test  #25: twime_business_reject_test ......................   Passed    0.04 sec
+      Start  26: twime_cert_scenario_runner_test
+24/74 Test  #26: twime_cert_scenario_runner_test .................   Passed    0.04 sec
+      Start  27: twime_loopback_transport_test
+25/74 Test  #27: twime_loopback_transport_test ...................   Passed    0.04 sec
+      Start  28: twime_transport_partial_read_test
+26/74 Test  #28: twime_transport_partial_read_test ...............   Passed    0.03 sec
+      Start  29: twime_transport_partial_write_test
+27/74 Test  #29: twime_transport_partial_write_test ..............   Passed    0.03 sec
+      Start  30: twime_transport_remote_close_test
+28/74 Test  #30: twime_transport_remote_close_test ...............   Passed    0.03 sec
+      Start  31: twime_transport_fault_injection_test
+29/74 Test  #31: twime_transport_fault_injection_test ............   Passed    0.03 sec
+      Start  32: twime_session_byte_stream_establish_test
+30/74 Test  #32: twime_session_byte_stream_establish_test ........   Passed    0.04 sec
+      Start  33: twime_session_byte_stream_fragmentation_test
+31/74 Test  #33: twime_session_byte_stream_fragmentation_test ....   Passed    0.04 sec
+      Start  34: twime_session_byte_stream_batched_frames_test
+32/74 Test  #34: twime_session_byte_stream_batched_frames_test ...   Passed    0.03 sec
+      Start  35: twime_tcp_transport_connect_test
+33/74 Test  #35: twime_tcp_transport_connect_test ................   Passed    0.04 sec
+      Start  36: twime_tcp_transport_partial_read_test
+34/74 Test  #36: twime_tcp_transport_partial_read_test ...........   Passed    0.03 sec
+      Start  37: twime_tcp_transport_partial_write_test
+35/74 Test  #37: twime_tcp_transport_partial_write_test ..........   Passed    0.03 sec
+      Start  38: twime_tcp_transport_remote_close_test
+36/74 Test  #38: twime_tcp_transport_remote_close_test ...........   Passed    0.03 sec
+      Start  39: twime_tcp_transport_fault_test
+37/74 Test  #39: twime_tcp_transport_fault_test ..................   Passed    0.04 sec
+      Start  40: twime_tcp_transport_reconnect_policy_test
+38/74 Test  #40: twime_tcp_transport_reconnect_policy_test .......   Passed    0.04 sec
+      Start  41: twime_tcp_transport_loopback_server_test
+39/74 Test  #41: twime_tcp_transport_loopback_server_test ........   Passed    0.03 sec
+      Start  42: twime_session_tcp_establish_test
+40/74 Test  #42: twime_session_tcp_establish_test ................   Passed    0.04 sec
+      Start  43: twime_session_tcp_fragmentation_test
+41/74 Test  #43: twime_session_tcp_fragmentation_test ............   Passed    0.06 sec
+      Start  44: twime_session_tcp_batched_frames_test
+42/74 Test  #44: twime_session_tcp_batched_frames_test ...........   Passed    0.06 sec
+      Start  45: twime_session_tcp_remote_close_test
+43/74 Test  #45: twime_session_tcp_remote_close_test .............   Passed    0.06 sec
+      Start  46: twime_session_tcp_terminate_flow_test
+44/74 Test  #46: twime_session_tcp_terminate_flow_test ...........   Passed    0.06 sec
+      Start  47: twime_endpoint_resolver_test
+45/74 Test  #47: twime_endpoint_resolver_test ....................   Passed    0.04 sec
+      Start  48: twime_test_network_gate_test
+46/74 Test  #48: twime_test_network_gate_test ....................   Passed    0.03 sec
+      Start  49: twime_credential_provider_test
+47/74 Test  #49: twime_credential_provider_test ..................   Passed    0.03 sec
+      Start  50: twime_external_profile_validation_test
+48/74 Test  #50: twime_external_profile_validation_test ..........   Passed    0.03 sec
+      Start  51: twime_external_endpoint_blocking_test
+49/74 Test  #51: twime_external_endpoint_blocking_test ...........   Passed    0.03 sec
+      Start  52: twime_external_endpoint_allow_test
+50/74 Test  #52: twime_external_endpoint_allow_test ..............   Passed    0.03 sec
+      Start  53: twime_session_tcp_external_establish_test
+51/74 Test  #53: twime_session_tcp_external_establish_test .......   Passed    0.03 sec
+      Start  54: twime_manual_operator_gate_test
+52/74 Test  #54: twime_manual_operator_gate_test .................   Passed    0.03 sec
+      Start  55: twime_external_session_validation_test
+53/74 Test  #55: twime_external_session_validation_test ..........   Passed    0.03 sec
+      Start  56: twime_session_health_test
+54/74 Test  #56: twime_session_health_test .......................   Passed    0.04 sec
+      Start  57: twime_session_persistence_test
+55/74 Test  #57: twime_session_persistence_test ..................   Passed    0.03 sec
+      Start  58: twime_live_session_runner_test
+56/74 Test  #58: twime_live_session_runner_test ..................   Passed    0.06 sec
+      Start  59: twime_live_session_reject_test
+57/74 Test  #59: twime_live_session_reject_test ..................   Passed    0.04 sec
+      Start  60: twime_live_session_establish_timeout_test
+58/74 Test  #60: twime_live_session_establish_timeout_test .......   Passed    0.29 sec
+      Start  61: twime_live_session_reconnect_disabled_test
+59/74 Test  #61: twime_live_session_reconnect_disabled_test ......   Passed    0.09 sec
+      Start  62: twime_live_session_reconnect_enabled_test
+60/74 Test  #62: twime_live_session_reconnect_enabled_test .......   Passed    0.09 sec
+      Start  63: phase0_selfcheck
+61/74 Test  #63: phase0_selfcheck ................................   Passed    0.04 sec
+      Start 116: plaza2_trade_no_send_guard_test
+62/74 Test #116: plaza2_trade_no_send_guard_test .................   Passed    0.03 sec
+      Start 119: plaza2_order_lifecycle_scenarios_test
+63/74 Test #119: plaza2_order_lifecycle_scenarios_test ...........   Passed    0.16 sec
+      Start 120: plaza2_trade_transport_scenarios_test
+64/74 Test #120: plaza2_trade_transport_scenarios_test ...........   Passed   15.12 sec
+      Start 121: connector_host_test
+65/74 Test #121: connector_host_test .............................   Passed    4.15 sec
+      Start 122: moexctl_test
+66/74 Test #122: moexctl_test ....................................   Passed    1.85 sec
+      Start 123: moex_c_api_v2_test
+67/74 Test #123: moex_c_api_v2_test ..............................   Passed    2.31 sec
+      Start 124: moex_c_api_v3_test
+68/74 Test #124: moex_c_api_v3_test ..............................   Passed    1.19 sec
+      Start 132: plaza2_runtime_probe_test
+69/74 Test #132: plaza2_runtime_probe_test .......................   Passed    1.27 sec
+      Start 134: plaza2_runtime_adapter_test
+70/74 Test #134: plaza2_runtime_adapter_test .....................   Passed    0.21 sec
+      Start 161: plaza2_public_wire_test
+71/74 Test #161: plaza2_public_wire_test .........................   Passed    0.03 sec
+      Start 163: plaza2_ordlog_test
+72/74 Test #163: plaza2_ordlog_test ..............................   Passed    0.20 sec
+      Start 164: plaza2_ordlog_benchmark_smoke
+73/74 Test #164: plaza2_ordlog_benchmark_smoke ...................   Passed    0.35 sec
+      Start 165: plaza2_publisher_rate_test
+74/74 Test #165: plaza2_publisher_rate_test ......................   Passed    0.03 sec
+
+100% tests passed, 0 tests failed out of 74
+
+Label Time Summary:
+cabi           =   3.50 sec*proc (2 tests)
+integration    =  17.93 sec*proc (27 tests)
+plaza2         =  26.90 sec*proc (13 tests)
+sanitizer      =  29.45 sec*proc (74 tests)
+tooling        =   0.12 sec*proc (3 tests)
+twime          =   2.51 sec*proc (60 tests)
+unit           =  12.85 sec*proc (71 tests)
+
+Total Test time (real) =  29.48 sec
