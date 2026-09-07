@@ -9,22 +9,24 @@ The FTP source-access problem was resolved; no user fetch is needed.
 - Main/base: `22a9dfd0947ccde4645696974e1270099491e2c6` (remote main reverified unchanged).
 - Phase A: `669a16de16bd09d3ef859b7a99b221cfa6b353b0`.
 - Locally tested implementation: `20ab52ed58d84d3295fe63309992c287c4516ed8` before the CI stack rebase.
-- Rebased implementation: `2d6ccb9cabccbe6e34dc1cf897c31008648fe02d`; its production/test source trees are byte-identical to the locally tested implementation.
-  The only additional implementation-stack change is the CI sanitizer build command. Final documentation follows that head.
+- Rebased implementation: `92763eb5493f74bcab7fc7ec16e66c8c6d17d3e5`; its production/test source trees are byte-identical to the locally tested implementation.
+  Additional support changes fix the CI sanitizer build command and UTF-8/CRLF parsing in the offline source-reproduction tool. Final documentation follows that head.
 - Worktree: `/Users/pavel/CSharp/MoexConnector-cert-a`. Original workspace and the user-supplied Archive.zip were preserved.
 
 | Phase | Commit | Draft PR |
 | --- | --- | --- |
-| B | `613bf94` + `41056fc` | [38: full-book scheme qualification](https://github.com/Ruhkukah/Connectors/pull/38) |
-| C1 | `ecaaa4c` | [39: raw anonymous ORDLOG](https://github.com/Ruhkukah/Connectors/pull/39) |
-| D0 | `cdf3054` | [40: raw throughput harness](https://github.com/Ruhkukah/Connectors/pull/40) |
-| CERT-SYS | `05649db` | [41: system replies and publisher rate](https://github.com/Ruhkukah/Connectors/pull/41) |
-| AGGR-REC | `2d6ccb9` | [42: AGGR20 lifecycle recovery](https://github.com/Ruhkukah/Connectors/pull/42) |
+| B | `b3bf57a` | [38: full-book scheme qualification](https://github.com/Ruhkukah/Connectors/pull/38) |
+| C1 | `b5bd291` | [39: raw anonymous ORDLOG](https://github.com/Ruhkukah/Connectors/pull/39) |
+| D0 | `54f3922` | [40: raw throughput harness](https://github.com/Ruhkukah/Connectors/pull/40) |
+| CERT-SYS | `35e06e2` | [41: system replies and publisher rate](https://github.com/Ruhkukah/Connectors/pull/41) |
+| AGGR-REC | `92763eb` | [42: AGGR20 lifecycle recovery](https://github.com/Ruhkukah/Connectors/pull/42) |
 
 The stack is B -> C1 -> D0 -> CERT-SYS -> AGGR-REC. D0 is independently reviewable after C1. PR 38 includes Phase A traceability.
 GitHub's first sanitizer runs selected the new tests but did not build their binaries because of a stale explicit target list.
 The Phase B branch now builds the configured sanitizer targets, and downstream branches were rebased onto that fix.
-This was a missing-executable CI failure, not a sanitizer finding. Nothing was merged. The old draft PR 24 was left unchanged. No execution re-arming or C ABI expansion occurred.
+This was a missing-executable CI failure, not a sanitizer finding. A final reproduction run also corrected UTF-8 descriptions
+and CRLF handling in the source-capture helper; the newly generated native probe again matched all ten sizes/indices and 135 field layouts.
+Nothing was merged. The old draft PR 24 was left unchanged. No execution re-arming or C ABI expansion occurred.
 
 ## Official evidence and differences
 
