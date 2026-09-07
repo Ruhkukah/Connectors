@@ -90,6 +90,32 @@ class Plaza2Aggr20BookProjector {
     bool transaction_open_{false};
 };
 
+// Shared by the standalone market-data runner and the trading host.
+class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
+  public:
+    explicit Plaza2Aggr20ListenerBridge(Plaza2Aggr20BookProjector& projector) : projector_(projector) {}
+    void reset() noexcept;
+    [[nodiscard]] bool online() const noexcept {
+        return online_;
+    }
+    [[nodiscard]] bool snapshot_complete() const noexcept {
+        return snapshot_complete_;
+    }
+    [[nodiscard]] bool recovering() const noexcept {
+        return reopen_required_ || retry_at_.has_value();
+    }
+    [[nodiscard]] Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent&) override;
+    void on_plaza2_listener_error(const Plaza2Error&) noexcept override {
+        reset();
+    }
+    [[nodiscard]] Plaza2Error supervise(Plaza2Listener&, std::chrono::steady_clock::time_point now);
+
+  private:
+    Plaza2Aggr20BookProjector& projector_;
+    bool online_{}, snapshot_complete_{}, reopen_required_{};
+    std::optional<std::chrono::steady_clock::time_point> retry_at_;
+};
+
 struct Plaza2Aggr20MdStreamConfig {
     generated::StreamCode stream_code{generated::StreamCode::kFortsAggrRepl};
     std::string settings;
@@ -109,6 +135,7 @@ struct Plaza2Aggr20MdConfig {
     Plaza2RuntimeArmState arm_state{};
     bool test_market_data_armed{false};
     std::uint32_t process_timeout_ms{50};
+    Plaza2Aggr20BookProjector::NowFn now;
 };
 
 enum class Plaza2Aggr20MdRunnerState : std::uint8_t {
@@ -118,6 +145,7 @@ enum class Plaza2Aggr20MdRunnerState : std::uint8_t {
     Ready = 3,
     Stopped = 4,
     Failed = 5,
+    Recovering = 6,
 };
 
 struct Plaza2Aggr20MdHealthSnapshot {

@@ -210,75 +210,77 @@ Plaza2Error first_fatal_issue(const Plaza2RuntimeProbeReport& report) {
     };
 }
 
-class Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
-  public:
-    explicit Aggr20ListenerBridge(Plaza2Aggr20BookProjector& projector) : projector_(projector) {}
+} // namespace
 
-    bool online() const noexcept {
-        return online_;
-    }
+void Plaza2Aggr20ListenerBridge::reset() noexcept {
+    projector_.reset();
+    online_ = false;
+    snapshot_complete_ = false;
+    reopen_required_ = false;
+    retry_at_.reset();
+}
 
-    bool snapshot_complete() const noexcept {
-        return snapshot_complete_;
-    }
-
-    Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override {
-        try {
-            return handle_event(event);
-        } catch (const std::exception& error) {
-            return {
-                .code = Plaza2ErrorCode::CallbackFailed,
-                .runtime_code = 0,
-                .message = std::string("AGGR20 projector bridge failed: ") + error.what(),
-            };
-        } catch (...) {
-            return {
-                .code = Plaza2ErrorCode::CallbackFailed,
-                .runtime_code = 0,
-                .message = "AGGR20 projector bridge failed with an unknown exception",
-            };
-        }
-    }
-
-  private:
-    Plaza2Error handle_event(const Plaza2ListenerEvent& event) {
-        switch (event.kind) {
-        case Plaza2ListenerEventKind::Open:
-        case Plaza2ListenerEventKind::Timeout:
-        case Plaza2ListenerEventKind::ReplState:
-        case Plaza2ListenerEventKind::LifeNum:
+Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2ListenerEvent& event) {
+    switch (event.kind) {
+    case Plaza2ListenerEventKind::Open:
+    case Plaza2ListenerEventKind::LifeNum:
+        reset();
+        return {};
+    case Plaza2ListenerEventKind::Close:
+    case Plaza2ListenerEventKind::ClearDeleted:
+        // Conservatively invalidate and request a fresh full snapshot. No partial book is advertised.
+        reset();
+        reopen_required_ = true;
+        return {};
+    case Plaza2ListenerEventKind::TransactionBegin:
+        projector_.begin_transaction();
+        return {};
+    case Plaza2ListenerEventKind::TransactionCommit:
+        if (reopen_required_)
             return {};
-        case Plaza2ListenerEventKind::Close:
-            online_ = false;
-            return {};
-        case Plaza2ListenerEventKind::TransactionBegin:
-            projector_.begin_transaction();
-            return {};
-        case Plaza2ListenerEventKind::TransactionCommit:
-            return projector_.commit();
-        case Plaza2ListenerEventKind::StreamData:
-            if (event.table_code != TableCode::kFortsAggrReplOrdersAggr) {
-                return {};
-            }
+        return projector_.commit();
+    case Plaza2ListenerEventKind::StreamData:
+        if (!reopen_required_ && event.table_code == generated::TableCode::kFortsAggrReplOrdersAggr)
             return projector_.on_row(event.fields);
-        case Plaza2ListenerEventKind::Online:
+        return {};
+    case Plaza2ListenerEventKind::Online:
+        if (!reopen_required_ && !projector_.transaction_open()) {
             online_ = true;
             snapshot_complete_ = true;
-            return {};
-        case Plaza2ListenerEventKind::ClearDeleted:
-            projector_.reset();
-            snapshot_complete_ = false;
-            return {};
         }
         return {};
+    default:
+        return {};
     }
+}
 
-    Plaza2Aggr20BookProjector& projector_;
-    bool online_{false};
-    bool snapshot_complete_{false};
-};
-
-} // namespace
+Plaza2Error Plaza2Aggr20ListenerBridge::supervise(Plaza2Listener& listener, std::chrono::steady_clock::time_point now) {
+    std::uint32_t state = 0;
+    if (const auto error = listener.state(state); error)
+        return error;
+    if (!reopen_required_ && !retry_at_ && state != 0 && state != 1)
+        return {};
+    if (!retry_at_) {
+        if (const auto error = listener.close(); error)
+            return error;
+        reset();
+        reopen_required_ = true;
+        retry_at_ = now + std::chrono::seconds(1);
+        return {};
+    }
+    if (now < *retry_at_)
+        return {};
+    // A cleared projection cannot resume after an opaque cursor; bootstrap the whole snapshot again.
+    const auto error = listener.open("mode=snapshot+online");
+    if (error) {
+        reopen_required_ = true;
+        retry_at_ = now + std::chrono::seconds(1);
+        return {};
+    }
+    reopen_required_ = false;
+    retry_at_.reset();
+    return {};
+}
 
 Plaza2Aggr20BookProjector::Plaza2Aggr20BookProjector(NowFn now)
     : now_(now ? std::move(now) : NowFn{[] { return Clock::now(); }}) {}
@@ -472,6 +474,8 @@ std::string_view plaza2_aggr20_md_runner_state_name(Plaza2Aggr20MdRunnerState st
         return "Stopped";
     case Plaza2Aggr20MdRunnerState::Failed:
         return "Failed";
+    case Plaza2Aggr20MdRunnerState::Recovering:
+        return "Recovering";
     }
     return "Unknown";
 }
@@ -541,7 +545,7 @@ Plaza2Error validate_plaza2_aggr20_md_config(const Plaza2Aggr20MdConfig& config)
 
 struct Plaza2Aggr20MdRunner::Impl {
     explicit Impl(Plaza2Aggr20MdConfig initial_config)
-        : config(std::move(initial_config)), listener_bridge(projector) {}
+        : config(std::move(initial_config)), projector(config.now), listener_bridge(projector) {}
 
     Plaza2Aggr20MdRunResult start() {
         if (started) {
@@ -642,13 +646,22 @@ struct Plaza2Aggr20MdRunner::Impl {
         if (!started) {
             return fail("AGGR20 TEST runner is not started");
         }
+        const auto now = config.now ? config.now() : std::chrono::steady_clock::now();
+        if (const auto recovery_error = listener_bridge.supervise(listener, now); recovery_error) {
+            return fail(recovery_error.message);
+        }
         std::uint32_t runtime_code = 0;
         const auto process_error = connection.process(config.process_timeout_ms, &runtime_code);
         health.last_process_runtime_code = runtime_code;
         if (process_error) {
             return fail(process_error.message);
         }
+        if (const auto recovery_error = listener_bridge.supervise(listener, now); recovery_error) {
+            return fail(recovery_error.message);
+        }
         refresh_health();
+        health.state =
+            listener_bridge.recovering() ? Plaza2Aggr20MdRunnerState::Recovering : Plaza2Aggr20MdRunnerState::Started;
         if (health.ready) {
             append_operator_log("state=ready");
             health.state = Plaza2Aggr20MdRunnerState::Ready;
@@ -674,6 +687,7 @@ struct Plaza2Aggr20MdRunner::Impl {
         static_cast<void>(connection.destroy());
         static_cast<void>(env.close());
         started = false;
+        listener_bridge.reset();
         refresh_health();
         health.state = Plaza2Aggr20MdRunnerState::Stopped;
         append_operator_log("runner=stopped");
@@ -757,6 +771,7 @@ struct Plaza2Aggr20MdRunner::Impl {
     }
 
     Plaza2Aggr20MdRunResult fail(std::string message) {
+        listener_bridge.reset();
         health.state = Plaza2Aggr20MdRunnerState::Failed;
         health.last_error = message;
         refresh_health();
@@ -777,7 +792,7 @@ struct Plaza2Aggr20MdRunner::Impl {
     Plaza2Aggr20MdHealthSnapshot health;
     Plaza2RuntimeProbeReport probe_report;
     Plaza2Aggr20BookProjector projector;
-    Aggr20ListenerBridge listener_bridge;
+    Plaza2Aggr20ListenerBridge listener_bridge;
     Plaza2Env env;
     Plaza2Connection connection;
     Plaza2Listener listener;
