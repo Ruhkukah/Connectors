@@ -1,9 +1,9 @@
-﻿2026-09-07T20:03:20.9886859Z ##[group]Run if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
-2026-09-07T20:03:20.9887401Z [36;1mif [ "$C2_PREFLIGHT_ONLY" = "true" ]; then[0m
-2026-09-07T20:03:20.9887822Z [36;1m  ctest --test-dir build --output-on-failure -L c2_preflight[0m
-2026-09-07T20:03:20.9888201Z [36;1melse[0m
-2026-09-07T20:03:20.9888516Z [36;1m  ctest --test-dir build --output-on-failure -LE preflight[0m
-2026-09-07T20:03:20.9888897Z [36;1mfi[0m
+2026-09-07T20:03:20.9886859Z ##[group]Run if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+2026-09-07T20:03:20.9887401Z if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+2026-09-07T20:03:20.9887822Z   ctest --test-dir build --output-on-failure -L c2_preflight
+2026-09-07T20:03:20.9888201Z else
+2026-09-07T20:03:20.9888516Z   ctest --test-dir build --output-on-failure -LE preflight
+2026-09-07T20:03:20.9888897Z fi
 2026-09-07T20:03:20.9928308Z shell: /usr/bin/bash -e {0}
 2026-09-07T20:03:20.9928586Z env:
 2026-09-07T20:03:20.9928844Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -30,9 +30,9 @@
 2026-09-07T20:03:21.9579703Z 5/6 Test #172: plaza2_c2_preflight_test ...........   Passed    0.50 sec
 2026-09-07T20:03:21.9580912Z     Start 173: plaza2_c2_capture_test
 2026-09-07T20:03:22.7211819Z 6/6 Test #173: plaza2_c2_capture_test .............   Passed    0.76 sec
-2026-09-07T20:03:22.7215228Z 
+2026-09-07T20:03:22.7215228Z
 2026-09-07T20:03:22.7215481Z 100% tests passed, 0 tests failed out of 6
-2026-09-07T20:03:22.7215822Z 
+2026-09-07T20:03:22.7215822Z
 2026-09-07T20:03:22.7216001Z Label Time Summary:
 2026-09-07T20:03:22.7216454Z c2_capture      =   0.76 sec*proc (1 test)
 2026-09-07T20:03:22.7216831Z c2_preflight    =   1.70 sec*proc (6 tests)
@@ -40,5 +40,5 @@
 2026-09-07T20:03:22.7217530Z sanitizer       =   1.32 sec*proc (5 tests)
 2026-09-07T20:03:22.7217856Z tooling         =   0.38 sec*proc (1 test)
 2026-09-07T20:03:22.7218231Z unit            =   1.70 sec*proc (6 tests)
-2026-09-07T20:03:22.7218411Z 
+2026-09-07T20:03:22.7218411Z
 2026-09-07T20:03:22.7218554Z Total Test time (real) =   1.71 sec
