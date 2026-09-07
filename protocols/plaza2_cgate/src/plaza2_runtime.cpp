@@ -1,6 +1,7 @@
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
 
 #include "plaza2_generated_metadata.hpp"
+#include "moex/plaza2/cgate/plaza2_public_decode.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1317,13 +1318,43 @@ struct Plaza2ListenerCallbackState {
         };
     }
 
+    const bool raw = state.handler && state.handler->wants_raw_replication();
+    const auto mismatch = []() -> Plaza2Error {
+        return {.code = Plaza2ErrorCode::DecodeFailed,
+                .message = "public replication scheme differs from qualified 9.9 wire layout"};
+    };
+    std::size_t expected_count = 0;
+    if (raw) {
+        for (const auto& table : public_wire::kTables) {
+            expected_count += table.stream == state.stream_code;
+        }
+        if (!expected_count || scheme->num_messages != expected_count)
+            return mismatch();
+    }
     state.message_plans.clear();
     std::size_t msg_index = 0;
     for (auto* message = scheme->messages; message != nullptr; message = message->next, ++msg_index) {
         const auto message_name = message->name == nullptr ? std::string{} : std::string(message->name);
         const auto* table = find_table_descriptor_for_stream(state.stream_code, message_name);
         if (table == nullptr) {
+            if (raw)
+                return mismatch();
             continue;
+        }
+        if (raw) {
+            const auto* wire = public_wire::table(table->table_code);
+            if (!wire || wire->index != msg_index || wire->size != message->size ||
+                wire->fields.size() != message->num_fields)
+                return mismatch();
+            auto* field = message->fields;
+            for (const auto& expected : wire->fields) {
+                if (!field || !field->name || !field->type || expected.name != field->name ||
+                    expected.type != field->type || expected.offset != field->offset || expected.size != field->size)
+                    return mismatch();
+                field = field->next;
+            }
+            if (field)
+                return mismatch();
         }
 
         RuntimeMessagePlan plan;
@@ -1364,6 +1395,8 @@ struct Plaza2ListenerCallbackState {
         state.message_plans.push_back(std::move(plan));
     }
 
+    if (raw && state.message_plans.size() != expected_count)
+        return mismatch();
     if (state.message_plans.empty()) {
         return {
             .code = Plaza2ErrorCode::DecodeFailed,
@@ -1392,6 +1425,8 @@ struct Plaza2ListenerCallbackState {
 
     auto fail = [&](Plaza2Error error) -> CgResult {
         state->last_error = std::move(error);
+        if (state->handler)
+            state->handler->on_plaza2_listener_error(state->last_error);
         return state->last_error.runtime_code == 0 ? kCgErrInternal : state->last_error.runtime_code;
     };
 
@@ -1399,6 +1434,7 @@ struct Plaza2ListenerCallbackState {
         const auto* msg = static_cast<CgMsg*>(raw_msg);
         switch (msg->type) {
         case kCgMsgOpen: {
+            state->scheme_loaded = false;
             if (const auto error = ensure_listener_scheme_loaded(*state); error) {
                 return fail(error);
             }
@@ -1570,6 +1606,27 @@ struct Plaza2ListenerCallbackState {
                 });
             }
 
+            if (state->handler && state->handler->wants_raw_replication()) {
+                // No per-record strings, heap allocation, timestamp rounding or decimal formatting.
+                if (plan->msg_index != payload->msg_index || !payload->data ||
+                    (payload->num_nulls && !payload->nulls)) {
+                    return fail({.code = Plaza2ErrorCode::DecodeFailed,
+                                 .message = "invalid public raw record index or buffer"});
+                }
+                const auto event = Plaza2ListenerEvent{
+                    .kind = Plaza2ListenerEventKind::StreamData,
+                    .stream_code = state->stream_code,
+                    .table_code = plan->table_code,
+                    .raw_payload = {static_cast<const std::byte*>(payload->data), payload->data_size},
+                    .signed_value = payload->rev,
+                    .raw_nulls = {payload->nulls, payload->num_nulls},
+                    .table_index = payload->msg_index,
+                };
+                if (const auto error = dispatch_listener_event(*state, event); error)
+                    return fail(error);
+                return kCgErrOk;
+            }
+
             state->decoded_fields.clear();
             state->text_storage.clear();
             state->decoded_fields.reserve(plan->fields.size());
@@ -1653,6 +1710,10 @@ struct Plaza2ListenerCallbackState {
             return kCgErrOk;
         }
         default:
+            if (state->handler && state->handler->wants_raw_replication()) {
+                return fail(
+                    {.code = Plaza2ErrorCode::DecodeFailed, .message = "unsupported public replication callback"});
+            }
             return kCgErrOk;
         }
     } catch (const std::exception& error) {

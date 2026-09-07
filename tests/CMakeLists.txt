@@ -968,6 +968,12 @@ add_test(NAME plaza2_public_wire_codegen_check
         --out "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/generated"
         --public-wire-lock "${MOEX_SOURCE_ROOT}/spec-lock/test/plaza2/public99/wire.json" --check)
 
+add_executable(plaza2_ordlog_test plaza2_cgate/plaza2_ordlog_test.cpp)
+target_link_libraries(plaza2_ordlog_test PRIVATE moex_plaza2_cgate_runtime plaza2_runtime_test_support ${CMAKE_DL_LIBS})
+add_dependencies(plaza2_ordlog_test plaza2_fake_cgate_runtime)
+add_test(NAME plaza2_ordlog_test COMMAND plaza2_ordlog_test "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+set_tests_properties(plaza2_ordlog_test PROPERTIES LABELS "unit;plaza2;sanitizer")
+
 get_property(moex_registered_tests DIRECTORY PROPERTY TESTS)
 foreach(test_name IN LISTS moex_registered_tests)
     if(test_name MATCHES "^plaza2_" OR test_name STREQUAL "moex_phase4b_capi_read_side_test")
