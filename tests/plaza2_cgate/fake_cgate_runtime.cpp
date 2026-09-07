@@ -3,6 +3,7 @@
 #include "../plaza2_trade/fixtures/cgate99_messages.hpp"
 #include "plaza2_generated_metadata.hpp"
 
+#include <fstream>
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -117,6 +118,7 @@ struct FakeReply {
 };
 
 struct FakeListener {
+    unsigned capture_iteration{};
     std::uint32_t state{kStateClosed};
     std::string settings;
     FakeConnection* connection{nullptr};
@@ -1471,7 +1473,128 @@ void detach_listener(FakeConnection* connection, FakeListener* listener) {
 
 } // namespace
 
+namespace {
+void capture_audit(const char* name) {
+    if (const char* path = std::getenv("MOEX_FAKE_CAPTURE_AUDIT")) {
+        std::ofstream out(path, std::ios::app);
+        out << name << '\n';
+    }
+}
+unsigned capture_regular = 0, capture_multileg = 0;
+std::uint32_t capture_script(FakeListener& listener) {
+    const bool multi = listener.settings.find("snapshot.data=multileg_orders") != std::string::npos;
+    const auto index_of = [&](std::string_view name) {
+        for (std::size_t i = 0; i < listener.scheme->messages.size(); ++i)
+            if (listener.scheme->messages[i]->name == name)
+                return i;
+        return listener.scheme->messages.size();
+    };
+    const auto row = [&](std::size_t source, std::string_view name, std::int64_t id, std::int64_t rev, int action,
+                         std::int64_t rest, std::int64_t bound) {
+        const auto& table = moex::plaza2::public_wire::kTables[source];
+        std::vector<std::byte> bytes(table.size);
+        for (const auto& f : table.fields) {
+            std::int64_t value = 0;
+            if (f.type == "d16.5") {
+                const moex::plaza2::public_wire::Bcd16_5 price{5, 16, 0, 0, 0, 0, 0, 0, 12, 0, 0};
+                std::memcpy(bytes.data() + f.offset, price.data(), price.size());
+                continue;
+            }
+            if (f.name == "replID" || f.name == "public_order_id")
+                value = id;
+            if (f.name == "replRev")
+                value = rev;
+            if (f.name == "sess_id" || f.name == "trades_lifenum")
+                value = 7;
+            if (f.name == "isin_id")
+                value = 100;
+            if (f.name == "dir" || f.name == "publication_state" || f.name == "infoID")
+                value = 1;
+            if (f.name == "public_amount_rest")
+                value = rest;
+            if (f.name == "public_amount" || f.name == "public_init_amount")
+                value = 10;
+            if (f.name == "public_action")
+                value = action;
+            if (f.name == "trades_rev")
+                value = bound;
+            if (f.size <= 8)
+                std::memcpy(bytes.data() + f.offset, &value, f.size);
+        }
+        CgMsgStreamData message{.type = kCgMsgStreamData,
+                                .data_size = bytes.size(),
+                                .data = bytes.data(),
+                                .owner_id = 0,
+                                .msg_index = index_of(name),
+                                .msg_id = 77,
+                                .msg_name = nullptr,
+                                .rev = rev,
+                                .num_nulls = 0,
+                                .nulls = nullptr,
+                                .user_id = 0};
+        return listener.callback(listener.connection, &listener, &message, listener.callback_data);
+    };
+    CgDataLifeNum life{7, 0};
+    if (auto code = emit_simple_message(listener, kCgMsgP2replLifenum, &life, sizeof(life)))
+        return code;
+    if (auto code = emit_simple_message(listener, kCgMsgTnBegin))
+        return code;
+    const bool fresh = listener.capture_iteration > 1;
+    if (auto code = row(multi ? 5 : 4, multi ? "multileg_orders" : "orders", 1, 1, 2, fresh ? 6 : 10, 0))
+        return code;
+    if (auto code = row(6, "info", 1, 1, 0, 0, fresh ? 15 : 10))
+        return code;
+    if (fake_flag("MOEX_FAKE_CAPTURE_UNKNOWN"))
+        if (auto code = row(2, "future_table", 1, 1, 0, 0, 0))
+            return code;
+    if (auto code = emit_simple_message(listener, kCgMsgTnCommit))
+        return code;
+    if (auto code = emit_simple_message(listener, kCgMsgP2replOnline))
+        return code;
+    if (!fresh && !fake_flag("MOEX_FAKE_CAPTURE_QUIET")) {
+        if (auto code = emit_simple_message(listener, kCgMsgTnBegin))
+            return code;
+        const std::array<std::array<std::int64_t, 4>, 5> events{
+            {{1, 11, 2, 6}, {2, 12, 1, 10}, {2, 13, 2, 0}, {3, 14, 1, 10}, {3, 15, 0, 10}}};
+        for (const auto& e : events)
+            if (auto code = row(multi ? 1 : 0, multi ? "multileg_orders_log" : "orders_log", e[0], e[1], e[2], e[3], 0))
+                return code;
+        if (auto code = emit_simple_message(listener, kCgMsgTnCommit))
+            return code;
+    }
+    char token[] = "opaque-public-replstate";
+    if (auto code = emit_simple_message(listener, kCgMsgP2replReplState, token, sizeof(token)))
+        return code;
+    if (fake_flag("MOEX_FAKE_CAPTURE_CONTROLS")) {
+        std::array<std::byte, 3> unknown{std::byte{1}, std::byte{2}, std::byte{3}};
+        if (auto code = emit_simple_message(listener, 0x777, unknown.data(), unknown.size()))
+            return code;
+        auto clear = make_clear_deleted_payload(
+            static_cast<std::uint32_t>(index_of(multi ? "multileg_orders_log" : "orders_log")), 99, 0);
+        if (auto code = emit_simple_message(listener, kCgMsgP2replClearDeleted, clear.data(), clear.size()))
+            return code;
+        life.life_number = 8;
+        if (auto code = emit_simple_message(listener, kCgMsgP2replLifenum, &life, sizeof(life)))
+            return code;
+        if (auto code = emit_simple_message(listener, kCgMsgClose))
+            return code;
+        listener.state = kStateError;
+    }
+    return 0;
+}
+} // namespace
 extern "C" {
+const char* cg_err_getstr(std::uint32_t code) {
+    capture_audit("cg_err_getstr");
+    return code ? "fake exact runtime error" : "OK";
+}
+std::uint32_t cg_env_getcomp_ver(const char*, int* major, int* minor, int* patch) {
+    capture_audit("cg_env_getcomp_ver");
+    *major = 9;
+    *minor = 9;
+    *patch = 1853;
+    return 0;
+}
 
 // Offline tests and D0 drive the actual dynamically loaded runtime callback bridge.
 std::uint32_t moex_fake_ordlog_emit(std::uint32_t type, std::size_t index, void* data, std::size_t size,
@@ -1517,6 +1640,8 @@ const char* moex_fake_cgate_runtime_v1() {
 }
 
 std::uint32_t cg_env_open(const char* settings) {
+    capture_audit("cg_env_open");
+    capture_regular = capture_multileg = 0;
     if (settings == nullptr || *settings == '\0') {
         return kCgErrInvalidArgument;
     }
@@ -1526,6 +1651,7 @@ std::uint32_t cg_env_open(const char* settings) {
 }
 
 std::uint32_t cg_env_close() {
+    capture_audit("cg_env_close");
     if (!g_env_open) {
         return kCgErrIncorrectState;
     }
@@ -1534,6 +1660,7 @@ std::uint32_t cg_env_close() {
 }
 
 std::uint32_t cg_conn_new(const char* settings, void** connptr) {
+    capture_audit("cg_conn_new");
     if (!g_env_open || settings == nullptr || connptr == nullptr) {
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
     }
@@ -1547,6 +1674,7 @@ std::uint32_t cg_conn_new(const char* settings, void** connptr) {
 }
 
 std::uint32_t cg_conn_destroy(void* conn) {
+    capture_audit("cg_conn_destroy");
     if (conn == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -1562,6 +1690,7 @@ std::uint32_t cg_conn_destroy(void* conn) {
 }
 
 std::uint32_t cg_conn_open(void* conn, const char*) {
+    capture_audit("cg_conn_open");
     if (!g_env_open || conn == nullptr) {
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
     }
@@ -1579,6 +1708,7 @@ std::uint32_t cg_conn_open(void* conn, const char*) {
 }
 
 std::uint32_t cg_conn_close(void* conn) {
+    capture_audit("cg_conn_close");
     if (conn == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -1588,10 +1718,24 @@ std::uint32_t cg_conn_close(void* conn) {
 }
 
 std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
+    capture_audit("cg_conn_process");
     if (conn == nullptr) {
         return kCgErrInvalidArgument;
     }
     auto* connection = static_cast<FakeConnection*>(conn);
+    if (fake_flag("MOEX_FAKE_CAPTURE_SCRIPT")) {
+        bool emitted = false;
+        for (auto* listener : connection->listeners)
+            if (listener->state == kStateActive && !listener->script_emitted) {
+                listener->script_emitted = true;
+                emitted = true;
+                if (auto code = capture_script(*listener)) {
+                    listener->state = kStateError;
+                    return code;
+                }
+            }
+        return emitted ? kCgErrOk : kCgErrTimeout;
+    }
     if (connection->state != kStateActive) {
         return kCgErrIncorrectState;
     }
@@ -1872,6 +2016,7 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
 }
 
 std::uint32_t cg_conn_getstate(void* conn, std::uint32_t* state) {
+    capture_audit("cg_conn_getstate");
     if (conn == nullptr || state == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -1880,6 +2025,7 @@ std::uint32_t cg_conn_getstate(void* conn, std::uint32_t* state) {
 }
 
 std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback callback, void* data, void** lsnptr) {
+    capture_audit("cg_lsn_new");
     if (!g_env_open || conn == nullptr || settings == nullptr || callback == nullptr || lsnptr == nullptr) {
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
     }
@@ -1914,14 +2060,31 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
     // Deliberately permuted MODEL schemes: never claim these are negotiated vendor indices.
     const bool composite = listener->settings.starts_with("p2ordbook://");
     const bool multileg = listener->settings.find("snapshot.data=multileg_orders") != std::string::npos;
-    std::array<std::size_t, 3> selected =
-        multileg ? std::array<std::size_t, 3>{1, 6, 5} : std::array<std::size_t, 3>{0, 6, 4};
+    std::vector<std::size_t> selected =
+        multileg ? std::vector<std::size_t>{1, 6, 5} : std::vector<std::size_t>{0, 6, 4};
+    if (fake_flag("MOEX_FAKE_CAPTURE_SCRIPT"))
+        listener->capture_iteration = multileg ? ++capture_multileg : ++capture_regular;
+    if (multileg && fake_flag("MOEX_FAKE_CAPTURE_REJECT_MULTILEG")) {
+        std::printf("CGate error 131073: rejected candidate %s; connection %s\n", settings,
+                    connection->settings.c_str());
+        delete listener;
+        return kCgErrInvalidArgument;
+    }
+    if (composite && fake_flag("MOEX_FAKE_CAPTURE_UNKNOWN"))
+        selected.push_back(2);
     if (fake_flag("MOEX_FAKE_COMPOSITE_REVERSE"))
         std::reverse(selected.begin(), selected.end());
     listener->scheme = composite ? build_public_ordlog_scheme(selected)
                        : listener->stream_code == StreamCode::kFortsOrdlogRepl
                            ? build_public_ordlog_scheme()
                            : build_scheme_for_messages(script, &listener->message_plans);
+    if (composite && fake_flag("MOEX_FAKE_CAPTURE_UNKNOWN")) {
+        for (auto& message : listener->scheme->messages)
+            if (message->name == "heartbeat") {
+                message->name = "future_table";
+                message->desc.name = message->name.data();
+            }
+    }
     if (listener->stream_code == StreamCode::kFortsOrdlogRepl)
         g_ordlog_listener = listener;
     if (!listener->scheme) {
@@ -1939,6 +2102,7 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
 }
 
 std::uint32_t cg_lsn_destroy(void* listener) {
+    capture_audit("cg_lsn_destroy");
     if (listener == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -1951,6 +2115,7 @@ std::uint32_t cg_lsn_destroy(void* listener) {
 }
 
 std::uint32_t cg_lsn_open(void* listener, const char* settings) {
+    capture_audit("cg_lsn_open");
     if (listener == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -1984,6 +2149,7 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
 }
 
 std::uint32_t cg_lsn_close(void* listener) {
+    capture_audit("cg_lsn_close");
     if (listener == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -1993,6 +2159,7 @@ std::uint32_t cg_lsn_close(void* listener) {
 }
 
 std::uint32_t cg_lsn_getstate(void* listener, std::uint32_t* state) {
+    capture_audit("cg_lsn_getstate");
     if (listener == nullptr || state == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2001,6 +2168,7 @@ std::uint32_t cg_lsn_getstate(void* listener, std::uint32_t* state) {
 }
 
 std::uint32_t cg_lsn_getscheme(void* listener, void** schemeptr) {
+    capture_audit("cg_lsn_getscheme");
     if (listener == nullptr || schemeptr == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2010,6 +2178,7 @@ std::uint32_t cg_lsn_getscheme(void* listener, void** schemeptr) {
 }
 
 std::uint32_t cg_pub_new(void* conn, const char* settings, void** pubptr) {
+    capture_audit("cg_pub_new");
     if (conn == nullptr || settings == nullptr || pubptr == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2024,6 +2193,7 @@ std::uint32_t cg_pub_new(void* conn, const char* settings, void** pubptr) {
 }
 
 std::uint32_t cg_pub_open(void* publisher, const char*) {
+    capture_audit("cg_pub_open");
     if (publisher == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2032,6 +2202,7 @@ std::uint32_t cg_pub_open(void* publisher, const char*) {
 }
 
 std::uint32_t cg_pub_close(void* publisher) {
+    capture_audit("cg_pub_close");
     if (publisher == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2040,6 +2211,7 @@ std::uint32_t cg_pub_close(void* publisher) {
 }
 
 std::uint32_t cg_pub_destroy(void* publisher) {
+    capture_audit("cg_pub_destroy");
     if (publisher == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2048,6 +2220,7 @@ std::uint32_t cg_pub_destroy(void* publisher) {
 }
 
 std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
+    capture_audit("cg_pub_getstate");
     if (publisher == nullptr || state == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2056,6 +2229,7 @@ std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
 }
 
 std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void** msgptr) {
+    capture_audit("cg_pub_msgnew");
     ++g_pub_msgnew_calls;
     if (publisher == nullptr || id == nullptr || msgptr == nullptr) {
         return kCgErrInvalidArgument;
@@ -2076,6 +2250,7 @@ std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void
 }
 
 std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
+    capture_audit("cg_pub_post");
     ++g_pub_post_calls;
     if (publisher == nullptr || message == nullptr) {
         return kCgErrInvalidArgument;
@@ -2176,6 +2351,7 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
 }
 
 std::uint32_t cg_pub_msgfree(void*, void* message) {
+    capture_audit("cg_pub_msgfree");
     if (message == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2191,6 +2367,7 @@ std::uint32_t cg_pub_msgfree(void*, void* message) {
 }
 
 std::uint32_t cg_getstr(const char*, const void* data, char* buffer, std::size_t* buffer_size) {
+    capture_audit("cg_getstr");
     if (data == nullptr || buffer_size == nullptr) {
         return kCgErrInvalidArgument;
     }

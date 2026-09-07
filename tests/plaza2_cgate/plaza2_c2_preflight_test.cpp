@@ -5,7 +5,10 @@
 #include <algorithm>
 #include <dlfcn.h>
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <numeric>
+#include <memory>
 #include <random>
 #include <stdexcept>
 
@@ -486,6 +489,9 @@ struct Driver {
     }
 };
 void callback_cases(const char* library) {
+    // A real capture loads CGate once for all listener lifetimes. Keep that DSO lifetime in the fixture too.
+    const std::unique_ptr<void, decltype(&dlclose)> module(dlopen(library, RTLD_NOW | RTLD_LOCAL), &dlclose);
+    require(static_cast<bool>(module), "pin callback fixture library");
     for (int pair = 0; pair < 2; ++pair)
         for (int reverse = 0; reverse < 2; ++reverse) {
             if (reverse)
@@ -726,8 +732,95 @@ void equivalence(std::uint64_t seed, int mode, std::size_t size) {
     }
     ++counts.histories;
 }
+int capture_fixture(const char* path) {
+    std::ifstream input(path);
+    require(static_cast<bool>(input), "capture fixture unavailable");
+    std::string line;
+    std::getline(input, line);
+    require(line.starts_with("# source_sha256=") && line.size() == 80, "source trace hash required");
+    const auto source_hash = line.substr(16);
+    std::map<unsigned, Model> models;
+    std::map<unsigned, std::uint64_t> ordinals;
+    std::map<std::tuple<unsigned, std::uint64_t, std::int64_t>, std::pair<std::uint64_t, std::uint64_t>> states;
+    std::size_t comparisons = 0, conflicts = 0, unknown = 0, rejected = 0, ready = 0;
+    while (std::getline(input, line)) {
+        std::istringstream row(line);
+        char kind{};
+        unsigned listener{};
+        std::uint64_t epoch{}, ordinal{};
+        require(static_cast<bool>(row >> kind >> listener >> epoch >> ordinal), "invalid capture fixture record");
+        auto& m = models[listener];
+        if (ordinal) {
+            require(ordinal == ++ordinals[listener], "capture fixture ordinal continuity");
+        }
+        if (kind == 'O') {
+            m.open();
+            m.opened();
+        } else if (kind == 'L') {
+            std::uint64_t life{};
+            require(static_cast<bool>(row >> life), "life fixture");
+            m.lifenum(life);
+        } else if (kind == 'B')
+            m.begin();
+        else if (kind == 'C') {
+            m.commit();
+            m.drain();
+        } else if (kind == 'N') {
+            m.online_event();
+            m.drain();
+        } else if (kind == 'X')
+            m.close();
+        else if (kind == 'E' || kind == 'D')
+            m.fail();
+        else if (kind == 'I') {
+            std::int64_t id{}, rev{}, life{}, pub{};
+            require(static_cast<bool>(row >> id >> rev >> life >> pub), "info fixture");
+            m.info(id, rev, life, pub);
+        } else if (kind == 'S' || kind == 'R') {
+            Event e;
+            auto& o = e.order;
+            require(static_cast<bool>(row >> o.pair >> o.id >> o.session >> o.instrument >> o.side >> o.price >>
+                                      o.remaining >> o.status >> o.status2),
+                    "order fixture");
+            if (kind == 'S')
+                m.snapshot(o);
+            else {
+                require(static_cast<bool>(row >> e.revision >> e.amount >> e.action >> e.fingerprint), "log fixture");
+                m.row(e);
+            }
+        } else if (kind != 'T') {
+            ++unknown;
+            m.fail();
+        }
+        if (m.state == State::NeedsResync || m.state == State::Failed)
+            ++rejected;
+        if ((kind == 'N' || kind == 'C') && m.state == State::Ready) {
+            ++ready;
+            const auto frontier = m.data.frontier.at(listener == 1 ? 1 : 0);
+            const auto key = std::tuple{listener, m.life, frontier};
+            const auto hash = m.data.hash(m.life);
+            if (const auto it = states.find(key); it != states.end() && it->second.first != epoch) {
+                ++comparisons;
+                if (it->second.second != hash)
+                    ++conflicts;
+            } else
+                states[key] = {epoch, hash};
+        }
+    }
+    const char* equivalence = comparisons && !conflicts && !unknown && !rejected ? "PASS_CONDITIONAL"
+                              : conflicts                                        ? "MISMATCH"
+                                                                                 : "NOT_OBSERVED";
+    std::cout << "{\"source_sha256\":\"" << source_hash << "\",\"equivalence\":\"" << equivalence
+              << "\",\"common_frontier_comparisons\":" << comparisons << ",\"conflicts\":" << conflicts
+              << ",\"unknown_records\":" << unknown << ",\"model_rejections\":" << rejected
+              << ",\"ready_observations\":" << ready << ",\"production_c2\":\"BLOCKED\"}\n";
+    return 0;
+}
+
 int main(int argc, char** argv) {
     try {
+        if (argc == 3 && std::string_view(argv[1]) == "--capture-fixture")
+            return capture_fixture(argv[2]);
         require(argc == 2, "fake runtime library required");
         mutation_cases();
         recovery_cases();

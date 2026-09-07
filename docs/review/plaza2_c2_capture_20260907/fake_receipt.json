@@ -1,0 +1,51 @@
+{
+  "kind": "FAKE_ONLY",
+  "api_calls": {
+    "cg_env_open": 1,
+    "cg_err_getstr": 14,
+    "cg_env_getcomp_ver": 1,
+    "cg_conn_new": 1,
+    "cg_conn_open": 1,
+    "cg_conn_getstate": 58,
+    "cg_lsn_new": 3,
+    "cg_lsn_open": 3,
+    "cg_lsn_getscheme": 3,
+    "cg_lsn_getstate": 112,
+    "cg_conn_process": 58,
+    "cg_lsn_close": 3,
+    "cg_lsn_destroy": 3,
+    "cg_conn_close": 1,
+    "cg_conn_destroy": 1,
+    "cg_env_close": 1
+  },
+  "publisher_creations": 0,
+  "publisher_opens": 0,
+  "publisher_posts": 0,
+  "transaction_commands": 0,
+  "trace_sha256": "f87b9185e2f795508a45e0a97e625c83f4bd08c36e038044feb764d0ac20ea55",
+  "binary_sha256": "cbe8d2b5d2f6fabc8500f5bdf299951772f91d3b9e670c672ad49298fd8429ba",
+  "metrics": {
+    "status": "CAPTURE_COMPLETE",
+    "callbacks_received": 38,
+    "records_captured": 64,
+    "bytes_captured": 18166,
+    "queue_high_water_bytes": 11796,
+    "capture_overflow": 0,
+    "write_failures": 0,
+    "descriptor_failures": 0,
+    "unknown_callbacks": 0,
+    "first_lost_ordinal": 0,
+    "first_lost_listener": 0,
+    "redaction_failures": 0
+  },
+  "oracle": {
+    "common_frontier_comparisons": 1,
+    "conflicts": 0,
+    "equivalence": "PASS_CONDITIONAL",
+    "model_rejections": 0,
+    "production_c2": "BLOCKED",
+    "ready_observations": 5,
+    "source_sha256": "f87b9185e2f795508a45e0a97e625c83f4bd08c36e038044feb764d0ac20ea55",
+    "unknown_records": 0
+  }
+}
