@@ -958,6 +958,16 @@ else()
 endif()
 
 
+add_executable(plaza2_public_wire_test plaza2_cgate/plaza2_public_wire_test.cpp)
+target_link_libraries(plaza2_public_wire_test PRIVATE moex_plaza2_cgate_metadata)
+add_test(NAME plaza2_public_wire_test COMMAND plaza2_public_wire_test)
+set_tests_properties(plaza2_public_wire_test PROPERTIES LABELS "unit;plaza2;sanitizer")
+add_test(NAME plaza2_public_wire_codegen_check
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tools/plaza2_codegen.py"
+        --schema "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/schema/plaza2_forts_reviewed.ini"
+        --out "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/generated"
+        --public-wire-lock "${MOEX_SOURCE_ROOT}/spec-lock/test/plaza2/public99/wire.json" --check)
+
 get_property(moex_registered_tests DIRECTORY PROPERTY TESTS)
 foreach(test_name IN LISTS moex_registered_tests)
     if(test_name MATCHES "^plaza2_" OR test_name STREQUAL "moex_phase4b_capi_read_side_test")

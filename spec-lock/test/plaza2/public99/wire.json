@@ -1,0 +1,1311 @@
+{
+  "version": 1,
+  "generated_by": "Official CGate schemetool plus C++ sizeof/offsetof capture; see qualification document",
+  "spectra_release": "SPECTRA9.9.0",
+  "dds_version": "990.1.6.42752",
+  "verified_at": "2026-09-07",
+  "sources": [
+    {
+      "file": "ordLog_trades.ini",
+      "url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/Scheme/9.9/ordLog_trades.ini",
+      "sha256": "0d35d8671d7c3668a95b359e21269f8a852c387e6a1ac9e7dff154b9c2b99676"
+    },
+    {
+      "file": "ordbook.ini",
+      "url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/Scheme/9.9/ordbook.ini",
+      "sha256": "9f39898346bf9580b88feadfc4a7578bd853a884393e2c72c481133687856238"
+    },
+    {
+      "file": "forts_scheme.ini",
+      "url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/Scheme/9.9/forts_scheme.ini",
+      "sha256": "f74726c9e86a5229732c55cd1b59f1822d20df92cb3d039dd871b67567dc2f3d"
+    },
+    {
+      "file": "forts_messages.ini",
+      "url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/Scheme/9.9/forts_messages.ini",
+      "sha256": "99cba03ef3fa9ffdc10c7da30378b69d6bd02e7093d9e64ffc4a27b94999eaa9"
+    },
+    {
+      "file": "cgate_en.pdf",
+      "url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/docs/cgate_en.pdf",
+      "sha256": "fef822098def1603d56cb4a53fb0ad3080535853215fe9dee25ff46c7f2b37fd"
+    },
+    {
+      "file": "p2gate_en.html",
+      "url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/docs/p2gate_en.html",
+      "sha256": "dd3d155aa7fae9f56b7c0b6e782fe38277c3cc332389ade69113d8be06b7b213"
+    },
+    {
+      "file": "cgate_linux_amd64-9.9.1853.zip",
+      "url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/cgate_linux_amd64-9.9.1853.zip",
+      "sha256": "49da634749203a919e69132594198348652acb5e731416c8a39bb34969364ce2"
+    }
+  ],
+  "sdk": {
+    "include/cgate.h": "b057b537034b23e960f27477dab6738ba5d751ac698287a40d8f95ba7a1ef78f",
+    "lib/libcgate.so": "f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f",
+    "bin/schemetool": "985b6710fc509637200fa7248b1082579af6f270f04f3f127b483e0eb854c4e1",
+    "samples/src/samples/c/orderbook/ordbook.cpp": "ebacad1d36ec087a9d2f04a8a4c6bfc87f94805e7d994762e0d79a959c6374e4"
+  },
+  "scheme_matches_distribution": true,
+  "reviewed_field_sequences_equal": true,
+  "alignment": 4,
+  "timestamp": {
+    "size": 10,
+    "msec_offset": 8,
+    "fields": [
+      "year:u2",
+      "month:u1",
+      "day:u1",
+      "hour:u1",
+      "minute:u1",
+      "second:u1",
+      "msec:u2"
+    ]
+  },
+  "tls": {
+    "root_source": "https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt",
+    "root_sha256": "936a43fea6e8e525bcc0f81acd9c3d21b4fc4b9b68acea7906d698005afc6504",
+    "scope": "request-local CAfile; chain and hostname verified; no system trust changes"
+  },
+  "tables": [
+    {
+      "stream": "FORTS_ORDLOG_REPL",
+      "scheme": "CustReplScheme",
+      "table": "orders_log",
+      "index": 0,
+      "msg_id": 0,
+      "source_file": "ordLog_trades.ini",
+      "source_sha256": "0d35d8671d7c3668a95b359e21269f8a852c387e6a1ac9e7dff154b9c2b99676",
+      "namespace": "Ordlog",
+      "fields": [
+        {
+          "name": "replID",
+          "type": "i8",
+          "offset": 0,
+          "size": 8,
+          "ordinal": 0,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replRev",
+          "type": "i8",
+          "offset": 8,
+          "size": 8,
+          "ordinal": 1,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replAct",
+          "type": "i8",
+          "offset": 16,
+          "size": 8,
+          "ordinal": 2,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_order_id",
+          "type": "i8",
+          "offset": 24,
+          "size": 8,
+          "ordinal": 3,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "sess_id",
+          "type": "i4",
+          "offset": 32,
+          "size": 4,
+          "ordinal": 4,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "isin_id",
+          "type": "i4",
+          "offset": 36,
+          "size": 4,
+          "ordinal": 5,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_amount",
+          "type": "i8",
+          "offset": 40,
+          "size": 8,
+          "ordinal": 6,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_amount_rest",
+          "type": "i8",
+          "offset": 48,
+          "size": 8,
+          "ordinal": 7,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "id_deal",
+          "type": "i8",
+          "offset": 56,
+          "size": 8,
+          "ordinal": 8,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus",
+          "type": "i8",
+          "offset": 64,
+          "size": 8,
+          "ordinal": 9,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus2",
+          "type": "i8",
+          "offset": 72,
+          "size": 8,
+          "ordinal": 10,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "price",
+          "type": "d16.5",
+          "offset": 80,
+          "size": 11,
+          "ordinal": 11,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        },
+        {
+          "name": "moment",
+          "type": "t",
+          "offset": 92,
+          "size": 10,
+          "ordinal": 12,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment_ns",
+          "type": "u8",
+          "offset": 104,
+          "size": 8,
+          "ordinal": 13,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "dir",
+          "type": "i1",
+          "offset": 112,
+          "size": 1,
+          "ordinal": 14,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_action",
+          "type": "i1",
+          "offset": 113,
+          "size": 1,
+          "ordinal": 15,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "deal_price",
+          "type": "d16.5",
+          "offset": 114,
+          "size": 11,
+          "ordinal": 16,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        }
+      ],
+      "size": 128
+    },
+    {
+      "stream": "FORTS_ORDLOG_REPL",
+      "scheme": "CustReplScheme",
+      "table": "multileg_orders_log",
+      "index": 1,
+      "msg_id": 0,
+      "source_file": "ordLog_trades.ini",
+      "source_sha256": "0d35d8671d7c3668a95b359e21269f8a852c387e6a1ac9e7dff154b9c2b99676",
+      "namespace": "Ordlog",
+      "fields": [
+        {
+          "name": "replID",
+          "type": "i8",
+          "offset": 0,
+          "size": 8,
+          "ordinal": 0,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replRev",
+          "type": "i8",
+          "offset": 8,
+          "size": 8,
+          "ordinal": 1,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replAct",
+          "type": "i8",
+          "offset": 16,
+          "size": 8,
+          "ordinal": 2,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_order_id",
+          "type": "i8",
+          "offset": 24,
+          "size": 8,
+          "ordinal": 3,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "sess_id",
+          "type": "i4",
+          "offset": 32,
+          "size": 4,
+          "ordinal": 4,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "isin_id",
+          "type": "i4",
+          "offset": 36,
+          "size": 4,
+          "ordinal": 5,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_amount",
+          "type": "i8",
+          "offset": 40,
+          "size": 8,
+          "ordinal": 6,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_amount_rest",
+          "type": "i8",
+          "offset": 48,
+          "size": 8,
+          "ordinal": 7,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "id_deal",
+          "type": "i8",
+          "offset": 56,
+          "size": 8,
+          "ordinal": 8,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus",
+          "type": "i8",
+          "offset": 64,
+          "size": 8,
+          "ordinal": 9,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus2",
+          "type": "i8",
+          "offset": 72,
+          "size": 8,
+          "ordinal": 10,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "price",
+          "type": "d16.5",
+          "offset": 80,
+          "size": 11,
+          "ordinal": 11,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        },
+        {
+          "name": "moment",
+          "type": "t",
+          "offset": 92,
+          "size": 10,
+          "ordinal": 12,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment_ns",
+          "type": "u8",
+          "offset": 104,
+          "size": 8,
+          "ordinal": 13,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "dir",
+          "type": "i1",
+          "offset": 112,
+          "size": 1,
+          "ordinal": 14,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_action",
+          "type": "i1",
+          "offset": 113,
+          "size": 1,
+          "ordinal": 15,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "deal_price",
+          "type": "d16.5",
+          "offset": 114,
+          "size": 11,
+          "ordinal": 16,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        },
+        {
+          "name": "rate_price",
+          "type": "d16.5",
+          "offset": 125,
+          "size": 11,
+          "ordinal": 17,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        },
+        {
+          "name": "swap_price",
+          "type": "d16.5",
+          "offset": 136,
+          "size": 11,
+          "ordinal": 18,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        }
+      ],
+      "size": 148
+    },
+    {
+      "stream": "FORTS_ORDLOG_REPL",
+      "scheme": "CustReplScheme",
+      "table": "heartbeat",
+      "index": 2,
+      "msg_id": 0,
+      "source_file": "ordLog_trades.ini",
+      "source_sha256": "0d35d8671d7c3668a95b359e21269f8a852c387e6a1ac9e7dff154b9c2b99676",
+      "namespace": "Ordlog",
+      "fields": [
+        {
+          "name": "replID",
+          "type": "i8",
+          "offset": 0,
+          "size": 8,
+          "ordinal": 0,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replRev",
+          "type": "i8",
+          "offset": 8,
+          "size": 8,
+          "ordinal": 1,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replAct",
+          "type": "i8",
+          "offset": 16,
+          "size": 8,
+          "ordinal": 2,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "server_time",
+          "type": "t",
+          "offset": 24,
+          "size": 10,
+          "ordinal": 3,
+          "nullability": "no optional field declared; preserve callback null map"
+        }
+      ],
+      "size": 36
+    },
+    {
+      "stream": "FORTS_ORDLOG_REPL",
+      "scheme": "CustReplScheme",
+      "table": "sys_events",
+      "index": 3,
+      "msg_id": 0,
+      "source_file": "ordLog_trades.ini",
+      "source_sha256": "0d35d8671d7c3668a95b359e21269f8a852c387e6a1ac9e7dff154b9c2b99676",
+      "namespace": "Ordlog",
+      "fields": [
+        {
+          "name": "replID",
+          "type": "i8",
+          "offset": 0,
+          "size": 8,
+          "ordinal": 0,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replRev",
+          "type": "i8",
+          "offset": 8,
+          "size": 8,
+          "ordinal": 1,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replAct",
+          "type": "i8",
+          "offset": 16,
+          "size": 8,
+          "ordinal": 2,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "event_id",
+          "type": "i8",
+          "offset": 24,
+          "size": 8,
+          "ordinal": 3,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "sess_id",
+          "type": "i4",
+          "offset": 32,
+          "size": 4,
+          "ordinal": 4,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "event_type",
+          "type": "i4",
+          "offset": 36,
+          "size": 4,
+          "ordinal": 5,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "message",
+          "type": "c64",
+          "offset": 40,
+          "size": 65,
+          "ordinal": 6,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "server_time",
+          "type": "t",
+          "offset": 106,
+          "size": 10,
+          "ordinal": 7,
+          "nullability": "no optional field declared; preserve callback null map"
+        }
+      ],
+      "size": 116
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "scheme": "CustReplScheme",
+      "table": "orders",
+      "index": 0,
+      "msg_id": 0,
+      "source_file": "ordbook.ini",
+      "source_sha256": "9f39898346bf9580b88feadfc4a7578bd853a884393e2c72c481133687856238",
+      "namespace": "Ordbook",
+      "fields": [
+        {
+          "name": "replID",
+          "type": "i8",
+          "offset": 0,
+          "size": 8,
+          "ordinal": 0,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replRev",
+          "type": "i8",
+          "offset": 8,
+          "size": 8,
+          "ordinal": 1,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replAct",
+          "type": "i8",
+          "offset": 16,
+          "size": 8,
+          "ordinal": 2,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_order_id",
+          "type": "i8",
+          "offset": 24,
+          "size": 8,
+          "ordinal": 3,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "sess_id",
+          "type": "i4",
+          "offset": 32,
+          "size": 4,
+          "ordinal": 4,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment",
+          "type": "t",
+          "offset": 36,
+          "size": 10,
+          "ordinal": 5,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment_ns",
+          "type": "u8",
+          "offset": 48,
+          "size": 8,
+          "ordinal": 6,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus",
+          "type": "i8",
+          "offset": 56,
+          "size": 8,
+          "ordinal": 7,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus2",
+          "type": "i8",
+          "offset": 64,
+          "size": 8,
+          "ordinal": 8,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_action",
+          "type": "i1",
+          "offset": 72,
+          "size": 1,
+          "ordinal": 9,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "isin_id",
+          "type": "i4",
+          "offset": 76,
+          "size": 4,
+          "ordinal": 10,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "dir",
+          "type": "i1",
+          "offset": 80,
+          "size": 1,
+          "ordinal": 11,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "price",
+          "type": "d16.5",
+          "offset": 81,
+          "size": 11,
+          "ordinal": 12,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        },
+        {
+          "name": "public_amount",
+          "type": "i8",
+          "offset": 92,
+          "size": 8,
+          "ordinal": 13,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_amount_rest",
+          "type": "i8",
+          "offset": 100,
+          "size": 8,
+          "ordinal": 14,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_init_moment",
+          "type": "t",
+          "offset": 108,
+          "size": 10,
+          "ordinal": 15,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_init_amount",
+          "type": "i8",
+          "offset": 120,
+          "size": 8,
+          "ordinal": 16,
+          "nullability": "no optional field declared; preserve callback null map"
+        }
+      ],
+      "size": 128
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "scheme": "CustReplScheme",
+      "table": "multileg_orders",
+      "index": 1,
+      "msg_id": 0,
+      "source_file": "ordbook.ini",
+      "source_sha256": "9f39898346bf9580b88feadfc4a7578bd853a884393e2c72c481133687856238",
+      "namespace": "Ordbook",
+      "fields": [
+        {
+          "name": "replID",
+          "type": "i8",
+          "offset": 0,
+          "size": 8,
+          "ordinal": 0,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replRev",
+          "type": "i8",
+          "offset": 8,
+          "size": 8,
+          "ordinal": 1,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replAct",
+          "type": "i8",
+          "offset": 16,
+          "size": 8,
+          "ordinal": 2,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_order_id",
+          "type": "i8",
+          "offset": 24,
+          "size": 8,
+          "ordinal": 3,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "sess_id",
+          "type": "i4",
+          "offset": 32,
+          "size": 4,
+          "ordinal": 4,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment",
+          "type": "t",
+          "offset": 36,
+          "size": 10,
+          "ordinal": 5,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment_ns",
+          "type": "u8",
+          "offset": 48,
+          "size": 8,
+          "ordinal": 6,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus",
+          "type": "i8",
+          "offset": 56,
+          "size": 8,
+          "ordinal": 7,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus2",
+          "type": "i8",
+          "offset": 64,
+          "size": 8,
+          "ordinal": 8,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_action",
+          "type": "i1",
+          "offset": 72,
+          "size": 1,
+          "ordinal": 9,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "isin_id",
+          "type": "i4",
+          "offset": 76,
+          "size": 4,
+          "ordinal": 10,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "dir",
+          "type": "i1",
+          "offset": 80,
+          "size": 1,
+          "ordinal": 11,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "price",
+          "type": "d16.5",
+          "offset": 81,
+          "size": 11,
+          "ordinal": 12,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        },
+        {
+          "name": "public_amount",
+          "type": "i8",
+          "offset": 92,
+          "size": 8,
+          "ordinal": 13,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_amount_rest",
+          "type": "i8",
+          "offset": 100,
+          "size": 8,
+          "ordinal": 14,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_init_moment",
+          "type": "t",
+          "offset": 108,
+          "size": 10,
+          "ordinal": 15,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_init_amount",
+          "type": "i8",
+          "offset": 120,
+          "size": 8,
+          "ordinal": 16,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "rate_price",
+          "type": "d16.5",
+          "offset": 128,
+          "size": 11,
+          "ordinal": 17,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        },
+        {
+          "name": "swap_price",
+          "type": "d16.5",
+          "offset": 139,
+          "size": 11,
+          "ordinal": 18,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        }
+      ],
+      "size": 152
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "scheme": "CustReplScheme",
+      "table": "info",
+      "index": 2,
+      "msg_id": 0,
+      "source_file": "ordbook.ini",
+      "source_sha256": "9f39898346bf9580b88feadfc4a7578bd853a884393e2c72c481133687856238",
+      "namespace": "Ordbook",
+      "fields": [
+        {
+          "name": "replID",
+          "type": "i8",
+          "offset": 0,
+          "size": 8,
+          "ordinal": 0,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replRev",
+          "type": "i8",
+          "offset": 8,
+          "size": 8,
+          "ordinal": 1,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replAct",
+          "type": "i8",
+          "offset": 16,
+          "size": 8,
+          "ordinal": 2,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "infoID",
+          "type": "i8",
+          "offset": 24,
+          "size": 8,
+          "ordinal": 3,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment",
+          "type": "t",
+          "offset": 32,
+          "size": 10,
+          "ordinal": 4,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "publication_state",
+          "type": "i1",
+          "offset": 42,
+          "size": 1,
+          "ordinal": 5,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "trades_rev",
+          "type": "i8",
+          "offset": 44,
+          "size": 8,
+          "ordinal": 6,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "trades_lifenum",
+          "type": "i8",
+          "offset": 52,
+          "size": 8,
+          "ordinal": 7,
+          "nullability": "no optional field declared; preserve callback null map"
+        }
+      ],
+      "size": 60
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "scheme": "CustReplScheme",
+      "table": "orders_currentday",
+      "index": 3,
+      "msg_id": 0,
+      "source_file": "ordbook.ini",
+      "source_sha256": "9f39898346bf9580b88feadfc4a7578bd853a884393e2c72c481133687856238",
+      "namespace": "Ordbook",
+      "fields": [
+        {
+          "name": "replID",
+          "type": "i8",
+          "offset": 0,
+          "size": 8,
+          "ordinal": 0,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replRev",
+          "type": "i8",
+          "offset": 8,
+          "size": 8,
+          "ordinal": 1,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replAct",
+          "type": "i8",
+          "offset": 16,
+          "size": 8,
+          "ordinal": 2,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_order_id",
+          "type": "i8",
+          "offset": 24,
+          "size": 8,
+          "ordinal": 3,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "sess_id",
+          "type": "i4",
+          "offset": 32,
+          "size": 4,
+          "ordinal": 4,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment",
+          "type": "t",
+          "offset": 36,
+          "size": 10,
+          "ordinal": 5,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment_ns",
+          "type": "u8",
+          "offset": 48,
+          "size": 8,
+          "ordinal": 6,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus",
+          "type": "i8",
+          "offset": 56,
+          "size": 8,
+          "ordinal": 7,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus2",
+          "type": "i8",
+          "offset": 64,
+          "size": 8,
+          "ordinal": 8,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_action",
+          "type": "i1",
+          "offset": 72,
+          "size": 1,
+          "ordinal": 9,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "isin_id",
+          "type": "i4",
+          "offset": 76,
+          "size": 4,
+          "ordinal": 10,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "dir",
+          "type": "i1",
+          "offset": 80,
+          "size": 1,
+          "ordinal": 11,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "price",
+          "type": "d16.5",
+          "offset": 81,
+          "size": 11,
+          "ordinal": 12,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        },
+        {
+          "name": "public_amount",
+          "type": "i8",
+          "offset": 92,
+          "size": 8,
+          "ordinal": 13,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_amount_rest",
+          "type": "i8",
+          "offset": 100,
+          "size": 8,
+          "ordinal": 14,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_init_moment",
+          "type": "t",
+          "offset": 108,
+          "size": 10,
+          "ordinal": 15,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_init_amount",
+          "type": "i8",
+          "offset": 120,
+          "size": 8,
+          "ordinal": 16,
+          "nullability": "no optional field declared; preserve callback null map"
+        }
+      ],
+      "size": 128
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "scheme": "CustReplScheme",
+      "table": "multileg_orders_currentday",
+      "index": 4,
+      "msg_id": 0,
+      "source_file": "ordbook.ini",
+      "source_sha256": "9f39898346bf9580b88feadfc4a7578bd853a884393e2c72c481133687856238",
+      "namespace": "Ordbook",
+      "fields": [
+        {
+          "name": "replID",
+          "type": "i8",
+          "offset": 0,
+          "size": 8,
+          "ordinal": 0,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replRev",
+          "type": "i8",
+          "offset": 8,
+          "size": 8,
+          "ordinal": 1,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replAct",
+          "type": "i8",
+          "offset": 16,
+          "size": 8,
+          "ordinal": 2,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_order_id",
+          "type": "i8",
+          "offset": 24,
+          "size": 8,
+          "ordinal": 3,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "sess_id",
+          "type": "i4",
+          "offset": 32,
+          "size": 4,
+          "ordinal": 4,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment",
+          "type": "t",
+          "offset": 36,
+          "size": 10,
+          "ordinal": 5,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "moment_ns",
+          "type": "u8",
+          "offset": 48,
+          "size": 8,
+          "ordinal": 6,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus",
+          "type": "i8",
+          "offset": 56,
+          "size": 8,
+          "ordinal": 7,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "xstatus2",
+          "type": "i8",
+          "offset": 64,
+          "size": 8,
+          "ordinal": 8,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_action",
+          "type": "i1",
+          "offset": 72,
+          "size": 1,
+          "ordinal": 9,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "isin_id",
+          "type": "i4",
+          "offset": 76,
+          "size": 4,
+          "ordinal": 10,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "dir",
+          "type": "i1",
+          "offset": 80,
+          "size": 1,
+          "ordinal": 11,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "price",
+          "type": "d16.5",
+          "offset": 81,
+          "size": 11,
+          "ordinal": 12,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        },
+        {
+          "name": "public_amount",
+          "type": "i8",
+          "offset": 92,
+          "size": 8,
+          "ordinal": 13,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_amount_rest",
+          "type": "i8",
+          "offset": 100,
+          "size": 8,
+          "ordinal": 14,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_init_moment",
+          "type": "t",
+          "offset": 108,
+          "size": 10,
+          "ordinal": 15,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "public_init_amount",
+          "type": "i8",
+          "offset": 120,
+          "size": 8,
+          "ordinal": 16,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "rate_price",
+          "type": "d16.5",
+          "offset": 128,
+          "size": 11,
+          "ordinal": 17,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        },
+        {
+          "name": "swap_price",
+          "type": "d16.5",
+          "offset": 139,
+          "size": 11,
+          "ordinal": 18,
+          "nullability": "no optional field declared; preserve callback null map",
+          "precision": 16,
+          "scale": 5
+        }
+      ],
+      "size": 152
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "scheme": "CustReplScheme",
+      "table": "info_currentday",
+      "index": 5,
+      "msg_id": 0,
+      "source_file": "ordbook.ini",
+      "source_sha256": "9f39898346bf9580b88feadfc4a7578bd853a884393e2c72c481133687856238",
+      "namespace": "Ordbook",
+      "fields": [
+        {
+          "name": "replID",
+          "type": "i8",
+          "offset": 0,
+          "size": 8,
+          "ordinal": 0,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replRev",
+          "type": "i8",
+          "offset": 8,
+          "size": 8,
+          "ordinal": 1,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "replAct",
+          "type": "i8",
+          "offset": 16,
+          "size": 8,
+          "ordinal": 2,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "publication_state",
+          "type": "i1",
+          "offset": 24,
+          "size": 1,
+          "ordinal": 3,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "trades_rev",
+          "type": "i8",
+          "offset": 28,
+          "size": 8,
+          "ordinal": 4,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "trades_lifenum",
+          "type": "i8",
+          "offset": 36,
+          "size": 8,
+          "ordinal": 5,
+          "nullability": "no optional field declared; preserve callback null map"
+        },
+        {
+          "name": "server_time",
+          "type": "t",
+          "offset": 44,
+          "size": 10,
+          "ordinal": 6,
+          "nullability": "no optional field declared; preserve callback null map"
+        }
+      ],
+      "size": 56
+    }
+  ]
+}
