@@ -71,6 +71,13 @@ assert 'Plaza2Publisher' not in symbols and 'cg_pub_' not in symbols and 'Connec
 
 with tempfile.TemporaryDirectory(prefix='plaza2_c2_capture_') as tmp:
     root = Path(tmp)
+    unsafe = root / 'untracked-env.cfg'
+    unsafe.write_text(f'runtime={FAKE}\nenv=ini=/private/untracked.ini\nconnection=p2tcp://127.0.0.1:1\n'
+                      'regular=p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL;name=c2_regular\n'
+                      'ordbook_scheme=/unused\nordlog_scheme=/unused\n')
+    rejected_config = subprocess.run([str(BINARY), '--config', str(unsafe), '--output', str(root / 'unsafe')],
+                                     capture_output=True)
+    assert rejected_config.returncode == 2 and not (root / 'unsafe').exists()
     out, analysis = run(root, 'regular_multileg_reopen', options=['--reopen-ms', '5'])
     assert analysis['oracle']['equivalence'] == 'PASS_CONDITIONAL', analysis
     assert analysis['oracle']['common_frontier_comparisons'] >= 1

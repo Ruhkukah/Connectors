@@ -50,7 +50,7 @@ ordlog_scheme=/ABSOLUTE/QUALIFIED/ordLog_trades.ini
 ```
 
 Omit `multileg` for regular-only runs. `env_file` must identify any INI used by
-`env`, for hashing and credential discovery; keep any referenced runtime sources
+`env` (enforced), for hashing and credential discovery; keep any referenced runtime sources
 under the same controlled evidence custody. Both qualified schema files are
 hashed even when explicit listener schemes are unnecessary. Optional
 `online.scheme=|FILE|...|CustReplScheme` and

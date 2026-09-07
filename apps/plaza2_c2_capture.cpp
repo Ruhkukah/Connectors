@@ -65,7 +65,7 @@ std::string hash_file(const fs::path& path) {
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0)
         throw std::runtime_error("cannot hash input file");
-    struct stat st{};
+    struct stat st;
     if (fstat(fd, &st) || !S_ISREG(st.st_mode)) {
         ::close(fd);
         throw std::runtime_error("hash input is not a regular file");
@@ -126,6 +126,11 @@ struct Config {
         if (values.at("env").find("log=") != std::string::npos ||
             values.at("env").find("minloglevel=") != std::string::npos)
             throw std::runtime_error("capture controls vendor logging");
+        const std::regex ini_pattern(R"((?:^|;)ini=([^;]+))");
+        std::smatch ini;
+        if (std::regex_search(values.at("env"), ini, ini_pattern) &&
+            (!values.contains("env_file") || values.at("env_file") != ini[1]))
+            throw std::runtime_error("environment INI must be declared for hashing and redaction");
         for (const char* key : {"regular", "multileg"})
             if (values.contains(key)) {
                 const auto& url = values.at(key);

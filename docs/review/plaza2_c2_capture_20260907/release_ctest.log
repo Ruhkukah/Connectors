@@ -4,11 +4,11 @@ Test project /tmp/plaza2-cert-a/build
     Start 168: plaza2_public_wire_codegen_check
 2/6 Test #168: plaza2_public_wire_codegen_check ...   Passed    0.19 sec
     Start 169: plaza2_ordlog_test
-3/6 Test #169: plaza2_ordlog_test .................   Passed    0.59 sec
+3/6 Test #169: plaza2_ordlog_test .................   Passed    0.34 sec
     Start 170: plaza2_ordlog_benchmark_smoke
-4/6 Test #170: plaza2_ordlog_benchmark_smoke ......   Passed    0.29 sec
+4/6 Test #170: plaza2_ordlog_benchmark_smoke ......   Passed    0.14 sec
     Start 172: plaza2_c2_preflight_test
-5/6 Test #172: plaza2_c2_preflight_test ...........   Passed    0.58 sec
+5/6 Test #172: plaza2_c2_preflight_test ...........   Passed    0.39 sec
     Start 173: plaza2_c2_capture_test
 6/6 Test #173: plaza2_c2_capture_test .............   Passed    0.89 sec
 
@@ -16,10 +16,10 @@ Test project /tmp/plaza2-cert-a/build
 
 Label Time Summary:
 c2_capture      =   0.89 sec*proc (1 test)
-c2_preflight    =   2.55 sec*proc (6 tests)
-plaza2          =   2.55 sec*proc (6 tests)
-sanitizer       =   2.36 sec*proc (5 tests)
+c2_preflight    =   1.96 sec*proc (6 tests)
+plaza2          =   1.96 sec*proc (6 tests)
+sanitizer       =   1.77 sec*proc (5 tests)
 tooling         =   0.19 sec*proc (1 test)
-unit            =   2.55 sec*proc (6 tests)
+unit            =   1.96 sec*proc (6 tests)
 
-Total Test time (real) =   2.56 sec
+Total Test time (real) =   1.97 sec
