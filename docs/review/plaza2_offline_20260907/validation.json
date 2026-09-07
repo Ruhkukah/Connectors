@@ -1,0 +1,41 @@
+{
+  "schema": "moex.plaza2.offline_certification.v1",
+  "base_sha": "22a9dfd0947ccde4645696974e1270099491e2c6",
+  "phase_a_sha": "669a16de16bd09d3ef859b7a99b221cfa6b353b0",
+  "tested_implementation_head": "20ab52ed58d84d3295fe63309992c287c4516ed8",
+  "source_lock": "spec-lock/test/plaza2/public99/wire.json",
+  "official_tables": 10,
+  "official_fields": 135,
+  "native_decimal_oracle_cases": 100004,
+  "release": {
+    "passed": 171,
+    "failed": 0,
+    "plaza_label": 59
+  },
+  "sanitizers": {
+    "platform": "macOS arm64; Apple clang 17",
+    "flags": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+    "labelled_passed": 74,
+    "labelled_failed": 0,
+    "additional_aggr_passed": 3,
+    "additional_aggr_failed": 0,
+    "leak_detection": "UNSUPPORTED_ON_PLATFORM"
+  },
+  "phase_prs": {
+    "B": 38,
+    "C1": 39,
+    "D0": 40,
+    "CERT_SYS": 41,
+    "AGGR_REC": 42
+  },
+  "t1_accessed": false,
+  "exchange_orders_sent": 0,
+  "l3_implemented": false,
+  "certification_ready": false,
+  "evidence_sha256": {
+    "release_ctest.log": "95d09c014f9c8fbc0259b7ae0e5751ad425fc39e956887778b468ccaae64d425",
+    "asan_ubsan_ctest.log": "9f4e0f07dd63f5a4b006210b3f26c974ff950ebaea5a7ed5980f97e36f62b658",
+    "asan_ubsan_aggr.log": "6dc55739cc9072d60a855613e2f6e1efd8669afc4050f3fe30b8cd7f7c5bd18b",
+    "raw_d0.json": "a9c854ef1ef5f60bc1ffe618b9422eb7a1e94698b59ac0f8981ae539a07b4752"
+  }
+}

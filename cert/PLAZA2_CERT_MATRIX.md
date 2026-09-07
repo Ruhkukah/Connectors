@@ -1,6 +1,8 @@
 # PLAZA II certification traceability matrix
 
-Audit base: `22a9dfd0947ccde4645696974e1270099491e2c6`, 2026-09-07. **Not certification-ready.** Phase A only.
+Audit base: `22a9dfd0947ccde4645696974e1270099491e2c6`, 2026-09-07. **Not certification-ready.** Updated after offline B/C1/D0/CERT-SYS/AGGR-REC; C2 remains stopped.
+
+Current scope, source hashes, PRs and results: [offline closeout](../docs/review/plaza2_offline_20260907/REPORT.md).
 
 Authority: [MOEX certification procedure](https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e), general sections 2–3 and Appendix 1 Plaza II (printed pages 5–7), retrieved this
 audit. `C1–C8`, `R1–R8`, `S1–S7` below map to its connection, replication and sending subsections; `G` refers to general requirements. `PLAN` denotes the attached plan's additional
@@ -74,18 +76,19 @@ Evidence map (paths relative to repository root):
 <tr>
 <td>ATEST</td>
 <td><code>docs/review/plaza2_certification_audit_20260907.json</code></td>
-<td>Current 163/163 offline Release run, 54 PLAZA-labelled tests; subsequent preflight recorded separately</td>
+<td>Historical Phase A 163/163 non-preflight run; current stack validation is in the offline closeout report</td>
 </tr>
 <tr>
 <td>SCHEMA</td>
 <td><code>docs/review/plaza2_ordlog_schema_audit_20260907.md</code></td>
-<td>10/10 local 9.9 manual field match; current official binary verification BLOCKED</td>
+<td>Phase A snapshot; superseded by public99/wire.json and PUBLIC_WIRE_9_9_QUALIFICATION.md: 10 tables / 135 fields qualified</td>
 </tr>
 </table>
 
 Details, sources, proposed types, recovery protocol gates and performance measurement are in the [baseline](../docs/review/plaza2_certification_baseline_20260907.md). Test names
-below denote existing coverage when stated; “add” means a future test, never a passing test. T1 “none” means no sufficient artifact found in audited committed bundles. New T1
-scenarios and benchmark evidence paths are prospective, not executed artifacts.
+below denote existing coverage when stated; “add” means a future test, never a passing test. T1 “none” means no sufficient artifact found in audited committed bundles. T1 scenarios remain prospective.
+Current raw benchmark results are in <code>docs/review/plaza2_offline_20260907/raw_d0.json</code>; all raw performance is provisional.
+Updated PASS rows below explicitly concern offline software scope, never certification or a current exchange run.
 
 ## Official requirements
 
@@ -184,11 +187,11 @@ scenarios and benchmark evidence paths are prospective, not executed artifacts.
 <td>P2-R01 / R1</td>
 <td>Subscription URLs/opening</td>
 <td>REQUIRED</td>
-<td>RT/LIVE existing; public path absent</td>
-<td>Existing listener tests + ATEST</td>
+<td>RT + dedicated raw ORDLOG; composite ORDBOOK not activated</td>
+<td>plaza2_ordlog_test; public recovery contract</td>
 <td>T99 private/status/AGGR only</td>
 <td>BLOCKED</td>
-<td>ORDLOG/ORDBOOK URLs + declared stream list</td>
+<td>Raw URL tested offline; C2 composite listener and T1 topology still required</td>
 </tr>
 <tr>
 <td>P2-R02 / R2</td>
@@ -204,11 +207,11 @@ scenarios and benchmark evidence paths are prospective, not executed artifacts.
 <td>P2-R03 / R3</td>
 <td>Valid receive schemes</td>
 <td>REQUIRED</td>
-<td>META + RT; consumed profile only</td>
-<td>Scheme drift/metadata tests + SCHEMA</td>
+<td>Exact public wire lock and runtime full-scheme checking</td>
+<td>public_wire tests; native SDK layouts; 100004 decimal oracle cases</td>
 <td>T99 existing consumed subset</td>
-<td>BLOCKED</td>
-<td>Freeze all new 9.9 public byte layouts/nulls/indices</td>
+<td>PASS (offline wire)</td>
+<td>Repeat negotiated scheme qualification on declared certification runtime</td>
 </tr>
 <tr>
 <td>P2-R04 / R4</td>
@@ -234,41 +237,41 @@ scenarios and benchmark evidence paths are prospective, not executed artifacts.
 <td>P2-R06 / R6</td>
 <td>Every listener reopens correctly</td>
 <td>REQUIRED</td>
-<td>TRADE initial-open retry only</td>
-<td>TRADE initial ERROR/reopen tests</td>
+<td>Raw ORDLOG and AGGR bounded reopen; private policy unchanged</td>
+<td>ordlog and AGGR runner recovery fixtures</td>
 <td>None; per-stream mid-run interruption</td>
 <td>BLOCKED</td>
-<td>Post-snapshot ERROR explicitly fails; implement recovery</td>
+<td>Private mid-run and coordinated per-stream outage qualification remain</td>
 </tr>
 <tr>
 <td>P2-R07 / R7</td>
 <td>Full ORDLOG &gt;=100,000 messages/s</td>
 <td>REQUIRED</td>
-<td>No live full path or benchmark</td>
-<td>Add Phase D paced full-path benchmark</td>
+<td>Raw D0 implemented; no L3 mutation</td>
+<td>raw_d0.json: 100k/200k offered, zero loss</td>
 <td>None; certify on declared machine</td>
 <td>BLOCKED</td>
-<td>100k without growing delay/loss; 200k is internal only</td>
+<td>Provisional raw path only; complete C2 and declared-machine certification benchmark</td>
 </tr>
 <tr>
 <td>P2-R08A / R8a</td>
 <td>ClearDeleted table/range semantics</td>
 <td>REQUIRED</td>
-<td>RT payload + PRIVATE scope; AGGR reset</td>
-<td>Private invalidation/provenance tests partial</td>
+<td>Raw table boundary retained; AGGR fresh-snapshot fallback</td>
+<td>ordlog clear marker and AGGR ClearDeleted/reopen fixtures</td>
 <td>None; deletion ranges per declared stream</td>
-<td>FAIL</td>
-<td>AGGR blanket reset; ORDLOG/ORDBOOK absent; verify range predicate</td>
+<td>BLOCKED</td>
+<td>Selective AGGR range purge and C2 book mutation not implemented</td>
 </tr>
 <tr>
 <td>P2-R08B / R8b</td>
 <td>LifeNum generation semantics</td>
 <td>REQUIRED</td>
-<td>PRIVATE scoped invalidation; AGGR differs</td>
-<td>Private and TRADE LifeNum tests partial</td>
+<td>Shared AGGR invalidation + raw generation markers</td>
+<td>ORDLOG and AGGR LifeNum fixtures</td>
 <td>T99 observed life values, not life change exercise</td>
-<td>FAIL</td>
-<td>Standalone AGGR ignores LifeNum; public generation absent</td>
+<td>NOT RUN (T1)</td>
+<td>Offline invalidation verified; coordinated LifeNum exercise remains</td>
 </tr>
 <tr>
 <td>P2-S01 / S1</td>
@@ -294,11 +297,11 @@ scenarios and benchmark evidence paths are prospective, not executed artifacts.
 <td>P2-S03 / S3</td>
 <td>Configurable command rate gate</td>
 <td>REQUIRED</td>
-<td>Absent in PLAZA</td>
-<td>Add boundary/reopen/timeout accounting tests</td>
+<td>Configurable bounded rolling-second gate, retained across reopen</td>
+<td>plaza2_publisher_rate_test; fake host stop/start accounting</td>
 <td>None; exercise provisioned rate</td>
-<td>FAIL</td>
-<td>A low send count is not a configurable gate</td>
+<td>PASS (offline software)</td>
+<td>Configure provisioned login cap; coordinated flood/rate exercise remains</td>
 </tr>
 <tr>
 <td>P2-S04 / S4</td>
@@ -324,11 +327,11 @@ scenarios and benchmark evidence paths are prospective, not executed artifacts.
 <td>P2-S06 / S6</td>
 <td>Replies 99 and 100</td>
 <td>REQUIRED</td>
-<td>CODEC decodes; TRADE rejects before codec</td>
-<td>CODEC decode tests PASS; live classification FAIL</td>
+<td>Both live-bridge whitelists accept 99/100; explicit ambiguity</td>
+<td>fake callback, raw diagnostics, bounded lifecycle and penalty tests</td>
 <td>None; end-to-end system/flood scenarios</td>
-<td>FAIL</td>
-<td>Fix ReplyBridge and second whitelist, preserve certainty/no resend</td>
+<td>PASS (offline software)</td>
+<td>No T1 system/flood exercise performed</td>
 </tr>
 <tr>
 <td>P2-S07 / S7</td>
@@ -649,101 +652,101 @@ scenarios and benchmark evidence paths are prospective, not executed artifacts.
 <td>P2-OL01 / PLAN</td>
 <td>FORTS_ORDLOG_REPL live listener</td>
 <td>REQUIRED</td>
-<td>META only; pipeline absent</td>
-<td>SCHEMA partial; add C1/C2 deterministic fixtures</td>
+<td>Plaza2Ordlog on existing runtime listener/connection</td>
+<td>actual fake-library wire callbacks and exact scheme checks</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Add dedicated public listener; preserve AGGR/private</td>
+<td>PASS (offline software)</td>
+<td>Guarded T1 reception remains not run</td>
 </tr>
 <tr>
 <td>P2-OL02 / PLAN</td>
 <td>Exact ORDLOG scheme</td>
 <td>REQUIRED</td>
-<td>META only; pipeline absent</td>
-<td>SCHEMA partial; add C1/C2 deterministic fixtures</td>
+<td>All four tables and every field in authoritative 9.9 wire lock</td>
+<td>public_wire tests and SDK sizeof/offsetof probes</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Current official 9.9 sizes/offsets/index/nullability unavailable</td>
+<td>PASS (wire)</td>
+<td>Sources/hashes frozen; no material logical schema difference</td>
 </tr>
 <tr>
 <td>P2-OL03 / PLAN</td>
 <td>Lossless ORDLOG decoding</td>
 <td>REQUIRED</td>
-<td>META only; pipeline absent</td>
-<td>SCHEMA partial; add C1/C2 deterministic fixtures</td>
+<td>Full raw payload/null map, exact decimals/timestamps/flags</td>
+<td>all-table decode and malformed fixtures</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Callback strips raw payload/null bitmap, textifies prices, truncates time</td>
+<td>PASS (offline raw)</td>
+<td>No floating-point conversion or absent-field invention</td>
 </tr>
 <tr>
 <td>P2-OL04 / PLAN</td>
 <td>Revision semantics and applied checkpoints</td>
 <td>REQUIRED</td>
-<td>META only; pipeline absent</td>
-<td>SCHEMA partial; add C1/C2 deterministic fixtures</td>
+<td>Table-local revisions; TN_COMMIT plus mandatory acknowledgment</td>
+<td>checkpoint eligibility and exact-token reopen tests</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Verify per-table revision rules; no consecutive integer assumption</td>
+<td>PASS (offline raw)</td>
+<td>No durable state store added; future persistence must atomically bind processed state and token</td>
 </tr>
 <tr>
 <td>P2-OL05 / PLAN</td>
 <td>Raw replay and full event output</td>
 <td>REQUIRED</td>
-<td>META only; pipeline absent</td>
-<td>SCHEMA partial; add C1/C2 deterministic fixtures</td>
+<td>Bounded mandatory/optional record rings; complete tables and generation/control context</td>
+<td>wire callback and queue accounting tests</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Own bounded wire batches; preserve every table/control event</td>
+<td>PASS (offline raw)</td>
+<td>Native owner APIs only; managed batch interface remains later work</td>
 </tr>
 <tr>
 <td>P2-OL06 / PLAN</td>
 <td>Duplicate handling</td>
 <td>REQUIRED</td>
-<td>META only; pipeline absent</td>
-<td>SCHEMA partial; add C1/C2 deterministic fixtures</td>
+<td>Consecutive duplicates labeled and retained; older history labeled replay</td>
+<td>duplicate and conflicting online revision fixtures</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Equal revision+bytes idempotent; contradictions resync</td>
+<td>PASS (offline raw)</td>
+<td>No historical dedup index or L3 idempotent mutation claimed</td>
 </tr>
 <tr>
 <td>P2-OL07 / PLAN</td>
 <td>Gap handling</td>
 <td>REQUIRED</td>
-<td>META only; pipeline absent</td>
-<td>SCHEMA partial; add C1/C2 deterministic fixtures</td>
+<td>Numeric discontinuity distinct from mandatory loss and corruption</td>
+<td>overflow and revision failure counters; checkpoint invalidation</td>
 <td>None</td>
 <td>BLOCKED</td>
-<td>Verified retention/coverage detection; fail closed</td>
+<td>Vendor retention-exhaustion and actual outage coverage still unqualified</td>
 </tr>
 <tr>
 <td>P2-OL08 / PLAN</td>
 <td>ORDLOG LifeNum</td>
 <td>REQUIRED</td>
-<td>META only; pipeline absent</td>
-<td>SCHEMA partial; add C1/C2 deterministic fixtures</td>
+<td>Ordered LifeNum/generation context and online invalidation</td>
+<td>LifeNum transition and lower-revision reset tests</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Invalidate generation, unsafe views and markers</td>
+<td>PASS (offline raw)</td>
+<td>Future L3 view lifetime and T1 generation exercise remain</td>
 </tr>
 <tr>
 <td>P2-OL09 / PLAN</td>
 <td>ORDLOG ClearDeleted</td>
 <td>REQUIRED</td>
-<td>META only; pipeline absent</td>
-<td>SCHEMA partial; add C1/C2 deterministic fixtures</td>
+<td>Table boundary/flags retained; maximum marker resets only affected tracker</td>
+<td>ClearDeleted and maximum revision fixtures</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Expire replicated history independently of active L3 orders</td>
+<td>PASS (offline raw)</td>
+<td>Raw control retention only; active L3 expiry is not implemented</td>
 </tr>
 <tr>
 <td>P2-OL10 / PLAN</td>
 <td>ORDLOG restart recovery</td>
 <td>REQUIRED</td>
-<td>META only; pipeline absent</td>
-<td>SCHEMA partial; add C1/C2 deterministic fixtures</td>
+<td>Fresh process history; drained same-process opaque continuation</td>
+<td>crash-before-ack eligibility and same-process reopen replay tests</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Fresh bootstrap or verified durable state+marker</td>
+<td>PASS (offline raw)</td>
+<td>No durable raw/L3 state restoration claimed</td>
 </tr>
 <tr>
 <td>P2-OL11 / PLAN</td>
@@ -919,31 +922,31 @@ scenarios and benchmark evidence paths are prospective, not executed artifacts.
 <td>P2-PF01 / PLAN</td>
 <td>Full-path 100k sustained qualification</td>
 <td>REQUIRED</td>
-<td>Benchmark absent</td>
-<td>Add D benchmark modes; no parser-only claims</td>
+<td>Raw D0: 1 million messages in 10.0022 seconds</td>
+<td>raw_d0.json</td>
 <td>None</td>
 <td>BLOCKED</td>
-<td>Paced wire input through decode/raw/L3/commit; no lag growth</td>
+<td>Provisional 99977.8 msg/s with pacing overhead; C2 complete path absent</td>
 </tr>
 <tr>
 <td>P2-PF02 / PLAN</td>
 <td>Engineering 200k sustained target</td>
 <td>REQUIRED</td>
-<td>Benchmark absent</td>
-<td>Add D benchmark modes; no parser-only claims</td>
+<td>Raw D0: 2 million messages in 10.001 seconds</td>
+<td>raw_d0.json</td>
 <td>None</td>
 <td>BLOCKED</td>
-<td>Internal target, not official requirement</td>
+<td>Provisional 199980 msg/s with pacing overhead; C2 complete path absent</td>
 </tr>
 <tr>
 <td>P2-PF03 / PLAN</td>
 <td>Engineering 300k burst target</td>
 <td>REQUIRED</td>
-<td>Benchmark absent</td>
-<td>Add D benchmark modes; no parser-only claims</td>
+<td>Raw unpaced burst: 2 million records, bounded queues</td>
+<td>raw_d0.json; high-water 32768; zero loss</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Bounded queue and measured recovery time</td>
+<td>PASS (provisional raw)</td>
+<td>No full-book burst result claimed</td>
 </tr>
 <tr>
 <td>P2-PF04 / PLAN</td>
@@ -959,21 +962,21 @@ scenarios and benchmark evidence paths are prospective, not executed artifacts.
 <td>P2-PF05 / PLAN</td>
 <td>Slow optional consumers</td>
 <td>REQUIRED</td>
-<td>Benchmark absent</td>
-<td>Add D benchmark modes; no parser-only claims</td>
+<td>Optional bounded ring with explicit first lost sequence</td>
+<td>ordlog overflow fixture</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Bounded batches; explicit overflow/loss boundary and invalidation</td>
+<td>PASS (offline raw)</td>
+<td>Overflowed optional subscription remains explicitly incomplete</td>
 </tr>
 <tr>
 <td>P2-PF06 / PLAN</td>
 <td>Mandatory backpressure</td>
 <td>REQUIRED</td>
-<td>Benchmark absent</td>
-<td>Add D benchmark modes; no parser-only claims</td>
+<td>Mandatory overflow fails health and revokes checkpoint</td>
+<td>ordlog transaction overflow and later-token fixture</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Fail unhealthy and stop checkpoint; never silently drop</td>
+<td>PASS (offline raw)</td>
+<td>Capacity is configurable and transactions must fit available space</td>
 </tr>
 <tr>
 <td>P2-PF07 / PLAN</td>
@@ -989,11 +992,11 @@ scenarios and benchmark evidence paths are prospective, not executed artifacts.
 <td>P2-PF08 / PLAN</td>
 <td>Machine-readable benchmark evidence</td>
 <td>REQUIRED</td>
-<td>Benchmark absent</td>
-<td>Add D benchmark modes; no parser-only claims</td>
+<td>D0 JSON with counts/rates/queue age/RSS/failures/binary hashes</td>
+<td>docs/review/plaza2_offline_20260907/raw_d0.json</td>
 <td>None</td>
-<td>BLOCKED</td>
-<td>Build/machine/corpus/rate/latency/backlog/RSS/hash/drop counters</td>
+<td>PASS (raw evidence)</td>
+<td>Machine is local M4 Pro; Linux CGate plus full L3 qualification remains</td>
 </tr>
 <tr>
 <td>P2-API01 / PLAN</td>
