@@ -379,7 +379,7 @@ class RunJournal {
 
     bool record_add_reply(const OrderReplyObservation& reply) {
         add_reply_timeout_observed_ = add_reply_timeout_observed_ || reply.timed_out;
-        if (!reply.timed_out || !add_reply_.has_value()) {
+        if (!reply.unresolved() || !add_reply_.has_value()) {
             add_reply_ = reply;
         }
         return persist_record();
@@ -387,7 +387,7 @@ class RunJournal {
 
     bool record_cancel_reply(const OrderReplyObservation& reply) {
         cancel_reply_timeout_observed_ = cancel_reply_timeout_observed_ || reply.timed_out;
-        if (!reply.timed_out || !cancel_reply_.has_value()) {
+        if (!reply.unresolved() || !cancel_reply_.has_value()) {
             cancel_reply_ = reply;
         }
         return persist_record();
@@ -395,7 +395,7 @@ class RunJournal {
 
     bool record_recovery_reply(const OrderReplyObservation& reply) {
         recovery_reply_timeout_observed_ = recovery_reply_timeout_observed_ || reply.timed_out;
-        if (!reply.timed_out || !recovery_reply_.has_value()) {
+        if (!reply.unresolved() || !recovery_reply_.has_value()) {
             recovery_reply_ = reply;
         }
         return persist_record();
@@ -481,6 +481,15 @@ class RunJournal {
         out << "  \"recovery_reply_observed\": " << (recovery_reply_.has_value() ? "true" : "false") << ",\n";
         out << "  \"recovery_reply_timeout_observed\": " << (recovery_reply_timeout_observed_ ? "true" : "false")
             << ",\n";
+        const auto diagnostics = [&](std::string_view name, const std::optional<OrderReplyObservation>& reply) {
+            out << "  \"" << name << "_reply_message_id\": " << (reply ? reply->message_id : 0) << ",\n";
+            out << "  \"" << name << "_reply_ambiguous\": " << (reply && reply->ambiguous ? "true" : "false") << ",\n";
+            out << "  \"" << name << "_reply_raw_hex\": \"" << (reply ? bytes_to_hex(reply->raw_payload) : "")
+                << "\",\n";
+        };
+        diagnostics("add", add_reply_);
+        diagnostics("cancel", cancel_reply_);
+        diagnostics("recovery", recovery_reply_);
         out << "  \"replication_observed\": " << (observation_.has_value() ? "true" : "false") << ",\n";
         out << "  \"trade_repl_provenance\": "
             << (observation_.has_value() && observation_->from_trade_replication ? "true" : "false") << ",\n";
@@ -587,14 +596,14 @@ struct LifecycleEvidence {
 
 void merge_reply(std::optional<OrderReplyObservation>& target, bool& timeout_observed,
                  const OrderReplyObservation& reply, bool& evidence_consistent) {
-    if (reply.timed_out) {
-        timeout_observed = true;
+    if (reply.unresolved()) {
+        timeout_observed = timeout_observed || reply.timed_out;
         if (!target.has_value()) {
             target = reply;
         }
         return;
     }
-    if (target.has_value() && !target->timed_out &&
+    if (target.has_value() && !target->unresolved() &&
         (target->accepted != reply.accepted || target->code != reply.code || target->order_id != reply.order_id)) {
         evidence_consistent = false;
     }
@@ -646,7 +655,7 @@ void consume_poll(const OrderLifecycleConfig& config, const OrderLifecyclePollRe
             journal.record_observation(observation);
         }
     }
-    if (evidence.add_reply.has_value() && !evidence.add_reply->timed_out && evidence.observation.has_value()) {
+    if (evidence.add_reply.has_value() && !evidence.add_reply->unresolved() && evidence.observation.has_value()) {
         if (!evidence.add_reply->accepted ||
             (evidence.add_reply->order_id.has_value() &&
              !reply_id_matches_observation(*evidence.add_reply->order_id, *evidence.observation))) {
@@ -670,21 +679,22 @@ bool observation_working(const std::optional<OrderObservation>& observation) {
 }
 
 bool accepted_add_reply_has_id(const LifecycleEvidence& evidence) {
-    return evidence.add_reply.has_value() && !evidence.add_reply->timed_out && evidence.add_reply->accepted &&
+    return evidence.add_reply.has_value() && !evidence.add_reply->unresolved() && evidence.add_reply->accepted &&
            evidence.add_reply->order_id.has_value();
 }
 
 bool definitive_add_rejection(const LifecycleEvidence& evidence) {
-    return evidence.add_reply.has_value() && !evidence.add_reply->timed_out && !evidence.add_reply->accepted &&
+    return evidence.add_reply.has_value() && !evidence.add_reply->unresolved() && !evidence.add_reply->accepted &&
            !evidence.observation.has_value();
 }
 
 bool definitive_cancel_rejection(const LifecycleEvidence& evidence) {
-    return evidence.cancel_reply.has_value() && !evidence.cancel_reply->timed_out && !evidence.cancel_reply->accepted;
+    return evidence.cancel_reply.has_value() && !evidence.cancel_reply->unresolved() &&
+           !evidence.cancel_reply->accepted;
 }
 
 bool definitive_recovery_rejection(const LifecycleEvidence& evidence) {
-    return evidence.recovery_reply.has_value() && !evidence.recovery_reply->timed_out &&
+    return evidence.recovery_reply.has_value() && !evidence.recovery_reply->unresolved() &&
            !evidence.recovery_reply->accepted;
 }
 

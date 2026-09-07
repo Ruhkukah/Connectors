@@ -34,6 +34,7 @@ struct Plaza2HostConfigInputs {
     std::int32_t session_id{0};
     plaza2::cgate::Plaza2RuntimeArmState arm_state{};
     std::string publisher_name;
+    std::uint32_t publisher_messages_per_second{30};
     std::string profile_id{"connector-host-cabi-v2"};
     std::string profile_fingerprint{std::string(64, '0')};
     std::string policy_version{"connector-host-cabi-v2:qty1:distance4:age5000:zero"};

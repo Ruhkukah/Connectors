@@ -397,6 +397,7 @@ class AggrProjectorBridge final : public Plaza2ListenerEventHandler {
 class ReplyBridge final : public Plaza2ListenerEventHandler {
   public:
     using Event = Plaza2TestSessionHost::ReplyEvent;
+    std::function<void(std::uint32_t)> apply_penalty;
 
     void arm(std::uint32_t user_id, Plaza2TradeCommandKind kind) {
         active_[user_id] = kind;
@@ -435,8 +436,17 @@ class ReplyBridge final : public Plaza2ListenerEventHandler {
         const auto expected_message_id = active->second == Plaza2TradeCommandKind::AddOrder   ? 179
                                          : active->second == Plaza2TradeCommandKind::DelOrder ? 177
                                                                                               : 186;
-        if (event.message_id != expected_message_id) {
+        if (event.message_id != expected_message_id && event.message_id != 99 && event.message_id != 100) {
             return fail("reply message family contradicts the active user_id command");
+        }
+        if (event.message_id == 99) {
+            Plaza2TradeValidationResult validation;
+            const auto reply = Plaza2TradeCodec{}.decode_reply(99, event.raw_payload, validation);
+            if (!validation.ok() || !reply.penalty_remain || *reply.penalty_remain < 0) {
+                return fail("malformed PLAZA flood reply");
+            }
+            if (apply_penalty)
+                apply_penalty(static_cast<std::uint32_t>(*reply.penalty_remain));
         }
         const auto signature = std::to_string(event.message_id) + ":" + cgate::plaza2_sha256_hex(event.raw_payload);
         const auto seen = signatures_.find(event.user_id);
@@ -644,9 +654,22 @@ struct Plaza2TestSessionHost::Impl {
     };
 
     explicit Impl(Plaza2TestSessionHostConfig initial)
-        : config(std::move(initial)), private_bridge(private_projector), aggr_bridge(aggr_projector) {}
+        : config(std::move(initial)), private_bridge(private_projector), aggr_bridge(aggr_projector),
+          rate_gate(config.publisher_messages_per_second) {
+        reply_bridge.apply_penalty = [this](std::uint32_t ms) { rate_gate.penalize(publisher_now_ms(), ms); };
+    }
+
+    std::uint64_t publisher_now_ms() const {
+        if (config.publisher_now_ms)
+            return config.publisher_now_ms();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    }
 
     Plaza2Error start() {
+        if (!rate_gate.valid())
+            return invalid("publisher_messages_per_second must be in 1..3000");
         if (started) {
             return invalid("TEST session host is already started", Plaza2ErrorCode::AdapterState);
         }
@@ -1093,6 +1116,7 @@ struct Plaza2TestSessionHost::Impl {
     cgate::Plaza2Env env;
     cgate::Plaza2Connection connection;
     cgate::Plaza2Publisher publisher;
+    cgate::Plaza2PublisherRateGate rate_gate;
     cgate::Plaza2Listener reply_listener;
     cgate::Plaza2Listener aggr_listener;
     std::vector<ManagedPrivateListener> private_listeners;
@@ -1216,8 +1240,17 @@ Plaza2PublisherMessageResult Plaza2TestSessionHost::post_validated(std::string_v
     } else if (message_name == "DelUserOrders") {
         kind = Plaza2TradeCommandKind::DelUserOrders;
     }
+    if (!impl_->rate_gate.admit(impl_->publisher_now_ms())) {
+        Plaza2PublisherMessageResult result;
+        result.validation_error = invalid("PLAZA publisher rate gate throttled; command was not sent");
+        return result;
+    }
     impl_->reply_bridge.arm(user_id, kind);
     return impl_->publisher.post_by_message_name(message_name, payload, user_id, need_reply);
+}
+
+cgate::Plaza2PublisherRateMetrics Plaza2TestSessionHost::publisher_rate_metrics() const noexcept {
+    return impl_->rate_gate.metrics();
 }
 
 struct Plaza2TestTradeTransport::Impl {
@@ -2127,12 +2160,14 @@ struct Plaza2TestTradeTransport::Impl {
             reply.user_id = event.user_id;
             reply.timed_out = event.timed_out;
             if (event.message_id != 179 && event.message_id != 177 && event.message_id != 186 &&
-                event.message_id != 0) {
+                event.message_id != 0 && event.message_id != 99 && event.message_id != 100) {
                 result.ok = false;
                 result.error = "reply message family is not allowed for the active user_id";
                 continue;
             }
             reply.command_kind = event.command_kind;
+            reply.message_id = event.message_id;
+            reply.raw_payload = event.raw_payload;
             if (!event.timed_out) {
                 Plaza2TradeValidationResult validation;
                 const auto decoded = codec.decode_reply(event.message_id, event.raw_payload, validation);
@@ -2142,6 +2177,9 @@ struct Plaza2TestTradeTransport::Impl {
                     continue;
                 }
                 reply.code = decoded.code;
+                reply.message = decoded.message;
+                reply.penalty_remain = decoded.penalty_remain;
+                reply.ambiguous = event.message_id == 100;
                 reply.accepted = decoded.status == Plaza2TradeReplyStatusCategory::Accepted;
                 reply.order_id = decoded.order_id;
             }
