@@ -1,0 +1,22 @@
+{
+  "base": "9a2974e8921c3ef6904582842c73950b306de726",
+  "implementation_head": "a512a67bf66fdd0bed55bdce68a66f8d4afe9aad",
+  "pr": 44,
+  "ci_run": 34157871238,
+  "ci_url": "https://github.com/Ruhkukah/Connectors/actions/runs/34157871238",
+  "release_tests": 6,
+  "macos_asan_ubsan_tests": 6,
+  "linux_asan_ubsan_lsan_tests": 6,
+  "linux_detect_leaks": 1,
+  "shared_abi_build": "PASS",
+  "t1_access": false,
+  "production_c2": "BLOCKED",
+  "artifacts": {
+    "linux-amd64/tools/plaza2_c2_capture_import.py": "ab57b9c4beec07da56184e3b3e7fd79bc3b1a02e6c1f0ec4570a7300a7f34453",
+    "linux-amd64/build/tests/plaza2_c2_preflight_test": "91c9628aded3c8e264fb29a22189ad9b88963215a1cc83de3443e714ea5e70e2",
+    "linux-amd64/build/apps/plaza2_c2_capture": "a1d68af6725112805b307b503a4cc936f035d08e1138352bafccf6679a06d15c",
+    "macos-arm64/plaza2_c2_capture_import.py": "ab57b9c4beec07da56184e3b3e7fd79bc3b1a02e6c1f0ec4570a7300a7f34453",
+    "macos-arm64/plaza2_c2_capture": "c66e3d0c1d6e4a73107847f4b3b212a29b20192721a81446a809adbe32503b9c",
+    "macos-arm64/plaza2_c2_preflight_test": "8ebc0e201ae8c8369c3fb60fc639e53b5fd3825be68b875cdd63f50f8e251c04"
+  }
+}
