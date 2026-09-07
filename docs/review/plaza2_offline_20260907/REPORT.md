@@ -8,19 +8,23 @@ The FTP source-access problem was resolved; no user fetch is needed.
 
 - Main/base: `22a9dfd0947ccde4645696974e1270099491e2c6` (remote main reverified unchanged).
 - Phase A: `669a16de16bd09d3ef859b7a99b221cfa6b353b0`.
-- Tested implementation head: `20ab52ed58d84d3295fe63309992c287c4516ed8`; the final documentation-only commit follows this head.
+- Locally tested implementation: `20ab52ed58d84d3295fe63309992c287c4516ed8` before the CI stack rebase.
+- Rebased implementation: `2d6ccb9cabccbe6e34dc1cf897c31008648fe02d`; its production/test source trees are byte-identical to the locally tested implementation.
+  The only additional implementation-stack change is the CI sanitizer build command. Final documentation follows that head.
 - Worktree: `/Users/pavel/CSharp/MoexConnector-cert-a`. Original workspace and the user-supplied Archive.zip were preserved.
 
 | Phase | Commit | Draft PR |
 | --- | --- | --- |
-| B | `613bf94` | [38: full-book scheme qualification](https://github.com/Ruhkukah/Connectors/pull/38) |
-| C1 | `e868adc` | [39: raw anonymous ORDLOG](https://github.com/Ruhkukah/Connectors/pull/39) |
-| D0 | `d3b5e44` | [40: raw throughput harness](https://github.com/Ruhkukah/Connectors/pull/40) |
-| CERT-SYS | `ebab1cf` | [41: system replies and publisher rate](https://github.com/Ruhkukah/Connectors/pull/41) |
-| AGGR-REC | `20ab52e` | [42: AGGR20 lifecycle recovery](https://github.com/Ruhkukah/Connectors/pull/42) |
+| B | `613bf94` + `41056fc` | [38: full-book scheme qualification](https://github.com/Ruhkukah/Connectors/pull/38) |
+| C1 | `ecaaa4c` | [39: raw anonymous ORDLOG](https://github.com/Ruhkukah/Connectors/pull/39) |
+| D0 | `cdf3054` | [40: raw throughput harness](https://github.com/Ruhkukah/Connectors/pull/40) |
+| CERT-SYS | `05649db` | [41: system replies and publisher rate](https://github.com/Ruhkukah/Connectors/pull/41) |
+| AGGR-REC | `2d6ccb9` | [42: AGGR20 lifecycle recovery](https://github.com/Ruhkukah/Connectors/pull/42) |
 
 The stack is B -> C1 -> D0 -> CERT-SYS -> AGGR-REC. D0 is independently reviewable after C1. PR 38 includes Phase A traceability.
-Nothing was merged. The old draft PR 24 was left unchanged. No execution re-arming or C ABI expansion occurred.
+GitHub's first sanitizer runs selected the new tests but did not build their binaries because of a stale explicit target list.
+The Phase B branch now builds the configured sanitizer targets, and downstream branches were rebased onto that fix.
+This was a missing-executable CI failure, not a sanitizer finding. Nothing was merged. The old draft PR 24 was left unchanged. No execution re-arming or C ABI expansion occurred.
 
 ## Official evidence and differences
 

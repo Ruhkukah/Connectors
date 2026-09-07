@@ -37,5 +37,8 @@
     "asan_ubsan_ctest.log": "9f4e0f07dd63f5a4b006210b3f26c974ff950ebaea5a7ed5980f97e36f62b658",
     "asan_ubsan_aggr.log": "6dc55739cc9072d60a855613e2f6e1efd8669afc4050f3fe30b8cd7f7c5bd18b",
     "raw_d0.json": "a9c854ef1ef5f60bc1ffe618b9422eb7a1e94698b59ac0f8981ae539a07b4752"
-  }
+  },
+  "rebased_implementation_head": "2d6ccb9cabccbe6e34dc1cf897c31008648fe02d",
+  "source_equivalence_after_ci_rebase": true,
+  "ci_build_fix": "41056fc10c6501713e4ec7a66aef0796e9014d9c"
 }
