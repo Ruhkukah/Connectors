@@ -193,11 +193,18 @@ struct Plaza2ListenerEvent {
     std::string_view text_value{};
     std::uint32_t clear_deleted_flags{0};
     std::uint32_t close_reason{0};
+    std::span<const std::uint8_t> raw_nulls{};
+    std::size_t table_index{0};
 };
 
 class Plaza2ListenerEventHandler {
   public:
     virtual ~Plaza2ListenerEventHandler() = default;
+    virtual void on_plaza2_listener_error(const Plaza2Error&) noexcept {}
+    // Opt in only for an exact, completely qualified public wire scheme.
+    [[nodiscard]] virtual bool wants_raw_replication() const noexcept {
+        return false;
+    }
     [[nodiscard]] virtual Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) = 0;
 };
 

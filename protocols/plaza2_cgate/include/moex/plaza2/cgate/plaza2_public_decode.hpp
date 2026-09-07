@@ -3,6 +3,8 @@
 #include "plaza2_public_wire.hpp"
 
 #include <bit>
+#include <cassert>
+#include <type_traits>
 #include <cstring>
 #include <optional>
 
@@ -36,11 +38,12 @@ inline std::optional<std::int64_t> decimal_scaled(const Bcd16_5& bytes) noexcept
     return negative ? -value : value;
 }
 
+// Precondition: validate the complete wire record once before loading any fields.
 template <typename T> inline T load(std::span<const std::byte> bytes, std::size_t offset = 0) noexcept {
-    T result{};
-    if (offset <= bytes.size() && sizeof(T) <= bytes.size() - offset) {
-        std::memcpy(&result, bytes.data() + offset, sizeof(T));
-    }
+    static_assert(std::is_trivially_copyable_v<T>);
+    assert(offset <= bytes.size() && sizeof(T) <= bytes.size() - offset);
+    T result;
+    std::memcpy(&result, bytes.data() + offset, sizeof(T));
     return result;
 }
 

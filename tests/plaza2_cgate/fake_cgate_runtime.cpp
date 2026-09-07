@@ -1,3 +1,4 @@
+#include "plaza2_public_wire.hpp"
 #include "../plaza2_trade/fixtures/cgate99_messages.hpp"
 #include "plaza2_generated_metadata.hpp"
 
@@ -247,6 +248,7 @@ struct FakeListener {
     std::vector<MessagePlan> message_plans;
     bool script_emitted{false};
     std::uint32_t open_attempt_count{0};
+    std::string open_settings;
 };
 
 struct FakeConnection {
@@ -275,6 +277,7 @@ struct FakePublisherMessage {
     std::vector<std::byte> payload;
 };
 
+FakeListener* g_ordlog_listener = nullptr;
 bool g_env_open = false;
 bool g_cancel_after_cleanup = false;
 std::uint32_t g_persistent_order_epoch = 0;
@@ -1386,6 +1389,42 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
     return scheme;
 }
 
+// Exact public layouts deliberately bypass the old private fixture's synthetic field packing.
+std::unique_ptr<OwnedScheme> build_public_ordlog_scheme() {
+    auto scheme = std::make_unique<OwnedScheme>();
+    for (const auto& table : moex::plaza2::public_wire::kTables) {
+        if (table.stream != StreamCode::kFortsOrdlogRepl)
+            continue;
+        auto message = std::make_unique<OwnedMessage>();
+        message->name = table.name;
+        message->desc.name = message->name.data();
+        message->desc.size = table.size;
+        message->desc.align = 4;
+        for (const auto& field : table.fields) {
+            auto owned = std::make_unique<OwnedField>();
+            owned->name = field.name;
+            owned->type_token = field.type;
+            owned->desc.name = owned->name.data();
+            owned->desc.type = owned->type_token.data();
+            owned->desc.offset = field.offset;
+            owned->desc.size = field.size;
+            if (!message->fields.empty())
+                message->fields.back()->desc.next = &owned->desc;
+            message->fields.push_back(std::move(owned));
+        }
+        message->desc.num_fields = message->fields.size();
+        message->desc.fields = &message->fields.front()->desc;
+        if (!scheme->messages.empty())
+            scheme->messages.back()->desc.next = &message->desc;
+        scheme->messages.push_back(std::move(message));
+    }
+    scheme->desc.num_messages = scheme->messages.size();
+    scheme->desc.messages = &scheme->messages.front()->desc;
+    if (fake_flag("MOEX_FAKE_ORDLOG_BAD_SCHEME"))
+        ++scheme->messages.front()->desc.size;
+    return scheme;
+}
+
 const MessagePlan* find_message_plan(const FakeListener& listener, TableCode table_code) {
     for (const auto& plan : listener.message_plans) {
         if (plan.table_code == table_code) {
@@ -1551,6 +1590,40 @@ void detach_listener(FakeConnection* connection, FakeListener* listener) {
 } // namespace
 
 extern "C" {
+
+// Offline tests and D0 drive the actual dynamically loaded runtime callback bridge.
+std::uint32_t moex_fake_ordlog_emit(std::uint32_t type, std::size_t index, void* data, std::size_t size,
+                                    std::int64_t revision, std::uint8_t* nulls, std::size_t null_count) {
+    auto* listener = g_ordlog_listener;
+    if (!listener || listener->state != kStateActive)
+        return kCgErrIncorrectState;
+    std::uint32_t result = 0;
+    if (type == kCgMsgStreamData) {
+        CgMsgStreamData message{.type = type,
+                                .data_size = size,
+                                .data = data,
+                                .owner_id = 0,
+                                .msg_index = index,
+                                .msg_id = 0,
+                                .msg_name = nullptr,
+                                .rev = revision,
+                                .num_nulls = null_count,
+                                .nulls = nulls,
+                                .user_id = 0};
+        result = listener->callback(listener->connection, listener, &message, listener->callback_data);
+    } else {
+        result = emit_simple_message(*listener, type, data, size);
+    }
+    if (result)
+        listener->state = kStateError;
+    if (type == kCgMsgClose)
+        listener->state = kStateClosed;
+    return result;
+}
+
+const char* moex_fake_ordlog_open_settings() {
+    return g_ordlog_listener ? g_ordlog_listener->open_settings.c_str() : "";
+}
 
 const char* moex_fake_cgate_runtime_v1() {
     return "moex_fake_cgate_runtime_v1";
@@ -1937,7 +2010,11 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
     }
 
     const auto script = script_for_stream(listener->stream_code);
-    listener->scheme = build_scheme_for_messages(script, &listener->message_plans);
+    listener->scheme = listener->stream_code == StreamCode::kFortsOrdlogRepl
+                           ? build_public_ordlog_scheme()
+                           : build_scheme_for_messages(script, &listener->message_plans);
+    if (listener->stream_code == StreamCode::kFortsOrdlogRepl)
+        g_ordlog_listener = listener;
     if (!listener->scheme) {
         delete listener;
         return kCgErrIncorrectState;
@@ -1957,16 +2034,19 @@ std::uint32_t cg_lsn_destroy(void* listener) {
         return kCgErrInvalidArgument;
     }
     auto* typed = static_cast<FakeListener*>(listener);
+    if (g_ordlog_listener == typed)
+        g_ordlog_listener = nullptr;
     detach_listener(typed->connection, typed);
     delete typed;
     return kCgErrOk;
 }
 
-std::uint32_t cg_lsn_open(void* listener, const char*) {
+std::uint32_t cg_lsn_open(void* listener, const char* settings) {
     if (listener == nullptr) {
         return kCgErrInvalidArgument;
     }
     auto* typed = static_cast<FakeListener*>(listener);
+    typed->open_settings = settings ? settings : "";
     ++typed->open_attempt_count;
     const bool refdata_error_once =
         typed->stream_code == StreamCode::kFortsRefdataRepl && fake_flag("MOEX_FAKE_REFDATA_OPEN_ERROR_ONCE");
