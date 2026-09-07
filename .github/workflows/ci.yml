@@ -11,7 +11,9 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # This explicitly read-only draft must not execute even fake publisher calls.
   # Other PRs, main and manual runs retain the full suites.
-  C2_PREFLIGHT_ONLY: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/plaza2-c2-preflight-20260907' }}
+  C2_PREFLIGHT_ONLY: >-
+    ${{ github.event_name == 'pull_request' &&
+    (github.head_ref == 'codex/plaza2-c2-preflight-20260907' || github.head_ref == 'codex/plaza2-c2-capture-20260907') }}
 
 jobs:
   connector-validation:
@@ -87,13 +89,18 @@ jobs:
             apps
 
       - name: Configure
-        run: cmake -S . -B build
+        run: |
+          if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          else
+            cmake -S . -B build
+          fi
 
       - name: Build
         run: |
           if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
             cmake --build build --parallel 2 --target \
-              plaza2_c2_preflight_test plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark
+              plaza2_c2_preflight_test plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark plaza2_c2_capture
           else
             cmake --build build
           fi
@@ -105,6 +112,16 @@ jobs:
           else
             ctest --test-dir build --output-on-failure -LE preflight
           fi
+
+      - name: Upload listener-only capture preparation binaries
+        if: github.head_ref == 'codex/plaza2-c2-capture-20260907'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plaza2-c2-capture-linux-amd64
+          path: |
+            build/apps/plaza2_c2_capture
+            build/tests/plaza2_c2_preflight_test
+            tools/plaza2_c2_capture_import.py
 
   component-sanitizers:
     runs-on: ubuntu-latest
@@ -141,7 +158,7 @@ jobs:
         run: |
           if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
             cmake --build build-asan --parallel 2 --target \
-              plaza2_c2_preflight_test plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark
+              plaza2_c2_preflight_test plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark plaza2_c2_capture
           else
             cmake --build build-asan --parallel 2
           fi

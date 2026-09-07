@@ -1,5 +1,9 @@
 # C2 market-data-only capture scenario — NOT EXECUTED
 
+The executable and binary/import contract are prepared in
+[C2_CAPTURE_HARNESS_9_9.md](C2_CAPTURE_HARNESS_9_9.md). This remains an unexecuted
+T1 scenario requiring separate explicit authorization.
+
 Status: **REQUIRES_T1_CAPTURE**, with a separate **BLOCKED** request for written identity authority. This document grants no
 T1 access. PRs #38–42 and the C2 preflight remain unmerged. No publisher object, reply listener, trade host or order commands
 belong in this capture. Use a listener-only harness in a later expressly authorized session.

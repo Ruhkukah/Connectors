@@ -995,6 +995,11 @@ set_tests_properties(plaza2_c2_preflight_test PROPERTIES LABELS "unit;plaza2;san
 set_property(TEST plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark_smoke
     plaza2_public_wire_codegen_check APPEND PROPERTY LABELS c2_preflight)
 
+add_test(NAME plaza2_c2_capture_test
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_c2_capture_test.py"
+        "$<TARGET_FILE:plaza2_c2_capture>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>" "$<TARGET_FILE:plaza2_c2_preflight_test>")
+set_tests_properties(plaza2_c2_capture_test PROPERTIES LABELS "unit;plaza2;sanitizer;c2_capture;c2_preflight")
+
 get_property(moex_registered_tests DIRECTORY PROPERTY TESTS)
 foreach(test_name IN LISTS moex_registered_tests)
     if(test_name MATCHES "^plaza2_" OR test_name STREQUAL "moex_phase4b_capi_read_side_test")
