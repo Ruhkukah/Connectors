@@ -1,0 +1,2 @@
+17:46:41.227723;p2mq-cli;ERROR;p2err 24590=0x600E - 'MQ:SOCK_CONNECT';IO err: Connect failed; mq-conn 0x1; err 111-'Connection refused';TID 140737467250560
+17:46:41.227992;cgate.connection.p2;ERROR;open: P2MQConnectEx2 failed with error: 0x600E. 'MQ:SOCK_CONNECT' @cee{name: noname1, obj: 0x55555557C570, thread: 1};TID 140737467250560

@@ -1,3 +1,4 @@
+#include "fake_cgate_abi.hpp"
 #include "plaza2_public_wire.hpp"
 #include "../plaza2_trade/fixtures/cgate99_messages.hpp"
 #include "plaza2_generated_metadata.hpp"
@@ -51,125 +52,6 @@ constexpr std::uint32_t kCgMsgP2replLifenum = 0x1110;
 constexpr std::uint32_t kCgMsgP2replClearDeleted = 0x1111;
 constexpr std::uint32_t kCgMsgP2replOnline = 0x1112;
 constexpr std::uint32_t kCgMsgP2replReplState = 0x1115;
-
-struct CgValuePair {
-    CgValuePair* next;
-    char* key;
-    char* value;
-};
-
-struct CgFieldValueDesc {
-    CgFieldValueDesc* next;
-    char* name;
-    char* desc;
-    void* value;
-    void* mask;
-};
-
-struct CgMessageDesc;
-
-struct CgFieldDesc {
-    CgFieldDesc* next;
-    std::uint32_t id;
-    char* name;
-    char* desc;
-    char* type;
-    std::size_t size;
-    std::size_t offset;
-    void* def_value;
-    std::size_t num_values;
-    CgFieldValueDesc* values;
-    CgValuePair* hints;
-    std::size_t max_count;
-    CgFieldDesc* count_field;
-    CgMessageDesc* type_msg;
-};
-
-struct CgIndexFieldDesc {
-    CgIndexFieldDesc* next;
-    CgFieldDesc* field;
-    std::uint32_t sort_order;
-};
-
-struct CgIndexDesc {
-    CgIndexDesc* next;
-    std::size_t num_fields;
-    CgIndexFieldDesc* fields;
-    char* name;
-    char* desc;
-    CgValuePair* hints;
-};
-
-struct CgMessageDesc {
-    CgMessageDesc* next;
-    std::size_t size;
-    std::size_t num_fields;
-    CgFieldDesc* fields;
-    std::uint32_t id;
-    char* name;
-    char* desc;
-    CgValuePair* hints;
-    std::size_t num_indices;
-    CgIndexDesc* indices;
-    std::size_t align;
-};
-
-struct CgSchemeDesc {
-    std::uint32_t scheme_type;
-    std::uint32_t features;
-    std::size_t num_messages;
-    CgMessageDesc* messages;
-    CgValuePair* hints;
-};
-
-struct CgMsg {
-    std::uint32_t type;
-    std::size_t data_size;
-    void* data;
-    std::int64_t owner_id;
-};
-
-struct CgMsgStreamData {
-    std::uint32_t type;
-    std::size_t data_size;
-    void* data;
-    std::int64_t owner_id;
-    std::size_t msg_index;
-    std::uint32_t msg_id;
-    const char* msg_name;
-    std::int64_t rev;
-    std::size_t num_nulls;
-    std::uint8_t* nulls;
-    std::uint64_t user_id;
-};
-
-struct CgMsgData {
-    std::uint32_t type;
-    std::size_t data_size;
-    void* data;
-    std::int64_t owner_id;
-    std::size_t msg_index;
-    std::uint32_t msg_id;
-    const char* msg_name;
-    std::uint32_t user_id;
-    const char* addr;
-    CgMsgData* ref_msg;
-};
-
-struct CgTime {
-    std::uint16_t year;
-    std::uint8_t month;
-    std::uint8_t day;
-    std::uint8_t hour;
-    std::uint8_t minute;
-    std::uint8_t second;
-    std::uint16_t msec;
-};
-
-struct CgDataLifeNum {
-    std::uint32_t life_number;
-    std::uint32_t flags;
-};
 
 enum class FakeValueKind : std::uint8_t {
     SignedInteger = 0,
@@ -1390,11 +1272,13 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
 }
 
 // Exact public layouts deliberately bypass the old private fixture's synthetic field packing.
-std::unique_ptr<OwnedScheme> build_public_ordlog_scheme() {
+std::unique_ptr<OwnedScheme> build_public_ordlog_scheme(std::span<const std::size_t> selection = {}) {
     auto scheme = std::make_unique<OwnedScheme>();
-    for (const auto& table : moex::plaza2::public_wire::kTables) {
-        if (table.stream != StreamCode::kFortsOrdlogRepl)
-            continue;
+    const std::array<std::size_t, 4> source{0, 1, 2, 3};
+    if (selection.empty())
+        selection = source;
+    for (const auto index : selection) {
+        const auto& table = moex::plaza2::public_wire::kTables[index];
         auto message = std::make_unique<OwnedMessage>();
         message->name = table.name;
         message->desc.name = message->name.data();
@@ -1619,6 +1503,11 @@ std::uint32_t moex_fake_ordlog_emit(std::uint32_t type, std::size_t index, void*
     if (type == kCgMsgClose)
         listener->state = kStateClosed;
     return result;
+}
+
+void moex_fake_ordlog_error() {
+    if (g_ordlog_listener)
+        g_ordlog_listener->state = kStateError;
 }
 
 const char* moex_fake_ordlog_open_settings() {
@@ -2024,7 +1913,15 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
     }
 
     const auto script = script_for_stream(listener->stream_code);
-    listener->scheme = listener->stream_code == StreamCode::kFortsOrdlogRepl
+    // Deliberately permuted MODEL schemes: never claim these are negotiated vendor indices.
+    const bool composite = listener->settings.starts_with("p2ordbook://");
+    const bool multileg = listener->settings.find("snapshot.data=multileg_orders") != std::string::npos;
+    std::array<std::size_t, 3> selected =
+        multileg ? std::array<std::size_t, 3>{1, 6, 5} : std::array<std::size_t, 3>{0, 6, 4};
+    if (fake_flag("MOEX_FAKE_COMPOSITE_REVERSE"))
+        std::reverse(selected.begin(), selected.end());
+    listener->scheme = composite ? build_public_ordlog_scheme(selected)
+                       : listener->stream_code == StreamCode::kFortsOrdlogRepl
                            ? build_public_ordlog_scheme()
                            : build_scheme_for_messages(script, &listener->message_plans);
     if (listener->stream_code == StreamCode::kFortsOrdlogRepl)

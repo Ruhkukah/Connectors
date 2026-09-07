@@ -1,0 +1,63 @@
+UpdateCTestConfiguration  from :/tmp/plaza2-cert-a/build/DartConfiguration.tcl
+Parse Config file:/tmp/plaza2-cert-a/build/DartConfiguration.tcl
+Test project /tmp/plaza2-cert-a/build
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 167
+    Start 167: plaza2_public_wire_test
+
+167: Test command: /tmp/plaza2-cert-a/build/tests/plaza2_public_wire_test
+167: Working Directory: /tmp/plaza2-cert-a/build/tests
+167: Test timeout computed to be: 1500
+167: 10 public tables: layouts, timestamps, nulls, decimals and raw flags PASS
+1/5 Test #167: plaza2_public_wire_test ............   Passed    0.00 sec
+test 168
+    Start 168: plaza2_public_wire_codegen_check
+
+168: Test command: /tmp/plaza2-cert-a/venv/bin/python "/Users/pavel/CSharp/MoexConnector-cert-a/tools/plaza2_codegen.py" "--schema" "/Users/pavel/CSharp/MoexConnector-cert-a/protocols/plaza2_cgate/schema/plaza2_forts_reviewed.ini" "--out" "/Users/pavel/CSharp/MoexConnector-cert-a/protocols/plaza2_cgate/generated" "--public-wire-lock" "/Users/pavel/CSharp/MoexConnector-cert-a/spec-lock/test/plaza2/public99/wire.json" "--check"
+168: Working Directory: /tmp/plaza2-cert-a/build/tests
+168: Test timeout computed to be: 1500
+2/5 Test #168: plaza2_public_wire_codegen_check ...   Passed    0.22 sec
+test 169
+    Start 169: plaza2_ordlog_test
+
+169: Test command: /tmp/plaza2-cert-a/build/tests/plaza2_ordlog_test "/tmp/plaza2-cert-a/build/tests/libplaza2_fake_cgate_runtime.dylib"
+169: Working Directory: /tmp/plaza2-cert-a/build/tests
+169: Test timeout computed to be: 1500
+169: ORDLOG wire callbacks, replay, generation, bounded delivery and checkpoint tests PASS
+3/5 Test #169: plaza2_ordlog_test .................   Passed    0.13 sec
+test 170
+    Start 170: plaza2_ordlog_benchmark_smoke
+
+170: Test command: /tmp/plaza2-cert-a/build/tests/plaza2_ordlog_benchmark "/tmp/plaza2-cert-a/build/tests/libplaza2_fake_cgate_runtime.dylib" "--smoke"
+170: Working Directory: /tmp/plaza2-cert-a/build/tests
+170: Test timeout computed to be: 1500
+170: {"profile":"sustained_100k","messages_processed":10000,"elapsed_seconds":0.000579291,"msg_per_second":1.72625e+07,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":72708,"peak_process_rss_bytes":35356672,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":64,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
+170: {"profile":"sustained_200k","messages_processed":10000,"elapsed_seconds":0.000440375,"msg_per_second":2.27079e+07,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":46625,"peak_process_rss_bytes":35422208,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":64,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
+170: {"profile":"burst","messages_processed":10000,"elapsed_seconds":0.00042025,"msg_per_second":2.37954e+07,"target_per_second":0,"queue_current":0,"queue_high_water":10000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":391083,"peak_process_rss_bytes":35422208,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":64,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
+170: {"profile":"multi_instrument","messages_processed":10000,"elapsed_seconds":0.000427625,"msg_per_second":2.3385e+07,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":41667,"peak_process_rss_bytes":35422208,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":4096,"id_population":100000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
+170: {"profile":"large_id_population","messages_processed":10000,"elapsed_seconds":0.000433375,"msg_per_second":2.30747e+07,"target_per_second":0,"queue_current":0,"queue_high_water":1000,"oldest_queued_event_age_ns":0,"peak_oldest_queued_event_age_ns":41750,"peak_process_rss_bytes":35422208,"decode_failures":0,"revision_failures":0,"dropped_records":0,"optional_dropped":0,"instruments":4096,"id_population":1000000,"checksum":16864,"accounting_pass":true,"l3_mutation":false,"certification_performance_pass":false}
+4/5 Test #170: plaza2_ordlog_benchmark_smoke ......   Passed    0.11 sec
+test 172
+    Start 172: plaza2_c2_preflight_test
+
+172: Test command: /tmp/plaza2-cert-a/build/tests/plaza2_c2_preflight_test "/tmp/plaza2-cert-a/build/tests/libplaza2_fake_cgate_runtime.dylib"
+172: Working Directory: /tmp/plaza2-cert-a/build/tests
+172: Test timeout computed to be: 1500
+172: MODEL_ONLY PASS histories=99 snapshot_equivalences=1136 restart_equivalences=1136 illegal_properties=396 life_positions=6 close_error_positions=6 callback_pair_permutations=4 callback_faults=18
+5/5 Test #172: plaza2_c2_preflight_test ...........   Passed    0.60 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Label Time Summary:
+c2_preflight    =   1.06 sec*proc (5 tests)
+plaza2          =   1.06 sec*proc (5 tests)
+sanitizer       =   0.84 sec*proc (4 tests)
+tooling         =   0.22 sec*proc (1 test)
+unit            =   1.06 sec*proc (5 tests)
+
+Total Test time (real) =   1.07 sec

@@ -1,6 +1,6 @@
 # PLAZA II certification traceability matrix
 
-Audit base: `22a9dfd0947ccde4645696974e1270099491e2c6`, 2026-09-07. **Not certification-ready.** Updated after offline B/C1/D0/CERT-SYS/AGGR-REC; C2 remains stopped.
+Audit base: `22a9dfd0947ccde4645696974e1270099491e2c6`, 2026-09-07. **Not certification-ready.** Updated after offline C2-PREFLIGHT; production C2 remains stopped.
 
 Current scope, source hashes, PRs and results: [offline closeout](../docs/review/plaza2_offline_20260907/REPORT.md).
 
@@ -11,6 +11,10 @@ acceptance criteria, not a separate claimed MOEX quotation. R8 is split into its
 Each row is independently applicable. **REQUIRED** means software capability/evidence; **MOEX-COORDINATED** means an externally scheduled exercise, not a waiver. Status **PASS** is
 restricted to the row's stated scope; **FAIL** is a code-confirmed requirement contradiction; **BLOCKED** means missing implementation or protocol authority; **NOT RUN** means
 qualification missing. Historical T1 receipts do not certify current HEAD. No full-order-log or L3 row is N/A.
+
+C2 preflight: [contract and gate verdict](../docs/plaza2/PUBLIC_L3_MUTATION_CONTRACT_9_9.md),
+[market-data-only capture scenario](../docs/plaza2/C2_MARKET_DATA_CAPTURE_9_9.md). Conditional model PASS_OFFLINE does not
+promote production capability rows. Actual composite mapping/chronology REQUIRES_T1_CAPTURE; identity domain BLOCKED.
 
 Evidence map (paths relative to repository root):
 
@@ -772,18 +776,18 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L301 / PLAN</td>
 <td>FORTS_ORDBOOK_REPL snapshot</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
-<td>Six tables exist only as metadata; stage complete publication</td>
+<td>Ten public layouts qualified; composite info/transaction exposure REQUIRES_T1_CAPTURE</td>
 </tr>
 <tr>
 <td>P2-L302 / PLAN</td>
 <td>Bootstrap</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
 <td>Seed active remainder; do not replay snapshot as order execution</td>
@@ -792,8 +796,8 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L303 / PLAN</td>
 <td>Snapshot revision and LifeNum</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
 <td>Bind trades_rev/trades_lifenum to matching log and publication</td>
@@ -802,18 +806,18 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L304 / PLAN</td>
 <td>ORDLOG handoff</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
-<td>Resolve stale logRev example and verify actual 9.9 open settings</td>
+<td>Default info.trades_rev and empty open settings documented; actual composite callbacks REQUIRES_T1_CAPTURE</td>
 </tr>
 <tr>
 <td>P2-L305 / PLAN</td>
 <td>No snapshot/log race gap</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
 <td>Proof of retained incremental coverage after boundary</td>
@@ -822,8 +826,8 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L306 / PLAN</td>
 <td>Deterministic final book/hash</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
 <td>Canonical complete active state plus checkpoint; not BBO only</td>
@@ -832,8 +836,8 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L307 / PLAN</td>
 <td>Late join</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
 <td>Include carried multi-day orders and both multileg tables</td>
@@ -842,18 +846,18 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L308 / PLAN</td>
 <td>L3 process restart</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
-<td>Hash equality with uninterrupted path</td>
+<td>1,136 conditional restart equalities PASS_OFFLINE; actual composite contract remains blocked</td>
 </tr>
 <tr>
 <td>P2-L309 / PLAN</td>
 <td>LifeNum during bootstrap</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
 <td>Discard staging and old active generation</td>
@@ -862,8 +866,8 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L310 / PLAN</td>
 <td>Resync after invalid state</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
 <td>Bounded retries, unavailable stale book, no checkpoint advance</td>
@@ -872,8 +876,8 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L311 / PLAN</td>
 <td>Snapshot failure/partial publication</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
 <td>Never publish incomplete generation</td>
@@ -882,8 +886,8 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L312 / PLAN</td>
 <td>Catch-up completion/readiness</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
 <td>Valid basis, coverage, commit and zero backlog; ONLINE alone insufficient</td>
@@ -892,18 +896,18 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L313 / PLAN</td>
 <td>Public identity scope</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
-<td>Verify uniqueness and rollover continuity before freezing key</td>
+<td>No production identity key frozen; universal uniqueness/reuse requires written MOEX authority</td>
 </tr>
 <tr>
 <td>P2-L314 / PLAN</td>
 <td>Action/remainder invariants</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
 <td>Unknown actions preserved raw; contradictions invalidate L3</td>
@@ -912,11 +916,11 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-L315 / PLAN</td>
 <td>ORDBOOK ClearDeleted</td>
 <td>REQUIRED</td>
-<td>Absent; proposed native C2</td>
-<td>Add C2 replay/fault fixtures</td>
+<td>Test-only C2 reference model; production absent</td>
+<td>C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table</td>
 <td>None</td>
 <td>BLOCKED</td>
-<td>Publication-aware table/range semantics; preserve valid active state</td>
+<td>Per-table callback cases PASS_OFFLINE; ambiguous relevant marker invalidates, no synthetic order cancellation</td>
 </tr>
 <tr>
 <td>P2-PF01 / PLAN</td>
@@ -1072,7 +1076,7 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-EV03 / PLAN</td>
 <td>Replay recovery oracle across interruptions</td>
 <td>REQUIRED</td>
-<td>No public L3 harness</td>
+<td>C2 test-only conditional oracle exists; no production public L3 harness</td>
 <td>Add snapshot+partial+restart vs uninterrupted hashes</td>
 <td>None</td>
 <td>BLOCKED</td>
