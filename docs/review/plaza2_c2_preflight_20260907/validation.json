@@ -1,0 +1,60 @@
+{
+  "scope": "C2-PREFLIGHT conditional model only",
+  "main_base": "22a9dfd0947ccde4645696974e1270099491e2c6",
+  "stack_base": "585d199997ec65d4690cc9618350052509c9d83b",
+  "implementation_head": "e66cadc0f3731d409758090713eeb9c082201fa1",
+  "pr": 43,
+  "production_c2": "BLOCKED",
+  "t1_access": false,
+  "publisher_calls": 0,
+  "exchange_orders": 0,
+  "release": {
+    "passed": 5,
+    "failed": 0
+  },
+  "asan_ubsan": {
+    "passed": 5,
+    "failed": 0,
+    "local_detect_leaks": false
+  },
+  "linux_ci": "Exact revision and results on PR checks; detect_leaks=1",
+  "histories": 99,
+  "snapshot_equalities": 1136,
+  "restart_equalities": 1136,
+  "illegal_properties": 396,
+  "life_positions": 6,
+  "close_error_positions": 6,
+  "callback_pair_permutations": 4,
+  "callback_faults": 18,
+  "open_errors": 2,
+  "matrix_rows": 96,
+  "gates": {
+    "regular_negotiation": "REQUIRES_T1_CAPTURE",
+    "snapshot_validity": "REQUIRES_T1_CAPTURE",
+    "bound_continuation": "REQUIRES_T1_CAPTURE",
+    "identity": "BLOCKED",
+    "normal_action_remainder": "PASS_OFFLINE",
+    "lifenum_invalidation": "PASS_OFFLINE",
+    "restart_failure_policy": "PASS_OFFLINE",
+    "protocol_equivalence": "BLOCKED",
+    "multileg_negotiation": "REQUIRES_T1_CAPTURE",
+    "conditional_model_equivalence": "PASS_OFFLINE"
+  },
+  "implementation_files_sha256": {
+    ".github/workflows/ci.yml": "88c67edf300f2fc7847ee5deeea3b00cca687feb9710ba5c8afe7c663616bf30",
+    "cert/PLAZA2_CERT_MATRIX.md": "7eab2b9b02fd6caf99afc02df7fdc664cb5e915c393d691d7a4a93232e444564",
+    "docs/plaza2/C2_MARKET_DATA_CAPTURE_9_9.md": "704e4d98bc4cc961886b45f7c30d4cdc917022eb0e9f7e9eba1fc2b364330311",
+    "docs/plaza2/PUBLIC_L3_MUTATION_CONTRACT_9_9.md": "d39d1fffa38bb183cb28a062300f495b56734c0e5b5681c202b941857286a533",
+    "docs/review/plaza2_c2_preflight_20260907/asan_ubsan_ctest.log": "359a4d7220038a08913d70de8852b4e8a0b5a18cf1227a5179252612f0e1c6e4",
+    "docs/review/plaza2_c2_preflight_20260907/release_ctest.log": "4a726a4e11a58301fd58cf7716ee50fb507534f9382e34f0496673174a31996c",
+    "docs/review/plaza2_c2_preflight_20260907/sdk_connection.log": "f275f0606774800304253ab006680a69219de8ee7849719f9a1e1f298a32ea75",
+    "docs/review/plaza2_c2_preflight_20260907/sdk_probe.log": "f17959add517f77b55c9c1e3bde75e92087a6bfe7d50f7e6961db730d44808fd",
+    "tests/CMakeLists.txt": "bda6ada67c655fa9f1f3453935b854e2ef36e8d18430795c84adefa37c2a3801",
+    "tests/fixtures/plaza2_c2/README.md": "96306b7b66277a1323ff74ee24b6134196d0823d05c26727bffe26ab84499075",
+    "tests/fixtures/plaza2_c2/sdk_probe.cpp": "0ffa1748397d83c1c95c8d04d9deaf501e6c8ac7fdcfb1de3d13434a3e67536c",
+    "tests/plaza2_cgate/fake_cgate_abi.hpp": "b68e2aa70b29bcdde84d678b62055031174428aa2d1e62c7a082a2eecc522430",
+    "tests/plaza2_cgate/fake_cgate_runtime.cpp": "ef4044a3b89f846f1fe44979cf1ad12ebc3bfecda5e472710f1f5437395968ce",
+    "tests/plaza2_cgate/plaza2_c2_preflight_test.cpp": "8a55d52ccef78b97f5fdc107231749cab8d3b71a9bbf9a1fbb2d11ee8a2e3fbc",
+    "tests/plaza2_cgate/plaza2_c2_reference.hpp": "3abfa3571eeb2f935b90a887e054035233477f13aab72fdc8109271efd7db932"
+  }
+}

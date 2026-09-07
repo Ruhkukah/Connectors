@@ -986,6 +986,15 @@ target_link_libraries(plaza2_publisher_rate_test PRIVATE moex_plaza2_cgate_metad
 add_test(NAME plaza2_publisher_rate_test COMMAND plaza2_publisher_rate_test)
 set_tests_properties(plaza2_publisher_rate_test PROPERTIES LABELS "unit;plaza2;sanitizer")
 
+add_executable(plaza2_c2_preflight_test plaza2_cgate/plaza2_c2_preflight_test.cpp)
+target_link_libraries(plaza2_c2_preflight_test PRIVATE moex_plaza2_cgate_metadata plaza2_runtime_test_support ${CMAKE_DL_LIBS})
+add_dependencies(plaza2_c2_preflight_test plaza2_fake_cgate_runtime)
+add_test(NAME plaza2_c2_preflight_test COMMAND plaza2_c2_preflight_test "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+set_tests_properties(plaza2_c2_preflight_test PROPERTIES LABELS "unit;plaza2;sanitizer;c2_preflight")
+# Audited no-publisher selection for this read-only tranche; baseline full-suite labels remain intact.
+set_property(TEST plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark_smoke
+    plaza2_public_wire_codegen_check APPEND PROPERTY LABELS c2_preflight)
+
 get_property(moex_registered_tests DIRECTORY PROPERTY TESTS)
 foreach(test_name IN LISTS moex_registered_tests)
     if(test_name MATCHES "^plaza2_" OR test_name STREQUAL "moex_phase4b_capi_read_side_test")
