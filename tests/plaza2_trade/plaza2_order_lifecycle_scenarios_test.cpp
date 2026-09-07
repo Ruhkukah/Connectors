@@ -623,6 +623,35 @@ void test_terminal_replication_before_reply_arrival() {
     std::filesystem::remove_all(root);
 }
 
+void test_system_reply_is_bounded_uncertainty() {
+    const auto root = make_temp_root("system_reply");
+    auto config = base_config(root, "system-reply");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    auto ambiguous_add = timeout_reply(Plaza2TradeCommandKind::AddOrder, config.add_user_id);
+    ambiguous_add.timed_out = false;
+    ambiguous_add.ambiguous = true;
+    ambiguous_add.message_id = 100;
+    auto ambiguous_recovery = ambiguous_add;
+    ambiguous_recovery.command_kind = Plaza2TradeCommandKind::DelUserOrders;
+    ambiguous_recovery.user_id = config.recovery_user_id;
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.replies = {ambiguous_add}},
+        {.deadline_reached = true},
+        {.replies = {ambiguous_recovery}},
+        {.deadline_reached = true},
+    };
+    const auto result = run_script(config, transport, clock);
+    require(result.state == OrderLifecycleState::UnresolvedOrphanIncident && result.add_reply->ambiguous &&
+                !result.add_reply->timed_out && !result.market_safe_terminal,
+            "system response must reach bounded unresolved outcome, never definitive rejection");
+    require(transport.commands.size() == 2 && transport.recovery_posts[1],
+            "no automatic AddOrder resend after system reply");
+    std::filesystem::remove_all(root);
+}
+
 void test_p2mq_timeout_is_uncertainty_not_completion() {
     const auto root = make_temp_root("p2mq_timeout");
     auto config = base_config(root, "p2mq-timeout");
@@ -1370,6 +1399,7 @@ int main() {
         test_replication_only_timeout_reconcile_finds_reply();
         test_replication_without_reply_uses_exact_ext_recovery();
         test_terminal_replication_before_reply_arrival();
+        test_system_reply_is_bounded_uncertainty();
         test_p2mq_timeout_is_uncertainty_not_completion();
         test_immediate_full_fill();
         test_partial_fill_then_remainder_cancellation();

@@ -981,6 +981,11 @@ add_test(NAME plaza2_ordlog_benchmark_smoke
     COMMAND plaza2_ordlog_benchmark "$<TARGET_FILE:plaza2_fake_cgate_runtime>" --smoke)
 set_tests_properties(plaza2_ordlog_benchmark_smoke PROPERTIES LABELS "unit;plaza2;sanitizer")
 
+add_executable(plaza2_publisher_rate_test plaza2_cgate/plaza2_publisher_rate_test.cpp)
+target_link_libraries(plaza2_publisher_rate_test PRIVATE moex_plaza2_cgate_metadata)
+add_test(NAME plaza2_publisher_rate_test COMMAND plaza2_publisher_rate_test)
+set_tests_properties(plaza2_publisher_rate_test PROPERTIES LABELS "unit;plaza2;sanitizer")
+
 get_property(moex_registered_tests DIRECTORY PROPERTY TESTS)
 foreach(test_name IN LISTS moex_registered_tests)
     if(test_name MATCHES "^plaza2_" OR test_name STREQUAL "moex_phase4b_capi_read_side_test")

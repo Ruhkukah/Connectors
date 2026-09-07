@@ -76,6 +76,14 @@ struct OrderReplyObservation {
     bool accepted{false};
     std::int32_t code{0};
     std::optional<std::int64_t> order_id;
+    bool ambiguous{false};
+    std::int32_t message_id{0};
+    std::string message;
+    std::vector<std::byte> raw_payload;
+    std::optional<std::int32_t> penalty_remain;
+    [[nodiscard]] bool unresolved() const noexcept {
+        return timed_out || ambiguous;
+    }
 };
 
 struct OrderLifecyclePollResult {

@@ -2203,11 +2203,26 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
                 reply_message_id = 177U;
             } else if (std::string_view(family) == "recovery") {
                 reply_message_id = 186U;
+            } else if (std::string_view(family) == "99") {
+                reply_message_id = 99;
+            } else if (std::string_view(family) == "100") {
+                reply_message_id = 100;
             } else if (std::string_view(family) == "wrong") {
                 reply_message_id = add ? 177U : 179U;
             }
         }
         auto reply_payload = make_trade_reply(message_name);
+        if (reply_message_id == 99) {
+            reply_payload.assign(140, std::byte{});
+            write_reply_scalar(reply_payload, 0, std::int32_t{30});
+            write_reply_scalar(reply_payload, 4, std::int32_t{1000});
+            std::memcpy(reply_payload.data() + 8, "FLOOD", 5);
+        } else if (reply_message_id == 100) {
+            reply_payload.assign(260, std::byte{});
+            const auto code = fake_flag("MOEX_FAKE_SYSTEM_ZERO_CODE") ? 0 : 1;
+            write_reply_scalar(reply_payload, 0, static_cast<std::int32_t>(code));
+            std::memcpy(reply_payload.data() + 4, "SYSTEM", 6);
+        }
         if (fake_flag("MOEX_FAKE_PUB_REPLY_MALFORMED") && !reply_payload.empty()) {
             reply_payload.resize(3);
         }
