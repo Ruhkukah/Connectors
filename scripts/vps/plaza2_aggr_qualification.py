@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import time
 from pathlib import Path
 import subprocess
 
@@ -21,8 +23,11 @@ def main():
     parser.add_argument("--orders", action="store_true")
     parser.add_argument("--idle", action="store_true")
     args = parser.parse_args()
+    args.output = args.output.resolve()
+    args.journal = args.journal.resolve()
     if args.orders and args.idle:
         parser.error("idle cannot enable orders")
+    os.umask(0o077)
     package = args.package.resolve()
     manifest = json.loads((package / "deployment.json").read_text())
     for name, expected in manifest["files"].items():
@@ -52,9 +57,23 @@ def main():
     env["MOEX_AGGR_T1_JOURNAL"] = str(args.journal.resolve())
     env["MOEX_QUAL_BROKER"] = str(account["broker_code"])
     env["MOEX_QUAL_CLIENT"] = str(account["client_code"])
-    env["MOEX_QUAL_ENV"] = (
-        f"ini={config / 'cgate/client_t1.ini'};key=${{MOEX_PLAZA2_CGATE_SOFTWARE_KEY}}"
+    work = args.output.parent / (args.output.name + "-vendor")
+    work.mkdir(mode=0o700)
+    private_ini = work / "client.ini"
+    client_settings, changed = re.subn(
+        r"(?m)^logfile=.*$", f"logfile={work / 'vendor.log'}",
+        (config / "cgate/client_t1.ini").read_text(),
     )
+    if changed != 1:
+        raise SystemExit("expected one existing client logfile setting")
+    private_ini.write_text(client_settings)
+    (work / "launch.json").write_text(json.dumps({
+        "source_sha": source_sha, "created_utc_s": time.time(),
+        "manifest_sha256": hashlib.sha256((package / "deployment.json").read_bytes()).hexdigest(),
+        "client_ini_sha256": hashlib.sha256(private_ini.read_bytes()).hexdigest(),
+        "orders_enabled": args.orders, "idle": args.idle, "isin_id": args.isin, "session_id": args.session,
+    }, indent=2) + "\n")
+    env["MOEX_QUAL_ENV"] = f"ini={private_ini};key=${{MOEX_PLAZA2_CGATE_SOFTWARE_KEY}}"
     env.pop("MOEX_AGGR_T1_ORDER_AUTH", None)
     env.pop("MOEX_AGGR_T1_IDLE", None)
     if args.orders:
@@ -71,9 +90,6 @@ def main():
         "--session-id", str(args.session), "--expected-release", "SPECTRA9.9.0",
         "--armed-test-network", "--armed-test-session", "--armed-test-plaza2", "--json",
     ]
-    work = args.output.parent / (args.output.name + "-vendor")
-    work.mkdir(mode=0o700)
-    os.umask(0o077)
     os.chdir(work)
     os.execve(str(binary), command, env)
 

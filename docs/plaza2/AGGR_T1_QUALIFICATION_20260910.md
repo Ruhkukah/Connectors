@@ -39,7 +39,9 @@ the clean restart. Host-managed ext_id starts at 2026091000; user IDs start at 2
 through the existing persisted serial/epoch mechanism. Validate no identifier collision before enabling.
 
 The private deployment wrapper reads the existing protected account profile and secret environment;
-never print or commit those values. Run in a dedicated writable vendor-log directory. Pin source, binary,
+never print or commit those values. The wrapper copies the client logging INI into each dedicated
+vendor-log directory and changes only its logfile path, preserving the shared original. Its launch receipt
+records that private INI hash and the package manifest hash. Pin source, binary,
 runtime, scheme, config and router hashes in preflight. The two messages/second local cap counts post
 attempts and leaves room for a prompt cancel; it does not claim the login's exchange limit.
 

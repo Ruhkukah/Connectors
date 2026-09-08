@@ -523,7 +523,8 @@ int main(int argc, char** argv) {
         if (std::getenv("MOEX_AGGR_T1_IDLE")) {
             const auto& arms = request.config.transport.host.arm_state;
             if (seconds != 300 || request.config.purpose != ch::HostPurpose::Qualify || !arms.test_network_armed ||
-                !arms.test_session_armed || !arms.test_plaza2_armed || date.tm_hour * 60 + date.tm_min > 16 * 60 + 5)
+                !arms.test_session_armed || !arms.test_plaza2_armed ||
+                date.tm_hour * 3600 + date.tm_min * 60 + date.tm_sec > 16 * 3600 + 5 * 60)
                 throw std::invalid_argument(
                     "idle probe requires 300 seconds, three TEST arms and no order authorization");
             return idle_connection(request.config.transport.host.runtime,
@@ -549,6 +550,11 @@ int main(int argc, char** argv) {
         auto previous = started;
         auto next_sample = started;
         auto deadline = started + std::chrono::seconds(seconds);
+        auto end_date = date;
+        end_date.tm_hour = 16;
+        end_date.tm_min = 10;
+        end_date.tm_sec = 0;
+        const auto end_utc = timegm(&end_date) - 3 * 3600;
         // Never continue beyond the authorized end, even when duration is misconfigured.
         const auto end_seconds = (16 * 60 + 10 - (date.tm_hour * 60 + date.tm_min)) * 60 - date.tm_sec;
         deadline = std::min(deadline, started + std::chrono::seconds(std::max(0, end_seconds)));
@@ -558,7 +564,7 @@ int main(int argc, char** argv) {
         std::uint64_t polls{}, max_gap{};
         std::optional<tr::OrderLifecycleState> last_lifecycle;
         std::optional<bool> last_ready;
-        while (!failed && !stopping && Clock::now() < deadline) {
+        while (!failed && !stopping && Clock::now() < deadline && std::time(nullptr) < end_utc) {
             const auto current = Clock::now();
             max_gap = std::max(max_gap,
                                static_cast<std::uint64_t>(
@@ -598,6 +604,7 @@ int main(int argc, char** argv) {
                 (void)result;
             }
             evidence.flush(events);
+            orders_blocked |= std::time(nullptr) >= end_utc - 15 * 60;
             orders_blocked |=
                 evidence.invalid_books || evidence.dropped || evidence.callback_errors || evidence.owner_violation;
             if (current >= next_sample || failed) {
