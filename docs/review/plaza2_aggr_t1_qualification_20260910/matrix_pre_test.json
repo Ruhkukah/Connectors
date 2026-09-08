@@ -1,7 +1,7 @@
 {
   "base_sha": "25747b47138473d71213ed7019bfd0be0f4dd139",
   "date": "2026-09-09",
-  "matrix_sha256": "7a2ab07dc45a31e5a818781c424354f1f3bdb0a3ebcae9876fdef6853a2ebcb8",
+  "matrix_sha256": "b14b2bddea4f535e7f86e565c0909cb8b9c228706ad1f396b1c014c294b2def5",
   "rows": [
     {
       "id": "P2-C01 / C1",
@@ -161,7 +161,7 @@
       "offline_evidence": "ordlog clear marker and AGGR ClearDeleted/reopen fixtures",
       "t1_evidence": "None; deletion ranges per declared stream",
       "status": "PASS_OFFLINE (AGGR fallback) / NOT OBSERVED (T1); C2 BLOCKED",
-      "limitations": "Conservative AGGR invalidation and fresh snapshot are supported offline; selective compaction is not required for this run. Public C2 mutation remains outside Aggregated scope"
+      "limitations": "AGGR fallback tested offline; selective compaction not required. Public C2 mutation remains outside Aggregated scope"
     },
     {
       "id": "P2-R08B / R8b",
@@ -521,7 +521,7 @@
       "offline_evidence": "plaza2_aggr20_md_runner_test: LifeNum invalidation and readiness withheld; transport epoch test restores after manual host restart",
       "t1_evidence": "Life values observed historically; no retained T1 LifeNum-change exercise",
       "status": "PASS_OFFLINE / NOT OBSERVED (T1)",
-      "limitations": "Fresh committed data plus ONLINE required; automatic LifeNum recovery is not established by the manual restart fixture and needs T1 evidence"
+      "limitations": "Fresh data plus ONLINE required. Manual restart fixture does not prove automatic LifeNum recovery; T1 evidence pending."
     },
     {
       "id": "P2-MD05 / PLAN",
@@ -531,7 +531,7 @@
       "offline_evidence": "plaza2_aggr20_md_runner_test: ClearDeleted invalidation, bounded reopen and restored snapshot",
       "t1_evidence": "No retained T1 ClearDeleted exercise",
       "status": "PASS_OFFLINE (fallback) / NOT OBSERVED (T1)",
-      "limitations": "Conservative fallback is the qualified implementation; selective compaction is not a prerequisite. T1 event and recovery remain unobserved"
+      "limitations": "Conservative fallback qualified offline; selective compaction not required. T1 event and recovery remain unobserved."
     },
     {
       "id": "P2-OL01 / PLAN",

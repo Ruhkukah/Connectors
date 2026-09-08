@@ -289,7 +289,7 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>ordlog clear marker and AGGR ClearDeleted/reopen fixtures</td>
 <td>None; deletion ranges per declared stream</td>
 <td>PASS_OFFLINE (AGGR fallback) / NOT OBSERVED (T1); C2 BLOCKED</td>
-<td>Conservative AGGR invalidation and fresh snapshot are supported offline; selective compaction is not required for this run. Public C2 mutation remains outside Aggregated scope</td>
+<td>AGGR fallback tested offline; selective compaction not required. Public C2 mutation remains outside Aggregated scope</td>
 </tr>
 <tr>
 <td>P2-R08B / R8b</td>
@@ -664,7 +664,7 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>plaza2_aggr20_md_runner_test: LifeNum invalidation and readiness withheld; transport epoch test restores after manual host restart</td>
 <td>Life values observed historically; no retained T1 LifeNum-change exercise</td>
 <td>PASS_OFFLINE / NOT OBSERVED (T1)</td>
-<td>Fresh committed data plus ONLINE required; automatic LifeNum recovery is not established by the manual restart fixture and needs T1 evidence</td>
+<td>Fresh data plus ONLINE required. Manual restart fixture does not prove automatic LifeNum recovery; T1 evidence pending.</td>
 </tr>
 <tr>
 <td>P2-MD05 / PLAN</td>
@@ -674,7 +674,7 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>plaza2_aggr20_md_runner_test: ClearDeleted invalidation, bounded reopen and restored snapshot</td>
 <td>No retained T1 ClearDeleted exercise</td>
 <td>PASS_OFFLINE (fallback) / NOT OBSERVED (T1)</td>
-<td>Conservative fallback is the qualified implementation; selective compaction is not a prerequisite. T1 event and recovery remain unobserved</td>
+<td>Conservative fallback qualified offline; selective compaction not required. T1 event and recovery remain unobserved.</td>
 </tr>
 <tr>
 <td>P2-OL01 / PLAN</td>
