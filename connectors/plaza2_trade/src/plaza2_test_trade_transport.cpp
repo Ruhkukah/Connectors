@@ -2253,6 +2253,11 @@ Plaza2PublisherMessageResult Plaza2TestTradeTransport::post(const Plaza2TradeEnc
 }
 Plaza2PublisherMessageResult
 Plaza2TestTradeTransport::post_exact_ext_id_recovery(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) {
+    if (!impl_->config.allow_exact_ext_id_recovery) {
+        Plaza2PublisherMessageResult result;
+        result.validation_error = invalid("exact-ext recovery is disabled by the configured command scope");
+        return result;
+    }
     if (command.command_kind != Plaza2TradeCommandKind::DelUserOrders) {
         Plaza2PublisherMessageResult result;
         result.validation_error = invalid("post_exact_ext_id_recovery requires a DelUserOrders command");

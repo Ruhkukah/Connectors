@@ -843,6 +843,24 @@ void test_reply_bridge_fail_closed(const moex::plaza2::test::RuntimeFixturePaths
     const auto add = encoded_add(codec);
     const auto recovery = encoded_recovery(codec);
     {
+        ScopedEnv post_timeout("MOEX_FAKE_PUB_POST_RESULT", "timeout");
+        auto config = prepared_config(fixture, add, recovery);
+        config.allow_exact_ext_id_recovery = false;
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
+        const auto ambiguous = transport.post(add, 701);
+        expect_case(ambiguous.certainty == cgate::Plaza2SubmissionCertainty::PossiblySent,
+                    "qualification fixture has a genuinely ambiguous Add");
+        const auto calls = transport.host().publisher_call_counts();
+        const auto refused = transport.post_exact_ext_id_recovery(recovery, 703);
+        const auto after = transport.host().publisher_call_counts();
+        expect_case(refused.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !refused.post_invoked &&
+                        calls.msgnew == after.msgnew && calls.post == after.post,
+                    "Add/DelOrder-only scope prevents recovery allocation/post even after uncertainty");
+    }
+
+    {
         ScopedEnv reply_first("MOEX_FAKE_REPLY_BEFORE_REPLICATION", "1");
         auto config = prepared_config(fixture, add, recovery);
         const auto plan = bound_plan(*config.authorized_intent, add, recovery);

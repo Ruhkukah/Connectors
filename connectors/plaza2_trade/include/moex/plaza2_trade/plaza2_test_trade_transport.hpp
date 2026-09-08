@@ -248,6 +248,8 @@ struct Plaza2TestTradeTransportConfig {
     std::string observation_client_code;
     Plaza2TradeSide observation_side{Plaza2TradeSide::Buy};
     std::int64_t observation_quantity{1};
+    // Qualification may narrow command scope to Add/DelOrder only.
+    bool allow_exact_ext_id_recovery{true};
 };
 
 // Read-side values only, deliberately distinct from a persisted execution receipt.

@@ -45,17 +45,17 @@ attempts and leaves room for a prompt cancel; it does not claim the login's exch
 
 The runner counts every callback and TN boundary, validates every committed AGGR state for valid side,
 positive retained volume, exact decimal/scale agreement, unique side/price keys and depth <=20, and samples
-book/state hashes and CPU counters once per second. Lifecycle/reply events use a bounded 8192-event buffer;
+book/state hashes, canonical per-instrument hashes and CPU counters once per second. Lifecycle/reply events use a bounded 8192-event buffer;
 loss is explicit and blocks orders. Callback formatting and disk writes occur outside CGate callbacks.
 The qualification-only validation scan adds work to commit; measure its actual Linux cost and do not
 represent these timings as an uninstrumented connector benchmark. Preserve native vendor traces for
 REPLSTATE text, full reply/close diagnostics and schema-negotiation evidence not retained in numeric events.
 
 `events.log` columns are monotonic_ns, stream code, kind, value, error, message_id, user_id. Event kinds
-0–9 follow Plaza2ListenerEventKind; 10/11/12 are sampled connection/publisher/listener states. TN counters
+0–9 follow Plaza2ListenerEventKind; kind 13 records host readiness transitions; 10/11/12 are sampled connection/publisher/listener states. TN counters
 are exact but per-TN timestamp traces are not collected. CGate states are CLOSED=0, ERROR=1, OPENING=2,
-ACTIVE=3. Owner-thread identity, actual process errors, FD count, current RSS and filesystem headroom
-must be collected by the supervisor/OS alongside these records. maxrss_native_units is KiB on Linux,
+ACTIVE=3. Owner identity and cross-thread violations are recorded. Current RSS and FD count are sampled on Linux;
+the supervisor additionally records filesystem headroom and preserves actual process-error diagnostics. maxrss_native_units is KiB on Linux,
 bytes on macOS. `price_limits_current.json` rows are isin_id, session_id, replRev, lower, upper; they are
 published only after REFDATA TN_COMMIT. Instrument expiry is Unix seconds from the runtime decoder.
 
@@ -65,7 +65,9 @@ and never retries Add. It writes the canonical plan, submits through `begin_orde
 Working and sends one explicit cancel, then requires safe Cancelled before finishing the epoch. A
 request is not permission to bypass supervisor checks. Any unexpected fill, ambiguous result, failed
 cancel, stale readiness, observation failure or event loss ends new orders. Retain the journal and raise
-operator attention; do not automatically flatten or resubmit. No automatic command files are scheduled.
+operator attention; do not automatically flatten or resubmit. No automatic command files are scheduled. The qualification configuration disables the existing
+DelUserOrders recovery path even if cancellation loses its correlated order identity; this fails closed
+without allocating or posting another command. Defaults for other hosts are unchanged.
 
 Set `MOEX_AGGR_T1_IDLE=1`, omit the order authorization and use duration exactly 300 for the independent
 connection-only probe. It opens no listener or publisher and records polling/state/CPU evidence. Run it
@@ -118,3 +120,7 @@ is AGGR_MODE_READY_FOR_FREEZE, AGGR_MODE_REQUIRES_FIXES or AGGR_MODE_INCOMPLETE_
 This preparation document is not an end-of-day report or certification verdict. Stop after closeout;
 pause the one-day heartbeat. Do not merge PRs, change MOEX login configuration, force server rate errors,
 restart the VPS, or touch unrelated trading services.
+
+Regression preparation found a timing-dependent TWIME Establish-timeout fixture. It now waits for the peer
+to receive Establish before advancing the fake clock and checks the exact 100/101 ms boundary. This changes
+the test synchronization only, not TWIME production behavior; retain the initial failed run in validation.

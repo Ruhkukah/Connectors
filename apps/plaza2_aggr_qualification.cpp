@@ -1,6 +1,7 @@
 #include "moex/connector_host/operator_config.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <charconv>
 #include <csignal>
@@ -71,6 +72,8 @@ struct Event {
 // This executable is qualification-only. Counters and fixed event storage stay on
 // the single CGate owner thread. Formatting and disk I/O happen after host.poll().
 struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20QualificationObserver {
+    const std::thread::id owner = std::this_thread::get_id();
+    std::atomic<bool> owner_violation{false};
     std::array<Event, 8192> events{};
     std::size_t used{};
     std::map<std::pair<std::int64_t, std::int64_t>, PriceLimits> limits;
@@ -85,6 +88,10 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
         keys.reserve(100000);
     }
     void observe(const cg::Plaza2ListenerEvent& e, const cg::Plaza2Error& error) noexcept override {
+        if (std::this_thread::get_id() != owner) {
+            owner_violation = true;
+            return;
+        }
         try {
             using FC = moex::plaza2::generated::FieldCode;
             using EK = cg::Plaza2ListenerEventKind;
@@ -193,6 +200,10 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
         }
     }
     void committed(const cg::Plaza2Aggr20Snapshot& book) noexcept override {
+        if (std::this_thread::get_id() != owner) {
+            owner_violation = true;
+            return;
+        }
         ++commits;
         keys.clear();
         if (book.levels.size() > keys.capacity()) {
@@ -268,6 +279,27 @@ std::string books_json(const ch::ConnectorHostQualificationSnapshot& q) {
         // Prices are numeric wire strings; scaled integer also retained for auditing.
         out << '[' << row.isin_id << ',' << row.dir << ',' << row.price_scaled << ',' << row.volume << ','
             << row.repl_id << ',' << row.repl_rev << ',' << std::quoted(row.price) << ']';
+    }
+    out << "],\"canonical_books\":[";
+    std::vector<const cg::Plaza2Aggr20Level*> levels;
+    levels.reserve(q.book.levels.size());
+    for (const auto& row : q.book.levels)
+        levels.push_back(&row);
+    std::sort(levels.begin(), levels.end(), [](const auto* a, const auto* b) {
+        return std::tie(a->isin_id, a->dir, a->price_scaled) < std::tie(b->isin_id, b->dir, b->price_scaled);
+    });
+    first = true;
+    for (std::size_t i = 0; i < levels.size();) {
+        const auto isin = levels[i]->isin_id;
+        std::ostringstream canonical;
+        do {
+            const auto& row = *levels[i++];
+            canonical << row.dir << ':' << row.price_scaled << ':' << row.volume << '\n';
+        } while (i < levels.size() && levels[i]->isin_id == isin);
+        if (!first)
+            out << ',';
+        first = false;
+        out << '[' << isin << ',' << std::quoted(cg::plaza2_sha256_hex(canonical.str())) << ']';
     }
     out << "],\"instruments\":[";
     first = true;
@@ -466,6 +498,7 @@ int main(int argc, char** argv) {
         const auto* journal = std::getenv("MOEX_AGGR_T1_JOURNAL");
         if (!journal || !*journal)
             throw std::invalid_argument("persistent qualification journal path is required");
+        request.config.transport.allow_exact_ext_id_recovery = false;
         request.config.order.journal_root = journal;
         request.config.order.run_id = "aggr-t1-20260910";
         request.config.order.profile_id = "main-aggregated-t1-20260910";
@@ -504,6 +537,10 @@ int main(int argc, char** argv) {
         request.config.transport.host.process_timeout_ms = 10;
         std::ofstream events(output / "events.log"), metrics(output / "metrics.jsonl");
         events << "monotonic_ns stream kind value error message_id user_id\n";
+        write_file(output / "environment.json",
+                   "{\"source_sha\":\"" MOEX_SOURCE_GIT_SHA "\",\"pid\":" + std::to_string(getpid()) +
+                       ",\"owner_thread\":" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) +
+                       "}\n");
         ch::ConnectorHost host(request.config);
         write_file(output / "state_before.json", ch::render_snapshot(host.snapshot(), true));
         std::signal(SIGTERM, stop_signal);
@@ -520,6 +557,7 @@ int main(int argc, char** argv) {
         bool cancel_sent = false;
         std::uint64_t polls{}, max_gap{};
         std::optional<tr::OrderLifecycleState> last_lifecycle;
+        std::optional<bool> last_ready;
         while (!failed && !stopping && Clock::now() < deadline) {
             const auto current = Clock::now();
             max_gap = std::max(max_gap,
@@ -529,6 +567,10 @@ int main(int argc, char** argv) {
             ++polls;
             failed = static_cast<bool>(host.poll());
             auto state = host.snapshot();
+            if (last_ready != state.observation_ready) {
+                events << ns() << " 0 13 " << state.observation_ready << " 0 0 0\n";
+                last_ready = state.observation_ready;
+            }
             if (state.order_epoch_active) {
                 const auto result = host.poll_order();
                 state = host.snapshot();
@@ -556,7 +598,8 @@ int main(int argc, char** argv) {
                 (void)result;
             }
             evidence.flush(events);
-            orders_blocked |= evidence.invalid_books || evidence.dropped || evidence.callback_errors;
+            orders_blocked |=
+                evidence.invalid_books || evidence.dropped || evidence.callback_errors || evidence.owner_violation;
             if (current >= next_sample || failed) {
                 const auto q = host.qualification_snapshot();
                 write_file(output / "state_current.json", ch::render_snapshot(host.snapshot(), true));
@@ -565,6 +608,23 @@ int main(int argc, char** argv) {
                 write_file(output / "price_limits_current.json", evidence.limits_json());
                 rusage resources{};
                 getrusage(RUSAGE_SELF, &resources);
+                std::uint64_t rss_kib = 0, fds = 0;
+#ifdef __linux__
+                std::ifstream status("/proc/self/status");
+                std::string status_line;
+                while (std::getline(status, status_line)) {
+                    if (status_line.starts_with("VmRSS:")) {
+                        std::istringstream line(status_line.substr(6));
+                        line >> rss_kib;
+                    }
+                }
+                std::error_code fd_error;
+                for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd", fd_error)) {
+                    (void)entry;
+                    ++fds;
+                }
+#endif
+
                 metrics << "{\"monotonic_ns\":" << ns() << ",\"polls\":" << polls << ",\"max_poll_gap_ns\":" << max_gap
                         << ",\"callbacks\":" << evidence.callbacks << ",\"commits\":" << evidence.commits
                         << ",\"invalid_books\":" << evidence.invalid_books << ",\"event_loss\":" << evidence.dropped
@@ -572,7 +632,8 @@ int main(int argc, char** argv) {
                         << ",\"runtime_active\":" << evidence.runtime_active()
                         << ",\"orders_blocked\":" << orders_blocked << ",\"book_sha256\":\""
                         << cg::plaza2_sha256_hex(book_bytes) << "\""
-                        << ",\"maxrss_native_units\":" << resources.ru_maxrss
+                        << ",\"owner_violation\":" << evidence.owner_violation << ",\"rss_kib\":" << rss_kib
+                        << ",\"fd_count\":" << fds << ",\"maxrss_native_units\":" << resources.ru_maxrss
                         << ",\"user_cpu_us\":" << (resources.ru_utime.tv_sec * 1000000LL + resources.ru_utime.tv_usec)
                         << ",\"system_cpu_us\":" << (resources.ru_stime.tv_sec * 1000000LL + resources.ru_stime.tv_usec)
                         << ",\"rate_admitted\":" << q.rate.admitted << ",\"rate_throttled\":" << q.rate.throttled
