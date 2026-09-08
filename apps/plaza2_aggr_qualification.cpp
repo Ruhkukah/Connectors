@@ -68,6 +68,9 @@ struct PriceLimits {
 struct Event {
     std::uint64_t time{}, value{};
     std::uint32_t stream{}, kind{}, error{}, message{}, user{};
+    std::int64_t signed_value{};
+    std::uint32_t table{}, flags{};
+    std::size_t text_index{static_cast<std::size_t>(-1)};
 };
 // This executable is qualification-only. Counters and fixed event storage stay on
 // the single CGate owner thread. Formatting and disk I/O happen after host.poll().
@@ -75,7 +78,8 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
     const std::thread::id owner = std::this_thread::get_id();
     std::atomic<bool> owner_violation{false};
     std::array<Event, 8192> events{};
-    std::size_t used{};
+    std::size_t used{}, text_bytes{};
+    std::vector<std::string> texts;
     std::map<std::pair<std::int64_t, std::int64_t>, PriceLimits> limits;
     std::vector<PriceLimits> pending_limits;
     std::uint64_t ref_life{};
@@ -156,7 +160,7 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
                 }
             }
             ++callbacks;
-            callback_errors += static_cast<bool>(error);
+
             const auto stream = static_cast<std::uint32_t>(e.stream_code);
             const auto kind = static_cast<std::uint32_t>(e.kind);
             if (kind < 10)
@@ -171,19 +175,38 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
                 ++dropped;
                 return;
             }
-            events[used++] = {ns(),
-                              e.unsigned_value,
-                              stream,
-                              kind,
-                              static_cast<std::uint32_t>(error.code),
-                              static_cast<std::uint32_t>(e.message_id),
-                              e.user_id};
+            auto& event = events[used++];
+            event = {ns(),
+                     e.unsigned_value,
+                     stream,
+                     kind,
+                     static_cast<std::uint32_t>(error.code),
+                     static_cast<std::uint32_t>(e.message_id),
+                     e.user_id,
+                     e.signed_value,
+                     static_cast<std::uint32_t>(e.table_code),
+                     e.kind == EK::Close ? e.close_reason : e.clear_deleted_flags};
+            if (!e.text_value.empty()) {
+                if (e.text_value.size() > 65536 || text_bytes + e.text_value.size() > 1048576) {
+                    ++dropped;
+                    return;
+                }
+                event.text_index = texts.size();
+                texts.emplace_back(e.text_value);
+                text_bytes += e.text_value.size();
+            }
         } catch (...) {
             ++dropped;
         }
     }
     void runtime_state(std::uint32_t kind, std::uint32_t stream, std::uint32_t state,
                        std::uint32_t error) noexcept override {
+        if (std::this_thread::get_id() != owner) {
+            owner_violation = true;
+            return;
+        }
+        if (kind == 14)
+            ++callback_errors;
         try {
             const auto key = std::pair{kind, stream};
             const auto value = std::pair{state, error};
@@ -251,9 +274,17 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
         for (std::size_t i = 0; i < used; ++i) {
             const auto& e = events[i];
             out << e.time << ' ' << e.stream << ' ' << e.kind << ' ' << e.value << ' ' << e.error << ' ' << e.message
-                << ' ' << e.user << '\n';
+                << ' ' << e.user << ' ' << e.signed_value << ' ' << e.table << ' ' << e.flags << ' ';
+            if (e.text_index < texts.size()) {
+                constexpr char hex[] = "0123456789abcdef";
+                for (const unsigned char c : texts[e.text_index])
+                    out << hex[c >> 4] << hex[c & 15];
+            }
+            out << '\n';
         }
         used = 0;
+        texts.clear();
+        text_bytes = 0;
         out.flush();
     }
 };
@@ -460,6 +491,17 @@ int self_test() {
     q.instruments.front().last_trade_date = std::time(nullptr);
     if (terms_gate(evidence, q, state, order))
         return 10;
+    Evidence text_evidence;
+    std::string token = "life=17;rev=123";
+    text_evidence.observe({.kind = cg::Plaza2ListenerEventKind::ReplState, .text_value = token}, {});
+    token = "overwritten";
+    std::ostringstream text_log;
+    text_evidence.flush(text_log);
+    if (text_log.str().find("6c6966653d31373b7265763d313233") == std::string::npos || text_evidence.text_bytes)
+        return 11;
+    text_evidence.runtime_state(14, 0, 1, 1);
+    if (text_evidence.callback_errors != 1)
+        return 12;
     std::cout << "qualification evidence self-test PASS\n";
     return 0;
 }
@@ -537,7 +579,7 @@ int main(int argc, char** argv) {
         request.config.transport.host.publisher_messages_per_second = 2;
         request.config.transport.host.process_timeout_ms = 10;
         std::ofstream events(output / "events.log"), metrics(output / "metrics.jsonl");
-        events << "monotonic_ns stream kind value error message_id user_id\n";
+        events << "monotonic_ns stream kind value error message_id user_id signed_value table flags text_hex\n";
         write_file(output / "environment.json",
                    "{\"source_sha\":\"" MOEX_SOURCE_GIT_SHA "\",\"pid\":" + std::to_string(getpid()) +
                        ",\"owner_thread\":" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) +

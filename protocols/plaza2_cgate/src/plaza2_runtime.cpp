@@ -1300,6 +1300,9 @@ struct Plaza2ListenerCallbackState {
 
     auto fail = [&](Plaza2Error error) -> CgResult {
         state->last_error = std::move(error);
+        if (auto* observer = state->shared->settings.qualification_observer)
+            observer->runtime_state(14, static_cast<std::uint32_t>(state->stream_code), state->last_error.runtime_code,
+                                    static_cast<std::uint32_t>(state->last_error.code));
         if (state->handler)
             state->handler->on_plaza2_listener_error(state->last_error);
         return state->last_error.runtime_code == 0 ? kCgErrInternal : state->last_error.runtime_code;

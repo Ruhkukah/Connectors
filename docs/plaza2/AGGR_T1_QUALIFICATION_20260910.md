@@ -51,10 +51,12 @@ book/state hashes, canonical per-instrument hashes and CPU counters once per sec
 loss is explicit and blocks orders. Callback formatting and disk writes occur outside CGate callbacks.
 The qualification-only validation scan adds work to commit; measure its actual Linux cost and do not
 represent these timings as an uninstrumented connector benchmark. Preserve native vendor traces for
-REPLSTATE text, full reply/close diagnostics and schema-negotiation evidence not retained in numeric events.
+full reply diagnostics and schema-negotiation evidence. REPLSTATE text is copied into bounded lifecycle
+storage and emitted as hex outside the callback; signed ClearDeleted boundaries, table codes and flags
+are retained in the numeric record.
 
-`events.log` columns are monotonic_ns, stream code, kind, value, error, message_id, user_id. Event kinds
-0–9 follow Plaza2ListenerEventKind; kind 13 records host readiness transitions; 10/11/12 are sampled connection/publisher/listener states. TN counters
+`events.log` columns are monotonic_ns, stream code, kind, value, error, message_id, user_id, signed_value, table, flags, text_hex. Event kinds
+0–9 follow Plaza2ListenerEventKind; kind 13 records host readiness transitions and 14 records callback failure (including decoder failures); 10/11/12 are sampled connection/publisher/listener states. TN counters
 are exact but per-TN timestamp traces are not collected. CGate states are CLOSED=0, ERROR=1, OPENING=2,
 ACTIVE=3. Owner identity and cross-thread violations are recorded. Current RSS and FD count are sampled on Linux;
 the supervisor additionally records filesystem headroom and preserves actual process-error diagnostics. maxrss_native_units is KiB on Linux,
