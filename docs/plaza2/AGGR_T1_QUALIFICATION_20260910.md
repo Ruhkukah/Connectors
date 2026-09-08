@@ -42,8 +42,9 @@ The private deployment wrapper reads the existing protected account profile and 
 never print or commit those values. The wrapper copies the client logging INI into each dedicated
 vendor-log directory and changes only its logfile path, preserving the shared original. Its launch receipt
 records that private INI hash and the package manifest hash. Pin source, binary,
-runtime, scheme, config and router hashes in preflight. The two messages/second local cap counts post
-attempts and leaves room for a prompt cancel; it does not claim the login's exchange limit.
+runtime, scheme, config and router hashes in preflight. The existing 30 messages/second local cap counts post attempts. Qualification submits only one serial
+Add/Cancel cycle per scheduled scenario, retaining capacity for cancellation; the local cap is not a
+claim about the login's provisioned exchange limit.
 
 The runner counts every callback and TN boundary, validates every committed AGGR state for valid side,
 positive retained volume, exact decimal/scale agreement, unique side/price keys and depth <=20, and samples

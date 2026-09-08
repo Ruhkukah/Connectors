@@ -1,7 +1,7 @@
 {
   "base_sha": "25747b47138473d71213ed7019bfd0be0f4dd139",
   "date": "2026-09-09",
-  "matrix_sha256": "bee59963d41b6e5f93f6715f7b78c4647b6553abf23d386ee6866341beff5ab1",
+  "matrix_sha256": "7a2ab07dc45a31e5a818781c424354f1f3bdb0a3ebcae9876fdef6853a2ebcb8",
   "rows": [
     {
       "id": "P2-C01 / C1",
@@ -160,8 +160,8 @@
       "implementation": "Raw table boundary retained; AGGR fresh-snapshot fallback",
       "offline_evidence": "ordlog clear marker and AGGR ClearDeleted/reopen fixtures",
       "t1_evidence": "None; deletion ranges per declared stream",
-      "status": "BLOCKED",
-      "limitations": "Selective AGGR range purge and C2 book mutation not implemented"
+      "status": "PASS_OFFLINE (AGGR fallback) / NOT OBSERVED (T1); C2 BLOCKED",
+      "limitations": "Conservative AGGR invalidation and fresh snapshot are supported offline; selective compaction is not required for this run. Public C2 mutation remains outside Aggregated scope"
     },
     {
       "id": "P2-R08B / R8b",
@@ -477,11 +477,11 @@
       "id": "P2-TX05 / PLAN",
       "requirement": "Rate boundary/reconnect/timeout handling",
       "applicability": "REQUIRED",
-      "implementation": "Rate gate absent",
-      "offline_evidence": "Add deterministic monotonic-clock tests",
-      "t1_evidence": "None",
-      "status": "BLOCKED",
-      "limitations": "Shared budget, post accounting, limits; dynamic updates unsupported"
+      "implementation": "Shared monotonic publisher rate gate and post accounting implemented",
+      "offline_evidence": "plaza2_publisher_rate_test boundaries; transport reopen retains rate metrics",
+      "t1_evidence": "Not run on qualification head",
+      "status": "PASS_OFFLINE / NOT RUN (T1)",
+      "limitations": "Configured limit retained; dynamic exchange limit updates unsupported; no live flood test authorized"
     },
     {
       "id": "P2-MD01 / PLAN",
@@ -518,10 +518,10 @@
       "requirement": "AGGR20 LifeNum",
       "applicability": "REQUIRED",
       "implementation": "Shared AGGR bridge invalidates visible/staged levels and readiness on LifeNum",
-      "offline_evidence": "plaza2_aggr20_md_runner_test: LifeNum invalidation and fresh ONLINE recovery",
+      "offline_evidence": "plaza2_aggr20_md_runner_test: LifeNum invalidation and readiness withheld; transport epoch test restores after manual host restart",
       "t1_evidence": "Life values observed historically; no retained T1 LifeNum-change exercise",
       "status": "PASS_OFFLINE / NOT OBSERVED (T1)",
-      "limitations": "Fresh committed data plus ONLINE required; a naturally observed change is needed for T1 proof"
+      "limitations": "Fresh committed data plus ONLINE required; automatic LifeNum recovery is not established by the manual restart fixture and needs T1 evidence"
     },
     {
       "id": "P2-MD05 / PLAN",
@@ -531,7 +531,7 @@
       "offline_evidence": "plaza2_aggr20_md_runner_test: ClearDeleted invalidation, bounded reopen and restored snapshot",
       "t1_evidence": "No retained T1 ClearDeleted exercise",
       "status": "PASS_OFFLINE (fallback) / NOT OBSERVED (T1)",
-      "limitations": "Selective table/revision purge is not implemented or claimed; R08A remains incomplete"
+      "limitations": "Conservative fallback is the qualified implementation; selective compaction is not a prerequisite. T1 event and recovery remain unobserved"
     },
     {
       "id": "P2-OL01 / PLAN",
@@ -963,5 +963,7 @@
       "status": "BLOCKED",
       "limitations": "Interrupt at receive/decode/apply/commit/checkpoint; exact state equality"
     }
-  ]
+  ],
+  "audit_revision": 2,
+  "audit_note": "Pre-live wording correction; initial external snapshot retained. No T1 result added."
 }

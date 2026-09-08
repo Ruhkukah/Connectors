@@ -288,8 +288,8 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>Raw table boundary retained; AGGR fresh-snapshot fallback</td>
 <td>ordlog clear marker and AGGR ClearDeleted/reopen fixtures</td>
 <td>None; deletion ranges per declared stream</td>
-<td>BLOCKED</td>
-<td>Selective AGGR range purge and C2 book mutation not implemented</td>
+<td>PASS_OFFLINE (AGGR fallback) / NOT OBSERVED (T1); C2 BLOCKED</td>
+<td>Conservative AGGR invalidation and fresh snapshot are supported offline; selective compaction is not required for this run. Public C2 mutation remains outside Aggregated scope</td>
 </tr>
 <tr>
 <td>P2-R08B / R8b</td>
@@ -620,11 +620,11 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-TX05 / PLAN</td>
 <td>Rate boundary/reconnect/timeout handling</td>
 <td>REQUIRED</td>
-<td>Rate gate absent</td>
-<td>Add deterministic monotonic-clock tests</td>
-<td>None</td>
-<td>BLOCKED</td>
-<td>Shared budget, post accounting, limits; dynamic updates unsupported</td>
+<td>Shared monotonic publisher rate gate and post accounting implemented</td>
+<td>plaza2_publisher_rate_test boundaries; transport reopen retains rate metrics</td>
+<td>Not run on qualification head</td>
+<td>PASS_OFFLINE / NOT RUN (T1)</td>
+<td>Configured limit retained; dynamic exchange limit updates unsupported; no live flood test authorized</td>
 </tr>
 <tr>
 <td>P2-MD01 / PLAN</td>
@@ -661,10 +661,10 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>AGGR20 LifeNum</td>
 <td>REQUIRED</td>
 <td>Shared AGGR bridge invalidates visible/staged levels and readiness on LifeNum</td>
-<td>plaza2_aggr20_md_runner_test: LifeNum invalidation and fresh ONLINE recovery</td>
+<td>plaza2_aggr20_md_runner_test: LifeNum invalidation and readiness withheld; transport epoch test restores after manual host restart</td>
 <td>Life values observed historically; no retained T1 LifeNum-change exercise</td>
 <td>PASS_OFFLINE / NOT OBSERVED (T1)</td>
-<td>Fresh committed data plus ONLINE required; a naturally observed change is needed for T1 proof</td>
+<td>Fresh committed data plus ONLINE required; automatic LifeNum recovery is not established by the manual restart fixture and needs T1 evidence</td>
 </tr>
 <tr>
 <td>P2-MD05 / PLAN</td>
@@ -674,7 +674,7 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>plaza2_aggr20_md_runner_test: ClearDeleted invalidation, bounded reopen and restored snapshot</td>
 <td>No retained T1 ClearDeleted exercise</td>
 <td>PASS_OFFLINE (fallback) / NOT OBSERVED (T1)</td>
-<td>Selective table/revision purge is not implemented or claimed; R08A remains incomplete</td>
+<td>Conservative fallback is the qualified implementation; selective compaction is not a prerequisite. T1 event and recovery remain unobserved</td>
 </tr>
 <tr>
 <td>P2-OL01 / PLAN</td>

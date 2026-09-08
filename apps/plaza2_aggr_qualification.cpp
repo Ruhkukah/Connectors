@@ -576,7 +576,6 @@ int main(int argc, char** argv) {
         Evidence evidence;
         request.config.transport.host.runtime.qualification_observer = &evidence;
         request.config.transport.host.qualification_book_observer = &evidence;
-        request.config.transport.host.publisher_messages_per_second = 2;
         request.config.transport.host.process_timeout_ms = 10;
         std::ofstream events(output / "events.log"), metrics(output / "metrics.jsonl");
         events << "monotonic_ns stream kind value error message_id user_id signed_value table flags text_hex\n";
@@ -630,7 +629,10 @@ int main(int argc, char** argv) {
                     orders_blocked = true;
                 if (state.lifecycle_state == tr::OrderLifecycleState::Working && !cancel_sent) {
                     cancel_sent = true;
-                    (void)host.cancel_current_order();
+                    events << ns() << " CANCEL_BEGIN\n";
+                    const auto cancel = host.cancel_current_order();
+                    events << ns() << " CANCEL_END " << static_cast<unsigned>(cancel.state) << ' '
+                           << cancel.cancel_submission.post_invoked << '\n';
                 }
                 if (state.lifecycle_state == tr::OrderLifecycleState::Cancelled && state.market_safe &&
                     state.evidence_consistent && !state.executed_quantity) {
@@ -727,7 +729,10 @@ int main(int argc, char** argv) {
                             if (host.begin_order(order, plan.canonical_json, plan.sha256))
                                 events << ns() << " ORDER_REFUSED_BIND\n";
                             else {
+                                events << ns() << " ADD_BEGIN " << plan.sha256 << '\n';
                                 const auto sent = host.submit_order();
+                                events << ns() << " ADD_END " << static_cast<unsigned>(sent.state) << ' '
+                                       << sent.add_submission.post_invoked << '\n';
                                 orders_blocked |= sent.state != tr::OrderLifecycleState::Posted;
                             }
                         }
@@ -739,13 +744,12 @@ int main(int argc, char** argv) {
         write_file(output / "state_after.json", ch::render_snapshot(host.snapshot(), true));
         const bool stopped = !host.stop();
         evidence.flush(events);
+        const bool evidence_failed = failed || !stopped || evidence.invalid_books || evidence.dropped ||
+                                     evidence.callback_errors || evidence.owner_violation;
         write_file(output / "result.json",
-                   std::string("{\"status\":\"") +
-                       (failed || !stopped || evidence.invalid_books || evidence.dropped || evidence.callback_errors
-                            ? "FAIL"
-                            : "PARTIAL") +
+                   std::string("{\"status\":\"") + (evidence_failed ? "FAIL" : "PARTIAL") +
                        "\",\"scope\":\"host observation; scenario verdict requires retained evidence review\"}\n");
-        return failed || !stopped ? 3 : 0;
+        return evidence_failed ? 3 : 0;
     } catch (const std::exception& error) {
         std::cerr << "qualification: " << error.what() << '\n';
         return 2;
