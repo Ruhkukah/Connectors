@@ -1032,3 +1032,6 @@ foreach(test_name IN LISTS moex_registered_tests)
         set_property(TEST "${test_name}" APPEND PROPERTY LABELS abi)
     endif()
 endforeach()
+
+add_test(NAME plaza2_aggr_qualification_evidence COMMAND plaza2_aggr_qualification --self-test)
+set_tests_properties(plaza2_aggr_qualification_evidence PROPERTIES LABELS "unit;plaza2;sanitizer")

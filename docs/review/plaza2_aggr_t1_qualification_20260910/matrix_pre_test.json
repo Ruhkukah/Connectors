@@ -1,0 +1,967 @@
+{
+  "base_sha": "25747b47138473d71213ed7019bfd0be0f4dd139",
+  "date": "2026-09-09",
+  "matrix_sha256": "bee59963d41b6e5f93f6715f7b78c4647b6553abf23d386ee6866341beff5ab1",
+  "rows": [
+    {
+      "id": "P2-C01 / C1",
+      "requirement": "Connection URLs",
+      "applicability": "REQUIRED",
+      "implementation": "RT/LIVE implemented",
+      "offline_evidence": "RT + ATEST",
+      "t1_evidence": "T99 partial; bind inquiry URLs",
+      "status": "NOT RUN",
+      "limitations": "Current inquiry form and exact certification URL log"
+    },
+    {
+      "id": "P2-C02 / C2",
+      "requirement": "Connection thread ownership",
+      "applicability": "REQUIRED",
+      "implementation": "Single pump in LIVE/TRADE",
+      "offline_evidence": "Code reviewed; add ownership assertion",
+      "t1_evidence": "None; record owner/thread mapping",
+      "status": "NOT RUN",
+      "limitations": "Thread/connection declaration and runtime evidence"
+    },
+    {
+      "id": "P2-C03 / C3",
+      "requirement": "Idle polling for at least five minutes",
+      "applicability": "REQUIRED",
+      "implementation": "RT process handles timeout; loops present",
+      "offline_evidence": "runtime_adapter timeout test; no 300 s idle test",
+      "t1_evidence": "None; 300 s idle streamless run",
+      "status": "NOT RUN",
+      "limitations": "Dedicated idle-only evidence, not active multistream duration"
+    },
+    {
+      "id": "P2-C04 / C4",
+      "requirement": "Connect with authenticated router",
+      "applicability": "REQUIRED",
+      "implementation": "RT/LIVE implemented",
+      "offline_evidence": "RT/LIVE + ATEST",
+      "t1_evidence": "T99 archived bring-up",
+      "status": "PASS",
+      "limitations": "PASS for historical bring-up only; repeat at freeze"
+    },
+    {
+      "id": "P2-C05 / C5",
+      "requirement": "Router up but exchange disconnected",
+      "applicability": "REQUIRED",
+      "implementation": "State wrappers, partial orchestration",
+      "offline_evidence": "Add precise disconnected-router fixture",
+      "t1_evidence": "None; router without exchange session",
+      "status": "NOT RUN",
+      "limitations": "Demonstrate wait/no-send state and recovery"
+    },
+    {
+      "id": "P2-C06 / C6",
+      "requirement": "Detect exchange connection becoming available",
+      "applicability": "REQUIRED",
+      "implementation": "LIVE/TRADE start logic",
+      "offline_evidence": "Initial asynchronous open tests in TRADE",
+      "t1_evidence": "T99 initial transitions only",
+      "status": "NOT RUN",
+      "limitations": "Prove disconnected-to-connected transition while running"
+    },
+    {
+      "id": "P2-C07 / C7",
+      "requirement": "Exchange-network loss suspends activity",
+      "applicability": "REQUIRED",
+      "implementation": "Fail-closed checks, incomplete supervision",
+      "offline_evidence": "TRADE close/uncertainty tests are partial",
+      "t1_evidence": "None; controlled upstream interruption",
+      "status": "BLOCKED",
+      "limitations": "Full mid-run detection/recovery evidence"
+    },
+    {
+      "id": "P2-C08 / C8",
+      "requirement": "Router connection loss suspends activity",
+      "applicability": "REQUIRED",
+      "implementation": "RT errors propagate",
+      "offline_evidence": "Add router loss/recovery integration",
+      "t1_evidence": "None; controlled router interruption",
+      "status": "NOT RUN",
+      "limitations": "Exact outage and resumed-state logs"
+    },
+    {
+      "id": "P2-R01 / R1",
+      "requirement": "Subscription URLs/opening",
+      "applicability": "REQUIRED",
+      "implementation": "RT + dedicated raw ORDLOG; composite ORDBOOK not activated",
+      "offline_evidence": "plaza2_ordlog_test; public recovery contract",
+      "t1_evidence": "T99 private/status/AGGR only",
+      "status": "BLOCKED",
+      "limitations": "Raw URL tested offline; C2 composite open is blocked by the external entitlement evidence above"
+    },
+    {
+      "id": "P2-R02 / R2",
+      "requirement": "Subscription thread rules",
+      "applicability": "REQUIRED",
+      "implementation": "Single-owner callbacks; public design pending",
+      "offline_evidence": "Add same-owner/coexistence fixture",
+      "t1_evidence": "None; include subscriptions per connection",
+      "status": "NOT RUN",
+      "limitations": "Freeze public subscription topology"
+    },
+    {
+      "id": "P2-R03 / R3",
+      "requirement": "Valid receive schemes",
+      "applicability": "REQUIRED",
+      "implementation": "Exact public wire lock and runtime full-scheme checking",
+      "offline_evidence": "public_wire tests; native SDK layouts; 100004 decimal oracle cases",
+      "t1_evidence": "T99 existing consumed subset",
+      "status": "PASS (offline wire)",
+      "limitations": "Repeat negotiated scheme qualification on declared certification runtime"
+    },
+    {
+      "id": "P2-R04 / R4",
+      "requirement": "Compatible scheme evolution",
+      "applicability": "REQUIRED",
+      "implementation": "RT compatibility checks",
+      "offline_evidence": "plaza2_scheme_drift_test + ATEST",
+      "t1_evidence": "None; coordinated additive field/table change",
+      "status": "NOT RUN",
+      "limitations": "Public required profile and negotiated unknown-field preservation"
+    },
+    {
+      "id": "P2-R05 / R5",
+      "requirement": "Incompatible scheme diagnostics",
+      "applicability": "REQUIRED",
+      "implementation": "RT fail-closed drift checks",
+      "offline_evidence": "plaza2_scheme_drift_test + ATEST",
+      "t1_evidence": "None; coordinated incompatible scheme exercise",
+      "status": "NOT RUN",
+      "limitations": "Extend required public fields; retain exact mismatch diagnostics"
+    },
+    {
+      "id": "P2-R06 / R6",
+      "requirement": "Every listener reopens correctly",
+      "applicability": "REQUIRED",
+      "implementation": "Raw ORDLOG and AGGR bounded reopen; private policy unchanged",
+      "offline_evidence": "ordlog and AGGR runner recovery fixtures",
+      "t1_evidence": "None; per-stream mid-run interruption",
+      "status": "BLOCKED",
+      "limitations": "Private mid-run and coordinated per-stream outage qualification remain"
+    },
+    {
+      "id": "P2-R07 / R7",
+      "requirement": "Full ORDLOG &gt;=100,000 messages/s",
+      "applicability": "REQUIRED",
+      "implementation": "Raw D0 implemented; no L3 mutation",
+      "offline_evidence": "raw_d0.json: 100k/200k offered, zero loss",
+      "t1_evidence": "None; certify on declared machine",
+      "status": "BLOCKED",
+      "limitations": "Provisional raw path only; complete C2 and declared-machine certification benchmark"
+    },
+    {
+      "id": "P2-R08A / R8a",
+      "requirement": "ClearDeleted table/range semantics",
+      "applicability": "REQUIRED",
+      "implementation": "Raw table boundary retained; AGGR fresh-snapshot fallback",
+      "offline_evidence": "ordlog clear marker and AGGR ClearDeleted/reopen fixtures",
+      "t1_evidence": "None; deletion ranges per declared stream",
+      "status": "BLOCKED",
+      "limitations": "Selective AGGR range purge and C2 book mutation not implemented"
+    },
+    {
+      "id": "P2-R08B / R8b",
+      "requirement": "LifeNum generation semantics",
+      "applicability": "REQUIRED",
+      "implementation": "Shared AGGR invalidation + raw generation markers",
+      "offline_evidence": "ORDLOG and AGGR LifeNum fixtures",
+      "t1_evidence": "T99 observed life values, not life change exercise",
+      "status": "NOT RUN (T1)",
+      "limitations": "Offline invalidation verified; coordinated LifeNum exercise remains"
+    },
+    {
+      "id": "P2-S01 / S1",
+      "requirement": "Publisher URLs/opening",
+      "applicability": "REQUIRED",
+      "implementation": "RT/TRADE implemented",
+      "offline_evidence": "runtime_adapter + transport tests",
+      "t1_evidence": "T99 and TORDER archived",
+      "status": "PASS",
+      "limitations": "Historical bounded open proof; freeze inquiry URLs later"
+    },
+    {
+      "id": "P2-S02 / S2",
+      "requirement": "Publisher thread rules",
+      "applicability": "REQUIRED",
+      "implementation": "Single host owner in TRADE",
+      "offline_evidence": "Code review; add ownership fixture",
+      "t1_evidence": "None; declaration/thread log",
+      "status": "NOT RUN",
+      "limitations": "Owner/thread enforcement under combined load"
+    },
+    {
+      "id": "P2-S03 / S3",
+      "requirement": "Configurable command rate gate",
+      "applicability": "REQUIRED",
+      "implementation": "Configurable bounded rolling-second gate, retained across reopen",
+      "offline_evidence": "plaza2_publisher_rate_test; fake host stop/start accounting",
+      "t1_evidence": "None; exercise provisioned rate",
+      "status": "PASS (offline software)",
+      "limitations": "Configure provisioned login cap; coordinated flood/rate exercise remains"
+    },
+    {
+      "id": "P2-S04 / S4",
+      "requirement": "Valid send scheme",
+      "applicability": "REQUIRED",
+      "implementation": "Official 9.9 CODEC fixtures",
+      "offline_evidence": "CODEC command validation/encoding + ATEST",
+      "t1_evidence": "TORDER Add/Del only",
+      "status": "PASS",
+      "limitations": "Scope Add/Del only; qualify every additional declared command"
+    },
+    {
+      "id": "P2-S05 / S5",
+      "requirement": "Replies and timeouts terminate safely",
+      "applicability": "REQUIRED",
+      "implementation": "TRADE operation correlation/uncertainty",
+      "offline_evidence": "TRADE timeout and lifecycle tests + ATEST",
+      "t1_evidence": "TORDER ordinary reply only; timeout exercise missing",
+      "status": "NOT RUN",
+      "limitations": "Bounded T1 timeout/ambiguity evidence"
+    },
+    {
+      "id": "P2-S06 / S6",
+      "requirement": "Replies 99 and 100",
+      "applicability": "REQUIRED",
+      "implementation": "Both live-bridge whitelists accept 99/100; explicit ambiguity",
+      "offline_evidence": "fake callback, raw diagnostics, bounded lifecycle and penalty tests",
+      "t1_evidence": "None; end-to-end system/flood scenarios",
+      "status": "PASS (offline software)",
+      "limitations": "No T1 system/flood exercise performed"
+    },
+    {
+      "id": "P2-S07 / S7",
+      "requirement": "Publisher error detection/reopen",
+      "applicability": "REQUIRED",
+      "implementation": "Open/close wrappers; no supervisor located",
+      "offline_evidence": "Add loss/reopen with outstanding operation",
+      "t1_evidence": "None; controlled publisher loss",
+      "status": "BLOCKED",
+      "limitations": "Track live state and bounded reopen without retransmission"
+    },
+    {
+      "id": "P2-G01 / G2",
+      "requirement": "Operation/result audit logs",
+      "applicability": "REQUIRED",
+      "implementation": "Receipts/journals/runners present",
+      "offline_evidence": "HOST/TRADE evidence tests + ATEST",
+      "t1_evidence": "TORDER bounded run",
+      "status": "NOT RUN",
+      "limitations": "Full stream/control audit and complete declared command coverage"
+    },
+    {
+      "id": "P2-G02 / G2",
+      "requirement": "Network interruption recovery",
+      "applicability": "REQUIRED",
+      "implementation": "Partial fail-closed behavior",
+      "offline_evidence": "Add common full recovery sequence",
+      "t1_evidence": "None; outage exercise",
+      "status": "NOT RUN",
+      "limitations": "State/checkpoint equivalence after real outage"
+    },
+    {
+      "id": "P2-G03 / G2",
+      "requirement": "Application restart during session",
+      "applicability": "REQUIRED",
+      "implementation": "HOST orders implemented; public L3 absent",
+      "offline_evidence": "HOST restart tests; add L3 equality",
+      "t1_evidence": "None; current mid-session restart bundle",
+      "status": "BLOCKED",
+      "limitations": "Fresh public snapshot or atomic state/checkpoint resume"
+    },
+    {
+      "id": "P2-G04 / G2",
+      "requirement": "TCS restart with data reload",
+      "applicability": "MOEX-COORDINATED",
+      "implementation": "Public generation recovery absent",
+      "offline_evidence": "Add reload/LifeNum replay",
+      "t1_evidence": "None; MOEX scheduled reload",
+      "status": "BLOCKED",
+      "limitations": "Software recovery then exchange-coordinated evidence"
+    },
+    {
+      "id": "P2-G05 / G2",
+      "requirement": "TCS restart without data reload",
+      "applicability": "MOEX-COORDINATED",
+      "implementation": "Public checkpoint recovery absent",
+      "offline_evidence": "Add no-reload replay",
+      "t1_evidence": "None; MOEX scheduled restart",
+      "status": "BLOCKED",
+      "limitations": "Safe retained-history replay and coordinated evidence"
+    },
+    {
+      "id": "P2-G06 / G2",
+      "requirement": "Reserve/backup access-server switch",
+      "applicability": "MOEX-COORDINATED",
+      "implementation": "No qualified alternate path found",
+      "offline_evidence": "Add configuration validation, no secret export",
+      "t1_evidence": "None; provision/coordinate alternate access",
+      "status": "NOT RUN",
+      "limitations": "Exact endpoints/configuration and failover evidence"
+    },
+    {
+      "id": "P2-G07 / G2",
+      "requirement": "Administration/monitoring if broker use",
+      "applicability": "REQUIRED",
+      "implementation": "Operator CLI/receipts exist",
+      "offline_evidence": "HOST/operator tests partial",
+      "t1_evidence": "None for broker administration scope",
+      "status": "NOT RUN",
+      "limitations": "Resolve actual broker-use declaration; no inferred N/A"
+    },
+    {
+      "id": "P2-G08 / G2",
+      "requirement": "Exchange terminology mapping",
+      "applicability": "REQUIRED",
+      "implementation": "META/CODEC names preserved",
+      "offline_evidence": "Metadata invariants + ATEST",
+      "t1_evidence": "Inquiry mapping not archived",
+      "status": "NOT RUN",
+      "limitations": "Freeze declared commands/tables with one-to-one names"
+    },
+    {
+      "id": "P2-G09 / G2",
+      "requirement": "Selected subsystem routing",
+      "applicability": "REQUIRED",
+      "implementation": "Guarded target/account/identity checks",
+      "offline_evidence": "TRADE mismatch/no-send tests",
+      "t1_evidence": "TORDER single SPECTRA TEST target",
+      "status": "NOT RUN",
+      "limitations": "Scope declaration and complete routing evidence"
+    },
+    {
+      "id": "P2-G10 / G3",
+      "requirement": "Router logging configuration",
+      "applicability": "REQUIRED",
+      "implementation": "Historical receipts, config not committed",
+      "offline_evidence": "Add redacted config fingerprint verification",
+      "t1_evidence": "None for final default logging configuration",
+      "status": "NOT RUN",
+      "limitations": "Default router log level plus complete certification logs"
+    },
+    {
+      "id": "P2-G11 / G3",
+      "requirement": "Full trading day including clearing/evening",
+      "applicability": "MOEX-COORDINATED",
+      "implementation": "Not qualified",
+      "offline_evidence": "Add long-run tool/bounds first",
+      "t1_evidence": "None; scheduled full-day run",
+      "status": "NOT RUN",
+      "limitations": "All declared commands, full day and clearing evidence"
+    },
+    {
+      "id": "P2-G12 / G3",
+      "requirement": "Application/inquiry form and test agreement",
+      "applicability": "MOEX-COORDINATED",
+      "implementation": "Not archived for new full-log scope",
+      "offline_evidence": "Document audit only",
+      "t1_evidence": "MOEX inquiry and agreed testing schedule missing",
+      "status": "NOT RUN",
+      "limitations": "Submit separately when authorized; no outreach in Phase A"
+    },
+    {
+      "id": "P2-RT01 / PLAN",
+      "requirement": "CGate environment initialization",
+      "applicability": "REQUIRED",
+      "implementation": "RT implemented",
+      "offline_evidence": "runtime_probe/runtime_adapter + ATEST",
+      "t1_evidence": "T99 archived",
+      "status": "PASS",
+      "limitations": "Only existing bring-up scope"
+    },
+    {
+      "id": "P2-RT02 / PLAN",
+      "requirement": "Router process restart",
+      "applicability": "REQUIRED",
+      "implementation": "Partial wrappers only",
+      "offline_evidence": "Add close/restart/reopen fixture",
+      "t1_evidence": "None; controlled router restart",
+      "status": "NOT RUN",
+      "limitations": "Bounded full recovery, fresh state"
+    },
+    {
+      "id": "P2-RT03 / PLAN",
+      "requirement": "Access-server interruption",
+      "applicability": "MOEX-COORDINATED",
+      "implementation": "No qualified sequence",
+      "offline_evidence": "Add error/fallback fixture",
+      "t1_evidence": "None; coordinate server interruption",
+      "status": "NOT RUN",
+      "limitations": "Failure detection and recovery logs"
+    },
+    {
+      "id": "P2-RP01 / PLAN",
+      "requirement": "Listener error and close status",
+      "applicability": "REQUIRED",
+      "implementation": "RT/LIVE implemented",
+      "offline_evidence": "RT and TRADE close tests + ATEST",
+      "t1_evidence": "T99 initial transitions only",
+      "status": "NOT RUN",
+      "limitations": "All public listeners and failure-reason evidence"
+    },
+    {
+      "id": "P2-RP02 / PLAN",
+      "requirement": "Online transition",
+      "applicability": "REQUIRED",
+      "implementation": "Existing RT/LIVE implemented",
+      "offline_evidence": "LIVE/PRIVATE/AGGR tests + ATEST",
+      "t1_evidence": "T99 archived",
+      "status": "PASS",
+      "limitations": "Only existing streams; L3 Ready is separate"
+    },
+    {
+      "id": "P2-RP03 / PLAN",
+      "requirement": "Replstate recovery",
+      "applicability": "REQUIRED",
+      "implementation": "In-memory markers/fake replay only",
+      "offline_evidence": "resume_from_replstate.yaml",
+      "t1_evidence": "No durable public restart evidence",
+      "status": "BLOCKED",
+      "limitations": "Per-stream durable applied boundaries; no marker-only empty-book resume"
+    },
+    {
+      "id": "P2-RP04 / PLAN",
+      "requirement": "Durable checkpoint after mandatory apply",
+      "applicability": "REQUIRED",
+      "implementation": "No public durable state store",
+      "offline_evidence": "Add fault at decode/apply/commit/publish",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Atomic state/checkpoint pair or explicitly fresh bootstrap"
+    },
+    {
+      "id": "P2-TX01 / PLAN",
+      "requirement": "No blind retransmission after ambiguous send",
+      "applicability": "REQUIRED",
+      "implementation": "TRADE + HOST implemented",
+      "offline_evidence": "PossiblySent, timeout, repeated-send guard tests",
+      "t1_evidence": "TORDER one Add/one Del, no recovery post",
+      "status": "PASS",
+      "limitations": "Offline safety + bounded historical run, no general timeout T1 claim"
+    },
+    {
+      "id": "P2-TX02 / PLAN",
+      "requirement": "Command-specific reply correlation",
+      "applicability": "REQUIRED",
+      "implementation": "TRADE 179/177/186 implemented",
+      "offline_evidence": "TRADE wrong-user/family/duplicate tests",
+      "t1_evidence": "TORDER Add/Del accepted",
+      "status": "PASS",
+      "limitations": "Additional declared command replies still require qualification"
+    },
+    {
+      "id": "P2-TX03 / PLAN",
+      "requirement": "Add -&gt; Working -&gt; Cancel -&gt; Cancelled",
+      "applicability": "REQUIRED",
+      "implementation": "TRADE private lifecycle implemented",
+      "offline_evidence": "Lifecycle/transport + ATEST",
+      "t1_evidence": "TORDER archived successful bounded run",
+      "status": "PASS",
+      "limitations": "Preserve exact path; new freeze rerun later"
+    },
+    {
+      "id": "P2-TX04 / PLAN",
+      "requirement": "Persistent serial/epoch and restart reconciliation",
+      "applicability": "REQUIRED",
+      "implementation": "HOST + order lifecycle",
+      "offline_evidence": "HOST restart/epoch and C ABI V3 + ATEST",
+      "t1_evidence": "No multi-epoch T1 qualification",
+      "status": "NOT RUN",
+      "limitations": "Run guarded persistent restart; do not equate order journal to L3 checkpoint"
+    },
+    {
+      "id": "P2-TX05 / PLAN",
+      "requirement": "Rate boundary/reconnect/timeout handling",
+      "applicability": "REQUIRED",
+      "implementation": "Rate gate absent",
+      "offline_evidence": "Add deterministic monotonic-clock tests",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Shared budget, post accounting, limits; dynamic updates unsupported"
+    },
+    {
+      "id": "P2-MD01 / PLAN",
+      "requirement": "AGGR20 initial synchronization",
+      "applicability": "REQUIRED",
+      "implementation": "AGGR + TRADE implemented",
+      "offline_evidence": "AGGR projection/runner + ATEST",
+      "t1_evidence": "T99, TORDER BBO",
+      "status": "PASS",
+      "limitations": "Bounded existing product only"
+    },
+    {
+      "id": "P2-MD02 / PLAN",
+      "requirement": "AGGR20 online operation",
+      "applicability": "REQUIRED",
+      "implementation": "AGGR exact levels/freshness",
+      "offline_evidence": "AGGR + TRADE multi-instrument tests",
+      "t1_evidence": "T99/TORDER",
+      "status": "PASS",
+      "limitations": "Historical bounded online proof"
+    },
+    {
+      "id": "P2-MD03 / PLAN",
+      "requirement": "AGGR20 recovery",
+      "applicability": "REQUIRED",
+      "implementation": "Shared AGGR bridge invalidates on loss; bounded CLOSED/ERROR reopen with fresh snapshot+online",
+      "offline_evidence": "plaza2_aggr20_md_runner_test; shared transport recovery fixtures",
+      "t1_evidence": "NOT RUN on qualification head; network/TCS recovery unproven",
+      "status": "PASS_OFFLINE / NOT RUN (T1)",
+      "limitations": "Private/connection automatic recovery remains a separate required live qualification"
+    },
+    {
+      "id": "P2-MD04 / PLAN",
+      "requirement": "AGGR20 LifeNum",
+      "applicability": "REQUIRED",
+      "implementation": "Shared AGGR bridge invalidates visible/staged levels and readiness on LifeNum",
+      "offline_evidence": "plaza2_aggr20_md_runner_test: LifeNum invalidation and fresh ONLINE recovery",
+      "t1_evidence": "Life values observed historically; no retained T1 LifeNum-change exercise",
+      "status": "PASS_OFFLINE / NOT OBSERVED (T1)",
+      "limitations": "Fresh committed data plus ONLINE required; a naturally observed change is needed for T1 proof"
+    },
+    {
+      "id": "P2-MD05 / PLAN",
+      "requirement": "AGGR20 ClearDeleted",
+      "applicability": "REQUIRED",
+      "implementation": "Conservative whole-book invalidation followed by fresh snapshot+online bootstrap",
+      "offline_evidence": "plaza2_aggr20_md_runner_test: ClearDeleted invalidation, bounded reopen and restored snapshot",
+      "t1_evidence": "No retained T1 ClearDeleted exercise",
+      "status": "PASS_OFFLINE (fallback) / NOT OBSERVED (T1)",
+      "limitations": "Selective table/revision purge is not implemented or claimed; R08A remains incomplete"
+    },
+    {
+      "id": "P2-OL01 / PLAN",
+      "requirement": "FORTS_ORDLOG_REPL live listener",
+      "applicability": "REQUIRED",
+      "implementation": "Plaza2Ordlog on existing runtime listener/connection",
+      "offline_evidence": "actual fake-library wire callbacks and exact scheme checks",
+      "t1_evidence": "None",
+      "status": "PASS (offline software)",
+      "limitations": "T1 regular-bootstrap: BLOCKED_EXTERNAL_ENTITLEMENT; <code>REPL:ACCESS_DENIED</code> 40969 / 0xA009 at 2026-09-08 07:01 MSK"
+    },
+    {
+      "id": "P2-OL02 / PLAN",
+      "requirement": "Exact ORDLOG scheme",
+      "applicability": "REQUIRED",
+      "implementation": "All four tables and every field in authoritative 9.9 wire lock",
+      "offline_evidence": "public_wire tests and SDK sizeof/offsetof probes",
+      "t1_evidence": "None",
+      "status": "PASS (wire)",
+      "limitations": "Sources/hashes frozen; no material logical schema difference"
+    },
+    {
+      "id": "P2-OL03 / PLAN",
+      "requirement": "Lossless ORDLOG decoding",
+      "applicability": "REQUIRED",
+      "implementation": "Full raw payload/null map, exact decimals/timestamps/flags",
+      "offline_evidence": "all-table decode and malformed fixtures",
+      "t1_evidence": "None",
+      "status": "PASS (offline raw)",
+      "limitations": "No floating-point conversion or absent-field invention"
+    },
+    {
+      "id": "P2-OL04 / PLAN",
+      "requirement": "Revision semantics and applied checkpoints",
+      "applicability": "REQUIRED",
+      "implementation": "Table-local revisions; TN_COMMIT plus mandatory acknowledgment",
+      "offline_evidence": "checkpoint eligibility and exact-token reopen tests",
+      "t1_evidence": "None",
+      "status": "PASS (offline raw)",
+      "limitations": "No durable state store added; future persistence must atomically bind processed state and token"
+    },
+    {
+      "id": "P2-OL05 / PLAN",
+      "requirement": "Raw replay and full event output",
+      "applicability": "REQUIRED",
+      "implementation": "Bounded mandatory/optional record rings; complete tables and generation/control context",
+      "offline_evidence": "wire callback and queue accounting tests",
+      "t1_evidence": "None",
+      "status": "PASS (offline raw)",
+      "limitations": "Native owner APIs only; managed batch interface remains later work"
+    },
+    {
+      "id": "P2-OL06 / PLAN",
+      "requirement": "Duplicate handling",
+      "applicability": "REQUIRED",
+      "implementation": "Consecutive duplicates labeled and retained; older history labeled replay",
+      "offline_evidence": "duplicate and conflicting online revision fixtures",
+      "t1_evidence": "None",
+      "status": "PASS (offline raw)",
+      "limitations": "No historical dedup index or L3 idempotent mutation claimed"
+    },
+    {
+      "id": "P2-OL07 / PLAN",
+      "requirement": "Gap handling",
+      "applicability": "REQUIRED",
+      "implementation": "Numeric discontinuity distinct from mandatory loss and corruption",
+      "offline_evidence": "overflow and revision failure counters; checkpoint invalidation",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Vendor retention-exhaustion and actual outage coverage still unqualified"
+    },
+    {
+      "id": "P2-OL08 / PLAN",
+      "requirement": "ORDLOG LifeNum",
+      "applicability": "REQUIRED",
+      "implementation": "Ordered LifeNum/generation context and online invalidation",
+      "offline_evidence": "LifeNum transition and lower-revision reset tests",
+      "t1_evidence": "None",
+      "status": "PASS (offline raw)",
+      "limitations": "Future L3 view lifetime and T1 generation exercise remain"
+    },
+    {
+      "id": "P2-OL09 / PLAN",
+      "requirement": "ORDLOG ClearDeleted",
+      "applicability": "REQUIRED",
+      "implementation": "Table boundary/flags retained; maximum marker resets only affected tracker",
+      "offline_evidence": "ClearDeleted and maximum revision fixtures",
+      "t1_evidence": "None",
+      "status": "PASS (offline raw)",
+      "limitations": "Raw control retention only; active L3 expiry is not implemented"
+    },
+    {
+      "id": "P2-OL10 / PLAN",
+      "requirement": "ORDLOG restart recovery",
+      "applicability": "REQUIRED",
+      "implementation": "Fresh process history; drained same-process opaque continuation",
+      "offline_evidence": "crash-before-ack eligibility and same-process reopen replay tests",
+      "t1_evidence": "None",
+      "status": "PASS (offline raw)",
+      "limitations": "No durable raw/L3 state restoration claimed"
+    },
+    {
+      "id": "P2-OL11 / PLAN",
+      "requirement": "ORDLOG TCS no-reload recovery",
+      "applicability": "REQUIRED",
+      "implementation": "META only; pipeline absent",
+      "offline_evidence": "SCHEMA partial; add C1/C2 deterministic fixtures",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Retained-history sequence and hash equality"
+    },
+    {
+      "id": "P2-OL12 / PLAN",
+      "requirement": "ORDLOG TCS reload recovery",
+      "applicability": "REQUIRED",
+      "implementation": "META only; pipeline absent",
+      "offline_evidence": "SCHEMA partial; add C1/C2 deterministic fixtures",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "New generation and full rebootstrap"
+    },
+    {
+      "id": "P2-L301 / PLAN",
+      "requirement": "FORTS_ORDBOOK_REPL snapshot",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Ten public layouts qualified; composite info/transaction exposure REQUIRES_T1_CAPTURE"
+    },
+    {
+      "id": "P2-L302 / PLAN",
+      "requirement": "Bootstrap",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Seed active remainder; do not replay snapshot as order execution"
+    },
+    {
+      "id": "P2-L303 / PLAN",
+      "requirement": "Snapshot revision and LifeNum",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Bind trades_rev/trades_lifenum to matching log and publication"
+    },
+    {
+      "id": "P2-L304 / PLAN",
+      "requirement": "ORDLOG handoff",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Default info.trades_rev and empty open settings documented; actual composite callbacks REQUIRES_T1_CAPTURE"
+    },
+    {
+      "id": "P2-L305 / PLAN",
+      "requirement": "No snapshot/log race gap",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Proof of retained incremental coverage after boundary"
+    },
+    {
+      "id": "P2-L306 / PLAN",
+      "requirement": "Deterministic final book/hash",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Canonical complete active state plus checkpoint; not BBO only"
+    },
+    {
+      "id": "P2-L307 / PLAN",
+      "requirement": "Late join",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Include carried multi-day orders and both multileg tables"
+    },
+    {
+      "id": "P2-L308 / PLAN",
+      "requirement": "L3 process restart",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "1,136 conditional restart equalities PASS_OFFLINE; actual composite contract remains blocked"
+    },
+    {
+      "id": "P2-L309 / PLAN",
+      "requirement": "LifeNum during bootstrap",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Discard staging and old active generation"
+    },
+    {
+      "id": "P2-L310 / PLAN",
+      "requirement": "Resync after invalid state",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Bounded retries, unavailable stale book, no checkpoint advance"
+    },
+    {
+      "id": "P2-L311 / PLAN",
+      "requirement": "Snapshot failure/partial publication",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Never publish incomplete generation"
+    },
+    {
+      "id": "P2-L312 / PLAN",
+      "requirement": "Catch-up completion/readiness",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Valid basis, coverage, commit and zero backlog; ONLINE alone insufficient"
+    },
+    {
+      "id": "P2-L313 / PLAN",
+      "requirement": "Public identity scope",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "No production identity key frozen; universal uniqueness/reuse requires written MOEX authority"
+    },
+    {
+      "id": "P2-L314 / PLAN",
+      "requirement": "Action/remainder invariants",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Unknown actions preserved raw; contradictions invalidate L3"
+    },
+    {
+      "id": "P2-L315 / PLAN",
+      "requirement": "ORDBOOK ClearDeleted",
+      "applicability": "REQUIRED",
+      "implementation": "Test-only C2 reference model; production absent",
+      "offline_evidence": "C2-PREFLIGHT: conditional model and callback fixtures PASS_OFFLINE; see contract gate table",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Per-table callback cases PASS_OFFLINE; ambiguous relevant marker invalidates, no synthetic order cancellation"
+    },
+    {
+      "id": "P2-PF01 / PLAN",
+      "requirement": "Full-path 100k sustained qualification",
+      "applicability": "REQUIRED",
+      "implementation": "Raw D0: 1 million messages in 10.0022 seconds",
+      "offline_evidence": "raw_d0.json",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Provisional 99977.8 msg/s with pacing overhead; C2 complete path absent"
+    },
+    {
+      "id": "P2-PF02 / PLAN",
+      "requirement": "Engineering 200k sustained target",
+      "applicability": "REQUIRED",
+      "implementation": "Raw D0: 2 million messages in 10.001 seconds",
+      "offline_evidence": "raw_d0.json",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Provisional 199980 msg/s with pacing overhead; C2 complete path absent"
+    },
+    {
+      "id": "P2-PF03 / PLAN",
+      "requirement": "Engineering 300k burst target",
+      "applicability": "REQUIRED",
+      "implementation": "Raw unpaced burst: 2 million records, bounded queues",
+      "offline_evidence": "raw_d0.json; high-water 32768; zero loss",
+      "t1_evidence": "None",
+      "status": "PASS (provisional raw)",
+      "limitations": "No full-book burst result claimed"
+    },
+    {
+      "id": "P2-PF04 / PLAN",
+      "requirement": "Deep-book correctness",
+      "applicability": "REQUIRED",
+      "implementation": "Benchmark absent",
+      "offline_evidence": "Add D benchmark modes; no parser-only claims",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Large active populations; deterministic full-state oracle"
+    },
+    {
+      "id": "P2-PF05 / PLAN",
+      "requirement": "Slow optional consumers",
+      "applicability": "REQUIRED",
+      "implementation": "Optional bounded ring with explicit first lost sequence",
+      "offline_evidence": "ordlog overflow fixture",
+      "t1_evidence": "None",
+      "status": "PASS (offline raw)",
+      "limitations": "Overflowed optional subscription remains explicitly incomplete"
+    },
+    {
+      "id": "P2-PF06 / PLAN",
+      "requirement": "Mandatory backpressure",
+      "applicability": "REQUIRED",
+      "implementation": "Mandatory overflow fails health and revokes checkpoint",
+      "offline_evidence": "ordlog transaction overflow and later-token fixture",
+      "t1_evidence": "None",
+      "status": "PASS (offline raw)",
+      "limitations": "Capacity is configurable and transactions must fit available space"
+    },
+    {
+      "id": "P2-PF07 / PLAN",
+      "requirement": "AGGR/private/publisher coexistence",
+      "applicability": "REQUIRED",
+      "implementation": "Benchmark absent",
+      "offline_evidence": "Add D benchmark modes; no parser-only claims",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Combined pump load and transaction reply deadlines"
+    },
+    {
+      "id": "P2-PF08 / PLAN",
+      "requirement": "Machine-readable benchmark evidence",
+      "applicability": "REQUIRED",
+      "implementation": "D0 JSON with counts/rates/queue age/RSS/failures/binary hashes",
+      "offline_evidence": "docs/review/plaza2_offline_20260907/raw_d0.json",
+      "t1_evidence": "None",
+      "status": "PASS (raw evidence)",
+      "limitations": "Machine is local M4 Pro; Linux CGate plus full L3 qualification remains"
+    },
+    {
+      "id": "P2-API01 / PLAN",
+      "requirement": "Raw event batch API",
+      "applicability": "REQUIRED",
+      "implementation": "V1/V2/V3 exist; public API absent",
+      "offline_evidence": "Add E ownership/overflow/ABI tests",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Owned or leased native batches; all exact fields and envelope"
+    },
+    {
+      "id": "P2-API02 / PLAN",
+      "requirement": "L3 state/status API",
+      "applicability": "REQUIRED",
+      "implementation": "V1/V2/V3 exist; public API absent",
+      "offline_evidence": "Add E ownership/overflow/ABI tests",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Generation, life, checkpoint and unavailable/stale semantics"
+    },
+    {
+      "id": "P2-API03 / PLAN",
+      "requirement": "Generation-scoped view lifetime",
+      "applicability": "REQUIRED",
+      "implementation": "V1/V2/V3 exist; public API absent",
+      "offline_evidence": "Add E ownership/overflow/ABI tests",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Expire stale handles; explicit release; bounded retention"
+    },
+    {
+      "id": "P2-API04 / PLAN",
+      "requirement": "Managed batch consumption",
+      "applicability": "REQUIRED",
+      "implementation": "V1/V2/V3 exist; public API absent",
+      "offline_evidence": "Add E ownership/overflow/ABI tests",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Additive API after native proof; no per-record P/Invoke"
+    },
+    {
+      "id": "P2-API05 / PLAN",
+      "requirement": "Existing V1/V2 compatibility",
+      "applicability": "REQUIRED",
+      "implementation": "Existing ABI unchanged",
+      "offline_evidence": "ATEST",
+      "t1_evidence": "None",
+      "status": "PASS",
+      "limitations": "Preserve layouts/semantics; current ABI regression passes"
+    },
+    {
+      "id": "P2-EV01 / PLAN",
+      "requirement": "Certification scenarios and logs",
+      "applicability": "REQUIRED",
+      "implementation": "PLAZA fake fixtures outside cert/scenarios",
+      "offline_evidence": "Existing cert/scenarios contains TWIME only; ATEST covers local PLAZA",
+      "t1_evidence": "Scoped T99/TORDER only",
+      "status": "BLOCKED",
+      "limitations": "Add versioned PLAZA scenario manifests with exact evidence mapping"
+    },
+    {
+      "id": "P2-EV02 / PLAN",
+      "requirement": "Scheme/commit/config/runtime freeze",
+      "applicability": "REQUIRED",
+      "implementation": "Partial historical locks",
+      "offline_evidence": "Audit records current base; no final freeze",
+      "t1_evidence": "None for new full-log declaration",
+      "status": "NOT RUN",
+      "limitations": "Archive exact tested build, scheme fingerprint, config and benchmark host"
+    },
+    {
+      "id": "P2-EV03 / PLAN",
+      "requirement": "Replay recovery oracle across interruptions",
+      "applicability": "REQUIRED",
+      "implementation": "C2 test-only conditional oracle exists; no production public L3 harness",
+      "offline_evidence": "Add snapshot+partial+restart vs uninterrupted hashes",
+      "t1_evidence": "None",
+      "status": "BLOCKED",
+      "limitations": "Interrupt at receive/decode/apply/commit/checkpoint; exact state equality"
+    }
+  ]
+}

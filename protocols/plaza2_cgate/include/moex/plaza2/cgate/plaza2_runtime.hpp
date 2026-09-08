@@ -80,6 +80,8 @@ struct Plaza2VersionMarkers {
     std::string target_polygon;
 };
 
+class Plaza2QualificationObserver;
+
 struct Plaza2Settings {
     Plaza2Environment environment{Plaza2Environment::Test};
     std::filesystem::path runtime_root;
@@ -93,6 +95,8 @@ struct Plaza2Settings {
     std::string expected_spectra_release;
     std::string expected_runtime_library_sha256;
     std::string expected_scheme_sha256;
+    // Optional qualification sink. Owner outlives Env; callbacks must not throw or call CGate.
+    Plaza2QualificationObserver* qualification_observer{nullptr};
 };
 
 struct Plaza2RuntimeLayout {
@@ -195,6 +199,14 @@ struct Plaza2ListenerEvent {
     std::uint32_t close_reason{0};
     std::span<const std::uint8_t> raw_nulls{};
     std::size_t table_index{0};
+};
+
+class Plaza2QualificationObserver {
+  public:
+    virtual ~Plaza2QualificationObserver() = default;
+    virtual void observe(const Plaza2ListenerEvent&, const Plaza2Error&) noexcept = 0;
+    // object: 10 connection, 11 publisher, 12 listener; stream zero for reply.
+    virtual void runtime_state(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) noexcept {}
 };
 
 class Plaza2ListenerEventHandler {

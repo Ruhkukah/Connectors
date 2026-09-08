@@ -64,6 +64,12 @@ struct Plaza2Aggr20InstrumentSnapshot {
     std::uint64_t exchange_moment_ns{0};
 };
 
+class Plaza2Aggr20QualificationObserver {
+  public:
+    virtual ~Plaza2Aggr20QualificationObserver() = default;
+    virtual void committed(const Plaza2Aggr20Snapshot&) noexcept = 0;
+};
+
 class Plaza2Aggr20BookProjector {
   public:
     using Clock = std::chrono::steady_clock;
@@ -71,6 +77,9 @@ class Plaza2Aggr20BookProjector {
 
     explicit Plaza2Aggr20BookProjector(NowFn now = {});
 
+    void set_qualification_observer(Plaza2Aggr20QualificationObserver* observer) noexcept {
+        qualification_observer_ = observer;
+    }
     void reset();
     void begin_transaction();
     [[nodiscard]] Plaza2Error on_row(std::span<const Plaza2DecodedFieldValue> fields);
@@ -82,6 +91,7 @@ class Plaza2Aggr20BookProjector {
     [[nodiscard]] bool transaction_open() const noexcept;
 
   private:
+    Plaza2Aggr20QualificationObserver* qualification_observer_{nullptr};
     std::vector<Plaza2Aggr20Level> staged_rows_;
     std::unordered_set<std::int64_t> affected_isin_ids_;
     Plaza2Aggr20Snapshot committed_;

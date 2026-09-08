@@ -10,13 +10,21 @@ acceptance criteria, not a separate claimed MOEX quotation. R8 is split into its
 
 Each row is independently applicable. **REQUIRED** means software capability/evidence; **MOEX-COORDINATED** means an externally scheduled exercise, not a waiver. Status **PASS** is
 restricted to the row's stated scope; **FAIL** is a code-confirmed requirement contradiction; **BLOCKED** means missing implementation or protocol authority; **NOT RUN** means
-qualification missing. Historical T1 receipts do not certify current HEAD. No full-order-log or L3 row is N/A.
+qualification missing. Historical T1 receipts do not certify current HEAD. Full-order-log and L3 rows retain their product backlog status; they are intentionally outside the 2026-09-10 Aggregated-mode qualification.
 
 C2 preflight: [contract and gate verdict](../docs/plaza2/PUBLIC_L3_MUTATION_CONTRACT_9_9.md),
 [market-data-only capture scenario](../docs/plaza2/C2_MARKET_DATA_CAPTURE_9_9.md). Conditional model PASS_OFFLINE does not
 promote production capability rows. Actual composite mapping/chronology REQUIRES_T1_CAPTURE; identity domain BLOCKED.
 
-### Current T1 entitlement blocker
+### Qualification scope for 2026-09-10
+
+The user declares the current login Main and MOEX-configured Aggregated mode. This is user-provided
+configuration evidence, to be verified against runtime behaviour during preflight; it is not a new MOEX
+identity document. No ORDLOG, public ORDBOOK or p2ordbook listener is authorized for this run.
+The pre-test audit corrects stale AGGR recovery claims against PR #42 code; offline recovery is not T1 proof.
+See [qualification runbook](../docs/plaza2/AGGR_T1_QUALIFICATION_20260910.md).
+
+### Historical full ORDLOG T1 entitlement blocker
 
 The retained 2026-09-08 regular-bootstrap attempt is documented in
 [C2 access evidence](../docs/review/plaza2_c2_access_20260908.md). For the full
@@ -642,31 +650,31 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>P2-MD03 / PLAN</td>
 <td>AGGR20 recovery</td>
 <td>REQUIRED</td>
-<td>Reset/restart partial</td>
-<td>TRADE closure/restart tests partial</td>
-<td>None for network/TCS recovery</td>
-<td>NOT RUN</td>
-<td>Prove fresh synchronization and no retained stale levels</td>
+<td>Shared AGGR bridge invalidates on loss; bounded CLOSED/ERROR reopen with fresh snapshot+online</td>
+<td>plaza2_aggr20_md_runner_test; shared transport recovery fixtures</td>
+<td>NOT RUN on qualification head; network/TCS recovery unproven</td>
+<td>PASS_OFFLINE / NOT RUN (T1)</td>
+<td>Private/connection automatic recovery remains a separate required live qualification</td>
 </tr>
 <tr>
 <td>P2-MD04 / PLAN</td>
 <td>AGGR20 LifeNum</td>
 <td>REQUIRED</td>
-<td>Standalone ignored; transport resets</td>
-<td>Add standalone generation-reset test</td>
-<td>No life-change exercise</td>
-<td>FAIL</td>
-<td>Standalone bridge must invalidate book/readiness</td>
+<td>Shared AGGR bridge invalidates visible/staged levels and readiness on LifeNum</td>
+<td>plaza2_aggr20_md_runner_test: LifeNum invalidation and fresh ONLINE recovery</td>
+<td>Life values observed historically; no retained T1 LifeNum-change exercise</td>
+<td>PASS_OFFLINE / NOT OBSERVED (T1)</td>
+<td>Fresh committed data plus ONLINE required; a naturally observed change is needed for T1 proof</td>
 </tr>
 <tr>
 <td>P2-MD05 / PLAN</td>
 <td>AGGR20 ClearDeleted</td>
 <td>REQUIRED</td>
-<td>Both bridges clear entire book</td>
-<td>Add table/revision survival fixture</td>
-<td>None</td>
-<td>FAIL</td>
-<td>Verify/apply actual range semantics, not blanket clear</td>
+<td>Conservative whole-book invalidation followed by fresh snapshot+online bootstrap</td>
+<td>plaza2_aggr20_md_runner_test: ClearDeleted invalidation, bounded reopen and restored snapshot</td>
+<td>No retained T1 ClearDeleted exercise</td>
+<td>PASS_OFFLINE (fallback) / NOT OBSERVED (T1)</td>
+<td>Selective table/revision purge is not implemented or claimed; R08A remains incomplete</td>
 </tr>
 <tr>
 <td>P2-OL01 / PLAN</td>

@@ -797,6 +797,16 @@ ConnectorHostSnapshot ConnectorHost::snapshot() const {
     return impl_->snapshot();
 }
 
+ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot() const {
+    const auto& host = impl_->transport.host();
+    const auto instruments = host.private_state().instruments();
+    return {.book = host.aggr20_projector().snapshot(),
+            .instruments = {instruments.begin(), instruments.end()},
+            .rate = host.publisher_rate_metrics(),
+            .aggr_online = host.aggr_online(),
+            .aggr_snapshot_complete = host.aggr_snapshot_complete()};
+}
+
 PreSendPlan ConnectorHost::plan() const {
     return plan_order(impl_->request_from_config());
 }

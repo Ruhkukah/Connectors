@@ -68,6 +68,16 @@ Plaza2HostConfig config_for(const test::RuntimeFixturePaths& f) {
     return config;
 }
 
+struct QualificationObserver final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20QualificationObserver {
+    std::size_t events{}, commits{};
+    void observe(const cg::Plaza2ListenerEvent&, const cg::Plaza2Error&) noexcept override {
+        ++events;
+    }
+    void committed(const cg::Plaza2Aggr20Snapshot&) noexcept override {
+        ++commits;
+    }
+};
+
 void warm(ConnectorHost& host) {
     test::require(!host.start(), "host start");
     for (unsigned i = 0; i < 10 && !host.snapshot().observation_ready; ++i)
@@ -114,12 +124,22 @@ int main(int argc, char** argv) {
         test::require(reset && count && env_open_count && connection_new_count, "independent fake counters");
         {
             reset();
-            ConnectorHost host(config_for(fixture));
+            auto observed_config = config_for(fixture);
+            QualificationObserver observer;
+            observed_config.transport.host.runtime.qualification_observer = &observer;
+            observed_config.transport.host.qualification_book_observer = &observer;
+            ConnectorHost host(observed_config);
             test::require(host.snapshot().state == ConnectorHostState::Created && !host.snapshot().observation_ready,
                           "created snapshot");
             test::require(static_cast<bool>(host.poll()), "poll before start refused");
             warm(host);
             test::require(static_cast<bool>(host.start()), "double start refused");
+            test::require(observer.events > 0 && observer.commits > 0,
+                          "qualification hooks observe real host callbacks");
+            const auto qualification = host.qualification_snapshot();
+            test::require(qualification.aggr_online && qualification.aggr_snapshot_complete &&
+                              !qualification.book.levels.empty() && !qualification.instruments.empty(),
+                          "qualification samples the same committed host state");
             auto s = host.snapshot();
             test::require(s.state == ConnectorHostState::Ready && s.private_streams_ready &&
                               s.target_refdata_provenance_ready &&

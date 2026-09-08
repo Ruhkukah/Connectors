@@ -432,6 +432,8 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
         }
     }
     committed_.instrument_count = instruments.size();
+    if (qualification_observer_)
+        qualification_observer_->committed(committed_);
     staged_rows_.clear();
     affected_isin_ids_.clear();
     transaction_open_ = false;

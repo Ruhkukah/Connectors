@@ -606,6 +606,7 @@ struct Plaza2TestSessionHost::Impl {
     }
 
     Plaza2Error start() {
+        aggr_projector.set_qualification_observer(config.qualification_book_observer);
         if (!rate_gate.valid())
             return invalid("publisher_messages_per_second must be in 1..3000");
         if (started) {
@@ -973,6 +974,21 @@ struct Plaza2TestSessionHost::Impl {
         }
         std::uint32_t runtime_code = 0;
         const auto error = connection.process(config.process_timeout_ms, &runtime_code);
+        if (auto* observer = config.runtime.qualification_observer) {
+            const auto sample = [&](const auto& object, std::uint32_t kind, StreamCode stream) {
+                std::uint32_t state = 0;
+                const auto status = object.state(state);
+                observer->runtime_state(kind, static_cast<std::uint32_t>(stream), state,
+                                        static_cast<std::uint32_t>(status.code));
+            };
+            sample(connection, 10, cgate::kNoStreamCode);
+            sample(publisher, 11, cgate::kNoStreamCode);
+            sample(reply_listener, 12, cgate::kNoStreamCode);
+            sample(aggr_listener, 12, config.aggr20_stream.stream_code);
+            for (const auto& managed : private_listeners)
+                sample(managed.listener, 12, managed.stream_code);
+        }
+
         if (error) {
             if (!reply_bridge.error().empty()) {
                 return invalid(reply_bridge.error(), Plaza2ErrorCode::CallbackFailed);

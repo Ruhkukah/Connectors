@@ -1286,7 +1286,10 @@ struct Plaza2ListenerCallbackState {
     if (state.handler == nullptr) {
         return {};
     }
-    return state.handler->on_plaza2_listener_event(event);
+    const auto error = state.handler->on_plaza2_listener_event(event);
+    if (auto* observer = state.shared->settings.qualification_observer)
+        observer->observe(event, error);
+    return error;
 }
 
 [[nodiscard]] CgResult listener_callback_bridge(void*, void*, void* raw_msg, void* data) {

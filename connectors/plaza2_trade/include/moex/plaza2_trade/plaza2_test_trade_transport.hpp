@@ -175,6 +175,7 @@ struct Plaza2TestSessionHostConfig {
     std::uint32_t process_timeout_ms{50};
     // Local conservative cap; configure from the provisioned login limit, not a claimed exchange default.
     std::uint32_t publisher_messages_per_second{30};
+    plaza2::cgate::Plaza2Aggr20QualificationObserver* qualification_book_observer{nullptr};
     std::function<std::uint64_t()> publisher_now_ms; // Empty uses steady_clock; injectable for offline boundary tests.
 };
 
