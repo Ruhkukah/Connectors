@@ -1000,6 +1000,10 @@ add_test(NAME plaza2_c2_capture_test
         "$<TARGET_FILE:plaza2_c2_capture>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>" "$<TARGET_FILE:plaza2_c2_preflight_test>")
 set_tests_properties(plaza2_c2_capture_test PROPERTIES LABELS "unit;plaza2;sanitizer;c2_capture;c2_preflight")
 
+add_test(NAME plaza2_c2_support_bundle_test
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_c2_support_bundle_test.py")
+set_tests_properties(plaza2_c2_support_bundle_test PROPERTIES LABELS "unit;plaza2;c2_capture")
+
 get_property(moex_registered_tests DIRECTORY PROPERTY TESTS)
 foreach(test_name IN LISTS moex_registered_tests)
     if(test_name MATCHES "^plaza2_" OR test_name STREQUAL "moex_phase4b_capi_read_side_test")

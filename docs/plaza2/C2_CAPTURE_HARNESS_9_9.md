@@ -142,6 +142,13 @@ The first lost ordinal conservatively identifies the earliest unflushed callback
 metadata-only failures can have ordinal zero. Disk-full may also prevent writing
 the failure receipt: exit failure and absence of a finalized trace are authoritative.
 
+Listener state controls are transition-driven. A state transition is emitted once
+with the previous/new state, first and last observation ordinals/times, the first
+SDK error code/text when available, and an `outcome` of `STATE_ERROR` for an error
+state. Unchanged polls are counted in a final `listener_state_summary`; they do
+not create one frame per `cg_conn_process` call. This keeps the trace alive and
+proves continued polling without inflating a failed 120-second run.
+
 ## Offline import and analysis
 
 Import only after copying the immutable trace and SHA sidecar into controlled
@@ -176,12 +183,27 @@ across epochs. PASS_CONDITIONAL validates only the captured/model comparison;
 missing common frontier is NOT_OBSERVED. Identity authority, actual T1 topology and
 universal restart guarantees remain outside this offline proof.
 
+For a denied T1 run, create a small offline support package without copying the
+raw trace:
+
+```sh
+python3 /ABSOLUTE/REPO/tools/plaza2_c2_support_bundle.py \
+  /ABSOLUTE/EVIDENCE --output /ABSOLUTE/PRIVATE/moex-support-bundle
+```
+
+The package contains a redacted summary, selected diagnostics/state transitions,
+runtime and connector hashes, the trace hash and capture-loss counters. Credentials,
+private connection URIs and complete capture bytes are excluded. The separate
+`plaza2_c2_entitlement_probe_plan.py` command only emits the documented future
+ORDLOG-only, ORDBOOK-only and composite one-shot modes; it never opens CGate.
+
 ## Fake preflight
 
 `ctest -L c2_preflight` selects six tests, all without publisher execution. The
-capture test runs eight fake-native cases: regular/multileg/reopen; permuted
+capture test runs nine fake-native cases: regular/multileg/reopen; permuted
 indices; unknown table/control plus LifeNum/ClearDeleted/CLOSE/error; exact
 multileg rejection with credential redaction; unexpected descriptor; quiet data;
+100,000+ unchanged listener-error polls with bounded state frames;
 small-buffer overflow; real OS write-size failure. It also verifies immutable
 roundtrip, SHA corruption/truncation rejection and existing-oracle import.
 Release and ASan/UBSan execute the same selection. Linux adds LeakSanitizer.

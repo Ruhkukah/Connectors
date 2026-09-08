@@ -21,7 +21,7 @@ ALLOWED = {'cg_env_open', 'cg_env_close', 'cg_conn_new', 'cg_conn_open', 'cg_con
 SECRET = 'Secret-Capture-Credential-123'
 
 
-def run(root, name, flags=None, options=None, write_failure=False):
+def run(root, name, flags=None, options=None, write_failure=False, duration_ms=80):
     folder = root / name
     folder.mkdir()
     audit = folder / 'audit.txt'
@@ -36,13 +36,15 @@ def run(root, name, flags=None, options=None, write_failure=False):
     out = folder / 'evidence'
     def limit():
         resource.setrlimit(resource.RLIMIT_FSIZE, (8192, 8192))
-    result = subprocess.run([str(BINARY), '--config', str(config), '--output', str(out), '--duration-ms', '80'] + (options or []),
-                            env=env, text=True, capture_output=True, preexec_fn=limit if write_failure else None)
+    command = [str(BINARY), '--config', str(config), '--output', str(out), '--duration-ms', str(duration_ms)] + (options or [])
+    result = subprocess.run(command, env=env, text=True, capture_output=True,
+                            preexec_fn=limit if write_failure else None)
     assert SECRET not in result.stdout and SECRET not in result.stderr
     calls = Counter(audit.read_text().splitlines()) if audit.exists() else Counter()
-    assert not (set(calls) - ALLOWED), calls
-    assert sum(count for name, count in calls.items() if name.startswith('cg_pub_')) == 0
-    assert 'AddOrder' not in calls and 'CancelOrder' not in calls and 'MoveOrder' not in calls
+    if not flags or not flags.get('MOEX_FAKE_CAPTURE_NO_AUDIT'):
+        assert not (set(calls) - ALLOWED), calls
+        assert sum(count for name, count in calls.items() if name.startswith('cg_pub_')) == 0
+        assert 'AddOrder' not in calls and 'CancelOrder' not in calls and 'MoveOrder' not in calls
     for p in out.glob('*'):
         assert SECRET.encode() not in p.read_bytes(), f'credential leaked in {p.name}'
     if write_failure:
@@ -61,8 +63,10 @@ def run(root, name, flags=None, options=None, write_failure=False):
     analysis = module.derive(trace, out / 'derived', ORACLE)
     assert trace.read_bytes() == before
     assert analysis['production_c2'] == 'BLOCKED'
-    assert calls['cg_lsn_new'] >= 2 and calls['cg_lsn_getscheme'] >= 1
-    assert calls['cg_env_close'] == 1 and calls['cg_conn_destroy'] == 1
+    if not flags or not flags.get('MOEX_FAKE_LSN_ERROR_STATE'):
+        assert calls['cg_lsn_new'] >= 2 and calls['cg_lsn_getscheme'] >= 1
+    if not flags or not flags.get('MOEX_FAKE_CAPTURE_NO_AUDIT'):
+        assert calls['cg_env_close'] == 1 and calls['cg_conn_destroy'] == 1
     return out, analysis
 
 
@@ -115,7 +119,18 @@ with tempfile.TemporaryDirectory(prefix='plaza2_c2_capture_') as tmp:
     assert 'OPENED_BUT_UNEXPECTED_DESCRIPTOR' in unexpected['outcomes'].values()
     out, quiet = run(root, 'quiet', {'MOEX_FAKE_CAPTURE_QUIET': '1'})
     assert all(x['passive_activity'] == 'NOT_OBSERVED' for x in quiet['observations'].values())
+    out, state_spin = run(root, 'state_error_spin',
+                          {'MOEX_FAKE_LSN_ERROR_STATE': '1', 'MOEX_FAKE_CAPTURE_STATE_SPIN': '1',
+                           'MOEX_FAKE_CAPTURE_NO_AUDIT': '1'},
+                          duration_ms=600)
+    state_controls = [json.loads(line) for line in (out / 'derived/controls.jsonl').read_text().splitlines()]
+    state_errors = [row for row in state_controls if row.get('outcome') == 'STATE_ERROR']
+    summaries = [row for row in state_controls if row.get('event') == 'listener_state_summary']
+    assert len(state_errors) <= 4, len(state_errors)
+    assert all(sum(row.get('listener') == listener for row in state_errors) <= 2
+               for listener in {row.get('listener') for row in state_errors})
+    assert any(row.get('unchanged_polls', 0) >= 100_000 for row in summaries), summaries
     run(root, 'overflow', options=['--buffer-bytes', '8192'])
     run(root, 'write_failure', write_failure=True)
-    print('CAPTURE PASS: 8 native runs; trace roundtrip; permuted/unknown descriptors; controls; reopen oracle; '
+    print('CAPTURE PASS: 9 native runs; trace roundtrip; permuted/unknown descriptors; controls; reopen oracle; '
           'corruption/truncation rejected; overflow/write failure invalid; all API calls allowlisted; publisher calls=0')

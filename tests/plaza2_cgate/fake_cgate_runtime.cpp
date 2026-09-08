@@ -1475,6 +1475,8 @@ void detach_listener(FakeConnection* connection, FakeListener* listener) {
 
 namespace {
 void capture_audit(const char* name) {
+    if (fake_flag("MOEX_FAKE_CAPTURE_NO_AUDIT"))
+        return;
     if (const char* path = std::getenv("MOEX_FAKE_CAPTURE_AUDIT")) {
         std::ofstream out(path, std::ios::app);
         out << name << '\n';
@@ -1734,7 +1736,11 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
                     return code;
                 }
             }
-        return emitted ? kCgErrOk : kCgErrTimeout;
+        if (emitted)
+            return kCgErrOk;
+        // Let the capture harness exercise a very hot unchanged-state poll
+        // without the normal one-millisecond timeout sleep.
+        return fake_flag("MOEX_FAKE_CAPTURE_STATE_SPIN") ? kCgErrOk : kCgErrTimeout;
     }
     if (connection->state != kStateActive) {
         return kCgErrIncorrectState;
