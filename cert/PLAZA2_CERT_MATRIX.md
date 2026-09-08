@@ -16,6 +16,22 @@ C2 preflight: [contract and gate verdict](../docs/plaza2/PUBLIC_L3_MUTATION_CONT
 [market-data-only capture scenario](../docs/plaza2/C2_MARKET_DATA_CAPTURE_9_9.md). Conditional model PASS_OFFLINE does not
 promote production capability rows. Actual composite mapping/chronology REQUIRES_T1_CAPTURE; identity domain BLOCKED.
 
+### Current T1 entitlement blocker
+
+The retained 2026-09-08 regular-bootstrap attempt is documented in
+[C2 access evidence](../docs/review/plaza2_c2_access_20260908.md). For the full
+ORDLOG and composite rows below, the T1 gate is:
+
+```text
+T1 full ORDLOG access: BLOCKED_EXTERNAL_ENTITLEMENT
+REPL:ACCESS_DENIED 40969 / 0xA009
+2026-09-08 07:01 MSK
+trace: a05afa4e5de25a8818f8cb91057c5cf02ead8f341636f6880e286e9febf83d66
+```
+
+This is an external entitlement blocker, not an implementation or certification
+failure. No new T1 attempt was made in this tranche.
+
 Evidence map (paths relative to repository root):
 
 <table>
@@ -195,7 +211,7 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>plaza2_ordlog_test; public recovery contract</td>
 <td>T99 private/status/AGGR only</td>
 <td>BLOCKED</td>
-<td>Raw URL tested offline; C2 composite listener and T1 topology still required</td>
+<td>Raw URL tested offline; C2 composite open is blocked by the external entitlement evidence above</td>
 </tr>
 <tr>
 <td>P2-R02 / R2</td>
@@ -660,7 +676,7 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 <td>actual fake-library wire callbacks and exact scheme checks</td>
 <td>None</td>
 <td>PASS (offline software)</td>
-<td>Guarded T1 reception remains not run</td>
+<td>T1 regular-bootstrap: BLOCKED_EXTERNAL_ENTITLEMENT; <code>REPL:ACCESS_DENIED</code> 40969 / 0xA009 at 2026-09-08 07:01 MSK</td>
 </tr>
 <tr>
 <td>P2-OL02 / PLAN</td>

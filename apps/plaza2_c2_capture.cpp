@@ -518,7 +518,13 @@ struct Listener {
     std::string url;
     void* handle{};
     std::uint64_t ordinal{}, epoch{}, poll{}, online_at{}, reopen_at{};
-    std::uint32_t last_state{UINT32_MAX};
+    std::uint32_t state_value{}, previous_state{};
+    std::uint32_t first_state_error_code{}, last_state_error_code{};
+    std::uint64_t state_observation_ordinal{}, state_first_observation_ordinal{}, state_last_observation_ordinal{};
+    std::uint64_t state_first_observation_ns{}, state_last_observation_ns{};
+    std::uint64_t state_observations{}, state_unchanged_polls{};
+    std::string first_state_error_text;
+    bool state_initialized{}, first_state_error_seen{}, last_state_error_seen{};
     bool online{}, attempted{}, reopened{}, expected_descriptor{};
     std::size_t table_count{};
     std::array<std::int64_t, 512> frontier{}, pending_frontier{};
@@ -528,6 +534,67 @@ struct Listener {
     void result(std::string_view operation, std::uint32_t code) {
         status("{\"operation\":" + quote(operation) + ",\"code\":" + std::to_string(code) +
                ",\"text\":" + quote(api.error_text(code)) + "}");
+    }
+    std::string state_frame(std::string_view event, bool transition) const {
+        const bool state_error = first_state_error_seen || state_value == 1;
+        std::string s = "{\"event\":" + quote(event) + ",\"transition\":" + (transition ? "true" : "false") +
+                        ",\"state\":" + std::to_string(state_value) + ",\"previous_state\":";
+        s += transition && state_observation_ordinal == 1 ? "null" : std::to_string(previous_state);
+        s += ",\"first_observation_ordinal\":" + std::to_string(state_first_observation_ordinal) +
+             ",\"last_observation_ordinal\":" + std::to_string(state_last_observation_ordinal) +
+             ",\"first_observation_monotonic_ns\":" + std::to_string(state_first_observation_ns) +
+             ",\"last_observation_monotonic_ns\":" + std::to_string(state_last_observation_ns) +
+             ",\"observations\":" + std::to_string(state_observations) +
+             ",\"unchanged_polls\":" + std::to_string(state_unchanged_polls) +
+             ",\"state_error\":" + (state_error ? "true" : "false") + ",\"first_sdk_error_code\":";
+        s += first_state_error_seen ? std::to_string(first_state_error_code) : "null";
+        s += ",\"first_sdk_diagnostic\":";
+        s += first_state_error_seen ? quote(first_state_error_text) : "null";
+        if (state_error)
+            s += ",\"outcome\":\"STATE_ERROR\"";
+        return s + "}";
+    }
+    void emit_state_summary() {
+        if (state_initialized)
+            status(state_frame("listener_state_summary", false));
+    }
+    void observe_state(std::uint32_t state, std::uint32_t error_code) {
+        const auto observed_at = now();
+        ++state_observation_ordinal;
+        const bool transition = !state_initialized || state != state_value;
+        if (transition) {
+            if (state_initialized)
+                emit_state_summary();
+            previous_state = state_initialized ? state_value : 0;
+            state_value = state;
+            state_initialized = true;
+            state_first_observation_ordinal = state_observation_ordinal;
+            state_first_observation_ns = observed_at;
+            state_observations = 1;
+            state_unchanged_polls = 0;
+            first_state_error_code = last_state_error_code = 0;
+            first_state_error_text.clear();
+            first_state_error_seen = last_state_error_seen = false;
+        } else {
+            ++state_observations;
+            ++state_unchanged_polls;
+        }
+        state_last_observation_ordinal = state_observation_ordinal;
+        state_last_observation_ns = observed_at;
+        if (error_code && (!last_state_error_seen || error_code != last_state_error_code)) {
+            if (!first_state_error_seen) {
+                first_state_error_seen = true;
+                first_state_error_code = error_code;
+                first_state_error_text = api.error_text(error_code);
+            }
+            last_state_error_seen = true;
+            last_state_error_code = error_code;
+            result("listener_state", error_code);
+        }
+        if (transition)
+            status(state_frame("listener_state_transition", true));
+        if (error_code || state == 1)
+            online = false;
     }
     bool describe() {
         CgSchemeDesc* descriptor{};
@@ -658,7 +725,13 @@ struct Listener {
     void create(void* connection) {
         attempted = true;
         ++epoch;
-        last_state = UINT32_MAX;
+        state_value = previous_state = 0;
+        first_state_error_code = last_state_error_code = 0;
+        state_observation_ordinal = state_first_observation_ordinal = state_last_observation_ordinal = 0;
+        state_first_observation_ns = state_last_observation_ns = 0;
+        state_observations = state_unchanged_polls = 0;
+        first_state_error_text.clear();
+        state_initialized = first_state_error_seen = last_state_error_seen = false;
         online = false;
         expected_descriptor = false;
         frontier = {};
@@ -813,16 +886,7 @@ int main(int argc, char** argv) {
                     if (l.handle) {
                         std::uint32_t ls{};
                         const auto lc = api.lsn_state(l.handle, &ls);
-                        if (lc)
-                            l.result("listener_state", lc);
-                        if (ls != l.last_state) {
-                            l.status("{\"listener_state\":" + std::to_string(ls) + "}");
-                            l.last_state = ls;
-                        }
-                        if (lc || ls == 1) {
-                            l.online = false;
-                            l.status("{\"outcome\":\"STATE_ERROR\",\"state_error\":true}");
-                        }
+                        l.observe_state(ls, lc);
                         if (!l.id && reopen && l.online && l.expected_descriptor && !l.reopened) {
                             l.close();
                             l.reopened = true;
@@ -849,6 +913,7 @@ int main(int argc, char** argv) {
         for (auto& l : listeners) {
             if (l.url.empty())
                 continue;
+            l.emit_state_summary();
             std::string summary = "{\"committed_callback_frontier\":[";
             for (std::size_t i = 0; i < l.table_count; ++i) {
                 if (i)
