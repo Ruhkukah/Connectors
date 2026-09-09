@@ -100,7 +100,9 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
             using FC = moex::plaza2::generated::FieldCode;
             using EK = cg::Plaza2ListenerEventKind;
             if (e.stream_code == moex::plaza2::generated::StreamCode::kFortsRefdataRepl) {
-                if (e.kind == EK::Open || e.kind == EK::Close || e.kind == EK::LifeNum || e.kind == EK::ClearDeleted) {
+                if (e.kind == EK::Open || e.kind == EK::Close || e.kind == EK::LifeNum ||
+                    (e.kind == EK::ClearDeleted &&
+                     e.table_code == moex::plaza2::generated::TableCode::kFortsRefdataReplFutSessContents)) {
                     limits.clear();
                     pending_limits.clear();
                     ref_online = false;
@@ -548,6 +550,34 @@ int self_test() {
     text_evidence.runtime_state(14, 0, 1, 1);
     if (text_evidence.callback_errors != 1)
         return 12;
+    Evidence ref;
+    using FC = moex::plaza2::generated::FieldCode;
+    using TC = moex::plaza2::generated::TableCode;
+    using EK = cg::Plaza2ListenerEventKind;
+    constexpr auto stream = moex::plaza2::generated::StreamCode::kFortsRefdataRepl;
+    const std::array<cg::Plaza2DecodedFieldValue, 5> fields{{
+        {.field_code = FC::kFortsRefdataReplFutSessContentsIsinId, .signed_value = 1},
+        {.field_code = FC::kFortsRefdataReplFutSessContentsSessId, .signed_value = 1},
+        {.field_code = FC::kFortsRefdataReplFutSessContentsReplRev, .signed_value = 10},
+        {.field_code = FC::kFortsRefdataReplFutSessContentsLimitUp, .text_value = "110"},
+        {.field_code = FC::kFortsRefdataReplFutSessContentsLimitDown, .text_value = "90"},
+    }};
+    ref.observe({.kind = EK::TransactionBegin, .stream_code = stream}, {});
+    ref.observe({.kind = EK::StreamData,
+                 .stream_code = stream,
+                 .table_code = TC::kFortsRefdataReplFutSessContents,
+                 .fields = fields},
+                {});
+    ref.observe({.kind = EK::TransactionCommit, .stream_code = stream}, {});
+    ref.observe({.kind = EK::ClearDeleted, .stream_code = stream, .table_code = TC::kFortsRefdataReplOptSessContents},
+                {});
+    ref.observe({.kind = EK::Online, .stream_code = stream}, {});
+    if (ref.limits.size() != 1 || !ref.ref_online || !ref.ref_valid)
+        return 15;
+    ref.observe({.kind = EK::ClearDeleted, .stream_code = stream, .table_code = TC::kFortsRefdataReplFutSessContents},
+                {});
+    if (!ref.limits.empty() || ref.ref_online)
+        return 16;
     std::cout << "qualification evidence self-test PASS\n";
     return 0;
 }

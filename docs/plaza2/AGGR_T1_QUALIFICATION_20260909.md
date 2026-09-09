@@ -154,3 +154,8 @@ router disruption require this account census to be zero and the underlying priv
 hashed. Its hash describes current exposure, not the entire historical replication dataset. Metrics include
 `account_active_orders`, `account_nonzero_positions` and `private_exposure_sha256`. Sampling is opt-in and
 outside callbacks. A nonzero position blocks subsequent deliberate orders; no automatic flattening occurs.
+
+The live retest also exposed a qualification-collector issue: cleanup markers for unrelated REFDATA tables
+cleared already committed futures price limits. Only cleanup of fut_sess_contents now invalidates that
+collector; unrelated table cleanup cannot erase its bounds. Regression covers both table cases. Order
+scenarios remain blocked until the fresh committed bounds are actually retained and validated on T1.
