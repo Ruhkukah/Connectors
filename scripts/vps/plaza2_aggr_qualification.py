@@ -53,7 +53,7 @@ def main():
             key, value = entry.split(b"=", 1)
             if key in (b"MOEX_PLAZA2_TEST_CREDENTIALS", b"MOEX_PLAZA2_CGATE_SOFTWARE_KEY"):
                 env[key.decode()] = value.decode()
-    env["MOEX_AGGR_T1_AUTH"] = "20260910_AGGREGATED_QUALIFICATION"
+    env["MOEX_AGGR_T1_AUTH"] = "20260909_AGGREGATED_QUALIFICATION"
     env["MOEX_AGGR_T1_JOURNAL"] = str(args.journal.resolve())
     env["MOEX_QUAL_BROKER"] = str(account["broker_code"])
     env["MOEX_QUAL_CLIENT"] = str(account["client_code"])
@@ -77,7 +77,7 @@ def main():
     env.pop("MOEX_AGGR_T1_ORDER_AUTH", None)
     env.pop("MOEX_AGGR_T1_IDLE", None)
     if args.orders:
-        env["MOEX_AGGR_T1_ORDER_AUTH"] = "20260910_ONE_LOT_ADD_CANCEL"
+        env["MOEX_AGGR_T1_ORDER_AUTH"] = "20260909_ONE_LOT_ADD_CANCEL"
     if args.idle:
         env["MOEX_AGGR_T1_IDLE"] = "1"
     runtime = Path(manifest["runtime_root"])

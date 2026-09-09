@@ -527,10 +527,10 @@ int main(int argc, char** argv) {
         const auto moscow = now + 3 * 3600;
         std::tm date{};
         gmtime_r(&moscow, &date);
-        if (!auth || std::string_view(auth) != "20260910_AGGREGATED_QUALIFICATION" || date.tm_year != 126 ||
-            date.tm_mon != 8 || date.tm_mday != 10 || date.tm_hour < 6 || (date.tm_hour == 6 && date.tm_min < 58) ||
+        if (!auth || std::string_view(auth) != "20260909_AGGREGATED_QUALIFICATION" || date.tm_year != 126 ||
+            date.tm_mon != 8 || date.tm_mday != 9 || date.tm_hour < 6 || (date.tm_hour == 6 && date.tm_min < 58) ||
             (date.tm_hour * 60 + date.tm_min >= 16 * 60 + 10))
-            throw std::invalid_argument("outside authorized 2026-09-10 T1 qualification window");
+            throw std::invalid_argument("outside authorized 2026-09-09 T1 qualification window");
         std::vector<std::string_view> args;
         for (int i = 3; i < argc; ++i)
             args.emplace_back(argv[i]);
@@ -542,15 +542,15 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("persistent qualification journal path is required");
         request.config.transport.allow_exact_ext_id_recovery = false;
         request.config.order.journal_root = journal;
-        request.config.order.run_id = "aggr-t1-20260910";
-        request.config.order.profile_id = "main-aggregated-t1-20260910";
+        request.config.order.run_id = "aggr-t1-20260909";
+        request.config.order.profile_id = "main-aggregated-t1-20260909";
         request.config.order.profile_fingerprint = cg::plaza2_sha256_hex(request.config.order.profile_id);
-        request.config.order.ext_id = 2026091000;
-        request.config.order.add_user_id = 2026091001;
-        request.config.order.cancel_user_id = 2026091002;
-        request.config.order.recovery_user_id = 2026091003;
+        request.config.order.ext_id = 2026090900;
+        request.config.order.add_user_id = 2026090901;
+        request.config.order.cancel_user_id = 2026090902;
+        request.config.order.recovery_user_id = 2026090903;
         if (const auto* order_auth = std::getenv("MOEX_AGGR_T1_ORDER_AUTH")) {
-            if (std::string_view(order_auth) != "20260910_ONE_LOT_ADD_CANCEL")
+            if (std::string_view(order_auth) != "20260909_ONE_LOT_ADD_CANCEL")
                 throw std::invalid_argument("invalid qualification order authorization");
             request.config.purpose = ch::HostPurpose::OrderTest;
             request.config.transport.host.mode = tr::Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
