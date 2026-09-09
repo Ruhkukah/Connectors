@@ -174,6 +174,11 @@ struct Plaza2TestSessionHostConfig {
     plaza2::cgate::Plaza2CredentialConfig credentials{};
     plaza2::cgate::Plaza2CredentialConfig software_key{};
     std::uint32_t process_timeout_ms{50};
+    bool transport_recovery_enabled{true};
+    std::chrono::milliseconds recovery_retry_interval{1000};
+    std::chrono::milliseconds recovery_deadline{60000};
+    std::function<std::chrono::steady_clock::time_point()> recovery_now;
+
     // Local conservative cap; configure from the provisioned login limit, not a claimed exchange default.
     std::uint32_t publisher_messages_per_second{30};
     plaza2::cgate::Plaza2Aggr20QualificationObserver* qualification_book_observer{nullptr};
@@ -192,6 +197,17 @@ struct Plaza2TransportHealth {
     }
 };
 
+enum class Plaza2SessionOperation { Stopped, Starting, Running, Recovering, Failed };
+
+struct Plaza2RecoveryStatus {
+    Plaza2SessionOperation operation{Plaza2SessionOperation::Stopped};
+    std::uint64_t generation{0}, attempts{0}, transitions{0};
+    std::uint64_t error_time_ns{0};
+    bool deadline_exhausted{false};
+    plaza2::cgate::Plaza2Error cause;
+    Plaza2TransportHealth health;
+};
+
 class Plaza2TestSessionHost final {
   public:
     explicit Plaza2TestSessionHost(Plaza2TestSessionHostConfig config);
@@ -206,6 +222,8 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] bool started() const noexcept;
+    [[nodiscard]] bool recovering() const noexcept;
+    [[nodiscard]] const Plaza2RecoveryStatus& recovery_status() const noexcept;
     [[nodiscard]] Plaza2TransportHealth runtime_health() const;
 
     [[nodiscard]] const plaza2::cgate::Plaza2RuntimeProbeReport& probe_report() const noexcept;

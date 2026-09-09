@@ -135,7 +135,9 @@ int main(int argc, char** argv) {
             reinterpret_cast<std::uint64_t (*)()>(dlsym(library, "moex_fake_connection_new_count"));
         test::require(reset && count && env_open_count && connection_new_count, "independent fake counters");
         {
-            ConnectorHost host(config_for(fixture));
+            auto config = config_for(fixture);
+            config.transport.host.transport_recovery_enabled = false;
+            ConnectorHost host(config);
             warm(host);
             test::require(host.snapshot().private_snapshot_state_ready && host.snapshot().aggr_ready,
                           "raw and effective states ready before loss");
@@ -156,7 +158,9 @@ int main(int argc, char** argv) {
             test::require(!host.stop(), "stop failed host without orders");
         }
         {
-            ConnectorHost host(config_for(fixture));
+            auto config = config_for(fixture);
+            config.transport.host.transport_recovery_enabled = false;
+            ConnectorHost host(config);
             warm(host);
             ::setenv("MOEX_FAKE_PRIVATE_ERROR_AFTER_READY", "1", 1);
             const auto failure = host.poll();
@@ -168,6 +172,182 @@ int main(int argc, char** argv) {
                               !failed.publisher_ready && !failed.reply_ready && !failed.new_order_allowed,
                           "private ERROR masks every effective gate");
             test::require(!host.stop(), "stop listener-error host");
+        }
+        // Deterministic recovery clock: no sleeps and no exchange endpoint.
+        for (const auto* fault :
+             {"MOEX_FAKE_CONNECTION_ERROR", "MOEX_FAKE_CONNECTION_CLOSED", "MOEX_FAKE_PRIVATE_ERROR_AFTER_READY",
+              "MOEX_FAKE_AGGR_ERROR_AFTER_READY", "MOEX_FAKE_PUBLISHER_ERROR", "MOEX_FAKE_REPLY_ERROR"}) {
+            reset();
+            auto now = std::chrono::steady_clock::now();
+            auto c = config_for(fixture);
+            c.transport.host.recovery_now = [&] { return now; };
+            ConnectorHost host(c);
+            warm(host);
+            const auto generation = host.snapshot().recovery.generation;
+            ::setenv("MOEX_FAKE_SINGLE_PRIVATE_ERROR", "1", 1);
+            ::setenv(fault, "1", 1);
+            test::require(!host.poll(), std::string("recoverable loss: ") + fault);
+            ::unsetenv(fault);
+            ::unsetenv("MOEX_FAKE_SINGLE_PRIVATE_ERROR");
+            const auto lost = host.snapshot();
+            test::require(lost.state == ConnectorHostState::Recovering && !lost.observation_ready &&
+                              !lost.private_streams_ready && !lost.aggr_ready && !lost.publisher_ready &&
+                              !lost.reply_ready && !lost.new_order_allowed && lost.causal_error,
+                          "all effective gates close immediately and cause retained");
+            if (std::string_view(fault) == "MOEX_FAKE_CONNECTION_ERROR" ||
+                std::string_view(fault) == "MOEX_FAKE_CONNECTION_CLOSED") {
+                test::require(lost.causal_error.code == cg::Plaza2ErrorCode::AdapterState &&
+                                  lost.causal_error.runtime_code == 131077 &&
+                                  lost.causal_error.message == "cg_conn_process: CG_ERR_INCORRECTSTATE",
+                              "real process result precedes synthetic loss check and is preserved exactly");
+            }
+            for (int i = 0; i < 10; ++i)
+                test::require(!host.poll(), "idle recovery poll");
+            test::require(host.snapshot().recovery.attempts == 0, "no busy retries");
+            ::setenv("MOEX_FAKE_FRESH_POS_ANCHOR", "1", 1);
+            now += std::chrono::seconds(1);
+            for (int i = 0; i < 10 && !host.snapshot().observation_ready; ++i)
+                test::require(!host.poll(), "fresh bootstrap poll");
+            ::unsetenv("MOEX_FAKE_FRESH_POS_ANCHOR");
+            const auto fresh = host.snapshot();
+            test::require(fresh.observation_ready && fresh.recovery.generation == generation + 1 &&
+                              fresh.recovery.attempts == 1 && fresh.publisher_ready && fresh.reply_ready &&
+                              fresh.aggr_ready && count(0) == 0 && count(1) == 0,
+                          std::string("fresh readiness without publisher calls: ") + fault);
+            test::require(fresh.pos_trades_rev == 91 && fresh.pos_trades_lifenum == 8 && fresh.trade_anchor &&
+                              fresh.trade_anchor->trades_rev == 91 && fresh.trade_anchor->trades_lifenum == 8 &&
+                              fresh.trade_replay_complete,
+                          "replacement POS anchor belongs to fresh LifeNum");
+            test::require(!host.stop(), "stop recovered host");
+        }
+        {
+            reset();
+            auto now = std::chrono::steady_clock::now();
+            auto c = config_for(fixture);
+            c.transport.host.recovery_now = [&] { return now; };
+            ConnectorHost host(c);
+            warm(host);
+            const auto connections = connection_new_count();
+            ::setenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS", "1", 1);
+            const auto error = host.poll();
+            ::unsetenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS");
+            const auto failed = host.snapshot();
+            test::require(error.code == cg::Plaza2ErrorCode::RuntimeCallFailed && error.runtime_code == 131072 &&
+                              error.message == "cg_conn_process: CG_ERR_INTERNAL" &&
+                              failed.causal_error.runtime_code == error.runtime_code &&
+                              failed.causal_error.message == error.message && failed.causal_health.connection == 1 &&
+                              failed.state == ConnectorHostState::Failed && !failed.observation_ready &&
+                              failed.recovery.attempts == 0,
+                          "CG_ERR_INTERNAL with observable ERROR stays fatal; it is not proven router loss");
+            now += std::chrono::seconds(2);
+            test::require(host.poll() && connection_new_count() == connections && count(1) == 0,
+                          "fatal runtime category cannot start a reconnect or command later");
+            test::require(!host.stop(), "stop internal-runtime-loss test");
+        }
+        for (const bool exhaust : {false, true}) {
+            reset();
+            auto now = std::chrono::steady_clock::now();
+            auto c = config_for(fixture);
+            c.transport.host.recovery_now = [&] { return now; };
+            c.transport.host.recovery_deadline = std::chrono::seconds(5);
+            ConnectorHost host(c);
+            // Loss before any initial ONLINE must also rebootstrap.
+            test::require(!host.start(), "early loss start");
+            ::setenv("MOEX_FAKE_CONNECTION_ERROR", "1", 1);
+            test::require(!host.poll(), "early router loss enters recovery");
+            ::unsetenv("MOEX_FAKE_CONNECTION_ERROR");
+            ::setenv("MOEX_FAKE_CONNECTION_OPEN_FAIL", "1", 1);
+            for (int i = 0; i < 2; ++i) {
+                now += std::chrono::seconds(1);
+                test::require(!host.poll(), "failed reconnect bounded");
+                test::require(host.snapshot().state == ConnectorHostState::Recovering, "still recovering");
+            }
+            ::unsetenv("MOEX_FAKE_CONNECTION_OPEN_FAIL");
+            if (exhaust) {
+                now += std::chrono::seconds(3);
+                const auto last = host.snapshot().causal_error;
+                const auto error = host.poll();
+                test::require(error && error.message == last.message && error.runtime_code == last.runtime_code &&
+                                  host.snapshot().state == ConnectorHostState::Failed &&
+                                  !host.snapshot().observation_ready,
+                              "deadline fails with last causal error");
+            } else {
+                now += std::chrono::seconds(1);
+                for (int i = 0; i < 10 && !host.snapshot().observation_ready; ++i)
+                    test::require(!host.poll(), "third reconnect succeeds");
+                test::require(host.snapshot().observation_ready && host.snapshot().recovery.attempts == 3,
+                              "two failed attempts then success");
+            }
+            test::require(count(1) == 0, "reconnect never posts");
+            test::require(!host.stop(), "stop retry test");
+        }
+        for (const auto* corruption : {"MOEX_FAKE_CALLBACK_CORRUPTION", "MOEX_FAKE_DECODE_CORRUPTION"}) {
+            auto c = config_for(fixture);
+            ConnectorHost host(c);
+            warm(host);
+            ::setenv(corruption, "1", 1);
+            const auto error = host.poll();
+            ::unsetenv(corruption);
+            test::require(error && host.snapshot().state == ConnectorHostState::Failed &&
+                              host.snapshot().recovery.attempts == 0,
+                          "callback corruption remains fatal even with listener ERROR");
+            test::require(!host.stop(), "stop corrupt callback test");
+        }
+        for (int loss_stage = 0; loss_stage != 3; ++loss_stage) {
+            reset();
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_CANCEL_AFTER_DEL", "1", 1);
+            ::setenv("MOEX_FAKE_FLAT_TRADE_REPLAY", "1", 1);
+            auto now = std::chrono::steady_clock::now();
+            auto c = config_for(fixture);
+            c.transport.host.recovery_now = [&] { return now; };
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "loss-epoch-" + std::to_string(loss_stage);
+            c.order.journal_root = fixture.root / c.order.run_id;
+            ConnectorHost host(c);
+            warm(host);
+            const ConnectorHostOrderRequest request{.side = Plaza2TradeSide::Sell,
+                                                    .price = "103000",
+                                                    .base_contract_code = "RTS",
+                                                    .comment = "loss-test",
+                                                    .quantity = 1};
+            const auto plan = host.plan_order(request);
+            test::require(plan.ok && !host.begin_order(request, plan.canonical_json, plan.sha256),
+                          "authorize fake interrupted epoch");
+            const auto posted = host.submit_order();
+            test::require(posted.add_submission.post_invoked && count(1) == 1, "one Add invoked before loss");
+            if (loss_stage > 0) {
+                const auto working = host.poll_order();
+                test::require(working.state == OrderLifecycleState::Working, "Working before loss");
+            }
+            if (loss_stage == 2)
+                test::require(host.cancel_current_order().cancel_submission.post_invoked, "Cancel invoked before loss");
+            const auto posts = count(1);
+            ::setenv("MOEX_FAKE_CONNECTION_ERROR", "1", 1);
+            test::require(!host.poll(), "active epoch transport loss");
+            ::unsetenv("MOEX_FAKE_CONNECTION_ERROR");
+            (void)host.poll_order();
+            test::require(host.snapshot().order_epoch_active && !host.snapshot().new_order_allowed && count(1) == posts,
+                          "interrupted epoch survives with zero recovery commands");
+            now += std::chrono::seconds(1);
+            for (int i = 0; i < 10 && !host.snapshot().observation_ready; ++i)
+                test::require(!host.poll(), "active epoch fresh observation bootstrap");
+            for (int i = 0; i < 3; ++i)
+                (void)host.poll_order();
+            test::require(host.snapshot().observation_ready && host.snapshot().order_epoch_active &&
+                              !host.snapshot().new_order_allowed && count(1) == posts,
+                          "fresh observation does not abandon or retransmit an uncertain epoch");
+            test::require(!host.submit_order().ok && count(1) == posts, "no Add retransmission after recovery");
+            (void)host.cancel_current_order();
+            test::require(count(1) == posts, "interrupted epoch cannot invoke automatic cleanup");
+            (void)host.stop(); // Existing unresolved-epoch stop policy stays in force.
+            ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+            ::unsetenv("MOEX_FAKE_EXT_ID");
+            ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
+            ::unsetenv("MOEX_FAKE_FLAT_TRADE_REPLAY");
         }
         {
             reset();

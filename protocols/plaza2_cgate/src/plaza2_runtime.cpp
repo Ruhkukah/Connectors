@@ -2074,6 +2074,11 @@ bool Plaza2Connection::is_created() const noexcept {
     return handle_ != nullptr;
 }
 
+const Plaza2Error& Plaza2Listener::last_callback_error() const noexcept {
+    static const Plaza2Error none;
+    return callback_state_ ? callback_state_->last_error : none;
+}
+
 Plaza2Listener::Plaza2Listener() = default;
 
 Plaza2Listener::~Plaza2Listener() {

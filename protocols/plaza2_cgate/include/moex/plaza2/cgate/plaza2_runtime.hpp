@@ -327,6 +327,7 @@ class Plaza2Listener {
     [[nodiscard]] Plaza2Error destroy();
     [[nodiscard]] Plaza2Error state(std::uint32_t& out_state) const;
     [[nodiscard]] bool is_created() const noexcept;
+    [[nodiscard]] const Plaza2Error& last_callback_error() const noexcept;
 
   private:
     std::shared_ptr<Plaza2RuntimeSharedState> shared_;

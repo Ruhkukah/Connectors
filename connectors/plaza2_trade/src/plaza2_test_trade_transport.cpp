@@ -779,8 +779,19 @@ struct Plaza2TestSessionHost::Impl {
         if (const auto error = aggr_listener.open(config.aggr20_stream.open_settings); error) {
             return error;
         }
+        if (recovery.operation != Plaza2SessionOperation::Recovering) {
+            if (const auto error = open_publisher_reply(); error)
+                return error;
+        }
+        started = true;
+        return {};
+    }
+
+    Plaza2Error open_publisher_reply() {
+        const auto effective_reply_settings =
+            config.p2mqreply_settings.empty() ? "p2mqreply://;ref=" + config.publisher_name : config.p2mqreply_settings;
         if (const auto error = publisher.create(
-                connection, render_copy(config.publisher_settings, credentials.value(), software_key.value()));
+                connection, render_copy(config.publisher_settings, credentials_value, software_key_value));
             error) {
             return error;
         }
@@ -790,17 +801,16 @@ struct Plaza2TestSessionHost::Impl {
         publisher_is_open = true;
         if (const auto error = reply_listener.create(
                 connection, cgate::kNoStreamCode,
-                render_copy(effective_reply_settings, credentials.value(), software_key.value()), &reply_bridge);
+                render_copy(effective_reply_settings, credentials_value, software_key_value), &reply_bridge);
             error) {
             return error;
         }
-        if (const auto error = reply_listener.open(
-                render_copy(config.p2mqreply_open_settings, credentials.value(), software_key.value()));
+        if (const auto error =
+                reply_listener.open(render_copy(config.p2mqreply_open_settings, credentials_value, software_key_value));
             error) {
             return error;
         }
         reply_listener_is_open = true;
-        started = true;
         return {};
     }
 
@@ -968,7 +978,19 @@ struct Plaza2TestSessionHost::Impl {
         return {};
     }
 
-    Plaza2Error poll() {
+    const Plaza2Error& listener_callback_error() const {
+        if (reply_listener.last_callback_error())
+            return reply_listener.last_callback_error();
+        if (aggr_listener.last_callback_error())
+            return aggr_listener.last_callback_error();
+        for (const auto& managed : private_listeners)
+            if (managed.listener.last_callback_error())
+                return managed.listener.last_callback_error();
+        static const Plaza2Error none;
+        return none;
+    }
+
+    Plaza2Error poll_resources() {
         if (!started) {
             return invalid("TEST session host is not started", Plaza2ErrorCode::AdapterState);
         }
@@ -989,6 +1011,8 @@ struct Plaza2TestSessionHost::Impl {
                 sample(managed.listener, 12, managed.stream_code);
         }
 
+        if (listener_callback_error())
+            return listener_callback_error();
         if (error) {
             if (!reply_bridge.error().empty()) {
                 return invalid(reply_bridge.error(), Plaza2ErrorCode::CallbackFailed);
@@ -998,6 +1022,12 @@ struct Plaza2TestSessionHost::Impl {
             }
             return error;
         }
+        if (!reply_bridge.error().empty())
+            return invalid(reply_bridge.error(), Plaza2ErrorCode::CallbackFailed);
+        if (!private_bridge.callback_error().empty())
+            return invalid(private_bridge.callback_error(), Plaza2ErrorCode::CallbackFailed);
+        if (config.transport_recovery_enabled && transport_lost())
+            return invalid("TEST transport handle lost; fresh bootstrap required", Plaza2ErrorCode::AdapterState);
         if (const auto replay_error = open_deferred_trade_replay_if_anchored(); replay_error) {
             return replay_error;
         }
@@ -1016,6 +1046,151 @@ struct Plaza2TestSessionHost::Impl {
         }
         if (!private_bridge.callback_error().empty()) {
             return invalid(private_bridge.callback_error(), Plaza2ErrorCode::CallbackFailed);
+        }
+        return {};
+    }
+
+    auto recovery_now() const {
+        return config.recovery_now ? config.recovery_now() : std::chrono::steady_clock::now();
+    }
+
+    Plaza2TransportHealth sample_health() const {
+        Plaza2TransportHealth out;
+        bool valid = started && !listener_callback_error() && private_bridge.callback_error().empty() &&
+                     reply_bridge.error().empty();
+        const auto sample = [&](const auto& object, std::uint32_t& state) {
+            if (object.state(state)) {
+                state = 0;
+                valid = false;
+            }
+        };
+        sample(connection, out.connection);
+        sample(publisher, out.publisher);
+        sample(reply_listener, out.reply);
+        sample(aggr_listener, out.aggr);
+        out.private_active = !private_listeners.empty();
+        for (const auto& item : private_listeners) {
+            if (out.private_count == out.private_states.size()) {
+                valid = false;
+                break;
+            }
+            const auto i = out.private_count++;
+            out.private_streams[i] = item.stream_code;
+            sample(item.listener, out.private_states[i]);
+            out.private_active &= out.private_states[i] == kCgStateActive;
+        }
+        out.valid = valid;
+        return out;
+    }
+
+    bool transport_lost() const {
+        const auto h = sample_health();
+        const auto lost = [](std::uint32_t state) { return state == kCgStateClosed || state == kCgStateError; };
+        if (lost(h.connection))
+            return true;
+        if (fully_bootstrapped && (lost(h.publisher) || lost(h.reply) || lost(h.aggr)))
+            return true;
+        for (std::size_t i = 0; i < private_listeners.size(); ++i) {
+            const auto& managed = private_listeners[i];
+            const auto* health = stream_health(managed.stream_code);
+            if ((managed.snapshot_completed_once || (health && health->online && health->snapshot_complete)) &&
+                lost(h.private_states[i]))
+                return true;
+        }
+        return false;
+    }
+
+    bool replication_complete() const {
+        const auto h = sample_health();
+        if (h.connection != kCgStateActive || !h.private_active || h.aggr != kCgStateActive || !aggr_bridge.online() ||
+            !aggr_bridge.snapshot_complete())
+            return false;
+        if (config.trade_replay_from_pos_anchor && !trade_replay_anchor_is_ready)
+            return false;
+        for (const auto& managed : private_listeners) {
+            const auto* health = stream_health(managed.stream_code);
+            if (!health || !health->online || !health->snapshot_complete)
+                return false;
+        }
+        return !deferred_trade_stream || trade_listener_index.has_value();
+    }
+
+    void record_failure(const Plaza2Error& error) {
+        recovery.cause = error;
+        recovery.health = sample_health();
+        recovery.error_time_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(recovery_now().time_since_epoch()).count();
+        ++recovery.transitions;
+    }
+
+    bool recoverable(const Plaza2Error& error) const {
+        // A transport state alone cannot turn schema/callback corruption into a retry.
+        return config.transport_recovery_enabled && error.code == Plaza2ErrorCode::AdapterState &&
+               !listener_callback_error() && reply_bridge.error().empty() && private_bridge.callback_error().empty() &&
+               transport_lost();
+    }
+
+    Plaza2Error supervise() {
+        const auto now = recovery_now();
+        if (recovery.operation == Plaza2SessionOperation::Failed)
+            return recovery.cause;
+        if (recovery.operation == Plaza2SessionOperation::Recovering) {
+            if (now >= recovery_expires) {
+                recovery.deadline_exhausted = true;
+                recovery.operation = Plaza2SessionOperation::Failed;
+                ++recovery.transitions;
+                return recovery.cause;
+            }
+            if (!started) {
+                if (now < next_recovery_attempt)
+                    return {};
+                ++recovery.attempts;
+                ++recovery.transitions;
+                auto error = start();
+                if (listener_callback_error())
+                    error = listener_callback_error();
+                if (error) {
+                    record_failure(error);
+                    // Startup configuration/decode failures remain fatal even during reconnect.
+                    if (error.code != Plaza2ErrorCode::AdapterState) {
+                        recovery.operation = Plaza2SessionOperation::Failed;
+                        return error;
+                    }
+                    static_cast<void>(stop());
+                    next_recovery_attempt = now + config.recovery_retry_interval;
+                    return {};
+                }
+                ++recovery.generation;
+                fully_bootstrapped = false;
+            }
+        }
+        const auto error = poll_resources();
+        if (error) {
+            const bool retry = recoverable(error);
+            record_failure(error);
+            if (!retry) {
+                recovery.operation = Plaza2SessionOperation::Failed;
+                return error;
+            }
+            if (recovery.operation != Plaza2SessionOperation::Recovering)
+                recovery_expires = now + config.recovery_deadline;
+            recovery.operation = Plaza2SessionOperation::Recovering;
+            static_cast<void>(stop());
+            next_recovery_attempt = now + config.recovery_retry_interval;
+            return {};
+        }
+        if (replication_complete() && !publisher_is_open) {
+            if (const auto open_error = open_publisher_reply(); open_error) {
+                record_failure(open_error);
+                recovery.operation = Plaza2SessionOperation::Failed;
+                return open_error;
+            }
+        }
+        if (replication_complete() && sample_health().all_active()) {
+            fully_bootstrapped = true;
+            if (recovery.operation != Plaza2SessionOperation::Running)
+                ++recovery.transitions;
+            recovery.operation = Plaza2SessionOperation::Running;
         }
         return {};
     }
@@ -1094,6 +1269,9 @@ struct Plaza2TestSessionHost::Impl {
     bool trade_replay_anchor_is_ready{false};
     bool bridge_started{false};
     bool started{false};
+    bool fully_bootstrapped{false};
+    Plaza2RecoveryStatus recovery;
+    std::chrono::steady_clock::time_point next_recovery_attempt{}, recovery_expires{};
 };
 
 Plaza2TestSessionHost::Plaza2TestSessionHost(Plaza2TestSessionHostConfig config)
@@ -1109,44 +1287,43 @@ Plaza2TestSessionHost::Plaza2TestSessionHost(Plaza2TestSessionHost&&) noexcept =
 Plaza2TestSessionHost& Plaza2TestSessionHost::operator=(Plaza2TestSessionHost&&) noexcept = default;
 
 Plaza2Error Plaza2TestSessionHost::start() {
-    return impl_->start();
+    if (impl_->recovery.operation != Plaza2SessionOperation::Stopped)
+        return invalid("TEST host already has an operational lifetime", Plaza2ErrorCode::AdapterState);
+    if (impl_->config.recovery_retry_interval < std::chrono::seconds(1) ||
+        impl_->config.recovery_deadline <= impl_->config.recovery_retry_interval)
+        return invalid("recovery requires interval >= 1 second and deadline > interval");
+    impl_->recovery.operation = Plaza2SessionOperation::Starting;
+    auto error = impl_->start();
+    if (impl_->listener_callback_error())
+        error = impl_->listener_callback_error();
+    if (error) {
+        impl_->record_failure(error);
+        impl_->recovery.operation = Plaza2SessionOperation::Failed;
+    } else
+        ++impl_->recovery.generation;
+    return error;
 }
 Plaza2Error Plaza2TestSessionHost::poll() {
-    return impl_->poll();
+    return impl_->supervise();
 }
 Plaza2Error Plaza2TestSessionHost::stop() {
+    impl_->recovery.operation = Plaza2SessionOperation::Stopped;
     return impl_->stop();
 }
 Plaza2TransportHealth Plaza2TestSessionHost::runtime_health() const {
-    Plaza2TransportHealth out;
-    const auto& p = *impl_;
-    bool valid = p.started && p.private_bridge.callback_error().empty() && p.reply_bridge.error().empty();
-    const auto sample = [&](const auto& object, std::uint32_t& state) {
-        if (object.state(state)) {
-            state = 0;
-            valid = false;
-        }
-    };
-    sample(p.connection, out.connection);
-    sample(p.publisher, out.publisher);
-    sample(p.reply_listener, out.reply);
-    sample(p.aggr_listener, out.aggr);
-    out.private_active = !p.private_listeners.empty();
-    for (const auto& item : p.private_listeners) {
-        if (out.private_count == out.private_states.size()) {
-            valid = false;
-            break;
-        }
-        const auto i = out.private_count++;
-        out.private_streams[i] = item.stream_code;
-        sample(item.listener, out.private_states[i]);
-        out.private_active &= out.private_states[i] == kCgStateActive;
-    }
-    out.valid = valid;
+    auto out = impl_->sample_health();
+    out.valid &= impl_->recovery.operation != Plaza2SessionOperation::Recovering &&
+                 impl_->recovery.operation != Plaza2SessionOperation::Failed;
     return out;
 }
 bool Plaza2TestSessionHost::started() const noexcept {
-    return impl_->started;
+    return impl_->recovery.operation != Plaza2SessionOperation::Stopped;
+}
+bool Plaza2TestSessionHost::recovering() const noexcept {
+    return impl_->recovery.operation == Plaza2SessionOperation::Recovering;
+}
+const Plaza2RecoveryStatus& Plaza2TestSessionHost::recovery_status() const noexcept {
+    return impl_->recovery;
 }
 const cgate::Plaza2RuntimeProbeReport& Plaza2TestSessionHost::probe_report() const noexcept {
     return impl_->probe_report;
@@ -1185,6 +1362,8 @@ std::vector<Plaza2TestSessionHost::ReplyEvent> Plaza2TestSessionHost::take_reply
     return impl_->reply_bridge.take();
 }
 const std::string& Plaza2TestSessionHost::last_callback_error() const noexcept {
+    if (impl_->listener_callback_error())
+        return impl_->listener_callback_error().message;
     if (!impl_->reply_bridge.error().empty()) {
         return impl_->reply_bridge.error();
     }
@@ -1215,8 +1394,9 @@ Plaza2PublisherMessageResult Plaza2TestSessionHost::post_validated(std::string_v
         result.post_invoked = false;
         return result;
     }
-    if (!impl_->started || (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestAuthorizedSend &&
-                            !impl_->config.arm_state.test_order_send_armed)) {
+    if (recovering() || impl_->recovery.operation == Plaza2SessionOperation::Failed || !impl_->started ||
+        (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestAuthorizedSend &&
+         !impl_->config.arm_state.test_order_send_armed)) {
         Plaza2PublisherMessageResult result;
         result.validation_error = invalid("publisher requires a started, explicitly armed TEST host");
         return result;
@@ -2030,6 +2210,9 @@ struct Plaza2TestTradeTransport::Impl {
                 result.validation_error = invalid(std::move(reason));
                 return result;
             };
+            if (order_may_exist && (host.recovering() || order_generation != host.recovery_status().generation))
+                return refuse(
+                    "order epoch crossed transport loss; observation reconciliation required; no automatic commands");
             const bool add = command.command_kind == Plaza2TradeCommandKind::AddOrder;
             const bool cancel = command.command_kind == Plaza2TradeCommandKind::DelOrder;
             const bool recovery = command.command_kind == Plaza2TradeCommandKind::DelUserOrders;
@@ -2119,6 +2302,7 @@ struct Plaza2TestTradeTransport::Impl {
         }
         const auto result = host.post_validated(command.command_name, command.payload, user_id, true);
         if (command.command_kind == Plaza2TradeCommandKind::AddOrder) {
+            order_generation = host.recovery_status().generation;
             order_may_exist = result.certainty != cgate::Plaza2SubmissionCertainty::DefinitelyNotSent;
         }
         return result;
@@ -2141,6 +2325,10 @@ struct Plaza2TestTradeTransport::Impl {
                 result.error = error.message;
             }
         }
+        // The order epoch and submission latches survive rebootstrap. Absence in an
+        // incomplete replacement snapshot is never terminal order evidence.
+        if (host.recovering() || !result.ok)
+            return result;
         const Plaza2TradeCodec codec;
         for (const auto& event : host.take_reply_events()) {
             OrderReplyObservation reply;
@@ -2212,6 +2400,7 @@ struct Plaza2TestTradeTransport::Impl {
     bool cancel_attempted{false};
     bool recovery_attempted{false};
     bool order_may_exist{false};
+    std::uint64_t order_generation{0};
     std::optional<std::int64_t> cancel_order_id;
     bool cancel_identity_conflict{false};
     bool safe_terminal_epoch{false};
@@ -2263,6 +2452,7 @@ Plaza2Error Plaza2TestTradeTransport::reset_order_epoch() {
     impl_->cancel_attempted = false;
     impl_->recovery_attempted = false;
     impl_->order_may_exist = false;
+    impl_->order_generation = 0;
     impl_->cancel_order_id.reset();
     impl_->cancel_identity_conflict = false;
     impl_->safe_terminal_epoch = false;
