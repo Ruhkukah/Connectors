@@ -1,6 +1,8 @@
 #pragma once
 
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
+#include <algorithm>
+#include <limits>
 #include <iomanip>
 #include <chrono>
 #include <optional>
@@ -21,6 +23,17 @@ class Plaza2TargetForensics {
     std::uint64_t life_{};
     std::int64_t last_revision_{-1};
     bool transaction_{}, identity_verified_{};
+    std::optional<std::int64_t> pending_clear_;
+    static bool expired(std::int64_t revision, std::int64_t boundary) noexcept {
+        return boundary == std::numeric_limits<std::int64_t>::max() || revision < boundary;
+    }
+    void retire(std::int64_t boundary) {
+        std::erase_if(committed_, [&](const auto& row) { return expired(row.revision, boundary); });
+        if (expired(last_revision_, boundary)) {
+            last_revision_ = -1;
+            identity_verified_ = false;
+        }
+    }
     static std::string quoted(std::string_view value) {
         std::string result = "\"";
         constexpr char hex[] = "0123456789abcdef";
@@ -73,7 +86,8 @@ class Plaza2TargetForensics {
             if (f.field_code == F::kFortsRefdataReplFutSessContentsReplRev)
                 rev = f.signed_value;
         }
-        return i == isin && s == session && rev != last_revision_;
+        return i == isin && s == session &&
+               (rev != last_revision_ || (pending_clear_ && expired(last_revision_, *pending_clear_)));
     }
     void capture(Row row) noexcept {
         try {
@@ -102,6 +116,8 @@ class Plaza2TargetForensics {
         try {
             if (e.kind == Kind::LifeNum || e.kind == Kind::Close || e.kind == Kind::Open) {
                 pending_.clear();
+                committed_.clear();
+                pending_clear_.reset();
                 identity_verified_ = false;
                 transaction_ = false;
                 last_revision_ = -1;
@@ -109,16 +125,28 @@ class Plaza2TargetForensics {
                     life_ = e.unsigned_value;
             } else if (e.kind == Kind::ClearDeleted &&
                        e.table_code == moex::plaza2::generated::TableCode::kFortsRefdataReplFutSessContents) {
-                identity_verified_ = false;
+                if (transaction_) {
+                    pending_clear_ = std::max(pending_clear_.value_or(e.signed_value), e.signed_value);
+                    // Retire pre-marker staged rows now. Rows after MAX belong to
+                    // the fresh publication and must survive the eventual commit.
+                    std::erase_if(pending_, [&](const auto& row) { return expired(row.revision, e.signed_value); });
+                } else {
+                    retire(e.signed_value);
+                }
             } else if (e.kind == Kind::TransactionBegin) {
                 if (transaction_)
                     failed = true;
                 pending_.clear();
+                pending_clear_.reset();
                 transaction_ = true;
             } else if (e.kind == Kind::TransactionCommit) {
                 if (!transaction_) {
                     failed = true;
                     return;
+                }
+                if (pending_clear_) {
+                    retire(*pending_clear_);
+                    pending_clear_.reset();
                 }
                 for (auto& row : pending_) {
                     last_revision_ = row.revision;

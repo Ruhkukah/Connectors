@@ -55,7 +55,13 @@ blocks orders. The qualification price gate also requires a committed, independe
 matched target identity, expected symbol and corresponding AGGR instrument; a missing
 symbol or missing probe is not an authorization. Rows are bounded to 64 KiB, 4,096 null entries and 128 descriptors;
 the observer holds at most 16 undrained target rows. Rollback/close/LifeNum does not
-publish pending rows. Formatting and disk I/O occur outside callbacks.
+publish pending rows. Relevant ClearDeleted boundaries remove captured revisions
+strictly older than the boundary, including already-drained identity proof. Surviving
+revisions retain their eligibility. Effects within a transaction are staged until
+commit; MAX retires prior publication evidence and permits fresh low revisions,
+including a revision number used before the reset. Other tables do not affect the
+target. LifeNum/Close/Open retire undrained evidence as well as verified proof.
+Formatting and disk I/O occur outside callbacks.
 
 No new live target payload has been collected by this implementation. Consequently,
 the historical 179/179 values remain unexplained. If independent raw decoding
