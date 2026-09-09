@@ -106,6 +106,7 @@ struct ConnectorHostQualificationSnapshot {
     bool client_code_is_brokerage_account{false};
     std::optional<plaza2::private_state::LimitSnapshot> broker_limit, client_limit;
     struct LimitDiagnostic {
+        std::int64_t repl_id;
         plaza2::private_state::LimitParticipantKind kind;
         std::size_t code_length;
         bool equals_broker, equals_client, limits_set, auto_update;

@@ -874,7 +874,8 @@ ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot() const
         out.client_limit = *client.exact;
     for (const auto& row : data.limits())
         out.limit_diagnostics.push_back(
-            {row.participant_kind, row.account_code.size(), row.account_code == impl_->config.order.broker_code,
+            {row.repl_id, row.participant_kind, row.account_code.size(),
+             row.account_code == impl_->config.order.broker_code,
              row.account_code == impl_->config.order.broker_code + impl_->config.order.client_code, row.limits_set,
              row.is_auto_update_limit, row.money_free, row.money_blocked, row.money_amount});
     return out;

@@ -1041,3 +1041,8 @@ target_include_directories(plaza2_target_forensics_test PRIVATE "${MOEX_SOURCE_R
 target_link_libraries(plaza2_target_forensics_test PRIVATE moex_plaza2_cgate_runtime)
 add_test(NAME plaza2_target_forensics_test COMMAND plaza2_target_forensics_test)
 set_tests_properties(plaza2_target_forensics_test PROPERTIES LABELS "unit;plaza2;sanitizer")
+
+add_test(NAME plaza2_observation_surface
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/plaza2_observation_surface_test.py
+            ${PROJECT_SOURCE_DIR}/apps/plaza2_aggr_qualification.cpp)
+set_tests_properties(plaza2_observation_surface PROPERTIES LABELS "unit;plaza2;sanitizer")

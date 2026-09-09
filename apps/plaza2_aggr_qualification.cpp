@@ -31,6 +31,24 @@ void stop_signal(int) {
 std::uint64_t ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
 }
+bool observation_authorized(const std::tm& date, const char* auth, const char* order_auth) {
+    const auto minute = date.tm_hour * 60 + date.tm_min;
+    return auth && std::string_view(auth) == "20260910_AGGREGATED_OBSERVATION" && !order_auth && date.tm_year == 126 &&
+           date.tm_mon == 8 && date.tm_mday == 10 && minute >= 6 * 60 + 58 && minute < 16 * 60 + 10;
+}
+bool observation_config(const ch::Plaza2HostConfig& config) {
+    return config.purpose == ch::HostPurpose::Qualify &&
+           config.transport.host.mode == tr::Plaza2TestSessionHostMode::LiveTestPreSend &&
+           !config.transport.host.arm_state.test_order_send_armed;
+}
+void participant_json(std::ostream& out, const ch::ConnectorHostQualificationSnapshot::LimitDiagnostic& row) {
+    out << "{\"repl_id\":" << row.repl_id << ",\"kind\":" << static_cast<unsigned>(row.kind)
+        << ",\"code_length\":" << row.code_length << ",\"equals_broker\":" << row.equals_broker
+        << ",\"equals_client\":" << row.equals_client << ",\"limits_set\":" << row.limits_set
+        << ",\"auto_update\":" << row.auto_update << ",\"money_free\":" << std::quoted(row.money_free)
+        << ",\"money_blocked\":" << std::quoted(row.money_blocked)
+        << ",\"money_amount\":" << std::quoted(row.money_amount) << '}';
+}
 std::optional<std::int64_t> exact_price(std::string_view value) {
     bool negative = false, decimal = false;
     unsigned digits = 0, fraction = 0;
@@ -416,61 +434,6 @@ std::string exposure_json(const ch::ConnectorHostQualificationSnapshot& q) {
 std::size_t nonzero_positions(const ch::ConnectorHostQualificationSnapshot& q) {
     return std::count_if(q.positions.begin(), q.positions.end(), [](const auto& row) { return row.xpos != 0; });
 }
-int idle_connection(cg::Plaza2Settings settings, const std::string& connection_settings,
-                    const cg::Plaza2CredentialConfig& software_key, const std::filesystem::path& output) {
-    const auto key = cg::load_plaza2_credentials(software_key);
-    constexpr std::string_view token = "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
-    if (const auto position = settings.env_open_settings.find(token); position != std::string::npos) {
-        if (!key)
-            throw std::invalid_argument("software key unavailable");
-        settings.env_open_settings.replace(position, token.size(), key->value);
-    }
-    cg::Plaza2Env env;
-    cg::Plaza2Connection connection;
-    if (env.open(settings) || connection.create(env, connection_settings) || connection.open({}))
-        return 3;
-    std::ofstream metrics(output / "metrics.jsonl");
-    const auto start = Clock::now();
-    auto previous = start, sample = start;
-    std::uint64_t polls = 0, max_gap = 0;
-    bool failed = false;
-    while (!stopping && Clock::now() - start < std::chrono::seconds(300)) {
-        const auto now = Clock::now();
-        max_gap = std::max(max_gap, static_cast<std::uint64_t>(
-                                        std::chrono::duration_cast<std::chrono::nanoseconds>(now - previous).count()));
-        previous = now;
-        std::uint32_t code = 0, state = 0;
-        ++polls;
-        failed = static_cast<bool>(connection.process(10, &code)) || static_cast<bool>(connection.state(state));
-        if (now >= sample || failed) {
-            rusage usage{};
-            getrusage(RUSAGE_SELF, &usage);
-            metrics << "{\"monotonic_ns\":" << ns() << ",\"polls\":" << polls << ",\"max_poll_gap_ns\":" << max_gap
-                    << ",\"state\":" << state << ",\"process_code\":" << code
-                    << ",\"user_cpu_us\":" << usage.ru_utime.tv_sec * 1000000LL + usage.ru_utime.tv_usec
-                    << ",\"system_cpu_us\":" << usage.ru_stime.tv_sec * 1000000LL + usage.ru_stime.tv_usec << "}\n";
-            metrics.flush();
-            if (!metrics)
-                failed = true;
-            sample = now + std::chrono::seconds(1);
-        }
-        if (failed)
-            break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    const bool complete = Clock::now() - start >= std::chrono::seconds(300);
-    failed |= static_cast<bool>(connection.close());
-    failed |= static_cast<bool>(connection.destroy());
-    failed |= static_cast<bool>(env.close());
-    write_file(output / "result.json",
-               std::string("{\"status\":\"") +
-                   (failed     ? "FAIL"
-                    : complete ? "PASS"
-                               : "PARTIAL") +
-                   "\",\"scope\":\"300 second connection-only polling, no listeners or publisher\"}\n");
-    return failed || !complete ? 3 : 0;
-}
-
 bool zero_gate(const ch::ConnectorHostSnapshot& s) {
     return s.observation_ready && s.new_order_allowed && s.zero_starting_position_proven &&
            s.active_own_order_count == 0 && !s.order_epoch_active && s.evidence_consistent;
@@ -503,6 +466,58 @@ bool terms_gate(const Evidence& evidence, const ch::ConnectorHostQualificationSn
 }
 
 int self_test() {
+    std::tm date{};
+    date.tm_year = 126;
+    date.tm_mon = 8;
+    date.tm_mday = 10;
+    date.tm_hour = 6;
+    date.tm_min = 58;
+    const auto* observation_token = "20260910_AGGREGATED_OBSERVATION";
+    if (!observation_authorized(date, observation_token, nullptr) ||
+        observation_authorized(date, observation_token, "") ||
+        observation_authorized(date, observation_token, "anything") || observation_authorized(date, "wrong", nullptr) ||
+        observation_authorized(date, nullptr, nullptr))
+        return 70;
+    for (const auto day : {9, 11}) {
+        date.tm_mday = day;
+        if (observation_authorized(date, observation_token, nullptr))
+            return 71;
+    }
+    date.tm_mday = 10;
+    date.tm_min = 57;
+    if (observation_authorized(date, observation_token, nullptr))
+        return 72;
+    date.tm_hour = 16;
+    date.tm_min = 9;
+    date.tm_sec = 59;
+    if (!observation_authorized(date, observation_token, nullptr))
+        return 73;
+    date.tm_min = 10;
+    if (observation_authorized(date, observation_token, nullptr))
+        return 74;
+    ch::Plaza2HostConfig config;
+    config.purpose = ch::HostPurpose::Qualify;
+    config.transport.host.mode = tr::Plaza2TestSessionHostMode::LiveTestPreSend;
+    if (!observation_config(config))
+        return 75;
+    config.transport.host.arm_state.test_order_send_armed = true;
+    if (observation_config(config))
+        return 76;
+    config.transport.host.arm_state.test_order_send_armed = false;
+    config.transport.host.mode = tr::Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+    if (observation_config(config))
+        return 77;
+    config.transport.host.mode = tr::Plaza2TestSessionHostMode::LiveTestPreSend;
+    config.purpose = ch::HostPurpose::OrderTest;
+    if (observation_config(config))
+        return 78;
+    ch::ConnectorHostQualificationSnapshot::LimitDiagnostic diagnostic{};
+    diagnostic.repl_id = 123456;
+    std::ostringstream rendered;
+    participant_json(rendered, diagnostic);
+    if (rendered.str().find("\"repl_id\":123456") == std::string::npos)
+        return 79;
+
     if (exact_price("12.34567") != 12345670 || exact_price("-0.5") != -500000 || exact_price("1x2") ||
         exact_price("1.1234567") || exact_price("99999999999999999999"))
         return 1;
@@ -718,10 +733,8 @@ int main(int argc, char** argv) {
         const auto moscow = now + 3 * 3600;
         std::tm date{};
         gmtime_r(&moscow, &date);
-        if (!auth || std::string_view(auth) != "20260909_AGGREGATED_QUALIFICATION" || date.tm_year != 126 ||
-            date.tm_mon != 8 || date.tm_mday != 9 || date.tm_hour < 6 || (date.tm_hour == 6 && date.tm_min < 58) ||
-            (date.tm_hour * 60 + date.tm_min >= 16 * 60 + 10))
-            throw std::invalid_argument("outside authorized 2026-09-09 T1 qualification window");
+        if (!observation_authorized(date, auth, std::getenv("MOEX_AGGR_T1_ORDER_AUTH")))
+            throw std::invalid_argument("outside September 10 observation authorization or order variable present");
         std::vector<std::string_view> args;
         for (int i = 3; i < argc; ++i)
             args.emplace_back(argv[i]);
@@ -733,37 +746,26 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("persistent qualification journal path is required");
         request.config.transport.allow_exact_ext_id_recovery = false;
         request.config.order.journal_root = journal;
-        request.config.order.run_id = "aggr-t1-20260909";
-        request.config.order.profile_id = "main-aggregated-t1-20260909";
+        request.config.order.run_id = "aggr-t1-20260910";
+        request.config.order.profile_id = "main-aggregated-t1-20260910";
         request.config.order.profile_fingerprint = cg::plaza2_sha256_hex(request.config.order.profile_id);
-        request.config.order.ext_id = 2026090900;
-        request.config.order.add_user_id = 2026090901;
-        request.config.order.cancel_user_id = 2026090902;
-        request.config.order.recovery_user_id = 2026090903;
-        if (const auto* order_auth = std::getenv("MOEX_AGGR_T1_ORDER_AUTH")) {
-            if (std::string_view(order_auth) != "20260909_ONE_LOT_ADD_CANCEL")
-                throw std::invalid_argument("invalid qualification order authorization");
-            request.config.purpose = ch::HostPurpose::OrderTest;
-            request.config.transport.host.mode = tr::Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
-            request.config.transport.host.arm_state.test_order_send_armed = true;
-        }
+        request.config.order.ext_id = 2026091000;
+        request.config.order.add_user_id = 2026091001;
+        request.config.order.cancel_user_id = 2026091002;
+        request.config.order.recovery_user_id = 2026091003;
+        if (!observation_config(request.config))
+            throw std::invalid_argument("observation requires Qualify, LiveTestPreSend and no send arm");
+        const std::filesystem::path journal_path(journal);
+        if (std::filesystem::exists(journal_path) && !std::filesystem::is_empty(journal_path))
+            throw std::invalid_argument("observation journal must be new and empty");
 
         const std::filesystem::path output(argv[1]);
         if (!std::filesystem::create_directory(output))
             throw std::invalid_argument("output must be a new directory under an existing evidence parent");
         std::signal(SIGTERM, stop_signal);
         std::signal(SIGINT, stop_signal);
-        if (std::getenv("MOEX_AGGR_T1_IDLE")) {
-            const auto& arms = request.config.transport.host.arm_state;
-            if (seconds != 300 || request.config.purpose != ch::HostPurpose::Qualify || !arms.test_network_armed ||
-                !arms.test_session_armed || !arms.test_plaza2_armed ||
-                date.tm_hour * 3600 + date.tm_min * 60 + date.tm_sec > 16 * 3600 + 5 * 60)
-                throw std::invalid_argument(
-                    "idle probe requires 300 seconds, three TEST arms and no order authorization");
-            return idle_connection(request.config.transport.host.runtime,
-                                   request.config.transport.host.connection_settings,
-                                   request.config.transport.host.software_key, output);
-        }
+        if (std::getenv("MOEX_AGGR_T1_IDLE"))
+            throw std::invalid_argument("observation requires the complete host topology");
         Evidence evidence;
         evidence.forensics.isin = request.config.transport.target_isin_id;
         evidence.forensics.session = request.config.transport.target_session_id;
@@ -796,10 +798,8 @@ int main(int argc, char** argv) {
         const auto end_seconds = (16 * 60 + 10 - (date.tm_hour * 60 + date.tm_min)) * 60 - date.tm_sec;
         deadline = std::min(deadline, started + std::chrono::seconds(std::max(0, end_seconds)));
         bool failed = static_cast<bool>(host.start());
-        bool orders_blocked = false;
-        bool cancel_sent = false;
+        const bool orders_blocked = true;
         std::uint64_t polls{}, max_gap{}, recovery_transition{};
-        std::optional<tr::OrderLifecycleState> last_lifecycle;
         std::optional<bool> last_ready;
         while (!failed && !stopping && Clock::now() < deadline && std::time(nullptr) < end_utc) {
             const auto current = Clock::now();
@@ -814,49 +814,14 @@ int main(int argc, char** argv) {
                 recovery_transition = state.recovery.transitions;
                 events << ns() << " transport " << ch::render_snapshot(state, true);
                 events.flush();
-                // Qualification must never turn an interrupted epoch into an
-                // automatic cancel or another order after recovery.
-                if (state.recovery.cause)
-                    orders_blocked = true;
             }
             if (last_ready != state.observation_ready) {
                 events << ns() << " 0 13 " << state.observation_ready << " 0 0 0\n";
                 last_ready = state.observation_ready;
             }
-            if (state.order_epoch_active) {
-                const auto result = host.poll_order();
-                state = host.snapshot();
-                if (state.lifecycle_state != last_lifecycle) {
-                    events << ns() << " order " << ch::render_snapshot(state, true);
-                    last_lifecycle = state.lifecycle_state;
-                }
-                if (state.executed_quantity || !state.evidence_consistent)
-                    orders_blocked = true;
-                if (state.lifecycle_state == tr::OrderLifecycleState::Working && !cancel_sent && !orders_blocked &&
-                    state.observation_ready) {
-                    cancel_sent = true;
-                    events << ns() << " CANCEL_BEGIN\n";
-                    const auto cancel = host.cancel_current_order();
-                    events << ns() << " CANCEL_END " << static_cast<unsigned>(cancel.state) << ' '
-                           << cancel.cancel_submission.post_invoked << '\n';
-                }
-                if (state.lifecycle_state == tr::OrderLifecycleState::Cancelled && state.market_safe &&
-                    state.evidence_consistent && !state.executed_quantity) {
-                    orders_blocked |= static_cast<bool>(host.finish_order_epoch());
-                    cancel_sent = false;
-                } else if (state.lifecycle_state == tr::OrderLifecycleState::PossiblySent ||
-                           state.lifecycle_state == tr::OrderLifecycleState::UnresolvedOrphanIncident ||
-                           state.lifecycle_state == tr::OrderLifecycleState::Rejected ||
-                           state.lifecycle_state == tr::OrderLifecycleState::Filled ||
-                           state.lifecycle_state == tr::OrderLifecycleState::PartiallyFilled) {
-                    orders_blocked = true;
-                }
-                (void)result;
-            }
+            if (state.order_epoch_active || state.publisher_calls.post || state.order_submission_attempted)
+                throw std::runtime_error("observation safety invariant violated");
             evidence.flush(events);
-            orders_blocked |= std::time(nullptr) >= end_utc - 15 * 60;
-            orders_blocked |= evidence.invalid_books || evidence.dropped || evidence.callback_errors ||
-                              evidence.owner_violation || evidence.forensics.failed;
             if (current >= next_sample || failed) {
                 const auto q = host.qualification_snapshot();
                 if (evidence.forensics.has_committed()) {
@@ -877,20 +842,15 @@ int main(int argc, char** argv) {
                     if (separator)
                         participants << ',';
                     separator = true;
-                    participants << "{\"kind\":" << static_cast<unsigned>(row.kind)
-                                 << ",\"code_length\":" << row.code_length << ",\"equals_broker\":" << row.equals_broker
-                                 << ",\"equals_client\":" << row.equals_client << ",\"limits_set\":" << row.limits_set
-                                 << ",\"auto_update\":" << row.auto_update
-                                 << ",\"money_free\":" << std::quoted(row.money_free)
-                                 << ",\"money_blocked\":" << std::quoted(row.money_blocked)
-                                 << ",\"money_amount\":" << std::quoted(row.money_amount) << '}';
+                    participant_json(participants, row);
                 }
                 participants << "]}\n";
                 write_file(output / "participant-limits.json", participants.str());
                 write_file(output / "state_current.json", ch::render_snapshot(host.snapshot(), true));
                 const auto exposure_bytes = exposure_json(q);
                 write_file(output / "private_exposure_current.json", exposure_bytes);
-                orders_blocked |= nonzero_positions(q) != 0;
+                if (nonzero_positions(q) || !q.active_orders.empty())
+                    throw std::runtime_error("observation account census is not flat");
                 const auto book_bytes = books_json(q);
                 write_file(output / "book_current.json", book_bytes);
                 write_file(output / "price_limits_current.json", evidence.limits_json());
@@ -946,40 +906,6 @@ int main(int argc, char** argv) {
                 if (!metrics || !events)
                     throw std::runtime_error("evidence output failed");
                 next_sample = current + std::chrono::seconds(1);
-                // The supervisor owns instrument/expiry/price-limit/session checks.
-                // Consuming a uniquely numbered request before begin_order forbids
-                // automatic replay or Add retry after uncertainty or a process crash.
-                const auto command = output / "order.request";
-                if (std::filesystem::exists(command)) {
-                    std::ifstream input(command);
-                    ch::ConnectorHostOrderRequest order;
-                    std::string side, extra;
-                    input >> side >> order.price >> order.base_contract_code;
-                    const bool valid = input && !(input >> extra) && (side == "buy" || side == "sell");
-                    std::filesystem::rename(command, output / ("order-consumed-" + std::to_string(ns()) + ".txt"));
-                    order.side = side == "buy" ? tr::Plaza2TradeSide::Buy : tr::Plaza2TradeSide::Sell;
-                    if (!valid || orders_blocked || !evidence.runtime_active() || !evidence.ref_online ||
-                        !evidence.ref_valid || !zero_gate(host.snapshot()) ||
-                        !terms_gate(evidence, q, host.snapshot(), order)) {
-                        events << ns() << " ORDER_REFUSED_PRECONDITION\n";
-                    } else {
-                        const auto plan = host.plan_order(order);
-                        if (!plan.ok)
-                            events << ns() << " ORDER_REFUSED_PLAN\n";
-                        else {
-                            write_file(output / ("plan-" + std::to_string(ns()) + ".json"), plan.canonical_json);
-                            if (host.begin_order(order, plan.canonical_json, plan.sha256))
-                                events << ns() << " ORDER_REFUSED_BIND\n";
-                            else {
-                                events << ns() << " ADD_BEGIN " << plan.sha256 << '\n';
-                                const auto sent = host.submit_order();
-                                events << ns() << " ADD_END " << static_cast<unsigned>(sent.state) << ' '
-                                       << sent.add_submission.post_invoked << '\n';
-                                orders_blocked |= sent.state != tr::OrderLifecycleState::Posted;
-                            }
-                        }
-                    }
-                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
