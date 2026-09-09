@@ -26,8 +26,8 @@ void event(Plaza2TargetForensics& p, Kind kind, std::int64_t boundary = 0, gen::
     p.observe({.kind = kind,
                .stream_code = stream,
                .table_code = target_table,
-               .signed_value = boundary,
-               .unsigned_value = 7});
+               .unsigned_value = 7,
+               .signed_value = boundary});
 }
 void capture(Plaza2TargetForensics& p, std::int64_t rev) {
     using F = gen::FieldCode;
