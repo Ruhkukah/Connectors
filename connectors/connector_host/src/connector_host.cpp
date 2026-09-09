@@ -1137,8 +1137,8 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
         << ",\"exchange_money_limit_check_enabled\":" << s.exchange_money_limit_check_enabled
         << ",\"causal_error\":{\"connector_code\":" << static_cast<unsigned>(s.causal_error.code)
         << ",\"runtime_code\":" << (s.causal_error.runtime_code ? std::to_string(s.causal_error.runtime_code) : "null")
-        << ",\"message\":" << quoted(s.causal_error.message) << "}"
-        << ",\"publisher_ready\":" << s.publisher_ready << ",\"reply_ready\":" << s.reply_ready
+        << ",\"message\":" << quoted(s.causal_error.message) << "}";
+    out << ",\"publisher_ready\":" << s.publisher_ready << ",\"reply_ready\":" << s.reply_ready
         << ",\"private_streams_ready\":" << s.private_streams_ready << ",\"observation_ready\":" << s.observation_ready
         << ",\"target\":" << quoted(s.target) << ",\"target_isin_id\":" << s.target_isin_id
         << ",\"session_id\":" << s.session_id
