@@ -194,6 +194,13 @@ int main(int argc, char** argv) {
                               !lost.private_streams_ready && !lost.aggr_ready && !lost.publisher_ready &&
                               !lost.reply_ready && !lost.new_order_allowed && lost.causal_error,
                           "all effective gates close immediately and cause retained");
+            if (std::string_view(fault) == "MOEX_FAKE_CONNECTION_ERROR" ||
+                std::string_view(fault) == "MOEX_FAKE_CONNECTION_CLOSED") {
+                test::require(lost.causal_error.code == cg::Plaza2ErrorCode::AdapterState &&
+                                  lost.causal_error.runtime_code == 131077 &&
+                                  lost.causal_error.message == "cg_conn_process: CG_ERR_INCORRECTSTATE",
+                              "real process result precedes synthetic loss check and is preserved exactly");
+            }
             for (int i = 0; i < 10; ++i)
                 test::require(!host.poll(), "idle recovery poll");
             test::require(host.snapshot().recovery.attempts == 0, "no busy retries");
@@ -212,6 +219,30 @@ int main(int argc, char** argv) {
                               fresh.trade_replay_complete,
                           "replacement POS anchor belongs to fresh LifeNum");
             test::require(!host.stop(), "stop recovered host");
+        }
+        {
+            reset();
+            auto now = std::chrono::steady_clock::now();
+            auto c = config_for(fixture);
+            c.transport.host.recovery_now = [&] { return now; };
+            ConnectorHost host(c);
+            warm(host);
+            const auto connections = connection_new_count();
+            ::setenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS", "1", 1);
+            const auto error = host.poll();
+            ::unsetenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS");
+            const auto failed = host.snapshot();
+            test::require(error.code == cg::Plaza2ErrorCode::RuntimeCallFailed && error.runtime_code == 131072 &&
+                              error.message == "cg_conn_process: CG_ERR_INTERNAL" &&
+                              failed.causal_error.runtime_code == error.runtime_code &&
+                              failed.causal_error.message == error.message && failed.causal_health.connection == 1 &&
+                              failed.state == ConnectorHostState::Failed && !failed.observation_ready &&
+                              failed.recovery.attempts == 0,
+                          "CG_ERR_INTERNAL with observable ERROR stays fatal; it is not proven router loss");
+            now += std::chrono::seconds(2);
+            test::require(host.poll() && connection_new_count() == connections && count(1) == 0,
+                          "fatal runtime category cannot start a reconnect or command later");
+            test::require(!host.stop(), "stop internal-runtime-loss test");
         }
         for (const bool exhaust : {false, true}) {
             reset();

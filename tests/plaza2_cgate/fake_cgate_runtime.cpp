@@ -32,6 +32,7 @@ using moex::plaza2::generated::ValueClass;
 
 constexpr std::uint32_t kCgErrOk = 0;
 constexpr std::uint32_t kCgRangeBegin = 131072;
+constexpr std::uint32_t kCgErrInternal = kCgRangeBegin;
 constexpr std::uint32_t kCgErrInvalidArgument = kCgRangeBegin + 1;
 constexpr std::uint32_t kCgErrTimeout = kCgRangeBegin + 3;
 constexpr std::uint32_t kCgErrIncorrectState = kCgRangeBegin + 5;
@@ -1747,6 +1748,10 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrInvalidArgument;
     }
     auto* connection = static_cast<FakeConnection*>(conn);
+    if (fake_flag("MOEX_FAKE_CONNECTION_INTERNAL_LOSS")) {
+        connection->state = kStateError;
+        return kCgErrInternal;
+    }
     if (fake_flag("MOEX_FAKE_CONNECTION_CLOSED")) {
         connection->state = kStateClosed;
         return kCgErrIncorrectState;

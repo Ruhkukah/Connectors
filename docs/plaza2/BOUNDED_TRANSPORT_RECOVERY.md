@@ -71,4 +71,35 @@ refactors in this PR.
 Before deployment, review this PR and PR #47. Actual T1 account identity and raw
 179/179 field interpretation remain unproven. The first separately approved live
 run must be observation-only; the second is zero-order/zero-exposure router
-stop/restart. A live order requires separate authorization after both pass.
+stop/restart. Live order testing with recovery enabled is not authorized under this
+implementation, even after those observation scenarios pass.
+
+## Runtime result classification regression
+
+The added fake case makes `cg_conn_process` return `CG_ERR_INTERNAL` (131072 /
+0x20000) while the connection changes from ACTIVE to ERROR. The wrapper reports
+`RuntimeCallFailed` with the exact message `cg_conn_process: CG_ERR_INTERNAL`.
+The host enters Failed, keeps all effective gates false, retains the original
+runtime cause and ERROR census, and performs zero retries or publisher calls.
+
+This remains fatal deliberately. MOEX's [CGate manual, section 2.5.5](https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/Game/docs/cgate_en.pdf)
+describes this result as an internal error which may reflect configuration or
+runtime-environment faults and calls for library-log diagnosis. An ERROR handle
+alone does not prove that rebootstrap is safe. This test does not claim to model
+all vendor router-disconnect results. The existing real `CG_ERR_INCORRECTSTATE`
+(131077 / 0x20005) with CLOSED/ERROR remains recoverable; tests now assert that its
+exact `cg_conn_process` result is preserved before any synthetic AdapterState check.
+Unknown, unsupported, schema, decoder and callback categories remain fatal.
+
+## Explicit future order gate
+
+`POST_RECOVERY_OPERATOR_CANCEL_NOT_IMPLEMENTED`
+
+`LIVE ORDER TEST WITH RECOVERY ENABLED = NOT AUTHORIZED`
+
+A Working order crossing a transport generation cannot currently be cancelled by
+the recovered epoch. A separately reviewed, explicit operator-authorized
+post-recovery Cancel mechanism is required before live order tests with recovery
+enabled. No automatic Add, Cancel, cleanup or flatten policy changes are included.
+This gate does not block observation-only testing or a controlled router test with
+zero orders, zero positions and no active order epoch.
