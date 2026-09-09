@@ -20,7 +20,7 @@ class Plaza2TargetForensics {
     std::vector<Captured> pending_, committed_;
     std::uint64_t life_{};
     std::int64_t last_revision_{-1};
-    bool transaction_{};
+    bool transaction_{}, identity_verified_{};
     static std::string quoted(std::string_view value) {
         std::string result = "\"";
         constexpr char hex[] = "0123456789abcdef";
@@ -81,6 +81,7 @@ class Plaza2TargetForensics {
                 failed = true;
                 return;
             }
+            identity_verified_ = false;
             const auto rev = std::stoll(value(row, "replRev"));
             for (const auto& field : row.fields)
                 if (!field.equal)
@@ -101,10 +102,14 @@ class Plaza2TargetForensics {
         try {
             if (e.kind == Kind::LifeNum || e.kind == Kind::Close || e.kind == Kind::Open) {
                 pending_.clear();
+                identity_verified_ = false;
                 transaction_ = false;
                 last_revision_ = -1;
                 if (e.kind == Kind::LifeNum)
                     life_ = e.unsigned_value;
+            } else if (e.kind == Kind::ClearDeleted &&
+                       e.table_code == moex::plaza2::generated::TableCode::kFortsRefdataReplFutSessContents) {
+                identity_verified_ = false;
             } else if (e.kind == Kind::TransactionBegin) {
                 if (transaction_)
                     failed = true;
@@ -132,6 +137,9 @@ class Plaza2TargetForensics {
             failed = true;
         }
     }
+    bool identity_verified() const noexcept {
+        return identity_verified_ && !failed && !transaction_;
+    }
     bool has_committed() const noexcept {
         return !committed_.empty();
     }
@@ -143,6 +151,8 @@ class Plaza2TargetForensics {
                 value(r, "isin_id") == std::to_string(isin) && value(r, "sess_id") == std::to_string(session);
             const bool symbol = !expected_symbol.empty() &&
                                 (value(r, "isin") == expected_symbol || value(r, "short_isin") == expected_symbol);
+            if (captured.life == life_ && captured.revision == last_revision_)
+                identity_verified_ = identity && symbol && aggr_target_present;
             out << "{\"stream\":" << static_cast<unsigned>(r.stream_code)
                 << ",\"table\":" << static_cast<unsigned>(r.table_code) << ",\"table_index\":" << r.table_index
                 << ",\"message_name\":" << quoted(r.message_name) << ",\"message_size\":" << r.message_size

@@ -51,7 +51,9 @@ The latter does not select its input through a generated FieldCode lookup.
 
 Target numeric identity, symbol identity and presence in AGGR are separate checks.
 Absence of a supplied symbol is not proof of symbol identity. Decoder disagreement
-blocks orders. Rows are bounded to 64 KiB, 4,096 null entries and 128 descriptors;
+blocks orders. The qualification price gate also requires a committed, independently
+matched target identity, expected symbol and corresponding AGGR instrument; a missing
+symbol or missing probe is not an authorization. Rows are bounded to 64 KiB, 4,096 null entries and 128 descriptors;
 the observer holds at most 16 undrained target rows. Rollback/close/LifeNum does not
 publish pending rows. Formatting and disk I/O occur outside callbacks.
 

@@ -477,7 +477,8 @@ bool zero_gate(const ch::ConnectorHostSnapshot& s) {
 }
 bool terms_gate(const Evidence& evidence, const ch::ConnectorHostQualificationSnapshot& q,
                 const ch::ConnectorHostSnapshot& s, const ch::ConnectorHostOrderRequest& order) {
-    if (evidence.ref_transaction || !q.active_orders.empty() || nonzero_positions(q))
+    if (!evidence.forensics.identity_verified() || evidence.ref_transaction || !q.active_orders.empty() ||
+        nonzero_positions(q))
         return false;
     const auto limits = evidence.limits.find({s.target_isin_id, s.session_id});
     if (limits == evidence.limits.end())
@@ -552,8 +553,33 @@ int self_test() {
     evidence.limits[{1, 1}] = {.isin = 1, .session = 1, .upper = "110", .lower = "90"};
     ch::ConnectorHostOrderRequest order{
         .side = tr::Plaza2TradeSide::Sell, .price = "104", .base_contract_code = "TEST"};
+    if (terms_gate(evidence, q, state, order))
+        return 22;
+    evidence.forensics.isin = 1;
+    evidence.forensics.session = 1;
+    evidence.forensics.expected_symbol = "TEST";
+    const auto proof_stream = moex::plaza2::generated::StreamCode::kFortsRefdataRepl;
+    cg::Plaza2ForensicRow proof;
+    proof.fields = {{.name = "replRev", .independent_value = "1", .equal = true},
+                    {.name = "isin_id", .independent_value = "1", .equal = true},
+                    {.name = "sess_id", .independent_value = "1", .equal = true},
+                    {.name = "isin", .independent_value = "TEST", .equal = true}};
+    evidence.forensics.observe({.kind = cg::Plaza2ListenerEventKind::TransactionBegin, .stream_code = proof_stream});
+    evidence.forensics.capture(proof);
+    evidence.forensics.observe({.kind = cg::Plaza2ListenerEventKind::TransactionCommit, .stream_code = proof_stream});
+    (void)evidence.forensics.drain(true);
     if (!terms_gate(evidence, q, state, order))
         return 8;
+    for (const bool aggr_present : {false, true}) {
+        auto unproven = evidence.forensics;
+        unproven.expected_symbol = aggr_present ? "WRONG" : "TEST";
+        unproven.observe({.kind = cg::Plaza2ListenerEventKind::TransactionBegin, .stream_code = proof_stream});
+        unproven.capture(proof);
+        unproven.observe({.kind = cg::Plaza2ListenerEventKind::TransactionCommit, .stream_code = proof_stream});
+        (void)unproven.drain(aggr_present);
+        if (unproven.identity_verified())
+            return 23;
+    }
     q.positions.push_back({.isin_id = 2, .xpos = 1});
     if (terms_gate(evidence, q, state, order))
         return 13;
