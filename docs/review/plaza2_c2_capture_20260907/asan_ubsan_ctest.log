@@ -1,0 +1,25 @@
+Test project /tmp/plaza2-cert-a/asan
+    Start 161: plaza2_public_wire_test
+1/6 Test #161: plaza2_public_wire_test ............   Passed    0.04 sec
+    Start 162: plaza2_public_wire_codegen_check
+2/6 Test #162: plaza2_public_wire_codegen_check ...   Passed    0.16 sec
+    Start 163: plaza2_ordlog_test
+3/6 Test #163: plaza2_ordlog_test .................   Passed    0.22 sec
+    Start 164: plaza2_ordlog_benchmark_smoke
+4/6 Test #164: plaza2_ordlog_benchmark_smoke ......   Passed    0.36 sec
+    Start 166: plaza2_c2_preflight_test
+5/6 Test #166: plaza2_c2_preflight_test ...........   Passed    5.93 sec
+    Start 167: plaza2_c2_capture_test
+6/6 Test #167: plaza2_c2_capture_test .............   Passed    4.31 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Label Time Summary:
+c2_capture      =   4.31 sec*proc (1 test)
+c2_preflight    =  11.01 sec*proc (6 tests)
+plaza2          =  11.01 sec*proc (6 tests)
+sanitizer       =  10.86 sec*proc (5 tests)
+tooling         =   0.16 sec*proc (1 test)
+unit            =  11.01 sec*proc (6 tests)
+
+Total Test time (real) =  11.02 sec

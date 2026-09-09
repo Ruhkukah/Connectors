@@ -80,6 +80,8 @@ struct Plaza2VersionMarkers {
     std::string target_polygon;
 };
 
+class Plaza2QualificationObserver;
+
 struct Plaza2Settings {
     Plaza2Environment environment{Plaza2Environment::Test};
     std::filesystem::path runtime_root;
@@ -93,6 +95,8 @@ struct Plaza2Settings {
     std::string expected_spectra_release;
     std::string expected_runtime_library_sha256;
     std::string expected_scheme_sha256;
+    // Optional qualification sink. Owner outlives Env; callbacks must not throw or call CGate.
+    Plaza2QualificationObserver* qualification_observer{nullptr};
 };
 
 struct Plaza2RuntimeLayout {
@@ -193,11 +197,26 @@ struct Plaza2ListenerEvent {
     std::string_view text_value{};
     std::uint32_t clear_deleted_flags{0};
     std::uint32_t close_reason{0};
+    std::span<const std::uint8_t> raw_nulls{};
+    std::size_t table_index{0};
+};
+
+class Plaza2QualificationObserver {
+  public:
+    virtual ~Plaza2QualificationObserver() = default;
+    virtual void observe(const Plaza2ListenerEvent&, const Plaza2Error&) noexcept = 0;
+    // object: 10 connection, 11 publisher, 12 listener; stream zero for reply.
+    virtual void runtime_state(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) noexcept {}
 };
 
 class Plaza2ListenerEventHandler {
   public:
     virtual ~Plaza2ListenerEventHandler() = default;
+    virtual void on_plaza2_listener_error(const Plaza2Error&) noexcept {}
+    // Opt in only for an exact, completely qualified public wire scheme.
+    [[nodiscard]] virtual bool wants_raw_replication() const noexcept {
+        return false;
+    }
     [[nodiscard]] virtual Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) = 0;
 };
 

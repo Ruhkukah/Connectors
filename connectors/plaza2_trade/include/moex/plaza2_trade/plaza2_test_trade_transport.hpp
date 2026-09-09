@@ -7,6 +7,8 @@
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
 #include "moex/plaza2_trade/plaza2_order_lifecycle.hpp"
 
+#include "moex/plaza2/cgate/plaza2_publisher_rate.hpp"
+#include <functional>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -171,6 +173,10 @@ struct Plaza2TestSessionHostConfig {
     plaza2::cgate::Plaza2CredentialConfig credentials{};
     plaza2::cgate::Plaza2CredentialConfig software_key{};
     std::uint32_t process_timeout_ms{50};
+    // Local conservative cap; configure from the provisioned login limit, not a claimed exchange default.
+    std::uint32_t publisher_messages_per_second{30};
+    plaza2::cgate::Plaza2Aggr20QualificationObserver* qualification_book_observer{nullptr};
+    std::function<std::uint64_t()> publisher_now_ms; // Empty uses steady_clock; injectable for offline boundary tests.
 };
 
 class Plaza2TestSessionHost final {
@@ -196,6 +202,7 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] bool p2mqreply_open() const noexcept;
     [[nodiscard]] bool publisher_open() const noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2PublisherCallCounts publisher_call_counts() const noexcept;
+    [[nodiscard]] plaza2::cgate::Plaza2PublisherRateMetrics publisher_rate_metrics() const noexcept;
     [[nodiscard]] Plaza2TestSessionHostMode mode() const noexcept;
     [[nodiscard]] bool trade_replay_anchor_ready() const noexcept;
     [[nodiscard]] std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used() const noexcept;
@@ -241,6 +248,8 @@ struct Plaza2TestTradeTransportConfig {
     std::string observation_client_code;
     Plaza2TradeSide observation_side{Plaza2TradeSide::Buy};
     std::int64_t observation_quantity{1};
+    // Qualification may narrow command scope to Add/DelOrder only.
+    bool allow_exact_ext_id_recovery{true};
 };
 
 // Read-side values only, deliberately distinct from a persisted execution receipt.

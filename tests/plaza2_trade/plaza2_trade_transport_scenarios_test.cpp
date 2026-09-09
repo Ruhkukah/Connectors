@@ -793,10 +793,73 @@ void test_multi_instrument_and_terminal_controller(const moex::plaza2::test::Run
     }
 }
 
+void test_system_replies_and_rate(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
+    const Plaza2TradeCodec codec;
+    const auto add = encoded_add(codec);
+    const auto recovery = encoded_recovery(codec);
+    for (const char* family : {"99", "100"}) {
+        ScopedEnv response("MOEX_FAKE_PUB_REPLY_FAMILY", family);
+        ScopedEnv zero_code("MOEX_FAKE_SYSTEM_ZERO_CODE", "1");
+        auto config = prepared_config(fixture, add, recovery);
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
+        expect_case(transport.post(add, 701).post_invoked, "system-reply fixture posts once");
+        const auto poll = transport.poll(std::chrono::steady_clock::now() + std::chrono::seconds(1));
+        expect_case(poll.ok && poll.replies.size() == 1, "99/100 recognized by live callback bridge");
+        const auto& reply = poll.replies.front();
+        expect_case(!reply.accepted && !reply.timed_out && !reply.raw_payload.empty(),
+                    "raw system diagnostics retained");
+        expect_case(reply.ambiguous == (reply.message_id == 100), "100 remains ambiguous even with zero code");
+        if (reply.message_id == 99) {
+            expect_case(transport.host().publisher_rate_metrics().penalty_until_ms > 0 && reply.penalty_remain == 1000,
+                        "flood penalty reaches the publisher gate and diagnostics");
+        }
+        expect_case(transport.host().publisher_call_counts().post == 1,
+                    "system response does not trigger automatic resend");
+    }
+    auto config = make_config(fixture).host;
+    config.publisher_messages_per_second = 2;
+    std::uint64_t now = 0;
+    config.publisher_now_ms = [&] { return now; };
+    Plaza2TestSessionHost host(config);
+    expect_case(!host.start(), "rate fixture starts");
+    expect_case(host.post("AddOrder", add.payload, 1, true).post_invoked, "first admitted");
+    expect_case(host.post("AddOrder", add.payload, 2, true).post_invoked, "second admitted");
+    const auto denied = host.post("AddOrder", add.payload, 3, true);
+    expect_case(!denied.post_invoked && denied.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent,
+                "rate refusal is definitely not sent");
+    expect_case(!host.stop() && !host.start(), "host environment/publisher reopen");
+    now = 999;
+    expect_case(!host.post("AddOrder", add.payload, 4, true).post_invoked, "reopen preserves rolling budget");
+    now = 1000;
+    expect_case(host.post("AddOrder", add.payload, 5, true).post_invoked, "exact one-second boundary admits");
+    expect_case(host.publisher_rate_metrics().admitted == 3 && host.publisher_rate_metrics().throttled == 2,
+                "rate metrics survive reopen");
+}
+
 void test_reply_bridge_fail_closed(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
     const Plaza2TradeCodec codec;
     const auto add = encoded_add(codec);
     const auto recovery = encoded_recovery(codec);
+    {
+        ScopedEnv post_timeout("MOEX_FAKE_PUB_POST_RESULT", "timeout");
+        auto config = prepared_config(fixture, add, recovery);
+        config.allow_exact_ext_id_recovery = false;
+        const auto plan = bound_plan(*config.authorized_intent, add, recovery);
+        Plaza2TestTradeTransport transport(std::move(config));
+        bind_test_plan(transport, plan);
+        const auto ambiguous = transport.post(add, 701);
+        expect_case(ambiguous.certainty == cgate::Plaza2SubmissionCertainty::PossiblySent,
+                    "qualification fixture has a genuinely ambiguous Add");
+        const auto calls = transport.host().publisher_call_counts();
+        const auto refused = transport.post_exact_ext_id_recovery(recovery, 703);
+        const auto after = transport.host().publisher_call_counts();
+        expect_case(refused.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !refused.post_invoked &&
+                        calls.msgnew == after.msgnew && calls.post == after.post,
+                    "Add/DelOrder-only scope prevents recovery allocation/post even after uncertainty");
+    }
+
     {
         ScopedEnv reply_first("MOEX_FAKE_REPLY_BEFORE_REPLICATION", "1");
         auto config = prepared_config(fixture, add, recovery);
@@ -1069,14 +1132,14 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
 
         const Plaza2TradeCodec codec;
-        const auto add = codec.encode(Plaza2TradeCommandRequest{add_request()});
+        const auto add = encoded_add(codec);
         test_authorized_send(fixture);
         require(add.validation.ok() && add.payload.size() == 128,
                 "AddOrder fixture must use reviewed payload size (got " + std::to_string(add.payload.size()) + ", " +
                     add.validation.message + ")");
         auto transport_config = make_config(fixture);
         transport_config.authorized_intent->add_payload_sha256 = cgate::plaza2_sha256_hex(add.payload);
-        const auto recovery = codec.encode(Plaza2TradeCommandRequest{recovery_request()});
+        const auto recovery = encoded_recovery(codec);
         require(recovery.validation.ok() && recovery.payload.size() == 60,
                 "exact-ext recovery fixture must use reviewed payload size");
         transport_config.authorized_intent->recovery_payload_sha256 = cgate::plaza2_sha256_hex(recovery.payload);
@@ -1349,6 +1412,7 @@ int main(int argc, char** argv) {
         test_authorized_payload_binding(fixture);
         test_late_authorized_intent_installation(fixture);
         test_replication_epoch_gates(fixture);
+        test_system_replies_and_rate(fixture);
         test_reply_bridge_fail_closed(fixture);
         test_multi_instrument_and_terminal_controller(fixture);
 

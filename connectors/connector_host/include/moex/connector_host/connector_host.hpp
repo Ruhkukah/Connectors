@@ -81,6 +81,18 @@ struct ConnectorHostSnapshot {
     std::string last_error;
 };
 
+// Explicitly sampled qualification data; never copied by the normal polling path.
+struct ConnectorHostQualificationSnapshot {
+    plaza2::cgate::Plaza2Aggr20Snapshot book;
+    std::vector<plaza2::private_state::InstrumentSnapshot> instruments;
+    std::vector<plaza2::private_state::PositionSnapshot> positions;
+    std::vector<plaza2::private_state::OwnOrderSnapshot> active_orders;
+    plaza2::cgate::Plaza2PublisherRateMetrics rate;
+    std::size_t visible_limit_rows{}, matching_client_limit_rows{};
+    bool aggr_online{false};
+    bool aggr_snapshot_complete{false};
+};
+
 [[nodiscard]] std::string_view host_state_name(ConnectorHostState state) noexcept;
 [[nodiscard]] std::string render_snapshot(const ConnectorHostSnapshot& snapshot, bool json);
 
@@ -95,6 +107,7 @@ class ConnectorHost final {
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] ConnectorHostSnapshot snapshot() const;
+    [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot() const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan() const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan_order(const ConnectorHostOrderRequest& request) const;
     // Exact canonical bytes AND SHA are mandatory. The host constructs the

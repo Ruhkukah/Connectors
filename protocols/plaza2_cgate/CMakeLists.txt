@@ -30,12 +30,20 @@ target_include_directories(moex_plaza2_cgate_metadata
 
 target_compile_features(moex_plaza2_cgate_metadata PUBLIC cxx_std_20)
 
+# Hashing is independently linkable by the listener-only capture tool.
+add_library(moex_plaza2_cgate_hash STATIC src/plaza2_sha256.cpp)
+set_target_properties(moex_plaza2_cgate_hash PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(moex_plaza2_cgate_hash PUBLIC moex_plaza2_cgate_metadata)
+target_compile_features(moex_plaza2_cgate_hash PUBLIC cxx_std_20)
+
 add_library(moex_plaza2_cgate_runtime STATIC
-    src/plaza2_runtime.cpp)
+    src/plaza2_runtime.cpp
+    src/plaza2_ordlog.cpp)
 
 target_link_libraries(moex_plaza2_cgate_runtime
     PUBLIC
         moex_plaza2_cgate_metadata
+        moex_plaza2_cgate_hash
     PRIVATE
         ${CMAKE_DL_LIBS})
 

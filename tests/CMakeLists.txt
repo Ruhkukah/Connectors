@@ -958,6 +958,52 @@ else()
 endif()
 
 
+add_executable(plaza2_public_wire_test plaza2_cgate/plaza2_public_wire_test.cpp)
+target_link_libraries(plaza2_public_wire_test PRIVATE moex_plaza2_cgate_metadata)
+add_test(NAME plaza2_public_wire_test COMMAND plaza2_public_wire_test)
+set_tests_properties(plaza2_public_wire_test PROPERTIES LABELS "unit;plaza2;sanitizer")
+add_test(NAME plaza2_public_wire_codegen_check
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tools/plaza2_codegen.py"
+        --schema "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/schema/plaza2_forts_reviewed.ini"
+        --out "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/generated"
+        --public-wire-lock "${MOEX_SOURCE_ROOT}/spec-lock/test/plaza2/public99/wire.json" --check)
+
+add_executable(plaza2_ordlog_test plaza2_cgate/plaza2_ordlog_test.cpp)
+target_link_libraries(plaza2_ordlog_test PRIVATE moex_plaza2_cgate_runtime plaza2_runtime_test_support ${CMAKE_DL_LIBS})
+add_dependencies(plaza2_ordlog_test plaza2_fake_cgate_runtime)
+add_test(NAME plaza2_ordlog_test COMMAND plaza2_ordlog_test "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+set_tests_properties(plaza2_ordlog_test PROPERTIES LABELS "unit;plaza2;sanitizer")
+
+add_executable(plaza2_ordlog_benchmark plaza2_cgate/plaza2_ordlog_benchmark.cpp)
+target_link_libraries(plaza2_ordlog_benchmark PRIVATE moex_plaza2_cgate_runtime plaza2_runtime_test_support ${CMAKE_DL_LIBS})
+add_dependencies(plaza2_ordlog_benchmark plaza2_fake_cgate_runtime)
+add_test(NAME plaza2_ordlog_benchmark_smoke
+    COMMAND plaza2_ordlog_benchmark "$<TARGET_FILE:plaza2_fake_cgate_runtime>" --smoke)
+set_tests_properties(plaza2_ordlog_benchmark_smoke PROPERTIES LABELS "unit;plaza2;sanitizer")
+
+add_executable(plaza2_publisher_rate_test plaza2_cgate/plaza2_publisher_rate_test.cpp)
+target_link_libraries(plaza2_publisher_rate_test PRIVATE moex_plaza2_cgate_metadata)
+add_test(NAME plaza2_publisher_rate_test COMMAND plaza2_publisher_rate_test)
+set_tests_properties(plaza2_publisher_rate_test PROPERTIES LABELS "unit;plaza2;sanitizer")
+
+add_executable(plaza2_c2_preflight_test plaza2_cgate/plaza2_c2_preflight_test.cpp)
+target_link_libraries(plaza2_c2_preflight_test PRIVATE moex_plaza2_cgate_metadata plaza2_runtime_test_support ${CMAKE_DL_LIBS})
+add_dependencies(plaza2_c2_preflight_test plaza2_fake_cgate_runtime)
+add_test(NAME plaza2_c2_preflight_test COMMAND plaza2_c2_preflight_test "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+set_tests_properties(plaza2_c2_preflight_test PROPERTIES LABELS "unit;plaza2;sanitizer;c2_preflight")
+# Audited no-publisher selection for this read-only tranche; baseline full-suite labels remain intact.
+set_property(TEST plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark_smoke
+    plaza2_public_wire_codegen_check APPEND PROPERTY LABELS c2_preflight)
+
+add_test(NAME plaza2_c2_capture_test
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_c2_capture_test.py"
+        "$<TARGET_FILE:plaza2_c2_capture>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>" "$<TARGET_FILE:plaza2_c2_preflight_test>")
+set_tests_properties(plaza2_c2_capture_test PROPERTIES LABELS "unit;plaza2;sanitizer;c2_capture;c2_preflight")
+
+add_test(NAME plaza2_c2_support_bundle_test
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_c2_support_bundle_test.py")
+set_tests_properties(plaza2_c2_support_bundle_test PROPERTIES LABELS "unit;plaza2;c2_capture")
+
 get_property(moex_registered_tests DIRECTORY PROPERTY TESTS)
 foreach(test_name IN LISTS moex_registered_tests)
     if(test_name MATCHES "^plaza2_" OR test_name STREQUAL "moex_phase4b_capi_read_side_test")
@@ -986,3 +1032,6 @@ foreach(test_name IN LISTS moex_registered_tests)
         set_property(TEST "${test_name}" APPEND PROPERTY LABELS abi)
     endif()
 endforeach()
+
+add_test(NAME plaza2_aggr_qualification_evidence COMMAND plaza2_aggr_qualification --self-test)
+set_tests_properties(plaza2_aggr_qualification_evidence PROPERTIES LABELS "unit;plaza2;sanitizer")

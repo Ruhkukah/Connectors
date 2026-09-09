@@ -332,71 +332,10 @@ std::size_t stream_index(const EngineState& state, StreamCode code) {
 }
 
 using PrivateProjectorBridge = cgate::Plaza2PrivateStateBridge;
-class AggrProjectorBridge final : public Plaza2ListenerEventHandler {
-  public:
-    explicit AggrProjectorBridge(cgate::Plaza2Aggr20BookProjector& projector) : projector_(projector) {}
-
-    [[nodiscard]] bool online() const noexcept {
-        return online_;
-    }
-
-    [[nodiscard]] bool snapshot_complete() const noexcept {
-        return snapshot_complete_;
-    }
-
-    void reset() noexcept {
-        online_ = false;
-        snapshot_complete_ = false;
-    }
-
-    Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override {
-        switch (event.kind) {
-        case Plaza2ListenerEventKind::Open:
-        case Plaza2ListenerEventKind::Timeout:
-        case Plaza2ListenerEventKind::ReplState:
-            return {};
-        case Plaza2ListenerEventKind::LifeNum:
-            online_ = false;
-            snapshot_complete_ = false;
-            projector_.reset();
-            return {};
-        case Plaza2ListenerEventKind::Close:
-            online_ = false;
-            snapshot_complete_ = false;
-            projector_.reset();
-            return {};
-        case Plaza2ListenerEventKind::Online:
-            online_ = true;
-            snapshot_complete_ = true;
-            return {};
-        case Plaza2ListenerEventKind::TransactionBegin:
-            projector_.begin_transaction();
-            return {};
-        case Plaza2ListenerEventKind::StreamData:
-            if (event.table_code == plaza2::generated::TableCode::kFortsAggrReplOrdersAggr) {
-                return projector_.on_row(event.fields);
-            }
-            return {};
-        case Plaza2ListenerEventKind::TransactionCommit:
-            return projector_.commit();
-        case Plaza2ListenerEventKind::ClearDeleted:
-            projector_.reset();
-            snapshot_complete_ = false;
-            return {};
-        default:
-            return {};
-        }
-    }
-
-  private:
-    cgate::Plaza2Aggr20BookProjector& projector_;
-    bool online_{false};
-    bool snapshot_complete_{false};
-};
-
 class ReplyBridge final : public Plaza2ListenerEventHandler {
   public:
     using Event = Plaza2TestSessionHost::ReplyEvent;
+    std::function<void(std::uint32_t)> apply_penalty;
 
     void arm(std::uint32_t user_id, Plaza2TradeCommandKind kind) {
         active_[user_id] = kind;
@@ -435,8 +374,17 @@ class ReplyBridge final : public Plaza2ListenerEventHandler {
         const auto expected_message_id = active->second == Plaza2TradeCommandKind::AddOrder   ? 179
                                          : active->second == Plaza2TradeCommandKind::DelOrder ? 177
                                                                                               : 186;
-        if (event.message_id != expected_message_id) {
+        if (event.message_id != expected_message_id && event.message_id != 99 && event.message_id != 100) {
             return fail("reply message family contradicts the active user_id command");
+        }
+        if (event.message_id == 99) {
+            Plaza2TradeValidationResult validation;
+            const auto reply = Plaza2TradeCodec{}.decode_reply(99, event.raw_payload, validation);
+            if (!validation.ok() || !reply.penalty_remain || *reply.penalty_remain < 0) {
+                return fail("malformed PLAZA flood reply");
+            }
+            if (apply_penalty)
+                apply_penalty(static_cast<std::uint32_t>(*reply.penalty_remain));
         }
         const auto signature = std::to_string(event.message_id) + ":" + cgate::plaza2_sha256_hex(event.raw_payload);
         const auto seen = signatures_.find(event.user_id);
@@ -644,9 +592,23 @@ struct Plaza2TestSessionHost::Impl {
     };
 
     explicit Impl(Plaza2TestSessionHostConfig initial)
-        : config(std::move(initial)), private_bridge(private_projector), aggr_bridge(aggr_projector) {}
+        : config(std::move(initial)), private_bridge(private_projector), aggr_bridge(aggr_projector),
+          rate_gate(config.publisher_messages_per_second) {
+        reply_bridge.apply_penalty = [this](std::uint32_t ms) { rate_gate.penalize(publisher_now_ms(), ms); };
+    }
+
+    std::uint64_t publisher_now_ms() const {
+        if (config.publisher_now_ms)
+            return config.publisher_now_ms();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    }
 
     Plaza2Error start() {
+        aggr_projector.set_qualification_observer(config.qualification_book_observer);
+        if (!rate_gate.valid())
+            return invalid("publisher_messages_per_second must be in 1..3000");
         if (started) {
             return invalid("TEST session host is already started", Plaza2ErrorCode::AdapterState);
         }
@@ -1012,6 +974,21 @@ struct Plaza2TestSessionHost::Impl {
         }
         std::uint32_t runtime_code = 0;
         const auto error = connection.process(config.process_timeout_ms, &runtime_code);
+        if (auto* observer = config.runtime.qualification_observer) {
+            const auto sample = [&](const auto& object, std::uint32_t kind, StreamCode stream) {
+                std::uint32_t state = 0;
+                const auto status = object.state(state);
+                observer->runtime_state(kind, static_cast<std::uint32_t>(stream), state,
+                                        static_cast<std::uint32_t>(status.code));
+            };
+            sample(connection, 10, cgate::kNoStreamCode);
+            sample(publisher, 11, cgate::kNoStreamCode);
+            sample(reply_listener, 12, cgate::kNoStreamCode);
+            sample(aggr_listener, 12, config.aggr20_stream.stream_code);
+            for (const auto& managed : private_listeners)
+                sample(managed.listener, 12, managed.stream_code);
+        }
+
         if (error) {
             if (!reply_bridge.error().empty()) {
                 return invalid(reply_bridge.error(), Plaza2ErrorCode::CallbackFailed);
@@ -1026,6 +1003,10 @@ struct Plaza2TestSessionHost::Impl {
         }
         if (const auto listener_error = supervise_initial_listener_opens(); listener_error) {
             return listener_error;
+        }
+        if (const auto aggr_error = aggr_bridge.supervise(aggr_listener, std::chrono::steady_clock::now());
+            aggr_error) {
+            return aggr_error;
         }
         if (const auto readiness_error = update_trade_replay_readiness(); readiness_error) {
             return readiness_error;
@@ -1055,6 +1036,7 @@ struct Plaza2TestSessionHost::Impl {
         reply_listener_is_open = false;
         static_cast<void>(aggr_listener.close());
         static_cast<void>(aggr_listener.destroy());
+        aggr_bridge.reset();
         for (auto it = private_listeners.rbegin(); it != private_listeners.rend(); ++it) {
             static_cast<void>(it->listener.close());
             static_cast<void>(it->listener.destroy());
@@ -1093,13 +1075,14 @@ struct Plaza2TestSessionHost::Impl {
     cgate::Plaza2Env env;
     cgate::Plaza2Connection connection;
     cgate::Plaza2Publisher publisher;
+    cgate::Plaza2PublisherRateGate rate_gate;
     cgate::Plaza2Listener reply_listener;
     cgate::Plaza2Listener aggr_listener;
     std::vector<ManagedPrivateListener> private_listeners;
     private_state::Plaza2PrivateStateProjector private_projector;
     cgate::Plaza2Aggr20BookProjector aggr_projector;
     PrivateProjectorBridge private_bridge;
-    AggrProjectorBridge aggr_bridge;
+    cgate::Plaza2Aggr20ListenerBridge aggr_bridge;
     ReplyBridge reply_bridge;
     std::optional<Plaza2TestTradeStreamConfig> deferred_trade_stream;
     std::optional<std::size_t> trade_listener_index;
@@ -1216,8 +1199,17 @@ Plaza2PublisherMessageResult Plaza2TestSessionHost::post_validated(std::string_v
     } else if (message_name == "DelUserOrders") {
         kind = Plaza2TradeCommandKind::DelUserOrders;
     }
+    if (!impl_->rate_gate.admit(impl_->publisher_now_ms())) {
+        Plaza2PublisherMessageResult result;
+        result.validation_error = invalid("PLAZA publisher rate gate throttled; command was not sent");
+        return result;
+    }
     impl_->reply_bridge.arm(user_id, kind);
     return impl_->publisher.post_by_message_name(message_name, payload, user_id, need_reply);
+}
+
+cgate::Plaza2PublisherRateMetrics Plaza2TestSessionHost::publisher_rate_metrics() const noexcept {
+    return impl_->rate_gate.metrics();
 }
 
 struct Plaza2TestTradeTransport::Impl {
@@ -2127,12 +2119,14 @@ struct Plaza2TestTradeTransport::Impl {
             reply.user_id = event.user_id;
             reply.timed_out = event.timed_out;
             if (event.message_id != 179 && event.message_id != 177 && event.message_id != 186 &&
-                event.message_id != 0) {
+                event.message_id != 0 && event.message_id != 99 && event.message_id != 100) {
                 result.ok = false;
                 result.error = "reply message family is not allowed for the active user_id";
                 continue;
             }
             reply.command_kind = event.command_kind;
+            reply.message_id = event.message_id;
+            reply.raw_payload = event.raw_payload;
             if (!event.timed_out) {
                 Plaza2TradeValidationResult validation;
                 const auto decoded = codec.decode_reply(event.message_id, event.raw_payload, validation);
@@ -2142,6 +2136,9 @@ struct Plaza2TestTradeTransport::Impl {
                     continue;
                 }
                 reply.code = decoded.code;
+                reply.message = decoded.message;
+                reply.penalty_remain = decoded.penalty_remain;
+                reply.ambiguous = event.message_id == 100;
                 reply.accepted = decoded.status == Plaza2TradeReplyStatusCategory::Accepted;
                 reply.order_id = decoded.order_id;
             }
@@ -2256,6 +2253,11 @@ Plaza2PublisherMessageResult Plaza2TestTradeTransport::post(const Plaza2TradeEnc
 }
 Plaza2PublisherMessageResult
 Plaza2TestTradeTransport::post_exact_ext_id_recovery(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) {
+    if (!impl_->config.allow_exact_ext_id_recovery) {
+        Plaza2PublisherMessageResult result;
+        result.validation_error = invalid("exact-ext recovery is disabled by the configured command scope");
+        return result;
+    }
     if (command.command_kind != Plaza2TradeCommandKind::DelUserOrders) {
         Plaza2PublisherMessageResult result;
         result.validation_error = invalid("post_exact_ext_id_recovery requires a DelUserOrders command");

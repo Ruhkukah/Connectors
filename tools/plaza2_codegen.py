@@ -504,11 +504,17 @@ def main() -> int:
     parser.add_argument("--schema", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--public-wire-lock")
     args = parser.parse_args()
 
     schema_path = Path(args.schema).resolve()
     output_dir = Path(args.out).resolve()
     parsed = parse_reviewed_scheme(schema_path)
+
+    if args.public_wire_lock:
+        from plaza2_public_wire_codegen import render_public_wire
+        wire = render_public_wire(Path(args.public_wire_lock), parsed)
+        write_if_different(output_dir / "plaza2_public_wire.hpp", wire, args.check)
 
     json_text = render_json(parsed)
     header_text = render_header(parsed)

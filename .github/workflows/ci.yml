@@ -9,6 +9,11 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # This explicitly read-only draft must not execute even fake publisher calls.
+  # Other PRs, main and manual runs retain the full suites.
+  C2_PREFLIGHT_ONLY: >-
+    ${{ github.event_name == 'pull_request' &&
+    (github.head_ref == 'codex/plaza2-c2-preflight-20260907' || github.head_ref == 'codex/plaza2-c2-capture-20260907') }}
 
 jobs:
   connector-validation:
@@ -84,13 +89,39 @@ jobs:
             apps
 
       - name: Configure
-        run: cmake -S . -B build
+        run: |
+          if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          else
+            cmake -S . -B build
+          fi
 
       - name: Build
-        run: cmake --build build
+        run: |
+          if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+            cmake --build build --parallel 2 --target \
+              plaza2_c2_preflight_test plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark plaza2_c2_capture
+          else
+            cmake --build build
+          fi
 
       - name: Run ctest
-        run: ctest --test-dir build --output-on-failure -LE preflight
+        run: |
+          if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+            ctest --test-dir build --output-on-failure -L c2_preflight
+          else
+            ctest --test-dir build --output-on-failure -LE preflight
+          fi
+
+      - name: Upload listener-only capture preparation binaries
+        if: github.head_ref == 'codex/plaza2-c2-capture-20260907'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plaza2-c2-capture-linux-amd64
+          path: |
+            build/apps/plaza2_c2_capture
+            build/tests/plaza2_c2_preflight_test
+            tools/plaza2_c2_capture_import.py
 
   component-sanitizers:
     runs-on: ubuntu-latest
@@ -104,6 +135,10 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
+      - name: Install C2 codegen requirements
+        if: env.C2_PREFLIGHT_ONLY == 'true'
+        run: python -m pip install -r requirements.txt
 
       - name: Install clang
         run: sudo apt-get update && sudo apt-get install -y clang
@@ -120,28 +155,21 @@ jobs:
           -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
 
       - name: Build sanitizer targets
-        run: >
-          cmake --build build-asan --target
-          twime_sbe_tests
-          twime_session_tests
-          twime_byte_transport_tests
-          twime_tcp_transport_tests
-          twime_tcp_session_tests
-          twime_endpoint_gate_tests
-          twime_live_runner_tests
-          moex_phase0_selfcheck
-          plaza2_order_lifecycle_scenarios_test
-          plaza2_runtime_adapter_test
-          plaza2_runtime_probe_test
-          plaza2_trade_no_send_guard_test
-          plaza2_trade_transport_scenarios_test
-          connector_host_test
-          moexctl
-          moex_c_api_v2_test
-          moex_c_api_v3_test
+        run: |
+          if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+            cmake --build build-asan --parallel 2 --target \
+              plaza2_c2_preflight_test plaza2_public_wire_test plaza2_ordlog_test plaza2_ordlog_benchmark plaza2_c2_capture
+          else
+            cmake --build build-asan --parallel 2
+          fi
 
       - name: Run critical component sanitizer tests
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build-asan --output-on-failure -L sanitizer
+        run: |
+          if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+            ctest --test-dir build-asan --output-on-failure -L c2_preflight
+          else
+            ctest --test-dir build-asan --output-on-failure -L sanitizer
+          fi

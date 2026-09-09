@@ -797,6 +797,30 @@ ConnectorHostSnapshot ConnectorHost::snapshot() const {
     return impl_->snapshot();
 }
 
+ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot() const {
+    const auto& host = impl_->transport.host();
+    const auto instruments = host.private_state().instruments();
+    const auto positions = host.private_state().positions();
+    ConnectorHostQualificationSnapshot out{.book = host.aggr20_projector().snapshot(),
+                                           .instruments = {instruments.begin(), instruments.end()},
+                                           .positions = {positions.begin(), positions.end()},
+                                           .rate = host.publisher_rate_metrics(),
+                                           .aggr_online = host.aggr_online(),
+                                           .aggr_snapshot_complete = host.aggr_snapshot_complete()};
+    for (const auto& row : host.private_state().own_orders()) {
+        if (row.identity_conflict || ((row.from_user_book || row.from_current_day) &&
+                                      (row.public_amount_rest > 0 || row.private_amount_rest > 0)))
+            out.active_orders.push_back(row);
+    }
+    const auto limits = host.private_state().limits();
+    out.visible_limit_rows = limits.size();
+    const auto participant = impl_->config.order.broker_code + impl_->config.order.client_code;
+    out.matching_client_limit_rows = std::count_if(limits.begin(), limits.end(), [&](const auto& row) {
+        return row.scope == ps::PositionScope::kClient && row.account_code == participant;
+    });
+    return out;
+}
+
 PreSendPlan ConnectorHost::plan() const {
     return plan_order(impl_->request_from_config());
 }

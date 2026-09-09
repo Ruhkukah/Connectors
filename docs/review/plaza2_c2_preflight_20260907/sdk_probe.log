@@ -1,0 +1,9 @@
+env=0
+connection_new=0
+loopback_connection_open=131073 state=0; network=none
+pair=regular new=0
+pre_open_getscheme=131077 present=0
+listener_open=131077 state=0 callbacks=0
+pair=multileg new=0
+pre_open_getscheme=131077 present=0
+listener_open=131077 state=0 callbacks=0

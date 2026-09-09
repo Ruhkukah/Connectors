@@ -69,6 +69,7 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     host.runtime.env_open_settings = inputs.env_open_settings;
     host.runtime.expected_spectra_release = inputs.expected_spectra_release;
     host.runtime.expected_scheme_sha256 = inputs.expected_scheme_sha256;
+    host.publisher_messages_per_second = inputs.publisher_messages_per_second;
     host.endpoint_host = "127.0.0.1";
     host.arm_state = inputs.arm_state;
     host.publisher_name = inputs.publisher_name.empty()

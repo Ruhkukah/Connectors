@@ -1,0 +1,45 @@
+2026-09-07T20:03:51.2233331Z ##[group]Run if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+2026-09-07T20:03:51.2233771Z if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
+2026-09-07T20:03:51.2234216Z   ctest --test-dir build-asan --output-on-failure -L c2_preflight
+2026-09-07T20:03:51.2234614Z else
+2026-09-07T20:03:51.2234922Z   ctest --test-dir build-asan --output-on-failure -L sanitizer
+2026-09-07T20:03:51.2235284Z fi
+2026-09-07T20:03:51.2275620Z shell: /usr/bin/bash -e {0}
+2026-09-07T20:03:51.2275904Z env:
+2026-09-07T20:03:51.2276151Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-09-07T20:03:51.2276463Z   C2_PREFLIGHT_ONLY: true
+2026-09-07T20:03:51.2276776Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.14/x64
+2026-09-07T20:03:51.2277252Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.14/x64/lib/pkgconfig
+2026-09-07T20:03:51.2277697Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.14/x64
+2026-09-07T20:03:51.2278276Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.14/x64
+2026-09-07T20:03:51.2278706Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.14/x64
+2026-09-07T20:03:51.2279085Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.14/x64/lib
+2026-09-07T20:03:51.2279447Z   ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+2026-09-07T20:03:51.2279786Z   UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+2026-09-07T20:03:51.2280091Z ##[endgroup]
+2026-09-07T20:03:51.5815615Z Internal ctest changing into directory: /home/runner/work/Connectors/Connectors/build-asan
+2026-09-07T20:03:51.6488421Z Test project /home/runner/work/Connectors/Connectors/build-asan
+2026-09-07T20:03:51.7021331Z     Start 161: plaza2_public_wire_test
+2026-09-07T20:03:51.7184543Z 1/6 Test #161: plaza2_public_wire_test ............   Passed    0.01 sec
+2026-09-07T20:03:51.7258303Z     Start 162: plaza2_public_wire_codegen_check
+2026-09-07T20:03:52.1277489Z 2/6 Test #162: plaza2_public_wire_codegen_check ...   Passed    0.40 sec
+2026-09-07T20:03:52.1278712Z     Start 163: plaza2_ordlog_test
+2026-09-07T20:03:52.1701276Z 3/6 Test #163: plaza2_ordlog_test .................   Passed    0.04 sec
+2026-09-07T20:03:52.1705721Z     Start 164: plaza2_ordlog_benchmark_smoke
+2026-09-07T20:03:52.2869556Z 4/6 Test #164: plaza2_ordlog_benchmark_smoke ......   Passed    0.12 sec
+2026-09-07T20:03:52.2918571Z     Start 166: plaza2_c2_preflight_test
+2026-09-07T20:03:54.3046006Z 5/6 Test #166: plaza2_c2_preflight_test ...........   Passed    2.01 sec
+2026-09-07T20:03:54.3047491Z     Start 167: plaza2_c2_capture_test
+2026-09-07T20:03:55.8863415Z 6/6 Test #167: plaza2_c2_capture_test .............   Passed    1.58 sec
+2026-09-07T20:03:55.8866889Z
+2026-09-07T20:03:55.8867091Z 100% tests passed, 0 tests failed out of 6
+2026-09-07T20:03:55.8867471Z
+2026-09-07T20:03:55.8867618Z Label Time Summary:
+2026-09-07T20:03:55.8868123Z c2_capture      =   1.58 sec*proc (1 test)
+2026-09-07T20:03:55.8868609Z c2_preflight    =   4.17 sec*proc (6 tests)
+2026-09-07T20:03:55.8868978Z plaza2          =   4.17 sec*proc (6 tests)
+2026-09-07T20:03:55.8869280Z sanitizer       =   3.76 sec*proc (5 tests)
+2026-09-07T20:03:55.8869587Z tooling         =   0.40 sec*proc (1 test)
+2026-09-07T20:03:55.8869886Z unit            =   4.17 sec*proc (6 tests)
+2026-09-07T20:03:55.8870062Z
+2026-09-07T20:03:55.8870175Z Total Test time (real) =   4.24 sec

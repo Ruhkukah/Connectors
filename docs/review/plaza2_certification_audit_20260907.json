@@ -1,0 +1,256 @@
+{
+  "audit_date": "2026-09-07",
+  "base_sha": "22a9dfd0947ccde4645696974e1270099491e2c6",
+  "original_checkout_sha": "ad100ae646d47ce4befc0314c62b79e9d2f08742",
+  "branch": "codex/plaza2-certification-phase-a-20260907",
+  "scope": "Phase A documentation only; no runtime changes; no T1 access; no exchange orders",
+  "official_certification_source": "https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e",
+  "official_certification_sections": "General sections 2-3; Appendix 1 Plaza II, printed pages 5-7",
+  "manual_comparison_source": {
+    "path": "/Users/pavel/CSharp/MoexConnector/.codex-tmp/cgate99_installed_p2gate_en.html",
+    "sha256": "5e2bfa2f6e8b3bc48f72e2eb46230e61200fde2a4bb5dbf723eabc28f1193c2e",
+    "title": "PLAZA II gateway (version 9.9)",
+    "verification": "local cached manual, read now; original download provenance not independently authenticated; current official network refresh failed"
+  },
+  "schema_comparison": [
+    {
+      "stream": "FORTS_ORDLOG_REPL",
+      "table": "orders_log",
+      "metadata_id": 757996785,
+      "equal": true,
+      "reviewed_field_count": 17,
+      "local_99_manual_field_count": 17
+    },
+    {
+      "stream": "FORTS_ORDLOG_REPL",
+      "table": "multileg_orders_log",
+      "metadata_id": 2185116523,
+      "equal": true,
+      "reviewed_field_count": 19,
+      "local_99_manual_field_count": 19
+    },
+    {
+      "stream": "FORTS_ORDLOG_REPL",
+      "table": "heartbeat",
+      "metadata_id": 4016122243,
+      "equal": true,
+      "reviewed_field_count": 4,
+      "local_99_manual_field_count": 4
+    },
+    {
+      "stream": "FORTS_ORDLOG_REPL",
+      "table": "sys_events",
+      "metadata_id": 1636144466,
+      "equal": true,
+      "reviewed_field_count": 8,
+      "local_99_manual_field_count": 8
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "table": "orders",
+      "metadata_id": 2918682757,
+      "equal": true,
+      "reviewed_field_count": 17,
+      "local_99_manual_field_count": 17
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "table": "multileg_orders",
+      "metadata_id": 820244997,
+      "equal": true,
+      "reviewed_field_count": 19,
+      "local_99_manual_field_count": 19
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "table": "info",
+      "metadata_id": 1622094016,
+      "equal": true,
+      "reviewed_field_count": 8,
+      "local_99_manual_field_count": 8
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "table": "orders_currentday",
+      "metadata_id": 3502516835,
+      "equal": true,
+      "reviewed_field_count": 17,
+      "local_99_manual_field_count": 17
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "table": "multileg_orders_currentday",
+      "metadata_id": 3564292835,
+      "equal": true,
+      "reviewed_field_count": 19,
+      "local_99_manual_field_count": 19
+    },
+    {
+      "stream": "FORTS_ORDBOOK_REPL",
+      "table": "info_currentday",
+      "metadata_id": 2155713904,
+      "equal": true,
+      "reviewed_field_count": 7,
+      "local_99_manual_field_count": 7
+    }
+  ],
+  "test_runs": [
+    {
+      "stage": "initial",
+      "passed": 123,
+      "failed": 40,
+      "cause": "Python interpreter missing repository PyYAML dependency; some runner discovery failures also present"
+    },
+    {
+      "stage": "isolated venv",
+      "passed": 158,
+      "failed": 5,
+      "cause": "moex_cert_runner.py does not find runner in arbitrary external build directory"
+    },
+    {
+      "stage": "venv PATH retry",
+      "passed": 158,
+      "failed": 5,
+      "cause": "same runner path failure; PATH cannot fix hardcoded discovery"
+    },
+    {
+      "stage": "mistaken local build directory",
+      "passed": 0,
+      "failed": 0,
+      "classification": "INVALID_RUN_NO_TESTS_FOUND; not qualification evidence"
+    },
+    {
+      "stage": "external Release build with local build/apps symlink",
+      "passed": 163,
+      "failed": 0,
+      "excluded": "3 preflight tests, run separately after documentation",
+      "elapsed_seconds": 6.31
+    }
+  ],
+  "plaza2_tests": [
+    "moex_phase4b_capi_read_side_test",
+    "plaza2_scheme_lock_fixture",
+    "plaza2_phase3a_check",
+    "plaza2_schema_materialize_check",
+    "plaza2_schema_materialize_missing_cache_check",
+    "plaza2_codegen_check",
+    "plaza2_fake_scenario_materialize_check",
+    "plaza2_scheme_parser_check",
+    "plaza2_fake_scenario_parser_check",
+    "plaza2_metadata_invariants_check",
+    "plaza2_runtime_scheme_lock_check",
+    "plaza2_trade_spec_lock_check",
+    "plaza2_trade_codec_materialize_check",
+    "plaza2_trade_command_validation_test",
+    "plaza2_trade_command_encoding_test",
+    "plaza2_trade_reply_decoding_test",
+    "plaza2_trade_no_send_guard_test",
+    "plaza2_trade_fake_session_test",
+    "plaza2_trade_fake_session_replication_test",
+    "plaza2_order_lifecycle_scenarios_test",
+    "plaza2_trade_transport_scenarios_test",
+    "connector_host_test",
+    "moexctl_test",
+    "moex_c_api_v2_test",
+    "moex_c_api_v3_test",
+    "plaza2_generated_metadata_test",
+    "plaza2_fake_engine_scenario_test",
+    "plaza2_fake_engine_rules_test",
+    "plaza2_private_state_projection_test",
+    "plaza2_private_state_visibility_test",
+    "plaza2_private_state_invalidation_test",
+    "plaza2_private_state_provenance_test",
+    "plaza2_runtime_probe_test",
+    "plaza2_scheme_drift_test",
+    "plaza2_runtime_adapter_test",
+    "plaza2_manual_operator_gate_test",
+    "plaza2_live_session_validation_test",
+    "plaza2_live_session_runner_test",
+    "plaza2_trade_connectivity_qualifier_test",
+    "plaza2_aggr20_md_validation_test",
+    "plaza2_aggr20_md_projection_test",
+    "plaza2_aggr20_md_runner_test",
+    "plaza2_twime_reconciler_normalization_test",
+    "plaza2_twime_reconciler_orders_test",
+    "plaza2_twime_reconciler_trades_test",
+    "plaza2_twime_reconciler_invalidation_test",
+    "plaza2_cert_runner_requires_test_plaza2_arm",
+    "plaza2_connectivity_qualifier_no_send_guard",
+    "plaza2_aggr20_md_runner_requires_market_data_arm",
+    "plaza2_twime_integrated_validation_test",
+    "plaza2_twime_integrated_runner_test",
+    "plaza2_twime_integrated_runner_requires_test_reconcile_arm",
+    "moex_c_api_v2_fixture",
+    "moex_c_api_v3_fixture"
+  ],
+  "sanitizers": "NOT RUN in Phase A; sanitizer label in CTest is not an instrumented build",
+  "performance": "NOT RUN; ORDLOG hot path absent",
+  "network": [
+    "GitHub read/fetch",
+    "MOEX public web reads/download attempts",
+    "PyYAML package installation",
+    "Offline test loopback fixtures",
+    "No T1 or production connections"
+  ],
+  "schema_field_inventory": "docs/review/plaza2_ordlog_schema_audit_20260907.md",
+  "preflight": {
+    "passed": 3,
+    "failed": 0,
+    "elapsed_seconds": 2.18,
+    "tests": [
+      "unicode_guard_check",
+      "repo_style_check",
+      "source_style_check"
+    ],
+    "scope": "All tracked baseline and staged audit files"
+  },
+  "test_logs": {
+    "ctest-verified.log": {
+      "local_path": "/tmp/plaza2-cert-a/ctest-verified.log",
+      "sha256": "9bcc6be695e5d143ee6707284bf8c71df8cab030d3f01b7a87abd171f3c00dfb",
+      "summary": [
+        ", 0 tests failed out of 163",
+        "",
+        "Label Time Summary:",
+        "abi            =   3.54 sec*proc (4 tests)",
+        "cabi           =   1.24 sec*proc (4 tests)",
+        "integration    =  12.03 sec*proc (57 tests)",
+        "plaza2         =  15.28 sec*proc (54 tests)",
+        "sanitizer      =   7.05 sec*proc (70 tests)",
+        "tooling        =   7.60 sec*proc (59 tests)",
+        "twime          =   3.98 sec*proc (74 tests)",
+        "unit           =  13.47 sec*proc (132 tests)",
+        "",
+        "Total Test time (real) =   6.31 sec"
+      ]
+    },
+    "preflight-final.log": {
+      "local_path": "/tmp/plaza2-cert-a/preflight-final.log",
+      "sha256": "33cc9e5f0b33636cd4c3964865f7615f4e057bed9c62f1279c55410eff2b530e",
+      "summary": [
+        ", 0 tests failed out of 3",
+        "",
+        "Label Time Summary:",
+        "preflight    =   2.17 sec*proc (3 tests)",
+        "tooling      =   2.17 sec*proc (3 tests)",
+        "unit         =   2.17 sec*proc (3 tests)",
+        "",
+        "Total Test time (real) =   2.18 sec"
+      ]
+    }
+  },
+  "preflight_history": [
+    {
+      "stage": "before staging",
+      "passed": 3,
+      "failed": 0,
+      "scope": "tracked baseline; new untracked documents not covered by repository style discovery"
+    },
+    {
+      "stage": "staged documents",
+      "passed": 1,
+      "failed": 2,
+      "cause": "audit prose/table/JSON lines exceed repository length rules; fixed formatting only"
+    }
+  ]
+}
