@@ -366,7 +366,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
 
         std::size_t limit_matches = 0;
         for (const auto& limit : projector.limits()) {
-            if (limit.scope == PositionScope::kClient && limit.account_code == config.target.participant) {
+            if (limit.participant_kind == private_state::LimitParticipantKind::Client &&
+                limit.account_code == config.target.participant) {
                 ++limit_matches;
                 snapshot.participant_limits_set = limit.limits_set;
             }

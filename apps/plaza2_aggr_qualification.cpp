@@ -1,3 +1,4 @@
+#include "plaza2_target_forensics.hpp"
 #include "moex/connector_host/operator_config.hpp"
 
 #include <algorithm>
@@ -89,6 +90,13 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
     std::map<std::uint32_t, std::array<std::uint64_t, 10>> counts;
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::pair<std::uint32_t, std::uint32_t>> states;
     std::vector<std::tuple<std::int64_t, std::int32_t, std::int64_t>> keys;
+    Plaza2TargetForensics forensics;
+    bool wants_forensic_row(const cg::Plaza2ListenerEvent& e) const noexcept override {
+        return forensics.wants(e);
+    }
+    void forensic_row(cg::Plaza2ForensicRow row) noexcept override {
+        forensics.capture(std::move(row));
+    }
     Evidence() {
         keys.reserve(100000);
     }
@@ -97,6 +105,7 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
             owner_violation = true;
             return;
         }
+        forensics.observe(e);
         try {
             using FC = moex::plaza2::generated::FieldCode;
             using EK = cg::Plaza2ListenerEventKind;
@@ -627,6 +636,37 @@ int self_test() {
                 {});
     if (!ref.limits.empty())
         return 19;
+    Plaza2TargetForensics probe;
+    probe.isin = 1;
+    probe.session = 1;
+    probe.expected_symbol = "TEST";
+    cg::Plaza2ForensicRow raw;
+    raw.fields = {{.name = "replRev", .generic_value = "1", .independent_value = "1", .equal = true},
+                  {.name = "isin_id", .generic_value = "1", .independent_value = "1", .equal = true},
+                  {.name = "sess_id", .generic_value = "1", .independent_value = "1", .equal = true},
+                  {.name = "isin", .generic_value = "TEST", .independent_value = "TEST", .equal = true}};
+    probe.observe({.kind = EK::TransactionBegin, .stream_code = stream});
+    probe.capture(raw);
+    if (!probe.drain(true).empty())
+        return 20;
+    probe.observe({.kind = EK::LifeNum, .stream_code = stream, .unsigned_value = 9});
+    probe.observe({.kind = EK::TransactionCommit, .stream_code = stream});
+    if (probe.has_committed())
+        return 21;
+    Plaza2TargetForensics valid_probe;
+    valid_probe.isin = 1;
+    valid_probe.session = 1;
+    valid_probe.expected_symbol = "TEST";
+    valid_probe.observe({.kind = EK::TransactionBegin, .stream_code = stream});
+    valid_probe.capture(raw);
+    valid_probe.observe({.kind = EK::TransactionCommit, .stream_code = stream});
+    if (valid_probe.failed || !valid_probe.has_committed() || valid_probe.drain(true).find("TEST") == std::string::npos)
+        return 22;
+    raw.fields.back().equal = false;
+    valid_probe.observe({.kind = EK::TransactionBegin, .stream_code = stream});
+    valid_probe.capture(raw);
+    if (!valid_probe.failed)
+        return 23;
     std::cout << "qualification evidence self-test PASS\n";
     return 0;
 }
@@ -699,6 +739,11 @@ int main(int argc, char** argv) {
                                    request.config.transport.host.software_key, output);
         }
         Evidence evidence;
+        evidence.forensics.isin = request.config.transport.target_isin_id;
+        evidence.forensics.session = request.config.transport.target_session_id;
+        if (const auto* symbol = std::getenv("MOEX_AGGR_FORENSIC_SYMBOL"))
+            evidence.forensics.expected_symbol = symbol;
+        std::ofstream forensic_output(output / "target-forensics.jsonl");
         request.config.transport.host.runtime.qualification_observer = &evidence;
         request.config.transport.host.qualification_book_observer = &evidence;
         request.config.transport.host.process_timeout_ms = 10;
@@ -774,10 +819,38 @@ int main(int argc, char** argv) {
             }
             evidence.flush(events);
             orders_blocked |= std::time(nullptr) >= end_utc - 15 * 60;
-            orders_blocked |=
-                evidence.invalid_books || evidence.dropped || evidence.callback_errors || evidence.owner_violation;
+            orders_blocked |= evidence.invalid_books || evidence.dropped || evidence.callback_errors ||
+                              evidence.owner_violation || evidence.forensics.failed;
             if (current >= next_sample || failed) {
                 const auto q = host.qualification_snapshot();
+                if (evidence.forensics.has_committed()) {
+                    const bool target_present =
+                        q.aggr_online && std::any_of(q.book.levels.begin(), q.book.levels.end(), [&](const auto& row) {
+                            return row.isin_id == evidence.forensics.isin;
+                        });
+                    forensic_output << evidence.forensics.drain(target_present);
+                    forensic_output.flush();
+                }
+                std::ostringstream participants;
+                participants << "{\"broker_matches\":" << q.matching_broker_limit_rows
+                             << ",\"client_matches\":" << q.matching_client_limit_rows
+                             << ",\"unknown_rows\":" << q.unknown_limit_rows
+                             << ",\"client_code_is_000\":" << q.client_code_is_brokerage_account << ",\"rows\":[";
+                bool separator = false;
+                for (const auto& row : q.limit_diagnostics) {
+                    if (separator)
+                        participants << ',';
+                    separator = true;
+                    participants << "{\"kind\":" << static_cast<unsigned>(row.kind)
+                                 << ",\"code_length\":" << row.code_length << ",\"equals_broker\":" << row.equals_broker
+                                 << ",\"equals_client\":" << row.equals_client << ",\"limits_set\":" << row.limits_set
+                                 << ",\"auto_update\":" << row.auto_update
+                                 << ",\"money_free\":" << std::quoted(row.money_free)
+                                 << ",\"money_blocked\":" << std::quoted(row.money_blocked)
+                                 << ",\"money_amount\":" << std::quoted(row.money_amount) << '}';
+                }
+                participants << "]}\n";
+                write_file(output / "participant-limits.json", participants.str());
                 write_file(output / "state_current.json", ch::render_snapshot(host.snapshot(), true));
                 const auto exposure_bytes = exposure_json(q);
                 write_file(output / "private_exposure_current.json", exposure_bytes);

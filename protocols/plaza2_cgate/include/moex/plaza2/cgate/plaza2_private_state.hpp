@@ -141,8 +141,12 @@ struct MatchingMapSnapshot {
     std::int8_t matching_id{0};
 };
 
+enum class LimitParticipantKind : std::uint8_t { Unknown, BrokerageFirm, Client };
+[[nodiscard]] LimitParticipantKind classify_limit_participant(std::string_view code) noexcept;
+
 struct LimitSnapshot {
-    PositionScope scope{PositionScope::kClient};
+    LimitParticipantKind participant_kind{LimitParticipantKind::Unknown};
+    std::int64_t repl_id{0};
     std::string account_code;
     bool limits_set{false};
     bool is_auto_update_limit{false};
@@ -159,6 +163,12 @@ struct LimitSnapshot {
     std::string penalty;
     std::string premium_intercl;
     std::string net_option_value;
+};
+
+// Borrowed committed map row; invalidated by the next mutation. Ambiguity never yields a row.
+struct LimitLookup {
+    std::size_t match_count{0};
+    const LimitSnapshot* exact{nullptr};
 };
 
 struct PositionSnapshot {
@@ -262,6 +272,9 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::span<const InstrumentSnapshot> instruments() const;
     [[nodiscard]] std::span<const MatchingMapSnapshot> matching_map() const;
     [[nodiscard]] std::span<const LimitSnapshot> limits() const;
+    [[nodiscard]] LimitLookup find_limit_by_code(const std::string& code) const;
+    [[nodiscard]] std::size_t limit_row_count() const noexcept;
+    [[nodiscard]] std::size_t unknown_limit_row_count() const noexcept;
     [[nodiscard]] std::span<const PositionSnapshot> positions() const;
     [[nodiscard]] std::span<const OwnOrderSnapshot> own_orders() const;
     [[nodiscard]] std::span<const OwnTradeSnapshot> own_trades() const;

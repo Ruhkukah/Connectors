@@ -993,6 +993,7 @@ struct Plaza2RuntimeSharedState {
 };
 
 struct RuntimeFieldPlan {
+    std::string name;
     generated::FieldCode field_code{kNoFieldCode};
     generated::ValueClass value_class{generated::ValueClass::kSignedInteger};
     std::string type_token;
@@ -1253,6 +1254,7 @@ struct Plaza2ListenerCallbackState {
             }
 
             plan.fields.push_back({
+                .name = std::string(field_name),
                 .field_code = descriptor->field_code,
                 .value_class = descriptor->value_class,
                 .type_token = field->type == nullptr ? std::string(descriptor->type_token) : std::string(field->type),
@@ -1582,6 +1584,63 @@ struct Plaza2ListenerCallbackState {
                 .fields = state->decoded_fields,
                 .signed_value = payload->rev,
             };
+            if (auto* observer = state->shared->settings.qualification_observer;
+                observer && observer->wants_forensic_row(event)) {
+                if (payload->data_size > 65536 || payload->num_nulls > 4096 || plan->fields.size() > 128)
+                    return fail(
+                        {.code = Plaza2ErrorCode::DecodeFailed, .message = "target forensic row exceeds bounds"});
+                Plaza2ForensicRow raw;
+                raw.stream_code = state->stream_code;
+                raw.table_code = plan->table_code;
+                raw.table_index = plan->msg_index;
+                raw.message_size = payload->data_size;
+                raw.message_name = plan->msg_name;
+                const auto* bytes = static_cast<const std::byte*>(payload->data);
+                raw.payload.assign(bytes, bytes + payload->data_size);
+                if (payload->nulls)
+                    raw.nulls.assign(payload->nulls, payload->nulls + payload->num_nulls);
+                for (const auto& field : plan->fields) {
+                    const auto& name = field.name;
+                    if (name != "replID" && name != "replRev" && name != "replAct" && name != "isin_id" &&
+                        name != "sess_id" && name != "isin" && name != "short_isin" && name != "limit_up" &&
+                        name != "limit_down" && name != "settlement_price_open" && name != "settlement_price" &&
+                        name != "buy_deposit" && name != "sell_deposit" && name != "roundto" && name != "min_step" &&
+                        name != "step_price")
+                        continue;
+                    Plaza2ForensicField item{.name = name,
+                                             .type = field.type_token,
+                                             .offset = field.offset,
+                                             .size = field.size,
+                                             .ordinal = field.ordinal,
+                                             .is_null = payload->nulls && field.ordinal < payload->num_nulls &&
+                                                        payload->nulls[field.ordinal] != 0};
+                    if (!item.is_null) {
+                        // Independent name/negotiated-offset route: no generated FieldCode lookup.
+                        std::array<char, 256> buffer{};
+                        std::size_t size = buffer.size();
+                        item.conversion_result = state->shared->api->getstr(field.type_token.c_str(),
+                                                                            bytes + field.offset, buffer.data(), &size);
+                        if (item.conversion_result == kCgErrOk && size <= buffer.size())
+                            item.independent_value = copy_c_string(buffer.data(), size);
+                        else if (item.conversion_result == kCgErrOk)
+                            item.conversion_result = kCgErrBufferTooSmall;
+                        for (const auto& value : state->decoded_fields) {
+                            if (value.field_code != field.field_code)
+                                continue;
+                            item.generic_value = value.kind == Plaza2DecodedValueKind::SignedInteger
+                                                     ? std::to_string(value.signed_value)
+                                                 : value.kind == Plaza2DecodedValueKind::UnsignedInteger
+                                                     ? std::to_string(value.unsigned_value)
+                                                     : std::string(value.text_value);
+                            break;
+                        }
+                    }
+                    item.equal = item.is_null ||
+                                 (item.conversion_result == kCgErrOk && item.generic_value == item.independent_value);
+                    raw.fields.push_back(std::move(item));
+                }
+                observer->forensic_row(std::move(raw));
+            }
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
             }

@@ -238,7 +238,7 @@ std::string intent_fingerprint(const Plaza2AuthorizedOrderIntent& intent, bool b
 
 std::string limit_row_fingerprint(const plaza2::private_state::LimitSnapshot& limit) {
     std::ostringstream value;
-    value << static_cast<int>(limit.scope) << '|' << limit.account_code << '|' << limit.limits_set << '|'
+    value << static_cast<int>(limit.participant_kind) << '|' << limit.account_code << '|' << limit.limits_set << '|'
           << limit.is_auto_update_limit << '|' << limit.money_free << '|' << limit.money_blocked << '|'
           << limit.vm_reserve << '|' << limit.fee << '|' << limit.money_old << '|' << limit.money_amount << '|'
           << limit.money_pledge_amount << '|' << limit.actual_amount_of_base_currency << '|' << limit.vm_intercl << '|'
@@ -1117,6 +1117,34 @@ Plaza2Error Plaza2TestSessionHost::poll() {
 Plaza2Error Plaza2TestSessionHost::stop() {
     return impl_->stop();
 }
+Plaza2TransportHealth Plaza2TestSessionHost::runtime_health() const {
+    Plaza2TransportHealth out;
+    const auto& p = *impl_;
+    bool valid = p.started && p.private_bridge.callback_error().empty() && p.reply_bridge.error().empty();
+    const auto sample = [&](const auto& object, std::uint32_t& state) {
+        if (object.state(state)) {
+            state = 0;
+            valid = false;
+        }
+    };
+    sample(p.connection, out.connection);
+    sample(p.publisher, out.publisher);
+    sample(p.reply_listener, out.reply);
+    sample(p.aggr_listener, out.aggr);
+    out.private_active = !p.private_listeners.empty();
+    for (const auto& item : p.private_listeners) {
+        if (out.private_count == out.private_states.size()) {
+            valid = false;
+            break;
+        }
+        const auto i = out.private_count++;
+        out.private_streams[i] = item.stream_code;
+        sample(item.listener, out.private_states[i]);
+        out.private_active &= out.private_states[i] == kCgStateActive;
+    }
+    out.valid = valid;
+    return out;
+}
 bool Plaza2TestSessionHost::started() const noexcept {
     return impl_->started;
 }
@@ -1191,6 +1219,11 @@ Plaza2PublisherMessageResult Plaza2TestSessionHost::post_validated(std::string_v
                             !impl_->config.arm_state.test_order_send_armed)) {
         Plaza2PublisherMessageResult result;
         result.validation_error = invalid("publisher requires a started, explicitly armed TEST host");
+        return result;
+    }
+    if (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestAuthorizedSend && !runtime_health().all_active()) {
+        Plaza2PublisherMessageResult result;
+        result.validation_error = invalid("publisher requires effective ACTIVE transport health");
         return result;
     }
     Plaza2TradeCommandKind kind = Plaza2TradeCommandKind::AddOrder;
@@ -1678,19 +1711,11 @@ struct Plaza2TestTradeTransport::Impl {
         if (!target_provenance.ready) {
             return invalid("target REFDATA rows lack exact current-LifeNum provenance");
         }
-        const auto matching_limit_count =
-            std::count_if(private_state.limits().begin(), private_state.limits().end(), [&](const auto& candidate) {
-                return candidate.scope == plaza2::private_state::PositionScope::kClient &&
-                       candidate.account_code == participant_code() && candidate.limits_set;
-            });
-        const auto limit =
-            std::find_if(private_state.limits().begin(), private_state.limits().end(), [&](const auto& candidate) {
-                return candidate.scope == plaza2::private_state::PositionScope::kClient &&
-                       candidate.account_code == participant_code() && candidate.limits_set;
-            });
-        if (limit == private_state.limits().end() || matching_limit_count != 1) {
-            return invalid(matching_limit_count == 0 ? "applicable committed client limit row is missing or unset"
-                                                     : "multiple applicable committed client limit rows are ambiguous");
+        const auto lookup = private_state.find_limit_by_code(participant_code());
+        const auto* limit = lookup.exact;
+        if (lookup.match_count != 1 || limit == nullptr ||
+            limit->participant_kind != plaza2::private_state::LimitParticipantKind::Client || !limit->limits_set) {
+            return invalid("applicable committed client limit is missing, ambiguous, unknown or unchecked");
         }
         const auto position_evidence = assess_position_evidence();
         if (require_zero_starting_position() && !position_evidence.zero_starting_position_proven) {
@@ -1757,10 +1782,8 @@ struct Plaza2TestTradeTransport::Impl {
         const auto session = std::find_if(state.sessions().begin(), state.sessions().end(), [&](const auto& candidate) {
             return candidate.sess_id == config.target_session_id;
         });
-        const auto limit = std::find_if(state.limits().begin(), state.limits().end(), [&](const auto& candidate) {
-            return candidate.scope == plaza2::private_state::PositionScope::kClient &&
-                   candidate.account_code == participant_code() && candidate.limits_set;
-        });
+        const auto lookup = state.find_limit_by_code(participant_code());
+        const auto* limit = lookup.exact;
         const auto position_evidence = assess_position_evidence();
         const auto expected_account_type = expected_position_account_type();
         const auto position =
@@ -1770,7 +1793,8 @@ struct Plaza2TestTradeTransport::Impl {
                        candidate.account_type == expected_account_type;
             });
         if (!target_provenance.ready || instrument == state.instruments().end() || session == state.sessions().end() ||
-            limit == state.limits().end()) {
+            limit == nullptr || lookup.match_count != 1 ||
+            limit->participant_kind != plaza2::private_state::LimitParticipantKind::Client || !limit->limits_set) {
             return invalid("execution-safety receipt lacks target refdata/session/limit evidence");
         }
         if (require_zero_starting_position() && !position_evidence.zero_starting_position_proven) {
@@ -1862,8 +1886,12 @@ struct Plaza2TestTradeTransport::Impl {
             userorderbook != state.stream_health().end() && userorderbook->periodic_snapshot_consistent;
         receipt.private_streams_ready =
             receipt.private_streams_ready && receipt.userorderbook_periodic_snapshot_consistent;
-        receipt.p2mqreply_open = host.p2mqreply_open();
-        receipt.publisher_open = host.publisher_open();
+        const bool transport_active = host.runtime_health().all_active();
+        receipt.private_streams_ready &= transport_active;
+        receipt.aggr_online &= transport_active;
+        receipt.aggr_snapshot_complete &= transport_active;
+        receipt.p2mqreply_open = transport_active && host.p2mqreply_open();
+        receipt.publisher_open = transport_active && host.publisher_open();
         receipt.trading_capable = host.probe_report().trading_capable;
         receipt.test_order_send_armed = config.host.arm_state.test_order_send_armed;
         receipt.send_mode =

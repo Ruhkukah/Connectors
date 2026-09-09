@@ -69,7 +69,19 @@ Plaza2HostConfig config_for(const test::RuntimeFixturePaths& f) {
 }
 
 struct QualificationObserver final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20QualificationObserver {
-    std::size_t events{}, commits{};
+    std::size_t events{}, commits{}, forensic_rows{};
+    bool forensic_identity{}, forensic_equal{true};
+    bool wants_forensic_row(const cg::Plaza2ListenerEvent& e) const noexcept override {
+        return e.table_code == moex::plaza2::generated::TableCode::kFortsRefdataReplFutSessContents;
+    }
+    void forensic_row(cg::Plaza2ForensicRow row) noexcept override {
+        ++forensic_rows;
+        for (const auto& f : row.fields) {
+            forensic_equal &= f.equal && f.offset + f.size <= row.payload.size();
+            if (f.name == "isin_id")
+                forensic_identity = f.independent_value == "1001";
+        }
+    }
     void observe(const cg::Plaza2ListenerEvent&, const cg::Plaza2Error&) noexcept override {
         ++events;
     }
@@ -123,6 +135,41 @@ int main(int argc, char** argv) {
             reinterpret_cast<std::uint64_t (*)()>(dlsym(library, "moex_fake_connection_new_count"));
         test::require(reset && count && env_open_count && connection_new_count, "independent fake counters");
         {
+            ConnectorHost host(config_for(fixture));
+            warm(host);
+            test::require(host.snapshot().private_snapshot_state_ready && host.snapshot().aggr_ready,
+                          "raw and effective states ready before loss");
+            ::setenv("MOEX_FAKE_CONNECTION_ERROR", "1", 1);
+            const auto failure = host.poll();
+            ::unsetenv("MOEX_FAKE_CONNECTION_ERROR");
+            const auto failed = host.snapshot();
+            test::require(failure.code == cg::Plaza2ErrorCode::AdapterState && failure.runtime_code != 0 &&
+                              failure.message.find("CG_ERR_INCORRECTSTATE") != std::string::npos,
+                          "original runtime cause preserved");
+            test::require(failed.private_snapshot_state_ready && failed.aggr_snapshot_state_ready &&
+                              !failed.private_streams_ready && !failed.aggr_ready && !failed.publisher_ready &&
+                              !failed.reply_ready && !failed.observation_ready && !failed.new_order_allowed,
+                          "transport loss masks all effective readiness while retaining raw snapshots");
+            test::require(failed.causal_error.message == failure.message &&
+                              failed.causal_error.runtime_code == failure.runtime_code,
+                          "snapshot retains causal error");
+            test::require(!host.stop(), "stop failed host without orders");
+        }
+        {
+            ConnectorHost host(config_for(fixture));
+            warm(host);
+            ::setenv("MOEX_FAKE_PRIVATE_ERROR_AFTER_READY", "1", 1);
+            const auto failure = host.poll();
+            ::unsetenv("MOEX_FAKE_PRIVATE_ERROR_AFTER_READY");
+            const auto failed = host.snapshot();
+            test::require(failure.code == cg::Plaza2ErrorCode::AdapterState && failure.runtime_code == 0,
+                          "internally generated listener error is not a fabricated CGate result");
+            test::require(failed.private_snapshot_state_ready && !failed.private_streams_ready && !failed.aggr_ready &&
+                              !failed.publisher_ready && !failed.reply_ready && !failed.new_order_allowed,
+                          "private ERROR masks every effective gate");
+            test::require(!host.stop(), "stop listener-error host");
+        }
+        {
             reset();
             auto observed_config = config_for(fixture);
             QualificationObserver observer;
@@ -136,6 +183,8 @@ int main(int argc, char** argv) {
             test::require(static_cast<bool>(host.start()), "double start refused");
             test::require(observer.events > 0 && observer.commits > 0,
                           "qualification hooks observe real host callbacks");
+            test::require(observer.forensic_rows > 0 && observer.forensic_identity && observer.forensic_equal,
+                          "target payload/negotiated descriptor route agrees with generic decoder");
             const auto qualification = host.qualification_snapshot();
             test::require(qualification.aggr_online && qualification.aggr_snapshot_complete &&
                               !qualification.book.levels.empty() && !qualification.instruments.empty(),
