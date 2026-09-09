@@ -54,6 +54,7 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "PHASE5D-REDACTION-SAMPLE", 1);
         ::setenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME", "1", 1);
 
+        ::setenv("MOEX_FAKE_AGGR_CLEAR_ON_BOOTSTRAP", "1", 1);
         Plaza2Aggr20MdRunner runner(make_config(fixture));
         const auto start = runner.start();
         require(start.ok, "AGGR20 runner start should succeed with fake runtime and all arm flags");
@@ -121,6 +122,17 @@ int main(int argc, char** argv) {
             require(recovery.stop().ok, "recovery fixture stop");
         }
 
+        Plaza2Aggr20BookProjector staged;
+        Plaza2Aggr20ListenerBridge staged_bridge(staged);
+        require(!staged_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionBegin}),
+                "begin staged bootstrap");
+        require(!staged_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted}) &&
+                    staged_bridge.recovering() && !staged_bridge.online(),
+                "cleanup during a transaction still requires a fresh snapshot");
+        require(!staged_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}) &&
+                    !staged_bridge.online(),
+                "ONLINE cannot bypass pending recovery");
+        ::unsetenv("MOEX_FAKE_AGGR_CLEAR_ON_BOOTSTRAP");
         cleanup();
         ::unsetenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY");
         ::unsetenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME");

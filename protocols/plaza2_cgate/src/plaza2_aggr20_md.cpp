@@ -226,8 +226,14 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
     case Plaza2ListenerEventKind::LifeNum:
         reset();
         return {};
-    case Plaza2ListenerEventKind::Close:
     case Plaza2ListenerEventKind::ClearDeleted:
+        // CGate sends cleanup markers before the initial snapshot. Deleting from an already
+        // empty projection needs no reopen, which would only request the same markers again.
+        if (!reopen_required_ && !online_ && !snapshot_complete_ && !projector_.transaction_open() &&
+            projector_.snapshot().row_count == 0 && projector_.snapshot().last_repl_rev == 0)
+            return {};
+        [[fallthrough]];
+    case Plaza2ListenerEventKind::Close:
         // Conservatively invalidate and request a fresh full snapshot. No partial book is advertised.
         reset();
         reopen_required_ = true;

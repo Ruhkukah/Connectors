@@ -1436,6 +1436,16 @@ std::uint32_t emit_script(FakeListener& listener) {
         return result;
     }
 
+    if (listener.stream_code == StreamCode::kFortsAggrRepl && fake_flag("MOEX_FAKE_AGGR_CLEAR_ON_BOOTSTRAP")) {
+        for (const auto& plan : listener.message_plans) {
+            auto clear = make_clear_deleted_payload(static_cast<std::uint32_t>(plan.msg_index),
+                                                    std::numeric_limits<std::int64_t>::max(), 8);
+            if (const auto result = emit_simple_message(listener, kCgMsgP2replClearDeleted, clear.data(), clear.size());
+                result != kCgErrOk)
+                return result;
+        }
+    }
+
     if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk) {
         return result;
     }

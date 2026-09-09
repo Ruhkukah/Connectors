@@ -136,3 +136,13 @@ restart the VPS, or touch unrelated trading services.
 Regression preparation found a timing-dependent TWIME Establish-timeout fixture. It now waits for the peer
 to receive Establish before advancing the fake clock and checks the exact 100/101 ms boundary. This changes
 the test synchronization only, not TWIME production behavior; retain the initial failed run in validation.
+
+## Live bootstrap defect retained
+
+The first 9 September attempt on `2ca378fdf1dbac941e3e72f7a90144c8d49763f0` failed AGGR bootstrap:
+ClearDeleted(MAX_REVISION) arrived before any snapshot transaction and the bridge repeatedly reopened.
+Private streams synchronized, but AGGR had zero commits and never became ONLINE; no publisher posts occurred.
+The supervisor stopped the process and sealed its evidence before a code fix. This attempt remains FAIL.
+The fix treats cleanup of an already empty pre-snapshot projection as a no-op. Cleanup during a transaction
+or after ONLINE still invalidates and requests a fresh snapshot. The fake-runtime regression sends the real
+startup marker sequence on every open, including recovery opens; it fails before the fix and passes after.
