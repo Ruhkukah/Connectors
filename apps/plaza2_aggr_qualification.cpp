@@ -798,7 +798,7 @@ int main(int argc, char** argv) {
         bool failed = static_cast<bool>(host.start());
         bool orders_blocked = false;
         bool cancel_sent = false;
-        std::uint64_t polls{}, max_gap{};
+        std::uint64_t polls{}, max_gap{}, recovery_transition{};
         std::optional<tr::OrderLifecycleState> last_lifecycle;
         std::optional<bool> last_ready;
         while (!failed && !stopping && Clock::now() < deadline && std::time(nullptr) < end_utc) {
@@ -810,6 +810,15 @@ int main(int argc, char** argv) {
             ++polls;
             failed = static_cast<bool>(host.poll());
             auto state = host.snapshot();
+            if (state.recovery.transitions != recovery_transition) {
+                recovery_transition = state.recovery.transitions;
+                events << ns() << " transport " << ch::render_snapshot(state, true);
+                events.flush();
+                // Qualification must never turn an interrupted epoch into an
+                // automatic cancel or another order after recovery.
+                if (state.recovery.cause)
+                    orders_blocked = true;
+            }
             if (last_ready != state.observation_ready) {
                 events << ns() << " 0 13 " << state.observation_ready << " 0 0 0\n";
                 last_ready = state.observation_ready;
@@ -823,7 +832,8 @@ int main(int argc, char** argv) {
                 }
                 if (state.executed_quantity || !state.evidence_consistent)
                     orders_blocked = true;
-                if (state.lifecycle_state == tr::OrderLifecycleState::Working && !cancel_sent) {
+                if (state.lifecycle_state == tr::OrderLifecycleState::Working && !cancel_sent && !orders_blocked &&
+                    state.observation_ready) {
                     cancel_sent = true;
                     events << ns() << " CANCEL_BEGIN\n";
                     const auto cancel = host.cancel_current_order();

@@ -7,7 +7,7 @@
 
 namespace moex::connector_host {
 
-enum class ConnectorHostState { Created, Started, Ready, Stopping, Stopped, Failed };
+enum class ConnectorHostState { Created, Started, Ready, Stopping, Stopped, Failed, Recovering };
 enum class HostPurpose { Qualify, OrderTest };
 
 // Explicit native configuration, not the older topology-only profile format.
@@ -30,6 +30,7 @@ struct ConnectorHostOrderRequest {
 
 struct ConnectorHostSnapshot {
     ConnectorHostState state{ConnectorHostState::Created};
+    plaza2_trade::Plaza2RecoveryStatus recovery;
     plaza2::cgate::Plaza2Environment environment{plaza2::cgate::Plaza2Environment::Test};
     plaza2_trade::Plaza2TestSessionHostMode mode{plaza2_trade::Plaza2TestSessionHostMode::LiveTestPreSend};
     std::string runtime_compatibility;

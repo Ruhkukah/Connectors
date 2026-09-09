@@ -275,6 +275,8 @@ std::string_view host_state_name(ConnectorHostState state) noexcept {
         return "Stopping";
     case ConnectorHostState::Stopped:
         return "Stopped";
+    case ConnectorHostState::Recovering:
+        return "Recovering";
     case ConnectorHostState::Failed:
         return "Failed";
     }
@@ -510,7 +512,8 @@ struct ConnectorHost::Impl {
         ConnectorHostSnapshot out;
         const auto& host = transport.host();
         const auto& data = host.private_state();
-        out.state = state;
+        out.state = host.recovering() ? ConnectorHostState::Recovering : state;
+        out.recovery = transport.host().recovery_status();
         out.environment = config.transport.host.runtime.environment;
         out.mode = config.transport.host.mode;
         out.target_isin_id = config.transport.target_isin_id;
@@ -520,8 +523,8 @@ struct ConnectorHost::Impl {
         out.transport_health = host.runtime_health();
         const auto& health = out.transport_health;
         const bool live = host.started() && state != ConnectorHostState::Failed &&
-                          state != ConnectorHostState::Stopping && state != ConnectorHostState::Stopped &&
-                          health.all_active();
+                          state != ConnectorHostState::Recovering && state != ConnectorHostState::Stopping &&
+                          state != ConnectorHostState::Stopped && health.all_active();
         out.publisher_handle_open = host.publisher_open();
         out.reply_handle_open = host.p2mqreply_open();
         out.publisher_ready = live && out.publisher_handle_open && health.publisher == 3;
@@ -794,7 +797,8 @@ cg::Plaza2Error ConnectorHost::start() {
 
 cg::Plaza2Error ConnectorHost::poll() {
     auto& p = *impl_;
-    if (p.state != ConnectorHostState::Started && p.state != ConnectorHostState::Ready)
+    if (p.state != ConnectorHostState::Started && p.state != ConnectorHostState::Ready &&
+        p.state != ConnectorHostState::Recovering)
         return invalid("poll requires a running host");
     if (auto error = p.transport.host().poll()) {
         p.state = ConnectorHostState::Failed;
@@ -808,7 +812,16 @@ cg::Plaza2Error ConnectorHost::poll() {
         p.causal_operation = "poll";
         return error;
     }
-    p.state = p.snapshot().observation_ready ? ConnectorHostState::Ready : ConnectorHostState::Started;
+    const auto& recovery = p.transport.host().recovery_status();
+    if (recovery.cause) {
+        p.causal_error = recovery.cause;
+        p.causal_error_time_ns = recovery.error_time_ns;
+        p.causal_health = recovery.health;
+        p.causal_operation = "transport rebootstrap";
+    }
+    p.state = p.transport.host().recovering() ? ConnectorHostState::Recovering : ConnectorHostState::Started;
+    if (p.snapshot().observation_ready)
+        p.state = ConnectorHostState::Ready;
     return {};
 }
 
@@ -1138,6 +1151,9 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
         << ",\"causal_error\":{\"connector_code\":" << static_cast<unsigned>(s.causal_error.code)
         << ",\"runtime_code\":" << (s.causal_error.runtime_code ? std::to_string(s.causal_error.runtime_code) : "null")
         << ",\"message\":" << quoted(s.causal_error.message) << "}";
+    out << ",\"recovery_generation\":" << s.recovery.generation << ",\"recovery_attempts\":" << s.recovery.attempts
+        << ",\"recovery_transitions\":" << s.recovery.transitions
+        << ",\"recovery_deadline_exhausted\":" << s.recovery.deadline_exhausted;
     out << ",\"publisher_ready\":" << s.publisher_ready << ",\"reply_ready\":" << s.reply_ready
         << ",\"private_streams_ready\":" << s.private_streams_ready << ",\"observation_ready\":" << s.observation_ready
         << ",\"target\":" << quoted(s.target) << ",\"target_isin_id\":" << s.target_isin_id
