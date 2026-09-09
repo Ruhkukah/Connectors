@@ -9,6 +9,7 @@
 
 #include "moex/plaza2/cgate/plaza2_publisher_rate.hpp"
 #include <functional>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -179,6 +180,18 @@ struct Plaza2TestSessionHostConfig {
     std::function<std::uint64_t()> publisher_now_ms; // Empty uses steady_clock; injectable for offline boundary tests.
 };
 
+struct Plaza2TransportHealth {
+    std::uint32_t connection{0}, publisher{0}, reply{0}, aggr{0};
+    std::array<std::uint32_t, 8> private_states{};
+    std::array<plaza2::generated::StreamCode, 8> private_streams{};
+    std::size_t private_count{0};
+    bool valid{false};
+    bool private_active{false};
+    [[nodiscard]] bool all_active() const noexcept {
+        return valid && connection == 3 && publisher == 3 && reply == 3 && aggr == 3 && private_active;
+    }
+};
+
 class Plaza2TestSessionHost final {
   public:
     explicit Plaza2TestSessionHost(Plaza2TestSessionHostConfig config);
@@ -193,6 +206,7 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] bool started() const noexcept;
+    [[nodiscard]] Plaza2TransportHealth runtime_health() const;
 
     [[nodiscard]] const plaza2::cgate::Plaza2RuntimeProbeReport& probe_report() const noexcept;
     [[nodiscard]] const plaza2::private_state::Plaza2PrivateStateProjector& private_state() const noexcept;

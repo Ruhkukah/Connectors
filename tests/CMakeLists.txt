@@ -1035,3 +1035,9 @@ endforeach()
 
 add_test(NAME plaza2_aggr_qualification_evidence COMMAND plaza2_aggr_qualification --self-test)
 set_tests_properties(plaza2_aggr_qualification_evidence PROPERTIES LABELS "unit;plaza2;sanitizer")
+
+add_executable(plaza2_target_forensics_test plaza2_target_forensics_test.cpp)
+target_include_directories(plaza2_target_forensics_test PRIVATE "${MOEX_SOURCE_ROOT}/apps")
+target_link_libraries(plaza2_target_forensics_test PRIVATE moex_plaza2_cgate_runtime)
+add_test(NAME plaza2_target_forensics_test COMMAND plaza2_target_forensics_test)
+set_tests_properties(plaza2_target_forensics_test PROPERTIES LABELS "unit;plaza2;sanitizer")

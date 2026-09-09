@@ -43,20 +43,20 @@ template <typename T> void hash_combine(std::size_t& seed, const T& value) {
 }
 
 struct LimitKey {
-    PositionScope scope{PositionScope::kClient};
+    LimitParticipantKind participant_kind{LimitParticipantKind::Unknown};
     std::string account_code;
-
+    std::int64_t repl_id{0};
     bool operator==(const LimitKey& other) const {
-        return scope == other.scope && account_code == other.account_code;
+        if (repl_id != 0 || other.repl_id != 0)
+            return repl_id == other.repl_id;
+        return participant_kind == other.participant_kind && account_code == other.account_code;
     }
 };
-
 struct LimitKeyHash {
     std::size_t operator()(const LimitKey& key) const {
-        std::size_t seed = 0;
-        hash_combine(seed, static_cast<std::uint32_t>(key.scope));
-        hash_combine(seed, key.account_code);
-        return seed;
+        if (key.repl_id != 0)
+            return std::hash<std::int64_t>{}(key.repl_id);
+        return std::hash<std::string>{}(key.account_code);
     }
 };
 
@@ -219,7 +219,9 @@ std::string revision_key(const PositionKey& key) {
 }
 
 std::string revision_key(const LimitKey& key) {
-    return revision_key({std::to_string(static_cast<std::uint32_t>(key.scope)), key.account_code});
+    if (key.repl_id != 0)
+        return revision_key({"repl", std::to_string(key.repl_id)});
+    return revision_key({std::to_string(static_cast<std::uint32_t>(key.participant_kind)), key.account_code});
 }
 
 std::string revision_key(const OwnOrderSnapshot& row) {
@@ -429,6 +431,8 @@ struct Plaza2PrivateStateProjector::Impl {
     InstrumentMap instruments_by_isin;
     MatchingMap matching_by_base_contract;
     LimitMap limits_by_key;
+    std::unordered_map<std::string, LimitLookup> limit_index;
+    std::size_t unknown_limits{0};
     PositionMap positions_by_key;
     OrderMap orders_by_key;
     TradeMap trades_by_key;
@@ -453,6 +457,8 @@ struct Plaza2PrivateStateProjector::Impl {
         instruments_by_isin.clear();
         matching_by_base_contract.clear();
         limits_by_key.clear();
+        limit_index.clear();
+        unknown_limits = 0;
         positions_by_key.clear();
         orders_by_key.clear();
         trades_by_key.clear();
@@ -655,8 +661,9 @@ struct Plaza2PrivateStateProjector::Impl {
             });
         case TableCode::kFortsPartReplPart:
             return revision_key(LimitKey{
-                .scope = PositionScope::kClient,
+                .participant_kind = classify_limit_participant(row.text(FieldCode::kFortsPartReplPartClientCode)),
                 .account_code = row.text(FieldCode::kFortsPartReplPartClientCode),
+                .repl_id = row.i64(FieldCode::kFortsPartReplPartReplId),
             });
         case TableCode::kFortsRefdataReplSession:
             return revision_key(row.i32(FieldCode::kFortsRefdataReplSessionSessId));
@@ -716,11 +723,22 @@ struct Plaza2PrivateStateProjector::Impl {
     void rebuild_limits() {
         limit_snapshots =
             sorted_values<LimitSnapshot>(limits_by_key, [](const LimitSnapshot& lhs, const LimitSnapshot& rhs) {
-                if (lhs.scope != rhs.scope) {
-                    return static_cast<std::uint32_t>(lhs.scope) < static_cast<std::uint32_t>(rhs.scope);
+                if (lhs.participant_kind != rhs.participant_kind) {
+                    return static_cast<std::uint32_t>(lhs.participant_kind) <
+                           static_cast<std::uint32_t>(rhs.participant_kind);
                 }
-                return lhs.account_code < rhs.account_code;
+                if (lhs.account_code != rhs.account_code)
+                    return lhs.account_code < rhs.account_code;
+                return lhs.repl_id < rhs.repl_id;
             });
+        limit_index.clear();
+        unknown_limits = 0;
+        for (const auto& [key, row] : limits_by_key) {
+            auto& entry = limit_index[row.account_code];
+            ++entry.match_count;
+            entry.exact = entry.match_count == 1 ? &row : nullptr;
+            unknown_limits += row.participant_kind == LimitParticipantKind::Unknown;
+        }
     }
 
     void rebuild_positions() {
@@ -1140,6 +1158,8 @@ struct Plaza2PrivateStateProjector::Impl {
             break;
         case StreamCode::kFortsPartRepl:
             limits_by_key.clear();
+            limit_index.clear();
+            unknown_limits = 0;
             rebuild_limits();
             break;
         case StreamCode::kFortsRefdataRepl: {
@@ -1583,11 +1603,13 @@ struct Plaza2PrivateStateProjector::Impl {
     void apply_limit_row(const RowReader& row) {
         auto& limits = ensure_staged_limits();
         LimitKey key{
-            .scope = PositionScope::kClient,
+            .participant_kind = classify_limit_participant(row.text(FieldCode::kFortsPartReplPartClientCode)),
             .account_code = row.text(FieldCode::kFortsPartReplPartClientCode),
+            .repl_id = row.i64(FieldCode::kFortsPartReplPartReplId),
         };
         auto& limit = limits[key];
-        limit.scope = PositionScope::kClient;
+        limit.participant_kind = key.participant_kind;
+        limit.repl_id = key.repl_id;
         limit.account_code = key.account_code;
         limit.limits_set = row.boolean(FieldCode::kFortsPartReplPartLimitsSet);
         limit.is_auto_update_limit = row.boolean(FieldCode::kFortsPartReplPartIsAutoUpdateLimit);
@@ -2045,6 +2067,24 @@ std::span<const InstrumentSnapshot> Plaza2PrivateStateProjector::instruments() c
 
 std::span<const MatchingMapSnapshot> Plaza2PrivateStateProjector::matching_map() const {
     return impl_->matching_snapshots;
+}
+
+LimitParticipantKind classify_limit_participant(std::string_view code) noexcept {
+    if ((code.size() != 4 && code.size() != 7) || !std::all_of(code.begin(), code.end(), [](unsigned char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+        }))
+        return LimitParticipantKind::Unknown;
+    return code.size() == 4 ? LimitParticipantKind::BrokerageFirm : LimitParticipantKind::Client;
+}
+LimitLookup Plaza2PrivateStateProjector::find_limit_by_code(const std::string& code) const {
+    const auto it = impl_->limit_index.find(code);
+    return it == impl_->limit_index.end() ? LimitLookup{} : it->second;
+}
+std::size_t Plaza2PrivateStateProjector::limit_row_count() const noexcept {
+    return impl_->limits_by_key.size();
+}
+std::size_t Plaza2PrivateStateProjector::unknown_limit_row_count() const noexcept {
+    return impl_->unknown_limits;
 }
 
 std::span<const LimitSnapshot> Plaza2PrivateStateProjector::limits() const {

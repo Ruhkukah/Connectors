@@ -1735,6 +1735,10 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrInvalidArgument;
     }
     auto* connection = static_cast<FakeConnection*>(conn);
+    if (fake_flag("MOEX_FAKE_CONNECTION_ERROR")) {
+        connection->state = kStateError;
+        return kCgErrIncorrectState;
+    }
     if (fake_flag("MOEX_FAKE_CAPTURE_SCRIPT")) {
         bool emitted = false;
         for (auto* listener : connection->listeners)
@@ -1888,8 +1892,9 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
             connection->liveness_event_emitted = true;
             return kCgErrOk;
         }
-        const bool private_liveness =
-            fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_PRIVATE_LIFENUM_AFTER_READY");
+        const bool private_liveness = fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY") ||
+                                      fake_flag("MOEX_FAKE_PRIVATE_LIFENUM_AFTER_READY") ||
+                                      fake_flag("MOEX_FAKE_PRIVATE_ERROR_AFTER_READY");
         const bool aggr_liveness =
             fake_flag("MOEX_FAKE_AGGR_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_AGGR_LIFENUM_AFTER_READY") ||
             fake_flag("MOEX_FAKE_AGGR_CLEAR_AFTER_READY") || fake_flag("MOEX_FAKE_AGGR_ERROR_AFTER_READY");
@@ -1902,7 +1907,8 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
                 if ((is_aggr && !aggr_liveness) || (!is_aggr && !private_liveness)) {
                     continue;
                 }
-                if (is_aggr && fake_flag("MOEX_FAKE_AGGR_ERROR_AFTER_READY")) {
+                if ((is_aggr && fake_flag("MOEX_FAKE_AGGR_ERROR_AFTER_READY")) ||
+                    (!is_aggr && fake_flag("MOEX_FAKE_PRIVATE_ERROR_AFTER_READY"))) {
                     listener->state = kStateError;
                     continue;
                 }
@@ -2382,13 +2388,29 @@ std::uint32_t cg_pub_msgfree(void*, void* message) {
     return result;
 }
 
-std::uint32_t cg_getstr(const char*, const void* data, char* buffer, std::size_t* buffer_size) {
+std::uint32_t cg_getstr(const char* type, const void* data, char* buffer, std::size_t* buffer_size) {
     capture_audit("cg_getstr");
     if (data == nullptr || buffer_size == nullptr) {
         return kCgErrInvalidArgument;
     }
 
-    const auto text = copy_c_string(static_cast<const char*>(data), 32);
+    std::string text;
+    if (type && (std::string_view(type) == "i8" || std::string_view(type) == "i4" || std::string_view(type) == "i1")) {
+        if (std::string_view(type) == "i8") {
+            std::int64_t v{};
+            std::memcpy(&v, data, sizeof(v));
+            text = std::to_string(v);
+        } else if (std::string_view(type) == "i4") {
+            std::int32_t v{};
+            std::memcpy(&v, data, sizeof(v));
+            text = std::to_string(v);
+        } else {
+            std::int8_t v{};
+            std::memcpy(&v, data, sizeof(v));
+            text = std::to_string(v);
+        }
+    } else
+        text = copy_c_string(static_cast<const char*>(data), 32);
     const auto required_size = text.size() + 1;
     if (buffer == nullptr || *buffer_size < required_size) {
         *buffer_size = required_size;

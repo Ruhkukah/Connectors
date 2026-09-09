@@ -241,6 +241,54 @@ void set_lifenum(Plaza2PrivateStateProjector& projector, EngineState& state, Str
 
 int main() {
     try {
+        {
+            using K = moex::plaza2::private_state::LimitParticipantKind;
+            using moex::plaza2::private_state::classify_limit_participant;
+            require(classify_limit_participant("BRK1") == K::BrokerageFirm, "four-character brokerage");
+            require(classify_limit_participant("BRK1C01") == K::Client, "seven-character client");
+            require(classify_limit_participant("BRK1000") == K::Client, "000 is not silently a brokerage key");
+            for (auto code : {"", "ABC", "CL001", "brk1", "BRK!", "BRK1 C1"})
+                require(classify_limit_participant(code) == K::Unknown, "unknown code shape remains unknown");
+            Plaza2PrivateStateProjector limits;
+            EngineState state;
+            constexpr auto stream = StreamCode::kFortsPartRepl;
+            state.streams.push_back({.stream_code = stream});
+            const auto row = [&](std::int64_t id, std::string_view code, int enabled, std::int64_t rev) {
+                stage_row(limits, state, stream, TableCode::kFortsPartReplPart, rev,
+                          {signed_field(FieldCode::kFortsPartReplPartReplId, id),
+                           signed_field(FieldCode::kFortsPartReplPartReplRev, rev),
+                           text_field(FieldCode::kFortsPartReplPartClientCode, code),
+                           signed_field(FieldCode::kFortsPartReplPartLimitsSet, enabled)});
+            };
+            begin_transaction(limits, state, stream);
+            row(1, "BRK1", 1, 1);
+            row(2, "BRK1C01", 0, 2);
+            row(3, "", 1, 3);
+            require(limits.find_limit_by_code("BRK1").match_count == 0, "no staged identity visible");
+            commit_transaction(limits, state, stream, 3);
+            require(limits.find_limit_by_code("BRK1").exact->participant_kind == K::BrokerageFirm,
+                    "broker exact lookup");
+            require(limits.find_limit_by_code("BRK1C01").match_count == 1 &&
+                        !limits.find_limit_by_code("BRK1C01").exact->limits_set,
+                    "identity exists independently of financial checking");
+            require(limits.find_limit_by_code("WRNGC01").match_count == 0 && limits.unknown_limit_row_count() == 1,
+                    "wrong and unknown accounts not substituted");
+            begin_transaction(limits, state, stream);
+            row(4, "BRK1C01", 1, 4);
+            commit_transaction(limits, state, stream, 1);
+            require(limits.find_limit_by_code("BRK1C01").match_count == 2 &&
+                        limits.find_limit_by_code("BRK1C01").exact == nullptr,
+                    "duplicate identity ambiguous");
+            begin_transaction(limits, state, stream);
+            row(4, "BRK1000", 1, 5);
+            commit_transaction(limits, state, stream, 1);
+            require(limits.find_limit_by_code("BRK1C01").match_count == 1 &&
+                        limits.find_limit_by_code("BRK1000").exact->limits_set,
+                    "slot identity update reindexes");
+            clear_table(limits, state, stream, TableCode::kFortsPartReplPart, 6);
+            require(limits.limit_row_count() == 0 && limits.find_limit_by_code("BRK1").match_count == 0,
+                    "retention purge clears index");
+        }
         InitialScenario scenario;
         Plaza2PrivateStateProjector projector;
         Plaza2FakeEngine engine;
