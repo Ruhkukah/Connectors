@@ -85,6 +85,8 @@ struct ConnectorHostSnapshot {
 struct ConnectorHostQualificationSnapshot {
     plaza2::cgate::Plaza2Aggr20Snapshot book;
     std::vector<plaza2::private_state::InstrumentSnapshot> instruments;
+    std::vector<plaza2::private_state::PositionSnapshot> positions;
+    std::vector<plaza2::private_state::OwnOrderSnapshot> active_orders;
     plaza2::cgate::Plaza2PublisherRateMetrics rate;
     bool aggr_online{false};
     bool aggr_snapshot_complete{false};

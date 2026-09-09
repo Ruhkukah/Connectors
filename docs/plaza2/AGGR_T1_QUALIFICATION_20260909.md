@@ -146,3 +146,11 @@ The supervisor stopped the process and sealed its evidence before a code fix. Th
 The fix treats cleanup of an already empty pre-snapshot projection as a no-op. Cleanup during a transaction
 or after ONLINE still invalidates and requests a fresh snapshot. The fake-runtime regression sends the real
 startup marker sequence on every open, including recovery opens; it fails before the fix and passes after.
+
+The normal host order/position flatness assessment is target-scoped. Qualification additionally samples
+all visible POS rows and active/conflicting own-order rows, without target filtering. Before any order or
+router disruption require this account census to be zero and the underlying private streams to be healthy.
+`private_exposure_current.json` retains sorted position and active-order evidence with account identifiers
+hashed. Its hash describes current exposure, not the entire historical replication dataset. Metrics include
+`account_active_orders`, `account_nonzero_positions` and `private_exposure_sha256`. Sampling is opt-in and
+outside callbacks. A nonzero position blocks subsequent deliberate orders; no automatic flattening occurs.

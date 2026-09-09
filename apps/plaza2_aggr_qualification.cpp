@@ -348,6 +348,42 @@ std::string books_json(const ch::ConnectorHostQualificationSnapshot& q) {
     out << "]}\n";
     return out.str();
 }
+std::string exposure_json(const ch::ConnectorHostQualificationSnapshot& q) {
+    std::vector<std::string> positions, orders;
+    for (const auto& row : q.positions) {
+        std::ostringstream out;
+        out << '[' << std::quoted(cg::plaza2_sha256_hex(row.account_code)) << ',' << static_cast<int>(row.scope) << ','
+            << static_cast<int>(row.account_type) << ',' << row.isin_id << ',' << row.xpos << ',' << row.xbuys_qty
+            << ',' << row.xsells_qty << ',' << row.last_deal_id << ']';
+        positions.push_back(out.str());
+    }
+    for (const auto& row : q.active_orders) {
+        std::ostringstream out;
+        out << '[' << std::quoted(cg::plaza2_sha256_hex(row.client_code)) << ',' << row.isin_id << ',' << row.sess_id
+            << ',' << row.public_order_id << ',' << row.private_order_id << ',' << row.ext_id << ','
+            << row.public_amount_rest << ',' << row.private_amount_rest << ',' << row.identity_conflict << ']';
+        orders.push_back(out.str());
+    }
+    std::sort(positions.begin(), positions.end());
+    std::sort(orders.begin(), orders.end());
+    std::ostringstream out;
+    out << "{\"positions\":[";
+    const auto emit = [&](const auto& rows) {
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            if (i)
+                out << ',';
+            out << rows[i];
+        }
+    };
+    emit(positions);
+    out << "],\"active_orders\":[";
+    emit(orders);
+    out << "]}\n";
+    return out.str();
+}
+std::size_t nonzero_positions(const ch::ConnectorHostQualificationSnapshot& q) {
+    return std::count_if(q.positions.begin(), q.positions.end(), [](const auto& row) { return row.xpos != 0; });
+}
 int idle_connection(cg::Plaza2Settings settings, const std::string& connection_settings,
                     const cg::Plaza2CredentialConfig& software_key, const std::filesystem::path& output) {
     const auto key = cg::load_plaza2_credentials(software_key);
@@ -409,6 +445,8 @@ bool zero_gate(const ch::ConnectorHostSnapshot& s) {
 }
 bool terms_gate(const Evidence& evidence, const ch::ConnectorHostQualificationSnapshot& q,
                 const ch::ConnectorHostSnapshot& s, const ch::ConnectorHostOrderRequest& order) {
+    if (!q.active_orders.empty() || nonzero_positions(q))
+        return false;
     const auto limits = evidence.limits.find({s.target_isin_id, s.session_id});
     if (limits == evidence.limits.end())
         return false;
@@ -484,6 +522,14 @@ int self_test() {
         .side = tr::Plaza2TradeSide::Sell, .price = "104", .base_contract_code = "TEST"};
     if (!terms_gate(evidence, q, state, order))
         return 8;
+    q.positions.push_back({.isin_id = 2, .xpos = 1});
+    if (terms_gate(evidence, q, state, order))
+        return 13;
+    q.positions.clear();
+    q.active_orders.push_back({.isin_id = 2, .public_amount_rest = 1});
+    if (terms_gate(evidence, q, state, order))
+        return 14;
+    q.active_orders.clear();
     order.price = "100";
     if (terms_gate(evidence, q, state, order))
         return 9;
@@ -654,6 +700,9 @@ int main(int argc, char** argv) {
             if (current >= next_sample || failed) {
                 const auto q = host.qualification_snapshot();
                 write_file(output / "state_current.json", ch::render_snapshot(host.snapshot(), true));
+                const auto exposure_bytes = exposure_json(q);
+                write_file(output / "private_exposure_current.json", exposure_bytes);
+                orders_blocked |= nonzero_positions(q) != 0;
                 const auto book_bytes = books_json(q);
                 write_file(output / "book_current.json", book_bytes);
                 write_file(output / "price_limits_current.json", evidence.limits_json());
@@ -687,6 +736,9 @@ int main(int argc, char** argv) {
                         << ",\"fd_count\":" << fds << ",\"maxrss_native_units\":" << resources.ru_maxrss
                         << ",\"user_cpu_us\":" << (resources.ru_utime.tv_sec * 1000000LL + resources.ru_utime.tv_usec)
                         << ",\"system_cpu_us\":" << (resources.ru_stime.tv_sec * 1000000LL + resources.ru_stime.tv_usec)
+                        << ",\"account_active_orders\":" << q.active_orders.size()
+                        << ",\"account_nonzero_positions\":" << nonzero_positions(q)
+                        << ",\"private_exposure_sha256\":\"" << cg::plaza2_sha256_hex(exposure_bytes) << "\""
                         << ",\"rate_admitted\":" << q.rate.admitted << ",\"rate_throttled\":" << q.rate.throttled
                         << ",\"streams\": [";
                 bool first = true;
