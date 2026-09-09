@@ -159,3 +159,10 @@ The live retest also exposed a qualification-collector issue: cleanup markers fo
 cleared already committed futures price limits. Only cleanup of fut_sess_contents now invalidates that
 collector; unrelated table cleanup cannot erase its bounds. Regression covers both table cases. Order
 scenarios remain blocked until the fresh committed bounds are actually retained and validated on T1.
+
+The next live bootstrap showed that fut_sess_contents also repeats a retention boundary after its records
+are sent. Clearing the entire bounds cache at that boundary was wrong: rows at or above the boundary remain
+current. The qualification bounds collector now applies table/revision retention, staging in-transaction
+cleanup until commit and allowing fresh revisions after a MAX reset. This is reference-data correctness;
+the AGGR whole-book recovery policy remains unchanged. Limit-row counts separately distinguish missing
+account data from a matching row whose limits_set flag is false. No account-limit trading guard is relaxed.

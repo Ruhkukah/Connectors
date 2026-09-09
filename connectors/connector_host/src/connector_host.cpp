@@ -812,6 +812,12 @@ ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot() const
                                       (row.public_amount_rest > 0 || row.private_amount_rest > 0)))
             out.active_orders.push_back(row);
     }
+    const auto limits = host.private_state().limits();
+    out.visible_limit_rows = limits.size();
+    const auto participant = impl_->config.order.broker_code + impl_->config.order.client_code;
+    out.matching_client_limit_rows = std::count_if(limits.begin(), limits.end(), [&](const auto& row) {
+        return row.scope == ps::PositionScope::kClient && row.account_code == participant;
+    });
     return out;
 }
 

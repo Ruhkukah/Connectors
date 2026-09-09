@@ -88,6 +88,7 @@ struct ConnectorHostQualificationSnapshot {
     std::vector<plaza2::private_state::PositionSnapshot> positions;
     std::vector<plaza2::private_state::OwnOrderSnapshot> active_orders;
     plaza2::cgate::Plaza2PublisherRateMetrics rate;
+    std::size_t visible_limit_rows{}, matching_client_limit_rows{};
     bool aggr_online{false};
     bool aggr_snapshot_complete{false};
 };

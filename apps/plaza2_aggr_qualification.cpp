@@ -82,6 +82,7 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
     std::vector<std::string> texts;
     std::map<std::pair<std::int64_t, std::int64_t>, PriceLimits> limits;
     std::vector<PriceLimits> pending_limits;
+    std::optional<std::int64_t> pending_limit_clear;
     std::uint64_t ref_life{};
     bool ref_online{}, ref_transaction{}, ref_valid{true};
     std::uint64_t dropped{}, commits{}, invalid_books{}, callbacks{}, callback_errors{};
@@ -100,21 +101,41 @@ struct Evidence final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20Qualifi
             using FC = moex::plaza2::generated::FieldCode;
             using EK = cg::Plaza2ListenerEventKind;
             if (e.stream_code == moex::plaza2::generated::StreamCode::kFortsRefdataRepl) {
-                if (e.kind == EK::Open || e.kind == EK::Close || e.kind == EK::LifeNum ||
-                    (e.kind == EK::ClearDeleted &&
-                     e.table_code == moex::plaza2::generated::TableCode::kFortsRefdataReplFutSessContents)) {
+                if (e.kind == EK::Open || e.kind == EK::Close || e.kind == EK::LifeNum) {
                     limits.clear();
                     pending_limits.clear();
+                    pending_limit_clear.reset();
                     ref_online = false;
                     ref_transaction = false;
                     if (e.kind == EK::LifeNum)
                         ref_life = e.unsigned_value;
+                } else if (e.kind == EK::ClearDeleted &&
+                           e.table_code == moex::plaza2::generated::TableCode::kFortsRefdataReplFutSessContents) {
+                    const auto expired = [&](const auto& row) {
+                        return e.signed_value == std::numeric_limits<std::int64_t>::max() ||
+                               row.revision < e.signed_value;
+                    };
+                    if (ref_transaction) {
+                        pending_limit_clear = std::max(pending_limit_clear.value_or(e.signed_value), e.signed_value);
+                        std::erase_if(pending_limits, expired);
+                    } else
+                        std::erase_if(limits, [&](const auto& entry) { return expired(entry.second); });
                 } else if (e.kind == EK::TransactionBegin) {
+                    if (ref_transaction)
+                        ref_valid = false;
                     pending_limits.clear();
+                    pending_limit_clear.reset();
                     ref_transaction = true;
                 } else if (e.kind == EK::TransactionCommit) {
                     if (!ref_transaction)
                         ref_valid = false;
+                    if (pending_limit_clear) {
+                        std::erase_if(limits, [&](const auto& entry) {
+                            return *pending_limit_clear == std::numeric_limits<std::int64_t>::max() ||
+                                   entry.second.revision < *pending_limit_clear;
+                        });
+                        pending_limit_clear.reset();
+                    }
                     for (auto& row : pending_limits) {
                         const auto key = std::pair{row.isin, row.session};
                         if (row.action)
@@ -447,7 +468,7 @@ bool zero_gate(const ch::ConnectorHostSnapshot& s) {
 }
 bool terms_gate(const Evidence& evidence, const ch::ConnectorHostQualificationSnapshot& q,
                 const ch::ConnectorHostSnapshot& s, const ch::ConnectorHostOrderRequest& order) {
-    if (!q.active_orders.empty() || nonzero_positions(q))
+    if (evidence.ref_transaction || !q.active_orders.empty() || nonzero_positions(q))
         return false;
     const auto limits = evidence.limits.find({s.target_isin_id, s.session_id});
     if (limits == evidence.limits.end())
@@ -574,10 +595,38 @@ int self_test() {
     ref.observe({.kind = EK::Online, .stream_code = stream}, {});
     if (ref.limits.size() != 1 || !ref.ref_online || !ref.ref_valid)
         return 15;
-    ref.observe({.kind = EK::ClearDeleted, .stream_code = stream, .table_code = TC::kFortsRefdataReplFutSessContents},
+    ref.observe({.kind = EK::ClearDeleted,
+                 .stream_code = stream,
+                 .table_code = TC::kFortsRefdataReplFutSessContents,
+                 .signed_value = 10},
                 {});
-    if (!ref.limits.empty() || ref.ref_online)
+    if (ref.limits.size() != 1 || !ref.ref_online)
         return 16;
+    ref.observe({.kind = EK::TransactionBegin, .stream_code = stream}, {});
+    ref.observe({.kind = EK::ClearDeleted,
+                 .stream_code = stream,
+                 .table_code = TC::kFortsRefdataReplFutSessContents,
+                 .signed_value = std::numeric_limits<std::int64_t>::max()},
+                {});
+    if (ref.limits.size() != 1)
+        return 17; // No publication before commit.
+    auto fresh_fields = fields;
+    fresh_fields[2].signed_value = 1;
+    ref.observe({.kind = EK::StreamData,
+                 .stream_code = stream,
+                 .table_code = TC::kFortsRefdataReplFutSessContents,
+                 .fields = fresh_fields},
+                {});
+    ref.observe({.kind = EK::TransactionCommit, .stream_code = stream}, {});
+    if (ref.limits.size() != 1 || ref.limits.begin()->second.revision != 1 || !ref.ref_valid)
+        return 18; // Fresh revision after MAX survives; the previous row does not.
+    ref.observe({.kind = EK::ClearDeleted,
+                 .stream_code = stream,
+                 .table_code = TC::kFortsRefdataReplFutSessContents,
+                 .signed_value = 2},
+                {});
+    if (!ref.limits.empty())
+        return 19;
     std::cout << "qualification evidence self-test PASS\n";
     return 0;
 }
@@ -766,6 +815,8 @@ int main(int argc, char** argv) {
                         << ",\"fd_count\":" << fds << ",\"maxrss_native_units\":" << resources.ru_maxrss
                         << ",\"user_cpu_us\":" << (resources.ru_utime.tv_sec * 1000000LL + resources.ru_utime.tv_usec)
                         << ",\"system_cpu_us\":" << (resources.ru_stime.tv_sec * 1000000LL + resources.ru_stime.tv_usec)
+                        << ",\"visible_limit_rows\":" << q.visible_limit_rows
+                        << ",\"matching_client_limit_rows\":" << q.matching_client_limit_rows
                         << ",\"account_active_orders\":" << q.active_orders.size()
                         << ",\"account_nonzero_positions\":" << nonzero_positions(q)
                         << ",\"private_exposure_sha256\":\"" << cg::plaza2_sha256_hex(exposure_bytes) << "\""
