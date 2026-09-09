@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import subprocess
 
@@ -20,13 +21,19 @@ def main():
     parser.add_argument("--isin", type=int, required=True)
     parser.add_argument("--session", type=int, required=True)
     parser.add_argument("--seconds", type=int, default=36000)
-    parser.add_argument("--orders", action="store_true")
-    parser.add_argument("--idle", action="store_true")
+    parser.add_argument("--symbol", required=True)
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.journal = args.journal.resolve()
-    if args.orders and args.idle:
-        parser.error("idle cannot enable orders")
+    if "MOEX_AGGR_T1_ORDER_AUTH" in os.environ or "MOEX_AGGR_T1_IDLE" in os.environ:
+        parser.error("observation rejects order authorization and idle mode")
+    now = datetime.now(timezone(timedelta(hours=3)))
+    if now.date().isoformat() != "2026-09-10" or not 418 <= now.hour * 60 + now.minute < 970:
+        parser.error("outside September 10 06:58-16:10 MSK observation window")
+    if args.output.exists():
+        parser.error("output must be new; existing scenario or order.request is invalid preparation")
+    if args.journal.exists() and any(args.journal.iterdir()):
+        parser.error("journal must be empty")
     os.umask(0o077)
     package = args.package.resolve()
     manifest = json.loads((package / "deployment.json").read_text())
@@ -53,7 +60,8 @@ def main():
             key, value = entry.split(b"=", 1)
             if key in (b"MOEX_PLAZA2_TEST_CREDENTIALS", b"MOEX_PLAZA2_CGATE_SOFTWARE_KEY"):
                 env[key.decode()] = value.decode()
-    env["MOEX_AGGR_T1_AUTH"] = "20260909_AGGREGATED_QUALIFICATION"
+    env["MOEX_AGGR_T1_AUTH"] = "20260910_AGGREGATED_OBSERVATION"
+    env["MOEX_AGGR_FORENSIC_SYMBOL"] = args.symbol
     env["MOEX_AGGR_T1_JOURNAL"] = str(args.journal.resolve())
     env["MOEX_QUAL_BROKER"] = str(account["broker_code"])
     env["MOEX_QUAL_CLIENT"] = str(account["client_code"])
@@ -71,15 +79,9 @@ def main():
         "source_sha": source_sha, "created_utc_s": time.time(),
         "manifest_sha256": hashlib.sha256((package / "deployment.json").read_bytes()).hexdigest(),
         "client_ini_sha256": hashlib.sha256(private_ini.read_bytes()).hexdigest(),
-        "orders_enabled": args.orders, "idle": args.idle, "isin_id": args.isin, "session_id": args.session,
+        "orders_enabled": False, "symbol": args.symbol, "isin_id": args.isin, "session_id": args.session,
     }, indent=2) + "\n")
     env["MOEX_QUAL_ENV"] = f"ini={private_ini};key=${{MOEX_PLAZA2_CGATE_SOFTWARE_KEY}}"
-    env.pop("MOEX_AGGR_T1_ORDER_AUTH", None)
-    env.pop("MOEX_AGGR_T1_IDLE", None)
-    if args.orders:
-        env["MOEX_AGGR_T1_ORDER_AUTH"] = "20260909_ONE_LOT_ADD_CANCEL"
-    if args.idle:
-        env["MOEX_AGGR_T1_IDLE"] = "1"
     runtime = Path(manifest["runtime_root"])
     command = [
         str(binary), str(args.output.resolve()), str(args.seconds), "plaza2", "qualify",
