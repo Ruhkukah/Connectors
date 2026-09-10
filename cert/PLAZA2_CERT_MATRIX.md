@@ -46,6 +46,20 @@ Overall scenario remains **FAIL / exit 3** due to signal-interrupted shutdown.
 The shutdown/account patch's offline tests do not upgrade these live statuses. Performance and full
 ORDLOG/L3 qualification remain separate scopes.
 
+### Separate corrected SIGTERM scenario, September 10
+
+Source `ca48ae94529f27926c3dffcef9ed68d96a5afaa9`, binary
+`482eaf8fb7fd0acfe03ce98ba663569c8c5c0a1af0b1259f0cfbb17ec5248e74`:
+[GRACEFUL_SIGTERM_PASS evidence](../docs/review/plaza2_t1_shutdown_20260910/REPORT.md).
+After 220.381 stable seconds, one blocked/pending SIGTERM led to normal owner-thread resource teardown,
+exit 0, no CG_ERR_INTERNAL and zero recovery attempts/posts/orders/positions/epochs.
+This closes the observed signal-interrupted shutdown defect for this exact source; the earlier e8f4768
+FAIL/exit 3 is unchanged. No live SIGINT scenario was run.
+
+PART remains CLIENT_SHAPED_NO_MATCH, account authorization blocked, price semantics
+MOEX_CLARIFICATION_REQUIRED. Router recovery and order lifecycle are not promoted. The next zero-order
+router recovery test requires separate authorization.
+
 ### Historical full ORDLOG T1 entitlement blocker
 
 The retained 2026-09-08 regular-bootstrap attempt is documented in
