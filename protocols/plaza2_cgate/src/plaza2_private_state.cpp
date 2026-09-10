@@ -16,6 +16,64 @@
 
 namespace moex::plaza2::private_state {
 
+std::optional<SessionDecimal> parse_session_decimal(std::string_view text) noexcept {
+    if (text.empty())
+        return std::nullopt;
+    const bool negative = text.front() == '-';
+    if (negative || text.front() == '+')
+        text.remove_prefix(1);
+    if (text.empty())
+        return std::nullopt;
+    const auto limit = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + (negative ? 1U : 0U);
+    std::uint64_t magnitude = 0;
+    int fractional = 0;
+    bool point = false;
+    bool digit = false;
+    for (char c : text) {
+        if (c == '.' && !point && digit) {
+            point = true;
+            continue;
+        }
+        if (c < '0' || c > '9' || (point && ++fractional > 5))
+            return std::nullopt;
+        digit = true;
+        const auto value = static_cast<unsigned>(c - '0');
+        if (magnitude > (limit - value) / 10)
+            return std::nullopt;
+        magnitude = magnitude * 10 + value;
+    }
+    if (!digit || (point && fractional == 0))
+        return std::nullopt;
+    for (; fractional < 5; ++fractional) {
+        if (magnitude > limit / 10)
+            return std::nullopt;
+        magnitude *= 10;
+    }
+    if (negative && magnitude == limit)
+        return SessionDecimal{std::numeric_limits<std::int64_t>::min()};
+    const auto value = static_cast<std::int64_t>(magnitude);
+    return SessionDecimal{negative ? -value : value};
+}
+
+FuturePriceBounds evaluate_future_price_bounds(const FutureSessionTerms& terms) noexcept {
+    FuturePriceBounds result;
+    if (!terms.settlement_price || !terms.raw_limit_up || !terms.raw_limit_down || !terms.min_step ||
+        terms.min_step->units <= 0)
+        return result;
+    const auto reference = terms.settlement_price->units;
+    const auto up = terms.raw_limit_up->units;
+    const auto down = terms.raw_limit_down->units;
+    constexpr auto min = std::numeric_limits<std::int64_t>::min();
+    constexpr auto max = std::numeric_limits<std::int64_t>::max();
+    if (!((up > 0 && reference > max - up) || (up < 0 && reference < min - up)))
+        result.upper = SessionDecimal{reference + up};
+    // Subtract directly: negating INT64_MIN would itself overflow.
+    if (!((down > 0 && reference < min + down) || (down < 0 && reference > max + down)))
+        result.lower = SessionDecimal{reference - down};
+    result.interval_valid = result.lower && result.upper && result.lower->units < result.upper->units;
+    return result;
+}
+
 namespace {
 
 using StreamCode = generated::StreamCode;
@@ -1044,6 +1102,7 @@ struct Plaza2PrivateStateProjector::Impl {
                     it->second.sess_id = 0;
                     it->second.current_session_member = false;
                     it->second.current_session_state = 0;
+                    it->second.future_session_terms.reset();
                     ++it;
                 } else {
                     it = instruments.erase(it);
@@ -1676,7 +1735,7 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.trade_period_access = row.i64(FieldCode::kFortsRefdataReplFutInstrumentsTradePeriodAccess);
     }
 
-    void apply_future_session_contents_row(const RowReader& row) {
+    void apply_future_session_contents_row(const fake::EventSpec& event, const RowReader& row) {
         auto& instruments = ensure_staged_instruments();
         staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
         const auto isin_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsIsinId);
@@ -1703,6 +1762,31 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.trade_period_access = row.i64(FieldCode::kFortsRefdataReplFutSessContentsTradePeriodAccess);
         instrument.current_session_member = row.i32(FieldCode::kFortsRefdataReplFutSessContentsReplAct) == 0;
         instrument.current_session_state = instrument.state;
+        instrument.future_session_terms.reset();
+        if (instrument.current_session_member) {
+            const auto decimal = [&](FieldCode code) -> std::optional<SessionDecimal> {
+                const auto* field = row.find(code);
+                if (!field || (field->kind != fake::ValueKind::kDecimal && field->kind != fake::ValueKind::kString))
+                    return std::nullopt;
+                return parse_session_decimal(field->text_value);
+            };
+            FutureSessionTerms terms{
+                .isin_id = isin_id,
+                .sess_id = instrument.sess_id,
+                .settlement_price = decimal(FieldCode::kFortsRefdataReplFutSessContentsSettlementPrice),
+                .raw_limit_up = decimal(FieldCode::kFortsRefdataReplFutSessContentsLimitUp),
+                .raw_limit_down = decimal(FieldCode::kFortsRefdataReplFutSessContentsLimitDown),
+                .min_step = decimal(FieldCode::kFortsRefdataReplFutSessContentsMinStep),
+                .repl_id = row.i64(FieldCode::kFortsRefdataReplFutSessContentsReplId),
+                .source = {.stream_code = StreamCode::kFortsRefdataRepl,
+                           .table_code = TableCode::kFortsRefdataReplFutSessContents,
+                           .repl_rev = event.signed_value,
+                           .lifenum = refdata_lifenum().value_or(0),
+                           .present = refdata_lifenum().has_value()},
+            };
+            terms.bounds = evaluate_future_price_bounds(terms);
+            instrument.future_session_terms = terms;
+        }
     }
 
     void apply_session_status_row(const RowReader& row) {
@@ -1886,7 +1970,7 @@ struct Plaza2PrivateStateProjector::Impl {
             apply_future_instrument_row(row);
             break;
         case TableCode::kFortsRefdataReplFutSessContents:
-            apply_future_session_contents_row(row);
+            apply_future_session_contents_row(event, row);
             break;
         case TableCode::kFortsSessionstateReplSessionState:
             apply_session_status_row(row);
@@ -2059,6 +2143,20 @@ std::span<const StreamHealthSnapshot> Plaza2PrivateStateProjector::stream_health
 
 std::span<const TradingSessionSnapshot> Plaza2PrivateStateProjector::sessions() const {
     return impl_->session_snapshots;
+}
+
+std::optional<FutureSessionTerms>
+Plaza2PrivateStateProjector::find_future_session_terms(std::int32_t isin_id, std::int32_t sess_id,
+                                                       std::uint64_t expected_lifenum) const {
+    const auto it = impl_->instruments_by_isin.find(isin_id);
+    if (it == impl_->instruments_by_isin.end() || !it->second.future_session_terms)
+        return std::nullopt;
+    const auto& terms = *it->second.future_session_terms;
+    const auto source = impl_->refdata_source_provenance(TableCode::kFortsRefdataReplFutSessContents, isin_id);
+    if (terms.sess_id != sess_id || !source || !source->present || source->lifenum != expected_lifenum ||
+        terms.source != *source)
+        return std::nullopt;
+    return terms;
 }
 
 std::span<const InstrumentSnapshot> Plaza2PrivateStateProjector::instruments() const {
