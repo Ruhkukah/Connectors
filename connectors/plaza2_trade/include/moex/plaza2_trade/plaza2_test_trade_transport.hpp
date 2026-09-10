@@ -199,12 +199,33 @@ struct Plaza2TransportHealth {
 
 enum class Plaza2SessionOperation { Stopped, Starting, Running, Recovering, Failed };
 
+enum class Plaza2FailureOrigin {
+    Unknown,
+    ConnectionProcess,
+    ConnectionState,
+    ListenerState,
+    Publisher,
+    Callback,
+    Bootstrap,
+    EnvironmentOpen,
+    ConnectionCreate,
+    ConnectionOpen,
+    ListenerCreate,
+    ListenerOpen,
+    PublisherCreate,
+    PublisherOpen
+};
+
 struct Plaza2RecoveryStatus {
     Plaza2SessionOperation operation{Plaza2SessionOperation::Stopped};
     std::uint64_t generation{0}, attempts{0}, transitions{0};
     std::uint64_t error_time_ns{0};
     bool deadline_exhausted{false};
     plaza2::cgate::Plaza2Error cause;
+    Plaza2FailureOrigin origin{Plaza2FailureOrigin::Unknown};
+    plaza2::cgate::Plaza2Error first_cause;
+    plaza2::cgate::Plaza2Error process_cause;
+    plaza2::cgate::Plaza2Error state_query_cause;
     Plaza2TransportHealth health;
 };
 
