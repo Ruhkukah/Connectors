@@ -807,7 +807,8 @@ cg::Plaza2Error ConnectorHost::poll() {
         p.causal_error_time_ns =
             std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
                 .count();
-        p.causal_health = p.transport.host().runtime_health();
+        const auto& failure = p.transport.host().recovery_status();
+        p.causal_health = failure.cause ? failure.health : p.transport.host().runtime_health();
         p.causal_callback_error = p.transport.host().last_callback_error();
         p.causal_operation = "poll";
         return error;
@@ -1156,6 +1157,17 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
     out << ",\"recovery_generation\":" << s.recovery.generation << ",\"recovery_attempts\":" << s.recovery.attempts
         << ",\"recovery_transitions\":" << s.recovery.transitions
         << ",\"recovery_deadline_exhausted\":" << s.recovery.deadline_exhausted;
+    const auto failure_detail = [&](std::string_view name, const cg::Plaza2Error& error) {
+        out << "," << quoted(name) << ":{\"connector_code\":" << static_cast<unsigned>(error.code)
+            << ",\"runtime_code\":" << (error.runtime_code ? std::to_string(error.runtime_code) : "null")
+            << ",\"message\":" << quoted(error.message) << "}";
+    };
+    static constexpr std::array origin_names{"Unknown",   "ConnectionProcess", "ConnectionState", "ListenerState",
+                                             "Publisher", "Callback",          "Bootstrap"};
+    out << ",\"failure_origin\":" << quoted(origin_names.at(static_cast<std::size_t>(s.recovery.origin)));
+    failure_detail("first_recovery_cause", s.recovery.first_cause);
+    failure_detail("connection_process_cause", s.recovery.process_cause);
+    failure_detail("state_query_cause", s.recovery.state_query_cause);
     out << ",\"publisher_ready\":" << s.publisher_ready << ",\"reply_ready\":" << s.reply_ready
         << ",\"private_streams_ready\":" << s.private_streams_ready << ",\"observation_ready\":" << s.observation_ready
         << ",\"target\":" << quoted(s.target) << ",\"target_isin_id\":" << s.target_isin_id

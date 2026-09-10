@@ -1749,6 +1749,10 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrInvalidArgument;
     }
     auto* connection = static_cast<FakeConnection*>(conn);
+    if (fake_flag("MOEX_FAKE_PROCESS_INVALID_ARGUMENT"))
+        return kCgErrInvalidArgument;
+    if (fake_flag("MOEX_FAKE_PROCESS_INTERNAL_ACTIVE"))
+        return kCgErrInternal;
     if (fake_flag("MOEX_FAKE_CONNECTION_INTERNAL_LOSS")) {
         connection->state = kStateError;
         return kCgErrInternal;
@@ -1769,6 +1773,10 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
                                     .msg_name = plan.message_name.c_str()};
                 const auto error = listener->callback(connection, listener, &row, listener->callback_data);
                 listener->state = kStateError;
+                if (fake_flag("MOEX_FAKE_CALLBACK_PROCESS_INTERNAL")) {
+                    connection->state = kStateError;
+                    return kCgErrInternal;
+                }
                 return error;
             }
         }
@@ -1778,6 +1786,10 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
             if (!listener->reply_listener && listener->stream_code == StreamCode::kFortsPosRepl) {
                 const auto error = emit_simple_message(*listener, kCgMsgTnCommit);
                 listener->state = kStateError;
+                if (fake_flag("MOEX_FAKE_CALLBACK_PROCESS_INTERNAL")) {
+                    connection->state = kStateError;
+                    return kCgErrInternal;
+                }
                 return error;
             }
         }
@@ -2089,6 +2101,12 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
 
 std::uint32_t cg_conn_getstate(void* conn, std::uint32_t* state) {
     capture_audit("cg_conn_getstate");
+    if (fake_flag("MOEX_FAKE_CONN_GETSTATE_INTERNAL_ONCE")) {
+        ::unsetenv("MOEX_FAKE_CONN_GETSTATE_INTERNAL_ONCE");
+        return kCgErrInternal;
+    }
+    if (fake_flag("MOEX_FAKE_CONN_GETSTATE_INTERNAL"))
+        return kCgErrInternal;
     if (conn == nullptr || state == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2232,6 +2250,8 @@ std::uint32_t cg_lsn_close(void* listener) {
 
 std::uint32_t cg_lsn_getstate(void* listener, std::uint32_t* state) {
     capture_audit("cg_lsn_getstate");
+    if (fake_flag("MOEX_FAKE_LSN_GETSTATE_INTERNAL"))
+        return kCgErrInternal;
     if (listener == nullptr || state == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2294,6 +2314,8 @@ std::uint32_t cg_pub_destroy(void* publisher) {
 
 std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
     capture_audit("cg_pub_getstate");
+    if (fake_flag("MOEX_FAKE_PUB_GETSTATE_INTERNAL"))
+        return kCgErrInternal;
     if (publisher == nullptr || state == nullptr) {
         return kCgErrInvalidArgument;
     }

@@ -994,40 +994,47 @@ struct Plaza2TestSessionHost::Impl {
         if (!started) {
             return invalid("TEST session host is not started", Plaza2ErrorCode::AdapterState);
         }
+        failure_origin = Plaza2FailureOrigin::Unknown;
+        process_cause = {};
+        state_query_cause = {};
+        failure_health.reset();
         std::uint32_t runtime_code = 0;
         const auto error = connection.process(config.process_timeout_ms, &runtime_code);
-        if (auto* observer = config.runtime.qualification_observer) {
-            const auto sample = [&](const auto& object, std::uint32_t kind, StreamCode stream) {
-                std::uint32_t state = 0;
-                const auto status = object.state(state);
-                observer->runtime_state(kind, static_cast<std::uint32_t>(stream), state,
-                                        static_cast<std::uint32_t>(status.code));
-            };
-            sample(connection, 10, cgate::kNoStreamCode);
-            sample(publisher, 11, cgate::kNoStreamCode);
-            sample(reply_listener, 12, cgate::kNoStreamCode);
-            sample(aggr_listener, 12, config.aggr20_stream.stream_code);
-            for (const auto& managed : private_listeners)
-                sample(managed.listener, 12, managed.stream_code);
+        // First state read is cg_conn_getstate. Observer and supervisor share this
+        // sample, so an observer cannot consume and hide a one-shot state API error.
+        const auto health = sample_health(&state_query_cause, &failure_origin, true);
+        if (error || state_query_cause)
+            failure_health = health;
+        if (error && runtime_code != 0) {
+            process_cause = error;
+            if (!state_query_cause)
+                failure_origin = Plaza2FailureOrigin::ConnectionProcess;
         }
 
-        if (listener_callback_error())
-            return listener_callback_error();
-        if (error) {
-            if (!reply_bridge.error().empty()) {
+        const auto callback_cause = [&]() -> Plaza2Error {
+            if (listener_callback_error())
+                return listener_callback_error();
+            if (!reply_bridge.error().empty())
                 return invalid(reply_bridge.error(), Plaza2ErrorCode::CallbackFailed);
-            }
-            if (!private_bridge.callback_error().empty()) {
+            if (!private_bridge.callback_error().empty())
                 return invalid(private_bridge.callback_error(), Plaza2ErrorCode::CallbackFailed);
-            }
-            return error;
+            return {};
+        }();
+        if (callback_cause) {
+            failure_origin = Plaza2FailureOrigin::Callback;
+            return callback_cause;
         }
-        if (!reply_bridge.error().empty())
-            return invalid(reply_bridge.error(), Plaza2ErrorCode::CallbackFailed);
-        if (!private_bridge.callback_error().empty())
-            return invalid(private_bridge.callback_error(), Plaza2ErrorCode::CallbackFailed);
-        if (config.transport_recovery_enabled && transport_lost())
+        if (state_query_cause)
+            return state_query_cause;
+        if (error)
+            return error;
+        if (config.transport_recovery_enabled && transport_lost(health)) {
+            failure_health = health;
+            failure_origin = (health.connection == kCgStateClosed || health.connection == kCgStateError)
+                                 ? Plaza2FailureOrigin::ConnectionState
+                                 : Plaza2FailureOrigin::ListenerState;
             return invalid("TEST transport handle lost; fresh bootstrap required", Plaza2ErrorCode::AdapterState);
+        }
         if (const auto replay_error = open_deferred_trade_replay_if_anchored(); replay_error) {
             return replay_error;
         }
@@ -1054,20 +1061,36 @@ struct Plaza2TestSessionHost::Impl {
         return config.recovery_now ? config.recovery_now() : std::chrono::steady_clock::now();
     }
 
-    Plaza2TransportHealth sample_health() const {
+    Plaza2TransportHealth sample_health(Plaza2Error* first_error = nullptr, Plaza2FailureOrigin* origin = nullptr,
+                                        bool notify_observer = false) const {
         Plaza2TransportHealth out;
         bool valid = started && !listener_callback_error() && private_bridge.callback_error().empty() &&
                      reply_bridge.error().empty();
-        const auto sample = [&](const auto& object, std::uint32_t& state) {
-            if (object.state(state)) {
+        const auto sample = [&](const auto& object, std::uint32_t& state, Plaza2FailureOrigin operation,
+                                StreamCode stream = cgate::kNoStreamCode) {
+            const auto error = object.state(state);
+            if (error) {
                 state = 0;
                 valid = false;
+                // Missing optional handles during bootstrap are not failed vendor calls.
+                if (object.is_created() && first_error && !*first_error) {
+                    *first_error = error;
+                    if (origin)
+                        *origin = operation;
+                }
+            }
+            if (notify_observer && config.runtime.qualification_observer) {
+                const auto kind = operation == Plaza2FailureOrigin::ConnectionState ? 10U
+                                  : operation == Plaza2FailureOrigin::Publisher     ? 11U
+                                                                                    : 12U;
+                config.runtime.qualification_observer->runtime_state(kind, static_cast<std::uint32_t>(stream), state,
+                                                                     static_cast<std::uint32_t>(error.code));
             }
         };
-        sample(connection, out.connection);
-        sample(publisher, out.publisher);
-        sample(reply_listener, out.reply);
-        sample(aggr_listener, out.aggr);
+        sample(connection, out.connection, Plaza2FailureOrigin::ConnectionState);
+        sample(publisher, out.publisher, Plaza2FailureOrigin::Publisher);
+        sample(reply_listener, out.reply, Plaza2FailureOrigin::ListenerState);
+        sample(aggr_listener, out.aggr, Plaza2FailureOrigin::ListenerState, config.aggr20_stream.stream_code);
         out.private_active = !private_listeners.empty();
         for (const auto& item : private_listeners) {
             if (out.private_count == out.private_states.size()) {
@@ -1076,15 +1099,14 @@ struct Plaza2TestSessionHost::Impl {
             }
             const auto i = out.private_count++;
             out.private_streams[i] = item.stream_code;
-            sample(item.listener, out.private_states[i]);
+            sample(item.listener, out.private_states[i], Plaza2FailureOrigin::ListenerState, item.stream_code);
             out.private_active &= out.private_states[i] == kCgStateActive;
         }
         out.valid = valid;
         return out;
     }
 
-    bool transport_lost() const {
-        const auto h = sample_health();
+    bool transport_lost(const Plaza2TransportHealth& h) const {
         const auto lost = [](std::uint32_t state) { return state == kCgStateClosed || state == kCgStateError; };
         if (lost(h.connection))
             return true;
@@ -1116,18 +1138,35 @@ struct Plaza2TestSessionHost::Impl {
     }
 
     void record_failure(const Plaza2Error& error) {
+        if (recovery.operation != Plaza2SessionOperation::Recovering) {
+            recovery.first_cause = error;
+            recovery.process_cause = {};
+        }
         recovery.cause = error;
-        recovery.health = sample_health();
+        recovery.origin = failure_origin;
+        if (process_cause)
+            recovery.process_cause = process_cause;
+        recovery.state_query_cause = state_query_cause;
+        recovery.health = failure_health ? *failure_health : sample_health();
         recovery.error_time_ns =
             std::chrono::duration_cast<std::chrono::nanoseconds>(recovery_now().time_since_epoch()).count();
         ++recovery.transitions;
     }
 
     bool recoverable(const Plaza2Error& error) const {
-        // A transport state alone cannot turn schema/callback corruption into a retry.
-        return config.transport_recovery_enabled && error.code == Plaza2ErrorCode::AdapterState &&
-               !listener_callback_error() && reply_bridge.error().empty() && private_bridge.callback_error().empty() &&
-               transport_lost();
+        if (!config.transport_recovery_enabled || state_query_cause || listener_callback_error() ||
+            !reply_bridge.error().empty() || !private_bridge.callback_error().empty())
+            return false;
+        if (failure_origin == Plaza2FailureOrigin::ConnectionProcess) {
+            // process() filters OK/TIMEOUT. Only a direct runtime result may recover;
+            // configuration, schema and callback categories never enter this path.
+            return error.runtime_code != 0 &&
+                   (error.code == Plaza2ErrorCode::RuntimeCallFailed || error.code == Plaza2ErrorCode::AdapterState ||
+                    error.code == Plaza2ErrorCode::UnknownRuntimeResult);
+        }
+        return (failure_origin == Plaza2FailureOrigin::ConnectionState ||
+                failure_origin == Plaza2FailureOrigin::ListenerState) &&
+               error.code == Plaza2ErrorCode::AdapterState && failure_health && transport_lost(*failure_health);
     }
 
     Plaza2Error supervise() {
@@ -1146,6 +1185,10 @@ struct Plaza2TestSessionHost::Impl {
                     return {};
                 ++recovery.attempts;
                 ++recovery.transitions;
+                failure_origin = Plaza2FailureOrigin::Bootstrap;
+                failure_health.reset();
+                process_cause = {};
+                state_query_cause = {};
                 auto error = start();
                 if (listener_callback_error())
                     error = listener_callback_error();
@@ -1181,6 +1224,8 @@ struct Plaza2TestSessionHost::Impl {
         }
         if (replication_complete() && !publisher_is_open) {
             if (const auto open_error = open_publisher_reply(); open_error) {
+                failure_origin = Plaza2FailureOrigin::Publisher;
+                failure_health.reset();
                 record_failure(open_error);
                 recovery.operation = Plaza2SessionOperation::Failed;
                 return open_error;
@@ -1271,6 +1316,9 @@ struct Plaza2TestSessionHost::Impl {
     bool started{false};
     bool fully_bootstrapped{false};
     Plaza2RecoveryStatus recovery;
+    Plaza2FailureOrigin failure_origin{Plaza2FailureOrigin::Unknown};
+    Plaza2Error process_cause, state_query_cause;
+    std::optional<Plaza2TransportHealth> failure_health;
     std::chrono::steady_clock::time_point next_recovery_attempt{}, recovery_expires{};
 };
 
