@@ -2036,6 +2036,9 @@ Plaza2Error Plaza2Connection::process(std::uint32_t timeout_ms, std::uint32_t* r
     if (runtime_code != nullptr) {
         *runtime_code = result;
     }
+    // Poll timeout is a successful no-event iteration, not a failed runtime call.
+    if (result == kCgErrOk || result == kCgErrTimeout)
+        return {};
     return translate_plaza2_result("cg_conn_process", result);
 }
 

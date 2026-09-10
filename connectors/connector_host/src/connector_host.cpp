@@ -1162,8 +1162,10 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
             << ",\"runtime_code\":" << (error.runtime_code ? std::to_string(error.runtime_code) : "null")
             << ",\"message\":" << quoted(error.message) << "}";
     };
-    static constexpr std::array origin_names{"Unknown",   "ConnectionProcess", "ConnectionState", "ListenerState",
-                                             "Publisher", "Callback",          "Bootstrap"};
+    static constexpr std::array origin_names{
+        "Unknown",        "ConnectionProcess", "ConnectionState", "ListenerState",    "Publisher",
+        "Callback",       "Bootstrap",         "EnvironmentOpen", "ConnectionCreate", "ConnectionOpen",
+        "ListenerCreate", "ListenerOpen",      "PublisherCreate", "PublisherOpen"};
     out << ",\"failure_origin\":" << quoted(origin_names.at(static_cast<std::size_t>(s.recovery.origin)));
     failure_detail("first_recovery_cause", s.recovery.first_cause);
     failure_detail("connection_process_cause", s.recovery.process_cause);

@@ -6,6 +6,7 @@
 #include <fstream>
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -180,6 +181,12 @@ std::uint32_t configured_result(const char* variable) {
     }
     if (std::string_view(value) == "invalid") {
         return kCgErrInvalidArgument;
+    }
+    const auto text = std::string_view(value);
+    std::uint32_t result = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), result);
+    if (parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size()) {
+        return result;
     }
     return kCgRangeBegin;
 }
@@ -1663,6 +1670,8 @@ const char* moex_fake_cgate_runtime_v1() {
 
 std::uint32_t cg_env_open(const char* settings) {
     capture_audit("cg_env_open");
+    if (const auto result = configured_result("MOEX_FAKE_ENV_OPEN_RESULT"); result != kCgErrOk)
+        return result;
     capture_regular = capture_multileg = 0;
     if (settings == nullptr || *settings == '\0') {
         return kCgErrInvalidArgument;
@@ -1683,6 +1692,8 @@ std::uint32_t cg_env_close() {
 
 std::uint32_t cg_conn_new(const char* settings, void** connptr) {
     capture_audit("cg_conn_new");
+    if (const auto result = configured_result("MOEX_FAKE_CONNECTION_CREATE_RESULT"); result != kCgErrOk)
+        return result;
     if (!g_env_open || settings == nullptr || connptr == nullptr) {
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
     }
@@ -1713,6 +1724,8 @@ std::uint32_t cg_conn_destroy(void* conn) {
 
 std::uint32_t cg_conn_open(void* conn, const char*) {
     capture_audit("cg_conn_open");
+    if (const auto result = configured_result("MOEX_FAKE_CONNECTION_OPEN_RESULT"); result != kCgErrOk)
+        return result;
     if (!g_env_open || conn == nullptr) {
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
     }
@@ -1745,6 +1758,10 @@ std::uint32_t cg_conn_close(void* conn) {
 
 std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
     capture_audit("cg_conn_process");
+    if (fake_flag("MOEX_FAKE_PROCESS_TIMEOUT"))
+        return kCgErrTimeout;
+    if (const auto result = configured_result("MOEX_FAKE_PROCESS_RESULT"); result != kCgErrOk)
+        return result;
     if (conn == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2206,6 +2223,8 @@ std::uint32_t cg_lsn_destroy(void* listener) {
 
 std::uint32_t cg_lsn_open(void* listener, const char* settings) {
     capture_audit("cg_lsn_open");
+    if (const auto result = configured_result("MOEX_FAKE_LISTENER_OPEN_RESULT"); result != kCgErrOk)
+        return result;
     if (listener == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2287,6 +2306,8 @@ std::uint32_t cg_pub_new(void* conn, const char* settings, void** pubptr) {
 
 std::uint32_t cg_pub_open(void* publisher, const char*) {
     capture_audit("cg_pub_open");
+    if (const auto result = configured_result("MOEX_FAKE_PUBLISHER_OPEN_RESULT"); result != kCgErrOk)
+        return result;
     if (publisher == nullptr) {
         return kCgErrInvalidArgument;
     }

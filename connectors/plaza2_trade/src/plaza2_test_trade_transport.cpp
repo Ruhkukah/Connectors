@@ -73,6 +73,7 @@ constexpr std::string_view kCredentialToken = "${MOEX_PLAZA2_TEST_CREDENTIALS}";
 constexpr std::string_view kLegacyCredentialToken = "${PLAZA2_TEST_CREDENTIALS}";
 constexpr std::string_view kSoftwareKeyToken = "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
 constexpr std::string_view kRelativeSchemeToken = "|FILE|scheme/forts_scheme.ini|";
+constexpr std::uint32_t kCgErrInternal = 131072;
 constexpr std::uint32_t kCgStateClosed = 0;
 constexpr std::uint32_t kCgStateError = 1;
 constexpr std::uint32_t kCgStateOpening = 2;
@@ -606,6 +607,7 @@ struct Plaza2TestSessionHost::Impl {
     }
 
     Plaza2Error start() {
+        failure_origin = Plaza2FailureOrigin::Bootstrap;
         aggr_projector.set_qualification_observer(config.qualification_book_observer);
         if (!rate_gate.valid())
             return invalid("publisher_messages_per_second must be in 1..3000");
@@ -716,18 +718,22 @@ struct Plaza2TestSessionHost::Impl {
         effective_runtime = config.runtime;
         render(effective_runtime.env_open_settings, credentials.value(), software_key.value());
         effective_runtime.env_open_settings = resolve_ini(effective_runtime.env_open_settings, probe.layout.config_dir);
+        failure_origin = Plaza2FailureOrigin::EnvironmentOpen;
         if (const auto error = env.open(effective_runtime); error) {
             return error;
         }
+        failure_origin = Plaza2FailureOrigin::ConnectionCreate;
         if (const auto error = connection.create(
                 env, render_copy(config.connection_settings, credentials.value(), software_key.value()));
             error) {
             return error;
         }
+        failure_origin = Plaza2FailureOrigin::ConnectionOpen;
         if (const auto error = connection.open(config.connection_open_settings); error) {
             return error;
         }
 
+        failure_origin = Plaza2FailureOrigin::Bootstrap;
         std::vector<Plaza2TestTradeStreamConfig> all_private_streams = config.private_streams;
         all_private_streams.insert(all_private_streams.end(), config.status_streams.begin(),
                                    config.status_streams.end());
@@ -759,10 +765,12 @@ struct Plaza2TestSessionHost::Impl {
             auto& managed = private_listeners.back();
             const auto settings = resolve_scheme(
                 render_copy(stream.settings, credentials.value(), software_key.value()), probe.layout.scheme_path);
+            failure_origin = Plaza2FailureOrigin::ListenerCreate;
             if (const auto error = managed.listener.create(connection, stream.stream_code, settings, &private_bridge);
                 error) {
                 return error;
             }
+            failure_origin = Plaza2FailureOrigin::ListenerOpen;
             if (const auto error = managed.listener.open(managed.open_settings); error) {
                 return error;
             }
@@ -771,11 +779,13 @@ struct Plaza2TestSessionHost::Impl {
         const auto aggr_settings =
             resolve_scheme(render_copy(config.aggr20_stream.settings, credentials.value(), software_key.value()),
                            probe.layout.scheme_path);
+        failure_origin = Plaza2FailureOrigin::ListenerCreate;
         if (const auto error =
                 aggr_listener.create(connection, config.aggr20_stream.stream_code, aggr_settings, &aggr_bridge);
             error) {
             return error;
         }
+        failure_origin = Plaza2FailureOrigin::ListenerOpen;
         if (const auto error = aggr_listener.open(config.aggr20_stream.open_settings); error) {
             return error;
         }
@@ -790,21 +800,25 @@ struct Plaza2TestSessionHost::Impl {
     Plaza2Error open_publisher_reply() {
         const auto effective_reply_settings =
             config.p2mqreply_settings.empty() ? "p2mqreply://;ref=" + config.publisher_name : config.p2mqreply_settings;
+        failure_origin = Plaza2FailureOrigin::PublisherCreate;
         if (const auto error = publisher.create(
                 connection, render_copy(config.publisher_settings, credentials_value, software_key_value));
             error) {
             return error;
         }
+        failure_origin = Plaza2FailureOrigin::PublisherOpen;
         if (const auto error = publisher.open(config.publisher_open_settings); error) {
             return error;
         }
         publisher_is_open = true;
+        failure_origin = Plaza2FailureOrigin::ListenerCreate;
         if (const auto error = reply_listener.create(
                 connection, cgate::kNoStreamCode,
                 render_copy(effective_reply_settings, credentials_value, software_key_value), &reply_bridge);
             error) {
             return error;
         }
+        failure_origin = Plaza2FailureOrigin::ListenerOpen;
         if (const auto error =
                 reply_listener.open(render_copy(config.p2mqreply_open_settings, credentials_value, software_key_value));
             error) {
@@ -945,6 +959,7 @@ struct Plaza2TestSessionHost::Impl {
                     return invalid("FORTS_TRADE_REPL retry refused because the immutable POS replay anchor changed",
                                    Plaza2ErrorCode::AdapterState);
                 }
+                failure_origin = Plaza2FailureOrigin::ListenerOpen;
                 if (const auto error = managed.listener.open(managed.open_settings); error) {
                     managed.reopen_not_before = now + kListenerReopenDelay;
                     continue;
@@ -1157,13 +1172,8 @@ struct Plaza2TestSessionHost::Impl {
         if (!config.transport_recovery_enabled || state_query_cause || listener_callback_error() ||
             !reply_bridge.error().empty() || !private_bridge.callback_error().empty())
             return false;
-        if (failure_origin == Plaza2FailureOrigin::ConnectionProcess) {
-            // process() filters OK/TIMEOUT. Only a direct runtime result may recover;
-            // configuration, schema and callback categories never enter this path.
-            return error.runtime_code != 0 &&
-                   (error.code == Plaza2ErrorCode::RuntimeCallFailed || error.code == Plaza2ErrorCode::AdapterState ||
-                    error.code == Plaza2ErrorCode::UnknownRuntimeResult);
-        }
+        if (failure_origin == Plaza2FailureOrigin::ConnectionProcess)
+            return error.runtime_code == kCgErrInternal;
         return (failure_origin == Plaza2FailureOrigin::ConnectionState ||
                 failure_origin == Plaza2FailureOrigin::ListenerState) &&
                error.code == Plaza2ErrorCode::AdapterState && failure_health && transport_lost(*failure_health);
@@ -1194,8 +1204,11 @@ struct Plaza2TestSessionHost::Impl {
                     error = listener_callback_error();
                 if (error) {
                     record_failure(error);
-                    // Startup configuration/decode failures remain fatal even during reconnect.
-                    if (error.code != Plaza2ErrorCode::AdapterState) {
+                    // Only an actual connection-open INTERNAL can represent the router
+                    // still being unavailable within this already-bounded recovery episode.
+                    if (failure_origin != Plaza2FailureOrigin::ConnectionOpen || error.runtime_code != kCgErrInternal ||
+                        listener_callback_error() || !reply_bridge.error().empty() ||
+                        !private_bridge.callback_error().empty()) {
                         recovery.operation = Plaza2SessionOperation::Failed;
                         return error;
                     }
@@ -1224,7 +1237,6 @@ struct Plaza2TestSessionHost::Impl {
         }
         if (replication_complete() && !publisher_is_open) {
             if (const auto open_error = open_publisher_reply(); open_error) {
-                failure_origin = Plaza2FailureOrigin::Publisher;
                 failure_health.reset();
                 record_failure(open_error);
                 recovery.operation = Plaza2SessionOperation::Failed;

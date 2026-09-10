@@ -14,10 +14,18 @@ The restored router is not evidence of automatic connector recovery.
 ## Exact rule
 
 The single-owner TEST host records failure origin structurally. It never parses an error message to
-select recovery. A direct connection-process result other than OK/TIMEOUT is eligible for the existing
-bounded full rebootstrap if its translated category is RuntimeCallFailed, AdapterState or
-UnknownRuntimeResult. Invalid configuration/argument, callback, decoder and schema categories remain
-fatal. A locally generated missing-handle error without an actual process result cannot qualify.
+select recovery. Only direct connection-process **raw INTERNAL (131072)** is eligible for
+bounded full rebootstrap, subject to callback/schema/decode/state-query fatal precedence.
+Raw INVALIDARGUMENT, UNSUPPORTED, MORE, INCORRECTSTATE and unknown results are fatal.
+OK and TIMEOUT are explicit successful outcomes at `Plaza2Connection::process`; the raw result
+is retained. The translator already treated process TIMEOUT as success at the original reviewed
+head; this correction makes that existing contract explicit at the runtime boundary. Other APIs'
+timeout semantics are unchanged.
+
+Bootstrap origins distinguish environment open, connection create/open, listener create/open and
+publisher create/open. Only ConnectionOpen + raw INTERNAL can retry inside an established recovery
+episode. Initial-start ConnectionOpen INTERNAL and all other bootstrap INTERNAL failures remain
+fatal. The original deadline and first process cause survive failed reconnect attempts.
 
 The first state API call after process failure is cg_conn_getstate, before observers or resource
 teardown. State sampling retains the first failing state-query cause and corresponding origin rather
@@ -62,7 +70,11 @@ is included. No qualification VPS load test or performance claim is made.
   zero recovery attempts.
 - Connection/listener/publisher getstate INTERNAL and process invalid argument: fatal, zero attempts.
 - Process INTERNAL followed by connection getstate INTERNAL: both causes retained, fatal.
-- Failed reopens: bounded retries, eventual success or deadline exhaustion with original and final causes.
+- Router remains down for two ConnectionOpen INTERNAL attempts: third attempt succeeds, or the
+  original deadline expires with distinct process and reconnect causes retained.
+- 1,000 forced TIMEOUT polls each before ONLINE, while Ready and after recovery: no recreation,
+  generation change, posts or readiness invalidation merely from TIMEOUT.
+- Initial bootstrap INTERNAL and non-ConnectionOpen recovery bootstrap INTERNAL remain fatal.
 - Persistent process INTERNAL across successful reopens: deadline exhaustion, no busy loop or posts.
 - Existing connection/listener/publisher/reply loss, order uncertainty, shutdown/signal, account identity
   and session-terms regressions remain part of validation.
@@ -88,7 +100,9 @@ Use fresh evidence/journal directories, the dedicated router with no unrelated c
 and no active epoch. Stop it once, do not signal the connector, restore it once, and require same-PID
 fresh recovery before graceful shutdown. Preserve any failure and stop; do not patch and repeat live.
 
-## Validation receipts
+## Original reviewed-head validation receipts
+
+These receipts describe `a6ba3f8`; corrected-head validation is reported separately.
 
 Local macOS Release: **179/179**. Local ASan+UBSan component/PLAZA suite: **126/126**.
 The old classifier was temporarily restored in this isolated worktree as a negative control: the new

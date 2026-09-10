@@ -206,7 +206,14 @@ enum class Plaza2FailureOrigin {
     ListenerState,
     Publisher,
     Callback,
-    Bootstrap
+    Bootstrap,
+    EnvironmentOpen,
+    ConnectionCreate,
+    ConnectionOpen,
+    ListenerCreate,
+    ListenerOpen,
+    PublisherCreate,
+    PublisherOpen
 };
 
 struct Plaza2RecoveryStatus {
