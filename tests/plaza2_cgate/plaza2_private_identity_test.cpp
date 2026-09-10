@@ -28,7 +28,7 @@ int main() {
                 return 3;
             evidence.capture(snapshot, "OTHER", "OTHER"); // One-shot, no overwrite.
         }
-        struct stat info{};
+        struct stat info;
         if (stat(path.c_str(), &info) != 0 || (info.st_mode & 0777) != 0600)
             return 4;
         std::ifstream input(path);
