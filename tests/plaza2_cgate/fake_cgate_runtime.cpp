@@ -1016,10 +1016,10 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                 }
             }
         }
-        if (fake_flag("MOEX_FAKE_WRONG_LIMIT_CLIENT")) {
+        if (fake_flag("MOEX_FAKE_WRONG_LIMIT_CLIENT") || fake_flag("MOEX_FAKE_CLIENT_SHAPED_UNMATCHED")) {
             for (auto& message : script) {
                 if (auto* client = find_field(message, kFortsPartReplPartClientCode)) {
-                    client->text = "OTHER";
+                    client->text = fake_flag("MOEX_FAKE_CLIENT_SHAPED_UNMATCHED") ? "other !" : "OTHER";
                 }
             }
         }
@@ -1120,7 +1120,8 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
         for (auto& message : script) {
             for (const auto field_code : client_fields) {
                 if (auto* field = find_field(message, field_code)) {
-                    if (fake_flag("MOEX_FAKE_WRONG_LIMIT_CLIENT") && field_code == kFortsPartReplPartClientCode) {
+                    if ((fake_flag("MOEX_FAKE_WRONG_LIMIT_CLIENT") || fake_flag("MOEX_FAKE_CLIENT_SHAPED_UNMATCHED")) &&
+                        field_code == kFortsPartReplPartClientCode) {
                         continue;
                     }
                     field->text = replacement;

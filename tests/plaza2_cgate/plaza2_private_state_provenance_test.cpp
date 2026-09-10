@@ -247,8 +247,12 @@ int main() {
             require(classify_limit_participant("BRK1") == K::BrokerageFirm, "four-character brokerage");
             require(classify_limit_participant("BRK1C01") == K::Client, "seven-character client");
             require(classify_limit_participant("BRK1000") == K::Client, "000 is not silently a brokerage key");
-            for (auto code : {"", "ABC", "CL001", "brk1", "BRK!", "BRK1 C1"})
+            for (auto code : {"", "ABC", "CL001", "BRK1C001"})
                 require(classify_limit_participant(code) == K::Unknown, "unknown code shape remains unknown");
+            for (auto code : {"brk1", "BRK!", " BRK"})
+                require(classify_limit_participant(code) == K::BrokerageFirm, "length-only broker shape");
+            for (auto code : {"brk1c01", "BRK1 C1", "BRK1!01"})
+                require(classify_limit_participant(code) == K::Client, "length-only client shape");
             Plaza2PrivateStateProjector limits;
             EngineState state;
             constexpr auto stream = StreamCode::kFortsPartRepl;
@@ -285,7 +289,16 @@ int main() {
             require(limits.find_limit_by_code("BRK1C01").match_count == 1 &&
                         limits.find_limit_by_code("BRK1000").exact->limits_set,
                     "slot identity update reindexes");
-            clear_table(limits, state, stream, TableCode::kFortsPartReplPart, 6);
+            begin_transaction(limits, state, stream);
+            row(5, "brk1c01", 1, 6);
+            row(6, "BRK1 C1", 1, 7);
+            commit_transaction(limits, state, stream, 2);
+            require(limits.find_limit_by_code("brk1c01").exact->participant_kind == K::Client &&
+                        limits.find_limit_by_code("BRK1 C1").exact->account_code == "BRK1 C1" &&
+                        limits.find_limit_by_code("BRK1C01").match_count == 1 &&
+                        limits.find_limit_by_code("BRK1C1").match_count == 0,
+                    "classification never uppercases, trims or normalizes exact identity");
+            clear_table(limits, state, stream, TableCode::kFortsPartReplPart, 8);
             require(limits.limit_row_count() == 0 && limits.find_limit_by_code("BRK1").match_count == 0,
                     "retention purge clears index");
         }

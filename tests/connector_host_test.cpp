@@ -369,6 +369,13 @@ int main(int argc, char** argv) {
             test::require(qualification.aggr_online && qualification.aggr_snapshot_complete &&
                               !qualification.book.levels.empty() && !qualification.instruments.empty(),
                           "qualification samples the same committed host state");
+            test::require(!qualification.limit_diagnostics.empty() &&
+                              qualification.limit_diagnostics.front().private_account_code.empty(),
+                          "ordinary qualification snapshot never adds raw identity bytes");
+            const auto private_identity = host.qualification_snapshot(true);
+            test::require(private_identity.limit_diagnostics.front().private_account_code ==
+                              observed_config.order.broker_code + observed_config.order.client_code,
+                          "explicit private identity query preserves exact wire code");
             auto s = host.snapshot();
             test::require(s.state == ConnectorHostState::Ready && s.private_streams_ready &&
                               s.target_refdata_provenance_ready &&
@@ -395,8 +402,9 @@ int main(int argc, char** argv) {
             ConnectorHost host(std::move(c));
             test::require(static_cast<bool>(host.start()), "qualify rejects send arm before start");
         }
-        for (const char* flag : {"MOEX_FAKE_NONTRADABLE_SESSION", "MOEX_FAKE_NONTRADABLE_INSTRUMENT",
-                                 "MOEX_FAKE_AGGR_CROSSED", "MOEX_FAKE_MISSING_LIMITS"}) {
+        for (const char* flag :
+             {"MOEX_FAKE_NONTRADABLE_SESSION", "MOEX_FAKE_NONTRADABLE_INSTRUMENT", "MOEX_FAKE_AGGR_CROSSED",
+              "MOEX_FAKE_MISSING_LIMITS", "MOEX_FAKE_CLIENT_SHAPED_UNMATCHED"}) {
             reset();
             ::setenv(flag, "1", 1);
             ConnectorHost host(config_for(fixture));
@@ -406,6 +414,16 @@ int main(int argc, char** argv) {
             test::require(!host.snapshot().observation_ready && !host.plan().ok && !host.submit().ok && count(0) == 0 &&
                               count(1) == 0,
                           "readiness gate is not weakened");
+            if (std::string_view(flag) == "MOEX_FAKE_CLIENT_SHAPED_UNMATCHED") {
+                const auto q = host.qualification_snapshot(true);
+                test::require(q.limit_diagnostics.size() == 1 &&
+                                  q.limit_diagnostics.front().kind ==
+                                      moex::plaza2::private_state::LimitParticipantKind::Client &&
+                                  q.limit_diagnostics.front().private_account_code == "other !" &&
+                                  q.matching_client_limit_rows == 0 && q.matching_broker_limit_rows == 0 &&
+                                  !host.snapshot().participant_identity_exact && !host.snapshot().new_order_allowed,
+                              "client-shaped unmatched T1-like row cannot authorize sending");
+            }
             test::require(!host.stop(), "negative readiness stop");
             ::unsetenv(flag);
         }

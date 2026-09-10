@@ -24,6 +24,28 @@ identity document. No ORDLOG, public ORDBOOK or p2ordbook listener is authorized
 The pre-test audit corrects stale AGGR recovery claims against PR #42 code; offline recovery is not T1 proof.
 See [qualification runbook](../docs/plaza2/AGGR_T1_QUALIFICATION_20260910.md).
 
+### September 10 observation: granular historical results
+
+Bound exclusively to PR #49 source `e8f4768ced280f937af0665d25496308ec0fb0fc` and its deployed
+binary `5036fa0571562e3680e5e891fa3b10e6650fe9503743bb436195f97d73d084b3`.
+[Evidence binding and patch scope](../docs/review/plaza2_shutdown_account_20260910/REPORT.md).
+Overall scenario remains **FAIL / exit 3** due to signal-interrupted shutdown.
+
+| Observation | Result and boundary |
+|---|---|
+| Normal AGGR operation | PASS_OBSERVED: 658.708 stable seconds; zero invalid books/event loss |
+| Private synchronization | PASS_OBSERVED: fresh POS/TRADE replay and seven private streams synchronized |
+| Target negotiated schema/decoding | PASS_OBSERVED: 16 generic/independent fields agree; semantics not thereby validated |
+| Effective failure masking | PASS_OBSERVED: raw snapshots retained, all effective readiness false on failure |
+| Graceful signal shutdown | FAIL: SIGTERM interrupted vendor poll; exit 3 |
+| PART account authorization | BLOCKED: NO_EXACT_ACCOUNT_MATCH; corrected structural interpretation CLIENT_SHAPED_NO_EXACT_MATCH |
+| Price-bound validation | MOEX_CLARIFICATION_REQUIRED: raw 184/184 versus market around 2042-2045 |
+| Router recovery | NOT RUN in this observation; prior historical router-loss FAIL remains |
+| Order lifecycle / active-order recovery | NOT RUN; zero posts; POST_RECOVERY_OPERATOR_CANCEL_NOT_IMPLEMENTED |
+
+The shutdown/account patch's offline tests do not upgrade these live statuses. Performance and full
+ORDLOG/L3 qualification remain separate scopes.
+
 ### Historical full ORDLOG T1 entitlement blocker
 
 The retained 2026-09-08 regular-bootstrap attempt is documented in

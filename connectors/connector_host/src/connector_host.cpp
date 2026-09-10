@@ -845,7 +845,7 @@ ConnectorHostSnapshot ConnectorHost::snapshot() const {
     return impl_->snapshot();
 }
 
-ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot() const {
+ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot(bool private_identity) const {
     const auto& host = impl_->transport.host();
     const auto instruments = host.private_state().instruments();
     const auto positions = host.private_state().positions();
@@ -877,7 +877,8 @@ ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot() const
             {row.repl_id, row.participant_kind, row.account_code.size(),
              row.account_code == impl_->config.order.broker_code,
              row.account_code == impl_->config.order.broker_code + impl_->config.order.client_code, row.limits_set,
-             row.is_auto_update_limit, row.money_free, row.money_blocked, row.money_amount});
+             row.is_auto_update_limit, row.money_free, row.money_blocked, row.money_amount,
+             private_identity ? row.account_code : std::string{}});
     return out;
 }
 

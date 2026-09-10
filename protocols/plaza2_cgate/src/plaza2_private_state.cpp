@@ -2070,11 +2070,12 @@ std::span<const MatchingMapSnapshot> Plaza2PrivateStateProjector::matching_map()
 }
 
 LimitParticipantKind classify_limit_participant(std::string_view code) noexcept {
-    if ((code.size() != 4 && code.size() != 7) || !std::all_of(code.begin(), code.end(), [](unsigned char c) {
-            return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
-        }))
-        return LimitParticipantKind::Unknown;
-    return code.size() == 4 ? LimitParticipantKind::BrokerageFirm : LimitParticipantKind::Client;
+    // Protocol length describes participant level, not account authorization.
+    if (code.size() == 4)
+        return LimitParticipantKind::BrokerageFirm;
+    if (code.size() == 7)
+        return LimitParticipantKind::Client;
+    return LimitParticipantKind::Unknown;
 }
 LimitLookup Plaza2PrivateStateProjector::find_limit_by_code(const std::string& code) const {
     const auto it = impl_->limit_index.find(code);

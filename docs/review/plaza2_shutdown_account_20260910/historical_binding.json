@@ -1,0 +1,58 @@
+{
+  "source_sha": "e8f4768ced280f937af0665d25496308ec0fb0fc",
+  "binary_sha256": "5036fa0571562e3680e5e891fa3b10e6650fe9503743bb436195f97d73d084b3",
+  "runtime_sha256": "f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f",
+  "scheme_sha256": "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746",
+  "archive_sha256": "11ec663dd79f9573c32f4a39809cc10bb57639962397673a8fc352535c04b734",
+  "verified_archive_files": 28,
+  "scenario": "September 10 observation; signal-interrupted shutdown",
+  "start_msk": "2026-09-10T09:30:48.593+03:00",
+  "end_msk": "2026-09-10T09:41:54.407+03:00",
+  "result": "FAIL",
+  "exit_code": 3,
+  "stable_seconds_after_bootstrap": 658.708,
+  "callbacks": 205640,
+  "aggr_commits": 15087,
+  "invalid_books": 0,
+  "callback_errors": 0,
+  "event_loss": 0,
+  "orders": 0,
+  "positions": 0,
+  "publisher_posts": 0,
+  "active_epoch": false,
+  "effective_failure_masking": "PASS_OBSERVED",
+  "price_fields": "MOEX_CLARIFICATION_REQUIRED",
+  "part_identity": "NO_EXACT_ACCOUNT_MATCH",
+  "original_part_kind": "Unknown",
+  "corrected_structural_interpretation": "CLIENT_SHAPED_NO_EXACT_MATCH",
+  "source_files": {
+    "evidence/01-observation-truth/metrics.jsonl": {
+      "sha256": "4278997ef72bdea2a32ba492a124f11099dffe77acda5ff1195a67b3ad8cda5a",
+      "size": 648830
+    },
+    "evidence/01-observation-truth/participant-limits.json": {
+      "sha256": "6760dde95fde2ce53bf752f6118729765270add1482e35fd03fd9c5f68546231",
+      "size": 279
+    },
+    "evidence/01-observation-truth/result.json": {
+      "sha256": "38e35ab51e99e00df2e3a480f4ce6cebe1eb318f49a04ee30a92f19629307a8b",
+      "size": 97
+    },
+    "evidence/01-observation-truth/state_after.json": {
+      "sha256": "3b7043aa1d9baa55e9cebccb5e568b69505244150d8b4d1dc599cf6ad684ec7a",
+      "size": 3250
+    },
+    "evidence/01-observation-truth/target-forensics.jsonl": {
+      "sha256": "159a86f5107bcfdfa1dd6b67fb1d0b1302ec1eec1ec9efaaf6f848d379797f85",
+      "size": 4536
+    },
+    "evidence/observation-exit.json": {
+      "sha256": "90e53dd15a1be81fbcfe6463577b67383a546519fd419883f62a2701757e7ad4",
+      "size": 55
+    },
+    "evidence/observation-stop-request.json": {
+      "sha256": "bee0d31cf63d0c189332bd69b1a593bf0484684bbb51d1e7ee846051d6379c80",
+      "size": 4699
+    }
+  }
+}

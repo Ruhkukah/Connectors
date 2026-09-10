@@ -12,3 +12,9 @@ assert 'observation_config(request.config)' in main
 assert 'participant_json(participants, row)' in main
 assert 'row.repl_id' in source
 print('observation-only entry point: no request ingestion or order API calls')
+
+assert 'std::signal(' not in main
+assert main.index('Plaza2QualificationStop stop;') < main.index('ch::ConnectorHost host(')
+assert 'while (!failed && !stop.requested() &&' in main
+assert 'failed = static_cast<bool>(host.poll());' in main
+assert 'private_account_code' not in source[source.index('void participant_json'):source.index('std::optional<std::int64_t> exact_price')]
