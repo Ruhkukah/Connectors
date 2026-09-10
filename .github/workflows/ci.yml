@@ -110,7 +110,7 @@ jobs:
           fi
 
       - name: Complete Release preflight coverage for recovery review
-        if: github.head_ref == 'codex/plaza2-process-recovery'
+        if: github.head_ref == 'codex/plaza2-process-recovery' || github.head_ref == 'codex/plaza2-sep11-observation'
         run: ctest --test-dir build --output-on-failure -L preflight
 
       - name: Upload listener-only capture preparation binaries

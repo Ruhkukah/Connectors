@@ -1058,3 +1058,6 @@ add_executable(plaza2_private_identity_test plaza2_cgate/plaza2_private_identity
 target_link_libraries(plaza2_private_identity_test PRIVATE moex_connector_host)
 add_test(NAME plaza2_private_identity COMMAND plaza2_private_identity_test)
 set_tests_properties(plaza2_private_identity PROPERTIES LABELS "unit;plaza2;sanitizer")
+
+add_test(NAME plaza2_aggr_qualification_20260911_evidence COMMAND plaza2_aggr_qualification_20260911 --self-test)
+set_tests_properties(plaza2_aggr_qualification_20260911_evidence PROPERTIES LABELS "unit;plaza2;sanitizer")
