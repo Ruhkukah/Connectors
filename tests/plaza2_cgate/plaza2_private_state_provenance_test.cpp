@@ -237,10 +237,130 @@ void set_lifenum(Plaza2PrivateStateProjector& projector, EngineState& state, Str
                        state);
 }
 
+void test_future_terms() {
+    using namespace moex::plaza2::private_state;
+    const auto dec = parse_session_decimal;
+    require(dec("+184.00000")->units == 18400000 && dec("-184")->units == -18400000, "signed exact decimals");
+    require(dec("0.00001")->units == 1 && dec("-0.00001")->units == -1, "scale-five boundary");
+    require(dec("92233720368547.75807")->units == std::numeric_limits<std::int64_t>::max(), "positive range end");
+    require(dec("-92233720368547.75808")->units == std::numeric_limits<std::int64_t>::min(), "negative range end");
+    for (auto invalid :
+         {"", "+", "1.", ".1", " 1", "1e2", "1.000001", "1..2", "NaN", "92233720368547.75808", "-92233720368547.75809"})
+        require(!dec(invalid), "missing, malformed, excess precision and overflow must not round");
+    FutureSessionTerms numeric{.settlement_price = dec("2077"),
+                               .raw_limit_up = dec("184"),
+                               .raw_limit_down = dec("184"),
+                               .min_step = dec("1")};
+    auto b = evaluate_future_price_bounds(numeric);
+    require(b.formula_confirmed && b.interval_valid && b.lower == dec("1893") && b.upper == dec("2261"),
+            "MOEX confirmed historical regression");
+    require(dec("2042")->units > b.lower->units && dec("2045")->units < b.upper->units, "retained market inside");
+    numeric.raw_limit_down = dec("-184");
+    require(!evaluate_future_price_bounds(numeric).interval_valid, "signed subtraction produces equal bounds, no abs");
+    numeric.raw_limit_up = dec("-185");
+    require(!evaluate_future_price_bounds(numeric).interval_valid, "inverted bounds fail");
+    numeric = {.settlement_price = dec("-10"),
+               .raw_limit_up = dec("2"),
+               .raw_limit_down = dec("3"),
+               .min_step = dec("0.00001")};
+    b = evaluate_future_price_bounds(numeric);
+    require(b.interval_valid && b.lower == dec("-13") && b.upper == dec("-8"), "negative reference exact arithmetic");
+    numeric.settlement_price = SessionDecimal{std::numeric_limits<std::int64_t>::max()};
+    require(!evaluate_future_price_bounds(numeric).upper, "addition overflow");
+    numeric.settlement_price = SessionDecimal{std::numeric_limits<std::int64_t>::min()};
+    require(!evaluate_future_price_bounds(numeric).lower, "subtraction underflow");
+    numeric.raw_limit_up = SessionDecimal{-1};
+    require(!evaluate_future_price_bounds(numeric).upper, "addition underflow");
+    numeric.settlement_price = SessionDecimal{0};
+    numeric.raw_limit_down = SessionDecimal{std::numeric_limits<std::int64_t>::min()};
+    require(!evaluate_future_price_bounds(numeric).lower, "subtraction overflow without negating minimum");
+    numeric.settlement_price = SessionDecimal{-1};
+    require(evaluate_future_price_bounds(numeric).lower->units == std::numeric_limits<std::int64_t>::max(),
+            "subtraction exact maximum");
+    numeric.min_step.reset();
+    require(!evaluate_future_price_bounds(numeric).interval_valid, "missing step blocks");
+    numeric.min_step = dec("0");
+    require(!evaluate_future_price_bounds(numeric).interval_valid, "zero step blocks");
+    numeric.min_step = dec("1");
+    numeric.settlement_price.reset();
+    require(!evaluate_future_price_bounds(numeric).interval_valid, "null reference blocks");
+
+    InitialScenario fixture;
+    Plaza2PrivateStateProjector projector;
+    Plaza2FakeEngine engine;
+    const auto replay = engine.run(fixture.view(), &projector);
+    require(!replay.error, "initial reference fixture");
+    auto state = replay.state;
+    const auto stage_terms = [&](std::int64_t revision, std::string_view settlement, std::int64_t action = 0) {
+        stage_row(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutSessContents,
+                  revision,
+                  {signed_field(FieldCode::kFortsRefdataReplFutSessContentsIsinId, 1001),
+                   signed_field(FieldCode::kFortsRefdataReplFutSessContentsSessId, 321),
+                   signed_field(FieldCode::kFortsRefdataReplFutSessContentsReplId, 123),
+                   signed_field(FieldCode::kFortsRefdataReplFutSessContentsReplAct, action),
+                   text_field(FieldCode::kFortsRefdataReplFutSessContentsSettlementPrice, settlement),
+                   text_field(FieldCode::kFortsRefdataReplFutSessContentsSettlementPriceOpen, "9999"),
+                   text_field(FieldCode::kFortsRefdataReplFutSessContentsLimitUp, "184"),
+                   text_field(FieldCode::kFortsRefdataReplFutSessContentsLimitDown, "184"),
+                   text_field(FieldCode::kFortsRefdataReplFutSessContentsMinStep, "1")});
+    };
+    begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
+    stage_terms(50, "2077");
+    require(!projector.find_future_session_terms(1001, 321, 7)->bounds.interval_valid, "uncommitted terms invisible");
+    commit_transaction(projector, state, StreamCode::kFortsRefdataRepl, 1);
+    auto terms = projector.find_future_session_terms(1001, 321, 7);
+    require(terms && terms->repl_id == 123 && terms->source.repl_rev == 50 && terms->bounds.lower == dec("1893"),
+            "committed coherent row and provenance");
+    require(terms->settlement_price == dec("2077") && terms->raw_limit_down == dec("184"), "raw fields unchanged");
+    require(!projector.find_future_session_terms(1001, 322, 7) && !projector.find_future_session_terms(1001, 321, 8) &&
+                !projector.find_future_session_terms(999, 321, 7),
+            "session, generation, instrument mismatch");
+    begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
+    stage_row(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutInstruments, 51,
+              {signed_field(FieldCode::kFortsRefdataReplFutInstrumentsIsinId, 1001),
+               text_field(FieldCode::kFortsRefdataReplFutInstrumentsSettlementPrice, "8888")});
+    commit_transaction(projector, state, StreamCode::kFortsRefdataRepl, 1);
+    require(projector.find_future_session_terms(1001, 321, 7)->bounds.lower == dec("1893"),
+            "other table cannot mix into session terms");
+    begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
+    stage_terms(52, "");
+    commit_transaction(projector, state, StreamCode::kFortsRefdataRepl, 1);
+    require(!projector.find_future_session_terms(1001, 321, 7)->bounds.interval_valid,
+            "null update cannot reuse value");
+    begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
+    stage_terms(53, "2077", 1);
+    commit_transaction(projector, state, StreamCode::kFortsRefdataRepl, 1);
+    require(!projector.find_future_session_terms(1001, 321, 7), "deleted terms are unavailable");
+    begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
+    stage_terms(54, "2077");
+    commit_transaction(projector, state, StreamCode::kFortsRefdataRepl, 1);
+    clear_table(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutSessContents, 55);
+    require(!projector.find_future_session_terms(1001, 321, 7),
+            "ClearDeleted invalidates terms while instrument survives");
+    begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
+    stage_terms(56, "2077");
+    commit_transaction(projector, state, StreamCode::kFortsRefdataRepl, 1);
+    set_lifenum(projector, state, StreamCode::kFortsRefdataRepl, 8);
+    require(!projector.find_future_session_terms(1001, 321, 7) && !projector.find_future_session_terms(1001, 321, 8),
+            "old rows do not acquire new LifeNum");
+    begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
+    stage_terms(57, "2077");
+    commit_transaction(projector, state, StreamCode::kFortsRefdataRepl, 1);
+    const auto clone = projector.clone();
+    begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
+    stage_terms(58, "3000");
+    projector.on_event({}, EventSpec{.kind = EventKind::kClose, .stream_code = StreamCode::kFortsRefdataRepl}, state);
+    require(projector.find_future_session_terms(1001, 321, 8)->bounds.lower == dec("1893"),
+            "close retains committed diagnostic terms, never exposes staged update");
+    require(clone.find_future_session_terms(1001, 321, 8)->bounds.lower == dec("1893"),
+            "clone keeps committed row without staged update");
+}
+
 } // namespace
 
 int main() {
     try {
+        test_future_terms();
         {
             using K = moex::plaza2::private_state::LimitParticipantKind;
             using moex::plaza2::private_state::classify_limit_participant;

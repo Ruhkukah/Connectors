@@ -75,6 +75,35 @@ struct SourceRowProvenance {
     bool operator==(const SourceRowProvenance&) const = default;
 };
 
+// Exact scale-5 values for the negotiated futures session decimal fields.
+struct SessionDecimal {
+    std::int64_t units{0};
+    static constexpr std::int64_t scale = 100000;
+    bool operator==(const SessionDecimal&) const = default;
+};
+[[nodiscard]] std::optional<SessionDecimal> parse_session_decimal(std::string_view text) noexcept;
+
+struct FuturePriceBounds {
+    std::optional<SessionDecimal> lower;
+    std::optional<SessionDecimal> upper;
+    bool formula_confirmed{true};
+    // Arithmetic validity only: never substitutes for transport/account/order gates.
+    bool interval_valid{false};
+};
+
+struct FutureSessionTerms {
+    std::int32_t isin_id{0};
+    std::int32_t sess_id{0};
+    std::optional<SessionDecimal> settlement_price;
+    std::optional<SessionDecimal> raw_limit_up;
+    std::optional<SessionDecimal> raw_limit_down;
+    std::optional<SessionDecimal> min_step;
+    std::int64_t repl_id{0};
+    SourceRowProvenance source;
+    FuturePriceBounds bounds;
+};
+[[nodiscard]] FuturePriceBounds evaluate_future_price_bounds(const FutureSessionTerms& terms) noexcept;
+
 struct TradingSessionSnapshot {
     std::int32_t sess_id{0};
     std::int64_t begin{0};
@@ -134,6 +163,8 @@ struct InstrumentSnapshot {
     std::int64_t group_mask{0};
     std::int64_t trade_period_access{0};
     std::vector<InstrumentLegSnapshot> legs;
+    // Coherent fut_sess_contents row; never populated from fut_instruments.
+    std::optional<FutureSessionTerms> future_session_terms;
 };
 
 struct MatchingMapSnapshot {
@@ -270,6 +301,10 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::span<const StreamHealthSnapshot> stream_health() const;
     [[nodiscard]] std::span<const TradingSessionSnapshot> sessions() const;
     [[nodiscard]] std::span<const InstrumentSnapshot> instruments() const;
+    // Current-session indexed view. Empty for other sessions, missing/deleted rows or
+    // another LifeNum. Committed source validity is distinct from live transport health.
+    [[nodiscard]] std::optional<FutureSessionTerms>
+    find_future_session_terms(std::int32_t isin_id, std::int32_t sess_id, std::uint64_t expected_lifenum) const;
     [[nodiscard]] std::span<const MatchingMapSnapshot> matching_map() const;
     [[nodiscard]] std::span<const LimitSnapshot> limits() const;
     [[nodiscard]] LimitLookup find_limit_by_code(const std::string& code) const;

@@ -1,5 +1,8 @@
 #include "moex/connector_host/operator_config.hpp"
 #include "plaza2_runtime_test_support.hpp"
+#include "plaza2_trade/fixtures/cgate99_messages.hpp"
+
+#include <cstring>
 
 #include <cstdlib>
 #include <dlfcn.h>
@@ -128,6 +131,42 @@ int main(int argc, char** argv) {
         }
         void* library = dlopen(fixture.library_path.c_str(), RTLD_NOW | RTLD_LOCAL);
         test::require(library != nullptr, "load fake");
+        // Synthetic mixed-case identity through parser, observation, intent plan and wire encoder.
+        std::vector<std::string> account_plans;
+        for (const auto* client : {"12o", "12O", "120"}) {
+            ::setenv("HOST_TEST_BROKER", "AbC9", 1);
+            ::setenv("HOST_TEST_CLIENT", client, 1);
+            const std::string full = std::string("AbC9") + client;
+            ::setenv("MOEX_FAKE_CLIENT_CODE", full.c_str(), 1);
+            const auto config = config_for(fixture);
+            test::require(config.order.broker_code == "AbC9" && config.order.client_code == client &&
+                              config.transport.observation_client_code == full,
+                          "4+3 parser round-trip preserves case");
+            ConnectorHost host(config);
+            warm(host);
+            test::require(host.snapshot().participant_identity_exact && host.snapshot().participant_limit_row_present,
+                          "configured mixed-case PART identity matches");
+            const auto plan = host.plan();
+            test::require(plan.ok, "mixed-case intent plan");
+            official_cgate99::AddOrder wire{};
+            test::require(plan.add_command.payload.size() == sizeof(wire), "official AddOrder size");
+            std::memcpy(&wire, plan.add_command.payload.data(), sizeof(wire));
+            test::require(std::string(wire.broker_code) == "AbC9" && std::string(wire.client_code) == client,
+                          "encoder preserves exact selected bytes");
+            test::require(plan.canonical_json.find(cg::plaza2_sha256_hex(std::string_view(client))) !=
+                              std::string::npos,
+                          "intent binds exact client bytes");
+            account_plans.push_back(plan.sha256);
+            test::require(host.snapshot().publisher_calls.post == 0, "encoding test posts nothing");
+            test::require(!host.stop(), "mixed-case observation stop");
+        }
+        test::require(account_plans[0] != account_plans[1] && account_plans[0] != account_plans[2] &&
+                          account_plans[1] != account_plans[2],
+                      "o O and 0 yield distinct intents");
+        ::setenv("HOST_TEST_BROKER", "BRK1", 1);
+        ::setenv("HOST_TEST_CLIENT", "C01", 1);
+        ::setenv("MOEX_FAKE_CLIENT_CODE", "BRK1C01", 1);
+
         auto reset = reinterpret_cast<void (*)()>(dlsym(library, "moex_fake_reset_publisher_counts"));
         auto count = reinterpret_cast<std::uint64_t (*)(std::uint32_t)>(dlsym(library, "moex_fake_publisher_count"));
         auto env_open_count = reinterpret_cast<std::uint64_t (*)()>(dlsym(library, "moex_fake_environment_open_count"));
