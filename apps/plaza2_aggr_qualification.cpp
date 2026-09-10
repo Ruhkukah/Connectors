@@ -1,4 +1,6 @@
 #include "plaza2_target_forensics.hpp"
+#include "plaza2_qualification_stop.hpp"
+#include "plaza2_private_identity.hpp"
 #include "moex/connector_host/operator_config.hpp"
 
 #include <algorithm>
@@ -24,10 +26,6 @@ namespace cg = moex::plaza2::cgate;
 namespace ch = moex::connector_host;
 namespace tr = moex::plaza2_trade;
 using Clock = std::chrono::steady_clock;
-volatile std::sig_atomic_t stopping{};
-void stop_signal(int) {
-    stopping = 1;
-}
 std::uint64_t ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
 }
@@ -762,10 +760,11 @@ int main(int argc, char** argv) {
         const std::filesystem::path output(argv[1]);
         if (!std::filesystem::create_directory(output))
             throw std::invalid_argument("output must be a new directory under an existing evidence parent");
-        std::signal(SIGTERM, stop_signal);
-        std::signal(SIGINT, stop_signal);
         if (std::getenv("MOEX_AGGR_T1_IDLE"))
             throw std::invalid_argument("observation requires the complete host topology");
+        // Block before runtime construction/start so vendor threads inherit the mask.
+        Plaza2QualificationStop stop;
+        Plaza2PrivateIdentityEvidence private_identity(std::getenv("MOEX_AGGR_PRIVATE_IDENTITY_PATH"));
         Evidence evidence;
         evidence.forensics.isin = request.config.transport.target_isin_id;
         evidence.forensics.session = request.config.transport.target_session_id;
@@ -783,8 +782,6 @@ int main(int argc, char** argv) {
                        "}\n");
         ch::ConnectorHost host(request.config);
         write_file(output / "state_before.json", ch::render_snapshot(host.snapshot(), true));
-        std::signal(SIGTERM, stop_signal);
-        std::signal(SIGINT, stop_signal);
         const auto started = Clock::now();
         auto previous = started;
         auto next_sample = started;
@@ -801,7 +798,7 @@ int main(int argc, char** argv) {
         const bool orders_blocked = true;
         std::uint64_t polls{}, max_gap{}, recovery_transition{};
         std::optional<bool> last_ready;
-        while (!failed && !stopping && Clock::now() < deadline && std::time(nullptr) < end_utc) {
+        while (!failed && !stop.requested() && Clock::now() < deadline && std::time(nullptr) < end_utc) {
             const auto current = Clock::now();
             max_gap = std::max(max_gap,
                                static_cast<std::uint64_t>(
@@ -823,7 +820,10 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("observation safety invariant violated");
             evidence.flush(events);
             if (current >= next_sample || failed) {
-                const auto q = host.qualification_snapshot();
+                const auto q = host.qualification_snapshot(private_identity.pending());
+                if (private_identity.pending() && state.private_streams_ready)
+                    private_identity.capture(q, request.config.order.broker_code,
+                                             request.config.order.broker_code + request.config.order.client_code);
                 if (evidence.forensics.has_committed()) {
                     const bool target_present =
                         q.aggr_online && std::any_of(q.book.levels.begin(), q.book.levels.end(), [&](const auto& row) {

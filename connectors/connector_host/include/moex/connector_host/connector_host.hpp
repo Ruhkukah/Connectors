@@ -111,6 +111,7 @@ struct ConnectorHostQualificationSnapshot {
         std::size_t code_length;
         bool equals_broker, equals_client, limits_set, auto_update;
         std::string money_free, money_blocked, money_amount;
+        std::string private_account_code; // Explicit opt-in qualification artifact only.
     };
     std::vector<LimitDiagnostic> limit_diagnostics;
     bool aggr_online{false};
@@ -131,7 +132,7 @@ class ConnectorHost final {
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] ConnectorHostSnapshot snapshot() const;
-    [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot() const;
+    [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot(bool private_identity = false) const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan() const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan_order(const ConnectorHostOrderRequest& request) const;
     // Exact canonical bytes AND SHA are mandatory. The host constructs the
