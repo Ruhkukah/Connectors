@@ -68,5 +68,3 @@ moex_add_app(moex_plaza2_twime_integrated_test_runner plaza2_twime_integrated_te
 
 moex_add_app(plaza2_c2_capture plaza2_c2_capture.cpp moex_plaza2_cgate_hash)
 target_link_libraries(plaza2_c2_capture PRIVATE ${CMAKE_DL_LIBS})
-
-moex_add_app(plaza2_aggr_qualification plaza2_aggr_qualification.cpp moex_connector_host)

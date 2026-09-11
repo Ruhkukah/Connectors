@@ -1033,5 +1033,22 @@ foreach(test_name IN LISTS moex_registered_tests)
     endif()
 endforeach()
 
-add_test(NAME plaza2_aggr_qualification_evidence COMMAND plaza2_aggr_qualification --self-test)
-set_tests_properties(plaza2_aggr_qualification_evidence PROPERTIES LABELS "unit;plaza2;sanitizer")
+
+add_executable(plaza2_target_forensics_test plaza2_target_forensics_test.cpp)
+target_include_directories(plaza2_target_forensics_test PRIVATE "${MOEX_SOURCE_ROOT}/apps")
+target_link_libraries(plaza2_target_forensics_test PRIVATE moex_plaza2_cgate_runtime)
+add_test(NAME plaza2_target_forensics_test COMMAND plaza2_target_forensics_test)
+set_tests_properties(plaza2_target_forensics_test PROPERTIES LABELS "unit;plaza2;sanitizer")
+
+
+find_package(Threads REQUIRED)
+add_executable(plaza2_qualification_stop_test plaza2_cgate/plaza2_qualification_stop_test.cpp)
+target_link_libraries(plaza2_qualification_stop_test PRIVATE Threads::Threads)
+add_test(NAME plaza2_qualification_stop
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/plaza2_qualification_stop_test.py
+            $<TARGET_FILE:plaza2_qualification_stop_test>)
+set_tests_properties(plaza2_qualification_stop PROPERTIES LABELS "unit;plaza2;sanitizer" TIMEOUT 30)
+add_executable(plaza2_private_identity_test plaza2_cgate/plaza2_private_identity_test.cpp)
+target_link_libraries(plaza2_private_identity_test PRIVATE moex_connector_host)
+add_test(NAME plaza2_private_identity COMMAND plaza2_private_identity_test)
+set_tests_properties(plaza2_private_identity PROPERTIES LABELS "unit;plaza2;sanitizer")
