@@ -1118,3 +1118,12 @@ Functional base PR #55: `e004251ae932a2d15736ecf3bc07d03fcf63d160`.
 See [accepted status](../docs/plaza2/integration/CERTIFICATION_STATUS.md).
 The new integration SHA was not run on T1. Historical September 9, September 10
 and September 11 PR54 router FAILs remain immutable defect evidence.
+
+## Offline pre-order safety follow-ons
+
+Native price authorization and explicit in-process recovered-order cancellation
+are implemented as separate drafts on the durable integration. Their latest
+scope and remaining live gaps are recorded in
+[the independent status matrix](../docs/plaza2/integration/CERTIFICATION_STATUS.md).
+The accepted zero-order T1 evidence retains its original PR56 source identity;
+no live order or Working-order outage status is promoted by these offline tests.

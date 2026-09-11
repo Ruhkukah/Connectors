@@ -20,3 +20,10 @@ There are no unexplained runtime differences. New send-gate and recovered-cancel
 work will be separately reviewable commits/PRs on this base. CI runs the complete
 Release suite including preflight, and the existing Linux ASan/UBSan/LSan suite.
 No VPS mutation, T1 connection, exchange order, merge, or performance optimization.
+
+## Receipt scope in follow-on branches
+
+The equivalence manifest describes clean integration commit
+0263bb15fbf96235216903c1209aa33a8be84ac7 (PR57), not the later price-gate or
+recovered-cancel implementations. Those are intentional separately reviewed
+runtime differences on descendants of the receipt's candidate.
