@@ -7,6 +7,7 @@
 #include "moex/plaza2_trade/plaza2_trade_codec.hpp"
 
 #include <chrono>
+#include <functional>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -15,6 +16,10 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace moex::connector_host {
+class ConnectorHost;
+}
 
 namespace moex::plaza2_trade {
 
@@ -320,6 +325,11 @@ class PersistentOrderController final {
     [[nodiscard]] const OrderLifecycleResult& last_result() const noexcept;
 
   private:
+    friend class moex::connector_host::ConnectorHost;
+    [[nodiscard]] OrderLifecycleResult accept_recovered_terminal(const OrderObservation& observation);
+    [[nodiscard]] OrderLifecycleResult
+    explicit_recovered_cancel(const OrderObservation& observation,
+                              const std::function<plaza2::cgate::Plaza2PublisherMessageResult()>& execute);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

@@ -156,6 +156,11 @@ class ConnectorHost final {
     [[nodiscard]] plaza2_trade::OrderLifecycleResult submit_order();
     [[nodiscard]] plaza2_trade::OrderLifecycleResult poll_order();
     [[nodiscard]] plaza2_trade::OrderLifecycleResult cancel_current_order();
+    [[nodiscard]] plaza2_trade::RecoveredOrderReconciliation reconcile_recovered_order();
+    [[nodiscard]] plaza2_trade::RecoveredCancelPlan prepare_recovered_cancel(const std::filesystem::path& artifact);
+    [[nodiscard]] plaza2_trade::OrderLifecycleResult cancel_recovered_order(const std::filesystem::path& artifact,
+                                                                            std::string_view authorized_sha256);
+
     [[nodiscard]] plaza2::cgate::Plaza2Error finish_order_epoch();
     [[nodiscard]] plaza2_trade::RestartReconciliationResult reconcile();
 

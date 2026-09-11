@@ -3,6 +3,8 @@
 #include "moex/plaza2/cgate/plaza2_private_state_bridge.hpp"
 
 #include <algorithm>
+#include <random>
+#include <iomanip>
 #include <array>
 #include <bit>
 #include <cctype>
@@ -1926,6 +1928,171 @@ struct Plaza2TestTradeTransport::Impl {
         return {};
     }
 
+    RecoveredOrderReconciliation inspect_recovered(const RecoveredOrderKey& key) const {
+        RecoveredOrderReconciliation blocked;
+        blocked.key = key;
+        blocked.generation = host.recovery_status().generation;
+        if (!order_may_exist || !intent() || blocked.generation <= order_generation ||
+            recovered_cancel_evidence_failed) {
+            blocked.outcome = RecoveredOrderOutcome::GenerationNotFresh;
+            return blocked;
+        }
+        if (key.account != intent()->broker_code + intent()->client_code || key.isin_id != intent()->isin_id ||
+            key.sess_id != config.target_session_id || key.ext_id != intent()->ext_id || key.side != intent()->side ||
+            key.price != intent()->price || key.quantity != intent()->quantity || cancel_identity_conflict) {
+            blocked.outcome = RecoveredOrderOutcome::IdentityConflict;
+            return blocked;
+        }
+        const auto& state = host.private_state();
+        const auto participant = state.find_limit_by_code(key.account);
+        const auto provenance = target_refdata_provenance();
+        bool fresh = host.started() && !host.recovering() && host.runtime_health().all_active() &&
+                     host.recovery_status().operation == Plaza2SessionOperation::Running &&
+                     host.trade_replay_anchor_ready() && host.trade_replay_anchor_used() && provenance.ready &&
+                     host.aggr_online() && host.aggr_snapshot_complete() && participant.match_count == 1 &&
+                     participant.exact &&
+                     participant.exact->participant_kind == private_state::LimitParticipantKind::Client;
+        for (auto required : kRequiredPrivateStreams) {
+            fresh &= std::count_if(state.stream_health().begin(), state.stream_health().end(), [&](const auto& stream) {
+                         return stream.stream_code == required && stream.online && stream.snapshot_complete &&
+                                (required != generated::StreamCode::kFortsUserorderbookRepl ||
+                                 stream.periodic_snapshot_consistent);
+                     }) == 1;
+        }
+        auto result = reconcile_recovered_order(key, blocked.generation, fresh, state.own_orders(), state.own_trades());
+        if (result.observation) {
+            for (const auto& row : state.own_orders()) {
+                if (!row.from_user_book || row.client_code != key.account ||
+                    (row.ext_id != key.ext_id && row.private_order_id != result.exchange_order_id &&
+                     row.public_order_id != result.exchange_order_id))
+                    continue;
+                // Keep surfaces separate, but never authorize over an explicit
+                // conflicting candidate on the fresh account census.
+                if (row.identity_conflict || row.isin_id != key.isin_id || row.sess_id != key.sess_id ||
+                    row.dir != static_cast<int>(key.side) ||
+                    private_state::parse_session_decimal(row.price) !=
+                        private_state::parse_session_decimal(key.price) ||
+                    row.private_order_id != result.exchange_order_id ||
+                    row.public_order_id != result.exchange_order_id ||
+                    row.private_amount_rest != result.observation->remaining_quantity) {
+                    result.outcome = RecoveredOrderOutcome::IdentityConflict;
+                    result.observation.reset();
+                    return result;
+                }
+            }
+        }
+        if (!result.evidence_json.empty()) {
+            const auto anchor = *host.trade_replay_anchor_used();
+            std::ostringstream proof;
+            proof << "{\"order\":" << result.evidence_json << ",\"pos_anchor\":[" << anchor.trades_rev << ','
+                  << anchor.trades_lifenum << ',' << anchor.server_time
+                  << "],\"ref_lifenum\":" << provenance.current_lifenum << ",\"uob_rows\":[";
+            bool first = true;
+            for (const auto& row : state.own_orders()) {
+                if (!row.from_user_book || row.client_code != key.account || row.isin_id != key.isin_id)
+                    continue;
+                if (!first)
+                    proof << ',';
+                first = false;
+                proof << '[' << row.public_order_id << ',' << row.private_order_id << ',' << row.ext_id << ','
+                      << row.private_amount_rest << ',' << row.private_action << ',' << row.identity_conflict << ','
+                      << row.sess_id << ',' << row.dir << ',' << std::quoted(row.price) << ','
+                      << row.user_orderbook_commit_sequence << ']';
+            }
+            proof << "]}";
+            result.evidence_json = proof.str();
+            result.evidence_sha256 = cgate::plaza2_sha256_hex(result.evidence_json);
+        }
+        return result;
+    }
+
+    struct PreparedRecoveredCancel {
+        RecoveredCancelPlan plan;
+        Plaza2TradeEncodedCommand command;
+        std::uint32_t user_id{0};
+    };
+    std::optional<PreparedRecoveredCancel> prepared_cancel;
+    std::uint64_t recovered_cancel_attempt_generation{0};
+    bool recovered_cancel_evidence_failed{false};
+
+    RecoveredCancelPlan prepare_cancel(const RecoveredOrderKey& key, const std::filesystem::path& path) {
+        RecoveredCancelPlan plan;
+        plan.artifact = path;
+        plan.reconciliation = inspect_recovered(key);
+        if (!plan.eligible()) {
+            plan.error = std::string(recovered_order_outcome_name(plan.reconciliation.outcome));
+            return plan;
+        }
+        if (recovered_cancel_attempt_generation == plan.reconciliation.generation) {
+            plan.error = "one operator cancel attempt per recovery generation";
+            return plan;
+        }
+        DelOrderRequest request;
+        request.broker_code = intent()->broker_code;
+        request.client_code = intent()->client_code;
+        request.isin_id = key.isin_id;
+        request.order_id = plan.reconciliation.exchange_order_id;
+        const auto command = Plaza2TradeCodec{}.encode(Plaza2TradeCommandRequest{request});
+        if (!command.validation.ok()) {
+            plan.error = "exact recovered DelOrder encoding failed";
+            return plan;
+        }
+        std::random_device random;
+        std::ostringstream nonce;
+        for (int i = 0; i != 4; ++i)
+            nonce << std::hex << std::setw(8) << std::setfill('0') << random();
+        plan.canonical_json =
+            "{\"schema\":\"moex.recovered_cancel.v1\",\"nonce\":\"" + nonce.str() +
+            "\",\"command\":\"DelOrder\",\"message_id\":461,\"user_id\":" + std::to_string(intent()->cancel_user_id) +
+            ",\"add_authority_sha256\":\"" + intent()->sha256 + "\"" + ",\"payload_sha256\":\"" +
+            cgate::plaza2_sha256_hex(command.payload) + "\",\"reconciliation_sha256\":\"" +
+            plan.reconciliation.evidence_sha256 + "\",\"reconciliation\":" + plan.reconciliation.evidence_json + "}\n";
+        plan.sha256 = cgate::plaza2_sha256_hex(plan.canonical_json);
+        if (!write_recovered_artifact(path, plan.canonical_json, plan.error))
+            return plan;
+        prepared_cancel = PreparedRecoveredCancel{plan, command, intent()->cancel_user_id};
+        return plan;
+    }
+
+    Plaza2PublisherMessageResult execute_cancel(const std::filesystem::path& path, std::string_view sha) {
+        const auto refuse = [](std::string message) {
+            Plaza2PublisherMessageResult result;
+            result.validation_error = invalid(std::move(message));
+            return result;
+        };
+        if (!prepared_cancel || path != prepared_cancel->plan.artifact || sha != prepared_cancel->plan.sha256)
+            return refuse("new exact operator artifact hash required");
+        if (const auto error = host.poll(); error)
+            return refuse(error.message);
+        const auto current = inspect_recovered(prepared_cancel->plan.reconciliation.key);
+        if (current.outcome != RecoveredOrderOutcome::ExactlyOneWorkingMatch ||
+            current.generation != prepared_cancel->plan.reconciliation.generation ||
+            current.evidence_sha256 != prepared_cancel->plan.reconciliation.evidence_sha256 ||
+            recovered_cancel_attempt_generation == current.generation)
+            return refuse("reconciliation changed or generation already attempted; new authorization required");
+        std::string error;
+        if (!consume_recovered_artifact(path, prepared_cancel->plan.canonical_json, error))
+            return refuse(error);
+        recovered_cancel_attempt_generation = current.generation;
+        // No poll, Add, retry, or mass-cancel path between one-shot consumption and
+        // this exact command. Existing publisher health, arming and rate gates apply.
+        const auto before = host.publisher_call_counts();
+        auto result = host.post_validated("DelOrder", prepared_cancel->command.payload, prepared_cancel->user_id, true);
+        const auto after = host.publisher_call_counts();
+        std::ostringstream receipt;
+        receipt << "{\"plan_sha256\":\"" << sha << "\",\"generation\":" << current.generation
+                << ",\"msgnew\":" << after.msgnew - before.msgnew << ",\"post\":" << after.post - before.post
+                << ",\"post_invoked\":" << result.post_invoked
+                << ",\"certainty\":" << static_cast<int>(result.certainty)
+                << ",\"allocation_runtime_code\":" << result.allocation_error.runtime_code
+                << ",\"post_runtime_code\":" << result.post_error.runtime_code << "}\n";
+        if (!write_recovered_artifact(path.string() + ".submission.json", receipt.str(), error)) {
+            recovered_cancel_evidence_failed = true;
+            result.validation_error = invalid("mandatory recovered cancel receipt failed; epoch quarantined");
+        }
+        return result;
+    }
+
     Plaza2Error validate_session_price_binding() const {
         const auto* authorized = intent();
         if (!authorized || !authorized->session_price_binding)
@@ -2517,11 +2684,31 @@ struct Plaza2TestTradeTransport::Impl {
         }
         if (config.observation_ext_id != 0 ||
             (host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend && intent() != nullptr)) {
-            const auto observation =
-                observe_order(intent() != nullptr ? intent()->ext_id : config.observation_ext_id, participant_code(),
-                              intent() != nullptr ? intent()->side : config.observation_side,
-                              intent() != nullptr ? intent()->quantity : config.observation_quantity,
-                              host.private_state().own_orders(), host.private_state().own_trades());
+            std::optional<OrderObservation> observation;
+            if (order_may_exist && intent() && host.recovery_status().generation != order_generation) {
+                RecoveredOrderKey key;
+                key.epoch = intent()->sha256;
+                key.account = participant_code();
+                key.isin_id = intent()->isin_id;
+                key.sess_id = config.target_session_id;
+                key.ext_id = intent()->ext_id;
+                key.side = intent()->side;
+                key.price = intent()->price;
+                key.quantity = intent()->quantity;
+                key.known_exchange_id = cancel_order_id.value_or(0);
+                const auto recovered = inspect_recovered(key);
+                observation = recovered.observation;
+                if (!observation) {
+                    result.ok = false;
+                    result.error = std::string(recovered_order_outcome_name(recovered.outcome));
+                }
+            } else {
+                observation =
+                    observe_order(intent() != nullptr ? intent()->ext_id : config.observation_ext_id,
+                                  participant_code(), intent() != nullptr ? intent()->side : config.observation_side,
+                                  intent() != nullptr ? intent()->quantity : config.observation_quantity,
+                                  host.private_state().own_orders(), host.private_state().own_trades());
+            }
             if (observation.has_value()) {
                 auto normalized = *observation;
                 // Replication uses the seven-symbol participant identity
@@ -2558,6 +2745,18 @@ Plaza2TestTradeTransport::Plaza2TestTradeTransport(Plaza2TestTradeTransportConfi
 Plaza2TestTradeTransport::~Plaza2TestTradeTransport() = default;
 Plaza2TestTradeTransport::Plaza2TestTradeTransport(Plaza2TestTradeTransport&&) noexcept = default;
 Plaza2TestTradeTransport& Plaza2TestTradeTransport::operator=(Plaza2TestTradeTransport&&) noexcept = default;
+
+RecoveredOrderReconciliation Plaza2TestTradeTransport::inspect_recovered_order(const RecoveredOrderKey& key) const {
+    return impl_->inspect_recovered(key);
+}
+RecoveredCancelPlan Plaza2TestTradeTransport::prepare_recovered_cancel(const RecoveredOrderKey& key,
+                                                                       const std::filesystem::path& path) {
+    return impl_->prepare_cancel(key, path);
+}
+Plaza2PublisherMessageResult Plaza2TestTradeTransport::execute_recovered_cancel(const std::filesystem::path& path,
+                                                                                std::string_view sha) {
+    return impl_->execute_cancel(path, sha);
+}
 
 Plaza2Error Plaza2TestTradeTransport::bind_authorized_plan(const PreSendPlan& plan) {
     return impl_->bind_authorized_plan(plan);
@@ -2603,6 +2802,8 @@ Plaza2Error Plaza2TestTradeTransport::reset_order_epoch() {
     impl_->cancel_order_id.reset();
     impl_->cancel_identity_conflict = false;
     impl_->safe_terminal_epoch = false;
+    impl_->prepared_cancel.reset();
+    impl_->recovered_cancel_attempt_generation = 0;
     impl_->config.execution_safety_receipt_path = impl_->base_execution_safety_receipt_path;
     return {};
 }

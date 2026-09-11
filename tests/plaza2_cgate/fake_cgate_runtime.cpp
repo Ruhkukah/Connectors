@@ -1180,6 +1180,21 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
             }
         }
     }
+    if (fake_flag("MOEX_FAKE_REGULAR_RECOVERED_ORDER") && stream_code == StreamCode::kFortsTradeRepl) {
+        for (auto& row : script) {
+            if (row.table_code != kFortsTradeReplOrdersLog)
+                continue;
+            find_field(row, kFortsTradeReplOrdersLogPublicOrderId)->signed_value =
+                find_field(row, kFortsTradeReplOrdersLogPrivateOrderId)->signed_value;
+            find_field(row, kFortsTradeReplOrdersLogPrice)->text = "103000";
+            const bool terminal = g_cancel_after_cleanup || fake_flag("MOEX_FAKE_CANCELLED_ORDER");
+            for (auto code : {kFortsTradeReplOrdersLogPublicAmount, kFortsTradeReplOrdersLogPrivateAmount})
+                find_field(row, code)->signed_value = 1;
+            for (auto code : {kFortsTradeReplOrdersLogPublicAmountRest, kFortsTradeReplOrdersLogPrivateAmountRest,
+                              kFortsTradeReplOrdersLogPublicAction, kFortsTradeReplOrdersLogPrivateAction})
+                find_field(row, code)->signed_value = terminal ? 0 : 1;
+        }
+    }
     return script;
 }
 

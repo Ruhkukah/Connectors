@@ -668,6 +668,27 @@ struct ConnectorHost::Impl {
         return out;
     }
 
+    RecoveredOrderKey recovered_key() const {
+        const auto& c = persistent_order ? *persistent_order : config.order;
+        RecoveredOrderKey key;
+        key.epoch = c.run_id;
+        key.account = c.broker_code + c.client_code;
+        key.isin_id = c.isin_id;
+        key.sess_id = config.transport.target_session_id;
+        key.ext_id = c.ext_id;
+        key.side = c.side;
+        key.price = c.price;
+        key.quantity = c.quantity;
+        if (persistent) {
+            const auto& result = persistent->last_result();
+            if (result.add_reply && result.add_reply->accepted && result.add_reply->order_id)
+                key.known_exchange_id = *result.add_reply->order_id;
+            else if (result.observation)
+                key.known_exchange_id = result.observation->private_order_id;
+        }
+        return key;
+    }
+
     OrderLifecycleConfig current_order() const {
         return current_order(request_from_config());
     }
@@ -1066,6 +1087,56 @@ OrderLifecycleResult ConnectorHost::cancel_current_order() {
     if (p.persistent == nullptr)
         return {.message = "begin_order with an exact authorization is required"};
     return p.persistent->cancel_order();
+}
+
+RecoveredOrderReconciliation ConnectorHost::reconcile_recovered_order() {
+    auto& p = *impl_;
+    if (!p.persistent || !p.persistent->active() || !p.persistent->submission_attempted() || p.checkpoint_blocked)
+        return {.outcome = RecoveredOrderOutcome::GenerationNotFresh};
+    if (poll())
+        return {.outcome = RecoveredOrderOutcome::PrivateStreamNotCurrent};
+    auto reconciliation = p.transport.inspect_recovered_order(p.recovered_key());
+    if (reconciliation.outcome == RecoveredOrderOutcome::TerminalAlready && reconciliation.observation)
+        (void)p.persistent->accept_recovered_terminal(*reconciliation.observation);
+    return reconciliation;
+}
+
+RecoveredCancelPlan ConnectorHost::prepare_recovered_cancel(const std::filesystem::path& artifact) {
+    auto& p = *impl_;
+    const auto reconciliation = reconcile_recovered_order();
+    if (reconciliation.outcome != RecoveredOrderOutcome::ExactlyOneWorkingMatch)
+        return {.reconciliation = reconciliation,
+                .error = std::string(recovered_order_outcome_name(reconciliation.outcome))};
+    // Retain the old journal before any later cancel/reply replaces its current
+    // fields. This is evidence only; it cannot authorize a publisher call.
+    const auto journal_path = p.persistent->last_result().journal_path;
+    std::ifstream journal(journal_path, std::ios::binary);
+    const std::string bytes{std::istreambuf_iterator<char>(journal), {}};
+    std::string error;
+    if (!journal || bytes.empty() ||
+        !write_recovered_artifact(artifact.string() + ".journal-before.json", bytes, error))
+        return {.reconciliation = reconciliation, .error = "prior epoch journal could not be preserved: " + error};
+    return p.transport.prepare_recovered_cancel(p.recovered_key(), artifact);
+}
+
+OrderLifecycleResult ConnectorHost::cancel_recovered_order(const std::filesystem::path& artifact,
+                                                           std::string_view sha) {
+    auto& p = *impl_;
+    const auto reconciliation = reconcile_recovered_order();
+    if (reconciliation.outcome == RecoveredOrderOutcome::TerminalAlready && p.persistent) {
+        auto terminal = p.persistent->last_result();
+        terminal.cancel_submission = {}; // No command was issued by this call.
+        return terminal;
+    }
+    if (reconciliation.outcome != RecoveredOrderOutcome::ExactlyOneWorkingMatch || !reconciliation.observation)
+        return {.message = std::string(recovered_order_outcome_name(reconciliation.outcome))};
+    std::optional<cg::Plaza2PublisherMessageResult> attempt;
+    auto result = p.persistent->explicit_recovered_cancel(*reconciliation.observation, [&] {
+        attempt = p.transport.execute_recovered_cancel(artifact, sha);
+        return *attempt;
+    });
+    result.cancel_submission = attempt.value_or(cg::Plaza2PublisherMessageResult{});
+    return result;
 }
 
 cg::Plaza2Error ConnectorHost::finish_order_epoch() {

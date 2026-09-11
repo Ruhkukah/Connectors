@@ -22,6 +22,7 @@ cmake_language(DEFER CALL moex_assert_plaza2_trade_offline_boundary)
 target_compile_features(moex_plaza2_trade_offline_codec PUBLIC cxx_std_20)
 
 add_library(moex_plaza2_trade_order_lifecycle STATIC
+    src/plaza2_recovered_cancel.cpp
     src/plaza2_order_lifecycle.cpp
     src/plaza2_test_trade_transport.cpp)
 

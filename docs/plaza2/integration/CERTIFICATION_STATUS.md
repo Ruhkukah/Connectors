@@ -27,3 +27,16 @@ functional code, not a newly live-qualified executable. No order is authorized.
 
 Native session-price authorization and final pre-post comparison are implemented in the separate price-gate
 PR; see PRICE_SEND_GATE.md. This does not promote any live order status or close the recovered-cancel gap.
+
+## Current follow-on implementation status (offline only)
+
+| Requirement | Current status |
+|---|---|
+| Authoritative session terms in Add gate | IMPLEMENTED; local/Linux price-gate suites pass |
+| Explicit post-recovery operator cancel | IMPLEMENTED for an in-process persistent epoch; see RECOVERED_CANCEL.md |
+| Live order lifecycle | NOT YET TESTED |
+| Working order across transport loss | NOT YET TESTED |
+| Restarted-process nonterminal cancellation | Not enabled; restored checkpoint remains fail-closed |
+
+The accepted live PASS rows above retain their original source identity. The integration-base gap rows are
+historical; these follow-on rows describe the new code. No new live qualification claim is made.
