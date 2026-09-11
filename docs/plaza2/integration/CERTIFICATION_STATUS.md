@@ -22,3 +22,8 @@ The historical September 9, September 10 and September 11 PR54 router FAILs are
 preserved. New PASS evidence does not relabel them. PR51/PR56 evidence retains its
 original source identity. The new integration candidate is offline-equivalent
 functional code, not a newly live-qualified executable. No order is authorized.
+
+## Price gate follow-on (offline)
+
+Native session-price authorization and final pre-post comparison are implemented in the separate price-gate
+PR; see PRICE_SEND_GATE.md. This does not promote any live order status or close the recovered-cancel gap.

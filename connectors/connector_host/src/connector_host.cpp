@@ -609,9 +609,17 @@ struct ConnectorHost::Impl {
                                 out.active_own_order_count == 0 && out.aggr_ready && out.target_aggr20_uncrossed &&
                                 out.bbo_age_ms >= 0 && max_age > 0 && max_age <= 5000 &&
                                 static_cast<std::uint64_t>(out.bbo_age_ms) <= max_age;
+        const auto price_gate = inspect_session_price(
+            data.find_future_session_terms(out.target_isin_id), out.target_isin_id, out.session_id, out.refdata_lifenum,
+            out.private_streams_ready && out.target_refdata_provenance_ready, config.order.price);
+        out.session_terms_present = price_gate.session_terms_present;
+        out.session_terms_current = price_gate.session_terms_current;
+        out.session_price_bounds_valid = price_gate.session_price_bounds_valid;
+        out.order_price_within_exchange_bounds = price_gate.order_price_within_exchange_bounds;
+        out.order_price_tick_aligned = price_gate.order_price_tick_aligned;
         out.new_order_allowed = config.purpose == HostPurpose::OrderTest && out.observation_ready &&
-                                persistent == nullptr && !recovered_epoch_active && !checkpoint_blocked &&
-                                authorized_sha.empty() && !submitted &&
+                                price_gate.allowed() && persistent == nullptr && !recovered_epoch_active &&
+                                !checkpoint_blocked && authorized_sha.empty() && !submitted &&
                                 epoch_counter != std::numeric_limits<std::uint64_t>::max();
         out.last_error = error;
         out.causal_error = causal_error;
@@ -667,6 +675,13 @@ struct ConnectorHost::Impl {
     OrderLifecycleConfig current_order(const ConnectorHostOrderRequest& request) const {
         auto value = order_for_request(request);
         const auto view = snapshot();
+        value.require_session_price_binding = true;
+        value.session_price_binding.reset();
+        if (view.private_streams_ready && view.target_refdata_provenance_ready) {
+            if (const auto terms = transport.host().private_state().find_future_session_terms(
+                    value.isin_id, view.session_id, view.refdata_lifenum))
+                value.session_price_binding = SessionPriceBinding{view.recovery.generation, *terms};
+        }
         value.smoke = {};
         value.smoke.instrument_exists = view.target_refdata_provenance_ready;
         value.smoke.tradable_session = view.session_status == 1 && view.instrument_status == 1;
@@ -710,6 +725,7 @@ struct ConnectorHost::Impl {
         }
         const auto& c = order_config;
         Plaza2AuthorizedOrderIntent intent;
+        intent.session_price_binding = c.session_price_binding;
         intent.sha256 = candidate.sha256;
         intent.canonical_json = candidate.canonical_json;
         intent.profile_id = c.profile_id;
@@ -918,7 +934,7 @@ cg::Plaza2Error ConnectorHost::authorize(std::string_view canonical, std::string
         p.error = candidate.message.empty() ? "OBSERVATION_NOT_READY" : candidate.message;
         return invalid(p.error);
     }
-    return p.authorize_candidate(candidate, p.config.order, canonical, sha);
+    return p.authorize_candidate(candidate, p.current_order(), canonical, sha);
 }
 
 OrderLifecycleResult ConnectorHost::submit() {
@@ -1154,6 +1170,11 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
         << ",\"causal_error\":{\"connector_code\":" << static_cast<unsigned>(s.causal_error.code)
         << ",\"runtime_code\":" << (s.causal_error.runtime_code ? std::to_string(s.causal_error.runtime_code) : "null")
         << ",\"message\":" << quoted(s.causal_error.message) << "}";
+    out << ",\"session_terms_present\":" << s.session_terms_present
+        << ",\"session_terms_current\":" << s.session_terms_current
+        << ",\"session_price_bounds_valid\":" << s.session_price_bounds_valid
+        << ",\"order_price_within_exchange_bounds\":" << s.order_price_within_exchange_bounds
+        << ",\"order_price_tick_aligned\":" << s.order_price_tick_aligned;
     out << ",\"recovery_generation\":" << s.recovery.generation << ",\"recovery_attempts\":" << s.recovery.attempts
         << ",\"recovery_transitions\":" << s.recovery.transitions
         << ",\"recovery_deadline_exhausted\":" << s.recovery.deadline_exhausted;
