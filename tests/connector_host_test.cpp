@@ -276,28 +276,115 @@ int main(int argc, char** argv) {
                           "initial bootstrap INTERNAL is always fatal");
             test::require(!host.stop(), "stop initial bootstrap internal");
         }
-        for (const auto* operation : {"MOEX_FAKE_ENV_OPEN_RESULT", "MOEX_FAKE_CONNECTION_CREATE_RESULT",
-                                      "MOEX_FAKE_LISTENER_OPEN_RESULT", "MOEX_FAKE_PUBLISHER_OPEN_RESULT"}) {
+        for (const char* code : {"131072", "131073"}) {
+            for (const auto* operation : {"MOEX_FAKE_ENV_OPEN_RESULT", "MOEX_FAKE_CONNECTION_CREATE_RESULT",
+                                          "MOEX_FAKE_LISTENER_OPEN_RESULT", "MOEX_FAKE_PUBLISHER_OPEN_RESULT"}) {
+                auto now = std::chrono::steady_clock::now();
+                auto c = config_for(fixture);
+                c.transport.host.recovery_now = [&] { return now; };
+                ConnectorHost host(c);
+                warm(host);
+                ::setenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS", "1", 1);
+                test::require(!host.poll(), "bootstrap exclusion socket loss");
+                ::unsetenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS");
+                ::setenv(operation, code, 1);
+                now += std::chrono::seconds(1);
+                auto error = host.poll();
+                for (int i = 0; i < 10 && !error; ++i)
+                    error = host.poll();
+                ::unsetenv(operation);
+                test::require(error && host.snapshot().state == ConnectorHostState::Failed &&
+                                  host.snapshot().recovery.first_cause.runtime_code == 131072,
+                              "non-connection-open bootstrap failures remain fatal during recovery");
+                test::require(!host.stop(), "stop bootstrap exclusion");
+            }
+        }
+        {
+            ConnectorHost host(config_for(fixture));
+            ::setenv("MOEX_FAKE_CONNECTION_OPEN_RESULT", "131073", 1);
+            const auto error = host.start();
+            ::unsetenv("MOEX_FAKE_CONNECTION_OPEN_RESULT");
+            test::require(error && host.snapshot().state == ConnectorHostState::Failed &&
+                              host.snapshot().recovery.attempts == 0 && error.runtime_code == 131073,
+                          "initial connection-open INVALIDARGUMENT never retries");
+            test::require(!host.stop(), "stop initial invalid argument");
+        }
+        {
+            reset();
             auto now = std::chrono::steady_clock::now();
             auto c = config_for(fixture);
             c.transport.host.recovery_now = [&] { return now; };
             ConnectorHost host(c);
             warm(host);
             ::setenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS", "1", 1);
-            test::require(!host.poll(), "bootstrap exclusion socket loss");
+            test::require(!host.poll() && host.snapshot().causal_health.connection == 1 &&
+                              host.snapshot().recovery.origin == Plaza2FailureOrigin::ConnectionProcess,
+                          "September 11: process INTERNAL with connection ERROR");
             ::unsetenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS");
-            ::setenv(operation, "131072", 1);
+            ::setenv("MOEX_FAKE_CONNECTION_OPEN_RESULT", "131073", 1);
             now += std::chrono::seconds(1);
-            auto error = host.poll();
-            for (int i = 0; i < 10 && !error; ++i)
-                error = host.poll();
-            ::unsetenv(operation);
-            test::require(error && host.snapshot().state == ConnectorHostState::Failed &&
-                              host.snapshot().recovery.first_cause.runtime_code == 131072,
-                          "non-connection-open bootstrap INTERNAL remains fatal during recovery");
-            test::require(!host.stop(), "stop bootstrap exclusion");
+            const auto error = host.poll();
+            ::unsetenv("MOEX_FAKE_CONNECTION_OPEN_RESULT");
+            const auto result = host.snapshot();
+            std::cout << "SEPTEMBER_11_REOPEN_REGRESSION returned_error=" << static_cast<bool>(error)
+                      << " attempts=" << result.recovery.attempts
+                      << " first=" << result.recovery.first_cause.runtime_code
+                      << " current=" << result.recovery.cause.runtime_code << '\n';
+            test::require(!error && result.state == ConnectorHostState::Recovering && result.recovery.attempts == 1 &&
+                              result.recovery.first_cause.runtime_code == 131072 &&
+                              result.recovery.cause.runtime_code == 131073 && count(1) == 0,
+                          "September 11: previously opened identity retries INVALIDARGUMENT");
+            test::require(!host.stop(), "stop September 11 regression");
         }
-        for (const char* result : {"131073", "131074", "131077", "999999"}) {
+        {
+            Plaza2TestSessionHost host(config_for(fixture).transport.host);
+            test::require(!host.start() && !host.stop(), "first operational lifetime opens successfully");
+            ::setenv("MOEX_FAKE_CONNECTION_OPEN_RESULT", "131073", 1);
+            const auto error = host.start();
+            ::unsetenv("MOEX_FAKE_CONNECTION_OPEN_RESULT");
+            test::require(error.runtime_code == 131073 &&
+                              host.recovery_status().operation == Plaza2SessionOperation::Failed &&
+                              host.recovery_status().attempts == 0,
+                          "previous lifetime cannot authorize initial INVALIDARGUMENT retry");
+            test::require(!host.stop(), "stop second operational lifetime");
+        }
+        for (const bool change_ini : {false, true}) {
+            reset();
+            auto now = std::chrono::steady_clock::now();
+            auto c = config_for(fixture);
+            c.transport.host.recovery_now = [&] { return now; };
+            const auto ini_path = fixture.config_dir / "t1.ini";
+            std::ifstream ini_input(ini_path, std::ios::binary);
+            const std::string original_ini((std::istreambuf_iterator<char>(ini_input)), {});
+            ini_input.close();
+            ConnectorHost host(c);
+            warm(host);
+            ::setenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS", "1", 1);
+            test::require(!host.poll(), "identity mutation enters accepted recovery");
+            ::unsetenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS");
+            if (change_ini) {
+                std::ofstream output(ini_path, std::ios::app);
+                output << "\n; changed router endpoint/profile\n";
+            } else {
+                ::setenv("MOEX_PLAZA2_TEST_CREDENTIALS", "changed-invalid-identity", 1);
+            }
+            ::setenv("MOEX_FAKE_CONNECTION_OPEN_RESULT", "131073", 1);
+            now += std::chrono::seconds(1);
+            const auto error = host.poll();
+            ::unsetenv("MOEX_FAKE_CONNECTION_OPEN_RESULT");
+            ::setenv("MOEX_PLAZA2_TEST_CREDENTIALS", "test-only-secret", 1);
+            {
+                std::ofstream output(ini_path, std::ios::binary);
+                output << original_ini;
+            }
+            test::require(error && error.runtime_code == 0 &&
+                              error.message.find("connection identity changed") != std::string::npos &&
+                              host.snapshot().state == ConnectorHostState::Failed &&
+                              host.snapshot().recovery.attempts == 1 && count(1) == 0,
+                          "wrong recovery configuration fails before invoking connection open");
+            test::require(!host.stop(), "stop changed identity");
+        }
+        for (const char* result : {"131074", "131077", "999999"}) {
             auto now = std::chrono::steady_clock::now();
             auto c = config_for(fixture);
             c.transport.host.recovery_now = [&] { return now; };
@@ -313,7 +400,7 @@ int main(int argc, char** argv) {
             test::require(error && host.snapshot().state == ConnectorHostState::Failed &&
                               host.snapshot().recovery.origin == Plaza2FailureOrigin::ConnectionOpen &&
                               host.snapshot().recovery.attempts == 1,
-                          "only connection-open INTERNAL is transient within recovery");
+                          "unsupported, incorrect-state and unknown connection-open results remain fatal");
             test::require(!host.stop(), "stop connection-open exclusion");
         }
         // Deterministic recovery clock: no sleeps and no exchange endpoint.
@@ -412,49 +499,70 @@ int main(int argc, char** argv) {
                           "both causal errors persist in qualification JSON");
             test::require(!host.stop(), "stop failed state-query test");
         }
-        for (const bool exhaust : {false, true}) {
-            reset();
-            auto now = std::chrono::steady_clock::now();
-            auto c = config_for(fixture);
-            c.transport.host.recovery_now = [&] { return now; };
-            c.transport.host.recovery_deadline = std::chrono::seconds(5);
-            ConnectorHost host(c);
-            warm(host);
-            ::setenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS", "1", 1);
-            test::require(!host.poll(), "ready router loss enters recovery");
-            ::unsetenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS");
-            ::setenv("MOEX_FAKE_CONNECTION_OPEN_RESULT", "131072", 1);
-            for (int i = 0; i < 2; ++i) {
-                now += std::chrono::seconds(1);
-                test::require(!host.poll(), "failed reconnect bounded");
-                test::require(host.snapshot().state == ConnectorHostState::Recovering &&
-                                  host.snapshot().recovery.origin == Plaza2FailureOrigin::ConnectionOpen &&
-                                  host.snapshot().recovery.cause.runtime_code == 131072 &&
-                                  host.snapshot().recovery.cause.message == "cg_conn_open: CG_ERR_INTERNAL",
-                              "router-down connection open INTERNAL remains within the same recovery episode");
+        for (const auto code : {131072U, 131073U}) {
+            for (const bool exhaust : {false, true}) {
+                reset();
+                auto now = std::chrono::steady_clock::now();
+                auto c = config_for(fixture);
+                c.transport.host.recovery_now = [&] { return now; };
+                c.transport.host.recovery_deadline = std::chrono::seconds(5);
+                ConnectorHost host(c);
+                warm(host);
+                const auto generation = host.snapshot().recovery.generation;
+                ::setenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS", "1", 1);
+                test::require(!host.poll(), "ready router loss enters recovery");
+                ::unsetenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS");
+                ::setenv("MOEX_FAKE_CONNECTION_OPEN_RESULT", std::to_string(code).c_str(), 1);
+                for (int i = 0; i < 2; ++i) {
+                    now += std::chrono::seconds(1);
+                    test::require(!host.poll(), "failed reconnect bounded");
+                    test::require(
+                        host.snapshot().state == ConnectorHostState::Recovering &&
+                            host.snapshot().recovery.origin == Plaza2FailureOrigin::ConnectionOpen &&
+                            host.snapshot().recovery.cause.runtime_code == code &&
+                            host.snapshot().recovery.generation == generation &&
+                            host.snapshot().recovery.attempts == static_cast<unsigned>(i + 1) &&
+                            !host.snapshot().private_streams_ready && !host.snapshot().aggr_ready &&
+                            !host.snapshot().publisher_ready && !host.snapshot().reply_ready,
+                        "September 11 regression: absent router reopen remains in the same bounded recovery episode");
+                }
+                for (int idle = 0; idle < 10; ++idle)
+                    test::require(!host.poll(), "reopen retry does not busy-loop");
+                test::require(host.snapshot().recovery.attempts == 2, "idle polls do not create attempts");
+                ::unsetenv("MOEX_FAKE_CONNECTION_OPEN_RESULT");
+                if (exhaust) {
+                    now += std::chrono::seconds(3);
+                    const auto last = host.snapshot().causal_error;
+                    const auto error = host.poll();
+                    test::require(error && error.message == last.message && error.runtime_code == last.runtime_code &&
+                                      host.snapshot().state == ConnectorHostState::Failed &&
+                                      !host.snapshot().observation_ready,
+                                  "deadline fails with last causal error");
+                    test::require(host.snapshot().recovery.deadline_exhausted &&
+                                      host.snapshot().recovery.attempts == 2 &&
+                                      host.snapshot().recovery.first_cause.runtime_code == 131072 &&
+                                      host.snapshot().recovery.process_cause.runtime_code == 131072,
+                                  "bounded deadline retains initial INTERNAL alongside final reopen cause");
+                } else {
+                    ::setenv("MOEX_FAKE_FRESH_POS_ANCHOR", "1", 1);
+                    now += std::chrono::seconds(1);
+                    for (int i = 0; i < 10 && !host.snapshot().observation_ready; ++i)
+                        test::require(!host.poll(), "third reconnect succeeds");
+                    test::require(host.snapshot().observation_ready && host.snapshot().recovery.attempts == 3,
+                                  "two failed attempts then success");
+                    ::unsetenv("MOEX_FAKE_FRESH_POS_ANCHOR");
+                    const auto fresh = host.snapshot();
+                    test::require(
+                        fresh.recovery.generation == generation + 1 && fresh.private_streams_ready &&
+                            fresh.aggr_ready && fresh.publisher_ready && fresh.reply_ready &&
+                            fresh.pos_trades_rev == 91 && fresh.pos_trades_lifenum == 8 && fresh.trade_anchor &&
+                            fresh.trade_anchor->trades_rev == 91 && fresh.trade_anchor->trades_lifenum == 8 &&
+                            fresh.trade_replay_complete,
+                        "third attempt creates fresh POS to TRADE, private, AGGR and publisher/reply readiness");
+                }
+                test::require(count(1) == 0, "reconnect never posts");
+                test::require(!host.stop(), "stop retry test");
             }
-            ::unsetenv("MOEX_FAKE_CONNECTION_OPEN_RESULT");
-            if (exhaust) {
-                now += std::chrono::seconds(3);
-                const auto last = host.snapshot().causal_error;
-                const auto error = host.poll();
-                test::require(error && error.message == last.message && error.runtime_code == last.runtime_code &&
-                                  host.snapshot().state == ConnectorHostState::Failed &&
-                                  !host.snapshot().observation_ready,
-                              "deadline fails with last causal error");
-                test::require(host.snapshot().recovery.deadline_exhausted && host.snapshot().recovery.attempts == 2 &&
-                                  host.snapshot().recovery.first_cause.runtime_code == 131072 &&
-                                  host.snapshot().recovery.process_cause.runtime_code == 131072,
-                              "bounded deadline retains initial INTERNAL alongside final reopen cause");
-            } else {
-                now += std::chrono::seconds(1);
-                for (int i = 0; i < 10 && !host.snapshot().observation_ready; ++i)
-                    test::require(!host.poll(), "third reconnect succeeds");
-                test::require(host.snapshot().observation_ready && host.snapshot().recovery.attempts == 3,
-                              "two failed attempts then success");
-            }
-            test::require(count(1) == 0, "reconnect never posts");
-            test::require(!host.stop(), "stop retry test");
         }
         {
             reset();

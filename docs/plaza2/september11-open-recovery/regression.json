@@ -1,0 +1,27 @@
+{
+  "scenario": "September 11 process INTERNAL then fresh ConnectionOpen INVALIDARGUMENT",
+  "production_base_sha": "07460fc06562ebad395530aaceb628168c5557a2",
+  "immutable_live_source_sha": "58fade62e0ffd454547091b1934a342430aa8581",
+  "method": [
+    "Same new regression test object linked against unchanged PR53 Release archives for negative control.",
+    "New-policy binary linked against this branch. Fake CGate only."
+  ],
+  "negative_control": {
+    "exit_code": 1,
+    "stdout": [
+      "SEPTEMBER_11_REOPEN_REGRESSION returned_error=1 attempts=1 first=131072 current=131073"
+    ],
+    "stderr": "September 11: previously opened identity retries INVALIDARGUMENT\n"
+  },
+  "new_policy": {
+    "exit_code": 0,
+    "stdout": [
+      "SEPTEMBER_11_REOPEN_REGRESSION returned_error=0 attempts=1 first=131072 current=131073",
+      "connector host scenarios passed"
+    ],
+    "stderr": "scenario=3 AddOrder evidence is inconsistent, so no order identity was guessed\n"
+  },
+  "test_source_sha256": "9a9afc4da4067a51bf500ce3700690e937b93046ee0de71c017c1bd7d6b860aa",
+  "vps_mutation": false,
+  "t1_connection": false
+}
