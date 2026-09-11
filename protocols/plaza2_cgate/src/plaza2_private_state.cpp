@@ -2145,6 +2145,11 @@ std::span<const TradingSessionSnapshot> Plaza2PrivateStateProjector::sessions() 
     return impl_->session_snapshots;
 }
 
+std::optional<FutureSessionTerms> Plaza2PrivateStateProjector::find_future_session_terms(std::int32_t isin_id) const {
+    const auto it = impl_->instruments_by_isin.find(isin_id);
+    return it == impl_->instruments_by_isin.end() ? std::nullopt : it->second.future_session_terms;
+}
+
 std::optional<FutureSessionTerms>
 Plaza2PrivateStateProjector::find_future_session_terms(std::int32_t isin_id, std::int32_t sess_id,
                                                        std::uint64_t expected_lifenum) const {

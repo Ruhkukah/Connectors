@@ -609,6 +609,37 @@ int main(int argc, char** argv) {
                           "explicit callback cause outranks INTERNAL process result and ERROR connection");
             test::require(!host.stop(), "stop corrupt callback test");
         }
+        {
+            reset();
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "price-revision";
+            c.order.journal_root = fixture.root / "price-revision";
+            ConnectorHost host(c);
+            warm(host);
+            const auto before = host.plan();
+            test::require(before.ok && !host.begin_order(before.canonical_json, before.sha256),
+                          "bind initial session terms");
+            ::setenv("MOEX_FAKE_SESSION_PRICE_REVISION", "1", 1);
+            const auto refused = host.submit_order();
+            ::unsetenv("MOEX_FAKE_SESSION_PRICE_REVISION");
+            test::require(!refused.add_submission.post_invoked && host.snapshot().publisher_calls.msgnew == 0 &&
+                              host.snapshot().publisher_calls.post == 0,
+                          "terms change during preflight refuses Add before allocation");
+            test::require(!host.finish_order_epoch(), "definitely-not-sent epoch can close normally");
+            const auto after = host.plan();
+            test::require(after.ok && after.sha256 != before.sha256 &&
+                              after.canonical_json.find("\"repl_rev\":4") != std::string::npos,
+                          "new review binds changed committed terms");
+            test::require(static_cast<bool>(host.begin_order(before.canonical_json, before.sha256)),
+                          "old authority refused");
+            test::require(!host.begin_order(after.canonical_json, after.sha256),
+                          "new exact operator authority accepted");
+            test::require(host.snapshot().publisher_calls.post == 0, "reauthorization itself posts nothing");
+            test::require(static_cast<bool>(host.stop()), "authorized epoch remains protected until resolved");
+        }
         for (int loss_stage = 0; loss_stage != 3; ++loss_stage) {
             reset();
             ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);

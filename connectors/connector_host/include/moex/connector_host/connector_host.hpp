@@ -76,6 +76,11 @@ struct ConnectorHostSnapshot {
     bool order_epoch_active{false};
     bool order_authorized{false};
     bool order_submission_attempted{false};
+    bool session_terms_present{false};
+    bool session_terms_current{false};
+    bool session_price_bounds_valid{false};
+    bool order_price_within_exchange_bounds{false};
+    bool order_price_tick_aligned{false};
     bool new_order_allowed{false};
     std::optional<plaza2_trade::OrderLifecycleState> lifecycle_state;
     std::optional<plaza2_trade::OrderReplyObservation> add_reply;
