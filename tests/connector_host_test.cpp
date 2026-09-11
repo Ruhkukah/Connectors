@@ -640,6 +640,58 @@ int main(int argc, char** argv) {
             test::require(host.snapshot().publisher_calls.post == 0, "reauthorization itself posts nothing");
             test::require(static_cast<bool>(host.stop()), "authorized epoch remains protected until resolved");
         }
+        for (bool shift : {false, true}) {
+            reset();
+            auto c = config_for(fixture);
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.transport.max_aggr20_age = std::chrono::milliseconds(1000);
+            c.order.policy = first_order_deep_passive_policy();
+            c.order.run_id = shift ? "deep-shift" : "deep-stable";
+            c.order.journal_root = fixture.root / c.order.run_id;
+            ConnectorHost host(c);
+            warm(host);
+            const auto proposal = host.first_order_price_proposal();
+            test::require(proposal.buy.eligible && proposal.sell.eligible && proposal.buy.price_units == 9300000000LL &&
+                              proposal.sell.price_units == 11200000000LL,
+                          "native both-side deep proposal from current terms");
+            ConnectorHostOrderRequest request{.side = Plaza2TradeSide::Sell,
+                                              .price = "112000",
+                                              .base_contract_code = "RTS",
+                                              .comment = "deep-policy",
+                                              .quantity = 1};
+            const auto plan = host.plan_order(request);
+            test::require(plan.ok && plan.canonical_json.find("FIRST_ORDER_DEEP_PASSIVE_V1") != std::string::npos &&
+                              plan.canonical_json.find("first_order_bbo") != std::string::npos,
+                          "deep canonical policy and reviewed BBO: " + plan.message);
+            test::require(!host.begin_order(request, plan.canonical_json, plan.sha256),
+                          "explicit exact deep authority");
+            if (shift)
+                ::setenv("MOEX_FAKE_FIRST_ORDER_BBO_SHIFT", "1", 1);
+            const auto result = host.submit_order();
+            test::require(result.add_submission.post_invoked == !shift, "final current BBO cushion controls Add");
+            test::require(count(0) == (shift ? 0U : 1U) && count(1) == (shift ? 0U : 1U),
+                          "BBO invalidation occurs before allocation/post");
+            ::unsetenv("MOEX_FAKE_FIRST_ORDER_BBO_SHIFT");
+            if (!shift) {
+                ::setenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER", "1", 1);
+                ::setenv("MOEX_FAKE_FIRST_ORDER_FILLED", "1", 1);
+                ::setenv("MOEX_FAKE_RESTART_FILLED", "1", 1);
+                ::setenv("MOEX_FAKE_FORCE_TRADE_TERMINAL", "1", 1);
+                const auto filled = host.poll_order();
+                test::require(filled.state == OrderLifecycleState::Filled && count(1) == 1,
+                              "deep order fill freezes authority without cleanup order");
+                test::require(!host.finish_order_epoch() && !host.plan_order(request).ok &&
+                                  !host.snapshot().new_order_allowed &&
+                                  host.snapshot().last_error.find("FIRST_ORDER_FILLED") != std::string::npos,
+                              "first-order fill latch survives epoch finish");
+                ::unsetenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER");
+                ::unsetenv("MOEX_FAKE_FIRST_ORDER_FILLED");
+                ::unsetenv("MOEX_FAKE_RESTART_FILLED");
+                ::unsetenv("MOEX_FAKE_FORCE_TRADE_TERMINAL");
+            }
+        }
         for (int stage = 0; stage != 5; ++stage) {
             reset();
             ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);

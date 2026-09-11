@@ -1,6 +1,7 @@
 #pragma once
 
 #include "moex/plaza2_trade/plaza2_session_price_gate.hpp"
+#include "moex/plaza2_trade/plaza2_deep_passive.hpp"
 
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
@@ -161,6 +162,14 @@ struct OrderSmokePolicy {
     bool require_zero_starting_position{false};
 };
 
+inline OrderSmokePolicy first_order_deep_passive_policy() {
+    return {.version = std::string(kFirstOrderDeepPassiveVersion),
+            .sha256 = first_order_deep_passive_sha256(),
+            .max_distance_ticks = 4,
+            .max_aggr20_age_ms = kFirstOrderBboMaxAgeMs,
+            .require_zero_starting_position = true};
+}
+
 struct OrderLifecycleConfig {
     std::string run_id;
     std::string profile_id;
@@ -190,6 +199,7 @@ struct OrderLifecycleConfig {
 
     // Required by native live Add. Legacy offline plan-only callers may omit it.
     std::optional<SessionPriceBinding> session_price_binding;
+    std::optional<DeepPassiveBboBinding> first_order_bbo;
     bool require_session_price_binding{false};
     OrderSmokeSnapshot smoke;
     OrderSmokePolicy policy;
