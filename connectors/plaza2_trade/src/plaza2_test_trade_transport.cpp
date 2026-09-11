@@ -74,6 +74,7 @@ constexpr std::string_view kLegacyCredentialToken = "${PLAZA2_TEST_CREDENTIALS}"
 constexpr std::string_view kSoftwareKeyToken = "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
 constexpr std::string_view kRelativeSchemeToken = "|FILE|scheme/forts_scheme.ini|";
 constexpr std::uint32_t kCgErrInternal = 131072;
+constexpr std::uint32_t kCgErrInvalidArgument = 131073;
 constexpr std::uint32_t kCgStateClosed = 0;
 constexpr std::uint32_t kCgStateError = 1;
 constexpr std::uint32_t kCgStateOpening = 2;
@@ -606,7 +607,38 @@ struct Plaza2TestSessionHost::Impl {
             .count();
     }
 
+    // Computed only at bootstrap. Length framing avoids ambiguous concatenation.
+    // This private digest is never exported: hashing credentials is not redaction.
+    std::optional<std::string> connection_identity(std::string_view rendered_connection) const {
+        std::string identity;
+        const auto append = [&](std::string_view value) {
+            identity += std::to_string(value.size()) + ":";
+            identity.append(value);
+        };
+        for (const auto& value :
+             {std::string(rendered_connection), config.connection_open_settings, effective_runtime.env_open_settings,
+              config.endpoint_host, credentials_value, software_key_value, probe.layout.library_path.string(),
+              probe.runtime_library_sha256, probe.scheme_drift.runtime_scheme_sha256})
+            append(value);
+        const auto begin = effective_runtime.env_open_settings.find("ini=");
+        if (begin != std::string::npos) {
+            const auto value_begin = begin + 4;
+            const auto end = effective_runtime.env_open_settings.find(';', value_begin);
+            std::ifstream input(effective_runtime.env_open_settings.substr(value_begin, end - value_begin),
+                                std::ios::binary);
+            if (!input)
+                return std::nullopt;
+            std::ostringstream contents;
+            contents << input.rdbuf();
+            if (input.bad())
+                return std::nullopt;
+            append(contents.str());
+        }
+        return cgate::plaza2_sha256_hex(identity);
+    }
+
     Plaza2Error start() {
+        fresh_connection_created = false;
         failure_origin = Plaza2FailureOrigin::Bootstrap;
         aggr_projector.set_qualification_observer(config.qualification_book_observer);
         if (!rate_gate.valid())
@@ -718,20 +750,29 @@ struct Plaza2TestSessionHost::Impl {
         effective_runtime = config.runtime;
         render(effective_runtime.env_open_settings, credentials.value(), software_key.value());
         effective_runtime.env_open_settings = resolve_ini(effective_runtime.env_open_settings, probe.layout.config_dir);
+        const auto rendered_connection =
+            render_copy(config.connection_settings, credentials.value(), software_key.value());
+        const auto identity = connection_identity(rendered_connection);
+        if (!identity)
+            return invalid("TEST connection identity configuration could not be read");
+        attempt_connection_identity = *identity;
+        if (previously_opened_connection_identity && *previously_opened_connection_identity != *identity)
+            return invalid("TEST connection identity changed within the operational lifetime");
         failure_origin = Plaza2FailureOrigin::EnvironmentOpen;
         if (const auto error = env.open(effective_runtime); error) {
             return error;
         }
         failure_origin = Plaza2FailureOrigin::ConnectionCreate;
-        if (const auto error = connection.create(
-                env, render_copy(config.connection_settings, credentials.value(), software_key.value()));
-            error) {
+        if (const auto error = connection.create(env, rendered_connection); error) {
             return error;
         }
+        fresh_connection_created = true;
         failure_origin = Plaza2FailureOrigin::ConnectionOpen;
         if (const auto error = connection.open(config.connection_open_settings); error) {
             return error;
         }
+
+        previously_opened_connection_identity = attempt_connection_identity;
 
         failure_origin = Plaza2FailureOrigin::Bootstrap;
         std::vector<Plaza2TestTradeStreamConfig> all_private_streams = config.private_streams;
@@ -1204,16 +1245,26 @@ struct Plaza2TestSessionHost::Impl {
                     error = listener_callback_error();
                 if (error) {
                     record_failure(error);
-                    // Only an actual connection-open INTERNAL can represent the router
-                    // still being unavailable within this already-bounded recovery episode.
-                    if (failure_origin != Plaza2FailureOrigin::ConnectionOpen || error.runtime_code != kCgErrInternal ||
-                        listener_callback_error() || !reply_bridge.error().empty() ||
+                    // CGate 9.9 also returned INVALIDARGUMENT for an absent router on
+                    // September 11. Accept it only for this lifetime's proven identity.
+                    const bool proven_reopen = fresh_connection_created && previously_opened_connection_identity &&
+                                               *previously_opened_connection_identity == attempt_connection_identity;
+                    if (failure_origin != Plaza2FailureOrigin::ConnectionOpen ||
+                        (error.runtime_code != kCgErrInternal &&
+                         !(error.runtime_code == kCgErrInvalidArgument && proven_reopen)) ||
+                        state_query_cause || listener_callback_error() || !reply_bridge.error().empty() ||
                         !private_bridge.callback_error().empty()) {
                         recovery.operation = Plaza2SessionOperation::Failed;
                         return error;
                     }
                     static_cast<void>(stop());
-                    next_recovery_attempt = now + config.recovery_retry_interval;
+                    const auto completed = recovery_now();
+                    if (completed >= recovery_expires) {
+                        recovery.deadline_exhausted = true;
+                        recovery.operation = Plaza2SessionOperation::Failed;
+                        return error;
+                    }
+                    next_recovery_attempt = completed + config.recovery_retry_interval;
                     return {};
                 }
                 ++recovery.generation;
@@ -1325,6 +1376,9 @@ struct Plaza2TestSessionHost::Impl {
     bool publisher_is_open{false};
     bool trade_replay_anchor_is_ready{false};
     bool bridge_started{false};
+    std::optional<std::string> previously_opened_connection_identity;
+    std::string attempt_connection_identity;
+    bool fresh_connection_created{};
     bool started{false};
     bool fully_bootstrapped{false};
     Plaza2RecoveryStatus recovery;
@@ -1352,6 +1406,7 @@ Plaza2Error Plaza2TestSessionHost::start() {
     if (impl_->config.recovery_retry_interval < std::chrono::seconds(1) ||
         impl_->config.recovery_deadline <= impl_->config.recovery_retry_interval)
         return invalid("recovery requires interval >= 1 second and deadline > interval");
+    impl_->previously_opened_connection_identity.reset();
     impl_->recovery.operation = Plaza2SessionOperation::Starting;
     auto error = impl_->start();
     if (impl_->listener_callback_error())
@@ -1367,6 +1422,7 @@ Plaza2Error Plaza2TestSessionHost::poll() {
     return impl_->supervise();
 }
 Plaza2Error Plaza2TestSessionHost::stop() {
+    impl_->previously_opened_connection_identity.reset();
     impl_->recovery.operation = Plaza2SessionOperation::Stopped;
     return impl_->stop();
 }
