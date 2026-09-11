@@ -172,3 +172,40 @@ jobs:
           else
             ctest --test-dir build-asan --output-on-failure -L "sanitizer|plaza2"
           fi
+
+  september11-pr55-package:
+    if: github.head_ref == 'codex/plaza2-sep11-pr55-observation'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - name: Build exact native Release package
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2 --target plaza2_aggr_qualification_20260911_pr55
+          mkdir package
+          cp build/apps/plaza2_aggr_qualification_20260911_pr55 package/
+          cp scripts/vps/plaza2_aggr_qualification*.py package/
+          git rev-parse HEAD > package/source-sha.txt
+          test "$(package/plaza2_aggr_qualification_20260911_pr55 --version)" = "$(cat package/source-sha.txt)"
+          package/plaza2_aggr_qualification_20260911_pr55 --self-test > package/self-test.txt
+          binary=package/plaza2_aggr_qualification_20260911_pr55
+          if env MOEX_AGGR_T1_AUTH=wrong "$binary" /tmp/wrong-token 1; then exit 1; fi
+          if env MOEX_AGGR_T1_AUTH=20260911_PR55_AGGREGATED_OBSERVATION MOEX_AGGR_T1_ORDER_AUTH= "$binary" /tmp/order-auth 1; then exit 1; fi
+          test ! -e /tmp/wrong-token
+          test ! -e /tmp/order-auth
+          c++ --version > package/compiler.txt
+          uname -sm > package/architecture.txt
+          cp build/CMakeCache.txt package/
+          objdump -T package/plaza2_aggr_qualification_20260911_pr55 > package/symbols.txt
+          sha256sum package/plaza2_aggr_qualification_20260911_pr55 > package/binary-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plaza2-sep11-pr55-linux-x86-64
+          path: package/

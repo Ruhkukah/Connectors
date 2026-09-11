@@ -70,3 +70,6 @@ moex_add_app(plaza2_c2_capture plaza2_c2_capture.cpp moex_plaza2_cgate_hash)
 target_link_libraries(plaza2_c2_capture PRIVATE ${CMAKE_DL_LIBS})
 
 moex_add_app(plaza2_aggr_qualification plaza2_aggr_qualification.cpp moex_connector_host)
+
+moex_add_app(plaza2_aggr_qualification_20260911_pr55 plaza2_aggr_qualification.cpp moex_connector_host)
+target_compile_definitions(plaza2_aggr_qualification_20260911_pr55 PRIVATE MOEX_AGGR_OBSERVATION_20260911_PR55=1)

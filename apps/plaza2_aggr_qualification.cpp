@@ -26,13 +26,28 @@ namespace cg = moex::plaza2::cgate;
 namespace ch = moex::connector_host;
 namespace tr = moex::plaza2_trade;
 using Clock = std::chrono::steady_clock;
+// Each executable has one fixed authorization date; there is no runtime override.
+#ifdef MOEX_AGGR_OBSERVATION_20260911_PR55
+constexpr int kObservationDay = 11;
+constexpr const char* kObservationToken = "20260911_PR55_AGGREGATED_OBSERVATION";
+constexpr const char* kRunId = "aggr-t1-20260911-pr55";
+constexpr const char* kProfileId = "main-aggregated-t1-20260911-pr55";
+constexpr std::uint32_t kIdentityBase = 2026091150;
+#else
+constexpr int kObservationDay = 10;
+constexpr const char* kObservationToken = "20260910_AGGREGATED_OBSERVATION";
+constexpr const char* kRunId = "aggr-t1-20260910";
+constexpr const char* kProfileId = "main-aggregated-t1-20260910";
+constexpr std::uint32_t kIdentityBase = 2026091000;
+#endif
+
 std::uint64_t ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
 }
 bool observation_authorized(const std::tm& date, const char* auth, const char* order_auth) {
     const auto minute = date.tm_hour * 60 + date.tm_min;
-    return auth && std::string_view(auth) == "20260910_AGGREGATED_OBSERVATION" && !order_auth && date.tm_year == 126 &&
-           date.tm_mon == 8 && date.tm_mday == 10 && minute >= 6 * 60 + 58 && minute < 16 * 60 + 10;
+    return auth && std::string_view(auth) == kObservationToken && !order_auth && date.tm_year == 126 &&
+           date.tm_mon == 8 && date.tm_mday == kObservationDay && minute >= 6 * 60 + 58 && minute < 16 * 60 + 10;
 }
 bool observation_config(const ch::Plaza2HostConfig& config) {
     return config.purpose == ch::HostPurpose::Qualify &&
@@ -467,21 +482,21 @@ int self_test() {
     std::tm date{};
     date.tm_year = 126;
     date.tm_mon = 8;
-    date.tm_mday = 10;
+    date.tm_mday = kObservationDay;
     date.tm_hour = 6;
     date.tm_min = 58;
-    const auto* observation_token = "20260910_AGGREGATED_OBSERVATION";
+    const auto* observation_token = kObservationToken;
     if (!observation_authorized(date, observation_token, nullptr) ||
         observation_authorized(date, observation_token, "") ||
         observation_authorized(date, observation_token, "anything") || observation_authorized(date, "wrong", nullptr) ||
         observation_authorized(date, nullptr, nullptr))
         return 70;
-    for (const auto day : {9, 11}) {
+    for (const auto day : {kObservationDay - 1, kObservationDay + 1}) {
         date.tm_mday = day;
         if (observation_authorized(date, observation_token, nullptr))
             return 71;
     }
-    date.tm_mday = 10;
+    date.tm_mday = kObservationDay;
     date.tm_min = 57;
     if (observation_authorized(date, observation_token, nullptr))
         return 72;
@@ -732,7 +747,7 @@ int main(int argc, char** argv) {
         std::tm date{};
         gmtime_r(&moscow, &date);
         if (!observation_authorized(date, auth, std::getenv("MOEX_AGGR_T1_ORDER_AUTH")))
-            throw std::invalid_argument("outside September 10 observation authorization or order variable present");
+            throw std::invalid_argument("outside compiled observation date/window or order variable present");
         std::vector<std::string_view> args;
         for (int i = 3; i < argc; ++i)
             args.emplace_back(argv[i]);
@@ -744,13 +759,13 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("persistent qualification journal path is required");
         request.config.transport.allow_exact_ext_id_recovery = false;
         request.config.order.journal_root = journal;
-        request.config.order.run_id = "aggr-t1-20260910";
-        request.config.order.profile_id = "main-aggregated-t1-20260910";
+        request.config.order.run_id = kRunId;
+        request.config.order.profile_id = kProfileId;
         request.config.order.profile_fingerprint = cg::plaza2_sha256_hex(request.config.order.profile_id);
-        request.config.order.ext_id = 2026091000;
-        request.config.order.add_user_id = 2026091001;
-        request.config.order.cancel_user_id = 2026091002;
-        request.config.order.recovery_user_id = 2026091003;
+        request.config.order.ext_id = kIdentityBase + 0;
+        request.config.order.add_user_id = kIdentityBase + 1;
+        request.config.order.cancel_user_id = kIdentityBase + 2;
+        request.config.order.recovery_user_id = kIdentityBase + 3;
         if (!observation_config(request.config))
             throw std::invalid_argument("observation requires Qualify, LiveTestPreSend and no send arm");
         const std::filesystem::path journal_path(journal);
