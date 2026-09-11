@@ -13,7 +13,8 @@ It also records original Add authority and payload hashes, session-price binding
 known order ID/remaining quantity, last observed lifecycle state and next recovered-Cancel reply ID.
 The account hash is a comparison aid, not protection against brute-force recovery of short participant codes.
 Raw credentials are not added. Protected configuration must match the historical identity; session retargeting
-and price/side/account substitution are refused. A legacy nonterminal v1 file is never converted by guessing.
+and price/side/account substitution are refused. A legacy v1 file is never converted by guessing, including idle files: v1 has no durable recovered-reply-ID
+reservation history. Any migration requires a separately reviewed proof.
 
 Checkpoint writes use exclusive no-follow 0600 temporary files, file fsync, rename and directory fsync.
 A held advisory file lock prevents concurrent checkpoint owners. A durable `.required` marker makes a missing

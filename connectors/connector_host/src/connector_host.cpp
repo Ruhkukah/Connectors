@@ -255,10 +255,9 @@ bool parse_checkpoint(std::string_view text, PersistentSessionCheckpoint& checkp
     }
     checkpoint.schema = *schema;
     if (*schema == "moex.connector_host.persistent_session.v1") {
-        if (*phase != "idle") {
-            error = "v1 nonterminal checkpoint lacks safe restart identity";
-            return false;
-        }
+        // V1 also lacks a durable recovered-reply-ID high-water mark when idle.
+        error = "v1 checkpoint lacks safe restart identity and reply-ID reservation history";
+        return false;
     } else {
         const auto account = checkpoint_string_field(text, "account_sha256");
         const auto session = checkpoint_integer_field<std::int32_t>(text, "sess_id");

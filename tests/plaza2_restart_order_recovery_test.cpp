@@ -211,6 +211,14 @@ int main(int argc, char** argv) {
                     ConnectorHost old(c);
                     test::require(bool(old.start()), "v1 nonterminal remains fail-closed");
                 }
+                auto idle_v1 = v1;
+                const auto phase_at = idle_v1.find("add_may_have_been_sent");
+                idle_v1.replace(phase_at, std::string("add_may_have_been_sent").size(), "idle");
+                test::write_text_file(checkpoint_path, idle_v1);
+                {
+                    ConnectorHost old(c);
+                    test::require(bool(old.start()), "v1 idle cannot reset recovered reply reservations");
+                }
                 test::write_text_file(checkpoint_path, bytes);
                 std::filesystem::rename(checkpoint_path, checkpoint_path.string() + ".saved");
                 {
