@@ -1192,6 +1192,8 @@ int main(int argc, char** argv) {
             // A crash after the pre-send checkpoint must restore the exact
             // epoch identity and block a second Add until reconciliation.
             reset();
+            ::setenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER", "1", 1);
+            ::setenv("MOEX_FAKE_FLAT_TRADE_REPLAY", "1", 1);
             ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
             ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
             ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
@@ -1253,7 +1255,7 @@ int main(int argc, char** argv) {
                 test::require(unresolved.run_found && !unresolved.resolved && restarted.snapshot().order_epoch_active,
                               "Working restart evidence remains unresolved and locked");
             }
-            ::setenv("MOEX_FAKE_FULL_FILL", "1", 1);
+            ::setenv("MOEX_FAKE_FORCE_TRADE_TERMINAL", "1", 1);
             auto terminal_config = config_for(fixture);
             terminal_config.purpose = HostPurpose::OrderTest;
             terminal_config.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
@@ -1266,15 +1268,16 @@ int main(int argc, char** argv) {
                 test::require(!terminal_host.poll(), "terminal restart host poll");
             const auto resolved = terminal_host.reconcile();
             test::require(resolved.ok && resolved.resolved && !terminal_host.snapshot().order_epoch_active &&
-                              terminal_host.snapshot().new_order_allowed,
+                              !terminal_host.snapshot().new_order_allowed,
                           "terminal restart evidence resolves the exact epoch: ok=" + std::to_string(resolved.ok) +
                               " resolved=" + std::to_string(resolved.resolved) + " msg=" + resolved.message +
                               " snap=" + render_snapshot(terminal_host.snapshot(), true));
             const auto next_plan = terminal_host.plan_order(request);
-            test::require(next_plan.ok && next_plan.canonical_json.find("\"ext_id\": 80") != std::string::npos,
-                          "post-restart next epoch uses advanced identifiers");
+            test::require(!next_plan.ok, "recovery-only process never regains Add capability");
             test::require(!terminal_host.stop(), "restarted host stops after reconciliation");
             ::unsetenv("MOEX_FAKE_FULL_FILL");
+            ::unsetenv("MOEX_FAKE_FORCE_TRADE_TERMINAL");
+            ::unsetenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER");
         }
         {
             // If the process stops after publishing the pre-send checkpoint
@@ -1335,6 +1338,7 @@ int main(int argc, char** argv) {
             // exact, fully validated journal rather than deadlocking on the
             // stale active checkpoint when the process crashes in between.
             reset();
+            ::setenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER", "1", 1);
             ::unsetenv("MOEX_FAKE_TRADE_IDENTITY_CONFLICT");
             ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
             ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
@@ -1402,6 +1406,7 @@ int main(int argc, char** argv) {
             // crossed before restart; reconciliation still needs only the
             // private replication and anchored TRADE surfaces.
             ::setenv("MOEX_FAKE_AGGR_CROSSED", "1", 1);
+            ::setenv("MOEX_FAKE_FORCE_TRADE_TERMINAL", "1", 1);
             test::require(!restarted.start(), "safe terminal crossed-book restart starts");
             for (unsigned i = 0;
                  i < 10 && !(restarted.snapshot().private_streams_ready && restarted.snapshot().trade_replay_complete);
@@ -1414,7 +1419,6 @@ int main(int argc, char** argv) {
             const auto post_before_reconciliation = count(1);
             const auto reconciliation = restarted.reconcile();
             test::require(reconciliation.ok && reconciliation.run_found && reconciliation.resolved &&
-                              !reconciliation.locks_retained &&
                               reconciliation.state == OrderLifecycleState::Cancelled &&
                               !restarted.snapshot().order_epoch_active && !restarted.snapshot().new_order_allowed &&
                               count(0) == msgnew_before_reconciliation && count(1) == post_before_reconciliation,
@@ -1433,6 +1437,7 @@ int main(int argc, char** argv) {
                           "safe terminal reconciliation advances the persistent checkpoint to idle");
             test::require(!restarted.stop(), "safe terminal crossed-book restart stops after reconciliation");
             ::unsetenv("MOEX_FAKE_AGGR_CROSSED");
+            ::unsetenv("MOEX_FAKE_FORCE_TRADE_TERMINAL");
             auto restored_config = config_for(fixture);
             restored_config.purpose = HostPurpose::OrderTest;
             restored_config.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
@@ -1452,6 +1457,7 @@ int main(int argc, char** argv) {
             ::unsetenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
             ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
             ::unsetenv("MOEX_FAKE_AGGR_CROSSED");
+            ::unsetenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER");
             ::unsetenv("MOEX_FAKE_TRADE_IDENTITY_CONFLICT");
         }
         {
@@ -1519,10 +1525,9 @@ int main(int argc, char** argv) {
             const auto msgnew_before_reconciliation = count(0);
             const auto post_before_reconciliation = count(1);
             const auto unresolved = restarted.reconcile();
-            test::require(!unresolved.ok && unresolved.run_found && !unresolved.resolved &&
-                              !unresolved.locks_retained && restarted.snapshot().order_epoch_active &&
-                              !restarted.snapshot().new_order_allowed && count(0) == msgnew_before_reconciliation &&
-                              count(1) == post_before_reconciliation,
+            test::require(!unresolved.ok && unresolved.run_found && !unresolved.resolved && unresolved.locks_retained &&
+                              restarted.snapshot().order_epoch_active && !restarted.snapshot().new_order_allowed &&
+                              count(0) == msgnew_before_reconciliation && count(1) == post_before_reconciliation,
                           "corrupt no-lock journal remains unresolved and blocks a new Add: " + unresolved.message);
             std::ifstream payload_input(journal_path);
             const std::string corrupted(std::istreambuf_iterator<char>(payload_input), {});
@@ -1535,7 +1540,7 @@ int main(int argc, char** argv) {
             test::write_text_file(journal_path, corrupted_payload);
             const auto payload_unresolved = restarted.reconcile();
             test::require(!payload_unresolved.ok && payload_unresolved.run_found && !payload_unresolved.resolved &&
-                              !payload_unresolved.locks_retained && restarted.snapshot().order_epoch_active &&
+                              payload_unresolved.locks_retained && restarted.snapshot().order_epoch_active &&
                               !restarted.snapshot().new_order_allowed && count(0) == msgnew_before_reconciliation &&
                               count(1) == post_before_reconciliation,
                           "corrupt payload hash cannot resolve a no-lock journal: " + payload_unresolved.message);

@@ -1653,6 +1653,24 @@ PersistentOrderController::~PersistentOrderController() = default;
 PersistentOrderController::PersistentOrderController(PersistentOrderController&&) noexcept = default;
 PersistentOrderController& PersistentOrderController::operator=(PersistentOrderController&&) noexcept = default;
 
+cgate::Plaza2Error PersistentOrderController::restore_recovery_only(std::string_view add_payload_sha,
+                                                                    std::string_view recovery_payload_sha) {
+    auto& p = *impl_;
+    if (p.active_epoch)
+        return p.error("epoch already active");
+    p.journal = std::make_unique<RunJournal>();
+    std::string error;
+    if (!p.journal->begin(p.config, std::string(add_payload_sha), std::string(recovery_payload_sha), error))
+        return p.error(error);
+    p.active_epoch = true;
+    p.authorized_epoch = false;
+    p.submission_attempted_flag = true;
+    p.lifecycle_state = OrderLifecycleState::PossiblySent;
+    p.journal->record_state(p.lifecycle_state);
+    p.sync_result();
+    return {};
+}
+
 cgate::Plaza2Error PersistentOrderController::begin(const PreSendPlan& plan) {
     auto& p = *impl_;
     if (p.active_epoch) {

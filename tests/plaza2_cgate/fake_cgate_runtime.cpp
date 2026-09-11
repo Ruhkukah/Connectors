@@ -1,3 +1,4 @@
+#include <unistd.h>
 #include "fake_cgate_abi.hpp"
 #include "plaza2_public_wire.hpp"
 #include "../plaza2_trade/fixtures/cgate99_messages.hpp"
@@ -880,7 +881,7 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                        message.table_code == kFortsTradeReplMultilegOrdersLog;
             });
         }
-        if (fake_flag("MOEX_FAKE_FLAT_TRADE_REPLAY")) {
+        if (fake_flag("MOEX_FAKE_FLAT_TRADE_REPLAY") && !fake_flag("MOEX_FAKE_RESTART_FILLED")) {
             std::erase_if(script, [](const auto& message) {
                 return message.table_code == kFortsTradeReplUserDeal ||
                        message.table_code == kFortsTradeReplUserMultilegDeal;
@@ -1182,6 +1183,14 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     }
     if (fake_flag("MOEX_FAKE_REGULAR_RECOVERED_ORDER") && stream_code == StreamCode::kFortsTradeRepl) {
         for (auto& row : script) {
+            if (fake_flag("MOEX_FAKE_RESTART_FILLED") && row.table_code == kFortsTradeReplUserDeal) {
+                find_field(row, kFortsTradeReplUserDealPublicOrderIdSell)->signed_value = 20003;
+                find_field(row, kFortsTradeReplUserDealPrivateOrderIdSell)->signed_value = 20003;
+                find_field(row, kFortsTradeReplUserDealXamount)->signed_value = 1;
+                row.fields.push_back({.field_code = kFortsTradeReplUserDealExtIdSell,
+                                      .kind = FakeValueKind::SignedInteger,
+                                      .signed_value = 79});
+            }
             if (row.table_code != kFortsTradeReplOrdersLog)
                 continue;
             find_field(row, kFortsTradeReplOrdersLogPublicOrderId)->signed_value =
@@ -1193,6 +1202,12 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
             for (auto code : {kFortsTradeReplOrdersLogPublicAmountRest, kFortsTradeReplOrdersLogPrivateAmountRest,
                               kFortsTradeReplOrdersLogPublicAction, kFortsTradeReplOrdersLogPrivateAction})
                 find_field(row, code)->signed_value = terminal ? 0 : 1;
+            if (fake_flag("MOEX_FAKE_RESTART_FILLED")) {
+                for (auto code : {kFortsTradeReplOrdersLogPublicAmountRest, kFortsTradeReplOrdersLogPrivateAmountRest})
+                    find_field(row, code)->signed_value = 0;
+                for (auto code : {kFortsTradeReplOrdersLogPublicAction, kFortsTradeReplOrdersLogPrivateAction})
+                    find_field(row, code)->signed_value = 2;
+            }
         }
     }
     return script;
@@ -2412,12 +2427,16 @@ std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void
     owned->message.msg_name = owned->name.c_str();
     *msgptr = &owned->message;
     g_publisher_messages.emplace(*msgptr, owned);
+    if (fake_flag("MOEX_FAKE_EXIT_AFTER_MSGNEW"))
+        ::_exit(73);
     return kCgErrOk;
 }
 
 std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
     capture_audit("cg_pub_post");
     ++g_pub_post_calls;
+    if (fake_flag("MOEX_FAKE_EXIT_AFTER_POST"))
+        ::_exit(73);
     if (publisher == nullptr || message == nullptr) {
         return kCgErrInvalidArgument;
     }

@@ -326,6 +326,8 @@ class PersistentOrderController final {
 
   private:
     friend class moex::connector_host::ConnectorHost;
+    [[nodiscard]] plaza2::cgate::Plaza2Error restore_recovery_only(std::string_view add_payload_sha,
+                                                                   std::string_view recovery_payload_sha);
     [[nodiscard]] OrderLifecycleResult accept_recovered_terminal(const OrderObservation& observation);
     [[nodiscard]] OrderLifecycleResult
     explicit_recovered_cancel(const OrderObservation& observation, std::uint32_t cancel_user_id,

@@ -5,6 +5,11 @@
 #include <charconv>
 #include <ctime>
 #include <fstream>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <random>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -50,24 +55,40 @@ bool write_atomic_file(const std::filesystem::path& path, std::string_view conte
         error = "failed to create persistent session directory: " + filesystem_error.message();
         return false;
     }
-    auto temporary = path;
-    temporary += ".tmp";
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            error = "failed to open persistent session checkpoint temporary file";
-            return false;
-        }
-        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-        output.flush();
-        if (!output) {
-            error = "failed to flush persistent session checkpoint";
-            return false;
-        }
+    std::random_device random;
+    const auto temporary = path.string() + ".tmp-" + std::to_string(random());
+    const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (fd < 0) {
+        error = "checkpoint exclusive temporary creation failed";
+        return false;
     }
-    std::filesystem::rename(temporary, path, filesystem_error);
-    if (filesystem_error) {
-        error = "failed to publish persistent session checkpoint: " + filesystem_error.message();
+    std::size_t offset = 0;
+    while (offset < contents.size()) {
+        const auto count = ::write(fd, contents.data() + offset, contents.size() - offset);
+        if (count <= 0) {
+            ::close(fd);
+            ::unlink(temporary.c_str());
+            error = "checkpoint write failed";
+            return false;
+        }
+        offset += static_cast<std::size_t>(count);
+    }
+    const bool synced = ::fsync(fd) == 0;
+    const bool closed = ::close(fd) == 0;
+    if (!synced || !closed || ::rename(temporary.c_str(), path.c_str()) != 0) {
+        ::unlink(temporary.c_str());
+        error = "checkpoint durable publication failed";
+        return false;
+    }
+    const int directory = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY);
+    if (directory < 0) {
+        error = "checkpoint directory open failed";
+        return false;
+    }
+    const bool durable = ::fsync(directory) == 0;
+    ::close(directory);
+    if (!durable) {
+        error = "checkpoint directory fsync failed";
         return false;
     }
     return true;
@@ -129,6 +150,15 @@ template <class Integer> std::optional<Integer> checkpoint_integer_field(std::st
 }
 
 struct PersistentSessionCheckpoint {
+    std::string schema{"moex.connector_host.persistent_session.v2"};
+    std::string account_sha256;
+    std::int32_t sess_id{0};
+    std::string session_binding_sha256;
+    std::uint64_t authorized_generation{0};
+    std::int64_t known_order_id{0};
+    std::int64_t known_remaining{-1};
+    std::int32_t lifecycle_state{0};
+    std::uint32_t next_recovered_user_id{std::numeric_limits<std::uint32_t>::max()};
     std::string phase;
     std::uint64_t epoch_counter{0};
     std::string base_run_id;
@@ -154,13 +184,21 @@ struct PersistentSessionCheckpoint {
 std::string checkpoint_json(const PersistentSessionCheckpoint& checkpoint) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"schema\": \"moex.connector_host.persistent_session.v1\",\n"
+        << "  \"schema\": " << quoted(std::string_view(checkpoint.schema)) << ",\n"
+        << "  \"account_sha256\": " << quoted(checkpoint.account_sha256) << ",\n"
+        << "  \"sess_id\": " << checkpoint.sess_id << ",\n"
+        << "  \"session_binding_sha256\": " << quoted(checkpoint.session_binding_sha256) << ",\n"
+        << "  \"authorized_generation\": " << checkpoint.authorized_generation << ",\n"
+        << "  \"known_order_id\": " << checkpoint.known_order_id << ",\n"
+        << "  \"known_remaining\": " << checkpoint.known_remaining << ",\n"
+        << "  \"lifecycle_state\": " << checkpoint.lifecycle_state << ",\n"
+        << "  \"next_recovered_user_id\": " << checkpoint.next_recovered_user_id << ",\n"
         << "  \"phase\": " << quoted(checkpoint.phase) << ",\n"
         << "  \"epoch_counter\": " << checkpoint.epoch_counter << ",\n"
         << "  \"base_run_id\": " << quoted(checkpoint.base_run_id) << ",\n"
         << "  \"profile_id\": " << quoted(checkpoint.profile_id) << ",\n"
         << "  \"profile_fingerprint\": " << quoted(checkpoint.profile_fingerprint) << ",\n"
-        << "  \"run_id\": " << quoted(checkpoint.run_id) << ",\n"
+        << "  \"run_id\": " << quoted(std::string_view(checkpoint.run_id)) << ",\n"
         << "  \"ext_id\": " << checkpoint.ext_id << ",\n"
         << "  \"add_user_id\": " << checkpoint.add_user_id << ",\n"
         << "  \"cancel_user_id\": " << checkpoint.cancel_user_id << ",\n"
@@ -201,10 +239,12 @@ bool parse_checkpoint(std::string_view text, PersistentSessionCheckpoint& checkp
     const auto plan_sha256 = checkpoint_string_field(text, "plan_sha256");
     const auto add_payload_sha256 = checkpoint_string_field(text, "add_payload_sha256");
     const auto recovery_payload_sha256 = checkpoint_string_field(text, "recovery_payload_sha256");
-    if (!schema || *schema != "moex.connector_host.persistent_session.v1" || !phase || !epoch || !base_run_id ||
-        !profile_id || !profile_fingerprint || !run_id || !ext_id || !add_user_id || !cancel_user_id ||
-        !recovery_user_id || !side || !price || !base_contract_code || !comment || !quantity || !isin_id ||
-        !instrument_mask || !plan_sha256 || !add_payload_sha256 || !recovery_payload_sha256 ||
+    if (!schema ||
+        (*schema != "moex.connector_host.persistent_session.v1" &&
+         *schema != "moex.connector_host.persistent_session.v2") ||
+        !phase || !epoch || !base_run_id || !profile_id || !profile_fingerprint || !run_id || !ext_id || !add_user_id ||
+        !cancel_user_id || !recovery_user_id || !side || !price || !base_contract_code || !comment || !quantity ||
+        !isin_id || !instrument_mask || !plan_sha256 || !add_payload_sha256 || !recovery_payload_sha256 ||
         (*side != "buy" && *side != "sell")) {
         error = "persistent session checkpoint is incomplete or has an unsupported schema";
         return false;
@@ -212,6 +252,37 @@ bool parse_checkpoint(std::string_view text, PersistentSessionCheckpoint& checkp
     if (*phase != "idle" && *phase != "authorized" && *phase != "add_may_have_been_sent") {
         error = "persistent session checkpoint has an unsupported phase";
         return false;
+    }
+    checkpoint.schema = *schema;
+    if (*schema == "moex.connector_host.persistent_session.v1") {
+        if (*phase != "idle") {
+            error = "v1 nonterminal checkpoint lacks safe restart identity";
+            return false;
+        }
+    } else {
+        const auto account = checkpoint_string_field(text, "account_sha256");
+        const auto session = checkpoint_integer_field<std::int32_t>(text, "sess_id");
+        const auto binding = checkpoint_string_field(text, "session_binding_sha256");
+        const auto generation = checkpoint_integer_field<std::uint64_t>(text, "authorized_generation");
+        const auto known = checkpoint_integer_field<std::int64_t>(text, "known_order_id");
+        const auto remaining = checkpoint_integer_field<std::int64_t>(text, "known_remaining");
+        const auto state = checkpoint_integer_field<std::int32_t>(text, "lifecycle_state");
+        const auto next = checkpoint_integer_field<std::uint32_t>(text, "next_recovered_user_id");
+        if (!account || !session || !binding || !generation || !known || !remaining || !state || !next ||
+            account->size() != 64 || *session <= 0 || *known < 0 || *remaining < -1 ||
+            (*phase != "idle" &&
+             (binding->size() != 64 || plan_sha256->size() != 64 || add_payload_sha256->size() != 64))) {
+            error = "v2 checkpoint recovery identity incomplete";
+            return false;
+        }
+        checkpoint.account_sha256 = *account;
+        checkpoint.sess_id = *session;
+        checkpoint.session_binding_sha256 = *binding;
+        checkpoint.authorized_generation = *generation;
+        checkpoint.known_order_id = *known;
+        checkpoint.known_remaining = *remaining;
+        checkpoint.lifecycle_state = *state;
+        checkpoint.next_recovered_user_id = *next;
     }
     checkpoint.phase = *phase;
     checkpoint.epoch_counter = *epoch;
@@ -238,6 +309,10 @@ bool parse_checkpoint(std::string_view text, PersistentSessionCheckpoint& checkp
     checkpoint.plan_sha256 = *plan_sha256;
     checkpoint.add_payload_sha256 = *add_payload_sha256;
     checkpoint.recovery_payload_sha256 = *recovery_payload_sha256;
+    if (checkpoint.schema.ends_with(".v2") && checkpoint_json(checkpoint) != text) {
+        error = "v2 checkpoint is not canonical (duplicate, unknown or malformed fields)";
+        return false;
+    }
     return true;
 }
 
@@ -290,7 +365,47 @@ struct ConnectorHost::Impl {
           epoch_base_cancel_user_id(config.order.cancel_user_id),
           epoch_base_recovery_user_id(config.order.recovery_user_id),
           checkpoint_path(config.order.journal_root / "persistent_session.json") {
+        std::random_device random;
+        process_identity = cg::plaza2_sha256_hex(std::to_string(random()) + ":" + std::to_string(random()) + ":" +
+                                                 std::to_string(random()) + ":" + std::to_string(random()));
         load_checkpoint();
+        transport.configure_recovered_reservations(next_recovered_user_id,
+                                                   [this](std::uint32_t next, std::string& error) {
+                                                       next_recovered_user_id = next;
+                                                       auto checkpoint = retained_checkpoint;
+                                                       if (!checkpoint) {
+                                                           error = "durable epoch checkpoint required for reservation";
+                                                           return false;
+                                                       }
+                                                       checkpoint->next_recovered_user_id = next;
+                                                       if (!persist_checkpoint(*checkpoint, error))
+                                                           return false;
+                                                       return true;
+                                                   });
+    }
+    ~Impl() {
+        if (checkpoint_lock_fd >= 0)
+            ::close(checkpoint_lock_fd);
+    }
+    int checkpoint_lock_fd{-1};
+    bool acquire_checkpoint_lock(std::string& error) {
+        if (checkpoint_lock_fd >= 0)
+            return true;
+        std::error_code ec;
+        std::filesystem::create_directories(checkpoint_path.parent_path(), ec);
+        if (ec) {
+            error = "checkpoint directory unavailable";
+            return false;
+        }
+        const int fd = ::open((checkpoint_path.string() + ".lock").c_str(), O_RDWR | O_CREAT | O_NOFOLLOW, 0600);
+        if (fd < 0 || ::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            if (fd >= 0)
+                ::close(fd);
+            error = "persistent checkpoint already owned or lock unavailable";
+            return false;
+        }
+        checkpoint_lock_fd = fd;
+        return true;
     }
     Plaza2HostConfig config;
     Plaza2TestTradeTransport transport;
@@ -303,6 +418,11 @@ struct ConnectorHost::Impl {
     std::uint32_t epoch_base_cancel_user_id{0};
     std::uint32_t epoch_base_recovery_user_id{0};
     std::filesystem::path checkpoint_path;
+    std::string process_identity;
+    std::string restart_checkpoint_sha;
+    std::optional<PersistentSessionCheckpoint> retained_checkpoint;
+    std::uint32_t next_recovered_user_id{std::numeric_limits<std::uint32_t>::max()};
+    bool restart_recovery_only{false};
     bool checkpoint_blocked{false};
     bool recovered_epoch_active{false};
     std::string checkpoint_error;
@@ -387,6 +507,24 @@ struct ConnectorHost::Impl {
                                                const PreSendPlan* plan) const {
         PersistentSessionCheckpoint checkpoint;
         checkpoint.phase = std::move(phase);
+        checkpoint.account_sha256 = cg::plaza2_sha256_hex(order.broker_code + order.client_code);
+        checkpoint.sess_id = config.transport.target_session_id;
+        checkpoint.next_recovered_user_id = next_recovered_user_id;
+        if (order.session_price_binding) {
+            checkpoint.session_binding_sha256 =
+                cg::plaza2_sha256_hex(session_price_binding_json(*order.session_price_binding));
+            checkpoint.authorized_generation = order.session_price_binding->transport_generation;
+        }
+        if (persistent) {
+            const auto& result = persistent->last_result();
+            checkpoint.lifecycle_state = static_cast<std::int32_t>(result.state);
+            if (result.add_reply && result.add_reply->accepted && result.add_reply->order_id)
+                checkpoint.known_order_id = *result.add_reply->order_id;
+            if (result.observation && !result.observation->identity_conflict) {
+                checkpoint.known_order_id = result.observation->private_order_id;
+                checkpoint.known_remaining = result.observation->remaining_quantity;
+            }
+        }
         checkpoint.epoch_counter = epoch_counter;
         checkpoint.base_run_id = epoch_base_run_id;
         checkpoint.profile_id = order.profile_id;
@@ -414,19 +552,51 @@ struct ConnectorHost::Impl {
     bool write_checkpoint(std::string phase, const OrderLifecycleConfig& order, const PreSendPlan* plan,
                           std::string& error) {
         const auto checkpoint = checkpoint_for(std::move(phase), order, plan);
+        return persist_checkpoint(checkpoint, error);
+    }
+
+    bool persist_checkpoint(const PersistentSessionCheckpoint& checkpoint, std::string& error) {
+        if (!acquire_checkpoint_lock(error)) {
+            checkpoint_blocked = true;
+            checkpoint_error = error;
+            return false;
+        }
+        if (!std::filesystem::exists(checkpoint_path.string() + ".required") &&
+            !write_atomic_file(checkpoint_path.string() + ".required", "checkpoint must remain present\n", error)) {
+            checkpoint_blocked = true;
+            checkpoint_error = error;
+            return false;
+        }
         if (!write_atomic_file(checkpoint_path, checkpoint_json(checkpoint), error)) {
             checkpoint_blocked = true;
             checkpoint_error = error;
             return false;
         }
+        retained_checkpoint = checkpoint;
         checkpoint_blocked = false;
         checkpoint_error.clear();
         return true;
     }
 
     void load_checkpoint() {
-        if (checkpoint_path.empty() || !std::filesystem::exists(checkpoint_path))
+        if (checkpoint_path.empty() || !std::filesystem::exists(checkpoint_path)) {
+            if (std::filesystem::exists(checkpoint_path.string() + ".required")) {
+                checkpoint_blocked = true;
+                checkpoint_error = "required durable checkpoint is missing";
+            }
             return;
+        }
+        if (!acquire_checkpoint_lock(checkpoint_error)) {
+            checkpoint_blocked = true;
+            return;
+        }
+        struct stat metadata;
+        if (::lstat(checkpoint_path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
+            (metadata.st_mode & 077) != 0 || metadata.st_size > 65536) {
+            checkpoint_blocked = true;
+            checkpoint_error = "checkpoint must be bounded protected regular file";
+            return;
+        }
         std::ifstream input(checkpoint_path, std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
         if (!input && text.empty()) {
@@ -444,6 +614,9 @@ struct ConnectorHost::Impl {
                 parse_error.empty() ? "persistent session checkpoint identity does not match host" : parse_error;
             return;
         }
+        retained_checkpoint = checkpoint;
+        restart_checkpoint_sha = cg::plaza2_sha256_hex(text);
+        next_recovered_user_id = checkpoint.next_recovered_user_id;
         epoch_counter = checkpoint.epoch_counter;
         const bool active_checkpoint = checkpoint.phase != "idle";
         if (active_checkpoint && checkpoint.epoch_counter == 0) {
@@ -478,7 +651,10 @@ struct ConnectorHost::Impl {
             config.order.recovery_user_id = checkpoint.recovery_user_id;
             return;
         }
-        if (checkpoint.quantity != 1 || checkpoint.isin_id != config.order.isin_id ||
+        if (checkpoint.quantity != config.order.quantity || checkpoint.quantity != 1 ||
+            checkpoint.isin_id != config.order.isin_id || checkpoint.sess_id != config.transport.target_session_id ||
+            checkpoint.account_sha256 != cg::plaza2_sha256_hex(config.order.broker_code + config.order.client_code) ||
+            checkpoint.side != config.order.side || checkpoint.price != config.order.price ||
             checkpoint.instrument_mask != config.order.instrument_mask) {
             checkpoint_blocked = true;
             checkpoint_error = "persistent session checkpoint target identity does not match host";
@@ -494,17 +670,7 @@ struct ConnectorHost::Impl {
         config.order.base_contract_code = checkpoint.base_contract_code;
         config.order.comment = checkpoint.comment;
         config.order.quantity = checkpoint.quantity;
-        if (checkpoint.phase == "authorized") {
-            auto idle = config.order;
-            std::string error;
-            if (!assign_next_identity(idle, error) || !write_checkpoint("idle", idle, nullptr, error)) {
-                checkpoint_blocked = true;
-                checkpoint_error = error.empty() ? "authorized checkpoint retirement failed" : error;
-                return;
-            }
-            config.order = std::move(idle);
-            return;
-        }
+        restart_recovery_only = true;
         recovered_epoch_active = true;
     }
 
@@ -619,7 +785,7 @@ struct ConnectorHost::Impl {
         out.order_price_tick_aligned = price_gate.order_price_tick_aligned;
         out.new_order_allowed = config.purpose == HostPurpose::OrderTest && out.observation_ready &&
                                 price_gate.allowed() && persistent == nullptr && !recovered_epoch_active &&
-                                !checkpoint_blocked && authorized_sha.empty() && !submitted &&
+                                !checkpoint_blocked && !restart_recovery_only && authorized_sha.empty() && !submitted &&
                                 epoch_counter != std::numeric_limits<std::uint64_t>::max();
         out.last_error = error;
         out.causal_error = causal_error;
@@ -632,7 +798,7 @@ struct ConnectorHost::Impl {
         if (out.last_error.empty() && !checkpoint_error.empty())
             out.last_error = checkpoint_error;
         if (out.last_error.empty() && recovered_epoch_active)
-            out.last_error = "PERSISTENT_SESSION_RECONCILIATION_REQUIRED";
+            out.last_error = "RestartOrderRecoveryRequired";
         if (out.last_error.empty() && host.started() && !out.observation_ready)
             out.last_error = "OBSERVATION_NOT_READY";
         if (persistent != nullptr) {
@@ -679,6 +845,8 @@ struct ConnectorHost::Impl {
         key.side = c.side;
         key.price = c.price;
         key.quantity = c.quantity;
+        if (retained_checkpoint)
+            key.known_exchange_id = retained_checkpoint->known_order_id;
         if (persistent) {
             const auto& result = persistent->last_result();
             if (result.add_reply && result.add_reply->accepted && result.add_reply->order_id)
@@ -816,6 +984,40 @@ cg::Plaza2Error ConnectorHost::start() {
         p.error = "host purpose/send arms mismatch";
         return invalid(p.error);
     }
+    if (p.restart_recovery_only) {
+        const auto& checkpoint = *p.retained_checkpoint;
+        Plaza2AuthorizedOrderIntent identity;
+        identity.sha256 = checkpoint.plan_sha256;
+        identity.profile_id = checkpoint.profile_id;
+        identity.profile_fingerprint = checkpoint.profile_fingerprint;
+        identity.broker_code = c.order.broker_code;
+        identity.client_code = c.order.client_code;
+        identity.isin_id = checkpoint.isin_id;
+        identity.ext_id = checkpoint.ext_id;
+        identity.side = checkpoint.side;
+        identity.price = checkpoint.price;
+        identity.quantity = checkpoint.quantity;
+        identity.add_user_id = checkpoint.add_user_id;
+        identity.cancel_user_id = checkpoint.cancel_user_id;
+        identity.recovery_user_id = checkpoint.recovery_user_id;
+        p.transport.restore_recovery_epoch(
+            std::move(identity),
+            "{\"schema\":" + quoted(std::string_view(checkpoint.schema)) +
+                ",\"checkpoint_sha256\":" + quoted(std::string_view(p.restart_checkpoint_sha)) +
+                ",\"epoch\":" + quoted(std::string_view(checkpoint.run_id)) +
+                ",\"process_identity\":" + quoted(std::string_view(p.process_identity)) + "}",
+            checkpoint.known_order_id);
+        auto restored_order = c.order;
+        restored_order.journal_root /= "restart-" + p.process_identity;
+        p.persistent = std::make_unique<PersistentOrderController>(restored_order, p.transport, p.clock);
+        if (auto error = p.persistent->restore_recovery_only(checkpoint.add_payload_sha256,
+                                                             checkpoint.recovery_payload_sha256)) {
+            p.checkpoint_blocked = true;
+            p.checkpoint_error = error.message;
+            return error;
+        }
+        p.persistent_order = c.order;
+    }
     if (auto error = p.transport.host().start()) {
         p.state = ConnectorHostState::Failed;
         p.error = error.message;
@@ -876,6 +1078,10 @@ cg::Plaza2Error ConnectorHost::stop() {
         return invalid(p.error);
     }
     p.state = ConnectorHostState::Stopped;
+    if (p.checkpoint_lock_fd >= 0) {
+        ::close(p.checkpoint_lock_fd);
+        p.checkpoint_lock_fd = -1;
+    }
     return {};
 }
 
@@ -926,7 +1132,7 @@ PreSendPlan ConnectorHost::plan() const {
 
 PreSendPlan ConnectorHost::plan_order(const ConnectorHostOrderRequest& request) const {
     const auto& p = *impl_;
-    if (p.checkpoint_blocked || p.recovered_epoch_active || p.persistent != nullptr) {
+    if (p.checkpoint_blocked || p.restart_recovery_only || p.recovered_epoch_active || p.persistent != nullptr) {
         return {.failure = PreSendFailure::JournalFailure,
                 .message = p.checkpoint_blocked ? "PERSISTENT_SESSION_CHECKPOINT_BLOCKED"
                                                 : "PERSISTENT_SESSION_EPOCH_REQUIRES_RECONCILIATION"};
@@ -948,7 +1154,7 @@ PreSendPlan ConnectorHost::plan_order(const ConnectorHostOrderRequest& request) 
 cg::Plaza2Error ConnectorHost::authorize(std::string_view canonical, std::string_view sha) {
     auto& p = *impl_;
     if (p.config.purpose != HostPurpose::OrderTest || p.submitted || p.persistent != nullptr ||
-        p.recovered_epoch_active || p.checkpoint_blocked || !p.authorized_sha.empty())
+        p.recovered_epoch_active || p.restart_recovery_only || p.checkpoint_blocked || !p.authorized_sha.empty())
         return invalid("authorization is unavailable for this host");
     const auto candidate = plan();
     if (!candidate.ok) {
@@ -961,7 +1167,7 @@ cg::Plaza2Error ConnectorHost::authorize(std::string_view canonical, std::string
 OrderLifecycleResult ConnectorHost::submit() {
     auto& p = *impl_;
     if (p.config.purpose != HostPurpose::OrderTest || p.authorized_sha.empty() || p.submitted ||
-        p.persistent != nullptr || p.recovered_epoch_active || p.checkpoint_blocked)
+        p.persistent != nullptr || p.recovered_epoch_active || p.restart_recovery_only || p.checkpoint_blocked)
         return {.message = "authorized one-shot order-test required"};
     if (poll() || !p.snapshot().observation_ready)
         return {.message = "OBSERVATION_NOT_READY"};
@@ -986,7 +1192,7 @@ cg::Plaza2Error ConnectorHost::begin_order(const ConnectorHostOrderRequest& requ
                                            std::string_view sha256) {
     auto& p = *impl_;
     if (p.config.purpose != HostPurpose::OrderTest || p.submitted || p.persistent != nullptr ||
-        p.recovered_epoch_active || p.checkpoint_blocked || !p.authorized_sha.empty()) {
+        p.recovered_epoch_active || p.restart_recovery_only || p.checkpoint_blocked || !p.authorized_sha.empty()) {
         return invalid("a persistent order epoch is already active or unavailable for this host");
     }
     if (p.state != ConnectorHostState::Started && p.state != ConnectorHostState::Ready) {
@@ -1061,7 +1267,7 @@ cg::Plaza2Error ConnectorHost::begin_order(std::string_view canonical_plan, std:
 
 OrderLifecycleResult ConnectorHost::submit_order() {
     auto& p = *impl_;
-    if (p.persistent == nullptr || p.recovered_epoch_active || p.checkpoint_blocked)
+    if (p.persistent == nullptr || p.recovered_epoch_active || p.restart_recovery_only || p.checkpoint_blocked)
         return {.message = "begin_order with an exact authorization is required"};
     if (!p.persistent_plan || !p.persistent_order)
         return {.message = "persistent epoch authorization is incomplete"};
@@ -1079,13 +1285,32 @@ OrderLifecycleResult ConnectorHost::poll_order() {
     auto& p = *impl_;
     if (p.persistent == nullptr)
         return {.message = "begin_order with an exact authorization is required"};
-    return p.persistent->poll_order();
+    auto result = p.persistent->poll_order();
+    if (p.retained_checkpoint) {
+        auto checkpoint = *p.retained_checkpoint;
+        checkpoint.lifecycle_state = static_cast<std::int32_t>(result.state);
+        if (result.add_reply && result.add_reply->accepted && result.add_reply->order_id)
+            checkpoint.known_order_id = *result.add_reply->order_id;
+        if (result.observation && !result.observation->identity_conflict) {
+            checkpoint.known_order_id = result.observation->private_order_id;
+            checkpoint.known_remaining = result.observation->remaining_quantity;
+        }
+        std::string error;
+        if (checkpoint_json(checkpoint) != checkpoint_json(*p.retained_checkpoint) &&
+            !p.persist_checkpoint(checkpoint, error)) {
+            result.ok = false;
+            result.message = error;
+        }
+    }
+    return result;
 }
 
 OrderLifecycleResult ConnectorHost::cancel_current_order() {
     auto& p = *impl_;
     if (p.persistent == nullptr)
         return {.message = "begin_order with an exact authorization is required"};
+    if (p.restart_recovery_only)
+        return {.message = "restart requires fresh explicit recovered Cancel authorization"};
     return p.persistent->cancel_order();
 }
 
@@ -1169,6 +1394,7 @@ cg::Plaza2Error ConnectorHost::finish_order_epoch() {
     p.persistent.reset();
     p.persistent_plan.reset();
     p.persistent_order.reset();
+    p.recovered_epoch_active = false;
     p.authorized_sha.clear();
     p.result.reset();
     p.error.clear();
@@ -1176,6 +1402,26 @@ cg::Plaza2Error ConnectorHost::finish_order_epoch() {
 }
 
 RestartReconciliationResult ConnectorHost::reconcile() {
+    if (impl_->restart_recovery_only) {
+        const auto current = reconcile_recovered_order();
+        RestartReconciliationResult result;
+        result.run_found = true;
+        result.ok = current.outcome == RecoveredOrderOutcome::ExactlyOneWorkingMatch ||
+                    current.outcome == RecoveredOrderOutcome::TerminalAlready;
+        result.message = std::string(recovered_order_outcome_name(current.outcome));
+        if (current.observation)
+            result.state = current.observation->state;
+        if (current.outcome == RecoveredOrderOutcome::TerminalAlready) {
+            const auto error = finish_order_epoch();
+            result.resolved = !error;
+            if (error) {
+                result.ok = false;
+                result.message = error.message;
+            }
+        }
+        return result;
+    }
+
     if (impl_->checkpoint_blocked)
         return {.ok = false, .message = impl_->checkpoint_error};
     if (impl_->persistent != nullptr && impl_->persistent->active())
