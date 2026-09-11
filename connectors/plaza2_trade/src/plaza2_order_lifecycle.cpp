@@ -1811,9 +1811,10 @@ OrderLifecycleResult PersistentOrderController::accept_recovered_terminal(const 
 }
 
 OrderLifecycleResult PersistentOrderController::explicit_recovered_cancel(
-    const OrderObservation& observation, const std::function<cgate::Plaza2PublisherMessageResult()>& execute) {
+    const OrderObservation& observation, std::uint32_t cancel_user_id,
+    const std::function<cgate::Plaza2PublisherMessageResult()>& execute) {
     auto& p = *impl_;
-    if (!p.active_epoch || !p.submission_attempted_flag || !p.journal || p.journal->degraded() ||
+    if (cancel_user_id == 0 || !p.active_epoch || !p.submission_attempted_flag || !p.journal || p.journal->degraded() ||
         p.result.market_safe_terminal || observation.identity_conflict || observation.remaining_quantity <= 0 ||
         (observation.state != OrderLifecycleState::Working &&
          observation.state != OrderLifecycleState::PartiallyFilled))
@@ -1823,6 +1824,7 @@ OrderLifecycleResult PersistentOrderController::explicit_recovered_cancel(
     // attempt is still independently retained by the protected artifact marker.
     if (!submission.post_invoked && submission.validation_error)
         return p.refusal(submission.validation_error.message);
+    p.config.cancel_user_id = cancel_user_id;
     p.evidence.observation = observation;
     p.evidence.cancel_reply.reset();
     p.evidence.recovery_reply.reset();

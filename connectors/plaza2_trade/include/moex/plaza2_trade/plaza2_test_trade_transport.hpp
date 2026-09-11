@@ -371,6 +371,8 @@ class Plaza2TestTradeTransport final : public OrderLifecycleTransport {
     [[nodiscard]] RecoveredOrderReconciliation inspect_recovered_order(const RecoveredOrderKey& key) const;
     [[nodiscard]] RecoveredCancelPlan prepare_recovered_cancel(const RecoveredOrderKey& key,
                                                                const std::filesystem::path& path);
+    [[nodiscard]] std::uint32_t recovered_cancel_user_id(const std::filesystem::path& path,
+                                                         std::string_view authorized_sha) const;
     [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult
     execute_recovered_cancel(const std::filesystem::path& path, std::string_view authorized_sha);
     struct Impl;

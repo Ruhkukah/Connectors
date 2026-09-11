@@ -328,7 +328,7 @@ class PersistentOrderController final {
     friend class moex::connector_host::ConnectorHost;
     [[nodiscard]] OrderLifecycleResult accept_recovered_terminal(const OrderObservation& observation);
     [[nodiscard]] OrderLifecycleResult
-    explicit_recovered_cancel(const OrderObservation& observation,
+    explicit_recovered_cancel(const OrderObservation& observation, std::uint32_t cancel_user_id,
                               const std::function<plaza2::cgate::Plaza2PublisherMessageResult()>& execute);
     struct Impl;
     std::unique_ptr<Impl> impl_;

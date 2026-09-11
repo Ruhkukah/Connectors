@@ -703,6 +703,14 @@ int main(int argc, char** argv) {
             auto path = fixture.root / (c.order.run_id + ".json");
             auto plan = host.prepare_recovered_cancel(path);
             test::require(plan.eligible() && !plan.sha256.empty(), "protected plan after fresh reconciliation");
+            const auto reply_binding = [](const RecoveredCancelPlan& value) {
+                const auto begin = value.canonical_json.find("\"user_id\":");
+                test::require(begin != std::string::npos, "reply identity is in protected authorization");
+                return value.canonical_json.substr(begin, value.canonical_json.find(',', begin) - begin);
+            };
+            test::require(reply_binding(plan) != "\"user_id\":" + std::to_string(c.order.cancel_user_id),
+                          "recovered Cancel never reuses previous ordinary Cancel reply ID");
+
             (void)host.cancel_recovered_order(path, std::string(64, '0'));
             test::require(count(1) == lost_posts, "incorrect operator hash posts nothing");
             if (stage == 0) {
@@ -713,6 +721,8 @@ int main(int argc, char** argv) {
                 const auto refreshed = host.prepare_recovered_cancel(path);
                 test::require(refreshed.eligible() && refreshed.sha256 != plan.sha256,
                               "fresh generation needs new one-shot approval");
+                test::require(reply_binding(refreshed) != reply_binding(plan),
+                              "generation reauthorization reserves a new reply ID");
                 plan = refreshed;
             }
             if (stage != 3)
@@ -734,6 +744,8 @@ int main(int argc, char** argv) {
                 const auto next = host.prepare_recovered_cancel(path);
                 test::require(next.eligible() && next.sha256 != plan.sha256,
                               "survivor requires a new operator approval");
+                test::require(reply_binding(next) != reply_binding(plan),
+                              "uncertain Cancel reply cannot correlate to a new attempt");
                 plan = next;
                 ::setenv("MOEX_FAKE_CANCEL_AFTER_DEL", "1", 1);
                 test::require(host.cancel_recovered_order(path, plan.sha256).cancel_submission.post_invoked,

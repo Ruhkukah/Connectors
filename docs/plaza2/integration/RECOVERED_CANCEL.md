@@ -72,3 +72,10 @@ recovery qualification.
 
 No VPS mutation, T1 connection, exchange order, merge or performance optimization. First live order and
 Working order across transport loss remain NOT YET TESTED.
+
+Recovered attempts reserve distinct descending 32-bit reply identifiers across
+all epochs owned by the transport. Ordinary epoch identifiers cannot overlap
+that reserved range. The new identifier is part of the protected authorization;
+the persistent controller expects that identifier for the new reply while the
+prior journal retains the old attempt. A late old reply cannot be accepted as
+the new Cancel reply. Identifier exhaustion fails closed.

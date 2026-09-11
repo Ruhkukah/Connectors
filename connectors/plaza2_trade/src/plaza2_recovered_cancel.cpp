@@ -184,7 +184,7 @@ bool consume_recovered_artifact(const std::filesystem::path& path, std::string_v
         error = "protected artifact unavailable";
         return false;
     }
-    struct stat st{};
+    struct stat st;
     bool ok = ::fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & 07777) == 0600 &&
               st.st_uid == ::geteuid() && st.st_nlink == 1 && st.st_size == static_cast<off_t>(bytes.size());
     std::string actual(bytes.size(), '\0');

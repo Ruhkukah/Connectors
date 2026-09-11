@@ -1131,10 +1131,11 @@ OrderLifecycleResult ConnectorHost::cancel_recovered_order(const std::filesystem
     if (reconciliation.outcome != RecoveredOrderOutcome::ExactlyOneWorkingMatch || !reconciliation.observation)
         return {.message = std::string(recovered_order_outcome_name(reconciliation.outcome))};
     std::optional<cg::Plaza2PublisherMessageResult> attempt;
-    auto result = p.persistent->explicit_recovered_cancel(*reconciliation.observation, [&] {
-        attempt = p.transport.execute_recovered_cancel(artifact, sha);
-        return *attempt;
-    });
+    auto result = p.persistent->explicit_recovered_cancel(
+        *reconciliation.observation, p.transport.recovered_cancel_user_id(artifact, sha), [&] {
+            attempt = p.transport.execute_recovered_cancel(artifact, sha);
+            return *attempt;
+        });
     result.cancel_submission = attempt.value_or(cg::Plaza2PublisherMessageResult{});
     return result;
 }

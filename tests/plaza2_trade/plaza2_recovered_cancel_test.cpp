@@ -113,7 +113,7 @@ int main() {
         const auto file = root / "approval.json";
         std::string error;
         require(write_recovered_artifact(file, "exact-plan", error), "exclusive plan write");
-        struct stat st{};
+        struct stat st;
         require(::stat(file.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600, "private file mode");
         require(!write_recovered_artifact(file, "replacement", error), "cannot overwrite authority");
         require(!consume_recovered_artifact(file, "different-plan", error), "exact contents required");

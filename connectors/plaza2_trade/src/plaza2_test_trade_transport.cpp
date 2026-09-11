@@ -1795,6 +1795,9 @@ struct Plaza2TestTradeTransport::Impl {
              authorized->max_aggr20_age_ms > 5000)) {
             return invalid("authorized TEST send requires zero position, max four ticks and max 5000 ms");
         }
+        if (authorized->add_user_id > next_recovered_user_id || authorized->cancel_user_id > next_recovered_user_id ||
+            authorized->recovery_user_id > next_recovered_user_id)
+            return invalid("ordinary identifiers overlap reserved recovered-cancel reply IDs");
         const auto canonical = canonical_authorized_order_intent_json(*authorized);
         if (!authorized->canonical_json.empty() && authorized->canonical_json != canonical) {
             return invalid("authorized intent canonical JSON does not match its fields");
@@ -2014,6 +2017,8 @@ struct Plaza2TestTradeTransport::Impl {
     std::optional<PreparedRecoveredCancel> prepared_cancel;
     std::uint64_t recovered_cancel_attempt_generation{0};
     bool recovered_cancel_evidence_failed{false};
+    // Descending reply IDs stay reserved across all epochs of this owner.
+    std::uint32_t next_recovered_user_id{std::numeric_limits<std::uint32_t>::max()};
 
     RecoveredCancelPlan prepare_cancel(const RecoveredOrderKey& key, const std::filesystem::path& path) {
         RecoveredCancelPlan plan;
@@ -2037,20 +2042,26 @@ struct Plaza2TestTradeTransport::Impl {
             plan.error = "exact recovered DelOrder encoding failed";
             return plan;
         }
+        if (next_recovered_user_id <=
+            std::max({intent()->add_user_id, intent()->cancel_user_id, intent()->recovery_user_id})) {
+            plan.error = "recovered cancel reply identifier space exhausted";
+            return plan;
+        }
+        const auto user_id = next_recovered_user_id--;
         std::random_device random;
         std::ostringstream nonce;
         for (int i = 0; i != 4; ++i)
             nonce << std::hex << std::setw(8) << std::setfill('0') << random();
-        plan.canonical_json =
-            "{\"schema\":\"moex.recovered_cancel.v1\",\"nonce\":\"" + nonce.str() +
-            "\",\"command\":\"DelOrder\",\"message_id\":461,\"user_id\":" + std::to_string(intent()->cancel_user_id) +
-            ",\"add_authority_sha256\":\"" + intent()->sha256 + "\"" + ",\"payload_sha256\":\"" +
-            cgate::plaza2_sha256_hex(command.payload) + "\",\"reconciliation_sha256\":\"" +
-            plan.reconciliation.evidence_sha256 + "\",\"reconciliation\":" + plan.reconciliation.evidence_json + "}\n";
+        plan.canonical_json = "{\"schema\":\"moex.recovered_cancel.v1\",\"nonce\":\"" + nonce.str() +
+                              "\",\"command\":\"DelOrder\",\"message_id\":461,\"user_id\":" + std::to_string(user_id) +
+                              ",\"add_authority_sha256\":\"" + intent()->sha256 + "\"" + ",\"payload_sha256\":\"" +
+                              cgate::plaza2_sha256_hex(command.payload) + "\",\"reconciliation_sha256\":\"" +
+                              plan.reconciliation.evidence_sha256 +
+                              "\",\"reconciliation\":" + plan.reconciliation.evidence_json + "}\n";
         plan.sha256 = cgate::plaza2_sha256_hex(plan.canonical_json);
         if (!write_recovered_artifact(path, plan.canonical_json, plan.error))
             return plan;
-        prepared_cancel = PreparedRecoveredCancel{plan, command, intent()->cancel_user_id};
+        prepared_cancel = PreparedRecoveredCancel{plan, command, user_id};
         return plan;
     }
 
@@ -2752,6 +2763,11 @@ RecoveredOrderReconciliation Plaza2TestTradeTransport::inspect_recovered_order(c
 RecoveredCancelPlan Plaza2TestTradeTransport::prepare_recovered_cancel(const RecoveredOrderKey& key,
                                                                        const std::filesystem::path& path) {
     return impl_->prepare_cancel(key, path);
+}
+std::uint32_t Plaza2TestTradeTransport::recovered_cancel_user_id(const std::filesystem::path& path,
+                                                                 std::string_view sha) const {
+    const auto& prepared = impl_->prepared_cancel;
+    return prepared && prepared->plan.artifact == path && prepared->plan.sha256 == sha ? prepared->user_id : 0;
 }
 Plaza2PublisherMessageResult Plaza2TestTradeTransport::execute_recovered_cancel(const std::filesystem::path& path,
                                                                                 std::string_view sha) {
