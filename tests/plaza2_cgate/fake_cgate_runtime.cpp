@@ -1204,7 +1204,8 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
             for (auto code : {kFortsTradeReplOrdersLogPublicAmountRest, kFortsTradeReplOrdersLogPrivateAmountRest,
                               kFortsTradeReplOrdersLogPublicAction, kFortsTradeReplOrdersLogPrivateAction})
                 find_field(row, code)->signed_value = terminal ? 0 : 1;
-            if (fake_flag("MOEX_FAKE_RESTART_FILLED")) {
+            if (fake_flag("MOEX_FAKE_RESTART_FILLED") ||
+                (fake_flag("MOEX_FAKE_FIRST_ORDER_FILLED") && fake_flag("MOEX_FAKE_FULL_FILL"))) {
                 for (auto code : {kFortsTradeReplOrdersLogPublicAmountRest, kFortsTradeReplOrdersLogPrivateAmountRest})
                     find_field(row, code)->signed_value = 0;
                 for (auto code : {kFortsTradeReplOrdersLogPublicAction, kFortsTradeReplOrdersLogPrivateAction})

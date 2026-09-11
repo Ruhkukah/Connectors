@@ -642,6 +642,11 @@ int main(int argc, char** argv) {
         }
         for (bool shift : {false, true}) {
             reset();
+            ::setenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER", "1", 1);
+            ::setenv("MOEX_FAKE_FIRST_ORDER_FILLED", "1", 1);
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_FLAT_TRADE_REPLAY", "1", 1);
             auto c = config_for(fixture);
             c.purpose = HostPurpose::OrderTest;
             c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
@@ -677,21 +682,34 @@ int main(int argc, char** argv) {
             if (!shift) {
                 ::setenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER", "1", 1);
                 ::setenv("MOEX_FAKE_FIRST_ORDER_FILLED", "1", 1);
-                ::setenv("MOEX_FAKE_RESTART_FILLED", "1", 1);
+                ::setenv("MOEX_FAKE_FULL_FILL", "1", 1);
                 ::setenv("MOEX_FAKE_FORCE_TRADE_TERMINAL", "1", 1);
-                const auto filled = host.poll_order();
+                auto filled = host.poll_order();
+                for (int i = 0; i < 5 && filled.state != OrderLifecycleState::Filled; ++i)
+                    filled = host.poll_order();
+                if (filled.state != OrderLifecycleState::Filled) {
+                    const auto cause = host.poll();
+                    std::cerr << "fill fixture cause " << cause.message << " " << render_snapshot(host.snapshot(), true)
+                              << '\n';
+                }
                 test::require(filled.state == OrderLifecycleState::Filled && count(1) == 1,
-                              "deep order fill freezes authority without cleanup order");
-                test::require(!host.finish_order_epoch() && !host.plan_order(request).ok &&
-                                  !host.snapshot().new_order_allowed &&
+                              "deep order fill freezes authority without cleanup order: " + filled.message + " " +
+                                  std::string(order_lifecycle_state_name(filled.state)));
+                const auto finish_fill = host.finish_order_epoch();
+                test::require(!finish_fill && !host.plan_order(request).ok && !host.snapshot().new_order_allowed &&
                                   host.snapshot().last_error.find("FIRST_ORDER_FILLED") != std::string::npos,
-                              "first-order fill latch survives epoch finish");
+                              "first-order fill latch survives epoch finish: " + finish_fill.message + " " +
+                                  filled.message + " " + host.snapshot().last_error);
                 ::unsetenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER");
                 ::unsetenv("MOEX_FAKE_FIRST_ORDER_FILLED");
-                ::unsetenv("MOEX_FAKE_RESTART_FILLED");
+                ::unsetenv("MOEX_FAKE_FULL_FILL");
                 ::unsetenv("MOEX_FAKE_FORCE_TRADE_TERMINAL");
             }
         }
+        ::unsetenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER");
+        ::unsetenv("MOEX_FAKE_FIRST_ORDER_FILLED");
+        ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+        ::unsetenv("MOEX_FAKE_EXT_ID");
         for (int stage = 0; stage != 5; ++stage) {
             reset();
             ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
