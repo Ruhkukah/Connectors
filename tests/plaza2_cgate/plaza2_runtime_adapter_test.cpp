@@ -95,6 +95,14 @@ int main(int argc, char** argv) {
         require(!connection.process(0, &process_code), "timeout process should not be treated as error");
         require(process_code == 131075, "fake runtime should report CG_ERR_TIMEOUT from process");
 
+        ::setenv("MOEX_FAKE_PROCESS_TIMEOUT", "1", 1);
+        for (int poll = 0; poll < 1000; ++poll) {
+            process_code = 0;
+            require(!connection.process(0, &process_code) && process_code == 131075,
+                    "explicit runtime timeout remains successful and preserves its raw code");
+        }
+        ::unsetenv("MOEX_FAKE_PROCESS_TIMEOUT");
+
         Plaza2Listener listener;
         require(!listener.create(connection, "p2repl://FORTS_TRADE_REPL;scheme=|FILE|scheme/forts_scheme.ini|TRADES"),
                 "listener create should succeed");

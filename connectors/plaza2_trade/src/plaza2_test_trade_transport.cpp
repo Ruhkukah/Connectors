@@ -73,6 +73,8 @@ constexpr std::string_view kCredentialToken = "${MOEX_PLAZA2_TEST_CREDENTIALS}";
 constexpr std::string_view kLegacyCredentialToken = "${PLAZA2_TEST_CREDENTIALS}";
 constexpr std::string_view kSoftwareKeyToken = "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
 constexpr std::string_view kRelativeSchemeToken = "|FILE|scheme/forts_scheme.ini|";
+constexpr std::uint32_t kCgErrInternal = 131072;
+constexpr std::uint32_t kCgErrInvalidArgument = 131073;
 constexpr std::uint32_t kCgStateClosed = 0;
 constexpr std::uint32_t kCgStateError = 1;
 constexpr std::uint32_t kCgStateOpening = 2;
@@ -238,7 +240,7 @@ std::string intent_fingerprint(const Plaza2AuthorizedOrderIntent& intent, bool b
 
 std::string limit_row_fingerprint(const plaza2::private_state::LimitSnapshot& limit) {
     std::ostringstream value;
-    value << static_cast<int>(limit.scope) << '|' << limit.account_code << '|' << limit.limits_set << '|'
+    value << static_cast<int>(limit.participant_kind) << '|' << limit.account_code << '|' << limit.limits_set << '|'
           << limit.is_auto_update_limit << '|' << limit.money_free << '|' << limit.money_blocked << '|'
           << limit.vm_reserve << '|' << limit.fee << '|' << limit.money_old << '|' << limit.money_amount << '|'
           << limit.money_pledge_amount << '|' << limit.actual_amount_of_base_currency << '|' << limit.vm_intercl << '|'
@@ -605,7 +607,39 @@ struct Plaza2TestSessionHost::Impl {
             .count();
     }
 
+    // Computed only at bootstrap. Length framing avoids ambiguous concatenation.
+    // This private digest is never exported: hashing credentials is not redaction.
+    std::optional<std::string> connection_identity(std::string_view rendered_connection) const {
+        std::string identity;
+        const auto append = [&](std::string_view value) {
+            identity += std::to_string(value.size()) + ":";
+            identity.append(value);
+        };
+        for (const auto& value :
+             {std::string(rendered_connection), config.connection_open_settings, effective_runtime.env_open_settings,
+              config.endpoint_host, credentials_value, software_key_value, probe.layout.library_path.string(),
+              probe.runtime_library_sha256, probe.scheme_drift.runtime_scheme_sha256})
+            append(value);
+        const auto begin = effective_runtime.env_open_settings.find("ini=");
+        if (begin != std::string::npos) {
+            const auto value_begin = begin + 4;
+            const auto end = effective_runtime.env_open_settings.find(';', value_begin);
+            std::ifstream input(effective_runtime.env_open_settings.substr(value_begin, end - value_begin),
+                                std::ios::binary);
+            if (!input)
+                return std::nullopt;
+            std::ostringstream contents;
+            contents << input.rdbuf();
+            if (input.bad())
+                return std::nullopt;
+            append(contents.str());
+        }
+        return cgate::plaza2_sha256_hex(identity);
+    }
+
     Plaza2Error start() {
+        fresh_connection_created = false;
+        failure_origin = Plaza2FailureOrigin::Bootstrap;
         aggr_projector.set_qualification_observer(config.qualification_book_observer);
         if (!rate_gate.valid())
             return invalid("publisher_messages_per_second must be in 1..3000");
@@ -716,18 +750,31 @@ struct Plaza2TestSessionHost::Impl {
         effective_runtime = config.runtime;
         render(effective_runtime.env_open_settings, credentials.value(), software_key.value());
         effective_runtime.env_open_settings = resolve_ini(effective_runtime.env_open_settings, probe.layout.config_dir);
+        const auto rendered_connection =
+            render_copy(config.connection_settings, credentials.value(), software_key.value());
+        const auto identity = connection_identity(rendered_connection);
+        if (!identity)
+            return invalid("TEST connection identity configuration could not be read");
+        attempt_connection_identity = *identity;
+        if (previously_opened_connection_identity && *previously_opened_connection_identity != *identity)
+            return invalid("TEST connection identity changed within the operational lifetime");
+        failure_origin = Plaza2FailureOrigin::EnvironmentOpen;
         if (const auto error = env.open(effective_runtime); error) {
             return error;
         }
-        if (const auto error = connection.create(
-                env, render_copy(config.connection_settings, credentials.value(), software_key.value()));
-            error) {
+        failure_origin = Plaza2FailureOrigin::ConnectionCreate;
+        if (const auto error = connection.create(env, rendered_connection); error) {
             return error;
         }
+        fresh_connection_created = true;
+        failure_origin = Plaza2FailureOrigin::ConnectionOpen;
         if (const auto error = connection.open(config.connection_open_settings); error) {
             return error;
         }
 
+        previously_opened_connection_identity = attempt_connection_identity;
+
+        failure_origin = Plaza2FailureOrigin::Bootstrap;
         std::vector<Plaza2TestTradeStreamConfig> all_private_streams = config.private_streams;
         all_private_streams.insert(all_private_streams.end(), config.status_streams.begin(),
                                    config.status_streams.end());
@@ -759,10 +806,12 @@ struct Plaza2TestSessionHost::Impl {
             auto& managed = private_listeners.back();
             const auto settings = resolve_scheme(
                 render_copy(stream.settings, credentials.value(), software_key.value()), probe.layout.scheme_path);
+            failure_origin = Plaza2FailureOrigin::ListenerCreate;
             if (const auto error = managed.listener.create(connection, stream.stream_code, settings, &private_bridge);
                 error) {
                 return error;
             }
+            failure_origin = Plaza2FailureOrigin::ListenerOpen;
             if (const auto error = managed.listener.open(managed.open_settings); error) {
                 return error;
             }
@@ -771,36 +820,52 @@ struct Plaza2TestSessionHost::Impl {
         const auto aggr_settings =
             resolve_scheme(render_copy(config.aggr20_stream.settings, credentials.value(), software_key.value()),
                            probe.layout.scheme_path);
+        failure_origin = Plaza2FailureOrigin::ListenerCreate;
         if (const auto error =
                 aggr_listener.create(connection, config.aggr20_stream.stream_code, aggr_settings, &aggr_bridge);
             error) {
             return error;
         }
+        failure_origin = Plaza2FailureOrigin::ListenerOpen;
         if (const auto error = aggr_listener.open(config.aggr20_stream.open_settings); error) {
             return error;
         }
+        if (recovery.operation != Plaza2SessionOperation::Recovering) {
+            if (const auto error = open_publisher_reply(); error)
+                return error;
+        }
+        started = true;
+        return {};
+    }
+
+    Plaza2Error open_publisher_reply() {
+        const auto effective_reply_settings =
+            config.p2mqreply_settings.empty() ? "p2mqreply://;ref=" + config.publisher_name : config.p2mqreply_settings;
+        failure_origin = Plaza2FailureOrigin::PublisherCreate;
         if (const auto error = publisher.create(
-                connection, render_copy(config.publisher_settings, credentials.value(), software_key.value()));
+                connection, render_copy(config.publisher_settings, credentials_value, software_key_value));
             error) {
             return error;
         }
+        failure_origin = Plaza2FailureOrigin::PublisherOpen;
         if (const auto error = publisher.open(config.publisher_open_settings); error) {
             return error;
         }
         publisher_is_open = true;
+        failure_origin = Plaza2FailureOrigin::ListenerCreate;
         if (const auto error = reply_listener.create(
                 connection, cgate::kNoStreamCode,
-                render_copy(effective_reply_settings, credentials.value(), software_key.value()), &reply_bridge);
+                render_copy(effective_reply_settings, credentials_value, software_key_value), &reply_bridge);
             error) {
             return error;
         }
-        if (const auto error = reply_listener.open(
-                render_copy(config.p2mqreply_open_settings, credentials.value(), software_key.value()));
+        failure_origin = Plaza2FailureOrigin::ListenerOpen;
+        if (const auto error =
+                reply_listener.open(render_copy(config.p2mqreply_open_settings, credentials_value, software_key_value));
             error) {
             return error;
         }
         reply_listener_is_open = true;
-        started = true;
         return {};
     }
 
@@ -935,6 +1000,7 @@ struct Plaza2TestSessionHost::Impl {
                     return invalid("FORTS_TRADE_REPL retry refused because the immutable POS replay anchor changed",
                                    Plaza2ErrorCode::AdapterState);
                 }
+                failure_origin = Plaza2FailureOrigin::ListenerOpen;
                 if (const auto error = managed.listener.open(managed.open_settings); error) {
                     managed.reopen_not_before = now + kListenerReopenDelay;
                     continue;
@@ -968,35 +1034,62 @@ struct Plaza2TestSessionHost::Impl {
         return {};
     }
 
-    Plaza2Error poll() {
+    const Plaza2Error& listener_callback_error() const {
+        if (reply_listener.last_callback_error())
+            return reply_listener.last_callback_error();
+        if (aggr_listener.last_callback_error())
+            return aggr_listener.last_callback_error();
+        for (const auto& managed : private_listeners)
+            if (managed.listener.last_callback_error())
+                return managed.listener.last_callback_error();
+        static const Plaza2Error none;
+        return none;
+    }
+
+    Plaza2Error poll_resources() {
         if (!started) {
             return invalid("TEST session host is not started", Plaza2ErrorCode::AdapterState);
         }
+        failure_origin = Plaza2FailureOrigin::Unknown;
+        process_cause = {};
+        state_query_cause = {};
+        failure_health.reset();
         std::uint32_t runtime_code = 0;
         const auto error = connection.process(config.process_timeout_ms, &runtime_code);
-        if (auto* observer = config.runtime.qualification_observer) {
-            const auto sample = [&](const auto& object, std::uint32_t kind, StreamCode stream) {
-                std::uint32_t state = 0;
-                const auto status = object.state(state);
-                observer->runtime_state(kind, static_cast<std::uint32_t>(stream), state,
-                                        static_cast<std::uint32_t>(status.code));
-            };
-            sample(connection, 10, cgate::kNoStreamCode);
-            sample(publisher, 11, cgate::kNoStreamCode);
-            sample(reply_listener, 12, cgate::kNoStreamCode);
-            sample(aggr_listener, 12, config.aggr20_stream.stream_code);
-            for (const auto& managed : private_listeners)
-                sample(managed.listener, 12, managed.stream_code);
+        // First state read is cg_conn_getstate. Observer and supervisor share this
+        // sample, so an observer cannot consume and hide a one-shot state API error.
+        const auto health = sample_health(&state_query_cause, &failure_origin, true);
+        if (error || state_query_cause)
+            failure_health = health;
+        if (error && runtime_code != 0) {
+            process_cause = error;
+            if (!state_query_cause)
+                failure_origin = Plaza2FailureOrigin::ConnectionProcess;
         }
 
-        if (error) {
-            if (!reply_bridge.error().empty()) {
+        const auto callback_cause = [&]() -> Plaza2Error {
+            if (listener_callback_error())
+                return listener_callback_error();
+            if (!reply_bridge.error().empty())
                 return invalid(reply_bridge.error(), Plaza2ErrorCode::CallbackFailed);
-            }
-            if (!private_bridge.callback_error().empty()) {
+            if (!private_bridge.callback_error().empty())
                 return invalid(private_bridge.callback_error(), Plaza2ErrorCode::CallbackFailed);
-            }
+            return {};
+        }();
+        if (callback_cause) {
+            failure_origin = Plaza2FailureOrigin::Callback;
+            return callback_cause;
+        }
+        if (state_query_cause)
+            return state_query_cause;
+        if (error)
             return error;
+        if (config.transport_recovery_enabled && transport_lost(health)) {
+            failure_health = health;
+            failure_origin = (health.connection == kCgStateClosed || health.connection == kCgStateError)
+                                 ? Plaza2FailureOrigin::ConnectionState
+                                 : Plaza2FailureOrigin::ListenerState;
+            return invalid("TEST transport handle lost; fresh bootstrap required", Plaza2ErrorCode::AdapterState);
         }
         if (const auto replay_error = open_deferred_trade_replay_if_anchored(); replay_error) {
             return replay_error;
@@ -1016,6 +1109,196 @@ struct Plaza2TestSessionHost::Impl {
         }
         if (!private_bridge.callback_error().empty()) {
             return invalid(private_bridge.callback_error(), Plaza2ErrorCode::CallbackFailed);
+        }
+        return {};
+    }
+
+    auto recovery_now() const {
+        return config.recovery_now ? config.recovery_now() : std::chrono::steady_clock::now();
+    }
+
+    Plaza2TransportHealth sample_health(Plaza2Error* first_error = nullptr, Plaza2FailureOrigin* origin = nullptr,
+                                        bool notify_observer = false) const {
+        Plaza2TransportHealth out;
+        bool valid = started && !listener_callback_error() && private_bridge.callback_error().empty() &&
+                     reply_bridge.error().empty();
+        const auto sample = [&](const auto& object, std::uint32_t& state, Plaza2FailureOrigin operation,
+                                StreamCode stream = cgate::kNoStreamCode) {
+            const auto error = object.state(state);
+            if (error) {
+                state = 0;
+                valid = false;
+                // Missing optional handles during bootstrap are not failed vendor calls.
+                if (object.is_created() && first_error && !*first_error) {
+                    *first_error = error;
+                    if (origin)
+                        *origin = operation;
+                }
+            }
+            if (notify_observer && config.runtime.qualification_observer) {
+                const auto kind = operation == Plaza2FailureOrigin::ConnectionState ? 10U
+                                  : operation == Plaza2FailureOrigin::Publisher     ? 11U
+                                                                                    : 12U;
+                config.runtime.qualification_observer->runtime_state(kind, static_cast<std::uint32_t>(stream), state,
+                                                                     static_cast<std::uint32_t>(error.code));
+            }
+        };
+        sample(connection, out.connection, Plaza2FailureOrigin::ConnectionState);
+        sample(publisher, out.publisher, Plaza2FailureOrigin::Publisher);
+        sample(reply_listener, out.reply, Plaza2FailureOrigin::ListenerState);
+        sample(aggr_listener, out.aggr, Plaza2FailureOrigin::ListenerState, config.aggr20_stream.stream_code);
+        out.private_active = !private_listeners.empty();
+        for (const auto& item : private_listeners) {
+            if (out.private_count == out.private_states.size()) {
+                valid = false;
+                break;
+            }
+            const auto i = out.private_count++;
+            out.private_streams[i] = item.stream_code;
+            sample(item.listener, out.private_states[i], Plaza2FailureOrigin::ListenerState, item.stream_code);
+            out.private_active &= out.private_states[i] == kCgStateActive;
+        }
+        out.valid = valid;
+        return out;
+    }
+
+    bool transport_lost(const Plaza2TransportHealth& h) const {
+        const auto lost = [](std::uint32_t state) { return state == kCgStateClosed || state == kCgStateError; };
+        if (lost(h.connection))
+            return true;
+        if (fully_bootstrapped && (lost(h.publisher) || lost(h.reply) || lost(h.aggr)))
+            return true;
+        for (std::size_t i = 0; i < private_listeners.size(); ++i) {
+            const auto& managed = private_listeners[i];
+            const auto* health = stream_health(managed.stream_code);
+            if ((managed.snapshot_completed_once || (health && health->online && health->snapshot_complete)) &&
+                lost(h.private_states[i]))
+                return true;
+        }
+        return false;
+    }
+
+    bool replication_complete() const {
+        const auto h = sample_health();
+        if (h.connection != kCgStateActive || !h.private_active || h.aggr != kCgStateActive || !aggr_bridge.online() ||
+            !aggr_bridge.snapshot_complete())
+            return false;
+        if (config.trade_replay_from_pos_anchor && !trade_replay_anchor_is_ready)
+            return false;
+        for (const auto& managed : private_listeners) {
+            const auto* health = stream_health(managed.stream_code);
+            if (!health || !health->online || !health->snapshot_complete)
+                return false;
+        }
+        return !deferred_trade_stream || trade_listener_index.has_value();
+    }
+
+    void record_failure(const Plaza2Error& error) {
+        if (recovery.operation != Plaza2SessionOperation::Recovering) {
+            recovery.first_cause = error;
+            recovery.process_cause = {};
+        }
+        recovery.cause = error;
+        recovery.origin = failure_origin;
+        if (process_cause)
+            recovery.process_cause = process_cause;
+        recovery.state_query_cause = state_query_cause;
+        recovery.health = failure_health ? *failure_health : sample_health();
+        recovery.error_time_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(recovery_now().time_since_epoch()).count();
+        ++recovery.transitions;
+    }
+
+    bool recoverable(const Plaza2Error& error) const {
+        if (!config.transport_recovery_enabled || state_query_cause || listener_callback_error() ||
+            !reply_bridge.error().empty() || !private_bridge.callback_error().empty())
+            return false;
+        if (failure_origin == Plaza2FailureOrigin::ConnectionProcess)
+            return error.runtime_code == kCgErrInternal;
+        return (failure_origin == Plaza2FailureOrigin::ConnectionState ||
+                failure_origin == Plaza2FailureOrigin::ListenerState) &&
+               error.code == Plaza2ErrorCode::AdapterState && failure_health && transport_lost(*failure_health);
+    }
+
+    Plaza2Error supervise() {
+        const auto now = recovery_now();
+        if (recovery.operation == Plaza2SessionOperation::Failed)
+            return recovery.cause;
+        if (recovery.operation == Plaza2SessionOperation::Recovering) {
+            if (now >= recovery_expires) {
+                recovery.deadline_exhausted = true;
+                recovery.operation = Plaza2SessionOperation::Failed;
+                ++recovery.transitions;
+                return recovery.cause;
+            }
+            if (!started) {
+                if (now < next_recovery_attempt)
+                    return {};
+                ++recovery.attempts;
+                ++recovery.transitions;
+                failure_origin = Plaza2FailureOrigin::Bootstrap;
+                failure_health.reset();
+                process_cause = {};
+                state_query_cause = {};
+                auto error = start();
+                if (listener_callback_error())
+                    error = listener_callback_error();
+                if (error) {
+                    record_failure(error);
+                    // CGate 9.9 also returned INVALIDARGUMENT for an absent router on
+                    // September 11. Accept it only for this lifetime's proven identity.
+                    const bool proven_reopen = fresh_connection_created && previously_opened_connection_identity &&
+                                               *previously_opened_connection_identity == attempt_connection_identity;
+                    if (failure_origin != Plaza2FailureOrigin::ConnectionOpen ||
+                        (error.runtime_code != kCgErrInternal &&
+                         !(error.runtime_code == kCgErrInvalidArgument && proven_reopen)) ||
+                        state_query_cause || listener_callback_error() || !reply_bridge.error().empty() ||
+                        !private_bridge.callback_error().empty()) {
+                        recovery.operation = Plaza2SessionOperation::Failed;
+                        return error;
+                    }
+                    static_cast<void>(stop());
+                    const auto completed = recovery_now();
+                    if (completed >= recovery_expires) {
+                        recovery.deadline_exhausted = true;
+                        recovery.operation = Plaza2SessionOperation::Failed;
+                        return error;
+                    }
+                    next_recovery_attempt = completed + config.recovery_retry_interval;
+                    return {};
+                }
+                ++recovery.generation;
+                fully_bootstrapped = false;
+            }
+        }
+        const auto error = poll_resources();
+        if (error) {
+            const bool retry = recoverable(error);
+            record_failure(error);
+            if (!retry) {
+                recovery.operation = Plaza2SessionOperation::Failed;
+                return error;
+            }
+            if (recovery.operation != Plaza2SessionOperation::Recovering)
+                recovery_expires = now + config.recovery_deadline;
+            recovery.operation = Plaza2SessionOperation::Recovering;
+            static_cast<void>(stop());
+            next_recovery_attempt = now + config.recovery_retry_interval;
+            return {};
+        }
+        if (replication_complete() && !publisher_is_open) {
+            if (const auto open_error = open_publisher_reply(); open_error) {
+                failure_health.reset();
+                record_failure(open_error);
+                recovery.operation = Plaza2SessionOperation::Failed;
+                return open_error;
+            }
+        }
+        if (replication_complete() && sample_health().all_active()) {
+            fully_bootstrapped = true;
+            if (recovery.operation != Plaza2SessionOperation::Running)
+                ++recovery.transitions;
+            recovery.operation = Plaza2SessionOperation::Running;
         }
         return {};
     }
@@ -1093,7 +1376,16 @@ struct Plaza2TestSessionHost::Impl {
     bool publisher_is_open{false};
     bool trade_replay_anchor_is_ready{false};
     bool bridge_started{false};
+    std::optional<std::string> previously_opened_connection_identity;
+    std::string attempt_connection_identity;
+    bool fresh_connection_created{};
     bool started{false};
+    bool fully_bootstrapped{false};
+    Plaza2RecoveryStatus recovery;
+    Plaza2FailureOrigin failure_origin{Plaza2FailureOrigin::Unknown};
+    Plaza2Error process_cause, state_query_cause;
+    std::optional<Plaza2TransportHealth> failure_health;
+    std::chrono::steady_clock::time_point next_recovery_attempt{}, recovery_expires{};
 };
 
 Plaza2TestSessionHost::Plaza2TestSessionHost(Plaza2TestSessionHostConfig config)
@@ -1109,16 +1401,45 @@ Plaza2TestSessionHost::Plaza2TestSessionHost(Plaza2TestSessionHost&&) noexcept =
 Plaza2TestSessionHost& Plaza2TestSessionHost::operator=(Plaza2TestSessionHost&&) noexcept = default;
 
 Plaza2Error Plaza2TestSessionHost::start() {
-    return impl_->start();
+    if (impl_->recovery.operation != Plaza2SessionOperation::Stopped)
+        return invalid("TEST host already has an operational lifetime", Plaza2ErrorCode::AdapterState);
+    if (impl_->config.recovery_retry_interval < std::chrono::seconds(1) ||
+        impl_->config.recovery_deadline <= impl_->config.recovery_retry_interval)
+        return invalid("recovery requires interval >= 1 second and deadline > interval");
+    impl_->previously_opened_connection_identity.reset();
+    impl_->recovery.operation = Plaza2SessionOperation::Starting;
+    auto error = impl_->start();
+    if (impl_->listener_callback_error())
+        error = impl_->listener_callback_error();
+    if (error) {
+        impl_->record_failure(error);
+        impl_->recovery.operation = Plaza2SessionOperation::Failed;
+    } else
+        ++impl_->recovery.generation;
+    return error;
 }
 Plaza2Error Plaza2TestSessionHost::poll() {
-    return impl_->poll();
+    return impl_->supervise();
 }
 Plaza2Error Plaza2TestSessionHost::stop() {
+    impl_->previously_opened_connection_identity.reset();
+    impl_->recovery.operation = Plaza2SessionOperation::Stopped;
     return impl_->stop();
 }
+Plaza2TransportHealth Plaza2TestSessionHost::runtime_health() const {
+    auto out = impl_->sample_health();
+    out.valid &= impl_->recovery.operation != Plaza2SessionOperation::Recovering &&
+                 impl_->recovery.operation != Plaza2SessionOperation::Failed;
+    return out;
+}
 bool Plaza2TestSessionHost::started() const noexcept {
-    return impl_->started;
+    return impl_->recovery.operation != Plaza2SessionOperation::Stopped;
+}
+bool Plaza2TestSessionHost::recovering() const noexcept {
+    return impl_->recovery.operation == Plaza2SessionOperation::Recovering;
+}
+const Plaza2RecoveryStatus& Plaza2TestSessionHost::recovery_status() const noexcept {
+    return impl_->recovery;
 }
 const cgate::Plaza2RuntimeProbeReport& Plaza2TestSessionHost::probe_report() const noexcept {
     return impl_->probe_report;
@@ -1157,6 +1478,8 @@ std::vector<Plaza2TestSessionHost::ReplyEvent> Plaza2TestSessionHost::take_reply
     return impl_->reply_bridge.take();
 }
 const std::string& Plaza2TestSessionHost::last_callback_error() const noexcept {
+    if (impl_->listener_callback_error())
+        return impl_->listener_callback_error().message;
     if (!impl_->reply_bridge.error().empty()) {
         return impl_->reply_bridge.error();
     }
@@ -1187,10 +1510,16 @@ Plaza2PublisherMessageResult Plaza2TestSessionHost::post_validated(std::string_v
         result.post_invoked = false;
         return result;
     }
-    if (!impl_->started || (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestAuthorizedSend &&
-                            !impl_->config.arm_state.test_order_send_armed)) {
+    if (recovering() || impl_->recovery.operation == Plaza2SessionOperation::Failed || !impl_->started ||
+        (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestAuthorizedSend &&
+         !impl_->config.arm_state.test_order_send_armed)) {
         Plaza2PublisherMessageResult result;
         result.validation_error = invalid("publisher requires a started, explicitly armed TEST host");
+        return result;
+    }
+    if (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestAuthorizedSend && !runtime_health().all_active()) {
+        Plaza2PublisherMessageResult result;
+        result.validation_error = invalid("publisher requires effective ACTIVE transport health");
         return result;
     }
     Plaza2TradeCommandKind kind = Plaza2TradeCommandKind::AddOrder;
@@ -1678,19 +2007,11 @@ struct Plaza2TestTradeTransport::Impl {
         if (!target_provenance.ready) {
             return invalid("target REFDATA rows lack exact current-LifeNum provenance");
         }
-        const auto matching_limit_count =
-            std::count_if(private_state.limits().begin(), private_state.limits().end(), [&](const auto& candidate) {
-                return candidate.scope == plaza2::private_state::PositionScope::kClient &&
-                       candidate.account_code == participant_code() && candidate.limits_set;
-            });
-        const auto limit =
-            std::find_if(private_state.limits().begin(), private_state.limits().end(), [&](const auto& candidate) {
-                return candidate.scope == plaza2::private_state::PositionScope::kClient &&
-                       candidate.account_code == participant_code() && candidate.limits_set;
-            });
-        if (limit == private_state.limits().end() || matching_limit_count != 1) {
-            return invalid(matching_limit_count == 0 ? "applicable committed client limit row is missing or unset"
-                                                     : "multiple applicable committed client limit rows are ambiguous");
+        const auto lookup = private_state.find_limit_by_code(participant_code());
+        const auto* limit = lookup.exact;
+        if (lookup.match_count != 1 || limit == nullptr ||
+            limit->participant_kind != plaza2::private_state::LimitParticipantKind::Client || !limit->limits_set) {
+            return invalid("applicable committed client limit is missing, ambiguous, unknown or unchecked");
         }
         const auto position_evidence = assess_position_evidence();
         if (require_zero_starting_position() && !position_evidence.zero_starting_position_proven) {
@@ -1757,10 +2078,8 @@ struct Plaza2TestTradeTransport::Impl {
         const auto session = std::find_if(state.sessions().begin(), state.sessions().end(), [&](const auto& candidate) {
             return candidate.sess_id == config.target_session_id;
         });
-        const auto limit = std::find_if(state.limits().begin(), state.limits().end(), [&](const auto& candidate) {
-            return candidate.scope == plaza2::private_state::PositionScope::kClient &&
-                   candidate.account_code == participant_code() && candidate.limits_set;
-        });
+        const auto lookup = state.find_limit_by_code(participant_code());
+        const auto* limit = lookup.exact;
         const auto position_evidence = assess_position_evidence();
         const auto expected_account_type = expected_position_account_type();
         const auto position =
@@ -1770,7 +2089,8 @@ struct Plaza2TestTradeTransport::Impl {
                        candidate.account_type == expected_account_type;
             });
         if (!target_provenance.ready || instrument == state.instruments().end() || session == state.sessions().end() ||
-            limit == state.limits().end()) {
+            limit == nullptr || lookup.match_count != 1 ||
+            limit->participant_kind != plaza2::private_state::LimitParticipantKind::Client || !limit->limits_set) {
             return invalid("execution-safety receipt lacks target refdata/session/limit evidence");
         }
         if (require_zero_starting_position() && !position_evidence.zero_starting_position_proven) {
@@ -1862,8 +2182,12 @@ struct Plaza2TestTradeTransport::Impl {
             userorderbook != state.stream_health().end() && userorderbook->periodic_snapshot_consistent;
         receipt.private_streams_ready =
             receipt.private_streams_ready && receipt.userorderbook_periodic_snapshot_consistent;
-        receipt.p2mqreply_open = host.p2mqreply_open();
-        receipt.publisher_open = host.publisher_open();
+        const bool transport_active = host.runtime_health().all_active();
+        receipt.private_streams_ready &= transport_active;
+        receipt.aggr_online &= transport_active;
+        receipt.aggr_snapshot_complete &= transport_active;
+        receipt.p2mqreply_open = transport_active && host.p2mqreply_open();
+        receipt.publisher_open = transport_active && host.publisher_open();
         receipt.trading_capable = host.probe_report().trading_capable;
         receipt.test_order_send_armed = config.host.arm_state.test_order_send_armed;
         receipt.send_mode =
@@ -2002,6 +2326,9 @@ struct Plaza2TestTradeTransport::Impl {
                 result.validation_error = invalid(std::move(reason));
                 return result;
             };
+            if (order_may_exist && (host.recovering() || order_generation != host.recovery_status().generation))
+                return refuse(
+                    "order epoch crossed transport loss; observation reconciliation required; no automatic commands");
             const bool add = command.command_kind == Plaza2TradeCommandKind::AddOrder;
             const bool cancel = command.command_kind == Plaza2TradeCommandKind::DelOrder;
             const bool recovery = command.command_kind == Plaza2TradeCommandKind::DelUserOrders;
@@ -2091,6 +2418,7 @@ struct Plaza2TestTradeTransport::Impl {
         }
         const auto result = host.post_validated(command.command_name, command.payload, user_id, true);
         if (command.command_kind == Plaza2TradeCommandKind::AddOrder) {
+            order_generation = host.recovery_status().generation;
             order_may_exist = result.certainty != cgate::Plaza2SubmissionCertainty::DefinitelyNotSent;
         }
         return result;
@@ -2113,6 +2441,10 @@ struct Plaza2TestTradeTransport::Impl {
                 result.error = error.message;
             }
         }
+        // The order epoch and submission latches survive rebootstrap. Absence in an
+        // incomplete replacement snapshot is never terminal order evidence.
+        if (host.recovering() || !result.ok)
+            return result;
         const Plaza2TradeCodec codec;
         for (const auto& event : host.take_reply_events()) {
             OrderReplyObservation reply;
@@ -2184,6 +2516,7 @@ struct Plaza2TestTradeTransport::Impl {
     bool cancel_attempted{false};
     bool recovery_attempted{false};
     bool order_may_exist{false};
+    std::uint64_t order_generation{0};
     std::optional<std::int64_t> cancel_order_id;
     bool cancel_identity_conflict{false};
     bool safe_terminal_epoch{false};
@@ -2235,6 +2568,7 @@ Plaza2Error Plaza2TestTradeTransport::reset_order_epoch() {
     impl_->cancel_attempted = false;
     impl_->recovery_attempted = false;
     impl_->order_may_exist = false;
+    impl_->order_generation = 0;
     impl_->cancel_order_id.reset();
     impl_->cancel_identity_conflict = false;
     impl_->safe_terminal_epoch = false;

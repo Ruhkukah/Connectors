@@ -90,11 +90,7 @@ jobs:
 
       - name: Configure
         run: |
-          if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
-            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          else
-            cmake -S . -B build
-          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: |
@@ -110,8 +106,9 @@ jobs:
           if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
             ctest --test-dir build --output-on-failure -L c2_preflight
           else
-            ctest --test-dir build --output-on-failure -LE preflight
+            ctest --test-dir build --output-on-failure
           fi
+
 
       - name: Upload listener-only capture preparation binaries
         if: github.head_ref == 'codex/plaza2-c2-capture-20260907'
@@ -136,8 +133,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install C2 codegen requirements
-        if: env.C2_PREFLIGHT_ONLY == 'true'
+      - name: Install Python requirements
         run: python -m pip install -r requirements.txt
 
       - name: Install clang
@@ -171,5 +167,5 @@ jobs:
           if [ "$C2_PREFLIGHT_ONLY" = "true" ]; then
             ctest --test-dir build-asan --output-on-failure -L c2_preflight
           else
-            ctest --test-dir build-asan --output-on-failure -L sanitizer
+            ctest --test-dir build-asan --output-on-failure -L "sanitizer|plaza2"
           fi
