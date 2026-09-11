@@ -1032,7 +1032,21 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     const auto distance = config.side == Plaza2TradeSide::Buy ? std::max<std::int64_t>(0, bid->scaled - price->scaled)
                                                               : std::max<std::int64_t>(0, price->scaled - ask->scaled);
     const auto distance_ticks = static_cast<std::uint64_t>(distance / tick->scaled);
-    if (distance % tick->scaled != 0 || distance_ticks > config.policy.max_distance_ticks) {
+    const bool deep = config.policy.version == kFirstOrderDeepPassiveVersion;
+    if (deep) {
+        const auto exact_price = plaza2::private_state::parse_session_decimal(config.price);
+        if (!config.session_price_binding || !config.first_order_bbo || !exact_price ||
+            config.policy.sha256 != first_order_deep_passive_sha256() ||
+            config.policy.max_aggr20_age_ms != kFirstOrderBboMaxAgeMs ||
+            !config.policy.require_zero_starting_position || config.first_order_bbo->repl_id == 0 ||
+            config.first_order_bbo->committed_monotonic_ns <= 0 ||
+            !deep_passive_price_allowed(config.session_price_binding->terms, exact_price->units,
+                                        static_cast<int>(config.side), config.first_order_bbo->bid_units,
+                                        config.first_order_bbo->ask_units,
+                                        static_cast<std::int64_t>(config.smoke.aggr20_age_ms)))
+            return fail_plan(PreSendFailure::DistanceCeilingExceeded, "FIRST_ORDER_DEEP_PASSIVE_POLICY_REJECTED");
+    } else if (config.first_order_bbo || distance % tick->scaled != 0 ||
+               distance_ticks > config.policy.max_distance_ticks) {
         return fail_plan(PreSendFailure::DistanceCeilingExceeded, "independent distance ceiling exceeded");
     }
     if (!config.smoke.limits_snapshot_applicable) {
@@ -1098,6 +1112,8 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     json << "  \"broker_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.broker_code) << "\",\n";
     if (config.session_price_binding)
         json << "  \"session_price_binding\": " << session_price_binding_json(*config.session_price_binding) << ",\n";
+    if (config.first_order_bbo)
+        json << "  \"first_order_bbo\": " << deep_passive_binding_json(*config.first_order_bbo) << ",\n";
     json << "  \"smoke_policy\": {\n";
     json << "    \"version\": \"" << json_escape(config.policy.version) << "\",\n";
     json << "    \"sha256\": \"" << config.policy.sha256 << "\",\n";

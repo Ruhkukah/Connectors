@@ -422,6 +422,7 @@ struct ConnectorHost::Impl {
     std::optional<PersistentSessionCheckpoint> retained_checkpoint;
     std::uint32_t next_recovered_user_id{std::numeric_limits<std::uint32_t>::max()};
     bool restart_recovery_only{false};
+    bool first_order_fill_incident{false};
     bool checkpoint_blocked{false};
     bool recovered_epoch_active{false};
     std::string checkpoint_error;
@@ -784,8 +785,18 @@ struct ConnectorHost::Impl {
         out.order_price_tick_aligned = price_gate.order_price_tick_aligned;
         out.new_order_allowed = config.purpose == HostPurpose::OrderTest && out.observation_ready &&
                                 price_gate.allowed() && persistent == nullptr && !recovered_epoch_active &&
-                                !checkpoint_blocked && !restart_recovery_only && authorized_sha.empty() && !submitted &&
+                                !checkpoint_blocked && !restart_recovery_only && !first_order_fill_incident &&
+                                authorized_sha.empty() && !submitted &&
                                 epoch_counter != std::numeric_limits<std::uint64_t>::max();
+        if (config.order.policy.version == kFirstOrderDeepPassiveVersion) {
+            const auto terms = data.find_future_session_terms(out.target_isin_id);
+            const auto price = ps::parse_session_decimal(config.order.price);
+            const auto bid = ps::parse_session_decimal(out.bid), ask = ps::parse_session_decimal(out.ask);
+            out.new_order_allowed &=
+                terms && price && bid && ask &&
+                deep_passive_price_allowed(*terms, price->units, static_cast<int>(config.order.side), bid->units,
+                                           ask->units, out.bbo_age_ms);
+        }
         out.last_error = error;
         out.causal_error = causal_error;
         out.causal_error_time_ns = causal_error_time_ns;
@@ -794,6 +805,8 @@ struct ConnectorHost::Impl {
         out.causal_callback_error = causal_callback_error;
         if (out.state == ConnectorHostState::Ready && !out.observation_ready)
             out.state = ConnectorHostState::Started;
+        if (out.last_error.empty() && first_order_fill_incident)
+            out.last_error = "FIRST_ORDER_FILLED: new-order authority frozen; preserve actual position";
         if (out.last_error.empty() && !checkpoint_error.empty())
             out.last_error = checkpoint_error;
         if (out.last_error.empty() && recovered_epoch_active)
@@ -870,6 +883,26 @@ struct ConnectorHost::Impl {
                     value.isin_id, view.session_id, view.refdata_lifenum))
                 value.session_price_binding = SessionPriceBinding{view.recovery.generation, *terms};
         }
+        value.first_order_bbo.reset();
+        if (value.policy.version == kFirstOrderDeepPassiveVersion) {
+            if (const auto book = transport.host().aggr20_projector().snapshot_for_isin(value.isin_id);
+                book && book->top_bid && book->top_ask &&
+                std::chrono::steady_clock::now() - book->committed_at <=
+                    std::chrono::milliseconds(kFirstOrderBboMaxAgeMs)) {
+                const auto bid = ps::parse_session_decimal(book->top_bid->price);
+                const auto ask = ps::parse_session_decimal(book->top_ask->price);
+                if (bid && ask)
+                    value.first_order_bbo = DeepPassiveBboBinding{
+                        bid->units,
+                        ask->units,
+                        book->last_repl_id,
+                        book->last_repl_rev,
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(book->committed_at.time_since_epoch())
+                            .count(),
+                        book->exchange_moment,
+                        book->exchange_moment_ns};
+            }
+        }
         value.smoke = {};
         value.smoke.instrument_exists = view.target_refdata_provenance_ready;
         value.smoke.tradable_session = view.session_status == 1 && view.instrument_status == 1;
@@ -914,6 +947,7 @@ struct ConnectorHost::Impl {
         const auto& c = order_config;
         Plaza2AuthorizedOrderIntent intent;
         intent.session_price_binding = c.session_price_binding;
+        intent.first_order_bbo = c.first_order_bbo;
         intent.sha256 = candidate.sha256;
         intent.canonical_json = candidate.canonical_json;
         intent.profile_id = c.profile_id;
@@ -1084,6 +1118,14 @@ cg::Plaza2Error ConnectorHost::stop() {
     return {};
 }
 
+DeepPassiveProposal ConnectorHost::first_order_price_proposal() const {
+    const auto order = impl_->current_order();
+    if (!order.session_price_binding || !order.first_order_bbo)
+        return {};
+    return propose_deep_passive(order.session_price_binding->terms, order.first_order_bbo->bid_units,
+                                order.first_order_bbo->ask_units, static_cast<std::int64_t>(order.smoke.aggr20_age_ms));
+}
+
 ConnectorHostSnapshot ConnectorHost::snapshot() const {
     return impl_->snapshot();
 }
@@ -1131,7 +1173,8 @@ PreSendPlan ConnectorHost::plan() const {
 
 PreSendPlan ConnectorHost::plan_order(const ConnectorHostOrderRequest& request) const {
     const auto& p = *impl_;
-    if (p.checkpoint_blocked || p.restart_recovery_only || p.recovered_epoch_active || p.persistent != nullptr) {
+    if (p.checkpoint_blocked || p.restart_recovery_only || p.first_order_fill_incident || p.recovered_epoch_active ||
+        p.persistent != nullptr) {
         return {.failure = PreSendFailure::JournalFailure,
                 .message = p.checkpoint_blocked ? "PERSISTENT_SESSION_CHECKPOINT_BLOCKED"
                                                 : "PERSISTENT_SESSION_EPOCH_REQUIRES_RECONCILIATION"};
@@ -1153,7 +1196,8 @@ PreSendPlan ConnectorHost::plan_order(const ConnectorHostOrderRequest& request) 
 cg::Plaza2Error ConnectorHost::authorize(std::string_view canonical, std::string_view sha) {
     auto& p = *impl_;
     if (p.config.purpose != HostPurpose::OrderTest || p.submitted || p.persistent != nullptr ||
-        p.recovered_epoch_active || p.restart_recovery_only || p.checkpoint_blocked || !p.authorized_sha.empty())
+        p.recovered_epoch_active || p.restart_recovery_only || p.first_order_fill_incident || p.checkpoint_blocked ||
+        !p.authorized_sha.empty())
         return invalid("authorization is unavailable for this host");
     const auto candidate = plan();
     if (!candidate.ok) {
@@ -1166,7 +1210,8 @@ cg::Plaza2Error ConnectorHost::authorize(std::string_view canonical, std::string
 OrderLifecycleResult ConnectorHost::submit() {
     auto& p = *impl_;
     if (p.config.purpose != HostPurpose::OrderTest || p.authorized_sha.empty() || p.submitted ||
-        p.persistent != nullptr || p.recovered_epoch_active || p.restart_recovery_only || p.checkpoint_blocked)
+        p.persistent != nullptr || p.recovered_epoch_active || p.restart_recovery_only || p.first_order_fill_incident ||
+        p.checkpoint_blocked)
         return {.message = "authorized one-shot order-test required"};
     if (poll() || !p.snapshot().observation_ready)
         return {.message = "OBSERVATION_NOT_READY"};
@@ -1191,7 +1236,8 @@ cg::Plaza2Error ConnectorHost::begin_order(const ConnectorHostOrderRequest& requ
                                            std::string_view sha256) {
     auto& p = *impl_;
     if (p.config.purpose != HostPurpose::OrderTest || p.submitted || p.persistent != nullptr ||
-        p.recovered_epoch_active || p.restart_recovery_only || p.checkpoint_blocked || !p.authorized_sha.empty()) {
+        p.recovered_epoch_active || p.restart_recovery_only || p.first_order_fill_incident || p.checkpoint_blocked ||
+        !p.authorized_sha.empty()) {
         return invalid("a persistent order epoch is already active or unavailable for this host");
     }
     if (p.state != ConnectorHostState::Started && p.state != ConnectorHostState::Ready) {
@@ -1266,7 +1312,8 @@ cg::Plaza2Error ConnectorHost::begin_order(std::string_view canonical_plan, std:
 
 OrderLifecycleResult ConnectorHost::submit_order() {
     auto& p = *impl_;
-    if (p.persistent == nullptr || p.recovered_epoch_active || p.restart_recovery_only || p.checkpoint_blocked)
+    if (p.persistent == nullptr || p.recovered_epoch_active || p.restart_recovery_only || p.first_order_fill_incident ||
+        p.checkpoint_blocked)
         return {.message = "begin_order with an exact authorization is required"};
     if (!p.persistent_plan || !p.persistent_order)
         return {.message = "persistent epoch authorization is incomplete"};
@@ -1285,6 +1332,11 @@ OrderLifecycleResult ConnectorHost::poll_order() {
     if (p.persistent == nullptr)
         return {.message = "begin_order with an exact authorization is required"};
     auto result = p.persistent->poll_order();
+    if (p.config.order.policy.version == kFirstOrderDeepPassiveVersion && result.observation &&
+        (result.observation->state == OrderLifecycleState::Filled || result.observation->executed_quantity > 0)) {
+        p.first_order_fill_incident = true;
+        p.error = "FIRST_ORDER_FILLED: new-order authority frozen; preserve actual position, no automatic flatten";
+    }
     if (p.retained_checkpoint) {
         auto checkpoint = *p.retained_checkpoint;
         checkpoint.lifecycle_state = static_cast<std::int32_t>(result.state);

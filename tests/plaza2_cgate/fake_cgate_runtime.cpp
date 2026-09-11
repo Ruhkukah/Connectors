@@ -148,6 +148,7 @@ struct FakeConnection {
     bool pos_anchor_drift_emitted{false};
     bool forced_trade_terminal_emitted{false};
     bool session_price_revision_emitted{false};
+    bool first_order_bbo_shift_emitted{false};
     bool trade_open_error_seen{false};
 };
 
@@ -1195,14 +1196,16 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                 continue;
             find_field(row, kFortsTradeReplOrdersLogPublicOrderId)->signed_value =
                 find_field(row, kFortsTradeReplOrdersLogPrivateOrderId)->signed_value;
-            find_field(row, kFortsTradeReplOrdersLogPrice)->text = "103000";
+            find_field(row, kFortsTradeReplOrdersLogPrice)->text =
+                fake_flag("MOEX_FAKE_FIRST_ORDER_FILLED") ? "112000" : "103000";
             const bool terminal = g_cancel_after_cleanup || fake_flag("MOEX_FAKE_CANCELLED_ORDER");
             for (auto code : {kFortsTradeReplOrdersLogPublicAmount, kFortsTradeReplOrdersLogPrivateAmount})
                 find_field(row, code)->signed_value = 1;
             for (auto code : {kFortsTradeReplOrdersLogPublicAmountRest, kFortsTradeReplOrdersLogPrivateAmountRest,
                               kFortsTradeReplOrdersLogPublicAction, kFortsTradeReplOrdersLogPrivateAction})
                 find_field(row, code)->signed_value = terminal ? 0 : 1;
-            if (fake_flag("MOEX_FAKE_RESTART_FILLED")) {
+            if (fake_flag("MOEX_FAKE_RESTART_FILLED") ||
+                (fake_flag("MOEX_FAKE_FIRST_ORDER_FILLED") && fake_flag("MOEX_FAKE_FULL_FILL"))) {
                 for (auto code : {kFortsTradeReplOrdersLogPublicAmountRest, kFortsTradeReplOrdersLogPrivateAmountRest})
                     find_field(row, code)->signed_value = 0;
                 for (auto code : {kFortsTradeReplOrdersLogPublicAction, kFortsTradeReplOrdersLogPrivateAction})
@@ -1912,6 +1915,33 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
             connection->pos_anchor_drift_emitted = true;
             return kCgErrOk;
         }
+    }
+
+    if (connection->script_emitted && fake_flag("MOEX_FAKE_FIRST_ORDER_BBO_SHIFT") &&
+        !connection->first_order_bbo_shift_emitted) {
+        for (auto* listener : connection->listeners) {
+            if (!listener || listener->reply_listener || listener->state != kStateActive ||
+                listener->stream_code != StreamCode::kFortsAggrRepl)
+                continue;
+            if (auto error = emit_simple_message(*listener, kCgMsgTnBegin); error != kCgErrOk)
+                return error;
+            for (auto row : script_for_stream(listener->stream_code)) {
+                if (row.table_code != TableCode::kFortsAggrReplOrdersAggr)
+                    continue;
+                const auto* dir = find_field(row, FieldCode::kFortsAggrReplOrdersAggrDir);
+                find_field(row, FieldCode::kFortsAggrReplOrdersAggrPrice)->text =
+                    dir->signed_value == 1 ? "110000" : "110250";
+                row.rev += 1000;
+                if (auto* rev = find_field(row, FieldCode::kFortsAggrReplOrdersAggrReplRev))
+                    rev->signed_value = row.rev;
+                if (auto error = emit_stream_message(*listener, row); error != kCgErrOk)
+                    return error;
+            }
+            if (auto error = emit_simple_message(*listener, kCgMsgTnCommit); error != kCgErrOk)
+                return error;
+        }
+        connection->first_order_bbo_shift_emitted = true;
+        return kCgErrOk;
     }
 
     if (connection->script_emitted && fake_flag("MOEX_FAKE_SESSION_PRICE_REVISION") &&

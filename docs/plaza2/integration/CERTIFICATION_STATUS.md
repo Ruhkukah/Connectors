@@ -47,3 +47,10 @@ Persistent v2 checkpoint restart reconciliation and explicit recovered Cancel ar
 stacked PR; see RESTART_ORDER_RECOVERY.md. The new process stays recovery-only. Legacy nonterminal v1 remains
 blocked. This supersedes the earlier implementation-gap row only for v2; every live evidence identity and
 NOT YET TESTED live-order row remains unchanged.
+
+## Deep-passive policy follow-on (offline only)
+
+FIRST_ORDER_DEEP_PASSIVE_V1 is implemented as an opt-in exact policy with a 20-tick minimum cushion and 1000 ms
+BBO ceiling, binding reviewed BBO provenance and revalidating current passivity before Add. Legacy policies are
+unchanged. The proposed runbook now defines fill handling and restart contingencies. Live Add/Cancel lifecycle
+and Working-order outage remain NOT YET TESTED; this is not live authorization.
