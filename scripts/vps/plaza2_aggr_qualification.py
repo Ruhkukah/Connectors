@@ -13,7 +13,7 @@ import subprocess
 import yaml
 
 
-def main():
+def main(authorization_date="2026-09-10", binary_name="plaza2_aggr_qualification", token=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -28,8 +28,8 @@ def main():
     if "MOEX_AGGR_T1_ORDER_AUTH" in os.environ or "MOEX_AGGR_T1_IDLE" in os.environ:
         parser.error("observation rejects order authorization and idle mode")
     now = datetime.now(timezone(timedelta(hours=3)))
-    if now.date().isoformat() != "2026-09-10" or not 418 <= now.hour * 60 + now.minute < 970:
-        parser.error("outside September 10 06:58-16:10 MSK observation window")
+    if now.date().isoformat() != authorization_date or not 418 <= now.hour * 60 + now.minute < 970:
+        parser.error(f"outside {authorization_date} 06:58-16:10 MSK observation window")
     if args.output.exists():
         parser.error("output must be new; existing scenario or order.request is invalid preparation")
     if args.journal.exists() and any(args.journal.iterdir()):
@@ -43,7 +43,12 @@ def main():
             path = package / path
         if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
             raise SystemExit("deployment hash mismatch; no process started")
-    binary = package / "bin/plaza2_aggr_qualification"
+    binary = package / "bin" / binary_name
+    if authorization_date != "2026-09-10":
+        if manifest.get("authorization_date") != authorization_date:
+            raise SystemExit("deployment authorization date mismatch")
+        if hashlib.sha256(binary.read_bytes()).hexdigest() != manifest.get("binary_sha256"):
+            raise SystemExit("binary hash mismatch")
     source_sha = subprocess.check_output([str(binary), "--version"], text=True).strip()
     if source_sha != manifest["source_sha"]:
         raise SystemExit("binary source identity mismatch")
@@ -60,7 +65,7 @@ def main():
             key, value = entry.split(b"=", 1)
             if key in (b"MOEX_PLAZA2_TEST_CREDENTIALS", b"MOEX_PLAZA2_CGATE_SOFTWARE_KEY"):
                 env[key.decode()] = value.decode()
-    env["MOEX_AGGR_T1_AUTH"] = "20260910_AGGREGATED_OBSERVATION"
+    env["MOEX_AGGR_T1_AUTH"] = token or authorization_date.replace("-", "") + "_AGGREGATED_OBSERVATION"
     env["MOEX_AGGR_FORENSIC_SYMBOL"] = args.symbol
     env["MOEX_AGGR_T1_JOURNAL"] = str(args.journal.resolve())
     env["MOEX_QUAL_BROKER"] = str(account["broker_code"])
