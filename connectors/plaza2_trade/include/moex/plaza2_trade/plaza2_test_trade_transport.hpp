@@ -375,6 +375,9 @@ class Plaza2TestTradeTransport final : public OrderLifecycleTransport {
                                                          std::string_view authorized_sha) const;
     [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult
     execute_recovered_cancel(const std::filesystem::path& path, std::string_view authorized_sha);
+    // Recovery-only context never installs an Add-capable authorization.
+    void restore_recovery_epoch(Plaza2AuthorizedOrderIntent identity, std::string context, std::int64_t known_order_id);
+    void configure_recovered_reservations(std::uint32_t next, std::function<bool(std::uint32_t, std::string&)> persist);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

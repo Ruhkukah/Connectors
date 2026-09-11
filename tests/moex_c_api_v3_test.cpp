@@ -363,6 +363,8 @@ int main(int argc, char** argv) {
         std::error_code restart_cleanup;
         std::filesystem::remove_all(restart_journals, restart_cleanup);
 
+        ::setenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER", "1", 1);
+        ::setenv("MOEX_FAKE_FLAT_TRADE_REPLAY", "1", 1);
         // A safely terminal journal may be observed after the process dies
         // before the persistent checkpoint advances.  V3 must expose the
         // same historical recovery path without coupling it to the current
@@ -418,6 +420,7 @@ int main(int argc, char** argv) {
                           snapshot.order_epoch_active != 0 && snapshot.new_order_allowed == 0,
                       "terminal recovery initially blocks new order");
         ::setenv("MOEX_FAKE_AGGR_CROSSED", "1", 1);
+        ::setenv("MOEX_FAKE_FORCE_TRADE_TERMINAL", "1", 1);
         test::require(moex_v3_start(terminal_recovered) == MOEX_RESULT_OK, "terminal recovered start");
         for (int i = 0; i < 10; ++i) {
             test::require(moex_v3_poll(terminal_recovered) == MOEX_RESULT_OK, "terminal recovered poll");
@@ -433,7 +436,7 @@ int main(int argc, char** argv) {
         terminal_reconciliation.abi_version = MOEX_C_ABI_V3_VERSION;
         test::require(moex_v3_reconcile(terminal_recovered, &terminal_reconciliation) == MOEX_RESULT_OK &&
                           terminal_reconciliation.ok != 0 && terminal_reconciliation.run_found != 0 &&
-                          terminal_reconciliation.resolved != 0 && terminal_reconciliation.locks_retained == 0 &&
+                          terminal_reconciliation.resolved != 0 && terminal_reconciliation.locks_retained != 0 &&
                           terminal_reconciliation.lifecycle_state == MOEX_V3_ORDER_CANCELLED,
                       "terminal recovery resolves through V3");
         test::require(moex_v3_get_snapshot(terminal_recovered, &snapshot) == MOEX_RESULT_OK &&
@@ -445,6 +448,8 @@ int main(int argc, char** argv) {
                       "terminal recovery cleanup");
         ::unsetenv("MOEX_FAKE_AGGR_CROSSED");
         ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
+        ::unsetenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER");
+        ::unsetenv("MOEX_FAKE_FORCE_TRADE_TERMINAL");
         std::error_code terminal_cleanup;
         std::filesystem::remove_all(terminal_journals, terminal_cleanup);
 

@@ -1935,7 +1935,7 @@ struct Plaza2TestTradeTransport::Impl {
         RecoveredOrderReconciliation blocked;
         blocked.key = key;
         blocked.generation = host.recovery_status().generation;
-        if (!order_may_exist || !intent() || blocked.generation <= order_generation ||
+        if (!order_may_exist || !intent() || (!restart_recovery_only && blocked.generation <= order_generation) ||
             recovered_cancel_evidence_failed) {
             blocked.outcome = RecoveredOrderOutcome::GenerationNotFresh;
             return blocked;
@@ -2018,6 +2018,9 @@ struct Plaza2TestTradeTransport::Impl {
     std::uint64_t recovered_cancel_attempt_generation{0};
     bool recovered_cancel_evidence_failed{false};
     // Descending reply IDs stay reserved across all epochs of this owner.
+    bool restart_recovery_only{false};
+    std::string restart_context;
+    std::function<bool(std::uint32_t, std::string&)> persist_recovered_reservation;
     std::uint32_t next_recovered_user_id{std::numeric_limits<std::uint32_t>::max()};
 
     RecoveredCancelPlan prepare_cancel(const RecoveredOrderKey& key, const std::filesystem::path& path) {
@@ -2047,7 +2050,11 @@ struct Plaza2TestTradeTransport::Impl {
             plan.error = "recovered cancel reply identifier space exhausted";
             return plan;
         }
-        const auto user_id = next_recovered_user_id--;
+        const auto user_id = next_recovered_user_id;
+        // Burn the ID durably before creating even the approval artifact.
+        if (persist_recovered_reservation && !persist_recovered_reservation(user_id - 1, plan.error))
+            return plan;
+        --next_recovered_user_id;
         std::random_device random;
         std::ostringstream nonce;
         for (int i = 0; i != 4; ++i)
@@ -2057,7 +2064,8 @@ struct Plaza2TestTradeTransport::Impl {
                               ",\"add_authority_sha256\":\"" + intent()->sha256 + "\"" + ",\"payload_sha256\":\"" +
                               cgate::plaza2_sha256_hex(command.payload) + "\",\"reconciliation_sha256\":\"" +
                               plan.reconciliation.evidence_sha256 +
-                              "\",\"reconciliation\":" + plan.reconciliation.evidence_json + "}\n";
+                              "\",\"reconciliation\":" + plan.reconciliation.evidence_json +
+                              ",\"restart_context\":" + (restart_context.empty() ? "null" : restart_context) + "}\n";
         plan.sha256 = cgate::plaza2_sha256_hex(plan.canonical_json);
         if (!write_recovered_artifact(path, plan.canonical_json, plan.error))
             return plan;
@@ -2520,6 +2528,12 @@ struct Plaza2TestTradeTransport::Impl {
     }
 
     Plaza2PublisherMessageResult submit(const Plaza2TradeEncodedCommand& command, std::uint32_t user_id) {
+        if (restart_recovery_only) {
+            Plaza2PublisherMessageResult blocked;
+            blocked.validation_error =
+                invalid("restart recovery permits only a new explicitly approved recovered Cancel");
+            return blocked;
+        }
         if (host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend) {
             const auto refuse = [](std::string reason) {
                 Plaza2PublisherMessageResult result;
@@ -2696,7 +2710,8 @@ struct Plaza2TestTradeTransport::Impl {
         if (config.observation_ext_id != 0 ||
             (host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend && intent() != nullptr)) {
             std::optional<OrderObservation> observation;
-            if (order_may_exist && intent() && host.recovery_status().generation != order_generation) {
+            if (order_may_exist && intent() &&
+                (restart_recovery_only || host.recovery_status().generation != order_generation)) {
                 RecoveredOrderKey key;
                 key.epoch = intent()->sha256;
                 key.account = participant_code();
@@ -2756,6 +2771,22 @@ Plaza2TestTradeTransport::Plaza2TestTradeTransport(Plaza2TestTradeTransportConfi
 Plaza2TestTradeTransport::~Plaza2TestTradeTransport() = default;
 Plaza2TestTradeTransport::Plaza2TestTradeTransport(Plaza2TestTradeTransport&&) noexcept = default;
 Plaza2TestTradeTransport& Plaza2TestTradeTransport::operator=(Plaza2TestTradeTransport&&) noexcept = default;
+
+void Plaza2TestTradeTransport::configure_recovered_reservations(
+    std::uint32_t next, std::function<bool(std::uint32_t, std::string&)> persist) {
+    impl_->next_recovered_user_id = next;
+    impl_->persist_recovered_reservation = std::move(persist);
+}
+void Plaza2TestTradeTransport::restore_recovery_epoch(Plaza2AuthorizedOrderIntent identity, std::string context,
+                                                      std::int64_t known_order_id) {
+    impl_->config.authorized_intent = std::move(identity);
+    impl_->restart_recovery_only = true;
+    impl_->restart_context = std::move(context);
+    impl_->order_may_exist = true;
+    impl_->add_attempted = true;
+    if (known_order_id > 0)
+        impl_->cancel_order_id = known_order_id;
+}
 
 RecoveredOrderReconciliation Plaza2TestTradeTransport::inspect_recovered_order(const RecoveredOrderKey& key) const {
     return impl_->inspect_recovered(key);

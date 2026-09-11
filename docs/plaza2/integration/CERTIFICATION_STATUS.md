@@ -40,3 +40,10 @@ PR; see PRICE_SEND_GATE.md. This does not promote any live order status or close
 
 The accepted live PASS rows above retain their original source identity. The integration-base gap rows are
 historical; these follow-on rows describe the new code. No new live qualification claim is made.
+
+## Restart recovery follow-on (offline only)
+
+Persistent v2 checkpoint restart reconciliation and explicit recovered Cancel are implemented in a separate
+stacked PR; see RESTART_ORDER_RECOVERY.md. The new process stays recovery-only. Legacy nonterminal v1 remains
+blocked. This supersedes the earlier implementation-gap row only for v2; every live evidence identity and
+NOT YET TESTED live-order row remains unchanged.
