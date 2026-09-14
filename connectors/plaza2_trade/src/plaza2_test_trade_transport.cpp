@@ -245,8 +245,8 @@ std::string limit_row_fingerprint(const plaza2::private_state::LimitSnapshot& li
     value << static_cast<int>(limit.participant_kind) << '|' << limit.account_code << '|' << limit.limits_set << '|'
           << limit.is_auto_update_limit << '|' << limit.money_free << '|' << limit.money_blocked << '|'
           << limit.vm_reserve << '|' << limit.fee << '|' << limit.money_old << '|' << limit.money_amount << '|'
-          << limit.money_pledge_amount << '|' << limit.actual_amount_of_base_currency << '|' << limit.vm_intercl << '|'
-          << limit.broker_fee << '|' << limit.penalty << '|' << limit.premium_intercl << '|' << limit.net_option_value;
+          << limit.money_pledge_amount << '|' << limit.actual_amount_of_base_currency << '|' << limit.broker_fee << '|'
+          << limit.penalty << '|' << limit.net_option_value;
     return cgate::plaza2_sha256_hex(value.str());
 }
 

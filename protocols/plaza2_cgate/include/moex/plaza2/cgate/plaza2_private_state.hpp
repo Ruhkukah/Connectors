@@ -113,6 +113,8 @@ struct TradingSessionSnapshot {
     std::int32_t state{0};
     bool has_current_status{false};
     std::int32_t current_status{0};
+    // SPECTRA93 compatibility shadows. SPECTRA9.9 removed these fields;
+    // readiness, session terms and order gates never consume them.
     std::int64_t inter_cl_begin{0};
     std::int64_t inter_cl_end{0};
     std::int32_t inter_cl_state{0};
@@ -191,6 +193,8 @@ struct LimitSnapshot {
     std::string money_amount;
     std::string money_pledge_amount;
     std::string actual_amount_of_base_currency;
+    // SPECTRA93 compatibility shadows. SPECTRA9.9 removed these fields;
+    // participant identity, limits_set and money checks never consume them.
     std::string vm_intercl;
     std::string broker_fee;
     std::string penalty;
