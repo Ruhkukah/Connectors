@@ -37,9 +37,10 @@ The authoritative consumed-surface lock is [`consumed_replication_compatibility.
 
 | Protocol change | AGGR/private/refdata treatment | Result |
 |---|---|---|
-| `part.vm_intercl`, `part.premium_intercl` removed | retained C++/C ABI members are optional SPECTRA93 shadows; absent row values are empty and are not used by identity, `limits_set`, money checks, readiness, or order authorization | PASS_OFFLINE |
+| `part.vm_intercl`, `part.premium_intercl`, `part_sa.vm_intercl`, `part_sa.premium_intercl` removed | retained C++/C ABI members for the consumed `part` surface are optional SPECTRA93 shadows; `part_sa` is not in the AGGR host path; absent row values are empty and are not used by identity, `limits_set`, money checks, readiness, or order authorization | PASS_OFFLINE |
 | `session.inter_cl_begin/end/state` removed | retained session members are optional shadows only; session state, current status, trading periods and price terms use the current fields | PASS_OFFLINE |
-| `fut_instruments.step_price_interclr` removed | no AGGR or price-gate read; `min_step` and `step_price` are the authoritative fields | PASS_OFFLINE |
+| `sess_option_series.step_price_interclr`, `fut_sess_contents.step_price_interclr`, `fut_instruments.step_price_interclr` removed | none is read by AGGR or the price gate; `min_step` and `step_price` are the authoritative futures fields | PASS_OFFLINE |
+| `fut_exec_orders.xamount_apply`, `opt_exec_orders.xamount_apply` removed | execution-order tables are not opened by the AGGR host and no production path reads these fields | PASS_OFFLINE |
 | `fut_intercl_info`, `opt_intercl_info` removed | neither table is in the required private/refdata path; unknown required drift still fails closed | PASS_OFFLINE |
 | `prevorder_id` additions | additive and ignored by the AGGR/private gates; no positional or ordinal assumption | PASS_OFFLINE |
 | `premium_blocked` addition | additive PART field; participant identity and `limits_set` remain separate | PASS_OFFLINE |

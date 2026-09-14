@@ -107,6 +107,22 @@
     "safety": ["effective readiness false during recovery", "Add disabled", "no automatic Add retransmit", "no automatic Cancel/flatten", "active epoch remains unresolved until explicit reconciliation"]
   },
   "spectra_9_9_audit": {
+    "official_removed_surfaces": [
+      "FORTS_PART_REPL.part.vm_intercl",
+      "FORTS_PART_REPL.part.premium_intercl",
+      "FORTS_PART_REPL.part_sa.vm_intercl",
+      "FORTS_PART_REPL.part_sa.premium_intercl",
+      "FORTS_REFDATA_REPL.session.inter_cl_begin",
+      "FORTS_REFDATA_REPL.session.inter_cl_end",
+      "FORTS_REFDATA_REPL.session.inter_cl_state",
+      "FORTS_REFDATA_REPL.sess_option_series.step_price_interclr",
+      "FORTS_REFDATA_REPL.fut_sess_contents.step_price_interclr",
+      "FORTS_REFDATA_REPL.fut_instruments.step_price_interclr",
+      "FORTS_REFDATA_REPL.fut_exec_orders.xamount_apply",
+      "FORTS_REFDATA_REPL.opt_exec_orders.xamount_apply",
+      "FORTS_REFDATA_REPL.fut_intercl_info",
+      "FORTS_REFDATA_REPL.opt_intercl_info"
+    ],
     "reviewed_absent_fields": [
       "FORTS_PART_REPL.part.vm_intercl",
       "FORTS_PART_REPL.part.premium_intercl",

@@ -16,6 +16,18 @@ REMOVED_FIELDS = {
     "FORTS_REFDATA_REPL.session.inter_cl_state",
 }
 
+OFFICIAL_REMOVED_SURFACES = {
+    *REMOVED_FIELDS,
+    "FORTS_PART_REPL.part_sa.vm_intercl",
+    "FORTS_PART_REPL.part_sa.premium_intercl",
+    "FORTS_REFDATA_REPL.sess_option_series.step_price_interclr",
+    "FORTS_REFDATA_REPL.fut_sess_contents.step_price_interclr",
+    "FORTS_REFDATA_REPL.fut_exec_orders.xamount_apply",
+    "FORTS_REFDATA_REPL.opt_exec_orders.xamount_apply",
+    "FORTS_REFDATA_REPL.fut_intercl_info",
+    "FORTS_REFDATA_REPL.opt_intercl_info",
+}
+
 
 def require(condition: bool, message: str) -> None:
     if not condition:
@@ -96,6 +108,10 @@ def main() -> int:
     )
     require(set(compatibility["reviewed_absent_fields"]) == REMOVED_FIELDS, "9.9 removal set drifted")
     require(set(manifest["spectra_9_9_audit"]["reviewed_absent_fields"]) == REMOVED_FIELDS, "manifest removal set drifted")
+    require(
+        set(manifest["spectra_9_9_audit"]["official_removed_surfaces"]) == OFFICIAL_REMOVED_SURFACES,
+        "official 9.9 removal set is incomplete or changed",
+    )
 
     # Removed names may exist in generated schemas and in the explicit reviewed
     # compatibility table. They must not enter the AGGR hot path or the order
@@ -108,7 +124,7 @@ def main() -> int:
     )
     for relative in active_paths:
         text = read(root, relative)
-        for removed in REMOVED_FIELDS:
+        for removed in OFFICIAL_REMOVED_SURFACES:
             short = removed.rsplit(".", 1)[-1]
             require(short not in text, f"removed 9.9 field entered active path {relative}: {short}")
     private_source = read(root, "protocols/plaza2_cgate/src/plaza2_private_state.cpp")
