@@ -137,6 +137,7 @@ class ConnectorHost final {
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] ConnectorHostSnapshot snapshot() const;
+    [[nodiscard]] plaza2_trade::DeepPassiveProposal first_order_price_proposal() const;
     [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot(bool private_identity = false) const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan() const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan_order(const ConnectorHostOrderRequest& request) const;

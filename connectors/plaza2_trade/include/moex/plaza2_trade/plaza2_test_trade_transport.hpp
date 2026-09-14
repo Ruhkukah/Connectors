@@ -2,6 +2,7 @@
 #include "moex/plaza2_trade/plaza2_recovered_cancel.hpp"
 
 #include "moex/plaza2_trade/plaza2_session_price_gate.hpp"
+#include "moex/plaza2_trade/plaza2_deep_passive.hpp"
 
 #include "moex/plaza2/cgate/plaza2_aggr20_md.hpp"
 #include "moex/plaza2/cgate/plaza2_credential_provider.hpp"
@@ -72,6 +73,7 @@ struct Plaza2AuthorizedOrderIntent {
     std::uint64_t max_aggr20_age_ms{0};
     bool require_zero_starting_position{false};
     std::optional<SessionPriceBinding> session_price_binding;
+    std::optional<DeepPassiveBboBinding> first_order_bbo;
 };
 
 enum class PositionEvidenceClass : std::uint8_t {

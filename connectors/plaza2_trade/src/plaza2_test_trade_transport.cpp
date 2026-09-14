@@ -557,6 +557,9 @@ std::string canonical_authorized_order_intent_json(const Plaza2AuthorizedOrderIn
          << (intent.session_price_binding
                  ? "  \"session_price_binding\": " + session_price_binding_json(*intent.session_price_binding) + ",\n"
                  : "")
+         << (intent.first_order_bbo
+                 ? "  \"first_order_bbo\": " + deep_passive_binding_json(*intent.first_order_bbo) + ",\n"
+                 : "")
          << "  \"smoke_policy\": {\n"
          << "    \"version\": \"" << json_escape_local(intent.policy_version) << "\",\n"
          << "    \"sha256\": \"" << intent.policy_sha256 << "\",\n"
@@ -1790,6 +1793,19 @@ struct Plaza2TestTradeTransport::Impl {
              authorized->instrument_mask != 4)) {
             return invalid("authorized intent is incomplete or not a one-contract TEST intent");
         }
+        const bool deep = authorized->policy_version == kFirstOrderDeepPassiveVersion;
+        if (deep != authorized->first_order_bbo.has_value() ||
+            (deep && (authorized->policy_sha256 != first_order_deep_passive_sha256() ||
+                      authorized->max_aggr20_age_ms != kFirstOrderBboMaxAgeMs || !authorized->session_price_binding)))
+            return invalid("first-order policy version, hash, bounds and reviewed BBO required");
+        if (deep) {
+            const auto price = private_state::parse_session_decimal(authorized->price);
+            const auto& bbo = *authorized->first_order_bbo;
+            if (!price || bbo.repl_id == 0 || bbo.committed_monotonic_ns <= 0 ||
+                !deep_passive_price_allowed(authorized->session_price_binding->terms, price->units,
+                                            static_cast<int>(authorized->side), bbo.bid_units, bbo.ask_units, 0))
+                return invalid("reviewed first-order BBO and exact candidate violate policy");
+        }
         if (host.mode() == Plaza2TestSessionHostMode::LiveTestAuthorizedSend &&
             (!authorized->require_zero_starting_position || authorized->max_distance_ticks > 4 ||
              authorized->max_aggr20_age_ms > 5000)) {
@@ -2131,6 +2147,29 @@ struct Plaza2TestTradeTransport::Impl {
         return {};
     }
 
+    Plaza2Error validate_deep_passive_current() const {
+        if (!intent() || !intent()->first_order_bbo)
+            return {};
+        const auto& authorized = *intent();
+        const auto book = host.aggr20_projector().snapshot_for_isin(authorized.isin_id);
+        if (!book || !book->top_bid || !book->top_ask || !host.aggr_online() || !host.aggr_snapshot_complete() ||
+            !host.runtime_health().all_active() || host.recovering() || !authorized.session_price_binding)
+            return invalid("FIRST_ORDER_BBO_NOT_CURRENT");
+        const auto bid = private_state::parse_session_decimal(book->top_bid->price);
+        const auto ask = private_state::parse_session_decimal(book->top_ask->price);
+        const auto price = private_state::parse_session_decimal(authorized.price);
+        const auto elapsed = std::chrono::steady_clock::now() - book->committed_at;
+        if (elapsed < std::chrono::steady_clock::duration::zero() ||
+            elapsed > std::chrono::milliseconds(kFirstOrderBboMaxAgeMs))
+            return invalid("FIRST_ORDER_BBO_NOT_CURRENT");
+        const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+        if (!bid || !ask || !price ||
+            !deep_passive_price_allowed(authorized.session_price_binding->terms, price->units,
+                                        static_cast<int>(authorized.side), bid->units, ask->units, age))
+            return invalid("FIRST_ORDER_PASSIVE_CUSHION_INVALIDATED: new operator authorization required");
+        return {};
+    }
+
     Plaza2Error preflight_target() {
         if (const auto intent_error = validate_intent(); intent_error) {
             return intent_error;
@@ -2414,6 +2453,9 @@ struct Plaza2TestTradeTransport::Impl {
                 distance % *tick == 0 && static_cast<std::uint64_t>(distance / *tick) <= target_distance_ticks();
         }
 
+        if (config.authorized_intent->first_order_bbo)
+            receipt.bbo_distance_allowed = !validate_deep_passive_current();
+
         std::ostringstream json;
         json << "{\n"
              << "  \"schema\": \"moex.plaza2.execution_safety.v3\",\n"
@@ -2634,6 +2676,13 @@ struct Plaza2TestTradeTransport::Impl {
         // No poll/callback occurs between this comparison and publisher post.
         if (command.command_kind == Plaza2TradeCommandKind::AddOrder) {
             if (const auto gate = validate_session_price_binding(); gate) {
+                Plaza2PublisherMessageResult result;
+                result.validation_error = gate;
+                return result;
+            }
+        }
+        if (command.command_kind == Plaza2TradeCommandKind::AddOrder) {
+            if (const auto gate = validate_deep_passive_current(); gate) {
                 Plaza2PublisherMessageResult result;
                 result.validation_error = gate;
                 return result;
