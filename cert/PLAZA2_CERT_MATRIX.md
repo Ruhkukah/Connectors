@@ -1127,3 +1127,7 @@ scope and remaining live gaps are recorded in
 [the independent status matrix](../docs/plaza2/integration/CERTIFICATION_STATUS.md).
 The accepted zero-order T1 evidence retains its original PR56 source identity;
 no live order or Working-order outage status is promoted by these offline tests.
+
+Offline v2 persistent-checkpoint restart reconciliation is described in
+[RESTART_ORDER_RECOVERY.md](../docs/plaza2/integration/RESTART_ORDER_RECOVERY.md).
+It adds no live qualification claim and does not change the accepted PR55/PR56 evidence identities.
