@@ -14,6 +14,24 @@
     "t1_schedule": "https://www.moex.com/s438",
     "spectra_9_9_change_list": "https://www.moex.com/media/spisok-izmenenij-v-versii-9-9.pdf",
     "retrieved_date": "2026-09-14",
+    "certification_authority": {
+      "url": "https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e",
+      "title": "CUSTOMER SOFTWARE CERTIFICATION PROCEDURE",
+      "effective_or_approved_date": "2021-09-23",
+      "retrieved_date": "2026-09-14",
+      "downloaded_document_sha256": "5602136d9b7865a648c255f1e284aa2b2b301089a6a30033baba987f4287cf42",
+      "section_used": "Appendix 1, Certification tests for Native APIs, Plaza II; general sections 1-2",
+      "authority_note": "C/R/S labels are internal stable IDs mapped one-to-one to numbered Appendix 1 controls; MOEX does not name them"
+    },
+    "vpts_technical_requirements": {
+      "url": "https://www.moex.com/files/41j6qhzzp4hkdznn2wp8sj24ds",
+      "title": "Moscow Exchange Technical Center Software and Hardware Suite Connection Requirements for Customer Software",
+      "effective_or_current_edition_date": "2016-04-01",
+      "date_basis": "PDF document date; no explicit effective date stated in the downloaded document",
+      "retrieved_date": "2026-09-14",
+      "downloaded_document_sha256": "63e2018123dc2b5dcdacedb02eec99d915abbc75f5e2957e642efa133bbff510",
+      "section_used": "Sections 1-2, including logging and connection requirements"
+    },
     "current_linux_distribution": {
       "filename": "cgate_linux_amd64-9.9.1853.zip",
       "sha256": "49da634749203a919e69132594198348652acb5e731416c8a39bb34969364ce2",
@@ -90,7 +108,8 @@
   },
   "official_matrix": {
     "path": "cert/AGGR_CERT_MATRIX_9_9.md",
-    "authority": "current MOEX Plaza II checklist; C01-C08, R01-R08, S01-S07 preserved verbatim",
+    "authority": "internal stable IDs mapped one-to-one to Appendix 1 controls; C/R/S are repository labels, not MOEX identifiers",
+    "authority_source": "official_sources.certification_authority",
     "general_requirements": "retained separately without reusing C/R/S identifiers"
   },
   "qualification_runbook": "docs/plaza2/AGGR_T1_QUALIFICATION_9_9.md",
@@ -123,14 +142,12 @@
     "reply_policy": "business: AddOrder=179; DelOrder=177; system: 99/100; correlation never implies ordinary success",
     "ordinary_lifecycle": [
       "AddOrder 474",
-      "correlated business reply 179",
-      "exact private Working evidence",
-      "DelOrder 461",
-      "correlated business reply 177",
-      "exact private Cancelled evidence",
-      "zero active own orders",
+      "both: correlated business reply 179 + exact matching private Working evidence (either may arrive first)",
+      "DelOrder 461 only after both Add facts agree",
+      "both: correlated business reply 177 + exact private Cancelled evidence + zero active own orders (either may arrive first)",
       "reconcile final position"
-    ]
+    ],
+    "asynchronous_channel_policy": "business/private channels are independent; braces are conjunctions; either may arrive first; decode 99/100"
   },
   "recovery": {
     "operational_states": ["Starting", "Running", "Recovering", "Failed"],
@@ -145,6 +162,23 @@
     "retry_interval_ms": 1000,
     "deadline_ms": 60000,
     "rebootstrap": "fresh transport resources and fresh POS-to-TRADE anchor; every listener snapshot+ONLINE before readiness",
+    "upstream_plaza_fault_plan": {
+      "scope": "C05-C07 client-controlled T1 equivalent before any MOEX_COORDINATED fallback",
+      "method": "dedicated router stays running; block only outbound MOEX T1 IP/ports; connector-router traffic stays intact",
+      "sequence": [
+        "C05: connect and prove router reachable while upstream Plaza is unavailable; wait/no-send/no-current-stream",
+        "C06: remove the targeted block and prove the same connector detects upstream availability, fresh bootstrap and readiness",
+        "C07: with zero orders, reapply the block; prove readiness/command loss and no stale state, then remove it and prove fresh rebootstrap"
+      ],
+      "safety": [
+        "discover endpoints from protected runtime configuration without printing credentials",
+        "block only MOEX destination IP/port traffic for the dedicated router; never SSH or unrelated VPS traffic",
+        "schedule automatic rollback before applying any rule",
+        "record original network state and verify rollback after every case",
+        "begin with zero active orders and known position; defer Working-order transport loss until zero-order recovery passes"
+      ],
+      "fallback": "unsafe upstream injection: preserve offline; classify only live portion MOEX_COORDINATED with reason"
+    },
     "safety": [
       "effective readiness false during recovery",
       "Add disabled",

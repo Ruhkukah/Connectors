@@ -9,6 +9,11 @@ The test trading session is finished for today. No order, router restart, connec
 The dedicated machine-readable identity and matrix are [the 9.9 AGGR manifest](../../cert/aggr_plaza2_certification_manifest_9_9.json) and [the AGGR matrix](../../cert/AGGR_CERT_MATRIX_9_9.md).
 The next-session procedure is the [current AGGR T1 runbook](AGGR_T1_QUALIFICATION_9_9.md).
 
+The matrix labels `C01-C08`, `R01-R08`, and `S01-S07` are internal stable IDs mapped one-to-one to
+the numbered Plaza II controls in Appendix 1 of the pinned MOEX Customer Software Certification Procedure;
+they are repository traceability labels, not MOEX-named identifiers. Procedure and VPTS authority URL,
+edition/date, retrieval date and downloaded-document SHA-256 pins are recorded in the manifest.
+
 ## Runtime and official-source lock
 
 The current official T1 FTP listing was refreshed on 2026-09-14. The active Linux distribution remains
@@ -90,14 +95,23 @@ run the independent 300-second idle probe, then start the persistent host and re
 After all current safety gates pass, run the one-lot `FIRST_ORDER_DEEP_PASSIVE_V1` lifecycle:
 
 ```text
-AddOrder 474 -> business reply 179 -> exact private Working
-    -> immediate DelOrder 461 -> business reply 177 -> exact private Cancelled
-    -> zero active orders -> zero position
+AddOrder 474 -> {business reply 179 + exact matching private Working}
+    -> immediate DelOrder 461
+    -> {business reply 177 + exact matching private Cancelled + zero active orders}
+    -> final position reconciliation
 ```
 
+Each brace group is a conjunction, not a cross-channel arrival-order requirement; either may arrive first across the two channels.
+Working may precede 179 or 179 may precede Working; Cancelled may precede 177 or 177 may precede Cancelled. DelOrder is sent only after
+the Add conjunction agrees. System replies 99/100 are decoded and reconciled, never promoted to ordinary success.
+
 Then run the separately gated zero-order restart, one-Working-order process restart, local-router recovery,
-and MOEX-coordinated upstream/TCS/schema/access exercises. Decode and reconcile any system reply 99/100;
-never promote it to ordinary success.
+the C05-C07 client-controlled upstream-Plaza fault equivalent, and only then any MOEX-coordinated
+upstream/TCS/schema/access exercise that remains technically unavoidable. For C05-C07, keep the dedicated
+local router running and block only its outbound MOEX destination traffic; discover endpoints without
+printing credentials, schedule automatic rollback before the rule, preserve the original network state,
+and verify rollback after each case. If safe upstream-only injection cannot be demonstrated, preserve the
+offline result and classify only that live portion `MOEX_COORDINATED` with the recorded reason.
 Freeze a certification candidate only after those receipts, full Release/sanitizer/Linux/LSan validation, and the matrix review are complete.
 
 Until then the correct final verdict remains **AGGR_NOT_READY_FOR_MOEX_CERTIFICATION**.

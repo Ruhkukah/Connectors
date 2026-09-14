@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -42,9 +43,15 @@ GENERAL_ROWS = {
     "full SPECTRA trading-day exercise with all declared command types",
 }
 
-ALLOWED_CLASSIFICATIONS = {"AGGR_REQUIRED", "MOEX_COORDINATED", "DEFERRED_FULL_ORDLOG_PHASE"}
+ALLOWED_CLASSIFICATIONS = {"AGGR_REQUIRED", "MOEX_COORDINATED", "N/A_CLIENT_SCHEME", "DEFERRED_FULL_ORDLOG_PHASE"}
 ALLOWED_OFFLINE = {"PASS_OFFLINE", "DEFERRED_FULL_ORDLOG_PHASE"}
-ALLOWED_T1 = {"PASS_T1", "NOT_RUN_T1_SESSION_CLOSED", "MOEX_COORDINATED", "DEFERRED_FULL_ORDLOG_PHASE"}
+ALLOWED_T1 = {
+    "PASS_T1",
+    "NOT_RUN_T1_SESSION_CLOSED",
+    "MOEX_COORDINATED",
+    "N/A_CLIENT_SCHEME",
+    "DEFERRED_FULL_ORDLOG_PHASE",
+}
 FIELD_RE = re.compile(r"^- (Classification|Offline result|T1 result|Code/test evidence|Exact T1 evidence|Remaining action): (.+)$")
 HEADING_RE = re.compile(r"^### (C\d\d|R\d\d|S\d\d|General) — (.+)$")
 
@@ -82,11 +89,12 @@ def main() -> int:
     matrix = matrix_path.read_text(encoding="utf-8")
     require("P2-C" not in matrix and "P2-R" not in matrix and "P2-S" not in matrix, "official IDs were repurposed")
     require(
-        "AddOrder 474 -> business reply 179 -> Working" in matrix
-        and "DelOrder 461 -> business reply 177 -> Cancelled" in matrix,
-        "ordinary lifecycle semantics missing from matrix",
+        "AddOrder 474 -> {business reply 179 + matching private Working} -> DelOrder 461" in matrix
+        and "{business reply 177 + matching private Cancelled + zero active orders}" in matrix,
+        "ordinary lifecycle conjunction semantics missing from matrix",
     )
-    require("system replies 99/100 are decoded" in matrix, "system reply policy missing from matrix")
+    require("system replies 99/100 are decoded" in matrix.lower(), "system reply policy missing from matrix")
+    require("internal stable" in matrix and "MOEX does not name" in matrix, "authority provenance wording is missing")
 
     rows = parse_rows(matrix.splitlines())
     official = {key: value for key, value in rows.items() if key in OFFICIAL_ROWS}
@@ -115,8 +123,51 @@ def main() -> int:
     require(r07["Offline result"] == "DEFERRED_FULL_ORDLOG_PHASE", "R07 offline result must remain deferred")
     require(r07["T1 result"] == "DEFERRED_FULL_ORDLOG_PHASE", "R07 T1 result must remain deferred")
     for identifier in ("C05", "C06", "C07"):
-        require(official[identifier]["T1 result"] == "MOEX_COORDINATED", f"{identifier} upstream exercise must be MOEX coordinated")
+        require(
+            official[identifier]["Classification"] == "AGGR_REQUIRED",
+            f"{identifier} must remain an AGGR-required behavior",
+        )
+        require(
+            official[identifier]["T1 result"] == "NOT_RUN_T1_SESSION_CLOSED",
+            f"{identifier} must remain pending until a safe client fault attempt",
+        )
+    for identifier in ("R04", "R05"):
+        require(
+            official[identifier]["Classification"] == "N/A_CLIENT_SCHEME"
+            and official[identifier]["T1 result"] == "N/A_CLIENT_SCHEME",
+            f"{identifier} must be explicitly N/A_CLIENT_SCHEME for the client-scheme profile",
+        )
     require(official["C08"]["T1 result"] == "NOT_RUN_T1_SESSION_CLOSED", "C08 local-router test must remain a pending T1 gate")
+
+    manifest = json.loads((root / "cert/aggr_plaza2_certification_manifest_9_9.json").read_text(encoding="utf-8"))
+    authority = manifest["official_sources"]["certification_authority"]
+    require(
+        manifest["official_matrix"]["authority"].startswith("internal stable IDs mapped one-to-one"),
+        "manifest must describe C/R/S labels as internal stable IDs",
+    )
+    require(
+        manifest["official_matrix"]["authority_source"] == "official_sources.certification_authority",
+        "matrix must point to the pinned certification authority",
+    )
+    for key in (
+        "url",
+        "title",
+        "effective_or_approved_date",
+        "retrieved_date",
+        "downloaded_document_sha256",
+        "section_used",
+    ):
+        require(authority.get(key), f"certification authority pin lacks {key}")
+    vpts = manifest["official_sources"]["vpts_technical_requirements"]
+    for key in (
+        "url",
+        "title",
+        "effective_or_current_edition_date",
+        "retrieved_date",
+        "downloaded_document_sha256",
+        "section_used",
+    ):
+        require(vpts.get(key), f"VPTS authority pin lacks {key}")
 
     report = (root / "docs/plaza2/AGGR_CERTIFICATION_9_9.md").read_text(encoding="utf-8")
     runbook = (root / "docs/plaza2/AGGR_T1_QUALIFICATION_9_9.md").read_text(encoding="utf-8")
@@ -125,6 +176,7 @@ def main() -> int:
         "docs/plaza2/AGGR_T1_QUALIFICATION_9_9.md": runbook,
     }.items():
         require("business reply 179" in text and "business reply 177" in text, f"{relative} lacks business reply semantics")
+        require("either may arrive first" in text and "conjunction" in text, f"{relative} lacks asynchronous conjunction policy")
         require("system replies 99/100" in text or "Reply 99 or 100" in text, f"{relative} lacks system reply policy")
         require("accepted reply 99" not in text.lower(), f"{relative} promotes reply 99 to ordinary success")
         require("reply 100 -> exact private Cancelled" not in text, f"{relative} promotes reply 100 to ordinary success")

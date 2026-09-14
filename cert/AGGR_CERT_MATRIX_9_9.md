@@ -1,8 +1,18 @@
 # SPECTRA 9.9 Aggregated-mode certification matrix
 
-This matrix is an AGGR-only mapping of the current MOEX Plaza II checklist. The official identifiers are
-preserved exactly as `C01-C08`, `R01-R08`, and `S01-S07`; they are not renamed or reused for different requirements.
-General requirements are listed separately. Full ORDLOG/L3 remains `DEFERRED_FULL_ORDLOG_PHASE`.
+This matrix is an AGGR-only mapping of the numbered Plaza II controls in Appendix 1 of the pinned MOEX
+Customer Software Certification Procedure. `C01-C08`, `R01-R08`, and `S01-S07` are internal stable
+traceability IDs mapped one-to-one to those controls; MOEX does not name the controls with these repository IDs.
+They are not renamed or reused for different requirements. General requirements are listed separately. Full
+ORDLOG/L3 remains `DEFERRED_FULL_ORDLOG_PHASE`.
+
+Authority pins: procedure URL `https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e`, title
+`CUSTOMER SOFTWARE CERTIFICATION PROCEDURE`, approved `2021-09-23`, retrieved `2026-09-14`, downloaded
+SHA-256 `5602136d9b7865a648c255f1e284aa2b2b301089a6a30033baba987f4287cf42`, Appendix 1 Plaza II plus
+general sections 1-2. General logging/connection context also uses the pinned VPTS document at
+`https://www.moex.com/files/41j6qhzzp4hkdznn2wp8sj24ds`, title `Moscow Exchange Technical Center Software
+and Hardware Suite Connection Requirements for Customer Software`, document date `2016-04-01`, retrieved
+`2026-09-14`, downloaded SHA-256 `63e2018123dc2b5dcdacedb02eec99d915abbc75f5e2957e642efa133bbff510`.
 
 Each official row has its own classification, offline result, T1 result, code/test evidence, exact T1 evidence,
 and remaining action. `PASS_OFFLINE` means deterministic or locked software evidence. `PASS_T1` means exact
@@ -46,26 +56,32 @@ requires an exchange-controlled exercise.
 ### C05 — router available while Plaza network is unavailable; wait/no-send
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
-- T1 result: MOEX_COORDINATED
+- T1 result: NOT_RUN_T1_SESSION_CLOSED
 - Code/test evidence: fake transport no-send and readiness tests
-- Exact T1 evidence: upstream-unavailable trigger cannot be induced safely locally
-- Remaining action: run client equivalent; MOEX must induce upstream outage
+- Exact T1 evidence: no current-candidate targeted upstream-fault receipt
+- Remaining action: attempt the safe client-controlled equivalent: keep local P2MQRouter running, block only its
+  outbound T1 Plaza destination traffic, prove router reachable but upstream unavailable, wait/no-send/no-current-stream;
+  if safety cannot be demonstrated, classify only that live portion MOEX_COORDINATED with the recorded reason
 
 ### C06 — detect Plaza network becoming available
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
-- T1 result: MOEX_COORDINATED
+- T1 result: NOT_RUN_T1_SESSION_CLOSED
 - Code/test evidence: bounded rebootstrap tests; `connector_host_test.cpp`
-- Exact T1 evidence: no current-candidate upstream transition receipt
-- Remaining action: keep harness ready for MOEX-triggered recovery
+- Exact T1 evidence: no current-candidate targeted upstream-transition receipt
+- Remaining action: remove the C05 outbound block on the same connector, prove upstream availability detection,
+  fresh bootstrap and readiness without application restart; fall back to MOEX_COORDINATED only if the safe
+  mechanism is unavailable
 
 ### C07 — detect Plaza network loss and stop sends/stream use until recovered
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
-- T1 result: MOEX_COORDINATED
+- T1 result: NOT_RUN_T1_SESSION_CLOSED
 - Code/test evidence: fail-closed transport/recovery tests
-- Exact T1 evidence: no current-candidate upstream loss receipt
-- Remaining action: preserve no-send evidence; MOEX controls upstream trigger
+- Exact T1 evidence: no current-candidate targeted upstream-loss receipt
+- Remaining action: with zero active orders and known position, reapply the C05 block, prove immediate
+  effective-readiness/command loss and no stale-stream use, then remove it and prove bounded fresh
+  rebootstrap; defer Working-order loss until zero-order recovery passes
 
 ### C08 — detect router connection loss and stop activity
 - Classification: AGGR_REQUIRED
@@ -97,25 +113,25 @@ requires an exchange-controlled exercise.
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_CLOSED
-- Code/test evidence: runtime scheme lock; scheme drift tests
+- Code/test evidence: explicit `p2repl://...;scheme=|FILE|...forts_scheme.ini|...` bindings; runtime scheme lock; scheme drift tests
 - Exact T1 evidence: no current negotiated-scheme receipt
 - Remaining action: capture negotiated stream schemes and hashes
 
 ### R04 — compatible server-scheme additions
-- Classification: AGGR_REQUIRED
+- Classification: N/A_CLIENT_SCHEME
 - Offline result: PASS_OFFLINE
-- T1 result: MOEX_COORDINATED
-- Code/test evidence: compatibility checker and reviewed 9.9 additions
-- Exact T1 evidence: no coordinated additive change receipt
-- Remaining action: retain additive-field evidence if MOEX schedules it
+- T1 result: N/A_CLIENT_SCHEME
+- Code/test evidence: compatibility checker and reviewed 9.9 additions retained as defense-in-depth/version validation
+- Exact T1 evidence: not applicable to this explicit client-scheme profile
+- Remaining action: keep machinery green; do not represent a server-scheme exercise as mandatory for this profile
 
 ### R05 — incompatible removal/type-change detection
-- Classification: AGGR_REQUIRED
+- Classification: N/A_CLIENT_SCHEME
 - Offline result: PASS_OFFLINE
-- T1 result: MOEX_COORDINATED
-- Code/test evidence: runtime drift tests; 9.9 removal guard
-- Exact T1 evidence: no coordinated incompatible-change receipt
-- Remaining action: require fail-closed drift evidence during MOEX exercise
+- T1 result: N/A_CLIENT_SCHEME
+- Code/test evidence: runtime drift tests; 9.9 removal guard retained as defense-in-depth/version validation
+- Exact T1 evidence: not applicable to this explicit client-scheme profile
+- Remaining action: keep fail-closed drift machinery; no mandatory server-scheme MOEX exercise for this profile
 
 ### R06 — loss and correct reopening of every declared stream
 - Classification: AGGR_REQUIRED
@@ -261,5 +277,7 @@ requires an exchange-controlled exercise.
 
 The matrix is not certification-ready. The session is closed, so no new T1 evidence is manufactured. The next open session
 must use fresh notices, hashes, current session discovery, a 300-second idle probe, and the principal full-day campaign.
-The ordinary lifecycle is exactly `AddOrder 474 -> business reply 179 -> Working -> DelOrder 461 -> business reply 177 -> Cancelled`;
-system replies 99/100 are decoded and reconciled as system events, never treated as ordinary success.
+The ordinary lifecycle is exactly
+`AddOrder 474 -> {business reply 179 + matching private Working} -> DelOrder 461 -> {business reply 177 + matching private Cancelled + zero active orders} -> final position reconciliation`.
+Each brace group is a conjunction; either channel may arrive first. System replies 99/100 are decoded and reconciled as
+system events, never treated as ordinary success.

@@ -693,6 +693,10 @@ bool definitive_cancel_rejection(const LifecycleEvidence& evidence) {
            !evidence.cancel_reply->accepted;
 }
 
+bool accepted_cancel_reply(const LifecycleEvidence& evidence) {
+    return evidence.cancel_reply.has_value() && !evidence.cancel_reply->unresolved() && evidence.cancel_reply->accepted;
+}
+
 bool definitive_recovery_rejection(const LifecycleEvidence& evidence) {
     return evidence.recovery_reply.has_value() && !evidence.recovery_reply->unresolved() &&
            !evidence.recovery_reply->accepted;
@@ -714,6 +718,20 @@ bool add_phase_resolved(const LifecycleEvidence& evidence) {
            usable_cancel_precondition(evidence);
 }
 
+// DelOrder and private replication are independent asynchronous channels.  A
+// Cancelled row is ordinary cancel evidence only after the correlated
+// business reply 177 is also present and accepted.  A Filled row remains a
+// terminal market outcome even if cancellation raced with the fill.
+bool cancel_phase_resolved(const LifecycleEvidence& evidence) {
+    if (!evidence.observation.has_value() || !evidence.consistent) {
+        return false;
+    }
+    if (evidence.observation->state == OrderLifecycleState::Filled) {
+        return true;
+    }
+    return evidence.observation->state == OrderLifecycleState::Cancelled && accepted_cancel_reply(evidence);
+}
+
 void poll_add_until_resolution(const OrderLifecycleConfig& config, OrderLifecycleTransport& transport,
                                OrderLifecycleClock& clock, LifecycleEvidence& evidence, RunJournal& journal) {
     const auto deadline = clock.now() + config.add_observation_timeout;
@@ -733,7 +751,7 @@ void poll_until_terminal(const OrderLifecycleConfig& config, OrderLifecycleTrans
     for (std::uint32_t attempt = 0; attempt < config.max_poll_attempts && clock.now() < deadline; ++attempt) {
         const auto poll = transport.poll(deadline);
         consume_poll(config, poll, evidence, journal);
-        if (!poll.ok || poll.deadline_reached || observation_terminal(evidence.observation)) {
+        if (!poll.ok || poll.deadline_reached || cancel_phase_resolved(evidence)) {
             break;
         }
     }
@@ -1483,11 +1501,12 @@ OrderLifecycleResult OrderLifecycleController::run() {
         if (!observation_terminal(evidence.observation)) {
             reconcile_once(config_, transport_, evidence, journal);
         }
-        if (observation_terminal(evidence.observation)) {
+        if (observation_terminal(evidence.observation) &&
+            (evidence.observation->state == OrderLifecycleState::Filled || cancel_phase_resolved(evidence))) {
             return finish_result(std::move(result), journal, evidence.observation->state, true, false,
                                  evidence.observation->state == OrderLifecycleState::Filled
                                      ? "order filled while cancellation was pending"
-                                     : "remaining order quantity was factually cancelled",
+                                     : "DelOrder business reply and private Cancelled evidence agree",
                                  evidence);
         }
         const auto unresolved_message =
@@ -1604,7 +1623,8 @@ struct PersistentOrderController::Impl {
         if (!polled.ok) {
             return nonterminal(polled.error.empty() ? "order poll failed" : polled.error);
         }
-        if (observation_terminal(evidence.observation)) {
+        if (observation_terminal(evidence.observation) && (evidence.observation->state == OrderLifecycleState::Filled ||
+                                                           !cancel_requested || cancel_phase_resolved(evidence))) {
             const auto terminal = evidence.observation->state;
             return finish(terminal, true, false,
                           terminal == OrderLifecycleState::Filled ? "order reached Filled" : "order reached Cancelled");

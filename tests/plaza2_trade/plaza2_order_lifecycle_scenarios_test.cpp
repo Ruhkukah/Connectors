@@ -509,6 +509,7 @@ void test_reply_arrives_after_intermediate_empty_poll() {
         {},
         {.replies = {accepted_add()}},
         {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+        {.replies = {cancel_reply(true)}},
     };
     const auto result = run_script(config, transport, clock);
     require(result.state == OrderLifecycleState::Cancelled && transport.commands.size() == 2,
@@ -527,10 +528,52 @@ void test_replication_then_reply_arrival() {
         {.observations = {observation(OrderLifecycleState::Working)}},
         {.replies = {accepted_add()}},
         {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+        {.replies = {cancel_reply(true)}},
     };
     const auto result = run_script(config, transport, clock);
-    require(result.state == OrderLifecycleState::Cancelled && transport.commands.size() == 2,
-            "replication-before-reply must continue polling for the user_id-correlated AddOrder ID");
+    require(result.state == OrderLifecycleState::Cancelled && result.cancel_reply.has_value() &&
+                transport.commands.size() == 2,
+            "replication-before-reply must continue polling for both AddOrder and DelOrder business replies");
+    std::filesystem::remove_all(root);
+}
+
+void test_cancelled_before_cancel_reply_arrival() {
+    const auto root = make_temp_root("cancelled_before_reply");
+    auto config = base_config(root, "cancelled-before-reply");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.replies = {accepted_add()}, .observations = {observation(OrderLifecycleState::Working)}},
+        {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+        {.replies = {cancel_reply(true)}},
+    };
+    const auto result = run_script(config, transport, clock);
+    require(result.ok && result.state == OrderLifecycleState::Cancelled && result.cancel_reply.has_value() &&
+                result.observation.has_value() && result.observation->state == OrderLifecycleState::Cancelled &&
+                transport.commands.size() == 2,
+            "private Cancelled evidence may arrive before business reply 177, but both must be present before success");
+    std::filesystem::remove_all(root);
+}
+
+void test_cancel_reply_before_cancelled_arrival() {
+    const auto root = make_temp_root("cancel_reply_before_cancelled");
+    auto config = base_config(root, "cancel-reply-before-cancelled");
+    authorize_live(config);
+    FakeClock clock;
+    ScriptTransport transport(clock);
+    transport.post_results = {posted(), posted()};
+    transport.poll_results = {
+        {.replies = {accepted_add()}, .observations = {observation(OrderLifecycleState::Working)}},
+        {.replies = {cancel_reply(true)}},
+        {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+    };
+    const auto result = run_script(config, transport, clock);
+    require(result.ok && result.state == OrderLifecycleState::Cancelled && result.cancel_reply.has_value() &&
+                result.observation.has_value() && result.observation->state == OrderLifecycleState::Cancelled &&
+                transport.commands.size() == 2,
+            "business reply 177 may arrive before private Cancelled evidence, but both must be present before success");
     std::filesystem::remove_all(root);
 }
 
@@ -545,6 +588,7 @@ void test_reply_only_timeout_reconcile_finds_working() {
         {.replies = {accepted_add()}},
         {.deadline_reached = true},
         {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+        {.replies = {cancel_reply(true)}},
     };
     transport.reconciliation_results = {{.observations = {observation(OrderLifecycleState::Working)}}};
     const auto result = run_script(config, transport, clock);
@@ -565,6 +609,7 @@ void test_replication_only_timeout_reconcile_finds_reply() {
         {.observations = {observation(OrderLifecycleState::Working)}},
         {.deadline_reached = true},
         {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+        {.replies = {cancel_reply(true)}},
     };
     transport.reconciliation_results = {{.replies = {accepted_add()}}};
     const auto result = run_script(config, transport, clock);
@@ -1108,7 +1153,7 @@ void test_journal_reply_recording_failure() {
     transport.poll_hooks = {[&]() { std::filesystem::create_directory(blocker); }};
     transport.poll_results = {
         {.replies = {accepted_add()}, .observations = {observation(OrderLifecycleState::Working)}},
-        {.observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
+        {.replies = {cancel_reply(true)}, .observations = {observation(OrderLifecycleState::Cancelled, 0, 1, 0)}},
     };
     const auto result = run_script(config, transport, clock);
     require(result.market_safe_terminal && result.state == OrderLifecycleState::Cancelled && result.journal_degraded &&
@@ -1395,6 +1440,8 @@ int main() {
         test_reply_then_replication_arrival();
         test_reply_arrives_after_intermediate_empty_poll();
         test_replication_then_reply_arrival();
+        test_cancelled_before_cancel_reply_arrival();
+        test_cancel_reply_before_cancelled_arrival();
         test_reply_only_timeout_reconcile_finds_working();
         test_replication_only_timeout_reconcile_finds_reply();
         test_replication_without_reply_uses_exact_ext_recovery();

@@ -7,6 +7,11 @@ candidate branch and the exact matrix in `cert/AGGR_CERT_MATRIX_9_9.md`.
 The session is closed today. Do not start a connection, order, restart, or router mutation until
 fresh T1 availability and current source/binary/runtime/scheme/config hashes have been recorded.
 
+The `C01-C08`, `R01-R08`, and `S01-S07` labels below are internal stable IDs mapped one-to-one to the
+numbered Plaza II controls in Appendix 1 of the pinned [MOEX Customer Software Certification Procedure](https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e).
+They are repository traceability labels, not MOEX-named identifiers. The exact authority pins and the
+VPTS technical-requirements pin are in the manifest.
+
 ## Reply semantics
 
 The checked-in SPECTRA 9.9 transactional lock is authoritative:
@@ -25,14 +30,18 @@ The only ordinary lifecycle claim is:
 
 ```text
 AddOrder 474
-  -> correlated business reply 179
-  -> exact private Working evidence
-  -> DelOrder 461
-  -> correlated business reply 177
-  -> exact private Cancelled evidence
-  -> zero active own orders
+  -> {correlated business reply 179 + exact matching private Working evidence}
+  -> DelOrder 461 (only after both Add facts agree)
+  -> {correlated business reply 177 + exact matching private Cancelled evidence + zero active own orders}
   -> reconcile final position
 ```
+
+Each brace group is a conjunction, not a required arrival order; either may arrive first across the two channels.
+Working may precede reply 179 or reply 179
+may precede Working; Cancelled may precede reply 177 or reply 177 may precede Cancelled. The explicit DelOrder
+is sent only after the Add conjunction is complete. Ordinary cancel success is reported only after the DelOrder
+conjunction is complete. System replies 99/100 are exceptional outcomes requiring decoding and reconciliation,
+never ordinary business success.
 
 Do not flood or deliberately create an ambiguous live order to manufacture 99/100. Deterministic
 reply-bridge tests cover those system replies; any real occurrence is still recorded and reconciled.
@@ -54,9 +63,10 @@ reply-bridge tests cover those system replies; any real occurrence is still reco
    valid current price terms before any order gate can open.
 
 4. Run one quantity-1 `FIRST_ORDER_DEEP_PASSIVE_V1` lifecycle. Use the most passive safe price,
-   exact current BBO and price-bound checks. Submit one AddOrder, require business reply 179 and
-   exact private Working evidence, then issue one immediate DelOrder. Require business reply 177,
-   exact private Cancelled evidence, zero active own orders and a reconciled final position.
+   exact current BBO and price-bound checks. Submit one AddOrder and wait until both business reply 179
+   and exact matching private Working evidence are present; either channel may arrive first. Only then
+   issue one immediate DelOrder. Wait until both business reply 177 and exact private Cancelled evidence
+   with zero active own orders are present; either channel may arrive first. Reconcile the final position.
    Any 99/100 or other ambiguity stops new commands and becomes an explicit evidence outcome.
 
 5. After the ordinary lifecycle reaches a safe terminal state and the account is flat or otherwise
@@ -72,9 +82,24 @@ reply-bridge tests cover those system replies; any real occurrence is still reco
 
 7. Qualify local router/network recovery separately. First perform the zero-order local-router
    loss/restart case. Only after it passes may the Working-order case be attempted. For C05/C06/C07,
-   run the safest client-controlled equivalent that distinguishes router reachability from upstream
-   Plaza availability. Do not manipulate MOEX infrastructure. If the upstream state cannot be induced
-   safely, keep the deterministic offline PASS and classify only that live exercise as MOEX_COORDINATED.
+   first attempt the exact client-controlled T1 equivalent:
+
+   - keep the dedicated local P2MQRouter running and block only its outbound traffic to the discovered
+     T1 Plaza access endpoint IP/ports; connector-to-router traffic remains intact;
+   - C05: connect and prove router availability with upstream Plaza unavailable, wait/no-send and no
+     current-stream use;
+   - C06: remove the targeted block and prove the same connector detects upstream availability, performs
+     fresh bootstrap/snapshot/ONLINE and reaches readiness without application restart;
+   - C07: with zero active orders and known position, reapply the block, prove immediate effective
+     readiness/command loss and no stale-stream use, then remove it and prove bounded fresh rebootstrap.
+
+   Discover endpoints from protected configuration without printing credentials. Block only MOEX
+   destination IP/port traffic for the dedicated router, never SSH or unrelated VPS traffic. Schedule
+   automatic rollback before applying a rule, record original network state and verify rollback after
+   each case. Do not run the Working-order transport-loss case until zero-order recovery passes. If an
+   exact upstream-only fault cannot be induced with a demonstrably safe reversible mechanism, do not
+   improvise: preserve offline evidence and classify only that live portion `MOEX_COORDINATED` with
+   the technical reason.
 
 8. Keep the principal observer alive through the published T1 transitions, including the 12:15
    hot-reserve switch. Record exchange/session state and committed generations; do not infer a
@@ -86,7 +111,8 @@ reply-bridge tests cover those system replies; any real occurrence is still reco
 Each scenario directory is immutable and contains `environment.json`, `scenario.json`, `result.json`,
 `events.log`, `metrics.json`, `state_before.json`, `state_after.json` and `hashes.json`.
 Include exact reply IDs, raw reply diagnostics, correlating user/reply identity, private Working/Cancelled
-rows, order census, position snapshot and source/runtime/config provenance.
+rows, order census, position snapshot and source/runtime/config provenance. Record the independent arrival
+order of each reply and replication fact; the lifecycle result is based on conjunctions, not timestamps.
 
 At full-day closeout require no unexpected Working orders, a fully reconciled known position, no
 unresolved order epoch, no evidence-buffer loss, complete indexed logs and graceful shutdown.

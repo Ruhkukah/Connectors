@@ -150,15 +150,50 @@ def main() -> int:
         manifest["command_surface"]["ordinary_lifecycle"]
         == [
             "AddOrder 474",
-            "correlated business reply 179",
-            "exact private Working evidence",
-            "DelOrder 461",
-            "correlated business reply 177",
-            "exact private Cancelled evidence",
-            "zero active own orders",
+            "both: correlated business reply 179 + exact matching private Working evidence (either may arrive first)",
+            "DelOrder 461 only after both Add facts agree",
+            "both: correlated business reply 177 + exact private Cancelled evidence + zero active own orders (either may arrive first)",
             "reconcile final position",
         ],
         "ordinary lifecycle reply semantics changed",
+    )
+    require(
+        "independent" in manifest["command_surface"]["asynchronous_channel_policy"]
+        and "either may arrive first" in manifest["command_surface"]["asynchronous_channel_policy"],
+        "asynchronous reply/private policy is missing",
+    )
+    certification_authority = manifest["official_sources"]["certification_authority"]
+    require(
+        certification_authority
+        == {
+            "url": "https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e",
+            "title": "CUSTOMER SOFTWARE CERTIFICATION PROCEDURE",
+            "effective_or_approved_date": "2021-09-23",
+            "retrieved_date": "2026-09-14",
+            "downloaded_document_sha256": (
+                "5602136d9b7865a648c255f1e284aa2b2b301089a6a30033baba987f4287cf42"
+            ),
+            "section_used": "Appendix 1, Certification tests for Native APIs, Plaza II; general sections 1-2",
+            "authority_note": (
+                "C/R/S labels are internal stable IDs mapped one-to-one to numbered Appendix 1 controls; "
+                "MOEX does not name them"
+            ),
+        },
+        "certification authority pin changed",
+    )
+    vpts = manifest["official_sources"]["vpts_technical_requirements"]
+    require(
+        vpts
+        == {
+            "url": "https://www.moex.com/files/41j6qhzzp4hkdznn2wp8sj24ds",
+            "title": "Moscow Exchange Technical Center Software and Hardware Suite Connection Requirements for Customer Software",
+            "effective_or_current_edition_date": "2016-04-01",
+            "date_basis": "PDF document date; no explicit effective date stated in the downloaded document",
+            "retrieved_date": "2026-09-14",
+            "downloaded_document_sha256": "63e2018123dc2b5dcdacedb02eec99d915abbc75f5e2957e642efa133bbff510",
+            "section_used": "Sections 1-2, including logging and connection requirements",
+        },
+        "VPTS authority pin changed",
     )
     locked_trade = read_locked_commands(root / "spec-lock/test/plaza2/trade/SPECTRA9.9.0/manifest.yaml")
     locked_commands = {name: row for name, row in locked_trade.items() if name in {"AddOrder", "DelOrder", "DelUserOrders"}}
