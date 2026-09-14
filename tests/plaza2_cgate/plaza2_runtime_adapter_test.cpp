@@ -1,4 +1,5 @@
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
+#include "moex/plaza2/cgate/plaza2_certification_evidence.hpp"
 
 #include "plaza2_runtime_test_support.hpp"
 
@@ -65,6 +66,23 @@ int main(int argc, char** argv) {
         using namespace moex::plaza2::cgate;
         using namespace moex::plaza2::test;
 
+        Plaza2ClockEvidence clock{.sync_source = "chrony",
+                                  .sync_status_ok = true,
+                                  .wall_offset_ns = 120'000'000,
+                                  .monotonic_clock_id = "CLOCK_MONOTONIC_RAW",
+                                  .paired_samples = {{.local_wall_ns = 1'700'000'000'000'000'000,
+                                                      .local_monotonic_ns = 42,
+                                                      .exchange_wall_ns = 1'700'000'000'100'000'000}}};
+        require(plaza2_clock_evidence_passes(clock), "clock evidence within one second should pass");
+        clock.paired_samples[0].exchange_wall_ns += 1'000'000'001;
+        require(!plaza2_clock_evidence_passes(clock), "clock evidence over one second must fail");
+        clock.paired_samples[0].exchange_wall_ns = clock.paired_samples[0].local_wall_ns;
+        clock.sync_status_ok = false;
+        require(!plaza2_clock_evidence_passes(clock), "unsynchronized clock must fail");
+        clock.sync_status_ok = true;
+        clock.paired_samples.clear();
+        require(!plaza2_clock_evidence_passes(clock), "clock evidence without paired timestamps must fail");
+
         const auto fake_library = std::filesystem::path(argv[1]);
         const auto fixture_root = make_temp_directory("plaza2_runtime_adapter_test");
         const auto cleanup = [&]() { remove_tree(fixture_root); };
@@ -84,6 +102,10 @@ int main(int argc, char** argv) {
         Plaza2Connection connection;
         const auto app_name = make_plaza2_application_name("Connectors", "phase3c", 7);
         require(app_name == "connectors_phase3c_7", "application name should be deterministic and sanitized");
+        require(!make_plaza2_application_name("Connectors", "phase3c", 7).empty() &&
+                    make_plaza2_application_name("Connectors", "phase3c", 7) !=
+                        make_plaza2_application_name("Connectors", "phase3c", 8),
+                "distinct instance identities must not collide");
         require(!connection.create(env, "p2tcp://127.0.0.1:4001;app_name=" + app_name),
                 "connection create should succeed");
         require(!connection.open({}), "connection open should succeed");

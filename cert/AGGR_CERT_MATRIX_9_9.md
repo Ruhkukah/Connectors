@@ -1,18 +1,22 @@
 # SPECTRA 9.9 Aggregated-mode certification matrix
 
-This matrix is an AGGR-only mapping of the numbered Plaza II controls in Appendix 1 of the pinned MOEX
-Customer Software Certification Procedure. `C01-C08`, `R01-R08`, and `S01-S07` are internal stable
+This matrix is an AGGR-only mapping of the numbered Plaza II controls in Appendix 1 of the current MOEX
+VPTS certification procedure. `C01-C08`, `R01-R08`, and `S01-S07` are internal stable
 traceability IDs mapped one-to-one to those controls; MOEX does not name the controls with these repository IDs.
 They are not renamed or reused for different requirements. General requirements are listed separately. Full
 ORDLOG/L3 remains `DEFERRED_FULL_ORDLOG_PHASE`.
 
-Authority pins: procedure URL `https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e`, title
-`CUSTOMER SOFTWARE CERTIFICATION PROCEDURE`, approved `2021-09-23`, retrieved `2026-09-14`, downloaded
-SHA-256 `5602136d9b7865a648c255f1e284aa2b2b301089a6a30033baba987f4287cf42`, Appendix 1 Plaza II plus
-general sections 1-2. General logging/connection context also uses the pinned VPTS document at
-`https://www.moex.com/files/41j6qhzzp4hkdznn2wp8sj24ds`, title `Moscow Exchange Technical Center Software
-and Hardware Suite Connection Requirements for Customer Software`, document date `2016-04-01`, retrieved
-`2026-09-14`, downloaded SHA-256 `63e2018123dc2b5dcdacedb02eec99d915abbc75f5e2957e642efa133bbff510`.
+Authority pins: current procedure URL `https://www.moex.com/files/4xgv6e2x1paqr1zkn2fmq093cj`, title
+`ПОРЯДОК СЕРТИФИКАЦИИ ВНЕШНИХ ПРОГРАММНО-ТЕХНИЧЕСКИХ СРЕДСТВ (ВПТС) ПАО МОСКОВСКАЯ БИРЖА`, approved
+`2023-01-30` by order `МБ-П-2023-207`, retrieved `2026-09-14`, downloaded SHA-256
+`91c24dd5d03947e03f4d2b9fa3a78ab1b4b9d5c8fc43dc91e9e7205135caf2f1`, Appendix 1 Plaza II plus general
+requirements on pp. 2-4. The current VPTS requirements are pinned at
+`https://www.moex.com/files/41w8g1tt63pd9tq9drmk4n3g4z`, title
+`Требования к подключению клиентского программного обеспечения к программно-техническим комплексам Московской Биржи`,
+current edition effective `2020-08-17`, retrieved `2026-09-14`, downloaded SHA-256
+`a775f5c5aca3cefba58498549d8ff076055091faea757a6a0fbf1ba848f4a4a2`. The current 2023 Appendix 1 groups
+remain equivalent to this repository's existing mapping: Connection 1-8 -> C01-C08, Replication 1-8 -> R01-R08,
+Sending 1-7 -> S01-S07; no implementation remap is required.
 
 Each official row has its own classification, offline result, T1 result, code/test evidence, exact T1 evidence,
 and remaining action. `PASS_OFFLINE` means deterministic or locked software evidence. `PASS_T1` means exact
@@ -272,6 +276,70 @@ requires an exchange-controlled exercise.
 - Code/test evidence: runbook and lifecycle/reconciliation tests
 - Exact T1 evidence: prior observation was order-free only
 - Remaining action: run through published transitions and 12:15 hot reserve
+
+### General — administrator/emergency procedure
+- Classification: AGGR_REQUIRED
+- Offline result: PASS_OFFLINE
+- T1 result: NOT_RUN_T1_SESSION_CLOSED
+- Code/test evidence: `docs/plaza2/AGGR_OPERATOR_EMERGENCY_PROCEDURE_9_9.md`
+- Exact T1 evidence: operator acknowledgment pending for next open session
+- Remaining action: use the procedure for any ambiguity, order/position surprise, router/app/TCS failure
+
+### General — per-instance customer-software identifier
+- Classification: AGGR_REQUIRED
+- Offline result: PASS_OFFLINE
+- T1 result: NOT_RUN_T1_SESSION_CLOSED
+- Code/test evidence: nonempty `p2tcp` `app_name`, publisher/reply identity checks, instance-token test
+- Exact T1 evidence: record the live `app_name` in qualification evidence
+- Remaining action: prove the captured identity for the full session
+
+### General — log/system-time ±1 sec
+- Classification: AGGR_REQUIRED
+- Offline result: PASS_OFFLINE
+- T1 result: NOT_RUN_T1_SESSION_CLOSED
+- Code/test evidence: `plaza2_clock_evidence_passes` requires sync source/status, offset, monotonic ID and paired timestamps
+- Exact T1 evidence: none while the session is closed
+- Remaining action: record local wall, monotonic, exchange/server timestamps before the full-day run; any failure blocks PASS
+
+### General — Exchange/NCC messages
+- Classification: AGGR_REQUIRED
+- Offline result: PASS_OFFLINE
+- T1 result: NOT_RUN_T1_SESSION_CLOSED
+- Code/test evidence: `FORTS_REFDATA_REPL.sys_messages` projector, qualification snapshot and `moexctl qualify` JSON
+- Exact T1 evidence: no current-session message receipt
+- Remaining action: retain and hash the committed message evidence during the next open session
+
+### General — administration/monitoring for broker systems
+- Classification: N/A_PRODUCT_SCOPE
+- Offline result: PASS_OFFLINE
+- T1 result: N/A_PRODUCT_SCOPE
+- Code/test evidence: product-scope decision in manifest and runbook
+- Exact T1 evidence: not applicable
+- Remaining action: none; this is proprietary connector software using a broker account, not a broker platform offered to clients
+
+### General — one-to-one MOEX terminology
+- Classification: AGGR_REQUIRED
+- Offline result: PASS_OFFLINE
+- T1 result: NOT_RUN_T1_SESSION_CLOSED
+- Code/test evidence: current procedure/VPTS terms are used without local renaming of required concepts
+- Exact T1 evidence: terminology review is part of next candidate package
+- Remaining action: retain the one-to-one wording in operator evidence and certification correspondence
+
+### General — fixed SPECTRA subsystem routing
+- Classification: N/A_FIXED_SPECTRA_PROFILE
+- Offline result: PASS_OFFLINE
+- T1 result: N/A_FIXED_SPECTRA_PROFILE
+- Code/test evidence: fixed FORTS/SPECTRA profile has no uncontrolled subsystem selector
+- Exact T1 evidence: not applicable to this fixed profile
+- Remaining action: do not add an operator-selectable subsystem without a new review
+
+### General — broker-system/client-operation applicability
+- Classification: N/A_PRODUCT_SCOPE
+- Offline result: PASS_OFFLINE
+- T1 result: N/A_PRODUCT_SCOPE
+- Code/test evidence: proprietary connector runs through a broker account and is not client-facing brokerage software
+- Exact T1 evidence: not applicable
+- Remaining action: preserve this explicit scope decision
 
 ## Current gate
 

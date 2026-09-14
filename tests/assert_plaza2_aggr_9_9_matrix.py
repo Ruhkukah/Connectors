@@ -41,15 +41,32 @@ GENERAL_ROWS = {
     "TCS restart without reload",
     "reserve/access-server switching",
     "full SPECTRA trading-day exercise with all declared command types",
+    "administrator/emergency procedure",
+    "per-instance customer-software identifier",
+    "log/system-time ±1 sec",
+    "Exchange/NCC messages",
+    "administration/monitoring for broker systems",
+    "one-to-one MOEX terminology",
+    "fixed SPECTRA subsystem routing",
+    "broker-system/client-operation applicability",
 }
 
-ALLOWED_CLASSIFICATIONS = {"AGGR_REQUIRED", "MOEX_COORDINATED", "N/A_CLIENT_SCHEME", "DEFERRED_FULL_ORDLOG_PHASE"}
+ALLOWED_CLASSIFICATIONS = {
+    "AGGR_REQUIRED",
+    "MOEX_COORDINATED",
+    "N/A_CLIENT_SCHEME",
+    "N/A_PRODUCT_SCOPE",
+    "N/A_FIXED_SPECTRA_PROFILE",
+    "DEFERRED_FULL_ORDLOG_PHASE",
+}
 ALLOWED_OFFLINE = {"PASS_OFFLINE", "DEFERRED_FULL_ORDLOG_PHASE"}
 ALLOWED_T1 = {
     "PASS_T1",
     "NOT_RUN_T1_SESSION_CLOSED",
     "MOEX_COORDINATED",
     "N/A_CLIENT_SCHEME",
+    "N/A_PRODUCT_SCOPE",
+    "N/A_FIXED_SPECTRA_PROFILE",
     "DEFERRED_FULL_ORDLOG_PHASE",
 }
 FIELD_RE = re.compile(r"^- (Classification|Offline result|T1 result|Code/test evidence|Exact T1 evidence|Remaining action): (.+)$")
@@ -95,6 +112,10 @@ def main() -> int:
     )
     require("system replies 99/100 are decoded" in matrix.lower(), "system reply policy missing from matrix")
     require("internal stable" in matrix and "MOEX does not name" in matrix, "authority provenance wording is missing")
+    require("2023-01-30" in matrix and "91c24dd5d03947e03f4d2b9fa3a78ab1b4b9d5c8fc43dc91e9e7205135caf2f1" in matrix,
+            "current 2023 certification procedure pin is missing")
+    require("EQUIVALENT_CONTROLS_NO_IMPLEMENTATION_CHANGE" in matrix or "no implementation remap" in matrix,
+            "Appendix 1 equivalence decision is missing")
 
     rows = parse_rows(matrix.splitlines())
     official = {key: value for key, value in rows.items() if key in OFFICIAL_ROWS}
@@ -142,7 +163,8 @@ def main() -> int:
     manifest = json.loads((root / "cert/aggr_plaza2_certification_manifest_9_9.json").read_text(encoding="utf-8"))
     authority = manifest["official_sources"]["certification_authority"]
     require(
-        manifest["official_matrix"]["authority"].startswith("internal stable IDs mapped one-to-one"),
+        "internal stable IDs" in manifest["official_matrix"]["authority"] and
+        "one-to-one" in manifest["official_matrix"]["authority"],
         "manifest must describe C/R/S labels as internal stable IDs",
     )
     require(
@@ -168,6 +190,21 @@ def main() -> int:
         "section_used",
     ):
         require(vpts.get(key), f"VPTS authority pin lacks {key}")
+    require(authority["effective_or_approved_date"] == "2023-01-30", "matrix uses an obsolete procedure edition")
+    require(authority["downloaded_document_sha256"] == "91c24dd5d03947e03f4d2b9fa3a78ab1b4b9d5c8fc43dc91e9e7205135caf2f1",
+            "current procedure hash changed")
+    require(vpts["effective_or_current_edition_date"] == "2020-08-17", "matrix uses an obsolete VPTS edition")
+    require(vpts["downloaded_document_sha256"] == "a775f5c5aca3cefba58498549d8ff076055091faea757a6a0fbf1ba848f4a4a2",
+            "current VPTS requirements hash changed")
+    require(manifest["official_matrix"]["appendix1_equivalence"]["result"] == "EQUIVALENT_CONTROLS_NO_IMPLEMENTATION_CHANGE",
+            "manifest Appendix 1 equivalence decision missing")
+    require((root / manifest["operator_emergency_procedure"]).is_file(), "operator emergency procedure is missing")
+    require(manifest["clock_gate"]["max_skew_ns"] == 1_000_000_000 and
+            manifest["clock_gate"]["t1_status"] == "NOT_RUN_T1_SESSION_CLOSED", "clock gate is incomplete")
+    require(manifest["system_messages"]["table"] == "FORTS_REFDATA_REPL.sys_messages" and
+            "QualificationSnapshot" in manifest["system_messages"]["surface"], "system-message gate is incomplete")
+    require(manifest["instance_identity"]["field"] == "app_name" and
+            manifest["instance_identity"]["required"] == "nonempty for every live TEST connection", "instance identity gate is incomplete")
 
     report = (root / "docs/plaza2/AGGR_CERTIFICATION_9_9.md").read_text(encoding="utf-8")
     runbook = (root / "docs/plaza2/AGGR_T1_QUALIFICATION_9_9.md").read_text(encoding="utf-8")
@@ -178,6 +215,8 @@ def main() -> int:
         require("business reply 179" in text and "business reply 177" in text, f"{relative} lacks business reply semantics")
         require("either may arrive first" in text and "conjunction" in text, f"{relative} lacks asynchronous conjunction policy")
         require("system replies 99/100" in text or "Reply 99 or 100" in text, f"{relative} lacks system reply policy")
+        require("app_name" in text and "one second" in text, f"{relative} lacks instance/clock gate")
+        require("sys_messages" in text and "emergency" in text.lower(), f"{relative} lacks message/emergency gate")
         require("accepted reply 99" not in text.lower(), f"{relative} promotes reply 99 to ordinary success")
         require("reply 100 -> exact private Cancelled" not in text, f"{relative} promotes reply 100 to ordinary success")
 

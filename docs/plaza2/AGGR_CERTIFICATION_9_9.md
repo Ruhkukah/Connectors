@@ -10,9 +10,13 @@ The dedicated machine-readable identity and matrix are [the 9.9 AGGR manifest](.
 The next-session procedure is the [current AGGR T1 runbook](AGGR_T1_QUALIFICATION_9_9.md).
 
 The matrix labels `C01-C08`, `R01-R08`, and `S01-S07` are internal stable IDs mapped one-to-one to
-the numbered Plaza II controls in Appendix 1 of the pinned MOEX Customer Software Certification Procedure;
-they are repository traceability labels, not MOEX-named identifiers. Procedure and VPTS authority URL,
-edition/date, retrieval date and downloaded-document SHA-256 pins are recorded in the manifest.
+the numbered Plaza II controls in Appendix 1 of the current [MOEX VPTS certification procedure](https://www.moex.com/ru/documents/4531)
+(approved 30 January 2023, order МБ-П-2023-207); they are repository traceability labels, not MOEX-named identifiers.
+The current document is pinned by PDF SHA-256 `91c24dd5d03947e03f4d2b9fa3a78ab1b4b9d5c8fc43dc91e9e7205135caf2f1`.
+The current [VPTS connection requirements](https://www.moex.com/ru/documents/11844) (edition effective 17 August 2020)
+are pinned by PDF SHA-256 `a775f5c5aca3cefba58498549d8ff076055091faea757a6a0fbf1ba848f4a4a2`.
+The current Appendix 1 groups remain equivalent to the existing mapping (Connection 1-8 -> C01-C08,
+Replication 1-8 -> R01-R08, Sending 1-7 -> S01-S07), so no implementation remap is required.
 
 ## Runtime and official-source lock
 
@@ -51,6 +55,19 @@ system replies 99/100 may also occur and are never ordinary success by correlati
 but is known and undeclared for this candidate. Move, Iceberg Move and MassCancel are also undeclared.
 The local publisher admission cap defaults to 30 attempts per rolling second and is bounded to 1..3000; a denied or ambiguous command is never automatically retried.
 During recovery, effective readiness and Add authority are false. A nonterminal order epoch is preserved as uncertain, with no automatic Add, Cancel, flatten, or compensating command.
+
+The fixed profile routes only the declared SPECTRA/FORTS subsystem and exposes no uncontrolled subsystem selector.
+The connector is proprietary software used through a broker account; it is not a broker system offered to clients,
+so the broker-system administration/monitoring requirement is explicitly `N/A_PRODUCT_SCOPE`.
+
+`FORTS_REFDATA_REPL.sys_messages` is part of the existing REFDATA subscription. Committed rows preserve message
+identity, time, language, urgency, status, text and body, with LifeNum/ClearDeleted provenance. They are exposed by
+the explicit qualification snapshot and `moexctl qualify` JSON; malformed optional content cannot change readiness.
+The next full-day evidence must also include a nonempty CGate `app_name`, its publisher/reply identity match, and a
+clock gate with synchronization source/status, wall offset, monotonic clock identity and paired local/exchange
+timestamps. Every paired wall timestamp must be within one second; missing or failing evidence prevents PASS.
+The operator response for unexpected orders, ambiguous replies, router/network loss, application/TCS failure or
+unrecoverable uncertainty is the [AGGR operator emergency procedure](AGGR_OPERATOR_EMERGENCY_PROCEDURE_9_9.md).
 
 ## SPECTRA 9.9 dependency audit
 

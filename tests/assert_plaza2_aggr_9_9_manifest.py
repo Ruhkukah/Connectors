@@ -166,17 +166,15 @@ def main() -> int:
     require(
         certification_authority
         == {
-            "url": "https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e",
-            "title": "CUSTOMER SOFTWARE CERTIFICATION PROCEDURE",
-            "effective_or_approved_date": "2021-09-23",
+            "url": "https://www.moex.com/files/4xgv6e2x1paqr1zkn2fmq093cj",
+            "title": "ПОРЯДОК СЕРТИФИКАЦИИ ВНЕШНИХ ПРОГРАММНО-ТЕХНИЧЕСКИХ СРЕДСТВ (ВПТС) ПАО МОСКОВСКАЯ БИРЖА",
+            "effective_or_approved_date": "2023-01-30",
             "retrieved_date": "2026-09-14",
-            "downloaded_document_sha256": (
-                "5602136d9b7865a648c255f1e284aa2b2b301089a6a30033baba987f4287cf42"
-            ),
-            "section_used": "Appendix 1, Certification tests for Native APIs, Plaza II; general sections 1-2",
+            "downloaded_document_sha256": "91c24dd5d03947e03f4d2b9fa3a78ab1b4b9d5c8fc43dc91e9e7205135caf2f1",
+            "section_used": "Appendix 1 Plaza II (Connection 1-8, Replication 1-8, Sending 1-7) and general requirements on pp. 2-4",
             "authority_note": (
-                "C/R/S labels are internal stable IDs mapped one-to-one to numbered Appendix 1 controls; "
-                "MOEX does not name them"
+                "Approved by MOEX order МБ-П-2023-207 dated 30.01.2023; internal C/R/S labels remain one-to-one "
+                "traceability IDs, not MOEX identifiers."
             ),
         },
         "certification authority pin changed",
@@ -185,13 +183,13 @@ def main() -> int:
     require(
         vpts
         == {
-            "url": "https://www.moex.com/files/41j6qhzzp4hkdznn2wp8sj24ds",
-            "title": "Moscow Exchange Technical Center Software and Hardware Suite Connection Requirements for Customer Software",
-            "effective_or_current_edition_date": "2016-04-01",
-            "date_basis": "PDF document date; no explicit effective date stated in the downloaded document",
+            "url": "https://www.moex.com/files/41w8g1tt63pd9tq9drmk4n3g4z",
+            "title": "Порядок сертификации ВПТС ПАО Московская Биржа — текущие Требования к сопряжению с ПТК ТЦ",
+            "effective_or_current_edition_date": "2020-08-17",
+            "date_basis": "Current edition effective 17.08.2020; approved by MOEX order МБ-П-2020-1938 dated 07.08.2020",
             "retrieved_date": "2026-09-14",
-            "downloaded_document_sha256": "63e2018123dc2b5dcdacedb02eec99d915abbc75f5e2957e642efa133bbff510",
-            "section_used": "Sections 1-2, including logging and connection requirements",
+            "downloaded_document_sha256": "a775f5c5aca3cefba58498549d8ff076055091faea757a6a0fbf1ba848f4a4a2",
+            "section_used": "Section 2.1-2.12: LifeNum/ClearDeleted; admin; app identity; clock; Exchange/NCC; monitoring; redundancy",
         },
         "VPTS authority pin changed",
     )
@@ -216,6 +214,19 @@ def main() -> int:
     )
     require("MoveOrder" in manifest["command_surface"]["not_declared_for_this_candidate"], "MoveOrder claim widened")
     require("MassCancel" in manifest["command_surface"]["not_declared_for_this_candidate"], "MassCancel claim widened")
+    require(manifest["official_matrix"]["appendix1_equivalence"] == {
+        "result": "EQUIVALENT_CONTROLS_NO_IMPLEMENTATION_CHANGE",
+        "source_control_groups": ["Connection 1-8 -> C01-C08", "Replication 1-8 -> R01-R08", "Sending 1-7 -> S01-S07"],
+        "basis": (
+            "Current 2023 Appendix 1 groups and numbering are equivalent to the prior mapping; "
+            "wording re-audited; no implementation remap required."
+        ),
+    }, "Appendix 1 equivalence audit changed")
+    require(manifest["clock_gate"]["max_skew_ns"] == 1_000_000_000, "clock gate limit changed")
+    require(manifest["clock_gate"]["t1_status"] == "NOT_RUN_T1_SESSION_CLOSED", "closed-session clock status changed")
+    require(manifest["instance_identity"]["field"] == "app_name", "instance identity field changed")
+    require(manifest["system_messages"]["table"] == "FORTS_REFDATA_REPL.sys_messages", "system-message table changed")
+    require((root / manifest["operator_emergency_procedure"]).is_file(), "operator emergency procedure missing")
 
     compatibility = json.loads(
         (root / "spec-lock/test/plaza2/cgate99/consumed_replication_compatibility.json").read_text(encoding="utf-8")

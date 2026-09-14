@@ -760,6 +760,10 @@ struct Plaza2TestSessionHost::Impl {
         effective_runtime.env_open_settings = resolve_ini(effective_runtime.env_open_settings, probe.layout.config_dir);
         const auto rendered_connection =
             render_copy(config.connection_settings, credentials.value(), software_key.value());
+        const auto app_name = setting_value(rendered_connection, "app_name");
+        if (!app_name || app_name->empty())
+            return invalid("TEST connection settings require a non-empty app_name");
+        connection_app_name = *app_name;
         const auto identity = connection_identity(rendered_connection);
         if (!identity)
             return invalid("TEST connection identity configuration could not be read");
@@ -1386,6 +1390,7 @@ struct Plaza2TestSessionHost::Impl {
     bool bridge_started{false};
     std::optional<std::string> previously_opened_connection_identity;
     std::string attempt_connection_identity;
+    std::string connection_app_name;
     bool fresh_connection_created{};
     bool started{false};
     bool fully_bootstrapped{false};
@@ -1463,6 +1468,9 @@ bool Plaza2TestSessionHost::p2mqreply_open() const noexcept {
 }
 bool Plaza2TestSessionHost::publisher_open() const noexcept {
     return impl_->publisher_is_open;
+}
+const std::string& Plaza2TestSessionHost::connection_app_name() const noexcept {
+    return impl_->connection_app_name;
 }
 cgate::Plaza2PublisherCallCounts Plaza2TestSessionHost::publisher_call_counts() const noexcept {
     return impl_->publisher.call_counts();

@@ -686,6 +686,7 @@ struct ConnectorHost::Impl {
         out.session_id = config.transport.target_session_id;
         out.runtime_compatibility = cg::plaza2_compatibility_name(host.probe_report().compatibility);
         out.runtime_scheme_sha256 = host.probe_report().scheme_drift.runtime_scheme_sha256;
+        out.connection_app_name = host.connection_app_name();
         out.transport_health = host.runtime_health();
         const auto& health = out.transport_health;
         const bool live = host.started() && state != ConnectorHostState::Failed &&
@@ -1137,9 +1138,12 @@ ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot(bool pr
     ConnectorHostQualificationSnapshot out{.book = host.aggr20_projector().snapshot(),
                                            .instruments = {instruments.begin(), instruments.end()},
                                            .positions = {positions.begin(), positions.end()},
+                                           .connection_app_name = host.connection_app_name(),
                                            .rate = host.publisher_rate_metrics(),
                                            .aggr_online = host.aggr_online(),
                                            .aggr_snapshot_complete = host.aggr_snapshot_complete()};
+    const auto system_messages = host.private_state().system_messages();
+    out.system_messages.assign(system_messages.begin(), system_messages.end());
     for (const auto& row : host.private_state().own_orders()) {
         if (row.identity_conflict || ((row.from_user_book || row.from_current_day) &&
                                       (row.public_amount_rest > 0 || row.private_amount_rest > 0)))
@@ -1510,7 +1514,8 @@ RestartReconciliationResult ConnectorHost::reconcile() {
     return result;
 }
 
-std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
+std::string render_snapshot(const ConnectorHostSnapshot& s, bool json,
+                            const ConnectorHostQualificationSnapshot* qualification) {
     std::ostringstream out;
     out << std::boolalpha;
     if (!json) {
@@ -1523,6 +1528,9 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
             << " order_submission_attempted=" << s.order_submission_attempted
             << " new_order_allowed=" << s.new_order_allowed << "\nmarket_safe=" << s.market_safe
             << " evidence_consistent=" << s.evidence_consistent << "\nlast_error=" << s.last_error << '\n';
+        if (qualification != nullptr)
+            out << "connection_app_name=" << qualification->connection_app_name
+                << " system_messages=" << qualification->system_messages.size() << '\n';
         return out.str();
     }
     out << "{\"schema\":\"moex.connector-host.v1\",\"state\":" << quoted(host_state_name(s.state))
@@ -1530,6 +1538,7 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
         << ",\"mode\":" << static_cast<unsigned>(s.mode)
         << ",\"runtime_compatibility\":" << quoted(s.runtime_compatibility)
         << ",\"runtime_scheme_sha256\":" << quoted(s.runtime_scheme_sha256)
+        << ",\"connection_app_name\":" << quoted(s.connection_app_name)
         << ",\"publisher_handle_open\":" << s.publisher_handle_open << ",\"reply_handle_open\":" << s.reply_handle_open
         << ",\"private_snapshot_state_ready\":" << s.private_snapshot_state_ready
         << ",\"aggr_snapshot_state_ready\":" << s.aggr_snapshot_state_ready << ",\"aggr_ready\":" << s.aggr_ready
@@ -1625,7 +1634,29 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
             << ",\"snapshot_complete\":" << row.snapshot_complete
             << ",\"periodic_snapshot_consistent\":" << row.periodic_snapshot_consistent << '}';
     }
-    out << "]}\n";
+    if (qualification != nullptr) {
+        out << "],\"qualification\":{\"connection_app_name\":" << quoted(qualification->connection_app_name)
+            << ",\"system_messages\":[";
+        first = true;
+        for (const auto& message : qualification->system_messages) {
+            if (!first)
+                out << ',';
+            first = false;
+            out << "{\"repl_id\":" << message.repl_id << ",\"repl_rev\":" << message.repl_rev
+                << ",\"repl_act\":" << static_cast<int>(message.repl_act) << ",\"msg_id\":" << message.msg_id
+                << ",\"lang_code\":" << quoted(message.lang_code) << ",\"type_id\":" << message.type_id
+                << ",\"moment\":" << message.moment << ",\"text\":" << quoted(message.text)
+                << ",\"urgency\":" << static_cast<int>(message.urgency)
+                << ",\"status\":" << static_cast<int>(message.status)
+                << ",\"message_body\":" << quoted(message.message_body)
+                << ",\"source\":{\"present\":" << message.source.present << ",\"repl_rev\":" << message.source.repl_rev
+                << ",\"lifenum\":" << message.source.lifenum << "}}";
+        }
+        out << "]}";
+    } else {
+        out << ']';
+    }
+    out << "}\n";
     return out.str();
 }
 

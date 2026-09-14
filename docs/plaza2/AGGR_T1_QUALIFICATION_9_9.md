@@ -8,9 +8,9 @@ The session is closed today. Do not start a connection, order, restart, or route
 fresh T1 availability and current source/binary/runtime/scheme/config hashes have been recorded.
 
 The `C01-C08`, `R01-R08`, and `S01-S07` labels below are internal stable IDs mapped one-to-one to the
-numbered Plaza II controls in Appendix 1 of the pinned [MOEX Customer Software Certification Procedure](https://www.moex.com/files/4qg0gqtzcxkep68687ah1bwq5e).
-They are repository traceability labels, not MOEX-named identifiers. The exact authority pins and the
-VPTS technical-requirements pin are in the manifest.
+numbered Plaza II controls in Appendix 1 of the current [MOEX VPTS certification procedure](https://www.moex.com/ru/documents/4531),
+approved 30 January 2023 by order МБ-П-2023-207. They are repository traceability labels, not MOEX-named identifiers.
+The exact current procedure/VPTS pins and the explicit Appendix 1 equivalence audit are in the manifest.
 
 ## Reply semantics
 
@@ -51,7 +51,10 @@ reply-bridge tests cover those system replies; any real occurrence is still reco
 1. Refresh MOEX notices, T1 availability, the [official T1 listing](https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test),
    and the [published schedule](https://www.moex.com/s438). Discover the current symbol, ISIN and session.
    Record source SHA, Linux binary SHA, runtime/library SHA, scheme SHA, router SHA and protected
-   configuration fingerprints. A new package listing requires a fresh lock before use.
+   configuration fingerprints. Record the nonempty CGate connection `app_name` and verify that the publisher and
+   p2mqreply reference the same instance identity; never include credentials. Record the synchronized clock source,
+   synchronization status, wall offset, monotonic clock identity, and paired local-wall/monotonic/exchange timestamps.
+   Every pair must be within one second or the campaign is not eligible for PASS. A new package listing requires a fresh lock before use.
 
 2. Run the independent C03 probe for at least 300 seconds. It uses no publisher, no listeners and no
    order authorization. Record every poll/state transition, router connection continuity, CPU and
@@ -106,6 +109,12 @@ reply-bridge tests cover those system replies; any real occurrence is still reco
    transition from wall-clock time. Exercise only declared AddOrder and DelOrder during safe windows,
    preserving complete logs and order/position reconciliation after every action.
 
+9. Retain `FORTS_REFDATA_REPL.sys_messages` from the existing REFDATA stream and include the committed message
+   identity/time/language/urgency/status/text/body in certification evidence. Optional malformed content is recorded
+   and ignored for readiness. Follow the [operator emergency procedure](AGGR_OPERATOR_EMERGENCY_PROCEDURE_9_9.md)
+   for unexpected orders/positions, ambiguous replies, router/network loss, application/TCS failure, or any inability
+   to restore certainty.
+
 ## Evidence and closeout
 
 Each scenario directory is immutable and contains `environment.json`, `scenario.json`, `result.json`,
@@ -113,6 +122,8 @@ Each scenario directory is immutable and contains `environment.json`, `scenario.
 Include exact reply IDs, raw reply diagnostics, correlating user/reply identity, private Working/Cancelled
 rows, order census, position snapshot and source/runtime/config provenance. Record the independent arrival
 order of each reply and replication fact; the lifecycle result is based on conjunctions, not timestamps.
+Include the `app_name` identity receipt, the clock-gate fields and paired timestamp table, and the complete bounded
+`sys_messages` evidence. A missing clock or message/identity receipt prevents a certification PASS.
 
 At full-day closeout require no unexpected Working orders, a fully reconciled known position, no
 unresolved order epoch, no evidence-buffer loss, complete indexed logs and graceful shutdown.

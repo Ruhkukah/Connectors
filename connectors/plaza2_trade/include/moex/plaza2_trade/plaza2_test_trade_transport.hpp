@@ -260,6 +260,9 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] bool aggr_snapshot_complete() const noexcept;
     [[nodiscard]] bool p2mqreply_open() const noexcept;
     [[nodiscard]] bool publisher_open() const noexcept;
+    // Sanitized connection instance identity used for operator/certification
+    // evidence.  This is the CGate app_name value, never a credential.
+    [[nodiscard]] const std::string& connection_app_name() const noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2PublisherCallCounts publisher_call_counts() const noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2PublisherRateMetrics publisher_rate_metrics() const noexcept;
     [[nodiscard]] Plaza2TestSessionHostMode mode() const noexcept;

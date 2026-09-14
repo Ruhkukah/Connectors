@@ -541,9 +541,10 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
 }
 
 [[nodiscard]] bool is_required_private_state_table(std::string_view stream_name, std::string_view table_name) {
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 21> kRequiredTables = {{
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 22> kRequiredTables = {{
         {"FORTS_REFDATA_REPL", "session"},
         {"FORTS_REFDATA_REPL", "fut_instruments"},
+        {"FORTS_REFDATA_REPL", "sys_messages"},
         {"FORTS_REFDATA_REPL", "opt_sess_contents"},
         {"FORTS_REFDATA_REPL", "multileg_dict"},
         {"FORTS_REFDATA_REPL", "instr2matching_map"},

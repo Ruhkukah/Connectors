@@ -189,6 +189,7 @@ struct TradeKeyHash {
 using SessionMap = std::unordered_map<std::int32_t, TradingSessionSnapshot>;
 using InstrumentMap = std::unordered_map<std::int32_t, InstrumentSnapshot>;
 using MatchingMap = std::unordered_map<std::int32_t, MatchingMapSnapshot>;
+using SystemMessageMap = std::unordered_map<std::int64_t, SystemMessageSnapshot>;
 using LimitMap = std::unordered_map<LimitKey, LimitSnapshot, LimitKeyHash>;
 using PositionMap = std::unordered_map<PositionKey, PositionSnapshot, PositionKeyHash>;
 using OrderMap = std::unordered_map<OrderKey, OwnOrderSnapshot, OrderKeyHash>;
@@ -441,6 +442,7 @@ struct StagedState {
     std::optional<SessionMap> sessions;
     std::optional<InstrumentMap> instruments;
     std::optional<MatchingMap> matching_map;
+    std::optional<SystemMessageMap> system_messages;
     std::optional<LimitMap> limits;
     std::optional<PositionMap> positions;
     std::optional<OrderMap> orders;
@@ -488,6 +490,7 @@ struct Plaza2PrivateStateProjector::Impl {
     SessionMap sessions_by_id;
     InstrumentMap instruments_by_isin;
     MatchingMap matching_by_base_contract;
+    SystemMessageMap system_messages_by_id;
     LimitMap limits_by_key;
     std::unordered_map<std::string, LimitLookup> limit_index;
     std::size_t unknown_limits{0};
@@ -500,6 +503,7 @@ struct Plaza2PrivateStateProjector::Impl {
     std::vector<TradingSessionSnapshot> session_snapshots;
     std::vector<InstrumentSnapshot> instrument_snapshots;
     std::vector<MatchingMapSnapshot> matching_snapshots;
+    std::vector<SystemMessageSnapshot> system_message_snapshots;
     std::vector<LimitSnapshot> limit_snapshots;
     std::vector<PositionSnapshot> position_snapshots;
     std::vector<OwnOrderSnapshot> order_snapshots;
@@ -514,6 +518,7 @@ struct Plaza2PrivateStateProjector::Impl {
         sessions_by_id.clear();
         instruments_by_isin.clear();
         matching_by_base_contract.clear();
+        system_messages_by_id.clear();
         limits_by_key.clear();
         limit_index.clear();
         unknown_limits = 0;
@@ -525,6 +530,7 @@ struct Plaza2PrivateStateProjector::Impl {
         session_snapshots.clear();
         instrument_snapshots.clear();
         matching_snapshots.clear();
+        system_message_snapshots.clear();
         limit_snapshots.clear();
         position_snapshots.clear();
         order_snapshots.clear();
@@ -736,6 +742,8 @@ struct Plaza2PrivateStateProjector::Impl {
                                  std::to_string(row.i8(FieldCode::kFortsRefdataReplMultilegDictLegOrderNo))});
         case TableCode::kFortsRefdataReplInstr2matchingMap:
             return revision_key(row.i32(FieldCode::kFortsRefdataReplInstr2matchingMapBaseContractId));
+        case TableCode::kFortsRefdataReplSysMessages:
+            return revision_key(row.i64(FieldCode::kFortsRefdataReplSysMessagesReplId));
         case TableCode::kFortsSessionstateReplSessionState:
             return revision_key(row.i32(FieldCode::kFortsSessionstateReplSessionStateSessId));
         case TableCode::kFortsInstrumentstateReplInstrumentState:
@@ -775,6 +783,13 @@ struct Plaza2PrivateStateProjector::Impl {
         matching_snapshots = sorted_values<MatchingMapSnapshot>(
             matching_by_base_contract, [](const MatchingMapSnapshot& lhs, const MatchingMapSnapshot& rhs) {
                 return lhs.base_contract_id < rhs.base_contract_id;
+            });
+    }
+
+    void rebuild_system_messages() {
+        system_message_snapshots = sorted_values<SystemMessageSnapshot>(
+            system_messages_by_id, [](const SystemMessageSnapshot& lhs, const SystemMessageSnapshot& rhs) {
+                return lhs.repl_id < rhs.repl_id;
             });
     }
 
@@ -860,6 +875,7 @@ struct Plaza2PrivateStateProjector::Impl {
         rebuild_sessions();
         rebuild_instruments();
         rebuild_matching_map();
+        rebuild_system_messages();
         rebuild_limits();
         rebuild_positions();
         rebuild_orders();
@@ -916,6 +932,8 @@ struct Plaza2PrivateStateProjector::Impl {
             staged.active ? ensure_stage_copy(staged.instruments, instruments_by_isin) : instruments_by_isin;
         auto& matching = staged.active ? ensure_stage_copy(staged.matching_map, matching_by_base_contract)
                                        : matching_by_base_contract;
+        auto& system_messages =
+            staged.active ? ensure_stage_copy(staged.system_messages, system_messages_by_id) : system_messages_by_id;
         auto& limits = staged.active ? ensure_stage_copy(staged.limits, limits_by_key) : limits_by_key;
         auto& positions = staged.active ? ensure_stage_copy(staged.positions, positions_by_key) : positions_by_key;
         auto& orders = staged.active ? ensure_stage_copy(staged.orders, orders_by_key) : orders_by_key;
@@ -948,6 +966,7 @@ struct Plaza2PrivateStateProjector::Impl {
             case TableCode::kFortsRefdataReplOptSessContents:
             case TableCode::kFortsRefdataReplMultilegDict:
             case TableCode::kFortsRefdataReplInstr2matchingMap:
+            case TableCode::kFortsRefdataReplSysMessages:
                 return StreamCode::kFortsRefdataRepl;
             case TableCode::kFortsSessionstateReplSessionState:
                 return StreamCode::kFortsSessionstateRepl;
@@ -1153,6 +1172,17 @@ struct Plaza2PrivateStateProjector::Impl {
                 }
             }
             break;
+        case TableCode::kFortsRefdataReplSysMessages:
+            for (auto it = system_messages.begin(); it != system_messages.end();) {
+                const auto key = revision_key(it->first);
+                if (source_row_is_stale(table_code, key, clear_revision)) {
+                    erase_source_row(table_code, key);
+                    it = system_messages.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            break;
         case TableCode::kFortsSessionstateReplSessionState:
             for (auto it = sessions.begin(); it != sessions.end();) {
                 const auto key = revision_key(it->first);
@@ -1253,9 +1283,11 @@ struct Plaza2PrivateStateProjector::Impl {
             }
         }
             matching_by_base_contract.clear();
+            system_messages_by_id.clear();
             rebuild_sessions();
             rebuild_instruments();
             rebuild_matching_map();
+            rebuild_system_messages();
             break;
         case StreamCode::kFortsSessionstateRepl:
             for (auto& [unused_id, session] : sessions_by_id) {
@@ -1334,6 +1366,7 @@ struct Plaza2PrivateStateProjector::Impl {
             }
         }
             ensure_stage_copy(staged.matching_map, matching_by_base_contract).clear();
+            ensure_stage_copy(staged.system_messages, system_messages_by_id).clear();
             staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
             break;
         case StreamCode::kFortsSessionstateRepl:
@@ -1378,6 +1411,11 @@ struct Plaza2PrivateStateProjector::Impl {
     MatchingMap& ensure_staged_matching_map() {
         staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
         return ensure_stage_copy(staged.matching_map, matching_by_base_contract);
+    }
+
+    SystemMessageMap& ensure_staged_system_messages() {
+        staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
+        return ensure_stage_copy(staged.system_messages, system_messages_by_id);
     }
 
     LimitMap& ensure_staged_limits() {
@@ -1860,6 +1898,28 @@ struct Plaza2PrivateStateProjector::Impl {
         entry.matching_id = row.i8(FieldCode::kFortsRefdataReplInstr2matchingMapMatchingId);
     }
 
+    void apply_system_message_row(const fake::EventSpec& event, const RowReader& row) {
+        auto& messages = ensure_staged_system_messages();
+        const auto repl_id = row.i64(FieldCode::kFortsRefdataReplSysMessagesReplId);
+        auto& message = messages[repl_id];
+        message.repl_id = repl_id;
+        message.repl_rev = row.i64(FieldCode::kFortsRefdataReplSysMessagesReplRev, event.signed_value);
+        message.repl_act = row.i8(FieldCode::kFortsRefdataReplSysMessagesReplAct);
+        message.msg_id = row.i32(FieldCode::kFortsRefdataReplSysMessagesMsgId);
+        message.lang_code = row.text(FieldCode::kFortsRefdataReplSysMessagesLangCode);
+        message.type_id = row.i32(FieldCode::kFortsRefdataReplSysMessagesTypeId);
+        message.moment = row.i64(FieldCode::kFortsRefdataReplSysMessagesMoment);
+        message.text = row.text(FieldCode::kFortsRefdataReplSysMessagesText);
+        message.urgency = row.i8(FieldCode::kFortsRefdataReplSysMessagesUrgency);
+        message.status = row.i8(FieldCode::kFortsRefdataReplSysMessagesStatus);
+        message.message_body = row.text(FieldCode::kFortsRefdataReplSysMessagesMessageBody);
+        message.source = {.stream_code = StreamCode::kFortsRefdataRepl,
+                          .table_code = TableCode::kFortsRefdataReplSysMessages,
+                          .repl_rev = event.signed_value,
+                          .lifenum = refdata_lifenum().value_or(0),
+                          .present = refdata_lifenum().has_value()};
+    }
+
     void apply_trade_heartbeat_row(const RowReader& row) {
         auto& health = ensure_stream_health(ensure_staged_stream_health(), StreamCode::kFortsTradeRepl);
         staged.touched_streams.insert(StreamCode::kFortsTradeRepl);
@@ -1987,6 +2047,9 @@ struct Plaza2PrivateStateProjector::Impl {
         case TableCode::kFortsRefdataReplInstr2matchingMap:
             apply_matching_row(row);
             break;
+        case TableCode::kFortsRefdataReplSysMessages:
+            apply_system_message_row(event, row);
+            break;
         default:
             break;
         }
@@ -2013,6 +2076,10 @@ struct Plaza2PrivateStateProjector::Impl {
         if (staged.matching_map.has_value()) {
             matching_by_base_contract = std::move(*staged.matching_map);
             rebuild_matching_map();
+        }
+        if (staged.system_messages.has_value()) {
+            system_messages_by_id = std::move(*staged.system_messages);
+            rebuild_system_messages();
         }
         if (staged.limits.has_value()) {
             limits_by_key = std::move(*staged.limits);
@@ -2080,7 +2147,8 @@ struct Plaza2PrivateStateProjector::Impl {
                        table_code == TableCode::kFortsRefdataReplFutSessContents ||
                        table_code == TableCode::kFortsRefdataReplOptSessContents ||
                        table_code == TableCode::kFortsRefdataReplMultilegDict ||
-                       table_code == TableCode::kFortsRefdataReplInstr2matchingMap;
+                       table_code == TableCode::kFortsRefdataReplInstr2matchingMap ||
+                       table_code == TableCode::kFortsRefdataReplSysMessages;
             case StreamCode::kFortsSessionstateRepl:
                 return table_code == TableCode::kFortsSessionstateReplSessionState;
             case StreamCode::kFortsInstrumentstateRepl:
@@ -2170,6 +2238,10 @@ std::span<const InstrumentSnapshot> Plaza2PrivateStateProjector::instruments() c
 
 std::span<const MatchingMapSnapshot> Plaza2PrivateStateProjector::matching_map() const {
     return impl_->matching_snapshots;
+}
+
+std::span<const SystemMessageSnapshot> Plaza2PrivateStateProjector::system_messages() const {
+    return impl_->system_message_snapshots;
 }
 
 LimitParticipantKind classify_limit_participant(std::string_view code) noexcept {
