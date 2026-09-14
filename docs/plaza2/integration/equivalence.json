@@ -1,0 +1,958 @@
+{
+  "reference_sha": "e004251ae932a2d15736ecf3bc07d03fcf63d160",
+  "base_sha": "82707d4e00b1bb6bf703be800ff31988990116df",
+  "entries": [
+    {
+      "path": "apps/moexctl.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "bc477b75afb5e720c91d54be4e2ff4025f06c887",
+      "pr55_sha256": "d496ad8d63aaf3d68abe816879088fa30b50e041851e98c6302b882555ba3144",
+      "candidate_sha256": "d496ad8d63aaf3d68abe816879088fa30b50e041851e98c6302b882555ba3144"
+    },
+    {
+      "path": "apps/plaza2_aggr20_md_test_runner.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "7f4556ae85ad8b1c351a7151d19c24e4db1d0112",
+      "pr55_sha256": "151e51d43f7e678ae304c60ce99c78b94fa9664e57c4f633216939b70f765b01",
+      "candidate_sha256": "151e51d43f7e678ae304c60ce99c78b94fa9664e57c4f633216939b70f765b01"
+    },
+    {
+      "path": "apps/plaza2_aggr_qualification.cpp",
+      "classification": "EXCLUDED_HARNESS_ONLY",
+      "pr55_blob": "18144c3ff006ed1e0382fd917e2b6e6611b45683",
+      "pr55_sha256": "ed586c83bebb1351a585dbd20b49c23470d8cf60c7b905657f32e58f89e70879",
+      "candidate_sha256": null
+    },
+    {
+      "path": "apps/plaza2_c2_capture.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "f282d29f50d10ef2a517e7f9c301fcccea39b6e1",
+      "pr55_sha256": "e4165c62efc2087506858a4ee24cedf1da92edb1b9150e404cca1e5a9398eeb6",
+      "candidate_sha256": "e4165c62efc2087506858a4ee24cedf1da92edb1b9150e404cca1e5a9398eeb6"
+    },
+    {
+      "path": "apps/plaza2_c2_capture_abi.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "9ec169a4ca479a1498cfa800e8cc45574ad3ae53",
+      "pr55_sha256": "b68e2aa70b29bcdde84d678b62055031174428aa2d1e62c7a082a2eecc522430",
+      "candidate_sha256": "b68e2aa70b29bcdde84d678b62055031174428aa2d1e62c7a082a2eecc522430"
+    },
+    {
+      "path": "apps/plaza2_order_lifecycle_runner.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "75dfa78a4ec97b70a40a13324e76bdfd10ca53be",
+      "pr55_sha256": "5eba1fb81bd27741758699924e2d907be2d39c81e0e98e8100a3c879419d5f2a",
+      "candidate_sha256": "5eba1fb81bd27741758699924e2d907be2d39c81e0e98e8100a3c879419d5f2a"
+    },
+    {
+      "path": "apps/plaza2_private_identity.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "ff59b52f5f66481599cd5d4c9c37e8ded365a2e8",
+      "pr55_sha256": "b58d6a588135227b41fbf41052e7959510a9c580ddfa745b3f7da9459a790547",
+      "candidate_sha256": "b58d6a588135227b41fbf41052e7959510a9c580ddfa745b3f7da9459a790547"
+    },
+    {
+      "path": "apps/plaza2_qualification_stop.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "084e098814a08f0f415a323130b70f01a4128e60",
+      "pr55_sha256": "89fa21b33ab2d7c63b8730d91a28968048c2fb865269aea3fe06fe388a47cec2",
+      "candidate_sha256": "89fa21b33ab2d7c63b8730d91a28968048c2fb865269aea3fe06fe388a47cec2"
+    },
+    {
+      "path": "apps/plaza2_target_forensics.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "55e3f1e0c061b846f63119264fc039c736384828",
+      "pr55_sha256": "b48dfa52304deaa938e3f8c0598daa0c78abf13f2deb40f7a20814ac7ccb6f43",
+      "candidate_sha256": "b48dfa52304deaa938e3f8c0598daa0c78abf13f2deb40f7a20814ac7ccb6f43"
+    },
+    {
+      "path": "apps/plaza2_test_connectivity_qualifier.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "771da1ffedfb167856a23b86e3b703d7dbacc964",
+      "pr55_sha256": "5f45da00a6ff26669fc317d79db9b8fec1f9e9a627a05a11b7062d903b150356",
+      "candidate_sha256": "5f45da00a6ff26669fc317d79db9b8fec1f9e9a627a05a11b7062d903b150356"
+    },
+    {
+      "path": "apps/plaza2_test_runner.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "0a561eea673dff80ccd4f9152cbbece6791e35e7",
+      "pr55_sha256": "0ba1c76f582cec794e6d935c6d09b290c09de4b0d2f72aec6889886a9f6cf436",
+      "candidate_sha256": "0ba1c76f582cec794e6d935c6d09b290c09de4b0d2f72aec6889886a9f6cf436"
+    },
+    {
+      "path": "apps/plaza2_twime_integrated_test_runner.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "4c12ca10d250874f6ceb149afa13d9b43f0b95c5",
+      "pr55_sha256": "885e821f344df2d91a0557e608376db95d8c7d031fd52b4b02eadc6b062527e2",
+      "candidate_sha256": "885e821f344df2d91a0557e608376db95d8c7d031fd52b4b02eadc6b062527e2"
+    },
+    {
+      "path": "apps/twime_cert_runner.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "caa498a71cd2711e92911e614c2891c073885d7d",
+      "pr55_sha256": "8be325d86e2e91717de9e427a15c6efa4bf77d6c689b1308534ae1c70b92d8a4",
+      "candidate_sha256": "8be325d86e2e91717de9e427a15c6efa4bf77d6c689b1308534ae1c70b92d8a4"
+    },
+    {
+      "path": "connectors/connector_host/include/moex/connector_host/connector_host.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "c79948d9056cb6fabd771f4aa7a6315cacb5521a",
+      "pr55_sha256": "3919a273158f111ad17564717a244e0d68bd566b2303e7f87f8f40b9d2a5d335",
+      "candidate_sha256": "3919a273158f111ad17564717a244e0d68bd566b2303e7f87f8f40b9d2a5d335"
+    },
+    {
+      "path": "connectors/connector_host/include/moex/connector_host/operator_config.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "bd48861a4548ec970f19aac93cd42979fb4e7472",
+      "pr55_sha256": "4dbe17aa75a7e7281bfeb6b6dd330466124200c50a225f558fabed7eaaa70ea8",
+      "candidate_sha256": "4dbe17aa75a7e7281bfeb6b6dd330466124200c50a225f558fabed7eaaa70ea8"
+    },
+    {
+      "path": "connectors/connector_host/src/connector_host.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "98954b6d1ab65d92120e60dcd0d8df89ba8aeb97",
+      "pr55_sha256": "1077fdeb827fa310712bb3f500f02e855b9a547fd01eb2465665250b15c1feab",
+      "candidate_sha256": "1077fdeb827fa310712bb3f500f02e855b9a547fd01eb2465665250b15c1feab"
+    },
+    {
+      "path": "connectors/connector_host/src/operator_config.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "c8345b75f5a57bff814cd85918695a49553185d5",
+      "pr55_sha256": "1fbf77d0fd02f3dacb3a390ac3e8ca4d43cea47c24aa36048715b398cb6cdd1c",
+      "candidate_sha256": "1fbf77d0fd02f3dacb3a390ac3e8ca4d43cea47c24aa36048715b398cb6cdd1c"
+    },
+    {
+      "path": "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_order_lifecycle.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "39e32b28d17a14cbd1e175852f1e053381c4be2f",
+      "pr55_sha256": "f239ce9680ef4e457d62ee40fdfe80b0ff007e5bc650d12a09b734e18b8b8a00",
+      "candidate_sha256": "f239ce9680ef4e457d62ee40fdfe80b0ff007e5bc650d12a09b734e18b8b8a00"
+    },
+    {
+      "path": "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_test_trade_transport.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "130067e0240c1e7a2ace23478bfeefcd9c2ff860",
+      "pr55_sha256": "b7b70548b2cb8b685c56ae928e93fc2fc2cdca423f5f05a8ae2b9a677fd73598",
+      "candidate_sha256": "b7b70548b2cb8b685c56ae928e93fc2fc2cdca423f5f05a8ae2b9a677fd73598"
+    },
+    {
+      "path": "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_trade_codec.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "1b3881929ef7b04b20f3519cef28123bfde3f152",
+      "pr55_sha256": "77a4f4027d688e3377e42cc9cb1aa48deaef18f406c7d07ad24c281b89429c5c",
+      "candidate_sha256": "77a4f4027d688e3377e42cc9cb1aa48deaef18f406c7d07ad24c281b89429c5c"
+    },
+    {
+      "path": "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_trade_commands.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "8f96e4ec9a77e5e73dee3fb46e3e3522a965a694",
+      "pr55_sha256": "aa762f00554cc5cf4e65cc02ffc9912536ee00f2e0e0e47174aefc568c24755c",
+      "candidate_sha256": "aa762f00554cc5cf4e65cc02ffc9912536ee00f2e0e0e47174aefc568c24755c"
+    },
+    {
+      "path": "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_trade_fake_session.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "7040c96125cd05ad2b18adaf70eb309532b348a4",
+      "pr55_sha256": "ceeecd29b7d4c787976e14b93c044f8a6262046b3c4f6c04c7edbbd11bf9fa88",
+      "candidate_sha256": "ceeecd29b7d4c787976e14b93c044f8a6262046b3c4f6c04c7edbbd11bf9fa88"
+    },
+    {
+      "path": "connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_trade_replies.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "0f3b86a6787da110b6a60ffca33cd47bcaa731c8",
+      "pr55_sha256": "a79e3359b3126af08d7f09d95c2d16e414636e3c24af75531a2241d048142a1f",
+      "candidate_sha256": "a79e3359b3126af08d7f09d95c2d16e414636e3c24af75531a2241d048142a1f"
+    },
+    {
+      "path": "connectors/plaza2_trade/src/plaza2_order_lifecycle.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "17be6b52410261031f23aae17f3e65c377178c3f",
+      "pr55_sha256": "49d83b83fc944ba135d2269d9eb36d8fb326510c6e15ed12dcb6ac556bff105b",
+      "candidate_sha256": "49d83b83fc944ba135d2269d9eb36d8fb326510c6e15ed12dcb6ac556bff105b"
+    },
+    {
+      "path": "connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "884026d72bb8dab7fa8ab44100df101481d59f28",
+      "pr55_sha256": "6a4ce300cbedfb604de99741765ca6fab002f2444b1818f1dc896d2e723558ee",
+      "candidate_sha256": "6a4ce300cbedfb604de99741765ca6fab002f2444b1818f1dc896d2e723558ee"
+    },
+    {
+      "path": "connectors/plaza2_trade/src/plaza2_trade_codec.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "31eeede0bad9a9a98cc726a9401550f27482a5cb",
+      "pr55_sha256": "e1d3034985b6655ffb712af6afc3101d21821b24468c0d5fec2c1183af0f9cc2",
+      "candidate_sha256": "e1d3034985b6655ffb712af6afc3101d21821b24468c0d5fec2c1183af0f9cc2"
+    },
+    {
+      "path": "connectors/plaza2_trade/src/plaza2_trade_fake_session.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "e813a45cd47b99378b40f43e2255f20435298f21",
+      "pr55_sha256": "753a35a944951b4ac0f1bb8da4ba55508e44adfbccae7bfff57d88fec8a587ec",
+      "candidate_sha256": "753a35a944951b4ac0f1bb8da4ba55508e44adfbccae7bfff57d88fec8a587ec"
+    },
+    {
+      "path": "connectors/plaza2_twime_reconciler/include/moex/plaza2_twime_reconciler/plaza2_twime_integrated_test_runner.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "0cbfb4716c13b209bb05b9551307df3cbcd54f7a",
+      "pr55_sha256": "d6da2f7bf99e3c1d93fae129ba956c95033d63a206db05d608c9f06c5a23a38b",
+      "candidate_sha256": "d6da2f7bf99e3c1d93fae129ba956c95033d63a206db05d608c9f06c5a23a38b"
+    },
+    {
+      "path": "connectors/plaza2_twime_reconciler/include/moex/plaza2_twime_reconciler/plaza2_twime_reconciler.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "120fac23c917768ffaf9769b094bac6aa5be0bcd",
+      "pr55_sha256": "b516c49f840bb069a7f32acbb86116ff4efe0e5b1e6e324d9008e0f4c2f98981",
+      "candidate_sha256": "b516c49f840bb069a7f32acbb86116ff4efe0e5b1e6e324d9008e0f4c2f98981"
+    },
+    {
+      "path": "connectors/plaza2_twime_reconciler/src/plaza2_twime_integrated_test_runner.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "96fa058c960374227c80b95b736e69f483772fb2",
+      "pr55_sha256": "5f38fb7b1aca50492abf79c44bb37a477b315a56e41a16fa17b22e4ca6dde6ef",
+      "candidate_sha256": "5f38fb7b1aca50492abf79c44bb37a477b315a56e41a16fa17b22e4ca6dde6ef"
+    },
+    {
+      "path": "connectors/plaza2_twime_reconciler/src/plaza2_twime_reconciler.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "ca25dabea828108b076131fc279e2e2aee34e7f8",
+      "pr55_sha256": "cc9d011cc9769d5a678ab5ecfe0fc1c8a2dd8c59306e6870d1d41daedb551f08",
+      "candidate_sha256": "cc9d011cc9769d5a678ab5ecfe0fc1c8a2dd8c59306e6870d1d41daedb551f08"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/itwime_byte_transport.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "042cdc2eee7766b87c9afd4f2127684c7ba13753",
+      "pr55_sha256": "5cac5c045dd035847228ec916e14d5d5e4b5115b7ccdade54f12d7e9bfac4d08",
+      "candidate_sha256": "5cac5c045dd035847228ec916e14d5d5e4b5115b7ccdade54f12d7e9bfac4d08"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_credential_provider.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "a3d82254b0259b5043978e0842e3d21f561d7f7e",
+      "pr55_sha256": "629a9bfcb75f2509895ffa8f23401495804664f32bd04d7958c05025569c9d69",
+      "candidate_sha256": "629a9bfcb75f2509895ffa8f23401495804664f32bd04d7958c05025569c9d69"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_credential_redaction.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "41206bba245d42cc2e01104c0813c728677460bd",
+      "pr55_sha256": "a30051cb58ed540becda53e1f83d6486790f064d10a2e5c4ea7a2b0e44b56f2c",
+      "candidate_sha256": "a30051cb58ed540becda53e1f83d6486790f064d10a2e5c4ea7a2b0e44b56f2c"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_endpoint_resolver.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "e385937227eef42e000fbfc955e980d4b99cb7d4",
+      "pr55_sha256": "6d2a5e89c37a48ef9e78cee2c1e081b79fa570a7b8855308781d43107edffffc",
+      "candidate_sha256": "6d2a5e89c37a48ef9e78cee2c1e081b79fa570a7b8855308781d43107edffffc"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_loopback_transport.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "024ec0e861712f82a6324cc14a02a532def14871",
+      "pr55_sha256": "a7dde763d727921d8b8f406c120c847867a450d872f01d85678a59f7037ed041",
+      "candidate_sha256": "a7dde763d727921d8b8f406c120c847867a450d872f01d85678a59f7037ed041"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_reconnect_policy.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "c6920f15f64fb71d4fec009e873849a82beff802",
+      "pr55_sha256": "999e5c9ad057d927de4aa5a7de98a7fa6527bf94d70b0b0502ec1f392bae4835",
+      "candidate_sha256": "999e5c9ad057d927de4aa5a7de98a7fa6527bf94d70b0b0502ec1f392bae4835"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_scripted_transport.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "a4fe38cc9d23a023e1ac0cce6261d1ace485dca9",
+      "pr55_sha256": "b1a5d64afd94340569195d22bafb4c213516cb54b1f8f2ada41af1fa4d685964",
+      "candidate_sha256": "b1a5d64afd94340569195d22bafb4c213516cb54b1f8f2ada41af1fa4d685964"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_socket_handle.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "78f7e1eeaab28f1b741b3051b1ca2035f3b42aeb",
+      "pr55_sha256": "145c4883c97487e9694d98f4857469784f5edeada8dc8702bcbe1343479aa69c",
+      "candidate_sha256": "145c4883c97487e9694d98f4857469784f5edeada8dc8702bcbe1343479aa69c"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_tcp_config.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "66866b32e48667b0c7aa9f79f50a75337288e68d",
+      "pr55_sha256": "453444693d1c0f54a494a1d024a11577619263db0a440979256f3d9efff342b7",
+      "candidate_sha256": "453444693d1c0f54a494a1d024a11577619263db0a440979256f3d9efff342b7"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_tcp_endpoint.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "427d093671cfde9017e4231212762ff2499e89ff",
+      "pr55_sha256": "13e8f3bb7fa08e780501152b3885a47996f56a187e0782db864a3561def7d314",
+      "candidate_sha256": "13e8f3bb7fa08e780501152b3885a47996f56a187e0782db864a3561def7d314"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_tcp_transport.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "5e42f30debd5e0d76febf353afecf5b63d0aebff",
+      "pr55_sha256": "8722eb742ffbcd5eab1e54d875d6bca744e7c50a654d0b8dd0513372a9f6daa4",
+      "candidate_sha256": "8722eb742ffbcd5eab1e54d875d6bca744e7c50a654d0b8dd0513372a9f6daa4"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_test_network_gate.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "4fcee7a81304aa564da5630c108eba1c0475442e",
+      "pr55_sha256": "67c0704c01c218b0c95b3e026c4a86dbc8ed98a78b7de2da7be34a0519eeedc5",
+      "candidate_sha256": "67c0704c01c218b0c95b3e026c4a86dbc8ed98a78b7de2da7be34a0519eeedc5"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_transport_errors.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "d8d601c7222f8bc7cb121866ff486d0c12eeb108",
+      "pr55_sha256": "1db856144aee8dddb612fd22663ed6b939c0060ea7050ee1ef4e64cf9e6a0e99",
+      "candidate_sha256": "1db856144aee8dddb612fd22663ed6b939c0060ea7050ee1ef4e64cf9e6a0e99"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_transport_events.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "da56e365a7dd95a5ab469d56ea6ed44f624e56f6",
+      "pr55_sha256": "7da875a431feedf296bc853e460a980e7e780ebff218aaf7a78c4be75700f446",
+      "candidate_sha256": "7da875a431feedf296bc853e460a980e7e780ebff218aaf7a78c4be75700f446"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/transport/twime_transport_metrics.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "25fb94098e4eeca57145d2f30fad2b177f225132",
+      "pr55_sha256": "55fd76fabf57642c1964ad596bfda00cc90924a8fdaf973bae142414754b2553",
+      "candidate_sha256": "55fd76fabf57642c1964ad596bfda00cc90924a8fdaf973bae142414754b2553"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_cert_scenario_runner.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "9f32d9106ccfc159d1e22b147ef22475dfd92bcc",
+      "pr55_sha256": "c88b4171f1635047471f1b83c9f182afa02d77c6506475bef715da172ea4f254",
+      "candidate_sha256": "c88b4171f1635047471f1b83c9f182afa02d77c6506475bef715da172ea4f254"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_fake_transport.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "2e3a025e8626fb8100302c2a7f09e89c21c43e3e",
+      "pr55_sha256": "322502b09b191ff980505b3ab1bd81bee7e7c1b776b9311f0f52f8d56f225a79",
+      "candidate_sha256": "322502b09b191ff980505b3ab1bd81bee7e7c1b776b9311f0f52f8d56f225a79"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_live_session_runner.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "048299657f2ed74aacf01b6a2ed2538a532edee3",
+      "pr55_sha256": "d91e3700a95daf72aa232a76475df54e1c883065a999a6d3a2e7bdd31dbc00d7",
+      "candidate_sha256": "d91e3700a95daf72aa232a76475df54e1c883065a999a6d3a2e7bdd31dbc00d7"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_manual_operator_gate.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "2d42c3ff3be44d2b11dbcaf8201397b416b90af1",
+      "pr55_sha256": "07ad797cebaa3175b55b02e32c3124511d8b8e331250fce2cc7ad6858df0c9dc",
+      "candidate_sha256": "07ad797cebaa3175b55b02e32c3124511d8b8e331250fce2cc7ad6858df0c9dc"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_rate_limit_model.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "4e3366ee29bce7ddfaedbcaac27386116bc7395e",
+      "pr55_sha256": "14402947bdf86f612ce319dd642981ada07c68c832f4b61c6740580359f7e86a",
+      "candidate_sha256": "14402947bdf86f612ce319dd642981ada07c68c832f4b61c6740580359f7e86a"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_recovery_state.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "b5e47de497ee518063faca614e8a5596d61f3dd7",
+      "pr55_sha256": "fc3cc43bb624e83a45c2803d9daf8d2a52eddacf0172425b67cd32e64c34e391",
+      "candidate_sha256": "fc3cc43bb624e83a45c2803d9daf8d2a52eddacf0172425b67cd32e64c34e391"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_sequence_state.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "af21651217dc50c3a358f754f8586e6643d2a138",
+      "pr55_sha256": "52021dd47579c54a63b2fc6872c313d27f1b4a5e4d3ebf7608bd7c13fcdf3ec0",
+      "candidate_sha256": "52021dd47579c54a63b2fc6872c313d27f1b4a5e4d3ebf7608bd7c13fcdf3ec0"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_session.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "22ee6a4c38d4045e215626901342c4177cfd4efc",
+      "pr55_sha256": "acab9ac88f44f3349496f62305e88cd4946909da0f9f80c7c30763890d78b6c7",
+      "candidate_sha256": "acab9ac88f44f3349496f62305e88cd4946909da0f9f80c7c30763890d78b6c7"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_session_health.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "73f855695b41f11b40ffb9a393b8bd04c842a667",
+      "pr55_sha256": "aa268a9a02a71200a1bfa12d2799373ad07a932265a6bb7eb9700f051edcd2e6",
+      "candidate_sha256": "aa268a9a02a71200a1bfa12d2799373ad07a932265a6bb7eb9700f051edcd2e6"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_session_metrics.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "57ee0e21930d4e9982ca09e22b94790896b1c2d1",
+      "pr55_sha256": "2ac2e9c0007592c580a026d0b317ab2957a8b470768740aa3bfa3562be11aa17",
+      "candidate_sha256": "2ac2e9c0007592c580a026d0b317ab2957a8b470768740aa3bfa3562be11aa17"
+    },
+    {
+      "path": "connectors/twime_trade/include/moex/twime_trade/twime_session_persistence.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "5c4168ced16c267cc3f10f2ba748cbe0240e7a36",
+      "pr55_sha256": "2ef82ef5e540b4808904576e9f7462eb11dc19dce56ca33f1fb52f6e22ba6ef8",
+      "candidate_sha256": "2ef82ef5e540b4808904576e9f7462eb11dc19dce56ca33f1fb52f6e22ba6ef8"
+    },
+    {
+      "path": "connectors/twime_trade/src/transport/twime_credential_provider.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "e58fdfbb4e4b17427c020cbaf501f391537c1bc7",
+      "pr55_sha256": "eb19166b3cd670f3e9f612b8a2a808edbf0505b64a605ba0ca8ee1dd784a8892",
+      "candidate_sha256": "eb19166b3cd670f3e9f612b8a2a808edbf0505b64a605ba0ca8ee1dd784a8892"
+    },
+    {
+      "path": "connectors/twime_trade/src/transport/twime_credential_redaction.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "7623bd987e956c379cbe2d18c9358c664c2c2094",
+      "pr55_sha256": "09af43c5d1e63bd7a7bb8563ee14a0f0288badb2799ed289cd990eedb9c843f6",
+      "candidate_sha256": "09af43c5d1e63bd7a7bb8563ee14a0f0288badb2799ed289cd990eedb9c843f6"
+    },
+    {
+      "path": "connectors/twime_trade/src/transport/twime_endpoint_resolver.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "1b55de1ba46406795f5531ea74933734af0a70b0",
+      "pr55_sha256": "9d77ec19904b29436cdaf8c024e4cfa86dd989710fe66d3e39d6511d7230a1ca",
+      "candidate_sha256": "9d77ec19904b29436cdaf8c024e4cfa86dd989710fe66d3e39d6511d7230a1ca"
+    },
+    {
+      "path": "connectors/twime_trade/src/transport/twime_loopback_transport.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "9c4bc664b1205e72413570adfad4e5e806257fab",
+      "pr55_sha256": "fb46249d30e1b62e00f653b9a870d8dd1fa847f534bcd4a2c1d326bd5eeecd83",
+      "candidate_sha256": "fb46249d30e1b62e00f653b9a870d8dd1fa847f534bcd4a2c1d326bd5eeecd83"
+    },
+    {
+      "path": "connectors/twime_trade/src/transport/twime_reconnect_policy.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "c8efc670b8854ec16fa2e495ea5cd24d9bf2c006",
+      "pr55_sha256": "6bc664c151ecfbae223adc7d56f629d6c8c1dc0f831e8deb23d5197d7cd7db0c",
+      "candidate_sha256": "6bc664c151ecfbae223adc7d56f629d6c8c1dc0f831e8deb23d5197d7cd7db0c"
+    },
+    {
+      "path": "connectors/twime_trade/src/transport/twime_scripted_transport.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "86f7e76d7c3b1942e292c6bc655efa8a461c2f41",
+      "pr55_sha256": "f8c3aa1857d6ffc49184b4062c562db4cec06ba1fe2cd0ed24d3f36f2fd35e02",
+      "candidate_sha256": "f8c3aa1857d6ffc49184b4062c562db4cec06ba1fe2cd0ed24d3f36f2fd35e02"
+    },
+    {
+      "path": "connectors/twime_trade/src/transport/twime_socket_handle.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "784484e438680bdd946b2804bf746f02da1e075c",
+      "pr55_sha256": "8eb2b7f70ec761c5bd8e1ebcd58e57cb8825a10631a13b3c296b371110f34016",
+      "candidate_sha256": "8eb2b7f70ec761c5bd8e1ebcd58e57cb8825a10631a13b3c296b371110f34016"
+    },
+    {
+      "path": "connectors/twime_trade/src/transport/twime_tcp_endpoint.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "1e55695e1d64c3c3672b0feb5627b77351c8583d",
+      "pr55_sha256": "82c85bee16c26dfc29d67cc8670ae59a3afa2bab878c738e3c7a97e5b1e74976",
+      "candidate_sha256": "82c85bee16c26dfc29d67cc8670ae59a3afa2bab878c738e3c7a97e5b1e74976"
+    },
+    {
+      "path": "connectors/twime_trade/src/transport/twime_tcp_transport.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "020f4b1413ac4321b8543339fa2e916585527508",
+      "pr55_sha256": "34b1e62f13cefde1b496738afae1b59a6c48332c425ebd654661f2bea73c327d",
+      "candidate_sha256": "34b1e62f13cefde1b496738afae1b59a6c48332c425ebd654661f2bea73c327d"
+    },
+    {
+      "path": "connectors/twime_trade/src/transport/twime_test_network_gate.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "f2d658e88ed608b27abc046bc89bfd3fbeba6f7e",
+      "pr55_sha256": "e24986a8791cb27a6c7b6bbff02a6ddfd84b0e28b3ea7da6878bcf027e938700",
+      "candidate_sha256": "e24986a8791cb27a6c7b6bbff02a6ddfd84b0e28b3ea7da6878bcf027e938700"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_cert_scenario_runner.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "741b7957f04f41c9a06afcf3cead8c0aec859332",
+      "pr55_sha256": "9491233f470a5276725866a2ea0f6ff761651477be70b2c461d43a133335c598",
+      "candidate_sha256": "9491233f470a5276725866a2ea0f6ff761651477be70b2c461d43a133335c598"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_fake_transport.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "fc81364b3bca86b593f5ddc25cfb6d6e66477cb0",
+      "pr55_sha256": "fca839bce521d2d37813f1866c69b8287ac13344e46c685735fe438365c263bd",
+      "candidate_sha256": "fca839bce521d2d37813f1866c69b8287ac13344e46c685735fe438365c263bd"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_live_session_runner.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "e607ce8595dc2ddeb303310f8e4ede6b9905253d",
+      "pr55_sha256": "d89758998d10b89d961cb1b5995225ae19907fe0e85ca9aabc401f801430d5fb",
+      "candidate_sha256": "d89758998d10b89d961cb1b5995225ae19907fe0e85ca9aabc401f801430d5fb"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_manual_operator_gate.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "f6782fff6e095cf61f78d84b9edead64beda77aa",
+      "pr55_sha256": "3b456b31b251c2934c4df4c70861c969249c3a1ea5bef232c8ede4378c4d300c",
+      "candidate_sha256": "3b456b31b251c2934c4df4c70861c969249c3a1ea5bef232c8ede4378c4d300c"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_rate_limit_model.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "cc1d2ced409fcc4613c5e70125c5e773dc31df74",
+      "pr55_sha256": "b40edc28327ce498a698c92cfa555712d45e8e30e6930691ab8a1e79f032f2e0",
+      "candidate_sha256": "b40edc28327ce498a698c92cfa555712d45e8e30e6930691ab8a1e79f032f2e0"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_recovery_state.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "81aa61edb4dfee53e6346b53e9866d328abee61b",
+      "pr55_sha256": "78821617e10d944772ac888778082d723f41781bda026ec2b2cb9afc03fafd82",
+      "candidate_sha256": "78821617e10d944772ac888778082d723f41781bda026ec2b2cb9afc03fafd82"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_sequence_state.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "724d1ae51b6b07d2e273be3096f4eab0f2d88a30",
+      "pr55_sha256": "52e08a27f81d5e024725d1e73579fddefe2d86ec0bcc67caabfbc7613031e6de",
+      "candidate_sha256": "52e08a27f81d5e024725d1e73579fddefe2d86ec0bcc67caabfbc7613031e6de"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_session.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "9f9706e3305670e1cc23dfadffa37e8838561fc9",
+      "pr55_sha256": "0181cc5ea46317618bac22f6b20221181d10de777bc0dbf44ce8983235147bf6",
+      "candidate_sha256": "0181cc5ea46317618bac22f6b20221181d10de777bc0dbf44ce8983235147bf6"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_session_health.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "25b4cdc1b553eb403e187898467380ed7ce17ed3",
+      "pr55_sha256": "135a68fb81cccede2e0a58075cd28f817cc02f3af269a72283f390b9ab345723",
+      "candidate_sha256": "135a68fb81cccede2e0a58075cd28f817cc02f3af269a72283f390b9ab345723"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_session_metrics.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "3301f1fb5a2e8c25549a5e9bc8ff1157c3dfa184",
+      "pr55_sha256": "8206437f793c170d116d1bf18df5767ea47a74ec053bc04c0dc0c953aa4ee0fd",
+      "candidate_sha256": "8206437f793c170d116d1bf18df5767ea47a74ec053bc04c0dc0c953aa4ee0fd"
+    },
+    {
+      "path": "connectors/twime_trade/src/twime_session_persistence.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "a8f3172d73dc431944d783da6f3bab002a5ce384",
+      "pr55_sha256": "ca9ecfb4d2801e744c2215701191f112d90915b81dfed3ad66542c8f4cb612de",
+      "candidate_sha256": "ca9ecfb4d2801e744c2215701191f112d90915b81dfed3ad66542c8f4cb612de"
+    },
+    {
+      "path": "include/adapters/alorengine_capi/moex_c_api.h",
+      "classification": "IDENTICAL",
+      "pr55_blob": "17172316f1fa64dfa706b48b8c3d283f7bc50429",
+      "pr55_sha256": "93896e6dc0eebc14b4c65fb6e0ecbe83aecd07246e9039f2506629dfe1d2e32b",
+      "candidate_sha256": "93896e6dc0eebc14b4c65fb6e0ecbe83aecd07246e9039f2506629dfe1d2e32b"
+    },
+    {
+      "path": "include/adapters/alorengine_capi/moex_c_api_v2.h",
+      "classification": "IDENTICAL",
+      "pr55_blob": "4410e7bf3b91b95d777a8df8edd4819a27bfa9b3",
+      "pr55_sha256": "02c9ec3b127ab570bcaad43b48281968457682260e641d4d02da2961651b73c3",
+      "candidate_sha256": "02c9ec3b127ab570bcaad43b48281968457682260e641d4d02da2961651b73c3"
+    },
+    {
+      "path": "include/adapters/alorengine_capi/moex_c_api_v3.h",
+      "classification": "IDENTICAL",
+      "pr55_blob": "c1fb551019f56db4e4f96f8e5486ef4eeca59424",
+      "pr55_sha256": "d061197ce4dbd6ae5112f742f360d6850200afbe3cc60981b36d7eaabfc81e67",
+      "candidate_sha256": "d061197ce4dbd6ae5112f742f360d6850200afbe3cc60981b36d7eaabfc81e67"
+    },
+    {
+      "path": "include/moex_core/cert/cert_log_policy.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "90d2a1830f1a8796e86d97d6242bb634fb7c8745",
+      "pr55_sha256": "8a80bbd9e621e7af93c4bbe9a992a0db4608f9ec3e8606029011b265a5dd8cf6",
+      "candidate_sha256": "8a80bbd9e621e7af93c4bbe9a992a0db4608f9ec3e8606029011b265a5dd8cf6"
+    },
+    {
+      "path": "include/moex_core/config/profile_spec.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "cd6a56ea52dadd0568b49ad6baf38c929ffcc24c",
+      "pr55_sha256": "afbaa0c4e9de3ffb0d7589cb310a9663e1a694fd85b7665d474ecaab4eac951c",
+      "candidate_sha256": "afbaa0c4e9de3ffb0d7589cb310a9663e1a694fd85b7665d474ecaab4eac951c"
+    },
+    {
+      "path": "include/moex_core/connector/backpressure_policy.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "46506397873a9b7bfaaa7a59c996db9f34a72b19",
+      "pr55_sha256": "35c20a0ac55d89685f00a35aa485fd618b2b78191dbc7434631465d82360175d",
+      "candidate_sha256": "35c20a0ac55d89685f00a35aa485fd618b2b78191dbc7434631465d82360175d"
+    },
+    {
+      "path": "include/moex_core/connector/health_snapshot.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "93a87d0f2b9bebb26b8e973cfcfb3b76b4cb1770",
+      "pr55_sha256": "afc4d7317e854053b3d656b0b0d94522239d3da34d15fbd7c7d8b1f58c724076",
+      "candidate_sha256": "afc4d7317e854053b3d656b0b0d94522239d3da34d15fbd7c7d8b1f58c724076"
+    },
+    {
+      "path": "include/moex_core/logging/redaction.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "f9fc3f90b08edbac1e6a9a7bef03c142e8e2e6c0",
+      "pr55_sha256": "efcf8d88cf3bc1ef976adf4950a901b97306e2cffea198413e677db8fe47ef3e",
+      "candidate_sha256": "efcf8d88cf3bc1ef976adf4950a901b97306e2cffea198413e677db8fe47ef3e"
+    },
+    {
+      "path": "include/moex_core/phase0_core.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "e9b0e177b9c8bac4714cebfd1b1b35d745e95c83",
+      "pr55_sha256": "1b3b1472de6b9c6d04b70284beb27c32f4260eadbcad098912d944a9d5c8dbd7",
+      "candidate_sha256": "1b3b1472de6b9c6d04b70284beb27c32f4260eadbcad098912d944a9d5c8dbd7"
+    },
+    {
+      "path": "include/moex_core/reconciliation/source_priority.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "247236b263e589ec5fa1466dbe859000972110bb",
+      "pr55_sha256": "75bbd04e43fb14874116432d9a537198cd415f27d4ea9af45929fc24531d80d0",
+      "candidate_sha256": "75bbd04e43fb14874116432d9a537198cd415f27d4ea9af45929fc24531d80d0"
+    },
+    {
+      "path": "include/moex_core/recovery/recovery_state_store.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "49e9a3ab95285434fb28d32c2d79bfd5b5d9aad0",
+      "pr55_sha256": "1b67e69282bbe3f2d532effdb40004c83142709f583b3d15734924d28e66b87c",
+      "candidate_sha256": "1b67e69282bbe3f2d532effdb40004c83142709f583b3d15734924d28e66b87c"
+    },
+    {
+      "path": "include/moex_core/risk/local_risk_controls.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "a4781c5c1dd2f50c36782a4784b561037c02aea0",
+      "pr55_sha256": "178a9fa43d61e0b688c3788c2f4f945dae0a35ec2a9a1854028c9960a3c46724",
+      "candidate_sha256": "178a9fa43d61e0b688c3788c2f4f945dae0a35ec2a9a1854028c9960a3c46724"
+    },
+    {
+      "path": "include/moex_core/time/timestamp_policy.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "899b3e581a55af6563de07514987a09aeedaf93e",
+      "pr55_sha256": "e35e3b12bf59ce35888d695c28d08ef5bd9d7eaa12ce7de5aa5d280da49cc6be",
+      "candidate_sha256": "e35e3b12bf59ce35888d695c28d08ef5bd9d7eaa12ce7de5aa5d280da49cc6be"
+    },
+    {
+      "path": "protocols/plaza2_cgate/generated/plaza2_fake_scenarios.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "2db6c75ea47bf9a9a94661ef1cb953d13d981493",
+      "pr55_sha256": "a21ec4e14ec1c39b4c775b5be126d15785676b664ac4965254a68f35c6c1b1c1",
+      "candidate_sha256": "a21ec4e14ec1c39b4c775b5be126d15785676b664ac4965254a68f35c6c1b1c1"
+    },
+    {
+      "path": "protocols/plaza2_cgate/generated/plaza2_fake_scenarios.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "6cff6d522b27b20a4dcaccbbc3c3370495ad5ef7",
+      "pr55_sha256": "7387e8ecf914023823ac3f184d691e0f9a4b27251ae3c13bcbc4c1112ff5369e",
+      "candidate_sha256": "7387e8ecf914023823ac3f184d691e0f9a4b27251ae3c13bcbc4c1112ff5369e"
+    },
+    {
+      "path": "protocols/plaza2_cgate/generated/plaza2_generated_metadata.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "f62fc6fc6557e583aa703b5386d36ba54a640dcc",
+      "pr55_sha256": "5576df5daed5e1f214f3a234f9d62ec3ae470bb68b57f6162e69175f3d579930",
+      "candidate_sha256": "5576df5daed5e1f214f3a234f9d62ec3ae470bb68b57f6162e69175f3d579930"
+    },
+    {
+      "path": "protocols/plaza2_cgate/generated/plaza2_generated_metadata.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "52ba176cf20dd50f2e748b3ac3ef02a3bb5028c7",
+      "pr55_sha256": "a8d66648a57da23d15712613a856aec596958901a2df69808002cffa9f9bf38f",
+      "candidate_sha256": "a8d66648a57da23d15712613a856aec596958901a2df69808002cffa9f9bf38f"
+    },
+    {
+      "path": "protocols/plaza2_cgate/generated/plaza2_public_wire.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "36a524dc9f6987d57cd092eb256392381bc78bfb",
+      "pr55_sha256": "c488f438261cd33470bb1695790f749d78f881227f2eea66bd6286ffa772d045",
+      "candidate_sha256": "c488f438261cd33470bb1695790f749d78f881227f2eea66bd6286ffa772d045"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_aggr20_md.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "e95006c67e0cc95b5c7d33f7f2b114a4382a0389",
+      "pr55_sha256": "c58047509f6479ad7c8a6b22f4b2e879613b2491fff8df99ea5b080349f42a78",
+      "candidate_sha256": "c58047509f6479ad7c8a6b22f4b2e879613b2491fff8df99ea5b080349f42a78"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_credential_provider.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "4e80d60b375c1e2d0f5e4d5a5365171fa68f22be",
+      "pr55_sha256": "7e0e73679d878a2f3f3369aad49dc03ca838964a8a606ba688676390daaf8bf4",
+      "candidate_sha256": "7e0e73679d878a2f3f3369aad49dc03ca838964a8a606ba688676390daaf8bf4"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_fake_engine.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "246483e22b9f5dea5d70c6a64807806a57a25f5c",
+      "pr55_sha256": "304a02ee81ad99ded8c0da0d3df80b41f34c8efb81bad13fac4316b2a38a51ed",
+      "candidate_sha256": "304a02ee81ad99ded8c0da0d3df80b41f34c8efb81bad13fac4316b2a38a51ed"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_live_session_runner.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "d653500a02ab67f6883d5c88560a1af6710f1537",
+      "pr55_sha256": "dae4460cc781c6ebec730a4bfdfda756c65b4b70e59dde977a9643341ae5c68f",
+      "candidate_sha256": "dae4460cc781c6ebec730a4bfdfda756c65b4b70e59dde977a9643341ae5c68f"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_manual_operator_gate.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "537bfd42e3ab4d4f816b6210f6648ad92b3937d9",
+      "pr55_sha256": "3f7a1c94170487d7dc180f61a54c62ace0c7cb6de31b7acf6a5f0e8848eb91b1",
+      "candidate_sha256": "3f7a1c94170487d7dc180f61a54c62ace0c7cb6de31b7acf6a5f0e8848eb91b1"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_ordlog.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "4f754b4528ee09229fbf94d1645f8f36ed2a4c0e",
+      "pr55_sha256": "ccf114488426bbf2913124675cae3ba8a976b0900a2fcb5ebf25b61a36aca480",
+      "candidate_sha256": "ccf114488426bbf2913124675cae3ba8a976b0900a2fcb5ebf25b61a36aca480"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_private_state.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "8cf362a67d4a4713317c7eeb8e307be50d314b18",
+      "pr55_sha256": "f0452ff1da45b43eaa7071cc7247b68f33ac9d98e668d2647513a322b5f945a0",
+      "candidate_sha256": "f0452ff1da45b43eaa7071cc7247b68f33ac9d98e668d2647513a322b5f945a0"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_private_state_bridge.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "984812474504199e5b6aadbe9077a7ccffdeac76",
+      "pr55_sha256": "479b1a9685cfb36a2ef1cb81103c53e348838d16774afee6a2d82ff135a67082",
+      "candidate_sha256": "479b1a9685cfb36a2ef1cb81103c53e348838d16774afee6a2d82ff135a67082"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_public_decode.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "50649f53eb6284f33ae0a6b0156c61c85df7ad6e",
+      "pr55_sha256": "1e92e2db719308155f81ec1b3abfdfa93e1e91f3356f40b4dc1b224bbd1b571e",
+      "candidate_sha256": "1e92e2db719308155f81ec1b3abfdfa93e1e91f3356f40b4dc1b224bbd1b571e"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_publisher_rate.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "4163f3b6e43bdaf433554d8ddbf926673b6ed152",
+      "pr55_sha256": "0eeb5f991a119aec77b7bce33f3d71f018a87e78434e77cb64e71812e54cb049",
+      "candidate_sha256": "0eeb5f991a119aec77b7bce33f3d71f018a87e78434e77cb64e71812e54cb049"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_runtime.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "035eec985de93c84c82eabb4c52152495cf59ecb",
+      "pr55_sha256": "82dbed4bf881680bf97747b3dfd7f11b44ee308974bf19d5c15dcb55a3a20a5a",
+      "candidate_sha256": "82dbed4bf881680bf97747b3dfd7f11b44ee308974bf19d5c15dcb55a3a20a5a"
+    },
+    {
+      "path": "protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_trade_connectivity_qualifier.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "1d93ac7c52b9d974d4facc4e1ef6d3a61d7fa67f",
+      "pr55_sha256": "59a13baa4152a8e1abcae39fca61cfa28350a1095209453f921d6464065a77f1",
+      "candidate_sha256": "59a13baa4152a8e1abcae39fca61cfa28350a1095209453f921d6464065a77f1"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "9c940b256d4077b770da52a28d5318c0ff3d8c9f",
+      "pr55_sha256": "d9312b00af8c68c7511354ecf03229b8678512d3d8442198411e9412c3482c1f",
+      "candidate_sha256": "d9312b00af8c68c7511354ecf03229b8678512d3d8442198411e9412c3482c1f"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_credential_provider.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "84fb11a4b37b681f8d3b3e65d3e5c91fc28b9be0",
+      "pr55_sha256": "742c07aebcdc60c8a9cf655e088f328ed64866d8d678f5c008c073db438942a4",
+      "candidate_sha256": "742c07aebcdc60c8a9cf655e088f328ed64866d8d678f5c008c073db438942a4"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_fake_engine.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "f98c5d7682bc7b6665f3ea34c89887c97e49d996",
+      "pr55_sha256": "633e1b0586f1597de6e807f5146e18a8c1dee422478db8bb5ecdba226659d3d9",
+      "candidate_sha256": "633e1b0586f1597de6e807f5146e18a8c1dee422478db8bb5ecdba226659d3d9"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_live_session_runner.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "4b3618b9b62384ecf66f2e9971c829c4a46b088f",
+      "pr55_sha256": "43a920b353a3d0c351b545a392bb84771f5f9d91aa0b2ac5bf18e8c97ee99516",
+      "candidate_sha256": "43a920b353a3d0c351b545a392bb84771f5f9d91aa0b2ac5bf18e8c97ee99516"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_manual_operator_gate.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "97e623a552178d73a1e52cca6f2420090845af7f",
+      "pr55_sha256": "ba151f0f0492b5f07908b7dfb1eec41f6976e67e4feb30ad570a41636740d044",
+      "candidate_sha256": "ba151f0f0492b5f07908b7dfb1eec41f6976e67e4feb30ad570a41636740d044"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_ordlog.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "847e9366b3ccce9e3388911c4242248bfcb8000c",
+      "pr55_sha256": "4153eac0a5f75c9beb624de5100c22d5b439c068852797d1ecf06ebd4082442c",
+      "candidate_sha256": "4153eac0a5f75c9beb624de5100c22d5b439c068852797d1ecf06ebd4082442c"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_private_state.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "737b8da6289e4965483db09d2181fd8ab77a12f8",
+      "pr55_sha256": "fe29bdb1534d6b2d1ff56f753477d5b2b931fb2cef4796d23519a1e6b4f97697",
+      "candidate_sha256": "fe29bdb1534d6b2d1ff56f753477d5b2b931fb2cef4796d23519a1e6b4f97697"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_private_state_bridge.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "323f608d2287457015d891856b258234f2cdd9cb",
+      "pr55_sha256": "b71ca0c40b3ded763b47a20e3138cca193ba9a78adf4b45964bb04c084b18532",
+      "candidate_sha256": "b71ca0c40b3ded763b47a20e3138cca193ba9a78adf4b45964bb04c084b18532"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_runtime.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "8476242b48bfbd6d559beffab112620b4363191f",
+      "pr55_sha256": "34f14d0d6b74feb8b4da724e565d2730bcf88bad14c0f91ba8f72741cb1c1534",
+      "candidate_sha256": "34f14d0d6b74feb8b4da724e565d2730bcf88bad14c0f91ba8f72741cb1c1534"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_sha256.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "de7abb72079766b7350ea72e1749884cad5c7ea6",
+      "pr55_sha256": "083655145f27a50592202de46b980f0b3be4887a64fc74f6f3a41015411ceaa9",
+      "candidate_sha256": "083655145f27a50592202de46b980f0b3be4887a64fc74f6f3a41015411ceaa9"
+    },
+    {
+      "path": "protocols/plaza2_cgate/src/plaza2_trade_connectivity_qualifier.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "2f7e17416cd1dff095e2a252a0495fe36bac0fa0",
+      "pr55_sha256": "2d4a0de3ebc4ecd2d2c257ac655b7bac9643e0801a81b9bddd05be5f20fde543",
+      "candidate_sha256": "2d4a0de3ebc4ecd2d2c257ac655b7bac9643e0801a81b9bddd05be5f20fde543"
+    },
+    {
+      "path": "protocols/twime_sbe/generated/twime_generated_enums.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "585f35b3d174a69ff488a5cffd8d6970ee5ff045",
+      "pr55_sha256": "370181a2a2409e75d0e7e1f93e40feb9dee802ffdcf606b885fef53413973b2a",
+      "candidate_sha256": "370181a2a2409e75d0e7e1f93e40feb9dee802ffdcf606b885fef53413973b2a"
+    },
+    {
+      "path": "protocols/twime_sbe/generated/twime_generated_messages.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "61d12d2c0874571c49fd24e7e13ecab0b3004ea9",
+      "pr55_sha256": "4a8e863c27b7d601e610d2b3fd246232ed1ee18f6ba8889a53aba522924860e0",
+      "candidate_sha256": "4a8e863c27b7d601e610d2b3fd246232ed1ee18f6ba8889a53aba522924860e0"
+    },
+    {
+      "path": "protocols/twime_sbe/generated/twime_generated_metadata.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "6c8b239a3561ff8a7c822313a58a6b58208aa570",
+      "pr55_sha256": "acaf1cfd9f59914f67ffe4633179a9acd05fcc2ce830641fdd82197d433d6a96",
+      "candidate_sha256": "acaf1cfd9f59914f67ffe4633179a9acd05fcc2ce830641fdd82197d433d6a96"
+    },
+    {
+      "path": "protocols/twime_sbe/generated/twime_generated_metadata.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "1cd7c4ee4a2503ef45df44df0623434c8af27c98",
+      "pr55_sha256": "7d6f6979a22814ec14f0e47fd654bedab0bf4efea0304e65e1b6ddaeb1d50f34",
+      "candidate_sha256": "7d6f6979a22814ec14f0e47fd654bedab0bf4efea0304e65e1b6ddaeb1d50f34"
+    },
+    {
+      "path": "protocols/twime_sbe/include/moex/twime_sbe/twime_cert_log_formatter.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "72f4043c92f551f978b9b3224e6a3c295d83873b",
+      "pr55_sha256": "8ae68013ac2c64edefe9164d0d9ac2ee7069fc1eba30efb05a2e83a16b8e2f2f",
+      "candidate_sha256": "8ae68013ac2c64edefe9164d0d9ac2ee7069fc1eba30efb05a2e83a16b8e2f2f"
+    },
+    {
+      "path": "protocols/twime_sbe/include/moex/twime_sbe/twime_codec.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "8dfba5ebe20b414c4e83513fbfdafce08fe3e7ed",
+      "pr55_sha256": "e43d2f97cdd60f2498e9b20e54f86329c9b37203757df8f886a692c98fa17214",
+      "candidate_sha256": "e43d2f97cdd60f2498e9b20e54f86329c9b37203757df8f886a692c98fa17214"
+    },
+    {
+      "path": "protocols/twime_sbe/include/moex/twime_sbe/twime_frame_assembler.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "4df525c2aff9fa4f834880030c0a2cfc85930b32",
+      "pr55_sha256": "daccccd737ddba6f73f8ae0c8b93212448c19a539cd38177adab321d0bb23fd7",
+      "candidate_sha256": "daccccd737ddba6f73f8ae0c8b93212448c19a539cd38177adab321d0bb23fd7"
+    },
+    {
+      "path": "protocols/twime_sbe/include/moex/twime_sbe/twime_message_header.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "70d544b11394e795715f90dbc1ece8cfec1c6afb",
+      "pr55_sha256": "27d60da5d59327874d6aa60ae6b92cacd453fdd0a28d9a07224d00902a3b9f3e",
+      "candidate_sha256": "27d60da5d59327874d6aa60ae6b92cacd453fdd0a28d9a07224d00902a3b9f3e"
+    },
+    {
+      "path": "protocols/twime_sbe/include/moex/twime_sbe/twime_schema.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "64b0422bb489a4d1dda0ad80052d47f91a4dda1e",
+      "pr55_sha256": "137e723e1ebee1e85e93a95b7ea42b6d3e0871238bb796ed941d0216865ab59f",
+      "candidate_sha256": "137e723e1ebee1e85e93a95b7ea42b6d3e0871238bb796ed941d0216865ab59f"
+    },
+    {
+      "path": "protocols/twime_sbe/include/moex/twime_sbe/twime_types.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "96ab66a25a31de39981879269016a367afb79532",
+      "pr55_sha256": "fcf4e843fdc76fe702a8214cf860a8cedd5ee50e1379792b22dfae5dfde0ec1e",
+      "candidate_sha256": "fcf4e843fdc76fe702a8214cf860a8cedd5ee50e1379792b22dfae5dfde0ec1e"
+    },
+    {
+      "path": "protocols/twime_sbe/src/twime_cert_log_formatter.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "e9ed70fd4fde8bc2e94f9e84cd3225c00f603dcd",
+      "pr55_sha256": "b4bdc793d82bb54f57fe63c519f6c62decc7e46f50218474c9de184e74c1be55",
+      "candidate_sha256": "b4bdc793d82bb54f57fe63c519f6c62decc7e46f50218474c9de184e74c1be55"
+    },
+    {
+      "path": "protocols/twime_sbe/src/twime_codec.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "2256a7a68771e2e7f725c8d85866147df3486a41",
+      "pr55_sha256": "170342ae1a4753e2efd0de8b14d630e0aeadec726ac560c111531add36d73b88",
+      "candidate_sha256": "170342ae1a4753e2efd0de8b14d630e0aeadec726ac560c111531add36d73b88"
+    },
+    {
+      "path": "protocols/twime_sbe/src/twime_frame_assembler.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "84966874404b9dd45f7b21f3884f0d5f9c97aab3",
+      "pr55_sha256": "6194063cb2069e35d18f607d9df27c05d9d25c5fd754e13579a7170a01879c28",
+      "candidate_sha256": "6194063cb2069e35d18f607d9df27c05d9d25c5fd754e13579a7170a01879c28"
+    },
+    {
+      "path": "src/moex_c_api_internal.hpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "94d2f01068dd28c2efe419084a7c1cbbc88ddf24",
+      "pr55_sha256": "30c569e6816da7d61d3a86764a690bf8b4563dc6cbc8cd5ed8372d420b4c24e6",
+      "candidate_sha256": "30c569e6816da7d61d3a86764a690bf8b4563dc6cbc8cd5ed8372d420b4c24e6"
+    },
+    {
+      "path": "src/moex_c_api_v2.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "242f7d5742efd50f88cf46f0fc24122efed9fa0b",
+      "pr55_sha256": "c3893c1677b08b66aba8c9b0237be05c62381a301b3a018bb93bd10df41d5ef6",
+      "candidate_sha256": "c3893c1677b08b66aba8c9b0237be05c62381a301b3a018bb93bd10df41d5ef6"
+    },
+    {
+      "path": "src/moex_c_api_v3.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "a4c8c288fcf70576ea087f749589299be7ffe7bf",
+      "pr55_sha256": "5ac378b2dbbcd5b3821d26e46e4a140a39283fbe8fcd122f72aac1e3d4d2f7f0",
+      "candidate_sha256": "5ac378b2dbbcd5b3821d26e46e4a140a39283fbe8fcd122f72aac1e3d4d2f7f0"
+    },
+    {
+      "path": "src/phase0_core.cpp",
+      "classification": "IDENTICAL",
+      "pr55_blob": "f0ece4942156d0451a26c5b65f9ae682b3333127",
+      "pr55_sha256": "cb74db5c604c5b2df39d9f1a03d2cabcd99e8f8307978e076cdbe54c8c364aee",
+      "candidate_sha256": "cb74db5c604c5b2df39d9f1a03d2cabcd99e8f8307978e076cdbe54c8c364aee"
+    }
+  ]
+}

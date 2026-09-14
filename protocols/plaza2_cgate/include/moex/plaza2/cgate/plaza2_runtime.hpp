@@ -201,10 +201,30 @@ struct Plaza2ListenerEvent {
     std::size_t table_index{0};
 };
 
+struct Plaza2ForensicField {
+    std::string name, type, generic_value, independent_value;
+    std::size_t offset{}, size{}, ordinal{};
+    bool is_null{}, equal{};
+    std::uint32_t conversion_result{};
+};
+struct Plaza2ForensicRow {
+    generated::StreamCode stream_code{kNoStreamCode};
+    generated::TableCode table_code{kNoTableCode};
+    std::size_t table_index{}, message_size{};
+    std::string message_name;
+    std::vector<std::byte> payload;
+    std::vector<std::uint8_t> nulls;
+    std::vector<Plaza2ForensicField> fields;
+};
+
 class Plaza2QualificationObserver {
   public:
     virtual ~Plaza2QualificationObserver() = default;
     virtual void observe(const Plaza2ListenerEvent&, const Plaza2Error&) noexcept = 0;
+    [[nodiscard]] virtual bool wants_forensic_row(const Plaza2ListenerEvent&) const noexcept {
+        return false;
+    }
+    virtual void forensic_row(Plaza2ForensicRow) noexcept {}
     // object: 10 connection, 11 publisher, 12 listener; stream zero for reply.
     virtual void runtime_state(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) noexcept {}
 };
@@ -307,6 +327,7 @@ class Plaza2Listener {
     [[nodiscard]] Plaza2Error destroy();
     [[nodiscard]] Plaza2Error state(std::uint32_t& out_state) const;
     [[nodiscard]] bool is_created() const noexcept;
+    [[nodiscard]] const Plaza2Error& last_callback_error() const noexcept;
 
   private:
     std::shared_ptr<Plaza2RuntimeSharedState> shared_;

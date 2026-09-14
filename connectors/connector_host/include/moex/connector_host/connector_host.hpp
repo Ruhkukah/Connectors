@@ -7,7 +7,7 @@
 
 namespace moex::connector_host {
 
-enum class ConnectorHostState { Created, Started, Ready, Stopping, Stopped, Failed };
+enum class ConnectorHostState { Created, Started, Ready, Stopping, Stopped, Failed, Recovering };
 enum class HostPurpose { Qualify, OrderTest };
 
 // Explicit native configuration, not the older topology-only profile format.
@@ -30,10 +30,17 @@ struct ConnectorHostOrderRequest {
 
 struct ConnectorHostSnapshot {
     ConnectorHostState state{ConnectorHostState::Created};
+    plaza2_trade::Plaza2RecoveryStatus recovery;
     plaza2::cgate::Plaza2Environment environment{plaza2::cgate::Plaza2Environment::Test};
     plaza2_trade::Plaza2TestSessionHostMode mode{plaza2_trade::Plaza2TestSessionHostMode::LiveTestPreSend};
     std::string runtime_compatibility;
     std::string runtime_scheme_sha256;
+    bool publisher_handle_open{false};
+    bool reply_handle_open{false};
+    bool private_snapshot_state_ready{false};
+    bool aggr_snapshot_state_ready{false};
+    bool aggr_ready{false};
+    plaza2_trade::Plaza2TransportHealth transport_health;
     bool publisher_ready{false};
     bool reply_ready{false};
     bool private_streams_ready{false};
@@ -62,6 +69,9 @@ struct ConnectorHostSnapshot {
     bool trade_replay_complete{false};
     std::size_t active_own_order_count{0};
     bool uob_periodic_consistent{false};
+    bool participant_limit_row_present{false};
+    bool participant_identity_exact{false};
+    bool exchange_money_limit_check_enabled{false};
     bool limits_set{false};
     bool order_epoch_active{false};
     bool order_authorized{false};
@@ -79,6 +89,10 @@ struct ConnectorHostSnapshot {
     bool evidence_consistent{true};
     plaza2::cgate::Plaza2PublisherCallCounts publisher_calls;
     std::string last_error;
+    plaza2::cgate::Plaza2Error causal_error;
+    std::uint64_t causal_error_time_ns{};
+    std::string causal_operation, causal_callback_error;
+    plaza2_trade::Plaza2TransportHealth causal_health;
 };
 
 // Explicitly sampled qualification data; never copied by the normal polling path.
@@ -88,7 +102,18 @@ struct ConnectorHostQualificationSnapshot {
     std::vector<plaza2::private_state::PositionSnapshot> positions;
     std::vector<plaza2::private_state::OwnOrderSnapshot> active_orders;
     plaza2::cgate::Plaza2PublisherRateMetrics rate;
-    std::size_t visible_limit_rows{}, matching_client_limit_rows{};
+    std::size_t visible_limit_rows{}, matching_client_limit_rows{}, matching_broker_limit_rows{}, unknown_limit_rows{};
+    bool client_code_is_brokerage_account{false};
+    std::optional<plaza2::private_state::LimitSnapshot> broker_limit, client_limit;
+    struct LimitDiagnostic {
+        std::int64_t repl_id;
+        plaza2::private_state::LimitParticipantKind kind;
+        std::size_t code_length;
+        bool equals_broker, equals_client, limits_set, auto_update;
+        std::string money_free, money_blocked, money_amount;
+        std::string private_account_code; // Explicit opt-in qualification artifact only.
+    };
+    std::vector<LimitDiagnostic> limit_diagnostics;
     bool aggr_online{false};
     bool aggr_snapshot_complete{false};
 };
@@ -107,7 +132,7 @@ class ConnectorHost final {
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] ConnectorHostSnapshot snapshot() const;
-    [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot() const;
+    [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot(bool private_identity = false) const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan() const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan_order(const ConnectorHostOrderRequest& request) const;
     // Exact canonical bytes AND SHA are mandatory. The host constructs the

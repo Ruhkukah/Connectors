@@ -61,7 +61,7 @@ Plaza2TradeConnectivityQualifierConfig make_config(const moex::plaza2::test::Run
     config.session.arm_state.test_plaza2_armed = true;
     config.session.process_timeout_ms = 0;
     config.target.isin = "RIH6";
-    config.target.participant = "CL001";
+    config.target.participant = "BRK1C01";
     config.target.expected_position_account_type = 2;
     config.test_market_data_armed = true;
     config.max_aggr20_age_ms = 5000;
@@ -84,6 +84,7 @@ int main(int argc, char** argv) {
         const auto fixture = materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme);
         ::setenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "QUALIFIER-FAKE-KEY", 1);
 
+        ::setenv("MOEX_FAKE_CLIENT_CODE", "BRK1C01", 1);
         Plaza2TradeConnectivityQualifier qualifier(make_config(fixture));
         const auto start = qualifier.start();
         if (!start.ok) {

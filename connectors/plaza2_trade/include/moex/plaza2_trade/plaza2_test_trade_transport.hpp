@@ -9,6 +9,7 @@
 
 #include "moex/plaza2/cgate/plaza2_publisher_rate.hpp"
 #include <functional>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -173,10 +174,59 @@ struct Plaza2TestSessionHostConfig {
     plaza2::cgate::Plaza2CredentialConfig credentials{};
     plaza2::cgate::Plaza2CredentialConfig software_key{};
     std::uint32_t process_timeout_ms{50};
+    bool transport_recovery_enabled{true};
+    std::chrono::milliseconds recovery_retry_interval{1000};
+    std::chrono::milliseconds recovery_deadline{60000};
+    std::function<std::chrono::steady_clock::time_point()> recovery_now;
+
     // Local conservative cap; configure from the provisioned login limit, not a claimed exchange default.
     std::uint32_t publisher_messages_per_second{30};
     plaza2::cgate::Plaza2Aggr20QualificationObserver* qualification_book_observer{nullptr};
     std::function<std::uint64_t()> publisher_now_ms; // Empty uses steady_clock; injectable for offline boundary tests.
+};
+
+struct Plaza2TransportHealth {
+    std::uint32_t connection{0}, publisher{0}, reply{0}, aggr{0};
+    std::array<std::uint32_t, 8> private_states{};
+    std::array<plaza2::generated::StreamCode, 8> private_streams{};
+    std::size_t private_count{0};
+    bool valid{false};
+    bool private_active{false};
+    [[nodiscard]] bool all_active() const noexcept {
+        return valid && connection == 3 && publisher == 3 && reply == 3 && aggr == 3 && private_active;
+    }
+};
+
+enum class Plaza2SessionOperation { Stopped, Starting, Running, Recovering, Failed };
+
+enum class Plaza2FailureOrigin {
+    Unknown,
+    ConnectionProcess,
+    ConnectionState,
+    ListenerState,
+    Publisher,
+    Callback,
+    Bootstrap,
+    EnvironmentOpen,
+    ConnectionCreate,
+    ConnectionOpen,
+    ListenerCreate,
+    ListenerOpen,
+    PublisherCreate,
+    PublisherOpen
+};
+
+struct Plaza2RecoveryStatus {
+    Plaza2SessionOperation operation{Plaza2SessionOperation::Stopped};
+    std::uint64_t generation{0}, attempts{0}, transitions{0};
+    std::uint64_t error_time_ns{0};
+    bool deadline_exhausted{false};
+    plaza2::cgate::Plaza2Error cause;
+    Plaza2FailureOrigin origin{Plaza2FailureOrigin::Unknown};
+    plaza2::cgate::Plaza2Error first_cause;
+    plaza2::cgate::Plaza2Error process_cause;
+    plaza2::cgate::Plaza2Error state_query_cause;
+    Plaza2TransportHealth health;
 };
 
 class Plaza2TestSessionHost final {
@@ -193,6 +243,9 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] bool started() const noexcept;
+    [[nodiscard]] bool recovering() const noexcept;
+    [[nodiscard]] const Plaza2RecoveryStatus& recovery_status() const noexcept;
+    [[nodiscard]] Plaza2TransportHealth runtime_health() const;
 
     [[nodiscard]] const plaza2::cgate::Plaza2RuntimeProbeReport& probe_report() const noexcept;
     [[nodiscard]] const plaza2::private_state::Plaza2PrivateStateProjector& private_state() const noexcept;

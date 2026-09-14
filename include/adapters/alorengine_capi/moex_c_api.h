@@ -101,6 +101,13 @@ typedef enum MoexPlaza2PositionScope {
     MOEX_PLAZA2_POSITION_SCOPE_SETTLEMENT_ACCOUNT = 1
 } MoexPlaza2PositionScope;
 
+/* MoexPlaza2LimitItem.scope: participant identity, independent of POS scope. */
+typedef enum MoexPlaza2LimitParticipantKind {
+    MOEX_PLAZA2_LIMIT_CLIENT = 0,
+    MOEX_PLAZA2_LIMIT_BROKERAGE_FIRM = 2,
+    MOEX_PLAZA2_LIMIT_UNKNOWN = 3
+} MoexPlaza2LimitParticipantKind;
+
 typedef enum MoexPlaza2Side {
     MOEX_PLAZA2_SIDE_UNKNOWN = 0,
     MOEX_PLAZA2_SIDE_BUY = 1,

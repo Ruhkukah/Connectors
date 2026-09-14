@@ -275,6 +275,8 @@ std::string_view host_state_name(ConnectorHostState state) noexcept {
         return "Stopping";
     case ConnectorHostState::Stopped:
         return "Stopped";
+    case ConnectorHostState::Recovering:
+        return "Recovering";
     case ConnectorHostState::Failed:
         return "Failed";
     }
@@ -308,6 +310,11 @@ struct ConnectorHost::Impl {
     std::optional<OrderLifecycleConfig> persistent_order;
     ConnectorHostState state{ConnectorHostState::Created};
     std::string error;
+    cg::Plaza2Error causal_error;
+    std::uint64_t causal_error_time_ns{};
+    std::string causal_operation;
+    Plaza2TransportHealth causal_health;
+    std::string causal_callback_error;
     std::string authorized_sha;
     bool submitted{false};
     std::optional<OrderLifecycleResult> result;
@@ -505,15 +512,25 @@ struct ConnectorHost::Impl {
         ConnectorHostSnapshot out;
         const auto& host = transport.host();
         const auto& data = host.private_state();
-        out.state = state;
+        out.state = host.recovering() ? ConnectorHostState::Recovering : state;
+        out.recovery = transport.host().recovery_status();
         out.environment = config.transport.host.runtime.environment;
         out.mode = config.transport.host.mode;
         out.target_isin_id = config.transport.target_isin_id;
         out.session_id = config.transport.target_session_id;
         out.runtime_compatibility = cg::plaza2_compatibility_name(host.probe_report().compatibility);
         out.runtime_scheme_sha256 = host.probe_report().scheme_drift.runtime_scheme_sha256;
-        out.publisher_ready = host.publisher_open();
-        out.reply_ready = host.p2mqreply_open();
+        out.transport_health = host.runtime_health();
+        const auto& health = out.transport_health;
+        const bool live = host.started() && state != ConnectorHostState::Failed &&
+                          state != ConnectorHostState::Recovering && state != ConnectorHostState::Stopping &&
+                          state != ConnectorHostState::Stopped && health.all_active();
+        out.publisher_handle_open = host.publisher_open();
+        out.reply_handle_open = host.p2mqreply_open();
+        out.publisher_ready = live && out.publisher_handle_open && health.publisher == 3;
+        out.reply_ready = live && out.reply_handle_open && health.reply == 3;
+        out.aggr_snapshot_state_ready = host.aggr_online() && host.aggr_snapshot_complete();
+        out.aggr_ready = live && health.aggr == 3 && out.aggr_snapshot_state_ready;
         out.publisher_calls = host.publisher_call_counts();
         out.streams.assign(data.stream_health().begin(), data.stream_health().end());
         constexpr std::array required{StreamCode::kFortsTradeRepl,
@@ -523,11 +540,12 @@ struct ConnectorHost::Impl {
                                       StreamCode::kFortsRefdataRepl,
                                       StreamCode::kFortsSessionstateRepl,
                                       StreamCode::kFortsInstrumentstateRepl};
-        out.private_streams_ready = std::all_of(required.begin(), required.end(), [&](auto code) {
+        out.private_snapshot_state_ready = std::all_of(required.begin(), required.end(), [&](auto code) {
             return std::count_if(out.streams.begin(), out.streams.end(), [&](const auto& row) {
                        return row.stream_code == code && row.online && row.snapshot_complete;
                    }) == 1;
         });
+        out.private_streams_ready = live && health.private_active && out.private_snapshot_state_ready;
         for (const auto& row : out.streams) {
             if (row.stream_code == StreamCode::kFortsUserorderbookRepl)
                 out.uob_periodic_consistent = row.periodic_snapshot_consistent;
@@ -561,11 +579,12 @@ struct ConnectorHost::Impl {
                 out.session_status = row.current_status;
         }
         const auto participant = config.order.broker_code + config.order.client_code;
-        out.limits_set =
-            !participant.empty() && std::count_if(data.limits().begin(), data.limits().end(), [&](const auto& row) {
-                                        return row.scope == ps::PositionScope::kClient &&
-                                               row.account_code == participant && row.limits_set;
-                                    }) == 1;
+        const auto limit = data.find_limit_by_code(participant);
+        out.participant_limit_row_present = limit.match_count != 0;
+        out.participant_identity_exact = limit.match_count == 1 && limit.exact != nullptr &&
+                                         limit.exact->participant_kind == ps::LimitParticipantKind::Client;
+        out.exchange_money_limit_check_enabled = limit.exact != nullptr && limit.exact->limits_set;
+        out.limits_set = out.participant_identity_exact && out.exchange_money_limit_check_enabled;
         out.order_epoch_active = recovered_epoch_active || (persistent != nullptr && persistent->active());
         out.order_authorized = persistent != nullptr && persistent->authorized();
         out.order_submission_attempted =
@@ -587,14 +606,19 @@ struct ConnectorHost::Impl {
                                 out.uob_periodic_consistent && out.target_refdata_provenance_ready && membership &&
                                 out.session_status == 1 && out.instrument_status == 1 && out.limits_set &&
                                 out.trade_replay_complete && out.zero_starting_position_proven &&
-                                out.active_own_order_count == 0 && host.aggr_online() &&
-                                host.aggr_snapshot_complete() && out.target_aggr20_uncrossed && out.bbo_age_ms >= 0 &&
-                                max_age > 0 && max_age <= 5000 && static_cast<std::uint64_t>(out.bbo_age_ms) <= max_age;
+                                out.active_own_order_count == 0 && out.aggr_ready && out.target_aggr20_uncrossed &&
+                                out.bbo_age_ms >= 0 && max_age > 0 && max_age <= 5000 &&
+                                static_cast<std::uint64_t>(out.bbo_age_ms) <= max_age;
         out.new_order_allowed = config.purpose == HostPurpose::OrderTest && out.observation_ready &&
                                 persistent == nullptr && !recovered_epoch_active && !checkpoint_blocked &&
                                 authorized_sha.empty() && !submitted &&
                                 epoch_counter != std::numeric_limits<std::uint64_t>::max();
         out.last_error = error;
+        out.causal_error = causal_error;
+        out.causal_error_time_ns = causal_error_time_ns;
+        out.causal_operation = causal_operation;
+        out.causal_health = causal_health;
+        out.causal_callback_error = causal_callback_error;
         if (out.state == ConnectorHostState::Ready && !out.observation_ready)
             out.state = ConnectorHostState::Started;
         if (out.last_error.empty() && !checkpoint_error.empty())
@@ -757,8 +781,15 @@ cg::Plaza2Error ConnectorHost::start() {
     }
     if (auto error = p.transport.host().start()) {
         p.state = ConnectorHostState::Failed;
-        p.error = "runtime start failed (code=" + std::to_string(static_cast<unsigned>(error.code)) + ")";
-        return invalid(p.error);
+        p.error = error.message;
+        p.causal_error = error;
+        p.causal_error_time_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        p.causal_health = p.transport.host().runtime_health();
+        p.causal_callback_error = p.transport.host().last_callback_error();
+        p.causal_operation = "start";
+        return error;
     }
     p.state = ConnectorHostState::Started;
     return {};
@@ -766,14 +797,32 @@ cg::Plaza2Error ConnectorHost::start() {
 
 cg::Plaza2Error ConnectorHost::poll() {
     auto& p = *impl_;
-    if (p.state != ConnectorHostState::Started && p.state != ConnectorHostState::Ready)
+    if (p.state != ConnectorHostState::Started && p.state != ConnectorHostState::Ready &&
+        p.state != ConnectorHostState::Recovering)
         return invalid("poll requires a running host");
     if (auto error = p.transport.host().poll()) {
         p.state = ConnectorHostState::Failed;
-        p.error = "runtime poll failed (code=" + std::to_string(static_cast<unsigned>(error.code)) + ")";
-        return invalid(p.error);
+        p.error = error.message;
+        p.causal_error = error;
+        p.causal_error_time_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        const auto& failure = p.transport.host().recovery_status();
+        p.causal_health = failure.cause ? failure.health : p.transport.host().runtime_health();
+        p.causal_callback_error = p.transport.host().last_callback_error();
+        p.causal_operation = "poll";
+        return error;
     }
-    p.state = p.snapshot().observation_ready ? ConnectorHostState::Ready : ConnectorHostState::Started;
+    const auto& recovery = p.transport.host().recovery_status();
+    if (recovery.cause) {
+        p.causal_error = recovery.cause;
+        p.causal_error_time_ns = recovery.error_time_ns;
+        p.causal_health = recovery.health;
+        p.causal_operation = "transport rebootstrap";
+    }
+    p.state = p.transport.host().recovering() ? ConnectorHostState::Recovering : ConnectorHostState::Started;
+    if (p.snapshot().observation_ready)
+        p.state = ConnectorHostState::Ready;
     return {};
 }
 
@@ -797,7 +846,7 @@ ConnectorHostSnapshot ConnectorHost::snapshot() const {
     return impl_->snapshot();
 }
 
-ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot() const {
+ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot(bool private_identity) const {
     const auto& host = impl_->transport.host();
     const auto instruments = host.private_state().instruments();
     const auto positions = host.private_state().positions();
@@ -812,12 +861,25 @@ ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot() const
                                       (row.public_amount_rest > 0 || row.private_amount_rest > 0)))
             out.active_orders.push_back(row);
     }
-    const auto limits = host.private_state().limits();
-    out.visible_limit_rows = limits.size();
-    const auto participant = impl_->config.order.broker_code + impl_->config.order.client_code;
-    out.matching_client_limit_rows = std::count_if(limits.begin(), limits.end(), [&](const auto& row) {
-        return row.scope == ps::PositionScope::kClient && row.account_code == participant;
-    });
+    const auto& data = host.private_state();
+    out.visible_limit_rows = data.limit_row_count();
+    out.unknown_limit_rows = data.unknown_limit_row_count();
+    const auto broker = data.find_limit_by_code(impl_->config.order.broker_code);
+    const auto client = data.find_limit_by_code(impl_->config.order.broker_code + impl_->config.order.client_code);
+    out.matching_broker_limit_rows = broker.match_count;
+    out.matching_client_limit_rows = client.match_count;
+    out.client_code_is_brokerage_account = impl_->config.order.client_code == "000";
+    if (broker.exact)
+        out.broker_limit = *broker.exact;
+    if (client.exact)
+        out.client_limit = *client.exact;
+    for (const auto& row : data.limits())
+        out.limit_diagnostics.push_back(
+            {row.repl_id, row.participant_kind, row.account_code.size(),
+             row.account_code == impl_->config.order.broker_code,
+             row.account_code == impl_->config.order.broker_code + impl_->config.order.client_code, row.limits_set,
+             row.is_auto_update_limit, row.money_free, row.money_blocked, row.money_amount,
+             private_identity ? row.account_code : std::string{}});
     return out;
 }
 
@@ -1083,7 +1145,32 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
         << ",\"mode\":" << static_cast<unsigned>(s.mode)
         << ",\"runtime_compatibility\":" << quoted(s.runtime_compatibility)
         << ",\"runtime_scheme_sha256\":" << quoted(s.runtime_scheme_sha256)
-        << ",\"publisher_ready\":" << s.publisher_ready << ",\"reply_ready\":" << s.reply_ready
+        << ",\"publisher_handle_open\":" << s.publisher_handle_open << ",\"reply_handle_open\":" << s.reply_handle_open
+        << ",\"private_snapshot_state_ready\":" << s.private_snapshot_state_ready
+        << ",\"aggr_snapshot_state_ready\":" << s.aggr_snapshot_state_ready << ",\"aggr_ready\":" << s.aggr_ready
+        << ",\"participant_limit_row_present\":" << s.participant_limit_row_present
+        << ",\"participant_identity_exact\":" << s.participant_identity_exact
+        << ",\"exchange_money_limit_check_enabled\":" << s.exchange_money_limit_check_enabled
+        << ",\"causal_error\":{\"connector_code\":" << static_cast<unsigned>(s.causal_error.code)
+        << ",\"runtime_code\":" << (s.causal_error.runtime_code ? std::to_string(s.causal_error.runtime_code) : "null")
+        << ",\"message\":" << quoted(s.causal_error.message) << "}";
+    out << ",\"recovery_generation\":" << s.recovery.generation << ",\"recovery_attempts\":" << s.recovery.attempts
+        << ",\"recovery_transitions\":" << s.recovery.transitions
+        << ",\"recovery_deadline_exhausted\":" << s.recovery.deadline_exhausted;
+    const auto failure_detail = [&](std::string_view name, const cg::Plaza2Error& error) {
+        out << "," << quoted(name) << ":{\"connector_code\":" << static_cast<unsigned>(error.code)
+            << ",\"runtime_code\":" << (error.runtime_code ? std::to_string(error.runtime_code) : "null")
+            << ",\"message\":" << quoted(error.message) << "}";
+    };
+    static constexpr std::array origin_names{
+        "Unknown",        "ConnectionProcess", "ConnectionState", "ListenerState",    "Publisher",
+        "Callback",       "Bootstrap",         "EnvironmentOpen", "ConnectionCreate", "ConnectionOpen",
+        "ListenerCreate", "ListenerOpen",      "PublisherCreate", "PublisherOpen"};
+    out << ",\"failure_origin\":" << quoted(origin_names.at(static_cast<std::size_t>(s.recovery.origin)));
+    failure_detail("first_recovery_cause", s.recovery.first_cause);
+    failure_detail("connection_process_cause", s.recovery.process_cause);
+    failure_detail("state_query_cause", s.recovery.state_query_cause);
+    out << ",\"publisher_ready\":" << s.publisher_ready << ",\"reply_ready\":" << s.reply_ready
         << ",\"private_streams_ready\":" << s.private_streams_ready << ",\"observation_ready\":" << s.observation_ready
         << ",\"target\":" << quoted(s.target) << ",\"target_isin_id\":" << s.target_isin_id
         << ",\"session_id\":" << s.session_id
@@ -1123,7 +1210,22 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
         out << "{\"present\":" << row.present << ",\"table_code\":" << static_cast<unsigned>(row.table_code)
             << ",\"lifenum\":" << row.lifenum << ",\"repl_rev\":" << row.repl_rev << '}';
     }
-    out << "],\"streams\":[";
+    out << "],\"causal_operation\":" << quoted(s.causal_operation)
+        << ",\"causal_monotonic_ns\":" << s.causal_error_time_ns
+        << ",\"causal_callback_error\":" << quoted(s.causal_callback_error);
+    const auto render_health = [&](std::string_view label, const Plaza2TransportHealth& h) {
+        out << ',' << quoted(label) << ":{\"connection\":" << h.connection << ",\"publisher\":" << h.publisher
+            << ",\"reply\":" << h.reply << ",\"aggr\":" << h.aggr << ",\"private\":[";
+        for (std::size_t i = 0; i < h.private_count; ++i) {
+            if (i)
+                out << ',';
+            out << '[' << static_cast<unsigned>(h.private_streams[i]) << ',' << h.private_states[i] << ']';
+        }
+        out << "]}";
+    };
+    render_health("transport_health", s.transport_health);
+    render_health("causal_transport_health", s.causal_health);
+    out << ",\"streams\":[";
     first = true;
     for (const auto& row : s.streams) {
         if (!first)

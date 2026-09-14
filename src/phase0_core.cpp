@@ -628,7 +628,11 @@ void fill_matching_map_item(const MatchingMapSnapshot& native, MoexPlaza2Matchin
 }
 
 void fill_limit_item(const LimitSnapshot& native, MoexPlaza2LimitItem& abi) {
-    abi.scope = to_abi_position_scope(native.scope);
+    abi.scope = native.participant_kind == moex::plaza2::private_state::LimitParticipantKind::Client
+                    ? MOEX_PLAZA2_LIMIT_CLIENT
+                : native.participant_kind == moex::plaza2::private_state::LimitParticipantKind::BrokerageFirm
+                    ? MOEX_PLAZA2_LIMIT_BROKERAGE_FIRM
+                    : MOEX_PLAZA2_LIMIT_UNKNOWN;
     abi.limits_set = to_abi_bool(native.limits_set);
     abi.is_auto_update_limit = to_abi_bool(native.is_auto_update_limit);
     copy_fixed(native.account_code, abi.account_code, MOEX_ACCOUNT_CAPACITY);

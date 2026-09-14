@@ -1109,3 +1109,12 @@ Updated PASS rows below explicitly concern offline software scope, never certifi
 </table>
 
 No certificate or full-readiness claim follows from this matrix. Phase A stops for review as required by the attached plan.
+
+
+### Accepted September 11 evidence (independent scoped statuses)
+
+Live source PR #56: `b0f80c4862be73df28df32f8f1db0e496a1b054b`.
+Functional base PR #55: `e004251ae932a2d15736ecf3bc07d03fcf63d160`.
+See [accepted status](../docs/plaza2/integration/CERTIFICATION_STATUS.md).
+The new integration SHA was not run on T1. Historical September 9, September 10
+and September 11 PR54 router FAILs remain immutable defect evidence.
