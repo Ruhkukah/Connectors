@@ -89,6 +89,7 @@ struct FuturePriceBounds {
     bool formula_confirmed{true};
     // Arithmetic validity only: never substitutes for transport/account/order gates.
     bool interval_valid{false};
+    bool operator==(const FuturePriceBounds&) const = default;
 };
 
 struct FutureSessionTerms {
@@ -101,6 +102,7 @@ struct FutureSessionTerms {
     std::int64_t repl_id{0};
     SourceRowProvenance source;
     FuturePriceBounds bounds;
+    bool operator==(const FutureSessionTerms&) const = default;
 };
 [[nodiscard]] FuturePriceBounds evaluate_future_price_bounds(const FutureSessionTerms& terms) noexcept;
 
@@ -301,6 +303,7 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::span<const StreamHealthSnapshot> stream_health() const;
     [[nodiscard]] std::span<const TradingSessionSnapshot> sessions() const;
     [[nodiscard]] std::span<const InstrumentSnapshot> instruments() const;
+    [[nodiscard]] std::optional<FutureSessionTerms> find_future_session_terms(std::int32_t isin_id) const;
     // Current-session indexed view. Empty for other sessions, missing/deleted rows or
     // another LifeNum. Committed source validity is distinct from live transport health.
     [[nodiscard]] std::optional<FutureSessionTerms>

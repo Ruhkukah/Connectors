@@ -52,6 +52,21 @@ Plaza2TestTradeStreamConfig stream(generated::StreamCode code, std::string_view 
     return {.stream_code = code, .settings = std::move(settings)};
 }
 
+SessionPriceBinding fixture_price_binding() {
+    namespace ps = moex::plaza2::private_state;
+    ps::FutureSessionTerms terms;
+    terms.isin_id = 1001;
+    terms.sess_id = 321;
+    terms.repl_id = 3101;
+    terms.settlement_price = ps::parse_session_decimal("102500");
+    terms.raw_limit_up = terms.raw_limit_down = ps::parse_session_decimal("10000");
+    terms.min_step = ps::parse_session_decimal("250");
+    terms.source = {generated::StreamCode::kFortsRefdataRepl, generated::TableCode::kFortsRefdataReplFutSessContents, 3,
+                    7, true};
+    terms.bounds = ps::evaluate_future_price_bounds(terms);
+    return {1, terms};
+}
+
 Plaza2TestTradeTransportConfig make_config(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
     using generated::StreamCode;
     Plaza2TestTradeTransportConfig config;
@@ -101,6 +116,7 @@ Plaza2TestTradeTransportConfig make_config(const moex::plaza2::test::RuntimeFixt
         .max_aggr20_age_ms = 5000,
         .require_zero_starting_position = false,
     };
+    config.authorized_intent->session_price_binding = fixture_price_binding();
     config.execution_safety_receipt_path = fixture.root / "execution_safety.json";
     config.target_tick_size = "250";
     config.target_price = "103000";
@@ -213,6 +229,7 @@ OrderLifecycleConfig make_controller_config(const std::filesystem::path& root) {
     config.cancel_user_id = 702;
     config.recovery_user_id = 703;
     config.comment = "offline";
+    config.session_price_binding = fixture_price_binding();
     config.smoke.instrument_exists = true;
     config.smoke.tradable_session = true;
     config.smoke.aggr20_two_sided = true;
@@ -693,8 +710,10 @@ void test_replication_epoch_gates(const moex::plaza2::test::RuntimeFixturePaths&
         {
             ScopedEnv restored(variable, nullptr);
             const auto reopened = transport.post(add, 701);
-            expect_case(reopened.certainty == cgate::Plaza2SubmissionCertainty::Posted && reopened.post_invoked,
-                        std::string(label) + " must regain readiness only after a complete fresh snapshot");
+            expect_case(reopened.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                            !reopened.post_invoked &&
+                            contains_text(reopened.validation_error.message, "SESSION_PRICE_AUTHORIZATION_INVALIDATED"),
+                        std::string(label) + " fresh bootstrap cannot reuse prior generation price authority");
             static_cast<void>(transport.host().stop());
         }
     }

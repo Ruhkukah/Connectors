@@ -1,5 +1,7 @@
 #pragma once
 
+#include "moex/plaza2_trade/plaza2_session_price_gate.hpp"
+
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
 #include "moex/plaza2_trade/plaza2_trade_codec.hpp"
@@ -181,6 +183,9 @@ struct OrderLifecycleConfig {
     std::uint32_t recovery_user_id{0};
     std::string comment;
 
+    // Required by native live Add. Legacy offline plan-only callers may omit it.
+    std::optional<SessionPriceBinding> session_price_binding;
+    bool require_session_price_binding{false};
     OrderSmokeSnapshot smoke;
     OrderSmokePolicy policy;
     std::chrono::milliseconds add_observation_timeout{std::chrono::seconds(60)};
@@ -218,9 +223,8 @@ struct PreSendPlan {
     bool ok{false};
     PreSendFailure failure{PreSendFailure::None};
     std::string message;
-    // The canonical hash is an authorization hash for static order intent. It
-    // deliberately excludes dynamic market/session observations; those belong
-    // in the execution-safety receipt produced immediately before posting.
+    // The authorization binds order intent and committed session-price terms.
+    // Dynamic BBO observations remain in the execution-safety receipt.
     std::string canonical_json;
     std::string reviewed_evidence_json;
     std::string sha256;

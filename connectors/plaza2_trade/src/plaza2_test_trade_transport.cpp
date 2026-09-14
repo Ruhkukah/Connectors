@@ -552,6 +552,9 @@ std::string canonical_authorized_order_intent_json(const Plaza2AuthorizedOrderIn
          << "  \"quantity\": " << intent.quantity << ",\n"
          << "  \"client_code_sha256\": \"" << intent_fingerprint(intent, false) << "\",\n"
          << "  \"broker_code_sha256\": \"" << intent_fingerprint(intent, true) << "\",\n"
+         << (intent.session_price_binding
+                 ? "  \"session_price_binding\": " + session_price_binding_json(*intent.session_price_binding) + ",\n"
+                 : "")
          << "  \"smoke_policy\": {\n"
          << "    \"version\": \"" << json_escape_local(intent.policy_version) << "\",\n"
          << "    \"sha256\": \"" << intent.policy_sha256 << "\",\n"
@@ -1923,6 +1926,25 @@ struct Plaza2TestTradeTransport::Impl {
         return {};
     }
 
+    Plaza2Error validate_session_price_binding() const {
+        const auto* authorized = intent();
+        if (!authorized || !authorized->session_price_binding)
+            return invalid("CURRENT_SESSION_PRICE_TERMS_REQUIRED");
+        const auto& binding = *authorized->session_price_binding;
+        const auto provenance = target_refdata_provenance();
+        const auto current = host.private_state().find_future_session_terms(
+            static_cast<std::int32_t>(target_isin()), config.target_session_id, provenance.current_lifenum);
+        const bool live =
+            host.started() && !host.recovering() && host.runtime_health().all_active() && provenance.ready;
+        if (!inspect_session_price(current, target_isin(), config.target_session_id, provenance.current_lifenum, live,
+                                   authorized->price)
+                 .allowed() ||
+            !current || binding.transport_generation != host.recovery_status().generation || binding.terms != *current)
+            return invalid(
+                "SESSION_PRICE_AUTHORIZATION_INVALIDATED: fresh exact terms and operator authorization required");
+        return {};
+    }
+
     Plaza2Error preflight_target() {
         if (const auto intent_error = validate_intent(); intent_error) {
             return intent_error;
@@ -2413,6 +2435,15 @@ struct Plaza2TestTradeTransport::Impl {
             if (const auto receipt = persist_execution_safety_receipt(); receipt) {
                 Plaza2PublisherMessageResult result;
                 result.validation_error = receipt;
+                return result;
+            }
+        }
+        // Last read-side check: preflight can process a new REFDATA revision.
+        // No poll/callback occurs between this comparison and publisher post.
+        if (command.command_kind == Plaza2TradeCommandKind::AddOrder) {
+            if (const auto gate = validate_session_price_binding(); gate) {
+                Plaza2PublisherMessageResult result;
+                result.validation_error = gate;
                 return result;
             }
         }

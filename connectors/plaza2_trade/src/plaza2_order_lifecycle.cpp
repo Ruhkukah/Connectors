@@ -974,6 +974,16 @@ std::string_view pre_send_failure_name(PreSendFailure failure) noexcept {
 }
 
 PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
+    if (config.require_session_price_binding && !config.session_price_binding)
+        return fail_plan(PreSendFailure::InvalidPrice, "CURRENT_SESSION_PRICE_TERMS_REQUIRED");
+    if (config.session_price_binding) {
+        const auto& b = *config.session_price_binding;
+        if (!b.transport_generation ||
+            !inspect_session_price(b.terms, config.isin_id, b.terms.sess_id, b.terms.source.lifenum, true, config.price)
+                 .allowed())
+            return fail_plan(PreSendFailure::InvalidPrice, "SESSION_PRICE_GATE_REJECTED");
+    }
+
     if (config.dry_run == config.send_test_order) {
         return fail_plan(PreSendFailure::ConflictingMode, "choose exactly one of dry-run or --send-test-order");
     }
@@ -1058,7 +1068,7 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     const auto payload_hash = cgate::plaza2_sha256_hex(static_commands.add_command.payload);
     const auto recovery_payload_hash = cgate::plaza2_sha256_hex(static_commands.exact_ext_id_recovery_command.payload);
 
-    // Only static, human-authorized intent is hashed. Dynamic market/session
+    // The human-authorized intent binds committed session terms. Dynamic market
     // observations are written separately and are re-derived by the concrete
     // transport immediately before AddOrder.
     std::ostringstream json;
@@ -1086,6 +1096,8 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     json << "  \"quantity\": 1,\n";
     json << "  \"client_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.client_code) << "\",\n";
     json << "  \"broker_code_sha256\": \"" << cgate::plaza2_sha256_hex(config.broker_code) << "\",\n";
+    if (config.session_price_binding)
+        json << "  \"session_price_binding\": " << session_price_binding_json(*config.session_price_binding) << ",\n";
     json << "  \"smoke_policy\": {\n";
     json << "    \"version\": \"" << json_escape(config.policy.version) << "\",\n";
     json << "    \"sha256\": \"" << config.policy.sha256 << "\",\n";

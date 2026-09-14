@@ -146,6 +146,7 @@ struct FakeConnection {
     bool userbook_periodic_info_emitted{false};
     bool pos_anchor_drift_emitted{false};
     bool forced_trade_terminal_emitted{false};
+    bool session_price_revision_emitted{false};
     bool trade_open_error_seen{false};
 };
 
@@ -433,8 +434,8 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                 .fields =
                     {
                         {.field_code = FieldCode::kFortsRefdataReplFutSessContentsReplId,
-                         .kind = UnsignedInteger,
-                         .unsigned_value = 3101},
+                         .kind = SignedInteger,
+                         .signed_value = 3101},
                         {.field_code = FieldCode::kFortsRefdataReplFutSessContentsReplRev,
                          .kind = SignedInteger,
                          .signed_value = 3},
@@ -463,6 +464,15 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .kind = SignedInteger,
                          .signed_value = 2},
                         {.field_code = FieldCode::kFortsRefdataReplFutSessContentsMinStep, .kind = Text, .text = "250"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsSettlementPrice,
+                         .kind = Text,
+                         .text = "102500"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsLimitUp,
+                         .kind = Text,
+                         .text = "10000"},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsLimitDown,
+                         .kind = Text,
+                         .text = "10000"},
                         {.field_code = FieldCode::kFortsRefdataReplFutSessContentsLotVolume,
                          .kind = SignedInteger,
                          .signed_value = 1},
@@ -1872,6 +1882,31 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
             connection->pos_anchor_drift_emitted = true;
             return kCgErrOk;
         }
+    }
+
+    if (connection->script_emitted && fake_flag("MOEX_FAKE_SESSION_PRICE_REVISION") &&
+        !connection->session_price_revision_emitted) {
+        for (auto* listener : connection->listeners) {
+            if (!listener || listener->reply_listener || listener->state != kStateActive ||
+                listener->stream_code != StreamCode::kFortsRefdataRepl)
+                continue;
+            const auto script = script_for_stream(listener->stream_code);
+            for (auto row : script) {
+                if (row.table_code != TableCode::kFortsRefdataReplFutSessContents)
+                    continue;
+                row.rev = 4;
+                if (auto* rev = find_field(row, FieldCode::kFortsRefdataReplFutSessContentsReplRev))
+                    rev->signed_value = 4;
+                if (auto error = emit_simple_message(*listener, kCgMsgTnBegin); error != kCgErrOk)
+                    return error;
+                if (auto error = emit_stream_message(*listener, row); error != kCgErrOk)
+                    return error;
+                if (auto error = emit_simple_message(*listener, kCgMsgTnCommit); error != kCgErrOk)
+                    return error;
+            }
+        }
+        connection->session_price_revision_emitted = true;
+        return kCgErrOk;
     }
 
     if (fake_flag("MOEX_FAKE_FORCE_TRADE_TERMINAL") && !connection->forced_trade_terminal_emitted) {
