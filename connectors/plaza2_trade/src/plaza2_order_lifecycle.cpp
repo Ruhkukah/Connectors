@@ -1800,6 +1800,45 @@ OrderLifecycleResult PersistentOrderController::cancel_order() {
     return p.nonterminal("exact-ext recovery posted; poll_order is required for terminal evidence");
 }
 
+OrderLifecycleResult PersistentOrderController::accept_recovered_terminal(const OrderObservation& observation) {
+    auto& p = *impl_;
+    if (!p.active_epoch || !p.journal || p.journal->degraded() || observation.identity_conflict ||
+        (observation.state != OrderLifecycleState::Filled && observation.state != OrderLifecycleState::Cancelled))
+        return p.refusal("current exact terminal recovery evidence and healthy journal required");
+    p.evidence.observation = observation;
+    p.evidence.consistent = true;
+    return p.finish(observation.state, true, false, "fresh recovered private state proves terminal; no command");
+}
+
+OrderLifecycleResult PersistentOrderController::explicit_recovered_cancel(
+    const OrderObservation& observation, std::uint32_t cancel_user_id,
+    const std::function<cgate::Plaza2PublisherMessageResult()>& execute) {
+    auto& p = *impl_;
+    if (cancel_user_id == 0 || !p.active_epoch || !p.submission_attempted_flag || !p.journal || p.journal->degraded() ||
+        p.result.market_safe_terminal || observation.identity_conflict || observation.remaining_quantity <= 0 ||
+        (observation.state != OrderLifecycleState::Working &&
+         observation.state != OrderLifecycleState::PartiallyFilled))
+        return p.refusal("current exact working recovery evidence and healthy journal required");
+    const auto submission = execute();
+    // Authorization refusals leave the previous evidence untouched. A consumed
+    // attempt is still independently retained by the protected artifact marker.
+    if (!submission.post_invoked && submission.validation_error)
+        return p.refusal(submission.validation_error.message);
+    p.config.cancel_user_id = cancel_user_id;
+    p.evidence.observation = observation;
+    p.evidence.cancel_reply.reset();
+    p.evidence.recovery_reply.reset();
+    p.evidence.consistent = true;
+    p.cancel_requested = true;
+    p.recovery_requested = false;
+    p.terminal_finished = false;
+    p.result.cancel_submission = submission;
+    p.journal->record_cancel_submission(submission);
+    p.lifecycle_state = OrderLifecycleState::CancelPending;
+    p.journal->record_state(p.lifecycle_state);
+    return p.nonterminal("one operator-authorized recovered DelOrder attempted; fresh terminal proof required");
+}
+
 cgate::Plaza2Error PersistentOrderController::finish_order_epoch() {
     auto& p = *impl_;
     if (!p.active_epoch) {

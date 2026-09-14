@@ -640,6 +640,131 @@ int main(int argc, char** argv) {
             test::require(host.snapshot().publisher_calls.post == 0, "reauthorization itself posts nothing");
             test::require(static_cast<bool>(host.stop()), "authorized epoch remains protected until resolved");
         }
+        for (int stage = 0; stage != 5; ++stage) {
+            reset();
+            ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
+            ::setenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER", "1", 1);
+            ::setenv("MOEX_FAKE_EXT_ID", "79", 1);
+            ::setenv("MOEX_FAKE_FLAT_TRADE_REPLAY", "1", 1);
+            ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
+            auto now = std::chrono::steady_clock::now();
+            auto c = config_for(fixture);
+            c.transport.host.recovery_now = [&] { return now; };
+            c.purpose = HostPurpose::OrderTest;
+            c.transport.host.mode = Plaza2TestSessionHostMode::LiveTestAuthorizedSend;
+            c.transport.host.arm_state.test_order_send_armed = true;
+            c.order.run_id = "operator-cancel-" + std::to_string(stage);
+            c.order.journal_root = fixture.root / c.order.run_id;
+            ConnectorHost host(c);
+            warm(host);
+            const auto initial = host.plan();
+            test::require(initial.ok && !host.begin_order(initial.canonical_json, initial.sha256),
+                          "authorize ordinary fake order");
+            test::require(host.submit_order().add_submission.post_invoked, "one initial Add");
+            if (stage > 0)
+                test::require(host.poll_order().state == OrderLifecycleState::Working, "Working before outage");
+            if (stage == 2)
+                test::require(host.cancel_current_order().cancel_submission.post_invoked,
+                              "cancel reply not yet read before outage");
+            const auto lost_posts = count(1);
+            const auto lose_and_recover = [&] {
+                ::setenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS", "1", 1);
+                test::require(!host.poll(), "recoverable loss");
+                ::unsetenv("MOEX_FAKE_CONNECTION_INTERNAL_LOSS");
+                test::require(!host.snapshot().private_streams_ready && !host.snapshot().new_order_allowed,
+                              "immediate quarantine");
+                now += std::chrono::seconds(1);
+                for (int i = 0; i != 15 && !host.snapshot().private_streams_ready; ++i)
+                    test::require(!host.poll(), "fresh bootstrap");
+                test::require(host.snapshot().private_streams_ready && host.snapshot().trade_replay_complete,
+                              "fresh private anchor and streams");
+            };
+            lose_and_recover();
+            test::require(count(1) == lost_posts && host.snapshot().order_epoch_active &&
+                              !host.snapshot().new_order_allowed,
+                          "recovery sends no automatic Add or Cancel and preserves epoch");
+            if (stage == 4) {
+                ::setenv("MOEX_FAKE_FORCE_TRADE_TERMINAL", "1", 1);
+                const auto terminal = host.reconcile_recovered_order();
+                ::unsetenv("MOEX_FAKE_FORCE_TRADE_TERMINAL");
+                test::require(terminal.outcome == RecoveredOrderOutcome::TerminalAlready && count(1) == lost_posts,
+                              "positive fresh terminal proof after outage sends no Cancel");
+                test::require(!host.finish_order_epoch() && !host.stop(),
+                              "terminal recovery closes through normal journal");
+                ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+                ::unsetenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER");
+                ::unsetenv("MOEX_FAKE_EXT_ID");
+                ::unsetenv("MOEX_FAKE_FLAT_TRADE_REPLAY");
+                continue;
+            }
+            const auto exact = host.reconcile_recovered_order();
+            test::require(exact.outcome == RecoveredOrderOutcome::ExactlyOneWorkingMatch,
+                          "exact surviving regular order reconciled");
+            auto path = fixture.root / (c.order.run_id + ".json");
+            auto plan = host.prepare_recovered_cancel(path);
+            test::require(plan.eligible() && !plan.sha256.empty(), "protected plan after fresh reconciliation");
+            const auto reply_binding = [](const RecoveredCancelPlan& value) {
+                const auto begin = value.canonical_json.find("\"user_id\":");
+                test::require(begin != std::string::npos, "reply identity is in protected authorization");
+                return value.canonical_json.substr(begin, value.canonical_json.find(',', begin) - begin);
+            };
+            test::require(reply_binding(plan) != "\"user_id\":" + std::to_string(c.order.cancel_user_id),
+                          "recovered Cancel never reuses previous ordinary Cancel reply ID");
+
+            (void)host.cancel_recovered_order(path, std::string(64, '0'));
+            test::require(count(1) == lost_posts, "incorrect operator hash posts nothing");
+            if (stage == 0) {
+                lose_and_recover();
+                (void)host.cancel_recovered_order(path, plan.sha256);
+                test::require(count(1) == lost_posts, "generation N authority invalid in N+1");
+                path = fixture.root / (c.order.run_id + "-fresh.json");
+                const auto refreshed = host.prepare_recovered_cancel(path);
+                test::require(refreshed.eligible() && refreshed.sha256 != plan.sha256,
+                              "fresh generation needs new one-shot approval");
+                test::require(reply_binding(refreshed) != reply_binding(plan),
+                              "generation reauthorization reserves a new reply ID");
+                plan = refreshed;
+            }
+            if (stage != 3)
+                ::setenv("MOEX_FAKE_CANCEL_AFTER_DEL", "1", 1);
+            const auto cancelled = host.cancel_recovered_order(path, plan.sha256);
+            test::require(cancelled.cancel_submission.post_invoked && count(1) == lost_posts + 1,
+                          "exact hash permits one DelOrder through existing publisher gate");
+            test::require(std::filesystem::exists(path.string() + ".consumed") &&
+                              std::filesystem::exists(path.string() + ".submission.json"),
+                          "durable one-shot and publisher receipt");
+            auto expected_posts = lost_posts + 1;
+            if (stage == 3) {
+                // The recovered Cancel itself was posted, but no reply was read.
+                lose_and_recover();
+                test::require(count(1) == expected_posts, "no resend of uncertain recovered Cancel");
+                (void)host.cancel_recovered_order(path, plan.sha256);
+                test::require(count(1) == expected_posts, "consumed old-generation approval remains unusable");
+                path = fixture.root / (c.order.run_id + "-second-cancel.json");
+                const auto next = host.prepare_recovered_cancel(path);
+                test::require(next.eligible() && next.sha256 != plan.sha256,
+                              "survivor requires a new operator approval");
+                test::require(reply_binding(next) != reply_binding(plan),
+                              "uncertain Cancel reply cannot correlate to a new attempt");
+                plan = next;
+                ::setenv("MOEX_FAKE_CANCEL_AFTER_DEL", "1", 1);
+                test::require(host.cancel_recovered_order(path, plan.sha256).cancel_submission.post_invoked,
+                              "second generation exact approval permits one new cancel");
+                ++expected_posts;
+            }
+            (void)host.cancel_recovered_order(path, plan.sha256);
+            test::require(count(1) == expected_posts, "consumed authority cannot repeat a command");
+            for (int i = 0; i != 5 && !host.snapshot().market_safe; ++i)
+                (void)host.poll_order();
+            test::require(host.snapshot().market_safe && !host.finish_order_epoch(),
+                          "fresh terminal evidence closes normally");
+            test::require(!host.stop(), "stop resolved operator-cancel host");
+            ::unsetenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION");
+            ::unsetenv("MOEX_FAKE_REGULAR_RECOVERED_ORDER");
+            ::unsetenv("MOEX_FAKE_EXT_ID");
+            ::unsetenv("MOEX_FAKE_FLAT_TRADE_REPLAY");
+            ::unsetenv("MOEX_FAKE_CANCEL_AFTER_DEL");
+        }
         for (int loss_stage = 0; loss_stage != 3; ++loss_stage) {
             reset();
             ::setenv("MOEX_FAKE_PERSISTENT_ORDER_SESSION", "1", 1);
