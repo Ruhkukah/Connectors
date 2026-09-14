@@ -7,6 +7,7 @@ Full public ORDLOG/ORDBOOK/p2ordbook mutation remains `DEFERRED_FULL_ORDLOG_PHAS
 
 The test trading session is finished for today. No order, router restart, connector restart, or VPS mutation is performed in this tranche.
 The dedicated machine-readable identity and matrix are [the 9.9 AGGR manifest](../../cert/aggr_plaza2_certification_manifest_9_9.json) and [the AGGR matrix](../../cert/AGGR_CERT_MATRIX_9_9.md).
+The next-session procedure is the [current AGGR T1 runbook](AGGR_T1_QUALIFICATION_9_9.md).
 
 ## Runtime and official-source lock
 
@@ -40,7 +41,9 @@ It owns five private streams (`POS`, `PART`, `TRADE`, `USERORDERBOOK`, `REFDATA`
 It also owns the `FORTS_AGGR20_REPL` listener, one publisher, and one `p2mqreply` listener.
 `TRADE` opens only after a fresh POS.info anchor is committed. Every stream must be ACTIVE and snapshot/ONLINE before effective readiness can become true.
 
-The candidate declares only the ordinary `AddOrder`/reply 99 and `DelOrder`/reply 100 pair. It does not declare Move, Iceberg Move, MassCancel, or DelUserOrders.
+The candidate declares only ordinary `AddOrder` 474 and `DelOrder` 461. Their business replies are 179 and 177 respectively;
+system replies 99/100 may also occur and are never ordinary success by correlation alone. `DelUserOrders` 466 has business reply 186
+but is known and undeclared for this candidate. Move, Iceberg Move and MassCancel are also undeclared.
 The local publisher admission cap defaults to 30 attempts per rolling second and is bounded to 1..3000; a denied or ambiguous command is never automatically retried.
 During recovery, effective readiness and Add authority are false. A nonterminal order epoch is preserved as uncertain, with no automatic Add, Cancel, flatten, or compensating command.
 
@@ -82,17 +85,19 @@ Earlier live failures and passes retain their original source, binary, runtime, 
 
 ## Next live gate
 
-When T1 is open, refresh availability and discover the current session again. Build a fresh Release/sanitizer candidate
-from the reviewed branch, record source/binary/runtime/scheme/config hashes, and run the complete order-free day observer first.
-Only after review and current gates pass may the operator run the one-lot `FIRST_ORDER_DEEP_PASSIVE_V1` lifecycle:
+When T1 is open, follow the [current runbook](AGGR_T1_QUALIFICATION_9_9.md): refresh availability and discover the current session,
+run the independent 300-second idle probe, then start the persistent host and record fresh source/binary/runtime/scheme/config hashes.
+After all current safety gates pass, run the one-lot `FIRST_ORDER_DEEP_PASSIVE_V1` lifecycle:
 
 ```text
-Add -> accepted reply 99 -> exact private Working
-    -> immediate DelOrder -> reply 100 -> exact private Cancelled
+AddOrder 474 -> business reply 179 -> exact private Working
+    -> immediate DelOrder 461 -> business reply 177 -> exact private Cancelled
     -> zero active orders -> zero position
 ```
 
-Then run the separately gated zero-order restart and MOEX-coordinated Working-order/restart and TCS/schema/access exercises.
+Then run the separately gated zero-order restart, one-Working-order process restart, local-router recovery,
+and MOEX-coordinated upstream/TCS/schema/access exercises. Decode and reconcile any system reply 99/100;
+never promote it to ordinary success.
 Freeze a certification candidate only after those receipts, full Release/sanitizer/Linux/LSan validation, and the matrix review are complete.
 
 Until then the correct final verdict remains **AGGR_NOT_READY_FOR_MOEX_CERTIFICATION**.

@@ -88,14 +88,49 @@
       "publisher and reply listener ACTIVE"
     ]
   },
+  "official_matrix": {
+    "path": "cert/AGGR_CERT_MATRIX_9_9.md",
+    "authority": "current MOEX Plaza II checklist; C01-C08, R01-R08, S01-S07 preserved verbatim",
+    "general_requirements": "retained separately without reusing C/R/S identifiers"
+  },
+  "qualification_runbook": "docs/plaza2/AGGR_T1_QUALIFICATION_9_9.md",
   "command_surface": {
     "declared": [
-      {"name": "AddOrder", "command_id": 474, "reply_id": 99},
-      {"name": "DelOrder", "command_id": 461, "reply_id": 100}
+      {
+        "name": "AddOrder",
+        "command_id": 474,
+        "business_reply_id": 179,
+        "system_reply_ids": [99, 100]
+      },
+      {
+        "name": "DelOrder",
+        "command_id": 461,
+        "business_reply_id": 177,
+        "system_reply_ids": [99, 100]
+      }
+    ],
+    "known_not_declared": [
+      {
+        "name": "DelUserOrders",
+        "command_id": 466,
+        "business_reply_id": 186,
+        "system_reply_ids": [99, 100]
+      }
     ],
     "not_declared_for_this_candidate": ["MoveOrder", "IcebergMoveOrder", "MassCancel", "DelUserOrders"],
     "publisher_rate_cap_per_second": {"default": 30, "range": "1..3000", "semantics": "bounded local admission; no automatic retry or resend"},
-    "order_scope": "TEST only; quantity exactly one; deep-passive first-order policy; no live order while session is closed"
+    "order_scope": "TEST only; quantity exactly one; deep-passive first-order policy; no live order while session is closed",
+    "reply_policy": "business: AddOrder=179; DelOrder=177; system: 99/100; correlation never implies ordinary success",
+    "ordinary_lifecycle": [
+      "AddOrder 474",
+      "correlated business reply 179",
+      "exact private Working evidence",
+      "DelOrder 461",
+      "correlated business reply 177",
+      "exact private Cancelled evidence",
+      "zero active own orders",
+      "reconcile final position"
+    ]
   },
   "recovery": {
     "operational_states": ["Starting", "Running", "Recovering", "Failed"],

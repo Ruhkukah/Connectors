@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +37,22 @@ def require(condition: bool, message: str) -> None:
 
 def read(root: Path, relative: str) -> str:
     return (root / relative).read_text(encoding="utf-8")
+
+
+def read_locked_commands(path: Path) -> dict[str, dict[str, object]]:
+    rows: dict[str, dict[str, object]] = {}
+    pattern = re.compile(
+        r"- \{name: ([A-Za-z0-9_]+), msgid: (\d+), replies: \[([^]]+)\], payload_size: (\d+)\}"
+    )
+    for match in pattern.finditer(path.read_text(encoding="utf-8")):
+        name, msgid, replies, payload_size = match.groups()
+        rows[name] = {
+            "name": name,
+            "msgid": int(msgid),
+            "replies": [int(value.strip()) for value in replies.split(",")],
+            "payload_size": int(payload_size),
+        }
+    return rows
 
 
 def main() -> int:
@@ -96,10 +113,72 @@ def main() -> int:
     require("FORTS_ORDBOOK_REPL" not in private, "public ORDBOOK entered the AGGR host")
 
     commands = manifest["command_surface"]["declared"]
-    require({(command["name"], command["command_id"], command["reply_id"]) for command in commands} == {
-        ("AddOrder", 474, 99),
-        ("DelOrder", 461, 100),
-    }, "declared command/reply surface changed")
+    require(
+        {
+            (
+                command["name"],
+                command["command_id"],
+                command["business_reply_id"],
+                tuple(command["system_reply_ids"]),
+            )
+            for command in commands
+        }
+        == {
+            ("AddOrder", 474, 179, (99, 100)),
+            ("DelOrder", 461, 177, (99, 100)),
+        },
+        "declared command/business/system reply surface changed",
+    )
+    require(
+        manifest["command_surface"]["known_not_declared"]
+        == [
+            {
+                "name": "DelUserOrders",
+                "command_id": 466,
+                "business_reply_id": 186,
+                "system_reply_ids": [99, 100],
+            }
+        ],
+        "known undeclared DelUserOrders reply mapping changed",
+    )
+    require(
+        manifest["command_surface"]["reply_policy"]
+        == "business: AddOrder=179; DelOrder=177; system: 99/100; correlation never implies ordinary success",
+        "reply policy must keep system replies out of ordinary success",
+    )
+    require(
+        manifest["command_surface"]["ordinary_lifecycle"]
+        == [
+            "AddOrder 474",
+            "correlated business reply 179",
+            "exact private Working evidence",
+            "DelOrder 461",
+            "correlated business reply 177",
+            "exact private Cancelled evidence",
+            "zero active own orders",
+            "reconcile final position",
+        ],
+        "ordinary lifecycle reply semantics changed",
+    )
+    locked_trade = read_locked_commands(root / "spec-lock/test/plaza2/trade/SPECTRA9.9.0/manifest.yaml")
+    locked_commands = {name: row for name, row in locked_trade.items() if name in {"AddOrder", "DelOrder", "DelUserOrders"}}
+    require(
+        locked_commands
+        == {
+            "AddOrder": {"name": "AddOrder", "msgid": 474, "replies": [179, 99, 100], "payload_size": 112},
+            "DelOrder": {"name": "DelOrder", "msgid": 461, "replies": [177, 99, 100], "payload_size": 20},
+            "DelUserOrders": {"name": "DelUserOrders", "msgid": 466, "replies": [186, 99, 100], "payload_size": 49},
+        },
+        "SPECTRA 9.9 transactional lock mappings changed",
+    )
+    require(
+        manifest["command_surface"]["declared"]
+        == [
+            {"name": "AddOrder", "command_id": 474, "business_reply_id": 179, "system_reply_ids": [99, 100]},
+            {"name": "DelOrder", "command_id": 461, "business_reply_id": 177, "system_reply_ids": [99, 100]},
+        ],
+        "manifest declared commands do not match the locked mappings",
+    )
     require("MoveOrder" in manifest["command_surface"]["not_declared_for_this_candidate"], "MoveOrder claim widened")
     require("MassCancel" in manifest["command_surface"]["not_declared_for_this_candidate"], "MassCancel claim widened")
 
