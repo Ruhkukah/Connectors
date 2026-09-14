@@ -1,8 +1,11 @@
 # SPECTRA 9.9 Aggregated-mode certification matrix
 
-This is the current AGGR-only addendum to [the historical Plaza II matrix](PLAZA2_CERT_MATRIX.md). It is based on merged main `78f1dded089453d8e3d52a3f1fc26536baf1b197` and the locked SPECTRA 9.9 runtime in [`aggr_plaza2_certification_manifest_9_9.json`](aggr_plaza2_certification_manifest_9_9.json). It does not relabel earlier evidence and it does not claim Full ORDLOG readiness.
+This is the current AGGR-only addendum to [the historical Plaza II matrix](PLAZA2_CERT_MATRIX.md). It is based on merged main `78f1dded089453d8e3d52a3f1fc26536baf1b197` and the locked SPECTRA 9.9 runtime in
+[`aggr_plaza2_certification_manifest_9_9.json`](aggr_plaza2_certification_manifest_9_9.json). It does not relabel earlier evidence and it does not claim Full ORDLOG readiness.
 
-`PASS_OFFLINE` means the software-controlled behavior is covered by deterministic tests or a reviewed lock. `PASS_OBSERVATION` is the bounded, order-free T1 observation recorded on 2026-09-14. `NOT_RUN_T1_SESSION_CLOSED` means the row still needs a live run when the test market is open. `MOEX_COORDINATED` requires a scheduled exchange exercise. `DEFERRED_FULL_ORDLOG_PHASE` is outside this candidate. A command family is `N/A_UNDECLARED` only when the candidate explicitly does not claim it.
+`PASS_OFFLINE` means the software-controlled behavior is covered by deterministic tests or a reviewed lock. `PASS_OBSERVATION` is the bounded, order-free T1 observation recorded on 2026-09-14.
+`NOT_RUN_T1_SESSION_CLOSED` means the row still needs a live run when the test market is open. `MOEX_COORDINATED` requires a scheduled exchange exercise.
+`DEFERRED_FULL_ORDLOG_PHASE` is outside this candidate. A command family is `N/A_UNDECLARED` only when the candidate explicitly does not claim it.
 
 | Row | Scope | Classification | Current result | Evidence or next gate |
 |---|---|---|---|---|
@@ -43,4 +46,5 @@ This is the current AGGR-only addendum to [the historical Plaza II matrix](PLAZA
 
 ## Current gate
 
-The matrix is intentionally **not ready** for the final certification freeze. The test market is closed today, so no Add, Working, Cancel, restart, or full-day claim is being manufactured. The next live session must use a fresh current-session discovery and a new candidate binary/hash package; this matrix does not authorize an order by itself.
+The matrix is intentionally **not ready** for the final certification freeze. The test market is closed today, so no Add, Working, Cancel, restart, or full-day claim is being manufactured.
+The next live session must use a fresh current-session discovery and a new candidate binary/hash package; this matrix does not authorize an order by itself.

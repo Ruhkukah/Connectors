@@ -99,12 +99,24 @@
   },
   "recovery": {
     "operational_states": ["Starting", "Running", "Recovering", "Failed"],
-    "recoverable": ["connection CLOSED/ERROR", "router transport loss", "AGGR listener loss", "private listener loss after ONLINE", "publisher/reply invalidation"],
+    "recoverable": [
+      "connection CLOSED/ERROR",
+      "router transport loss",
+      "AGGR listener loss",
+      "private listener loss after ONLINE",
+      "publisher/reply invalidation"
+    ],
     "fatal": ["schema incompatibility", "decode/callback corruption", "identity conflict", "evidence loss", "internal state corruption"],
     "retry_interval_ms": 1000,
     "deadline_ms": 60000,
     "rebootstrap": "fresh transport resources and fresh POS-to-TRADE anchor; every listener snapshot+ONLINE before readiness",
-    "safety": ["effective readiness false during recovery", "Add disabled", "no automatic Add retransmit", "no automatic Cancel/flatten", "active epoch remains unresolved until explicit reconciliation"]
+    "safety": [
+      "effective readiness false during recovery",
+      "Add disabled",
+      "no automatic Add retransmit",
+      "no automatic Cancel/flatten",
+      "active epoch remains unresolved until explicit reconciliation"
+    ]
   },
   "spectra_9_9_audit": {
     "official_removed_surfaces": [
@@ -132,24 +144,40 @@
       "FORTS_REFDATA_REPL.session.inter_cl_state"
     ],
     "removed_tables_not_in_aggr_required_path": ["FORTS_REFDATA_REPL.fut_intercl_info", "FORTS_REFDATA_REPL.opt_intercl_info"],
-    "compatible_additions": ["FORTS_PART_REPL.part.premium_blocked", "FORTS_TRADE_REPL.orders_log.prevorder_id", "FORTS_USERORDERBOOK_REPL.orders.prevorder_id"],
+    "compatible_additions": [
+      "FORTS_PART_REPL.part.premium_blocked",
+      "FORTS_TRADE_REPL.orders_log.prevorder_id",
+      "FORTS_USERORDERBOOK_REPL.orders.prevorder_id"
+    ],
     "production_usage": {
       "aggr20_md": "no references to removed fields or tables",
-      "private_state": "legacy members remain as optional SPECTRA93 shadows; absent RowReader values default empty/zero and never gate readiness, terms, identity, limits or orders",
+      "private_state": "legacy members remain as optional SPECTRA93 shadows; absent RowReader values default empty/zero",
+      "private_state_safety": "legacy shadows never gate readiness, terms, identity, limits or orders",
       "trade_safety_fingerprint": "removed PART shadow fields excluded",
       "runtime_probe": "removals are explicit reviewed compatibility exceptions; unknown required drift remains fatal"
     },
     "source_of_truth": "spec-lock/test/plaza2/cgate99/consumed_replication_compatibility.json"
   },
   "matrix_policy": {
-    "AGGR_REQUIRED": "connections, listener ownership, bootstrap/ONLINE/readiness, LifeNum/ClearDeleted, bounded recovery, publisher/replies/rate, restart/reconciliation, clock/logging, ordinary Add/Cancel lifecycle",
+    "AGGR_REQUIRED": [
+      "connections",
+      "listeners",
+      "bootstrap/ONLINE/readiness",
+      "LifeNum/ClearDeleted",
+      "bounded recovery",
+      "publisher/replies",
+      "restart/reconciliation",
+      "clock/logging"
+    ],
+    "AGGR_REQUIRED_order_lifecycle": "ordinary Add/Cancel lifecycle",
     "DEFERRED_FULL_ORDLOG_PHASE": "public ORDLOG/ORDBOOK/p2ordbook L3 mutation and capacity claims",
     "MOEX_COORDINATED": "TCS restart/reload, schema modification, backup/access-server switch, exchange/router scheduled transitions",
     "NA": "command families not declared by the candidate; they are not silently treated as tested"
   },
   "evidence": {
     "observation_only": ".codex-tmp/merged-main-20260914/live-observation-summary.json",
-    "observation_result": "PASS: fresh session 11705, ALRS-9.26/4519447, exact PART identity, limits_set=true, all effective readiness true, zero orders and zero starting position, BBO age 1ms, no publisher messages",
+    "observation_result": "PASS: fresh session 11705, ALRS-9.26/4519447, exact PART identity, limits_set=true, all effective readiness true",
+    "observation_result_detail": "zero orders and zero starting position, BBO age 1ms, no publisher messages",
     "live_order_lifecycle": "NOT_RUN_T1_SESSION_CLOSED",
     "full_day_timeline": "NOT_RUN_T1_SESSION_CLOSED",
     "restart_and_working_order_scenarios": "NOT_RUN_T1_SESSION_CLOSED",
@@ -157,7 +185,13 @@
   },
   "verdict": {
     "value": "AGGR_NOT_READY_FOR_MOEX_CERTIFICATION",
-    "reason": "software-controlled 9.9 audit and observation gates are prepared, but the required current T1 full-day observation, ordinary Add/accepted Working/Cancel/Cancelled lifecycle, and restart/working-order live scenarios remain unrun; today's session is closed",
+    "reason": "software-controlled 9.9 audit and observation gates are prepared, but the required current T1 live scenarios remain unrun",
+    "reason_detail": [
+      "full-day observation",
+      "ordinary Add/accepted Working/Cancel/Cancelled lifecycle",
+      "restart/working-order cases",
+      "today's session is closed"
+    ],
     "freeze_policy": "do not freeze or deploy a certification candidate until review, a fresh Release/sanitizer build, and the missing live evidence pass"
   }
 }
