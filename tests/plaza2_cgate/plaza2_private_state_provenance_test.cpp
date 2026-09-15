@@ -356,11 +356,66 @@ void test_future_terms() {
             "clone keeps committed row without staged update");
 }
 
+void test_system_messages() {
+    using namespace moex::plaza2::private_state;
+    constexpr auto stream = StreamCode::kFortsRefdataRepl;
+    constexpr auto table = TableCode::kFortsRefdataReplSysMessages;
+    Plaza2PrivateStateProjector projector;
+    EngineState state;
+    state.streams.push_back({.stream_code = stream});
+    set_lifenum(projector, state, stream, 7);
+
+    begin_transaction(projector, state, stream);
+    stage_row(projector, state, stream, table, 11,
+              {signed_field(FieldCode::kFortsRefdataReplSysMessagesReplId, 101),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesReplRev, 11),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesReplAct, 0),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesMsgId, 9001),
+               text_field(FieldCode::kFortsRefdataReplSysMessagesLangCode, "ru"),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesTypeId, 2),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesMoment, 1700000012),
+               text_field(FieldCode::kFortsRefdataReplSysMessagesText, "session notice"),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesUrgency, 1),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesStatus, 0),
+               text_field(FieldCode::kFortsRefdataReplSysMessagesMessageBody, "full notice")});
+    // A second optional-content row proves that missing text/body stays a
+    // valid informational row and cannot affect connector readiness.
+    stage_row(projector, state, stream, table, 12,
+              {signed_field(FieldCode::kFortsRefdataReplSysMessagesReplId, 102),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesReplRev, 12),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesMsgId, 9002),
+               text_field(FieldCode::kFortsRefdataReplSysMessagesLangCode, "en"),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesMoment, 1700000013),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesUrgency, 0),
+               signed_field(FieldCode::kFortsRefdataReplSysMessagesStatus, 1)});
+    require(projector.system_messages().empty(), "uncommitted system messages must remain invisible");
+    commit_transaction(projector, state, stream, 2);
+
+    const auto messages = projector.system_messages();
+    require(messages.size() == 2, "committed system messages should be retained");
+    require(messages[0].repl_id == 101 && messages[0].msg_id == 9001 && messages[0].lang_code == "ru",
+            "system message identity/language should be decoded");
+    require(messages[0].moment == 1700000012 && messages[0].urgency == 1 && messages[0].status == 0 &&
+                messages[0].text == "session notice" && messages[0].message_body == "full notice",
+            "system message payload should be decoded");
+    require(messages[0].source.present && messages[0].source.repl_rev == 11 && messages[0].source.lifenum == 7,
+            "system message provenance should retain revision and LifeNum");
+    require(messages[1].text.empty() && messages[1].message_body.empty(),
+            "missing optional system message content must remain safe");
+
+    clear_table(projector, state, stream, table, 12);
+    require(projector.system_messages().size() == 1 && projector.system_messages()[0].repl_id == 102,
+            "ClearDeleted must remove only older system-message revisions");
+    set_lifenum(projector, state, stream, 8);
+    require(projector.system_messages().empty(), "LifeNum change must invalidate old system messages");
+}
+
 } // namespace
 
 int main() {
     try {
         test_future_terms();
+        test_system_messages();
         {
             using K = moex::plaza2::private_state::LimitParticipantKind;
             using moex::plaza2::private_state::classify_limit_participant;

@@ -390,6 +390,16 @@ add_test(
         "${MOEX_SOURCE_ROOT}")
 
 add_test(
+    NAME plaza2_aggr_9_9_manifest_check
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/assert_plaza2_aggr_9_9_manifest.py"
+        "${MOEX_SOURCE_ROOT}")
+
+add_test(
+    NAME plaza2_aggr_9_9_matrix_authority_check
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/assert_plaza2_aggr_9_9_matrix.py"
+        "${MOEX_SOURCE_ROOT}")
+
+add_test(
     NAME plaza2_trade_spec_lock_check
     COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/assert_plaza2_trade_spec_lock.py"
         "${MOEX_SOURCE_ROOT}"

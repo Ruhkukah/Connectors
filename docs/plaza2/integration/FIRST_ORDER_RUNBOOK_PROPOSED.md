@@ -64,7 +64,7 @@ position/order evidence independently of this connector. This procedure grants n
 
 ## Process and transport contingencies
 
-If the owner stays alive but transport fails, use qualified bounded recovery and PR59 fresh exact reconciliation
+If the owner stays alive but transport fails, use qualified controlled retry/indefinite wait and PR59 fresh exact reconciliation
 plus new explicit recovered-Cancel approval. If the process dies, use PR60 v2 restart recovery-only mode: fresh
 full bootstrap, exact historical session/account identity, fresh proof or new approval. Never reuse a prior
 artifact, reply ID or Add authority for a resend. Another uncertain Cancel requires another fresh reconciliation

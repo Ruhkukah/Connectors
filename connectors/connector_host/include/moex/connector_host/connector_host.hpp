@@ -3,7 +3,9 @@
 #include "moex/plaza2_trade/plaza2_test_trade_transport.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace moex::connector_host {
 
@@ -35,6 +37,7 @@ struct ConnectorHostSnapshot {
     plaza2_trade::Plaza2TestSessionHostMode mode{plaza2_trade::Plaza2TestSessionHostMode::LiveTestPreSend};
     std::string runtime_compatibility;
     std::string runtime_scheme_sha256;
+    std::string connection_app_name;
     bool publisher_handle_open{false};
     bool reply_handle_open{false};
     bool private_snapshot_state_ready{false};
@@ -106,6 +109,8 @@ struct ConnectorHostQualificationSnapshot {
     std::vector<plaza2::private_state::InstrumentSnapshot> instruments;
     std::vector<plaza2::private_state::PositionSnapshot> positions;
     std::vector<plaza2::private_state::OwnOrderSnapshot> active_orders;
+    std::vector<plaza2::private_state::SystemMessageSnapshot> system_messages;
+    std::string connection_app_name;
     plaza2::cgate::Plaza2PublisherRateMetrics rate;
     std::size_t visible_limit_rows{}, matching_client_limit_rows{}, matching_broker_limit_rows{}, unknown_limit_rows{};
     bool client_code_is_brokerage_account{false};
@@ -124,7 +129,8 @@ struct ConnectorHostQualificationSnapshot {
 };
 
 [[nodiscard]] std::string_view host_state_name(ConnectorHostState state) noexcept;
-[[nodiscard]] std::string render_snapshot(const ConnectorHostSnapshot& snapshot, bool json);
+[[nodiscard]] std::string render_snapshot(const ConnectorHostSnapshot& snapshot, bool json,
+                                          const ConnectorHostQualificationSnapshot* qualification = nullptr);
 
 // Single-threaded owner. Callers receive values, never transport/projector pointers.
 class ConnectorHost final {

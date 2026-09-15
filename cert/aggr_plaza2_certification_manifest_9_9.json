@@ -1,0 +1,537 @@
+{
+  "schema": "moex.plaza2.aggr-certification-manifest.v1",
+  "scope": "SPECTRA 9.9 / CGate 9.9 / T1 / Aggregated Order Book",
+  "source_base_sha": "78f1dded089453d8e3d52a3f1fc26536baf1b197",
+  "branch_policy": "descendant_of_source_base; final candidate SHA is filled only after review and a fresh build",
+  "today": {
+    "date": "2026-09-14",
+    "t1_session": "CLOSED_AFTER_THE_OBSERVED_SESSION",
+    "live_order_authorized": false,
+    "router_or_connector_mutation": false
+  },
+  "official_sources": {
+    "ftp_listing": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test",
+    "t1_schedule": "https://www.moex.com/s438",
+    "spectra_9_9_change_list": "https://www.moex.com/media/spisok-izmenenij-v-versii-9-9.pdf",
+    "retrieved_date": "2026-09-14",
+    "certification_authority": {
+      "url": "https://www.moex.com/files/4xgv6e2x1paqr1zkn2fmq093cj",
+      "title": "ПОРЯДОК СЕРТИФИКАЦИИ ВНЕШНИХ ПРОГРАММНО-ТЕХНИЧЕСКИХ СРЕДСТВ (ВПТС) ПАО МОСКОВСКАЯ БИРЖА",
+      "effective_or_approved_date": "2023-01-30",
+      "retrieved_date": "2026-09-14",
+      "downloaded_document_sha256": "91c24dd5d03947e03f4d2b9fa3a78ab1b4b9d5c8fc43dc91e9e7205135caf2f1",
+      "section_used": "Appendix 1 Plaza II (Connection 1-8, Replication 1-8, Sending 1-7) and general requirements on pp. 2-4",
+      "authority_note": "Approved by MOEX order МБ-П-2023-207 dated 30.01.2023; internal C/R/S labels remain one-to-one traceability IDs, not MOEX identifiers."
+    },
+    "vpts_technical_requirements": {
+      "url": "https://www.moex.com/files/41w8g1tt63pd9tq9drmk4n3g4z",
+      "title": "Порядок сертификации ВПТС ПАО Московская Биржа — текущие Требования к сопряжению с ПТК ТЦ",
+      "effective_or_current_edition_date": "2020-08-17",
+      "date_basis": "Current edition effective 17.08.2020; approved by MOEX order МБ-П-2020-1938 dated 07.08.2020",
+      "retrieved_date": "2026-09-14",
+      "downloaded_document_sha256": "a775f5c5aca3cefba58498549d8ff076055091faea757a6a0fbf1ba848f4a4a2",
+      "section_used": "Section 2.1-2.12: LifeNum/ClearDeleted; admin; app identity; clock; Exchange/NCC; monitoring; redundancy"
+    },
+    "current_linux_distribution": {
+      "filename": "cgate_linux_amd64-9.9.1853.zip",
+      "sha256": "49da634749203a919e69132594198348652acb5e731416c8a39bb34969364ce2",
+      "status": "matches_existing_locked_distribution"
+    },
+    "current_linux_package": {
+      "filename": "cgate_9.9.0-2008_amd64.deb",
+      "sha256": "15047b505bfdb2c73c6ec6c4457ddf05b690a234cf98c41f085d8b07c7e60eb2"
+    },
+    "windows_listing_is_not_active_linux_runtime": "setup_SpectraCGate_x64_v9.9.1887.msi"
+  },
+  "runtime_lock": {
+    "release": "SPECTRA9.9.0",
+    "dds_version": "990.1.6.42744",
+    "version": "6.102.0.6118",
+    "library_sha256": "f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f",
+    "header_sha256": "b057b537034b23e960f27477dab6738ba5d751ac698287a40d8f95ba7a1ef78f",
+    "scheme_sha256": "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746",
+    "compatibility": "CompatibleWithWarnings",
+    "fatal_drift_count": 0,
+    "warning_drift_count": 194,
+    "lock_manifest": "spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/manifest.yaml"
+  },
+  "observed_candidate_identity": {
+    "vps_binary_sha256": "f62fd2a5ed6d68be99433e1e837bed9b246d7ee4dd403edf7c8c2723d264bead",
+    "router_version": "P2MQRouter-229.123.0.7233",
+    "router_binary_sha256": "6ea6ad50d6e3300fee99e43900eb22a21c207166f2455d2fc850f7e30bc91423",
+    "runtime_config_hashes": {
+      "client_t1_ini": "2d3b265ad71fa28d7b5cb448f5e5dd3ec157b4791cf129b205b10be987ed50b3",
+      "order_profile": "69cac88494e23bb2dd122c9ca888bb9b364bf7d5b790a6dd89064c7de5bc9ef0"
+    },
+    "binary_status": "observation_only_build_from_source_base; not a frozen certification candidate"
+  },
+  "topology": {
+    "owner": "one Plaza2TestSessionHost single-owner thread",
+    "connection": {
+      "settings_shape": "p2tcp://127.0.0.1:4101;app_name=<unique>;timeout=2000",
+      "endpoint": "dedicated local T1 router",
+      "environment": "TEST"
+    },
+    "private_replication": [
+      {
+        "stream": "FORTS_POS_REPL",
+        "alias": "POS",
+        "role": "position and POS.info replay anchor"
+      },
+      {
+        "stream": "FORTS_PART_REPL",
+        "alias": "PART",
+        "role": "participant limits"
+      },
+      {
+        "stream": "FORTS_TRADE_REPL",
+        "alias": "Trade",
+        "role": "private orders/trades; opened after POS anchor"
+      },
+      {
+        "stream": "FORTS_USERORDERBOOK_REPL",
+        "alias": "OrdBook",
+        "role": "private order census"
+      },
+      {
+        "stream": "FORTS_REFDATA_REPL",
+        "alias": "REFDATA",
+        "role": "instrument/session terms"
+      }
+    ],
+    "status_replication": [
+      {
+        "stream": "FORTS_SESSIONSTATE_REPL",
+        "role": "current session status"
+      },
+      {
+        "stream": "FORTS_INSTRUMENTSTATE_REPL",
+        "role": "current instrument status"
+      }
+    ],
+    "aggregated_replication": {
+      "stream": "FORTS_AGGR20_REPL",
+      "scheme_alias": "Aggr",
+      "role": "AGGR20 market-data book"
+    },
+    "order_io": {
+      "publisher": "p2mq://FORTS_SRV;category=FORTS_MSG;name=<unique>;timeout=5000",
+      "reply_listener": "p2mqreply://;ref=<publisher-name>",
+      "ownership": "same host and owner as all listeners"
+    },
+    "bootstrap_order": [
+      "connection ACTIVE",
+      "POS fresh snapshot/info",
+      "TRADE opened from immutable POS anchor",
+      "TRADE ONLINE",
+      "USERORDERBOOK fresh snapshot",
+      "PART fresh snapshot",
+      "REFDATA fresh snapshot",
+      "SESSIONSTATE and INSTRUMENTSTATE fresh state",
+      "AGGR20 fresh snapshot and ONLINE",
+      "publisher and reply listener ACTIVE"
+    ]
+  },
+  "official_matrix": {
+    "path": "cert/AGGR_CERT_MATRIX_9_9.md",
+    "authority": "2023 MOEX VPTS procedure; internal stable IDs map one-to-one to current Appendix 1 controls",
+    "authority_source": "official_sources.certification_authority",
+    "general_requirements": "explicit general_rows above; no requirement is silently omitted",
+    "appendix1_equivalence": {
+      "result": "EQUIVALENT_CONTROLS_NO_IMPLEMENTATION_CHANGE",
+      "source_control_groups": [
+        "Connection 1-8 -> C01-C08",
+        "Replication 1-8 -> R01-R08",
+        "Sending 1-7 -> S01-S07"
+      ],
+      "basis": "Current 2023 Appendix 1 groups and numbering are equivalent to the prior mapping; wording re-audited; no implementation remap required."
+    },
+    "general_rows": [
+      {
+        "name": "complete interaction logs",
+        "classification": "AGGR_REQUIRED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "NOT_RUN_T1_SESSION_CLOSED",
+        "evidence": "complete indexed interaction/result log and hash index"
+      },
+      {
+        "name": "network interruption recovery",
+        "classification": "AGGR_REQUIRED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "NOT_RUN_T1_SESSION_CLOSED",
+        "evidence": "controlled retry with indefinite operator-cancellable wait/no-resend evidence"
+      },
+      {
+        "name": "application restart during trading",
+        "classification": "AGGR_REQUIRED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "NOT_RUN_T1_SESSION_CLOSED",
+        "evidence": "checkpoint/reconciliation evidence"
+      },
+      {
+        "name": "TCS restart requiring reload",
+        "classification": "MOEX_COORDINATED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "MOEX_COORDINATED",
+        "evidence": "MOEX-controlled reload exercise"
+      },
+      {
+        "name": "TCS restart not requiring reload",
+        "classification": "MOEX_COORDINATED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "MOEX_COORDINATED",
+        "evidence": "MOEX-controlled no-reload exercise"
+      },
+      {
+        "name": "reserve/backup access server switching",
+        "classification": "MOEX_COORDINATED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "MOEX_COORDINATED",
+        "evidence": "MOEX-provisioned alternate access server"
+      },
+      {
+        "name": "full SPECTRA trading-day exercise",
+        "classification": "AGGR_REQUIRED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "NOT_RUN_T1_SESSION_CLOSED",
+        "evidence": "published transitions and declared command types"
+      },
+      {
+        "name": "administrator/emergency procedure",
+        "classification": "AGGR_REQUIRED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "NOT_RUN_T1_SESSION_CLOSED",
+        "evidence": "docs/plaza2/AGGR_OPERATOR_EMERGENCY_PROCEDURE_9_9.md"
+      },
+      {
+        "name": "per-instance customer-software identifier",
+        "classification": "AGGR_REQUIRED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "NOT_RUN_T1_SESSION_CLOSED",
+        "evidence": "nonempty CGate app_name and distinct-instance test"
+      },
+      {
+        "name": "log/system-time ±1 sec",
+        "classification": "AGGR_REQUIRED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "NOT_RUN_T1_SESSION_CLOSED",
+        "evidence": "clock evidence gate with paired local/exchange timestamps"
+      },
+      {
+        "name": "Exchange/NCC messages",
+        "classification": "AGGR_REQUIRED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "NOT_RUN_T1_SESSION_CLOSED",
+        "evidence": "FORTS_REFDATA_REPL.sys_messages retained and surfaced"
+      },
+      {
+        "name": "administration/monitoring for broker systems",
+        "classification": "N/A_PRODUCT_SCOPE",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "N/A_PRODUCT_SCOPE",
+        "evidence": "proprietary connector via broker account; not a broker platform offered to clients"
+      },
+      {
+        "name": "one-to-one MOEX terminology",
+        "classification": "AGGR_REQUIRED",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "NOT_RUN_T1_SESSION_CLOSED",
+        "evidence": "matrix terms mirror current procedure and VPTS vocabulary"
+      },
+      {
+        "name": "fixed SPECTRA subsystem routing",
+        "classification": "N/A_FIXED_SPECTRA_PROFILE",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "N/A_FIXED_SPECTRA_PROFILE",
+        "evidence": "fixed FORTS/SPECTRA profile exposes no uncontrolled subsystem selector"
+      },
+      {
+        "name": "broker-system/client-operation applicability",
+        "classification": "N/A_PRODUCT_SCOPE",
+        "offline_result": "PASS_OFFLINE",
+        "t1_result": "N/A_PRODUCT_SCOPE",
+        "evidence": "connector is proprietary client software, not a broker system operated for clients"
+      }
+    ]
+  },
+  "qualification_runbook": "docs/plaza2/AGGR_T1_QUALIFICATION_9_9.md",
+  "command_surface": {
+    "declared": [
+      {
+        "name": "AddOrder",
+        "command_id": 474,
+        "business_reply_id": 179,
+        "system_reply_ids": [
+          99,
+          100
+        ]
+      },
+      {
+        "name": "DelOrder",
+        "command_id": 461,
+        "business_reply_id": 177,
+        "system_reply_ids": [
+          99,
+          100
+        ]
+      }
+    ],
+    "known_not_declared": [
+      {
+        "name": "DelUserOrders",
+        "command_id": 466,
+        "business_reply_id": 186,
+        "system_reply_ids": [
+          99,
+          100
+        ]
+      }
+    ],
+    "not_declared_for_this_candidate": [
+      "MoveOrder",
+      "IcebergMoveOrder",
+      "MassCancel",
+      "DelUserOrders"
+    ],
+    "publisher_rate_cap_per_second": {
+      "default": 30,
+      "range": "1..3000",
+      "semantics": "bounded local admission; no automatic retry or resend"
+    },
+    "order_scope": "TEST only; quantity exactly one; deep-passive first-order policy; no live order while session is closed",
+    "reply_policy": "business: AddOrder=179; DelOrder=177; system: 99/100; correlation never implies ordinary success",
+    "ordinary_lifecycle": [
+      "AddOrder 474",
+      "both: correlated business reply 179 + exact matching private Working evidence (either may arrive first)",
+      "DelOrder 461 only after both Add facts agree",
+      "both: correlated business reply 177 + exact private Cancelled evidence + zero active own orders (either may arrive first)",
+      "reconcile final position"
+    ],
+    "asynchronous_channel_policy": "business/private channels are independent; braces are conjunctions; either may arrive first; decode 99/100"
+  },
+  "recovery": {
+    "operational_states": [
+      "Starting",
+      "Running",
+      "Recovering",
+      "Failed"
+    ],
+    "recoverable": [
+      "local router unavailable or disconnected",
+      "router connected but Plaza upstream unavailable",
+      "Plaza connectivity loss",
+      "declared listener CLOSED/ERROR due transport availability",
+      "known declared service temporarily returns SERV:NO_SERVICE",
+      "snapshot/recovery service unavailable",
+      "AGGR listener loss",
+      "private listener loss after ONLINE",
+      "publisher/reply invalidation"
+    ],
+    "fatal": [
+      "schema incompatibility",
+      "decode/callback corruption",
+      "identity conflict",
+      "evidence loss",
+      "journal/evidence corruption",
+      "internal invariant failure",
+      "invalid static configuration or service absent from the reviewed scheme"
+    ],
+    "retry_interval_ms": 1000,
+    "alert_after_ms": 60000,
+    "terminal_recovery_deadline_ms": null,
+    "operator_cancellable_wait": true,
+    "waiting_states": [
+      "WaitingForRouter",
+      "WaitingForPlaza",
+      "WaitingForService",
+      "RecoveringBootstrap"
+    ],
+    "diagnostics": [
+      "first cause",
+      "current cause",
+      "wait start and duration",
+      "attempt count and last attempt time",
+      "involved service/listener",
+      "current transport health",
+      "unresolved order epoch"
+    ],
+    "rebootstrap": "fresh transport resources and fresh POS-to-TRADE anchor; every listener snapshot+ONLINE before readiness",
+    "upstream_plaza_fault_plan": {
+      "scope": "C05-C07 client-controlled T1 equivalent before any MOEX_COORDINATED fallback",
+      "method": "dedicated router stays running; block only outbound MOEX T1 IP/ports; connector-router traffic stays intact",
+      "sequence": [
+        "C05: connect and prove router reachable while upstream Plaza is unavailable; wait/no-send/no-current-stream",
+        "C06: remove the targeted block and prove the same connector detects upstream availability, fresh bootstrap and readiness",
+        "C07: with zero orders, reapply the block; prove readiness/command loss and no stale state, then remove it and prove fresh rebootstrap"
+      ],
+      "safety": [
+        "discover endpoints from protected runtime configuration without printing credentials",
+        "block only MOEX destination IP/port traffic for the dedicated router; never SSH or unrelated VPS traffic",
+        "schedule automatic rollback before applying any rule",
+        "record original network state and verify rollback after every case",
+        "begin with zero active orders and known position; defer Working-order transport loss until zero-order recovery passes"
+      ],
+      "fallback": "unsafe upstream injection: preserve offline; classify only live portion MOEX_COORDINATED with reason"
+    },
+    "safety": [
+      "effective readiness false during recovery",
+      "Add disabled",
+      "no automatic Add retransmit",
+      "no automatic Cancel/flatten",
+      "active epoch remains unresolved until explicit reconciliation"
+    ]
+  },
+  "spectra_9_9_audit": {
+    "official_removed_surfaces": [
+      "FORTS_PART_REPL.part.vm_intercl",
+      "FORTS_PART_REPL.part.premium_intercl",
+      "FORTS_PART_REPL.part_sa.vm_intercl",
+      "FORTS_PART_REPL.part_sa.premium_intercl",
+      "FORTS_REFDATA_REPL.session.inter_cl_begin",
+      "FORTS_REFDATA_REPL.session.inter_cl_end",
+      "FORTS_REFDATA_REPL.session.inter_cl_state",
+      "FORTS_REFDATA_REPL.sess_option_series.step_price_interclr",
+      "FORTS_REFDATA_REPL.fut_sess_contents.step_price_interclr",
+      "FORTS_REFDATA_REPL.fut_instruments.step_price_interclr",
+      "FORTS_REFDATA_REPL.fut_exec_orders.xamount_apply",
+      "FORTS_REFDATA_REPL.opt_exec_orders.xamount_apply",
+      "FORTS_REFDATA_REPL.fut_intercl_info",
+      "FORTS_REFDATA_REPL.opt_intercl_info"
+    ],
+    "reviewed_absent_fields": [
+      "FORTS_PART_REPL.part.vm_intercl",
+      "FORTS_PART_REPL.part.premium_intercl",
+      "FORTS_REFDATA_REPL.fut_instruments.step_price_interclr",
+      "FORTS_REFDATA_REPL.session.inter_cl_begin",
+      "FORTS_REFDATA_REPL.session.inter_cl_end",
+      "FORTS_REFDATA_REPL.session.inter_cl_state"
+    ],
+    "removed_tables_not_in_aggr_required_path": [
+      "FORTS_REFDATA_REPL.fut_intercl_info",
+      "FORTS_REFDATA_REPL.opt_intercl_info"
+    ],
+    "compatible_additions": [
+      "FORTS_PART_REPL.part.premium_blocked",
+      "FORTS_TRADE_REPL.orders_log.prevorder_id",
+      "FORTS_USERORDERBOOK_REPL.orders.prevorder_id"
+    ],
+    "production_usage": {
+      "aggr20_md": "no references to removed fields or tables",
+      "private_state": "legacy members remain as optional SPECTRA93 shadows; absent RowReader values default empty/zero",
+      "private_state_safety": "legacy shadows never gate readiness, terms, identity, limits or orders",
+      "trade_safety_fingerprint": "removed PART shadow fields excluded",
+      "runtime_probe": "removals are explicit reviewed compatibility exceptions; unknown required drift remains fatal"
+    },
+    "source_of_truth": "spec-lock/test/plaza2/cgate99/consumed_replication_compatibility.json"
+  },
+  "matrix_policy": {
+    "AGGR_REQUIRED": [
+      "connections",
+      "listeners",
+      "bootstrap/ONLINE/readiness",
+      "LifeNum/ClearDeleted",
+      "controlled retry with indefinite operator-cancellable recovery wait",
+      "publisher/replies",
+      "restart/reconciliation",
+      "clock/logging"
+    ],
+    "AGGR_REQUIRED_order_lifecycle": "ordinary Add/Cancel lifecycle",
+    "DEFERRED_FULL_ORDLOG_PHASE": "public ORDLOG/ORDBOOK/p2ordbook L3 mutation and capacity claims",
+    "MOEX_COORDINATED": "TCS restart/reload, schema modification, backup/access-server switch, exchange/router scheduled transitions",
+    "NA": "command families not declared by the candidate; they are not silently treated as tested",
+    "authority": "current 2023-01-30 certification procedure and current 2020-08-17 VPTS requirements",
+    "allowed_general_classifications": [
+      "AGGR_REQUIRED",
+      "MOEX_COORDINATED",
+      "N/A_CLIENT_SCHEME",
+      "N/A_PRODUCT_SCOPE",
+      "N/A_FIXED_SPECTRA_PROFILE",
+      "DEFERRED_FULL_ORDLOG_PHASE"
+    ]
+  },
+  "evidence": {
+    "t1_evidence_freeze_20260915": {
+      "preservation": "all existing 2026-09-15 T1 evidence is immutable",
+      "historical_c03": "PASS_T1 @ c4a0e392e0ed05eec7e264e3fc3cced6def22730; rerun required for the post-correction candidate",
+      "historical_r2_negative": "PARTIAL_SERVICE_AVAILABILITY -> WAIT/NOT_READY -> ZERO_POSTS; old bounded deadline behavior is not certification-compliant",
+      "historical_r2_interpretation": "TRANSIENT_EXTERNAL_T1_SERVICE_AVAILABILITY",
+      "matching_probe": "TRADE and TRADE_MATCH1 ONLINE; SESSIONSTATE, INSTRUMENTSTATE, SECURITYGROUPSTATE ONLINE; no router/config/firewall change",
+      "matching_forward_compatibility": "generic matching-aware topology remains a separate backlog item; no MATCH1-specific production behavior is implemented"
+    },
+    "observation_only": ".codex-tmp/merged-main-20260914/live-observation-summary.json",
+    "observation_result": "PASS: fresh session 11705, ALRS-9.26/4519447, exact PART identity, limits_set=true, all effective readiness true",
+    "observation_result_detail": "zero orders and zero starting position, BBO age 1ms, no publisher messages",
+    "live_order_lifecycle": "NOT_RUN_T1_SESSION_CLOSED",
+    "full_day_timeline": "NOT_RUN_T1_SESSION_CLOSED",
+    "restart_and_working_order_scenarios": "NOT_RUN_T1_SESSION_CLOSED",
+    "historical_failures": "preserved under their original source/binary/evidence identities",
+    "clock_gate": "NOT_RUN_T1_SESSION_CLOSED",
+    "system_messages": "NOT_RUN_T1_SESSION_CLOSED",
+    "instance_identity": "offline app_name uniqueness and nonempty validation; live receipt pending",
+    "emergency_procedure": "offline document present; live operator acknowledgment pending"
+  },
+  "verdict": {
+    "value": "AGGR_NOT_READY_FOR_MOEX_CERTIFICATION",
+    "reason": "software-controlled 9.9 audit and observation gates are prepared, but the required current T1 live scenarios remain unrun",
+    "reason_detail": [
+      "full-day observation",
+      "ordinary Add/accepted Working/Cancel/Cancelled lifecycle",
+      "restart/working-order cases",
+      "today's session is closed",
+      "clock/system-message/instance evidence is prepared offline but cannot be claimed while T1 is closed"
+    ],
+    "freeze_policy": "do not freeze or deploy a certification candidate until review, a fresh Release/sanitizer build, and the missing live evidence pass"
+  },
+  "instance_identity": {
+    "field": "app_name",
+    "required": "nonempty for every live TEST connection",
+    "operator_surface": "ConnectorHostSnapshot.connection_app_name and qualification snapshot",
+    "generation": "operator default connector_host_<pid>_<monotonic-token>; explicit names remain operator-reviewed",
+    "simultaneous_instance_proof": "instance-token test proves generated identities differ; publisher and p2mqreply references match the same name",
+    "secrets": "identity evidence contains no credentials or raw protected settings"
+  },
+  "clock_gate": {
+    "max_skew_ns": 1000000000,
+    "required_fields": [
+      "sync_source",
+      "sync_status_ok",
+      "wall_offset_ns",
+      "monotonic_clock_id",
+      "paired_samples"
+    ],
+    "paired_sample_fields": [
+      "local_wall_ns",
+      "local_monotonic_ns",
+      "exchange_wall_ns"
+    ],
+    "pass_policy": "every paired local/exchange wall timestamp must be within one second; missing sync/status/offset/monotonic/sample fails the gate",
+    "t1_status": "NOT_RUN_T1_SESSION_CLOSED",
+    "failure_effect": "certification PASS is forbidden when this gate fails or is absent"
+  },
+  "system_messages": {
+    "table": "FORTS_REFDATA_REPL.sys_messages",
+    "subscription": "already covered by the existing FORTS_REFDATA_REPL subscription; no new subscription",
+    "fields": [
+      "repl_id",
+      "repl_rev",
+      "repl_act",
+      "msg_id",
+      "lang_code",
+      "type_id",
+      "moment",
+      "text",
+      "urgency",
+      "status",
+      "message_body"
+    ],
+    "surface": "Plaza2PrivateStateProjector.system_messages, ConnectorHostQualificationSnapshot, moexctl qualify JSON",
+    "lifecycle": "transaction-commit visibility with REFDATA LifeNum/ClearDeleted invalidation; malformed optional text/body remains harmless",
+    "t1_status": "NOT_RUN_T1_SESSION_CLOSED"
+  },
+  "terminology_scope": {
+    "product": "SPECTRA 9.9 FORTS/Plaza II Aggregated Order Book profile",
+    "subsystem_routing": "fixed profile; no uncontrolled subsystem choice is exposed",
+    "broker_system_applicability": "N/A_PRODUCT_SCOPE: proprietary connector using a broker account, not a broker platform offered to clients"
+  },
+  "operator_emergency_procedure": "docs/plaza2/AGGR_OPERATOR_EMERGENCY_PROCEDURE_9_9.md"
+}

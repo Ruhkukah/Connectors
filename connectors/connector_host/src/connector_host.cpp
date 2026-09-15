@@ -686,9 +686,10 @@ struct ConnectorHost::Impl {
         out.session_id = config.transport.target_session_id;
         out.runtime_compatibility = cg::plaza2_compatibility_name(host.probe_report().compatibility);
         out.runtime_scheme_sha256 = host.probe_report().scheme_drift.runtime_scheme_sha256;
+        out.connection_app_name = host.connection_app_name();
         out.transport_health = host.runtime_health();
         const auto& health = out.transport_health;
-        const bool live = host.started() && state != ConnectorHostState::Failed &&
+        const bool live = host.started() && !host.recovering() && state != ConnectorHostState::Failed &&
                           state != ConnectorHostState::Recovering && state != ConnectorHostState::Stopping &&
                           state != ConnectorHostState::Stopped && health.all_active();
         out.publisher_handle_open = host.publisher_open();
@@ -755,6 +756,8 @@ struct ConnectorHost::Impl {
         out.order_authorized = persistent != nullptr && persistent->authorized();
         out.order_submission_attempted =
             recovered_epoch_active || (persistent != nullptr && persistent->submission_attempted());
+        out.recovery.order_epoch_unresolved =
+            out.order_epoch_active && (host.recovering() || out.order_submission_attempted);
         if (const auto bbo = host.aggr20_projector().snapshot_for_isin(out.target_isin_id)) {
             if (bbo->top_bid)
                 out.bid = bbo->top_bid->price;
@@ -1063,7 +1066,15 @@ cg::Plaza2Error ConnectorHost::start() {
         p.causal_operation = "start";
         return error;
     }
-    p.state = ConnectorHostState::Started;
+    const auto& recovery = p.transport.host().recovery_status();
+    if (recovery.cause) {
+        p.error = recovery.cause.message;
+        p.causal_error = recovery.cause;
+        p.causal_error_time_ns = recovery.error_time_ns;
+        p.causal_health = recovery.health;
+        p.causal_operation = "start";
+    }
+    p.state = p.transport.host().recovering() ? ConnectorHostState::Recovering : ConnectorHostState::Started;
     return {};
 }
 
@@ -1137,9 +1148,12 @@ ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot(bool pr
     ConnectorHostQualificationSnapshot out{.book = host.aggr20_projector().snapshot(),
                                            .instruments = {instruments.begin(), instruments.end()},
                                            .positions = {positions.begin(), positions.end()},
+                                           .connection_app_name = host.connection_app_name(),
                                            .rate = host.publisher_rate_metrics(),
                                            .aggr_online = host.aggr_online(),
                                            .aggr_snapshot_complete = host.aggr_snapshot_complete()};
+    const auto system_messages = host.private_state().system_messages();
+    out.system_messages.assign(system_messages.begin(), system_messages.end());
     for (const auto& row : host.private_state().own_orders()) {
         if (row.identity_conflict || ((row.from_user_book || row.from_current_day) &&
                                       (row.public_amount_rest > 0 || row.private_amount_rest > 0)))
@@ -1317,6 +1331,11 @@ OrderLifecycleResult ConnectorHost::submit_order() {
         return {.message = "begin_order with an exact authorization is required"};
     if (!p.persistent_plan || !p.persistent_order)
         return {.message = "persistent epoch authorization is incomplete"};
+    const auto view = p.snapshot();
+    if (p.transport.host().recovering() || !view.observation_ready) {
+        return {.state = OrderLifecycleState::Authorized,
+                .message = "OBSERVATION_NOT_READY: recovery wait; no AddOrder allocation/post"};
+    }
     std::string checkpoint_error;
     if (!p.write_checkpoint("add_may_have_been_sent", *p.persistent_order, &*p.persistent_plan, checkpoint_error)) {
         OrderLifecycleResult blocked;
@@ -1362,6 +1381,8 @@ OrderLifecycleResult ConnectorHost::cancel_current_order() {
         return {.message = "begin_order with an exact authorization is required"};
     if (p.restart_recovery_only)
         return {.message = "restart requires fresh explicit recovered Cancel authorization"};
+    if (p.transport.host().recovering())
+        return {.message = "recovery wait; explicit Cancel deferred; no command"};
     return p.persistent->cancel_order();
 }
 
@@ -1510,19 +1531,26 @@ RestartReconciliationResult ConnectorHost::reconcile() {
     return result;
 }
 
-std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
+std::string render_snapshot(const ConnectorHostSnapshot& s, bool json,
+                            const ConnectorHostQualificationSnapshot* qualification) {
     std::ostringstream out;
     out << std::boolalpha;
     if (!json) {
         out << "state=" << host_state_name(s.state) << " target=" << s.target << " session=" << s.session_id
-            << "\nobservation_ready=" << s.observation_ready << " publisher=" << s.publisher_ready
-            << " reply=" << s.reply_ready << "\nbbo=" << s.bid << '/' << s.ask << " age_ms=" << s.bbo_age_ms
-            << "\nposition=" << position_evidence_class_name(s.position_evidence_class)
+            << "\nrecovery_wait=" << plaza2_recovery_wait_state_name(s.recovery.wait_state)
+            << " duration_ms=" << s.recovery.wait_duration_ms << " attempts=" << s.recovery.attempts
+            << " last_attempt_ns=" << s.recovery.last_attempt_time_ns << " alert_active=" << s.recovery.alert_active
+            << " service=" << s.recovery.involved_service << "\nobservation_ready=" << s.observation_ready
+            << " publisher=" << s.publisher_ready << " reply=" << s.reply_ready << "\nbbo=" << s.bid << '/' << s.ask
+            << " age_ms=" << s.bbo_age_ms << "\nposition=" << position_evidence_class_name(s.position_evidence_class)
             << " active_own_orders=" << s.active_own_order_count << " uob_periodic=" << s.uob_periodic_consistent
             << "\norder_epoch_active=" << s.order_epoch_active << " order_authorized=" << s.order_authorized
             << " order_submission_attempted=" << s.order_submission_attempted
             << " new_order_allowed=" << s.new_order_allowed << "\nmarket_safe=" << s.market_safe
             << " evidence_consistent=" << s.evidence_consistent << "\nlast_error=" << s.last_error << '\n';
+        if (qualification != nullptr)
+            out << "connection_app_name=" << qualification->connection_app_name
+                << " system_messages=" << qualification->system_messages.size() << '\n';
         return out.str();
     }
     out << "{\"schema\":\"moex.connector-host.v1\",\"state\":" << quoted(host_state_name(s.state))
@@ -1530,6 +1558,7 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
         << ",\"mode\":" << static_cast<unsigned>(s.mode)
         << ",\"runtime_compatibility\":" << quoted(s.runtime_compatibility)
         << ",\"runtime_scheme_sha256\":" << quoted(s.runtime_scheme_sha256)
+        << ",\"connection_app_name\":" << quoted(s.connection_app_name)
         << ",\"publisher_handle_open\":" << s.publisher_handle_open << ",\"reply_handle_open\":" << s.reply_handle_open
         << ",\"private_snapshot_state_ready\":" << s.private_snapshot_state_ready
         << ",\"aggr_snapshot_state_ready\":" << s.aggr_snapshot_state_ready << ",\"aggr_ready\":" << s.aggr_ready
@@ -1546,7 +1575,14 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
         << ",\"order_price_tick_aligned\":" << s.order_price_tick_aligned;
     out << ",\"recovery_generation\":" << s.recovery.generation << ",\"recovery_attempts\":" << s.recovery.attempts
         << ",\"recovery_transitions\":" << s.recovery.transitions
-        << ",\"recovery_deadline_exhausted\":" << s.recovery.deadline_exhausted;
+        << ",\"recovery_deadline_exhausted\":" << s.recovery.deadline_exhausted
+        << ",\"recovery_wait_state\":" << quoted(plaza2_recovery_wait_state_name(s.recovery.wait_state))
+        << ",\"recovery_wait_start_time_ns\":" << s.recovery.wait_start_time_ns
+        << ",\"recovery_wait_duration_ms\":" << s.recovery.wait_duration_ms
+        << ",\"recovery_last_attempt_time_ns\":" << s.recovery.last_attempt_time_ns
+        << ",\"recovery_alert_active\":" << s.recovery.alert_active
+        << ",\"recovery_order_epoch_unresolved\":" << s.recovery.order_epoch_unresolved
+        << ",\"recovery_involved_service\":" << quoted(s.recovery.involved_service);
     const auto failure_detail = [&](std::string_view name, const cg::Plaza2Error& error) {
         out << "," << quoted(name) << ":{\"connector_code\":" << static_cast<unsigned>(error.code)
             << ",\"runtime_code\":" << (error.runtime_code ? std::to_string(error.runtime_code) : "null")
@@ -1625,7 +1661,29 @@ std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
             << ",\"snapshot_complete\":" << row.snapshot_complete
             << ",\"periodic_snapshot_consistent\":" << row.periodic_snapshot_consistent << '}';
     }
-    out << "]}\n";
+    if (qualification != nullptr) {
+        out << "],\"qualification\":{\"connection_app_name\":" << quoted(qualification->connection_app_name)
+            << ",\"system_messages\":[";
+        first = true;
+        for (const auto& message : qualification->system_messages) {
+            if (!first)
+                out << ',';
+            first = false;
+            out << "{\"repl_id\":" << message.repl_id << ",\"repl_rev\":" << message.repl_rev
+                << ",\"repl_act\":" << static_cast<int>(message.repl_act) << ",\"msg_id\":" << message.msg_id
+                << ",\"lang_code\":" << quoted(message.lang_code) << ",\"type_id\":" << message.type_id
+                << ",\"moment\":" << message.moment << ",\"text\":" << quoted(message.text)
+                << ",\"urgency\":" << static_cast<int>(message.urgency)
+                << ",\"status\":" << static_cast<int>(message.status)
+                << ",\"message_body\":" << quoted(message.message_body)
+                << ",\"source\":{\"present\":" << message.source.present << ",\"repl_rev\":" << message.source.repl_rev
+                << ",\"lifenum\":" << message.source.lifenum << "}}";
+        }
+        out << "]}";
+    } else {
+        out << ']';
+    }
+    out << "}\n";
     return out.str();
 }
 

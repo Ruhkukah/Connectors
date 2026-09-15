@@ -48,7 +48,13 @@ int main(int argc, char** argv) {
                 result = 6;
         }
         // Capture current qualification/terminal evidence before explicit close.
-        std::cout << render_snapshot(host.snapshot(), request.json);
+        const auto snapshot = host.snapshot();
+        if (request.command == "qualify") {
+            const auto qualification = host.qualification_snapshot();
+            std::cout << render_snapshot(snapshot, request.json, &qualification);
+        } else {
+            std::cout << render_snapshot(snapshot, request.json);
+        }
         if (host.stop())
             return 7;
         return result;

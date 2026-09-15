@@ -113,6 +113,8 @@ struct TradingSessionSnapshot {
     std::int32_t state{0};
     bool has_current_status{false};
     std::int32_t current_status{0};
+    // SPECTRA93 compatibility shadows. SPECTRA9.9 removed these fields;
+    // readiness, session terms and order gates never consume them.
     std::int64_t inter_cl_begin{0};
     std::int64_t inter_cl_end{0};
     std::int32_t inter_cl_state{0};
@@ -174,6 +176,25 @@ struct MatchingMapSnapshot {
     std::int8_t matching_id{0};
 };
 
+// Exchange-native REFDATA system message.  These rows are informational and
+// must never be allowed to affect readiness when malformed or absent, but the
+// complete committed payload is retained for operator/certification evidence.
+struct SystemMessageSnapshot {
+    std::int64_t repl_id{0};
+    std::int64_t repl_rev{0};
+    std::int8_t repl_act{0};
+    std::int32_t msg_id{0};
+    std::string lang_code;
+    std::int32_t type_id{0};
+    std::int64_t moment{0};
+    std::string text;
+    std::int8_t urgency{0};
+    std::int8_t status{0};
+    std::string message_body;
+    SourceRowProvenance source;
+    bool operator==(const SystemMessageSnapshot&) const = default;
+};
+
 enum class LimitParticipantKind : std::uint8_t { Unknown, BrokerageFirm, Client };
 [[nodiscard]] LimitParticipantKind classify_limit_participant(std::string_view code) noexcept;
 
@@ -191,6 +212,8 @@ struct LimitSnapshot {
     std::string money_amount;
     std::string money_pledge_amount;
     std::string actual_amount_of_base_currency;
+    // SPECTRA93 compatibility shadows. SPECTRA9.9 removed these fields;
+    // participant identity, limits_set and money checks never consume them.
     std::string vm_intercl;
     std::string broker_fee;
     std::string penalty;
@@ -309,6 +332,7 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::optional<FutureSessionTerms>
     find_future_session_terms(std::int32_t isin_id, std::int32_t sess_id, std::uint64_t expected_lifenum) const;
     [[nodiscard]] std::span<const MatchingMapSnapshot> matching_map() const;
+    [[nodiscard]] std::span<const SystemMessageSnapshot> system_messages() const;
     [[nodiscard]] std::span<const LimitSnapshot> limits() const;
     [[nodiscard]] LimitLookup find_limit_by_code(const std::string& code) const;
     [[nodiscard]] std::size_t limit_row_count() const noexcept;
