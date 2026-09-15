@@ -9,6 +9,32 @@ The test trading session is finished for today. No order, router restart, connec
 The dedicated machine-readable identity and matrix are [the 9.9 AGGR manifest](../../cert/aggr_plaza2_certification_manifest_9_9.json) and [the AGGR matrix](../../cert/AGGR_CERT_MATRIX_9_9.md).
 The next-session procedure is the [current AGGR T1 runbook](AGGR_T1_QUALIFICATION_9_9.md).
 
+## 2026-09-15 preserved T1 evidence and recovery correction
+
+All existing 2026-09-15 T1 evidence is preserved byte-for-byte and is not
+relabeled. The historical C03 receipt remains `PASS_T1 @
+c4a0e392e0ed05eec7e264e3fc3cced6def22730`; it must be rerun for the next
+post-correction candidate. The 10:26 r2 negative remains useful as
+`PARTIAL_SERVICE_AVAILABILITY -> WAIT/NOT_READY -> ZERO_POSTS`, while its
+eventual bounded `Recovering -> Failed` transition is not treated as
+certification-compliant.
+
+The later read-only CGate experiment resolved unsuffixed
+`FORTS_TRADE_REPL`, `FORTS_TRADE_REPL_MATCH1`, and all three status streams
+without a router, configuration, firewall, or connector change. Accordingly,
+the earlier r2 service result is recorded as historical
+`TRANSIENT_EXTERNAL_T1_SERVICE_AVAILABILITY`, not as a connector
+legacy-service-name defect. Matching-aware replication remains a separate
+forward-compatibility design item; this tranche does not add a hard-coded
+`MATCH1` subscription.
+
+The reviewed software correction removes the automatic terminal deadline for
+externally recoverable router, Plaza, listener, service, publisher, reply and
+snapshot/recovery failures. It retains bounded retry/backoff, an alert-only
+60-second threshold, explicit operator cancellation, fresh coherent
+rebootstrap and fail-closed order authority. Fatal schema, decode/callback,
+evidence/journal, identity and invariant failures remain terminal.
+
 The matrix labels `C01-C08`, `R01-R08`, and `S01-S07` are internal stable IDs mapped one-to-one to
 the numbered Plaza II controls in Appendix 1 of the current [MOEX VPTS certification procedure](https://www.moex.com/ru/documents/4531)
 (approved 30 January 2023, order МБ-П-2023-207); they are repository traceability labels, not MOEX-named identifiers.
@@ -54,7 +80,13 @@ The candidate declares only ordinary `AddOrder` 474 and `DelOrder` 461. Their bu
 system replies 99/100 may also occur and are never ordinary success by correlation alone. `DelUserOrders` 466 has business reply 186
 but is known and undeclared for this candidate. Move, Iceberg Move and MassCancel are also undeclared.
 The local publisher admission cap defaults to 30 attempts per rolling second and is bounded to 1..3000; a denied or ambiguous command is never automatically retried.
-During recovery, effective readiness and Add authority are false. A nonterminal order epoch is preserved as uncertain, with no automatic Add, Cancel, flatten, or compensating command.
+During recovery, effective readiness and Add authority are false. Recoverable
+outages remain in an operator-visible wait until restoration or explicit stop;
+an alert after 60 seconds is diagnostic only. A nonterminal order epoch is
+preserved as uncertain, with no automatic Add, Cancel, flatten, retransmission
+or compensating command. Restoration requires a fresh coherent generation and
+all current POS anchor, TRADE replay, USERORDERBOOK, PART, REFDATA/session,
+status, AGGR, publisher and reply gates before authority can return.
 
 The fixed profile routes only the declared SPECTRA/FORTS subsystem and exposes no uncontrolled subsystem selector.
 The connector is proprietary software used through a broker account; it is not a broker system offered to clients,

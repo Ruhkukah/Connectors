@@ -43,6 +43,9 @@ constexpr std::uint32_t kCgErrTimeout = kCgRangeBegin + 3;
 constexpr std::uint32_t kCgErrMore = kCgRangeBegin + 4;
 constexpr std::uint32_t kCgErrIncorrectState = kCgRangeBegin + 5;
 constexpr std::uint32_t kCgErrBufferTooSmall = kCgRangeBegin + 7;
+// CGate p2err 36866 / 0x9002: a declared service is temporarily not
+// exposed by the remote route. It is not a static listener-name failure.
+constexpr std::uint32_t kCgErrServiceUnavailable = 36866;
 
 constexpr std::uint32_t kCgKeyName = 2;
 constexpr std::uint32_t kCgPubNeedReply = 1;
@@ -1745,6 +1748,10 @@ Plaza2Error translate_plaza2_result(std::string_view operation, std::uint32_t ru
     case kCgErrTimeout:
         error.code = Plaza2ErrorCode::RuntimeCallFailed;
         error.message = std::string(operation) + ": CG_ERR_TIMEOUT";
+        break;
+    case kCgErrServiceUnavailable:
+        error.code = Plaza2ErrorCode::AdapterState;
+        error.message = std::string(operation) + ": p2err 36866=0x9002 SERV:NO_SERVICE";
         break;
     default:
         error.message = std::string(operation) + ": CGate returned runtime code " + std::to_string(runtime_code);

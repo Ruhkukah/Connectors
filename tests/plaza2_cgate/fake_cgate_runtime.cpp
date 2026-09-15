@@ -39,6 +39,7 @@ constexpr std::uint32_t kCgErrInvalidArgument = kCgRangeBegin + 1;
 constexpr std::uint32_t kCgErrTimeout = kCgRangeBegin + 3;
 constexpr std::uint32_t kCgErrIncorrectState = kCgRangeBegin + 5;
 constexpr std::uint32_t kCgErrBufferTooSmall = kCgRangeBegin + 7;
+constexpr std::uint32_t kCgErrServiceUnavailable = 36866;
 
 constexpr std::uint32_t kStateClosed = 0;
 constexpr std::uint32_t kStateError = 1;
@@ -2328,6 +2329,12 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
     if (typed->stream_code == StreamCode::kFortsAggrRepl)
         typed->script_emitted = false;
     ++typed->open_attempt_count;
+    if (const auto* no_service = std::getenv("MOEX_FAKE_LISTENER_OPEN_NO_SERVICE");
+        no_service != nullptr && *no_service != '\0' &&
+        (std::string_view(no_service) == "1" || typed->settings.find(no_service) != std::string::npos)) {
+        typed->state = kStateError;
+        return kCgErrServiceUnavailable;
+    }
     const bool refdata_error_once =
         typed->stream_code == StreamCode::kFortsRefdataRepl && fake_flag("MOEX_FAKE_REFDATA_OPEN_ERROR_ONCE");
     const bool trade_error_once =

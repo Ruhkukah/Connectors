@@ -11,8 +11,9 @@ It is the operator response for any event that makes the exchange state uncertai
    certainty. Record the raw bounded payload, message ID, user ID, causal error and current stream generations.
    Do not infer success from correlation alone.
 3. **Router or network loss.** Disable Add and publisher activity, leave the local router running unless MOEX directs
-   otherwise, and preserve the last causal transport state. Allow only the bounded recovery path already tested by
-   the host. If certainty cannot be restored, stop the process and escalate.
+   otherwise, and preserve the last causal transport state. Allow the host's controlled retry with an indefinite,
+   operator-cancellable wait; the 60-second alert threshold is diagnostic only and never authorizes a terminal failure.
+   If certainty cannot be restored, stop the process and escalate.
 4. **Application failure.** Do not restart blindly with an active order epoch. Preserve the journal/evidence
    directory and hashes, then restart only the reviewed executable with the same configuration after the operator
    has confirmed the recovery plan.

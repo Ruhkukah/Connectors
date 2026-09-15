@@ -6,6 +6,22 @@ traceability IDs mapped one-to-one to those controls; MOEX does not name the con
 They are not renamed or reused for different requirements. General requirements are listed separately. Full
 ORDLOG/L3 remains `DEFERRED_FULL_ORDLOG_PHASE`.
 
+## 2026-09-15 T1 evidence freeze and recovery correction
+
+All 2026-09-15 T1 evidence remains immutable. The historical C03 receipt is
+`PASS_T1 @ c4a0e392e0ed05eec7e264e3fc3cced6def22730`; it is not promoted to
+the post-correction candidate, so C03 must be rerun on the next candidate.
+The 10:26 r2 negative is retained as
+`PARTIAL_SERVICE_AVAILABILITY -> WAIT/NOT_READY -> ZERO_POSTS` and is useful
+historical evidence, but its eventual bounded `Recovering -> Failed` behavior
+was not certification-compliant. The later read-only service experiment
+resolved both unsuffixed `FORTS_TRADE_REPL` and `FORTS_TRADE_REPL_MATCH1`, plus
+all three status streams, without a router/config/firewall change; the earlier
+failure is therefore recorded as historical
+`TRANSIENT_EXTERNAL_T1_SERVICE_AVAILABILITY`, not as a connector legacy-name
+defect. Generic matching-aware replication remains a forward-compatibility
+backlog item and is not implemented by this correction.
+
 Authority pins: current procedure URL `https://www.moex.com/files/4xgv6e2x1paqr1zkn2fmq093cj`, title
 `ПОРЯДОК СЕРТИФИКАЦИИ ВНЕШНИХ ПРОГРАММНО-ТЕХНИЧЕСКИХ СРЕДСТВ (ВПТС) ПАО МОСКОВСКАЯ БИРЖА`, approved
 `2023-01-30` by order `МБ-П-2023-207`, retrieved `2026-09-14`, downloaded SHA-256
@@ -46,8 +62,8 @@ requires an exchange-controlled exercise.
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_CLOSED
 - Code/test evidence: runtime timeout tests; current runbook idle harness
-- Exact T1 evidence: no 300-second receipt yet
-- Remaining action: run 300-second no-listener/no-publisher probe
+- Exact T1 evidence: historical `PASS_T1 @ c4a0e392e0ed05eec7e264e3fc3cced6def22730`; not valid for the post-correction candidate
+- Remaining action: rerun the 300-second no-listener/no-publisher probe on the next candidate
 
 ### C04 — connection to authenticated router
 - Classification: AGGR_REQUIRED
@@ -61,7 +77,7 @@ requires an exchange-controlled exercise.
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_CLOSED
-- Code/test evidence: fake transport no-send and readiness tests
+- Code/test evidence: `connector_host_test.cpp` fake-clock tests A-C; indefinite operator-cancellable wait, alert-only threshold, readiness masking and zero-post guard
 - Exact T1 evidence: no current-candidate targeted upstream-fault receipt
 - Remaining action: attempt the safe client-controlled equivalent: keep local P2MQRouter running, block only its
   outbound T1 Plaza destination traffic, prove router reachable but upstream unavailable, wait/no-send/no-current-stream;
@@ -71,7 +87,7 @@ requires an exchange-controlled exercise.
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_CLOSED
-- Code/test evidence: bounded rebootstrap tests; `connector_host_test.cpp`
+- Code/test evidence: `connector_host_test.cpp` fake-clock tests A-C; controlled retry, fresh transport generation/bootstrap and readiness restoration without application restart
 - Exact T1 evidence: no current-candidate targeted upstream-transition receipt
 - Remaining action: remove the C05 outbound block on the same connector, prove upstream availability detection,
   fresh bootstrap and readiness without application restart; fall back to MOEX_COORDINATED only if the safe
@@ -81,7 +97,7 @@ requires an exchange-controlled exercise.
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_CLOSED
-- Code/test evidence: fail-closed transport/recovery tests
+- Code/test evidence: fail-closed transport/recovery tests; fake-clock tests C-H cover no resend, no automatic cancel/flatten and unresolved-epoch retention
 - Exact T1 evidence: no current-candidate targeted upstream-loss receipt
 - Remaining action: with zero active orders and known position, reapply the C05 block, prove immediate
   effective-readiness/command loss and no stale-stream use, then remove it and prove bounded fresh
@@ -91,9 +107,9 @@ requires an exchange-controlled exercise.
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_CLOSED
-- Code/test evidence: `connector_host_test.cpp`; AGGR runner recovery test
+- Code/test evidence: `connector_host_test.cpp` fake-clock router wait/recovery and operator-stop tests; AGGR runner recovery test
 - Exact T1 evidence: prior historical evidence is not relabeled
-- Remaining action: run local-router loss/restart on T1; no Add retry
+- Remaining action: run local-router loss/restart on T1; no Add retry; retain the old r2 fail-closed receipt without relabeling
 
 ## Replication requirements
 
@@ -141,7 +157,7 @@ requires an exchange-controlled exercise.
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_CLOSED
-- Code/test evidence: `connector_host_test.cpp`; AGGR runner; live-stream fixtures
+- Code/test evidence: `connector_host_test.cpp` fake-clock per-listener/service recovery, fresh POS-to-TRADE bootstrap and status-stream gates; AGGR runner; live-stream fixtures
 - Exact T1 evidence: no per-stream current-candidate receipt
 - Remaining action: exercise POS, PART, TRADE, USERORDERBOOK, REFDATA, both status, and AGGR
 
@@ -215,7 +231,7 @@ requires an exchange-controlled exercise.
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_CLOSED
-- Code/test evidence: `connector_host_test.cpp`; publisher/reply recovery cases
+- Code/test evidence: `connector_host_test.cpp` fake-clock publisher/reply recovery cases; no-post/no-resend guards
 - Exact T1 evidence: no current-candidate publisher-loss receipt
 - Remaining action: reopen publisher/reply without retransmitting Add
 
@@ -233,9 +249,9 @@ requires an exchange-controlled exercise.
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_CLOSED
-- Code/test evidence: bounded recovery and no-resend tests
+- Code/test evidence: indefinite operator-cancellable recovery, bounded retry/backoff, alert-only threshold, no-resend and unresolved-order-epoch tests in `connector_host_test.cpp`
 - Exact T1 evidence: no current full-day outage receipt
-- Remaining action: run safe client equivalent and reconcile
+- Remaining action: run the safe client equivalent and reconcile; the old r2 bounded-deadline behavior remains historical evidence only
 
 ### General — application restart during the trading day
 - Classification: AGGR_REQUIRED

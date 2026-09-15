@@ -159,7 +159,7 @@
         "classification": "AGGR_REQUIRED",
         "offline_result": "PASS_OFFLINE",
         "t1_result": "NOT_RUN_T1_SESSION_CLOSED",
-        "evidence": "bounded recovery/no-resend evidence"
+        "evidence": "controlled retry with indefinite operator-cancellable wait/no-resend evidence"
       },
       {
         "name": "application restart during trading",
@@ -317,8 +317,12 @@
       "Failed"
     ],
     "recoverable": [
-      "connection CLOSED/ERROR",
-      "router transport loss",
+      "local router unavailable or disconnected",
+      "router connected but Plaza upstream unavailable",
+      "Plaza connectivity loss",
+      "declared listener CLOSED/ERROR due transport availability",
+      "known declared service temporarily returns SERV:NO_SERVICE",
+      "snapshot/recovery service unavailable",
       "AGGR listener loss",
       "private listener loss after ONLINE",
       "publisher/reply invalidation"
@@ -328,10 +332,29 @@
       "decode/callback corruption",
       "identity conflict",
       "evidence loss",
-      "internal state corruption"
+      "journal/evidence corruption",
+      "internal invariant failure",
+      "invalid static configuration or service absent from the reviewed scheme"
     ],
     "retry_interval_ms": 1000,
-    "deadline_ms": 60000,
+    "alert_after_ms": 60000,
+    "terminal_recovery_deadline_ms": null,
+    "operator_cancellable_wait": true,
+    "waiting_states": [
+      "WaitingForRouter",
+      "WaitingForPlaza",
+      "WaitingForService",
+      "RecoveringBootstrap"
+    ],
+    "diagnostics": [
+      "first cause",
+      "current cause",
+      "wait start and duration",
+      "attempt count and last attempt time",
+      "involved service/listener",
+      "current transport health",
+      "unresolved order epoch"
+    ],
     "rebootstrap": "fresh transport resources and fresh POS-to-TRADE anchor; every listener snapshot+ONLINE before readiness",
     "upstream_plaza_fault_plan": {
       "scope": "C05-C07 client-controlled T1 equivalent before any MOEX_COORDINATED fallback",
@@ -407,7 +430,7 @@
       "listeners",
       "bootstrap/ONLINE/readiness",
       "LifeNum/ClearDeleted",
-      "bounded recovery",
+      "controlled retry with indefinite operator-cancellable recovery wait",
       "publisher/replies",
       "restart/reconciliation",
       "clock/logging"
@@ -427,6 +450,14 @@
     ]
   },
   "evidence": {
+    "t1_evidence_freeze_20260915": {
+      "preservation": "all existing 2026-09-15 T1 evidence is immutable",
+      "historical_c03": "PASS_T1 @ c4a0e392e0ed05eec7e264e3fc3cced6def22730; rerun required for the post-correction candidate",
+      "historical_r2_negative": "PARTIAL_SERVICE_AVAILABILITY -> WAIT/NOT_READY -> ZERO_POSTS; old bounded deadline behavior is not certification-compliant",
+      "historical_r2_interpretation": "TRANSIENT_EXTERNAL_T1_SERVICE_AVAILABILITY",
+      "matching_probe": "TRADE and TRADE_MATCH1 ONLINE; SESSIONSTATE, INSTRUMENTSTATE, SECURITYGROUPSTATE ONLINE; no router/config/firewall change",
+      "matching_forward_compatibility": "generic matching-aware topology remains a separate backlog item; no MATCH1-specific production behavior is implemented"
+    },
     "observation_only": ".codex-tmp/merged-main-20260914/live-observation-summary.json",
     "observation_result": "PASS: fresh session 11705, ALRS-9.26/4519447, exact PART identity, limits_set=true, all effective readiness true",
     "observation_result_detail": "zero orders and zero starting position, BBO age 1ms, no publisher messages",

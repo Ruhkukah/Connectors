@@ -228,6 +228,37 @@ def main() -> int:
     require(manifest["system_messages"]["table"] == "FORTS_REFDATA_REPL.sys_messages", "system-message table changed")
     require((root / manifest["operator_emergency_procedure"]).is_file(), "operator emergency procedure missing")
 
+    recovery = manifest["recovery"]
+    require(recovery["retry_interval_ms"] >= 1000, "recovery retry interval is unbounded or too aggressive")
+    require(recovery["alert_after_ms"] == 60000, "recovery alert threshold changed")
+    require(recovery["terminal_recovery_deadline_ms"] is None, "recoverable outages still have a terminal deadline")
+    require(recovery["operator_cancellable_wait"], "recoverable outage wait is not operator-cancellable")
+    require(
+        set(recovery["waiting_states"])
+        == {"WaitingForRouter", "WaitingForPlaza", "WaitingForService", "RecoveringBootstrap"},
+        "recovery waiting-state surface changed",
+    )
+    require("unresolved order epoch" in recovery["diagnostics"], "recovery diagnostics omit unresolved order epoch")
+    freeze = manifest["evidence"]["t1_evidence_freeze_20260915"]
+    require(
+        freeze["historical_c03"]
+        == "PASS_T1 @ c4a0e392e0ed05eec7e264e3fc3cced6def22730; rerun required for the post-correction candidate",
+        "historical C03 evidence was promoted or relabeled",
+    )
+    require(
+        freeze["historical_r2_interpretation"] == "TRANSIENT_EXTERNAL_T1_SERVICE_AVAILABILITY",
+        "historical r2 service interpretation changed",
+    )
+    require(
+        freeze["matching_forward_compatibility"]
+        == "generic matching-aware topology remains a separate backlog item; no MATCH1-specific production behavior is implemented",
+        "matching-specific behavior was silently added to the AGGR candidate",
+    )
+    require(
+        (root / "docs/plaza2/MATCHING_AWARE_REPLICATION_DESIGN.md").is_file(),
+        "matching-aware replication design note missing",
+    )
+
     compatibility = json.loads(
         (root / "spec-lock/test/plaza2/cgate99/consumed_replication_compatibility.json").read_text(encoding="utf-8")
     )

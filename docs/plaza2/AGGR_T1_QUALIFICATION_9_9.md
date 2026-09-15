@@ -94,7 +94,9 @@ reply-bridge tests cover those system replies; any real occurrence is still reco
    - C06: remove the targeted block and prove the same connector detects upstream availability, performs
      fresh bootstrap/snapshot/ONLINE and reaches readiness without application restart;
    - C07: with zero active orders and known position, reapply the block, prove immediate effective
-     readiness/command loss and no stale-stream use, then remove it and prove bounded fresh rebootstrap.
+     readiness/command loss and no stale-stream use, then remove it and prove controlled retry, fresh
+     coherent rebootstrap and restored readiness. The connector must wait indefinitely for this
+     externally recoverable condition unless the operator stops it; the 60-second threshold is alert-only.
 
    Discover endpoints from protected configuration without printing credentials. Block only MOEX
    destination IP/port traffic for the dedicated router, never SSH or unrelated VPS traffic. Schedule

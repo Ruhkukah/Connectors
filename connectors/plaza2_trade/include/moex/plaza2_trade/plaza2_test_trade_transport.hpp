@@ -182,7 +182,10 @@ struct Plaza2TestSessionHostConfig {
     std::uint32_t process_timeout_ms{50};
     bool transport_recovery_enabled{true};
     std::chrono::milliseconds recovery_retry_interval{1000};
-    std::chrono::milliseconds recovery_deadline{60000};
+    // Recoverable external outages are operator-cancellable and do not have
+    // an automatic terminal deadline. This threshold only raises the
+    // operator-visible waiting diagnostic.
+    std::chrono::milliseconds recovery_alert_after{60000};
     std::function<std::chrono::steady_clock::time_point()> recovery_now;
 
     // Local conservative cap; configure from the provisioned login limit, not a claimed exchange default.
@@ -222,11 +225,28 @@ enum class Plaza2FailureOrigin {
     PublisherOpen
 };
 
+enum class Plaza2RecoveryWaitState : std::uint8_t {
+    None,
+    WaitingForRouter,
+    WaitingForPlaza,
+    WaitingForService,
+    RecoveringBootstrap,
+};
+
+[[nodiscard]] std::string_view plaza2_recovery_wait_state_name(Plaza2RecoveryWaitState state) noexcept;
+
 struct Plaza2RecoveryStatus {
     Plaza2SessionOperation operation{Plaza2SessionOperation::Stopped};
     std::uint64_t generation{0}, attempts{0}, transitions{0};
     std::uint64_t error_time_ns{0};
+    std::uint64_t wait_start_time_ns{0};
+    std::uint64_t wait_duration_ms{0};
+    std::uint64_t last_attempt_time_ns{0};
     bool deadline_exhausted{false};
+    bool alert_active{false};
+    bool order_epoch_unresolved{false};
+    Plaza2RecoveryWaitState wait_state{Plaza2RecoveryWaitState::None};
+    std::string involved_service;
     plaza2::cgate::Plaza2Error cause;
     Plaza2FailureOrigin origin{Plaza2FailureOrigin::Unknown};
     plaza2::cgate::Plaza2Error first_cause;
