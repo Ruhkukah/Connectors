@@ -15,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -147,6 +148,12 @@ struct Plaza2Aggr20AuthoritySnapshot {
     std::uint64_t stream_epoch{0};
     std::uint64_t market_data_authority_epoch{0};
     std::optional<Plaza2Aggr20SysEventSnapshot> last_sys_event;
+    // Recovery diagnostics are retained across retry attempts and copied to
+    // the runner health snapshot before a fatal failure fences the bridge.
+    std::string recovery_service;
+    std::uint32_t reopen_retry_count{0};
+    std::optional<Plaza2Error> first_recovery_error;
+    std::optional<Plaza2Error> current_recovery_error;
 };
 
 // Shared by the standalone market-data runner and the trading host.
@@ -177,6 +184,12 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
     [[nodiscard]] std::uint64_t last_lifenum() const noexcept {
         return last_lifenum_;
     }
+    void set_recovery_service(std::string service) {
+        recovery_service_ = std::move(service);
+    }
+    void set_event_trace(std::function<void(std::string)> trace) {
+        event_trace_ = std::move(trace);
+    }
     [[nodiscard]] bool recovering() const noexcept {
         return reopen_required_ || retry_at_.has_value();
     }
@@ -200,6 +213,8 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
   private:
     void invalidate(bool request_reopen, bool transport_active) noexcept;
     [[nodiscard]] bool accepts_session(std::int32_t sess_id) const noexcept;
+    void trace_event(const Plaza2ListenerEvent& event, const Plaza2Aggr20AuthoritySnapshot& before,
+                     std::string detail = {}) const;
     Plaza2Aggr20BookProjector& projector_;
     std::int32_t expected_session_id_{0};
     bool transport_active_{false};
@@ -213,11 +228,19 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
     std::uint64_t stream_epoch_{0};
     std::uint64_t market_data_authority_epoch_{0};
     std::optional<Plaza2Aggr20SysEventSnapshot> last_sys_event_;
+    // sys_events is part of the source transaction. It is only promoted to
+    // last_sys_event_ and allowed to change authority after TN_COMMIT.
+    std::optional<Plaza2Aggr20SysEventSnapshot> pending_sys_event_;
     std::optional<std::chrono::steady_clock::time_point> retry_at_;
     std::optional<std::chrono::steady_clock::time_point> bootstrap_started_at_;
     std::chrono::milliseconds bootstrap_watchdog_{30000};
     Plaza2Error last_recovery_error_;
     std::string recovery_failure_classification_;
+    std::string recovery_service_;
+    std::uint32_t reopen_retry_count_{0};
+    std::optional<Plaza2Error> first_recovery_error_;
+    std::optional<Plaza2Error> current_recovery_error_;
+    std::function<void(std::string)> event_trace_;
 };
 
 struct Plaza2Aggr20MdStreamConfig {
@@ -278,6 +301,10 @@ struct Plaza2Aggr20MdHealthSnapshot {
     std::uint32_t last_process_runtime_code{0};
     std::string last_error;
     std::string failure_classification;
+    std::string recovery_service;
+    std::uint32_t reopen_retry_count{0};
+    std::optional<Plaza2Error> first_recovery_error;
+    std::optional<Plaza2Error> current_recovery_error;
     Plaza2Aggr20Snapshot snapshot;
 };
 

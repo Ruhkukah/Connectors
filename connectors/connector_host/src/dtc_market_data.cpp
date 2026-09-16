@@ -17,11 +17,6 @@ std::uint64_t unix_now_ns() noexcept {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 }
 
-std::uint64_t unix_now_ms() noexcept {
-    const auto now = std::chrono::system_clock::now().time_since_epoch();
-    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
-}
-
 void append_frame(std::span<const std::uint8_t> bytes, std::vector<DtcFrame>& completed) {
     DtcFrame frame;
     frame.message_type = read_u16(bytes.data() + 2);
@@ -62,11 +57,13 @@ bool DtcFrameDecoder::append(std::span<const std::uint8_t> bytes, std::vector<Dt
             }
         }
 
-        const auto needed_header = kDtcFrameHeaderSize - buffer_.size();
-        const auto header_bytes = std::min(needed_header, bytes.size() - offset);
-        buffer_.insert(buffer_.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-                       bytes.begin() + static_cast<std::ptrdiff_t>(offset + header_bytes));
-        offset += header_bytes;
+        if (buffer_.size() < kDtcFrameHeaderSize) {
+            const auto needed_header = kDtcFrameHeaderSize - buffer_.size();
+            const auto header_bytes = std::min(needed_header, bytes.size() - offset);
+            buffer_.insert(buffer_.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                           bytes.begin() + static_cast<std::ptrdiff_t>(offset + header_bytes));
+            offset += header_bytes;
+        }
         if (buffer_.size() < kDtcFrameHeaderSize)
             break;
 
@@ -109,8 +106,7 @@ void DtcFrameDecoder::reset() noexcept {
     faulted_ = false;
 }
 
-ConnectorHostDtcMarketDataSource::ConnectorHostDtcMarketDataSource(ConnectorHost& host, std::string board)
-    : host_(host), board_(std::move(board)) {}
+ConnectorHostDtcMarketDataSource::ConnectorHostDtcMarketDataSource(ConnectorHost& host) : host_(host) {}
 
 DtcReadOnlyCapabilities ConnectorHostDtcMarketDataSource::capabilities() const noexcept {
     return {.market_data = false,
@@ -129,16 +125,20 @@ DtcMarketDataSnapshot ConnectorHostDtcMarketDataSource::snapshot() const {
     out.connector_generation = market_data.connector_generation;
     out.market_data_authority_epoch = market_data.market_data_authority_epoch;
     out.stream_epoch = market_data.stream_epoch;
+    out.dtc_batch_sequence = 0;
     out.source_snapshot_version = market_data.source_snapshot_version;
     out.snapshot_watermark = market_data.snapshot_watermark;
     out.snapshot_level_count = market_data.levels.size();
     out.source_snapshot_hash = market_data.source_snapshot_hash;
-    out.engine_ingress_unix_ms = unix_now_ms();
-    out.engine_emit_unix_ms = out.engine_ingress_unix_ms;
+    // ConnectorHost is the source adapter, not the future DTC server. These
+    // timestamps are populated only when a server emits a DTC batch; a
+    // source snapshot must not manufacture engine timing provenance.
+    out.engine_ingress_unix_ms = 0;
+    out.engine_emit_unix_ms = 0;
     out.sampled_at_unix_ns = unix_now_ns();
     out.isin_id = market_data.target_isin_id;
     out.symbol = market_data.symbol;
-    out.board = board_.empty() ? market_data.board : board_;
+    out.board = market_data.board;
     out.min_step = market_data.min_step;
     out.transport_active = market_data.transport_active;
     // Compatibility field: "online" means the target AGGR stream reached
@@ -147,8 +147,15 @@ DtcMarketDataSnapshot ConnectorHostDtcMarketDataSource::snapshot() const {
     out.snapshot_complete = market_data.snapshot_complete;
     out.session_data_ready = market_data.session_data_ready;
     out.target_authoritative = market_data.target_authoritative;
+    out.source_consistent = market_data.source_consistent;
+    out.market_data_live = market_data.market_data_live;
+    out.session_tradable = market_data.session_tradable;
+    out.instrument_tradable = market_data.instrument_tradable;
+    out.order_entry_allowed = market_data.order_entry_allowed;
+    out.refdata_metadata_current = market_data.refdata_metadata_current;
     out.exchange_moment_ns = market_data.exchange_moment_ns;
     out.source_repl_id = market_data.source_repl_id;
+    out.source_row_id = market_data.source_repl_id;
     out.source_repl_rev = market_data.source_repl_rev;
 
     for (const auto& level : market_data.levels) {
@@ -161,7 +168,8 @@ DtcMarketDataSnapshot ConnectorHostDtcMarketDataSource::snapshot() const {
              .side = level.side == static_cast<std::int32_t>(DtcDepthSide::Bid) ? DtcDepthSide::Bid : DtcDepthSide::Ask,
              .source_repl_id = level.source_repl_id,
              .source_repl_rev = level.source_repl_rev,
-             .source_sequence = level.source_repl_id,
+             .source_row_id = level.source_repl_id,
+             .source_sequence = level.source_repl_rev > 0 ? static_cast<std::uint64_t>(level.source_repl_rev) : 0,
              .exchange_moment_ns = level.exchange_moment_ns,
              .price = level.price});
     }

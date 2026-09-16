@@ -149,6 +149,11 @@ template <class Integer> std::optional<Integer> checkpoint_integer_field(std::st
     return parsed;
 }
 
+bool valid_current_min_step(std::string_view value) {
+    const auto parsed = ps::parse_session_decimal(value);
+    return parsed.has_value() && parsed->units > 0;
+}
+
 struct PersistentSessionCheckpoint {
     std::string schema{"moex.connector_host.persistent_session.v2"};
     std::string account_sha256;
@@ -1168,12 +1173,28 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
     out.snapshot_complete = authority.snapshot_complete;
     out.session_data_ready = authority.session_data_ready;
 
+    bool target_instrument_refdata_current = false;
     for (const auto& instrument : host.private_state().instruments()) {
         if (instrument.isin_id != out.target_isin_id)
             continue;
         out.symbol = instrument.isin;
         out.min_step = instrument.min_step;
+        target_instrument_refdata_current =
+            instrument.kind == ps::InstrumentKind::kFuture && instrument.current_session_member &&
+            instrument.sess_id == config.transport.target_session_id && instrument.trade_mode_id != 0 &&
+            !instrument.isin.empty() && valid_current_min_step(instrument.min_step);
         break;
+    }
+
+    std::optional<std::int32_t> session_status;
+    std::optional<std::int32_t> instrument_status;
+    for (const auto& instrument : host.private_state().instruments()) {
+        if (instrument.isin_id == out.target_isin_id && instrument.has_current_status)
+            instrument_status = instrument.current_status;
+    }
+    for (const auto& session : host.private_state().sessions()) {
+        if (session.sess_id == config.transport.target_session_id && session.has_current_status)
+            session_status = session.current_status;
     }
 
     const auto scoped = host.aggr20_projector().snapshot_for_isin(out.target_isin_id);
@@ -1182,7 +1203,7 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
         out.source_snapshot_hash = scoped->source_snapshot_hash;
         out.source_repl_id = scoped->last_repl_id;
         out.source_repl_rev = scoped->last_repl_rev;
-        out.snapshot_watermark = scoped->last_repl_id;
+        out.snapshot_watermark = scoped->last_repl_rev > 0 ? static_cast<std::uint64_t>(scoped->last_repl_rev) : 0;
         out.exchange_moment = scoped->exchange_moment;
         out.exchange_moment_ns = scoped->exchange_moment_ns;
         out.committed_at = scoped->committed_at;
@@ -1200,8 +1221,14 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
         }
     }
 
-    out.target_authoritative = out.transport_active && out.snapshot_complete && out.session_data_ready &&
-                               authority.target_authoritative && scoped.has_value();
+    out.source_consistent = out.transport_active && out.snapshot_complete && out.session_data_ready &&
+                            authority.target_authoritative && scoped.has_value();
+    out.refdata_metadata_current = !out.board.empty() && target_instrument_refdata_current;
+    out.market_data_live = out.source_consistent;
+    out.session_tradable = session_status == std::optional<std::int32_t>{1};
+    out.instrument_tradable = instrument_status == std::optional<std::int32_t>{1};
+    out.order_entry_allowed = false;
+    out.target_authoritative = out.source_consistent && out.refdata_metadata_current;
     out.valid = out.target_authoritative;
     if (!out.transport_active)
         out.invalid_reason = "AGGR20 transport is not active";
@@ -1213,6 +1240,8 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
         out.invalid_reason = "target AGGR20 snapshot is absent";
     else if (!authority.target_authoritative)
         out.invalid_reason = "AGGR20 target source is not authoritative";
+    else if (!out.refdata_metadata_current)
+        out.invalid_reason = "target refdata symbol/board/min_step is not current";
     return out;
 }
 

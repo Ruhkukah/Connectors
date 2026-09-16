@@ -119,6 +119,24 @@ set +e
 runner_status=$?
 set -e
 
+# The native runner writes the event-level AGGR trace beside its summary. Keep
+# that trace in the evidence artifact; stdout alone contains only wrapper
+# failures and would omit Open/LifeNum/TN/sys_events/ONLINE transitions.
+native_operator_log="$(find "$output_dir" -maxdepth 1 -type f -name '*.aggr20.log' | sort | head -n 1)"
+if [[ -n "$native_operator_log" && -f "$native_operator_log" ]]; then
+  if [[ -s "$operator_log" ]]; then
+    combined_operator_log="$output_dir/operator.log.combined"
+    {
+      cat "$native_operator_log"
+      printf '%s\n' 'wrapper_output:'
+      cat "$operator_log"
+    } > "$combined_operator_log"
+    mv "$combined_operator_log" "$operator_log"
+  else
+    cp "$native_operator_log" "$operator_log"
+  fi
+fi
+
 sed -i.bak -E \
   -e 's/(password|passwd|pwd|secret|token|credential|key)=([^ ;]+)/\1=[REDACTED]/Ig' \
   -e 's/MOEX_PLAZA2_TEST_CREDENTIALS=[^ ;]+/MOEX_PLAZA2_TEST_CREDENTIALS=[REDACTED]/g' \

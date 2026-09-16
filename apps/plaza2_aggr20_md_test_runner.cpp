@@ -418,6 +418,14 @@ std::string level_summary(const std::optional<Plaza2Aggr20Level>& level) {
            ";volume=" + std::to_string(level->volume);
 }
 
+std::string error_summary(const std::optional<moex::plaza2::cgate::Plaza2Error>& error) {
+    if (!error.has_value()) {
+        return "none";
+    }
+    return "code=" + std::to_string(static_cast<int>(error->code)) +
+           ";runtime_code=" + std::to_string(error->runtime_code) + ";message=" + error->message;
+}
+
 void write_snapshot_json(const fs::path& path, const moex::plaza2::cgate::Plaza2Aggr20Snapshot& snapshot) {
     std::ofstream out(path);
     out << "{\n";
@@ -517,6 +525,13 @@ int main(int argc, char** argv) {
         lines.push_back("stream_opened=" + std::string(health.stream_opened ? "true" : "false"));
         lines.push_back("stream_online=" + std::string(health.stream_online ? "true" : "false"));
         lines.push_back("stream_snapshot_complete=" + std::string(health.stream_snapshot_complete ? "true" : "false"));
+        lines.push_back("transport_active=" + std::string(health.transport_active ? "true" : "false"));
+        lines.push_back("session_data_ready=" + std::string(health.session_data_ready ? "true" : "false"));
+        lines.push_back("target_authoritative=" + std::string(health.target_authoritative ? "true" : "false"));
+        lines.push_back("recovery_service=" + health.recovery_service);
+        lines.push_back("reopen_retry_count=" + std::to_string(health.reopen_retry_count));
+        lines.push_back("first_recovery_error=" + error_summary(health.first_recovery_error));
+        lines.push_back("current_recovery_error=" + error_summary(health.current_recovery_error));
         lines.push_back("row_count=" + std::to_string(health.snapshot.row_count));
         lines.push_back("instrument_count=" + std::to_string(health.snapshot.instrument_count));
         lines.push_back("failure_classification=" + health.failure_classification);
@@ -545,6 +560,13 @@ int main(int argc, char** argv) {
                 {"stream_opened", health.stream_opened ? "true" : "false"},
                 {"stream_online", health.stream_online ? "true" : "false"},
                 {"stream_snapshot_complete", health.stream_snapshot_complete ? "true" : "false"},
+                {"transport_active", health.transport_active ? "true" : "false"},
+                {"session_data_ready", health.session_data_ready ? "true" : "false"},
+                {"target_authoritative", health.target_authoritative ? "true" : "false"},
+                {"recovery_service", health.recovery_service},
+                {"reopen_retry_count", std::to_string(health.reopen_retry_count)},
+                {"first_recovery_error", error_summary(health.first_recovery_error)},
+                {"current_recovery_error", error_summary(health.current_recovery_error)},
                 {"row_count", std::to_string(health.snapshot.row_count)},
                 {"instrument_count", std::to_string(health.snapshot.instrument_count)},
                 {"bid_depth_levels", std::to_string(health.snapshot.bid_depth_levels)},

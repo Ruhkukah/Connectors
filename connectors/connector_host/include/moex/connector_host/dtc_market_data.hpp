@@ -81,8 +81,10 @@ struct DtcMarketDataLevel {
     DtcDepthSide side{DtcDepthSide::Bid};
     std::uint64_t source_repl_id{0};
     std::int64_t source_repl_rev{0};
-    // Exact row-level source identity; this is deliberately separate from a
-    // DTC batch sequence and is never synthesized from vector position.
+    // SourceRowID is the CGate replID. It is deliberately separate from a
+    // DTC batch sequence and from SourceSequence (which is replRev).
+    std::uint64_t source_row_id{0};
+    // SourceSequence is the CGate replRev, never a vector index or replID.
     std::uint64_t source_sequence{0};
     std::uint64_t exchange_moment_ns{0};
     std::string price;
@@ -104,6 +106,7 @@ struct DtcMarketDataSnapshot {
     std::uint64_t engine_ingress_unix_ms{0};
     std::uint64_t engine_emit_unix_ms{0};
     std::uint64_t source_repl_id{0};
+    std::uint64_t source_row_id{0};
     std::int64_t source_repl_rev{0};
     std::uint64_t exchange_moment_ns{0};
     std::uint64_t sampled_at_unix_ns{0};
@@ -119,6 +122,15 @@ struct DtcMarketDataSnapshot {
     bool snapshot_complete{false};
     bool session_data_ready{false};
     bool target_authoritative{false};
+    bool source_consistent{false};
+    bool market_data_live{false};
+    bool session_tradable{false};
+    bool instrument_tradable{false};
+    // ConnectorHost currently exposes no order-entry capability through this
+    // source. This remains false even when the exchange says the instrument
+    // is tradable.
+    bool order_entry_allowed{false};
+    bool refdata_metadata_current{false};
     bool two_sided{false};
     bool valid{false};
     std::string invalid_reason;
@@ -149,14 +161,13 @@ class DtcMarketDataSource {
 // this source only from the same owner/control plane that polls the host.
 class ConnectorHostDtcMarketDataSource final : public DtcMarketDataSource {
   public:
-    ConnectorHostDtcMarketDataSource(ConnectorHost& host, std::string board);
+    explicit ConnectorHostDtcMarketDataSource(ConnectorHost& host);
 
     [[nodiscard]] DtcMarketDataSnapshot snapshot() const override;
     [[nodiscard]] DtcReadOnlyCapabilities capabilities() const noexcept override;
 
   private:
     ConnectorHost& host_;
-    std::string board_;
 };
 
 } // namespace moex::connector_host::dtc

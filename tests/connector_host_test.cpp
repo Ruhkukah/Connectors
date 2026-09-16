@@ -184,7 +184,7 @@ int main(int argc, char** argv) {
             config.target_board = "RFUD";
             ConnectorHost host(config);
             warm(host);
-            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host, {});
+            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host);
             const auto first = source.snapshot();
             test::require(first.valid && first.target_authoritative && first.transport_active && first.source_online &&
                               first.snapshot_complete && first.session_data_ready,
@@ -194,9 +194,22 @@ int main(int argc, char** argv) {
             test::require(first.symbol == "RTS-6.26", "DTC source target symbol");
             test::require(first.levels.size() == 2, "DTC source target level count");
             test::require(first.two_sided, "DTC source target has two sides");
+            test::require(first.source_repl_id != 0 && first.source_row_id == first.source_repl_id &&
+                              first.source_repl_rev > 0 &&
+                              first.snapshot_watermark == static_cast<std::uint64_t>(first.source_repl_rev),
+                          "DTC source preserves CGate replID and uses committed replRev as watermark");
+            test::require(first.engine_ingress_unix_ms == 0 && first.engine_emit_unix_ms == 0 &&
+                              first.source_consistent && first.market_data_live && first.refdata_metadata_current &&
+                              first.session_tradable && first.instrument_tradable && !first.order_entry_allowed,
+                          "DTC source keeps timing unassigned and separates source/trading gates");
             test::require(first.levels[0].side == moex::connector_host::dtc::DtcDepthSide::Bid &&
                               first.levels[1].side == moex::connector_host::dtc::DtcDepthSide::Ask,
                           "DTC target levels retain deterministic side ordering");
+            for (const auto& level : first.levels) {
+                test::require(level.source_row_id == level.source_repl_id && level.source_sequence > 0 &&
+                                  level.source_sequence == static_cast<std::uint64_t>(level.source_repl_rev),
+                              "DTC levels preserve row identity and map SourceSequence to replRev");
+            }
             const auto before = first;
             ::setenv("MOEX_FAKE_AGGR_UNRELATED_UPDATE_AFTER_READY", "1", 1);
             test::require(!host.poll(), "unrelated AGGR update poll");
@@ -216,11 +229,12 @@ int main(int argc, char** argv) {
         {
             ::setenv("MOEX_FAKE_AGGR_ONE_SIDED", "1", 1);
             auto config = config_for(fixture);
+            config.target_board = "RFUD";
             ConnectorHost host(config);
             test::require(!host.start(), "one-sided DTC source start");
             for (unsigned i = 0; i < 10; ++i)
                 test::require(!host.poll(), "one-sided DTC source poll");
-            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host, {});
+            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host);
             const auto one_sided = source.snapshot();
             test::require(one_sided.valid && one_sided.target_authoritative && !one_sided.two_sided &&
                               one_sided.levels.size() == 1,
@@ -231,11 +245,12 @@ int main(int argc, char** argv) {
         {
             ::setenv("MOEX_FAKE_AGGR_EMPTY", "1", 1);
             auto config = config_for(fixture);
+            config.target_board = "RFUD";
             ConnectorHost host(config);
             test::require(!host.start(), "empty DTC source start");
             for (unsigned i = 0; i < 10; ++i)
                 test::require(!host.poll(), "empty DTC source poll");
-            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host, {});
+            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host);
             const auto empty = source.snapshot();
             test::require(empty.valid && empty.target_authoritative && empty.levels.empty() && !empty.two_sided &&
                               empty.snapshot_level_count == 0,
@@ -245,9 +260,10 @@ int main(int argc, char** argv) {
         }
         {
             auto config = config_for(fixture);
+            config.target_board = "RFUD";
             ConnectorHost host(config);
             warm(host);
-            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host, {});
+            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host);
             const auto before = source.snapshot();
             ::setenv("MOEX_FAKE_AGGR_CLEAR_AFTER_READY", "1", 1);
             test::require(!host.poll(), "AGGR invalidation poll");

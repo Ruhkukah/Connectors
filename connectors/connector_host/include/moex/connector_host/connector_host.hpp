@@ -169,8 +169,8 @@ struct ConnectorHostMarketDataSnapshot {
     std::uint64_t source_snapshot_hash{0};
     std::uint64_t source_repl_id{0};
     std::int64_t source_repl_rev{0};
-    // AGGR20 target last_repl_id, explicitly used as the target-source
-    // watermark. It is not a DTC batch sequence.
+    // AGGR20 target's committed maximum replRev, explicitly used as the
+    // target-source watermark. It is not a DTC batch sequence.
     std::uint64_t snapshot_watermark{0};
     std::uint64_t exchange_moment{0};
     std::uint64_t exchange_moment_ns{0};
@@ -179,6 +179,14 @@ struct ConnectorHostMarketDataSnapshot {
     bool snapshot_complete{false};
     bool session_data_ready{false};
     bool target_authoritative{false};
+    // Data consistency and trading state are intentionally separate. A
+    // closed/clearing session may retain a valid frozen synchronized book.
+    bool source_consistent{false};
+    bool market_data_live{false};
+    bool session_tradable{false};
+    bool instrument_tradable{false};
+    bool order_entry_allowed{false};
+    bool refdata_metadata_current{false};
     bool valid{false};
     bool two_sided{false};
     std::vector<ConnectorHostMarketDataLevel> levels;

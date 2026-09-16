@@ -29,6 +29,7 @@ std::vector<std::uint8_t> frame(std::uint16_t type, std::initializer_list<std::u
 
 int main() {
     using moex::connector_host::dtc::DtcFrameDecoder;
+    using moex::connector_host::dtc::kDtcFrameHeaderSize;
 
     DtcFrameDecoder decoder;
     std::vector<moex::connector_host::dtc::DtcFrame> frames;
@@ -38,11 +39,14 @@ int main() {
     std::vector<std::uint8_t> combined = first;
     combined.insert(combined.end(), second.begin(), second.end());
 
-    require(decoder.append(std::span<const std::uint8_t>(combined.data(), 2), frames, error),
-            "fragment header rejected");
+    const auto partial_body = kDtcFrameHeaderSize + 1;
+    require(decoder.append(std::span<const std::uint8_t>(combined.data(), partial_body), frames, error),
+            "fragment header and partial body rejected");
     require(frames.empty(), "partial frame emitted");
-    require(decoder.append(std::span<const std::uint8_t>(combined.data() + 2, combined.size() - 2), frames, error),
-            "coalesced frames rejected");
+    require(
+        decoder.append(std::span<const std::uint8_t>(combined.data() + partial_body, combined.size() - partial_body),
+                       frames, error),
+        "remaining frame and coalesced frame rejected");
     require(frames.size() == 2, "coalesced frames were not both emitted");
     require(frames[0].message_type == 6 && frames[0].payload == std::vector<std::uint8_t>({1, 2, 3}),
             "first frame decoded incorrectly");

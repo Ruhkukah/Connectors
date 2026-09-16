@@ -315,6 +315,53 @@ bool is_session_data_ready_message(std::string_view message) noexcept {
     return true;
 }
 
+std::string_view listener_event_kind_name(Plaza2ListenerEventKind kind) noexcept {
+    switch (kind) {
+    case Plaza2ListenerEventKind::Open:
+        return "OPEN";
+    case Plaza2ListenerEventKind::Close:
+        return "CLOSE";
+    case Plaza2ListenerEventKind::TransactionBegin:
+        return "TN_BEGIN";
+    case Plaza2ListenerEventKind::TransactionCommit:
+        return "TN_COMMIT";
+    case Plaza2ListenerEventKind::StreamData:
+        return "STREAM_DATA";
+    case Plaza2ListenerEventKind::Online:
+        return "ONLINE";
+    case Plaza2ListenerEventKind::LifeNum:
+        return "LIFENUM";
+    case Plaza2ListenerEventKind::ClearDeleted:
+        return "CLEAR_DELETED";
+    case Plaza2ListenerEventKind::ReplState:
+        return "REPLSTATE";
+    case Plaza2ListenerEventKind::Timeout:
+        return "TIMEOUT";
+    }
+    return "UNKNOWN";
+}
+
+std::string_view authority_state_name(Plaza2Aggr20AuthorityState state) noexcept {
+    switch (state) {
+    case Plaza2Aggr20AuthorityState::WaitingForTransport:
+        return "waiting_for_transport";
+    case Plaza2Aggr20AuthorityState::WaitingForSnapshot:
+        return "waiting_for_snapshot";
+    case Plaza2Aggr20AuthorityState::WaitingForSessionDataReady:
+        return "waiting_for_session_data_ready";
+    case Plaza2Aggr20AuthorityState::Authoritative:
+        return "authoritative";
+    case Plaza2Aggr20AuthorityState::Recovering:
+        return "recovering";
+    }
+    return "unknown";
+}
+
+std::uint64_t unix_now_ns() noexcept {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
+
 } // namespace
 
 void Plaza2Aggr20ListenerBridge::invalidate(bool request_reopen, bool transport_active) noexcept {
@@ -328,6 +375,7 @@ void Plaza2Aggr20ListenerBridge::invalidate(bool request_reopen, bool transport_
     target_authoritative_ = false;
     reopen_required_ = request_reopen;
     last_sys_event_.reset();
+    pending_sys_event_.reset();
     retry_at_.reset();
     bootstrap_started_at_.reset();
     last_recovery_error_ = {};
@@ -344,6 +392,27 @@ bool Plaza2Aggr20ListenerBridge::accepts_session(std::int32_t sess_id) const noe
     return expected_session_id_ > 0 ? sess_id == expected_session_id_ : sess_id > 0;
 }
 
+void Plaza2Aggr20ListenerBridge::trace_event(const Plaza2ListenerEvent& event,
+                                             const Plaza2Aggr20AuthoritySnapshot& before, std::string detail) const {
+    if (!event_trace_)
+        return;
+    const auto after = authority_snapshot();
+    std::string line = "event=" + std::string(listener_event_kind_name(event.kind)) +
+                       " local_unix_ns=" + std::to_string(unix_now_ns()) +
+                       " authority_before=" + std::string(authority_state_name(before.state)) +
+                       " authority_after=" + std::string(authority_state_name(after.state));
+    if (before.state != after.state || before.target_authoritative != after.target_authoritative ||
+        before.session_data_ready != after.session_data_ready) {
+        line += " authority_transition=true";
+    } else {
+        line += " authority_transition=false";
+    }
+    if (!detail.empty()) {
+        line += " " + std::move(detail);
+    }
+    event_trace_(std::move(line));
+}
+
 const Plaza2Aggr20AuthoritySnapshot Plaza2Aggr20ListenerBridge::authority_snapshot() const {
     Plaza2Aggr20AuthoritySnapshot out;
     out.transport_active = transport_active_;
@@ -353,6 +422,10 @@ const Plaza2Aggr20AuthoritySnapshot Plaza2Aggr20ListenerBridge::authority_snapsh
     out.stream_epoch = stream_epoch_;
     out.market_data_authority_epoch = market_data_authority_epoch_;
     out.last_sys_event = last_sys_event_;
+    out.recovery_service = recovery_service_;
+    out.reopen_retry_count = reopen_retry_count_;
+    out.first_recovery_error = first_recovery_error_;
+    out.current_recovery_error = current_recovery_error_;
     if (recovering()) {
         out.state = Plaza2Aggr20AuthorityState::Recovering;
     } else if (!transport_active_) {
@@ -368,14 +441,20 @@ const Plaza2Aggr20AuthoritySnapshot Plaza2Aggr20ListenerBridge::authority_snapsh
 }
 
 Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2ListenerEvent& event) {
+    const auto before = authority_snapshot();
     switch (event.kind) {
     case Plaza2ListenerEventKind::Open:
         invalidate(false, true);
+        reopen_retry_count_ = 0;
+        first_recovery_error_.reset();
+        current_recovery_error_.reset();
+        trace_event(event, before);
         return {};
     case Plaza2ListenerEventKind::LifeNum:
         invalidate(false, transport_active_);
         has_lifenum_ = true;
         last_lifenum_ = event.unsigned_value;
+        trace_event(event, before, "lifenum=" + std::to_string(last_lifenum_));
         return {};
     case Plaza2ListenerEventKind::ClearDeleted:
         // CGate sends cleanup markers before the initial snapshot. Deleting from an already
@@ -383,6 +462,7 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
         if (!reopen_required_ && !online_ && !snapshot_complete_ && !projector_.transaction_open() &&
             projector_.snapshot().row_count == 0 && projector_.snapshot().last_repl_rev == 0) {
             invalidate(false, transport_active_);
+            trace_event(event, before);
             return {};
         }
         [[fallthrough]];
@@ -398,17 +478,42 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
             };
             recovery_failure_classification_ = "transient_listener_close";
         }
+        trace_event(event, before);
         return {};
     }
     case Plaza2ListenerEventKind::TransactionBegin:
-        if (reopen_required_)
+        if (reopen_required_) {
+            trace_event(event, before, "ignored=true recovering=true");
             return {};
+        }
+        pending_sys_event_.reset();
         projector_.begin_transaction();
+        trace_event(event, before);
         return {};
     case Plaza2ListenerEventKind::TransactionCommit:
         if (reopen_required_)
             return {};
-        return projector_.commit();
+        if (const auto error = projector_.commit(); error) {
+            pending_sys_event_.reset();
+            trace_event(event, before, "commit_error=" + error.message);
+            return error;
+        }
+        if (pending_sys_event_.has_value()) {
+            auto committed_event = std::move(*pending_sys_event_);
+            pending_sys_event_.reset();
+            last_sys_event_ = committed_event;
+            // A sys_events row can certify only after its containing source
+            // transaction has committed and after ONLINE has fenced the
+            // bootstrap generation from the current session generation.
+            if (!committed_event.seen_during_snapshot && snapshot_complete_ && online_ &&
+                committed_event.event_type == 1 && is_session_data_ready_message(committed_event.message) &&
+                accepts_session(committed_event.sess_id)) {
+                session_data_ready_ = true;
+                target_authoritative_ = true;
+            }
+        }
+        trace_event(event, before);
+        return {};
     case Plaza2ListenerEventKind::StreamData:
         if (reopen_required_)
             return {};
@@ -432,17 +537,16 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
             sys_event.server_time =
                 unsigned_field(event.fields, generated::FieldCode::kFortsAggrReplSysEventsServerTime).value_or(0);
             sys_event.seen_during_snapshot = !snapshot_complete_;
-            last_sys_event_ = sys_event;
-
-            // A sys_events row carried in the bootstrap transaction is useful
-            // provenance but cannot certify the current stream generation.
-            if (!snapshot_complete_ || !online_)
-                return {};
-            if (sys_event.event_type == 1 && is_session_data_ready_message(sys_event.message) &&
-                accepts_session(sys_event.sess_id)) {
-                session_data_ready_ = true;
-                target_authoritative_ = true;
-            }
+            const auto detail =
+                "source_repl_id=" + std::to_string(sys_event.source_repl_id) +
+                " source_repl_rev=" + std::to_string(sys_event.source_repl_rev) +
+                " source_repl_act=" + std::to_string(sys_event.source_repl_act) +
+                " event_type=" + std::to_string(sys_event.event_type) +
+                " event_id=" + std::to_string(sys_event.event_id) + " sess_id=" + std::to_string(sys_event.sess_id) +
+                " exchange_server_time=" + std::to_string(sys_event.server_time) + " message=" + sys_event.message +
+                " seen_during_snapshot=" + (sys_event.seen_during_snapshot ? "true" : "false");
+            pending_sys_event_ = std::move(sys_event);
+            trace_event(event, before, detail);
         }
         return {};
     case Plaza2ListenerEventKind::Online:
@@ -453,6 +557,7 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
             session_data_ready_ = false;
             target_authoritative_ = false;
         }
+        trace_event(event, before);
         return {};
     default:
         return {};
@@ -464,6 +569,8 @@ Plaza2Error Plaza2Aggr20ListenerBridge::supervise(Plaza2Listener& listener, std:
     if (const auto error = listener.state(state); error) {
         last_recovery_error_ = error;
         recovery_failure_classification_ = "fatal_listener_state";
+        first_recovery_error_ = first_recovery_error_.value_or(error);
+        current_recovery_error_ = error;
         return error;
     }
     if (!reopen_required_ && !retry_at_ && state != 0 && state != 1) {
@@ -474,6 +581,8 @@ Plaza2Error Plaza2Aggr20ListenerBridge::supervise(Plaza2Listener& listener, std:
                 if (const auto error = listener.close(); error) {
                     last_recovery_error_ = error;
                     recovery_failure_classification_ = "fatal_listener_close";
+                    first_recovery_error_ = first_recovery_error_.value_or(error);
+                    current_recovery_error_ = error;
                     return error;
                 }
                 invalidate(true, false);
@@ -492,6 +601,10 @@ Plaza2Error Plaza2Aggr20ListenerBridge::supervise(Plaza2Listener& listener, std:
         if (const auto error = listener.close(); error) {
             last_recovery_error_ = error;
             recovery_failure_classification_ = "fatal_listener_close";
+            if (!first_recovery_error_.has_value())
+                first_recovery_error_ = error;
+            current_recovery_error_ = error;
+            ++reopen_retry_count_;
             return error;
         }
         invalidate(true, false);
@@ -511,6 +624,10 @@ Plaza2Error Plaza2Aggr20ListenerBridge::supervise(Plaza2Listener& listener, std:
     // A cleared projection cannot resume after an opaque cursor; bootstrap the whole snapshot again.
     const auto error = listener.open("mode=snapshot+online");
     if (error) {
+        if (!first_recovery_error_.has_value())
+            first_recovery_error_ = error;
+        current_recovery_error_ = error;
+        ++reopen_retry_count_;
         reopen_required_ = true;
         retry_at_ = now + std::chrono::seconds(1);
         last_recovery_error_ = error;
@@ -527,6 +644,9 @@ Plaza2Error Plaza2Aggr20ListenerBridge::supervise(Plaza2Listener& listener, std:
     bootstrap_started_at_ = now;
     last_recovery_error_ = {};
     recovery_failure_classification_.clear();
+    reopen_retry_count_ = 0;
+    first_recovery_error_.reset();
+    current_recovery_error_.reset();
     return {};
 }
 
@@ -837,6 +957,8 @@ struct Plaza2Aggr20MdRunner::Impl {
     explicit Impl(Plaza2Aggr20MdConfig initial_config)
         : config(std::move(initial_config)), projector(config.now), listener_bridge(projector) {
         listener_bridge.set_bootstrap_watchdog(config.listener_bootstrap_watchdog);
+        listener_bridge.set_recovery_service("FORTS_AGGR20_REPL");
+        listener_bridge.set_event_trace([this](std::string line) { append_operator_log(std::move(line)); });
     }
 
     Plaza2Aggr20MdRunResult start() {
@@ -1068,6 +1190,10 @@ struct Plaza2Aggr20MdRunner::Impl {
         health.stream_snapshot_complete = listener_bridge.snapshot_complete();
         health.session_data_ready = listener_bridge.session_data_ready();
         health.target_authoritative = listener_bridge.authoritative();
+        health.recovery_service = health.authority.recovery_service;
+        health.reopen_retry_count = health.authority.reopen_retry_count;
+        health.first_recovery_error = health.authority.first_recovery_error;
+        health.current_recovery_error = health.authority.current_recovery_error;
         health.snapshot = projector.snapshot();
         health.ready = health.runtime_probe_ok && health.scheme_drift_ok && health.stream_created &&
                        health.stream_opened && health.clock_evidence_ok && health.transport_active &&
@@ -1085,6 +1211,7 @@ struct Plaza2Aggr20MdRunner::Impl {
 
     Plaza2Aggr20MdRunResult fail(std::string message) {
         const auto bridge_classification = std::string(listener_bridge.recovery_failure_classification());
+        const auto recovery_diagnostics = listener_bridge.authority_snapshot();
         listener_bridge.reset();
         health.state = Plaza2Aggr20MdRunnerState::Failed;
         health.last_error = message;
@@ -1092,6 +1219,12 @@ struct Plaza2Aggr20MdRunner::Impl {
         if (!bridge_classification.empty()) {
             health.failure_classification = bridge_classification;
         }
+        // reset() correctly fences the source, but must not erase the causal
+        // recovery evidence that caused this terminal result.
+        health.recovery_service = recovery_diagnostics.recovery_service;
+        health.reopen_retry_count = recovery_diagnostics.reopen_retry_count;
+        health.first_recovery_error = recovery_diagnostics.first_recovery_error;
+        health.current_recovery_error = recovery_diagnostics.current_recovery_error;
         append_operator_log("error=" + message);
         return {
             .ok = false,
