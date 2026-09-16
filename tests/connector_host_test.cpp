@@ -186,8 +186,8 @@ int main(int argc, char** argv) {
             warm(host);
             moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host, {});
             const auto first = source.snapshot();
-            test::require(first.valid && first.target_authoritative && first.transport_active &&
-                              first.source_online && first.snapshot_complete && first.session_data_ready,
+            test::require(first.valid && first.target_authoritative && first.transport_active && first.source_online &&
+                              first.snapshot_complete && first.session_data_ready,
                           "DTC source requires current authoritative AGGR state");
             test::require(first.isin_id == 1001, "DTC source target ISIN");
             test::require(first.board == "RFUD", "DTC source target board");
@@ -205,8 +205,7 @@ int main(int argc, char** argv) {
             test::require(after.source_snapshot_version == before.source_snapshot_version &&
                               after.source_snapshot_hash == before.source_snapshot_hash &&
                               after.snapshot_watermark == before.snapshot_watermark &&
-                              after.exchange_moment_ns == before.exchange_moment_ns &&
-                              after.levels == before.levels,
+                              after.exchange_moment_ns == before.exchange_moment_ns && after.levels == before.levels,
                           "unrelated ISIN update cannot refresh target DTC provenance or freshness");
             test::require(source.capabilities().market_depth && !source.capabilities().accounts &&
                               !source.capabilities().positions && !source.capabilities().orders &&
@@ -238,8 +237,8 @@ int main(int argc, char** argv) {
                 test::require(!host.poll(), "empty DTC source poll");
             moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host, {});
             const auto empty = source.snapshot();
-            test::require(empty.valid && empty.target_authoritative && empty.levels.empty() &&
-                              !empty.two_sided && empty.snapshot_level_count == 0,
+            test::require(empty.valid && empty.target_authoritative && empty.levels.empty() && !empty.two_sided &&
+                              empty.snapshot_level_count == 0,
                           "empty target book retains authority without fabricating levels");
             test::require(!host.stop(), "empty DTC source stop");
             ::unsetenv("MOEX_FAKE_AGGR_EMPTY");

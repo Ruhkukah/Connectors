@@ -2041,9 +2041,8 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
                 listener->stream_code != StreamCode::kFortsAggrRepl)
                 continue;
             const auto script = script_for_stream(listener->stream_code);
-            const auto unrelated = std::ranges::find_if(script, [](const auto& message) {
-                return message.table_code == TableCode::kFortsAggrReplOrdersAggr;
-            });
+            const auto unrelated = std::ranges::find_if(
+                script, [](const auto& message) { return message.table_code == TableCode::kFortsAggrReplOrdersAggr; });
             if (unrelated == script.end())
                 return kCgErrIncorrectState;
             auto row = *unrelated;
