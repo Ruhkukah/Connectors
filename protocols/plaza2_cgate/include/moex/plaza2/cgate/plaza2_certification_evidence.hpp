@@ -11,6 +11,7 @@ namespace moex::plaza2::cgate {
 inline constexpr std::int64_t kPlaza2MaxLogClockSkewNs = 1'000'000'000;
 inline constexpr std::uint64_t kPlaza2MaxClockSampleAgeNs = 5'000'000'000;
 inline constexpr std::uint64_t kPlaza2MaxClockTransportDelayNs = 1'000'000'000;
+inline constexpr std::uint64_t kPlaza2MaxClockEvidenceFutureNs = 1'000'000'000;
 
 struct Plaza2ClockSample {
     std::int64_t local_wall_ns{0};
@@ -39,6 +40,13 @@ struct Plaza2ClockEvidence {
     std::optional<std::int64_t> current_local_wall_ns;
     std::optional<std::uint64_t> current_local_monotonic_ns;
     std::optional<std::uint64_t> sync_status_monotonic_ns;
+    // Wall time captured by the evidence producer. This is separate from
+    // current_local_wall_ns, which describes the paired-sample observation.
+    // The launch path compares it with the actual wall clock at validation.
+    std::optional<std::int64_t> evidence_generated_wall_ns;
+    // Optional same-boot provenance. A caller that can obtain a boot identity
+    // should preserve it here; the wall-time freshness gate remains mandatory.
+    std::optional<std::string> boot_id;
 };
 
 namespace detail {
@@ -74,20 +82,33 @@ namespace detail {
 
 } // namespace detail
 
-[[nodiscard]] inline bool plaza2_clock_evidence_passes(const Plaza2ClockEvidence& evidence) noexcept {
+[[nodiscard]] inline bool plaza2_clock_evidence_passes_at(const Plaza2ClockEvidence& evidence,
+                                                          std::int64_t current_wall_ns,
+                                                          std::uint64_t max_age_ns) noexcept {
     if (evidence.sync_source.empty() || !evidence.sync_status_ok || !evidence.wall_offset_ns.has_value() ||
         !evidence.offset_uncertainty_ns.has_value() || evidence.monotonic_clock_id.empty() ||
         evidence.paired_samples.size() < 2 || !evidence.current_local_wall_ns.has_value() ||
-        !evidence.current_local_monotonic_ns.has_value() || !evidence.sync_status_monotonic_ns.has_value()) {
+        !evidence.current_local_monotonic_ns.has_value() || !evidence.sync_status_monotonic_ns.has_value() ||
+        !evidence.evidence_generated_wall_ns.has_value()) {
         return false;
     }
-    if (*evidence.current_local_wall_ns == 0 || *evidence.current_local_monotonic_ns == 0 ||
+    if (current_wall_ns == 0 || *evidence.evidence_generated_wall_ns == 0 || max_age_ns == 0 ||
+        *evidence.current_local_wall_ns == 0 || *evidence.current_local_monotonic_ns == 0 ||
         *evidence.sync_status_monotonic_ns == 0 ||
         *evidence.offset_uncertainty_ns > static_cast<std::uint64_t>(kPlaza2MaxLogClockSkewNs) ||
         !detail::absolute_difference_within(*evidence.wall_offset_ns, 0,
                                             static_cast<std::uint64_t>(kPlaza2MaxLogClockSkewNs)) ||
         *evidence.sync_status_monotonic_ns > *evidence.current_local_monotonic_ns ||
         *evidence.current_local_monotonic_ns - *evidence.sync_status_monotonic_ns > kPlaza2MaxClockSampleAgeNs) {
+        return false;
+    }
+    const auto generated_age = detail::checked_difference(current_wall_ns, *evidence.evidence_generated_wall_ns);
+    if (!generated_age.has_value() ||
+        (*generated_age >= 0 && static_cast<std::uint64_t>(*generated_age) > max_age_ns) ||
+        (*generated_age < 0 && detail::unsigned_magnitude(*generated_age) > kPlaza2MaxClockEvidenceFutureNs)) {
+        return false;
+    }
+    if (evidence.boot_id.has_value() && evidence.boot_id->empty()) {
         return false;
     }
 
@@ -119,6 +140,14 @@ namespace detail {
         previous_offset = *observed_offset;
     }
     return true;
+}
+
+// Deterministic structural/freshness validation against the wall time carried
+// by the evidence itself. Runtime launch code must use plaza2_clock_evidence_passes_at
+// with a newly sampled system wall clock instead.
+[[nodiscard]] inline bool plaza2_clock_evidence_passes(const Plaza2ClockEvidence& evidence) noexcept {
+    return evidence.current_local_wall_ns.has_value() &&
+           plaza2_clock_evidence_passes_at(evidence, *evidence.current_local_wall_ns, kPlaza2MaxClockSampleAgeNs);
 }
 
 } // namespace moex::plaza2::cgate

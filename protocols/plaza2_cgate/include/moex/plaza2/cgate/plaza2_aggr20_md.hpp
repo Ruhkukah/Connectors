@@ -228,9 +228,10 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
     std::uint64_t stream_epoch_{0};
     std::uint64_t market_data_authority_epoch_{0};
     std::optional<Plaza2Aggr20SysEventSnapshot> last_sys_event_;
-    // sys_events is part of the source transaction. It is only promoted to
-    // last_sys_event_ and allowed to change authority after TN_COMMIT.
-    std::optional<Plaza2Aggr20SysEventSnapshot> pending_sys_event_;
+    // sys_events is part of the source transaction. Every row is retained in
+    // source order and is only promoted to last_sys_event_ or allowed to
+    // change authority after TN_COMMIT.
+    std::vector<Plaza2Aggr20SysEventSnapshot> pending_sys_events_;
     std::optional<std::chrono::steady_clock::time_point> retry_at_;
     std::optional<std::chrono::steady_clock::time_point> bootstrap_started_at_;
     std::chrono::milliseconds bootstrap_watchdog_{30000};
@@ -264,6 +265,7 @@ struct Plaza2Aggr20MdConfig {
     std::uint32_t process_timeout_ms{50};
     Plaza2Aggr20BookProjector::NowFn now;
     std::chrono::milliseconds listener_bootstrap_watchdog{30000};
+    std::uint64_t clock_evidence_freshness_window_ns{kPlaza2MaxClockSampleAgeNs};
     // Supplied by the launch/evidence path; absence keeps the runner from
     // reporting certification-ready even when the stream itself is healthy.
     std::optional<Plaza2ClockEvidence> clock_evidence;

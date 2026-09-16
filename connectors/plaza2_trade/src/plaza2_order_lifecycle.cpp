@@ -111,13 +111,11 @@ bool atomic_write(const std::filesystem::path& path, std::string_view contents, 
     if (::close(descriptor) != 0)
         write_ok = false;
     if (!write_ok) {
-        ::unlink(temporary.c_str());
         error = "failed to durably write temporary journal file";
         return false;
     }
 
     if (::rename(temporary.c_str(), path.c_str()) != 0) {
-        ::unlink(temporary.c_str());
         error = "failed to publish journal file";
         return false;
     }
@@ -136,6 +134,49 @@ bool atomic_write(const std::filesystem::path& path, std::string_view contents, 
     return true;
 }
 
+std::optional<std::string> decode_journal_string(std::string_view text, std::size_t value_begin) {
+    std::string value;
+    value.reserve(text.size() - value_begin);
+    for (std::size_t index = value_begin; index < text.size(); ++index) {
+        const auto character = text[index];
+        if (character == '"') {
+            return value;
+        }
+        if (character == '\\') {
+            if (++index >= text.size()) {
+                return std::nullopt;
+            }
+            switch (text[index]) {
+            case '"':
+                value.push_back('"');
+                break;
+            case '\\':
+                value.push_back('\\');
+                break;
+            case 'n':
+                value.push_back('\n');
+                break;
+            case 'r':
+                value.push_back('\r');
+                break;
+            case 't':
+                value.push_back('\t');
+                break;
+            default:
+                // json_escape() emits only this deliberately narrow grammar;
+                // reject unsupported escapes instead of guessing their value.
+                return std::nullopt;
+            }
+            continue;
+        }
+        if (static_cast<unsigned char>(character) < 0x20U) {
+            return std::nullopt;
+        }
+        value.push_back(character);
+    }
+    return std::nullopt;
+}
+
 std::optional<std::string> journal_string_field(std::string_view text, std::string_view key) {
     const auto marker = std::string("\"") + std::string(key) + "\": \"";
     const auto begin = text.find(marker);
@@ -143,11 +184,7 @@ std::optional<std::string> journal_string_field(std::string_view text, std::stri
         return std::nullopt;
     }
     const auto value_begin = begin + marker.size();
-    const auto value_end = text.find('"', value_begin);
-    if (value_end == std::string_view::npos) {
-        return std::nullopt;
-    }
-    return std::string(text.substr(value_begin, value_end - value_begin));
+    return decode_journal_string(text, value_begin);
 }
 
 std::optional<std::int64_t> journal_integer_field(std::string_view text, std::string_view key) {
@@ -212,6 +249,88 @@ std::optional<OrderLifecycleState> journal_state_field(std::string_view value) {
     return std::nullopt;
 }
 
+struct JournalTempRecovery {
+    bool present{false};
+    bool quarantined{false};
+    std::filesystem::path quarantine_path;
+    std::string error;
+};
+
+JournalTempRecovery quarantine_journal_temp(const std::filesystem::path& journal_path, std::string_view run_id) {
+    JournalTempRecovery result;
+    auto temporary = journal_path;
+    temporary += ".tmp";
+
+    std::error_code filesystem_error;
+    const auto temporary_status = std::filesystem::symlink_status(temporary, filesystem_error);
+    if (filesystem_error) {
+        if (filesystem_error == std::errc::no_such_file_or_directory) {
+            return result;
+        }
+        result.error = "failed to inspect crash-residue journal temp: " + filesystem_error.message();
+        return result;
+    }
+    if (temporary_status.type() == std::filesystem::file_type::not_found) {
+        return result;
+    }
+    result.present = true;
+
+    const auto wall_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    for (unsigned attempt = 0; attempt < 32; ++attempt) {
+        auto quarantine = temporary;
+        quarantine += ".stale." + std::string(run_id) + "." + std::to_string(static_cast<long long>(::getpid())) + "." +
+                      std::to_string(wall_ns) + "." + std::to_string(attempt);
+        filesystem_error.clear();
+        const auto quarantine_status = std::filesystem::symlink_status(quarantine, filesystem_error);
+        bool quarantine_exists = false;
+        if (filesystem_error) {
+            if (filesystem_error == std::errc::no_such_file_or_directory) {
+                filesystem_error.clear();
+            } else {
+                result.error = "failed to inspect journal temp quarantine path: " + filesystem_error.message();
+                return result;
+            }
+        } else {
+            quarantine_exists = quarantine_status.type() != std::filesystem::file_type::not_found;
+        }
+        if (quarantine_exists) {
+            continue;
+        }
+        if (::rename(temporary.c_str(), quarantine.c_str()) != 0) {
+            if (errno == ENOENT) {
+                // Another startup/reconciliation pass won the race. The
+                // published journal remains the only trusted source.
+                result.present = false;
+                return result;
+            }
+            if (errno == EEXIST) {
+                continue;
+            }
+            result.error = "failed to quarantine crash-residue journal temp: ";
+            result.error += std::strerror(errno);
+            return result;
+        }
+        result.quarantined = true;
+        result.quarantine_path = std::move(quarantine);
+
+        const int directory = ::open(journal_path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+        if (directory < 0) {
+            result.error = "journal temp was quarantined but its directory could not be fsynced";
+            return result;
+        }
+        const bool directory_synced = ::fsync(directory) == 0;
+        const bool directory_closed = ::close(directory) == 0;
+        if (!directory_synced || !directory_closed) {
+            result.error = "journal temp was quarantined but its directory fsync failed";
+        }
+        return result;
+    }
+    result.error = "could not allocate a unique journal temp quarantine path";
+    return result;
+}
+
 PreSendPlan fail_plan(PreSendFailure failure, std::string message) {
     return {
         .ok = false,
@@ -233,6 +352,15 @@ bool has_unfinished_identifier(const OrderLifecycleConfig& config) {
            std::filesystem::exists(user_lock_path(config, config.add_user_id)) ||
            std::filesystem::exists(user_lock_path(config, config.cancel_user_id)) ||
            std::filesystem::exists(user_lock_path(config, config.recovery_user_id));
+}
+
+bool has_existing_run_journal(const OrderLifecycleConfig& config) {
+    if (config.journal_root.empty() || config.run_id.empty()) {
+        return false;
+    }
+    std::error_code filesystem_error;
+    const auto run_directory = config.journal_root / config.run_id;
+    return std::filesystem::exists(run_directory, filesystem_error) && !filesystem_error;
 }
 
 struct StaticOrderCommandsResult {
@@ -1089,6 +1217,11 @@ PreSendPlan build_pre_send_plan(const OrderLifecycleConfig& config) {
     if (has_unfinished_identifier(config)) {
         return fail_plan(PreSendFailure::DuplicateIdentifier, "ext_id or user_id belongs to an unfinished run journal");
     }
+    if (has_existing_run_journal(config)) {
+        return fail_plan(PreSendFailure::JournalFailure,
+                         "run journal directory already exists; reconcile its published journal and crash residue "
+                         "before starting another order epoch");
+    }
 
     auto static_commands = build_static_order_commands(config);
     if (!static_commands.ok) {
@@ -1220,8 +1353,31 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
     RestartReconciliationResult result;
     result.journal_path = config.journal_root / config.run_id / "journal.json";
     const auto active = has_unfinished_identifier(config);
+    JournalTempRecovery temp_recovery;
+    if (!config.journal_root.empty() && valid_run_token(config.run_id)) {
+        temp_recovery = quarantine_journal_temp(result.journal_path, config.run_id);
+        if (!temp_recovery.error.empty()) {
+            result.ok = false;
+            result.run_found = active || temp_recovery.present;
+            result.locks_retained = active;
+            result.journal_temp_quarantined = temp_recovery.quarantined;
+            result.journal_temp_quarantine_path = temp_recovery.quarantine_path;
+            result.message = "journal crash residue could not be safely quarantined: " + temp_recovery.error;
+            return result;
+        }
+        result.journal_temp_quarantined = temp_recovery.quarantined;
+        result.journal_temp_quarantine_path = temp_recovery.quarantine_path;
+    }
     const auto journal_exists = std::filesystem::exists(result.journal_path);
     if (!active && !journal_exists) {
+        if (temp_recovery.present) {
+            result.ok = false;
+            result.run_found = true;
+            result.locks_retained = false;
+            result.message =
+                "published journal is absent; crash-residue temp was quarantined but cannot prove a safe run epoch";
+            return result;
+        }
         result.run_found = false;
         result.locks_retained = false;
         result.message = "no unfinished identifier locks found";
@@ -1231,7 +1387,10 @@ RestartReconciliationResult reconcile_unfinished_run(const OrderLifecycleConfig&
     result.locks_retained = active;
     if (!journal_exists) {
         result.ok = false;
-        result.message = "unfinished identifier locks have no journal; retaining them";
+        result.message = temp_recovery.present
+                             ? "unfinished identifier locks have no published journal; crash-residue temp was "
+                               "quarantined and cannot be trusted; retaining them"
+                             : "unfinished identifier locks have no journal; retaining them";
         return result;
     }
 

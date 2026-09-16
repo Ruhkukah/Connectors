@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -16,6 +17,9 @@ namespace {
 moex::plaza2::cgate::Plaza2ClockEvidence make_clock_evidence() {
     using namespace moex::plaza2::cgate;
     constexpr std::int64_t base_wall = 1'700'000'000'000'000'000;
+    const auto generated_wall_ns = static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
     return {
         .sync_source = "chrony",
         .sync_status_ok = true,
@@ -35,6 +39,8 @@ moex::plaza2::cgate::Plaza2ClockEvidence make_clock_evidence() {
         .current_local_wall_ns = base_wall + 1'000'000'000,
         .current_local_monotonic_ns = 3'000'000'000,
         .sync_status_monotonic_ns = 2'500'000'000,
+        .evidence_generated_wall_ns = generated_wall_ns,
+        .boot_id = "test-boot",
     };
 }
 
@@ -94,17 +100,40 @@ sys_event_fields(std::int64_t repl_id, std::int64_t repl_rev, std::int64_t event
     };
 }
 
-void emit_sys_event(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge, std::int64_t repl_id,
-                    std::int64_t repl_rev, std::int64_t event_id, std::int64_t sess_id, bool in_snapshot) {
+void begin_sys_event_transaction(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge) {
     using namespace moex::plaza2::cgate;
-    const auto fields = sys_event_fields(repl_id, repl_rev, event_id, sess_id, "session_data_ready");
-    static_cast<void>(in_snapshot);
     static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionBegin}));
+}
+
+void stage_sys_event(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge, std::int64_t repl_id,
+                     std::int64_t repl_rev, std::int64_t event_id, std::int64_t sess_id, std::string_view message) {
+    using namespace moex::plaza2::cgate;
+    const auto fields = sys_event_fields(repl_id, repl_rev, event_id, sess_id, message);
     static_cast<void>(
         bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
                                          .table_code = moex::plaza2::generated::TableCode::kFortsAggrReplSysEvents,
                                          .fields = fields}));
+}
+
+void commit_sys_event_transaction(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge) {
+    using namespace moex::plaza2::cgate;
     static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionCommit}));
+}
+
+void emit_sys_event(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge, std::int64_t repl_id,
+                    std::int64_t repl_rev, std::int64_t event_id, std::int64_t sess_id, bool in_snapshot) {
+    static_cast<void>(in_snapshot);
+    begin_sys_event_transaction(bridge);
+    stage_sys_event(bridge, repl_id, repl_rev, event_id, sess_id, "session_data_ready");
+    commit_sys_event_transaction(bridge);
+}
+
+void prepare_current_session(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge, std::uint64_t lifenum) {
+    using namespace moex::plaza2::cgate;
+    static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Open}));
+    static_cast<void>(
+        bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = lifenum}));
+    static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}));
 }
 
 bool contains_log(const std::vector<std::string>& lines, std::string_view needle) {
@@ -420,6 +449,106 @@ int main(int argc, char** argv) {
         require(!authority_bridge.authoritative(), "wrong-session sys_events must not authorize the target");
         emit_sys_event(authority_bridge, 2502, 26, 26, 321, false);
         require(authority_bridge.authoritative(), "matching current sys_events must restore authority after resync");
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 11);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 2601, 26, 26, 321, "session_data_ready");
+            stage_sys_event(bridge, 2602, 27, 27, 321, "other_event");
+            require(!bridge.session_data_ready() && !bridge.authoritative(),
+                    "ready-then-other rows must not authorize before their transaction commits");
+            commit_sys_event_transaction(bridge);
+            require(bridge.session_data_ready() && bridge.authoritative(),
+                    "ready-then-other rows must authorize when any matching row commits");
+            require(bridge.authority_snapshot().last_sys_event.has_value() &&
+                        bridge.authority_snapshot().last_sys_event->event_id == 27 &&
+                        bridge.authority_snapshot().last_sys_event->message == "other_event",
+                    "all committed sys_events rows must be processed in source order");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 12);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 2701, 28, 28, 321, "other_event");
+            stage_sys_event(bridge, 2702, 29, 29, 321, "session_data_ready");
+            require(!bridge.session_data_ready() && !bridge.authoritative(),
+                    "other-then-ready rows must remain pending before commit");
+            commit_sys_event_transaction(bridge);
+            require(bridge.session_data_ready() && bridge.authoritative(),
+                    "other-then-ready rows must authorize after the matching row commits");
+            require(bridge.authority_snapshot().last_sys_event.has_value() &&
+                        bridge.authority_snapshot().last_sys_event->event_id == 29,
+                    "the final row in an other-then-ready transaction must remain observable");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 13);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 2801, 30, 30, 321, "other_event");
+            stage_sys_event(bridge, 2802, 31, 31, 321, "another_event");
+            commit_sys_event_transaction(bridge);
+            require(!bridge.session_data_ready() && !bridge.authoritative(),
+                    "a transaction without session_data_ready must not authorize the target");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 14);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 2901, 32, 32, 321, "session_data_ready");
+            stage_sys_event(bridge, 2902, 33, 33, 321, "other_event");
+            require(!bridge.session_data_ready(), "aborted sys_events transaction must remain uncommitted");
+            static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Close}));
+            require(bridge.recovering() && !bridge.authoritative(),
+                    "close must discard every pending sys_events row and fence authority");
+            prepare_current_session(bridge, 15);
+            require(!bridge.authoritative(), "discarded rows must not authorize after a listener reopen");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 16);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 3001, 34, 34, 321, "session_data_ready");
+            static_cast<void>(
+                bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 17}));
+            static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}));
+            require(!bridge.authoritative(), "LifeNum must discard an uncommitted authority candidate");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 18);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 3101, 35, 35, 321, "session_data_ready");
+            static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted}));
+            require(bridge.recovering() && !bridge.authoritative(),
+                    "ClearDeleted must discard an uncommitted authority candidate");
+            prepare_current_session(bridge, 19);
+            require(!bridge.authoritative(), "ClearDeleted-discarded rows must not authorize after reopen");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 20);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 3201, 36, 36, 321, "session_data_ready");
+            projector.rollback();
+            require(static_cast<bool>(
+                        bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionCommit})),
+                    "a commit after projector rollback must fail closed");
+            require(!bridge.authoritative(), "failed commit must discard pending sys_events authority");
+        }
 
         Plaza2Aggr20BookProjector staged;
         Plaza2Aggr20ListenerBridge staged_bridge(staged);

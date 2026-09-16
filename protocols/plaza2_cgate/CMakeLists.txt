@@ -119,7 +119,8 @@ target_include_directories(moex_plaza2_cgate_live_session
 target_compile_features(moex_plaza2_cgate_live_session PUBLIC cxx_std_20)
 
 add_library(moex_plaza2_cgate_aggr20_md STATIC
-    src/plaza2_aggr20_md.cpp)
+    src/plaza2_aggr20_md.cpp
+    src/plaza2_aggr20_authority_probe.cpp)
 
 target_link_libraries(moex_plaza2_cgate_aggr20_md
     PUBLIC

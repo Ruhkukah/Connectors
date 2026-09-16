@@ -1244,12 +1244,6 @@ struct Plaza2TestSessionHost::Impl {
             return state_query_cause;
         if (error)
             return error;
-        if (aggr_bridge.recovering() && aggr_bridge.last_recovery_error()) {
-            failure_origin = Plaza2FailureOrigin::ListenerState;
-            failure_service = "FORTS_AGGR20_REPL";
-            failure_health = health;
-            return aggr_bridge.last_recovery_error();
-        }
         if (config.transport_recovery_enabled && transport_lost(health)) {
             failure_health = health;
             identify_transport_loss(health);
@@ -1271,13 +1265,6 @@ struct Plaza2TestSessionHost::Impl {
             if (!failure_health)
                 failure_health = sample_health();
             return aggr_error;
-        }
-        if (aggr_bridge.recovering() && aggr_bridge.last_recovery_error()) {
-            failure_origin = Plaza2FailureOrigin::ListenerState;
-            failure_service = "FORTS_AGGR20_REPL";
-            if (!failure_health)
-                failure_health = sample_health();
-            return aggr_bridge.last_recovery_error();
         }
         if (const auto readiness_error = update_trade_replay_readiness(); readiness_error) {
             if (!failure_health)

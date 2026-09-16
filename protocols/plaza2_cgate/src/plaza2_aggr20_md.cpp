@@ -375,7 +375,7 @@ void Plaza2Aggr20ListenerBridge::invalidate(bool request_reopen, bool transport_
     target_authoritative_ = false;
     reopen_required_ = request_reopen;
     last_sys_event_.reset();
-    pending_sys_event_.reset();
+    pending_sys_events_.clear();
     retry_at_.reset();
     bootstrap_started_at_.reset();
     last_recovery_error_ = {};
@@ -486,21 +486,22 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
             trace_event(event, before, "ignored=true recovering=true");
             return {};
         }
-        pending_sys_event_.reset();
+        pending_sys_events_.clear();
         projector_.begin_transaction();
         trace_event(event, before);
         return {};
-    case Plaza2ListenerEventKind::TransactionCommit:
+    case Plaza2ListenerEventKind::TransactionCommit: {
         if (reopen_required_)
             return {};
         if (const auto error = projector_.commit(); error) {
-            pending_sys_event_.reset();
+            pending_sys_events_.clear();
+            projector_.rollback();
             trace_event(event, before, "commit_error=" + error.message);
             return error;
         }
-        if (pending_sys_event_.has_value()) {
-            auto committed_event = std::move(*pending_sys_event_);
-            pending_sys_event_.reset();
+        auto committed_events = std::move(pending_sys_events_);
+        pending_sys_events_.clear();
+        for (const auto& committed_event : committed_events) {
             last_sys_event_ = committed_event;
             // A sys_events row can certify only after its containing source
             // transaction has committed and after ONLINE has fenced the
@@ -514,6 +515,7 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
         }
         trace_event(event, before);
         return {};
+    }
     case Plaza2ListenerEventKind::StreamData:
         if (reopen_required_)
             return {};
@@ -545,7 +547,7 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
                 " event_id=" + std::to_string(sys_event.event_id) + " sess_id=" + std::to_string(sys_event.sess_id) +
                 " exchange_server_time=" + std::to_string(sys_event.server_time) + " message=" + sys_event.message +
                 " seen_during_snapshot=" + (sys_event.seen_during_snapshot ? "true" : "false");
-            pending_sys_event_ = std::move(sys_event);
+            pending_sys_events_.push_back(std::move(sys_event));
             trace_event(event, before, detail);
         }
         return {};
@@ -944,6 +946,9 @@ Plaza2Error validate_plaza2_aggr20_md_config(const Plaza2Aggr20MdConfig& config)
     if (config.listener_bootstrap_watchdog.count() <= 0) {
         return invalid_config("listener_bootstrap_watchdog must be positive");
     }
+    if (config.clock_evidence_freshness_window_ns == 0) {
+        return invalid_config("clock_evidence_freshness_window_ns must be positive");
+    }
     if (config.stream.settings.find("FORTS_AGGR20_REPL") == std::string::npos) {
         return invalid_config("Phase 5D stream settings must explicitly use FORTS_AGGR20_REPL");
     }
@@ -972,8 +977,12 @@ struct Plaza2Aggr20MdRunner::Impl {
             return fail(validation_error.message);
         }
         health.clock_evidence_present = config.clock_evidence.has_value();
+        const auto current_wall_ns = static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
         health.clock_evidence_ok =
-            health.clock_evidence_present && plaza2_clock_evidence_passes(*config.clock_evidence);
+            health.clock_evidence_present && plaza2_clock_evidence_passes_at(*config.clock_evidence, current_wall_ns,
+                                                                             config.clock_evidence_freshness_window_ns);
         if (!health.clock_evidence_present) {
             return fail("AGGR20 TEST launch requires current paired clock evidence");
         }

@@ -256,8 +256,10 @@ struct RestartReconciliationResult {
     bool run_found{false};
     bool resolved{false};
     bool locks_retained{true};
+    bool journal_temp_quarantined{false};
     OrderLifecycleState state{OrderLifecycleState::UnresolvedOrphanIncident};
     std::filesystem::path journal_path;
+    std::filesystem::path journal_temp_quarantine_path;
     std::string message;
 };
 

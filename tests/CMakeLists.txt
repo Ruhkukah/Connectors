@@ -685,6 +685,8 @@ moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_projection_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_md_projection_test.cpp)
 moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_runner_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_md_runner_test.cpp)
+moex_add_plaza2_aggr20_md_test(plaza2_aggr20_authority_probe_test
+    ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_authority_probe_test.cpp)
 
 function(moex_add_plaza2_twime_reconciler_test target_name source_file)
     add_executable(${target_name} "${source_file}")

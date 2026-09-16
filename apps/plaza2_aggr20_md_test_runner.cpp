@@ -155,7 +155,7 @@ ClockEvidenceLoadResult read_clock_evidence(const fs::path& path) {
     }
 
     Plaza2ClockEvidence evidence;
-    std::array<bool, 8> seen{};
+    std::array<bool, 10> seen{};
     constexpr std::size_t kSyncSource = 0;
     constexpr std::size_t kSyncStatus = 1;
     constexpr std::size_t kWallOffset = 2;
@@ -164,6 +164,8 @@ ClockEvidenceLoadResult read_clock_evidence(const fs::path& path) {
     constexpr std::size_t kCurrentWall = 5;
     constexpr std::size_t kCurrentMonotonic = 6;
     constexpr std::size_t kSyncMonotonic = 7;
+    constexpr std::size_t kEvidenceGeneratedWall = 8;
+    constexpr std::size_t kBootId = 9;
     std::string line;
     std::size_t line_number = 0;
     while (std::getline(input, line)) {
@@ -231,6 +233,17 @@ ClockEvidenceLoadResult read_clock_evidence(const fs::path& path) {
                 return {.error = "clock evidence line " + std::to_string(line_number) +
                                  " has an invalid or duplicate sync_status_monotonic_ns"};
             evidence.sync_status_monotonic_ns = *parsed;
+        } else if (key == "evidence_generated_wall_ns") {
+            const auto parsed = parse_i64(value);
+            if (duplicate(kEvidenceGeneratedWall) || !parsed.has_value())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " has an invalid or duplicate evidence_generated_wall_ns"};
+            evidence.evidence_generated_wall_ns = *parsed;
+        } else if (key == "boot_id") {
+            if (duplicate(kBootId) || value.empty())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " has an invalid or duplicate boot_id"};
+            evidence.boot_id = value;
         } else if (key == "sample") {
             std::vector<std::string_view> fields;
             std::size_t begin = 0;
@@ -520,6 +533,12 @@ int main(int argc, char** argv) {
         lines.push_back("clock_evidence_file=" + args.clock_evidence_file.string());
         lines.push_back("clock_evidence_present=" + std::string(health.clock_evidence_present ? "true" : "false"));
         lines.push_back("clock_evidence_ok=" + std::string(health.clock_evidence_ok ? "true" : "false"));
+        if (clock_evidence.evidence.has_value()) {
+            lines.push_back("evidence_generated_wall_ns=" +
+                            std::to_string(clock_evidence.evidence->evidence_generated_wall_ns.value_or(0)));
+            lines.push_back("boot_id_present=" +
+                            std::string(clock_evidence.evidence->boot_id.has_value() ? "true" : "false"));
+        }
         if (!clock_evidence.error.empty())
             lines.push_back("clock_evidence_error=" + clock_evidence.error);
         lines.push_back("stream_opened=" + std::string(health.stream_opened ? "true" : "false"));
@@ -557,6 +576,13 @@ int main(int argc, char** argv) {
                 {"clock_evidence_present", health.clock_evidence_present ? "true" : "false"},
                 {"clock_evidence_ok", health.clock_evidence_ok ? "true" : "false"},
                 {"clock_evidence_error", clock_evidence.error},
+                {"evidence_generated_wall_ns",
+                 clock_evidence.evidence.has_value()
+                     ? std::to_string(clock_evidence.evidence->evidence_generated_wall_ns.value_or(0))
+                     : "0"},
+                {"boot_id_present", clock_evidence.evidence.has_value() && clock_evidence.evidence->boot_id.has_value()
+                                        ? "true"
+                                        : "false"},
                 {"stream_opened", health.stream_opened ? "true" : "false"},
                 {"stream_online", health.stream_online ? "true" : "false"},
                 {"stream_snapshot_complete", health.stream_snapshot_complete ? "true" : "false"},

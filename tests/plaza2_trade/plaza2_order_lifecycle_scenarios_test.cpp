@@ -893,6 +893,7 @@ void test_duplicate_ext_id_refusal_and_orphan_journal() {
 void test_restart_reconciliation_resolves_consistent_terminal() {
     const auto root = make_temp_root("restart_resolution");
     auto config = base_config(root, "restart-resolution");
+    config.profile_id = "test-profile-\"quoted\"";
     authorize_live(config);
     FakeClock clock;
     ScriptTransport transport(clock);
@@ -1043,6 +1044,90 @@ void test_restart_reconciliation_rejects_mismatch_and_corruption() {
 
 std::filesystem::path journal_temp_path(const std::filesystem::path& root, std::string_view run_id) {
     return root / run_id / "journal.json.tmp";
+}
+
+void test_journal_crash_residue_recovery() {
+    const auto run_published_case = [](std::string_view scenario, std::string_view residue) {
+        const auto root = make_temp_root(scenario);
+        auto config = base_config(root, std::string(scenario) + "-published");
+        authorize_live(config);
+        FakeClock clock;
+        ScriptTransport transport(clock);
+        transport.post_results = {possibly_sent()};
+        transport.poll_results = {{.deadline_reached = true}};
+        const auto initial = run_script(config, transport, clock);
+        require(initial.orphan_incident_written, "crash-residue fixture must leave a published unfinished journal");
+
+        const auto temporary = journal_temp_path(root, config.run_id);
+        write_text(temporary, residue);
+        private_state::OwnOrderSnapshot terminal;
+        terminal.public_order_id = 9001;
+        terminal.private_order_id = 9001;
+        terminal.ext_id = config.ext_id;
+        terminal.client_code = config.client_code;
+        terminal.public_amount = 1;
+        terminal.private_amount = 1;
+        terminal.public_amount_rest = 0;
+        terminal.private_amount_rest = 0;
+        terminal.from_trade_repl = true;
+        const std::vector orders{terminal};
+        const std::vector<private_state::OwnTradeSnapshot> trades;
+        const auto reconciliation = reconcile_unfinished_run(config, orders, trades);
+        require(reconciliation.ok && reconciliation.resolved && !reconciliation.locks_retained &&
+                    reconciliation.journal_temp_quarantined,
+                "published journal must remain authoritative while stale temp residue is quarantined");
+        require(!std::filesystem::exists(temporary) &&
+                    std::filesystem::exists(reconciliation.journal_temp_quarantine_path),
+                "crash residue must be preserved under a unique quarantine name");
+        require(reconciliation.journal_temp_quarantine_path.filename().string().find(".stale." + config.run_id + ".") !=
+                    std::string::npos,
+                "quarantine name must carry run identity and process/start uniqueness");
+        require(read_text(reconciliation.journal_temp_quarantine_path) == residue,
+                "quarantine must preserve the exact partial or divergent temp bytes");
+        std::filesystem::remove_all(root);
+    };
+
+    // These represent the observable crash points before publication: an
+    // fsynced partial file and a complete but not-yet-renamed candidate.
+    run_published_case("journal-crash-partial", "{\n  \"schema\": \"moex.plaza2.order_run_journal.v2\"\n");
+    run_published_case("journal-crash-complete", "{\"schema\":\"foreign-candidate\",\"finished\":true}\n");
+
+    {
+        const auto root = make_temp_root("journal-temp-only");
+        auto config = base_config(root, "journal-temp-only");
+        const auto run_directory = root / config.run_id;
+        std::filesystem::create_directories(run_directory);
+        const auto temporary = journal_temp_path(root, config.run_id);
+        write_text(temporary, "partial-without-published-journal");
+        require(build_pre_send_plan(config).failure == PreSendFailure::JournalFailure,
+                "an existing run directory with only crash residue must block a new order epoch");
+        const auto reconciliation = reconcile_unfinished_run(config, {}, {});
+        require(!reconciliation.ok && reconciliation.run_found && !reconciliation.locks_retained &&
+                    reconciliation.journal_temp_quarantined &&
+                    reconciliation.message.find("published journal is absent") != std::string::npos,
+                "temp-only evidence must be quarantined but remain unresolved without a published journal");
+        require(!std::filesystem::exists(temporary) &&
+                    std::filesystem::exists(reconciliation.journal_temp_quarantine_path),
+                "temp-only evidence must not be deleted during failed reconstruction");
+        std::filesystem::remove_all(root);
+    }
+
+    {
+        const auto root = make_temp_root("journal-temp-locked");
+        auto config = base_config(root, "journal-temp-locked");
+        std::filesystem::create_directories(root / "active" / ("ext_" + std::to_string(config.ext_id)));
+        std::filesystem::create_directories(root / config.run_id);
+        const auto temporary = journal_temp_path(root, config.run_id);
+        write_text(temporary, "partial-with-locks");
+        const auto reconciliation = reconcile_unfinished_run(config, {}, {});
+        require(!reconciliation.ok && reconciliation.run_found && reconciliation.locks_retained &&
+                    reconciliation.journal_temp_quarantined,
+                "missing published journal must retain active identifier locks");
+        require(!std::filesystem::exists(temporary) &&
+                    std::filesystem::exists(reconciliation.journal_temp_quarantine_path),
+                "locked temp-only evidence must remain available for operator reconciliation");
+        std::filesystem::remove_all(root);
+    }
 }
 
 void require_persisted_inconsistent_terminal_incident(const std::filesystem::path& root,
@@ -1459,6 +1544,7 @@ int main() {
         test_restart_reconciliation_resolves_consistent_terminal();
         test_restart_reconciliation_retains_working_locks();
         test_restart_reconciliation_rejects_mismatch_and_corruption();
+        test_journal_crash_residue_recovery();
         test_full_fill_with_identity_conflict_is_unresolved();
         test_cancelled_with_contradictory_add_identity_is_unresolved();
         test_terminal_after_exact_ext_recovery_with_prior_inconsistency_is_unresolved();
