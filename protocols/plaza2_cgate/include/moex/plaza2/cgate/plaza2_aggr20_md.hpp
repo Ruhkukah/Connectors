@@ -1,8 +1,10 @@
 #pragma once
 
 #include "moex/plaza2/cgate/plaza2_credential_provider.hpp"
+#include "moex/plaza2/cgate/plaza2_certification_evidence.hpp"
 #include "moex/plaza2/cgate/plaza2_manual_operator_gate.hpp"
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -21,6 +23,8 @@ namespace moex::plaza2::cgate {
 
 struct Plaza2Aggr20Level {
     std::int64_t isin_id{0};
+    // AGGR20 keeps six decimal places internally. Session/order values use
+    // scale 1e5 and must not be compared by mixing the two unit systems.
     std::int64_t price_scaled{0};
     std::int64_t volume{0};
     std::int32_t dir{0};
@@ -114,9 +118,20 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
     [[nodiscard]] bool recovering() const noexcept {
         return reopen_required_ || retry_at_.has_value();
     }
+    [[nodiscard]] const Plaza2Error& last_recovery_error() const noexcept {
+        return last_recovery_error_;
+    }
+    [[nodiscard]] std::string_view recovery_failure_classification() const noexcept {
+        return recovery_failure_classification_;
+    }
+    void set_bootstrap_watchdog(std::chrono::milliseconds watchdog) noexcept {
+        bootstrap_watchdog_ = watchdog;
+    }
     [[nodiscard]] Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent&) override;
-    void on_plaza2_listener_error(const Plaza2Error&) noexcept override {
+    void on_plaza2_listener_error(const Plaza2Error& error) noexcept override {
         reset();
+        last_recovery_error_ = error;
+        recovery_failure_classification_ = "fatal_callback";
     }
     [[nodiscard]] Plaza2Error supervise(Plaza2Listener&, std::chrono::steady_clock::time_point now);
 
@@ -124,6 +139,10 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
     Plaza2Aggr20BookProjector& projector_;
     bool online_{}, snapshot_complete_{}, reopen_required_{};
     std::optional<std::chrono::steady_clock::time_point> retry_at_;
+    std::optional<std::chrono::steady_clock::time_point> bootstrap_started_at_;
+    std::chrono::milliseconds bootstrap_watchdog_{30000};
+    Plaza2Error last_recovery_error_;
+    std::string recovery_failure_classification_;
 };
 
 struct Plaza2Aggr20MdStreamConfig {
@@ -146,6 +165,10 @@ struct Plaza2Aggr20MdConfig {
     bool test_market_data_armed{false};
     std::uint32_t process_timeout_ms{50};
     Plaza2Aggr20BookProjector::NowFn now;
+    std::chrono::milliseconds listener_bootstrap_watchdog{30000};
+    // Supplied by the launch/evidence path; absence keeps the runner from
+    // reporting certification-ready even when the stream itself is healthy.
+    std::optional<Plaza2ClockEvidence> clock_evidence;
 };
 
 enum class Plaza2Aggr20MdRunnerState : std::uint8_t {
@@ -170,6 +193,8 @@ struct Plaza2Aggr20MdHealthSnapshot {
     bool stream_opened{false};
     bool stream_online{false};
     bool stream_snapshot_complete{false};
+    bool clock_evidence_present{false};
+    bool clock_evidence_ok{false};
     bool ready{false};
     std::uint32_t last_process_runtime_code{0};
     std::string last_error;

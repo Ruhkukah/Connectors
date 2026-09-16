@@ -1218,10 +1218,15 @@ int main(int argc, char** argv) {
             require(selected.has_value() && selected->trades_rev == 44 && selected->trades_lifenum == 7 &&
                         !host.trade_replay_anchor_ready(),
                     "failed TRADE open must retain but not declare the immutable anchor ready");
-            const auto drift = host.poll();
-            require(drift && contains_text(drift.message, "immutable POS.info anchor") &&
+            require(!host.poll() && !host.trade_replay_anchor_used().has_value() && !host.trade_replay_anchor_ready(),
+                    "newer committed POS epoch must invalidate the incomplete TRADE replay without mixing anchors");
+            require(!host.poll(), "TRADE replay must reopen only after selecting the newer POS epoch");
+            const auto reanchored = host.trade_replay_anchor_used();
+            require(reanchored.has_value() && reanchored->trades_rev == 45 && reanchored->trades_lifenum == 7 &&
                         !host.trade_replay_anchor_ready(),
-                    "TRADE open failure plus POS anchor drift must fail closed without re-anchoring");
+                    "TRADE replay must bind the newer committed POS epoch before it becomes ready");
+            require(!host.poll() && host.trade_replay_anchor_ready(),
+                    "reanchored TRADE replay must become ready only after its fresh snapshot completes");
             require(!host.stop(), "TRADE anchor-drift host must stop cleanly");
         }
 
@@ -1421,8 +1426,8 @@ int main(int argc, char** argv) {
             require(drift_transport.last_execution_safety_receipt() == std::nullopt,
                     "changed POS replay anchor must prevent receipt persistence");
             const auto anchor = drift_transport.host().trade_replay_anchor_used();
-            require(anchor.has_value() && anchor->trades_rev == 44 && anchor->trades_lifenum == 7,
-                    "deferred TRADE must retain the original POS replay anchor");
+            require(!anchor.has_value() && !drift_transport.host().trade_replay_anchor_ready(),
+                    "deferred TRADE must discard the stale anchor before a fresh bootstrap can select its replacement");
             require(drift_transport.host().stop().code == cgate::Plaza2ErrorCode::None,
                     "POS anchor drift pre-send host must stop cleanly");
         }

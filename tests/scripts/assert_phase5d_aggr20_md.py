@@ -49,7 +49,10 @@ def main() -> int:
     script = repo_root / "scripts" / "vps" / "plaza2_aggr20_md_test_evidence.sh"
     run(["bash", "-n", str(script)], expect_success=True)
     refused = run(["bash", str(script)], expect_success=False)
-    if "--bundle-root, --profile, --secret-env-file, and --output-dir are required" not in refused.stderr:
+    if (
+        "--bundle-root, --profile, --clock-evidence-file, --secret-env-file, and --output-dir are required"
+        not in refused.stderr
+    ):
         raise AssertionError("AGGR20 evidence script did not fail closed without required arguments")
 
     validate_profile(repo_root / "profiles" / "test_plaza2_aggr20_md.template.yaml")

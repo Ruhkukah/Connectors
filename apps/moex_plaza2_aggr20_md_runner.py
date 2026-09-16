@@ -34,6 +34,7 @@ def main() -> int:
     parser.add_argument("--credentials-file")
     parser.add_argument("--software-key-env")
     parser.add_argument("--software-key-file")
+    parser.add_argument("--clock-evidence-file")
     parser.add_argument("--max-polls", type=int, default=8)
     args = parser.parse_args()
 
@@ -112,6 +113,10 @@ def main() -> int:
         command.extend(["--software-key-env-var", software_key_env])
     if software_key_file:
         command.extend(["--software-key-file", software_key_file])
+
+    clock_evidence_file = args.clock_evidence_file or str(plaza2_md.get("clock_evidence_file", ""))
+    if clock_evidence_file:
+        command.extend(["--clock-evidence-file", clock_evidence_file])
 
     if args.armed_test_network:
         command.append("--armed-test-network")

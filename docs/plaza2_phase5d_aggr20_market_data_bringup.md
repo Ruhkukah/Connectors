@@ -64,9 +64,17 @@ Startup order:
 4. Run runtime probe and scoped scheme-drift validation.
 5. Open CGate environment and connection.
 6. Open one AGGR20 listener.
-7. Process bounded polls.
-8. Project committed `orders_aggr` rows.
-9. Emit redacted evidence and stop.
+7. Load and validate current paired clock evidence.
+8. Process bounded polls.
+9. Project committed `orders_aggr` rows.
+10. Emit redacted evidence and stop.
+
+The launch path requires `--clock-evidence-file <path>`. The file is a strict
+key/value record set supplied by the operator's clock/evidence collector; it
+must contain the synchronization metadata and at least two current samples.
+Each `sample` line has the form
+`local_wall_ns,local_monotonic_ns,exchange_wall_ns,transport_delay_ns,exchange_event_age_ns,provenance`.
+Historical snapshot timestamps must not be reused as current clock references.
 
 ## Projection Model
 
@@ -141,6 +149,7 @@ mkdir -p "$HOME/moex/evidence/plaza2-md/$run_id"
   --armed-test-session \
   --armed-test-plaza2 \
   --armed-test-market-data \
+  --clock-evidence-file ~/.config/moex-connector/evidence/plaza2_clock.txt \
   --max-polls 512
 ```
 
@@ -150,6 +159,8 @@ The runner classifies failure as:
 
 - `runtime_probe_failed`
 - `schema_mismatch`
+- `clock_evidence_missing`
+- `clock_evidence_invalid`
 - `stream_open_failed`
 - `stream_not_online`
 - `snapshot_incomplete`

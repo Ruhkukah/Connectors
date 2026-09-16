@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -69,19 +70,83 @@ int main(int argc, char** argv) {
         Plaza2ClockEvidence clock{.sync_source = "chrony",
                                   .sync_status_ok = true,
                                   .wall_offset_ns = 120'000'000,
+                                  .offset_uncertainty_ns = 20'000'000,
                                   .monotonic_clock_id = "CLOCK_MONOTONIC_RAW",
                                   .paired_samples = {{.local_wall_ns = 1'700'000'000'000'000'000,
-                                                      .local_monotonic_ns = 42,
-                                                      .exchange_wall_ns = 1'700'000'000'100'000'000}}};
+                                                      .local_monotonic_ns = 1'000'000'000,
+                                                      .exchange_wall_ns = 1'699'999'999'880'000'000,
+                                                      .provenance = "test-current-clock",
+                                                      .current_reference = true},
+                                                     {.local_wall_ns = 1'700'000'000'500'000'000,
+                                                      .local_monotonic_ns = 2'000'000'000,
+                                                      .exchange_wall_ns = 1'700'000'000'380'000'000,
+                                                      .provenance = "test-current-clock",
+                                                      .current_reference = true}},
+                                  .current_local_wall_ns = 1'700'000'001'000'000'000,
+                                  .current_local_monotonic_ns = 3'000'000'000,
+                                  .sync_status_monotonic_ns = 2'500'000'000};
         require(plaza2_clock_evidence_passes(clock), "clock evidence within one second should pass");
-        clock.paired_samples[0].exchange_wall_ns += 1'000'000'001;
+        clock.paired_samples[0].exchange_wall_ns -= 1'000'000'001;
         require(!plaza2_clock_evidence_passes(clock), "clock evidence over one second must fail");
-        clock.paired_samples[0].exchange_wall_ns = clock.paired_samples[0].local_wall_ns;
+        auto threshold_clock = clock;
+        threshold_clock.wall_offset_ns = kPlaza2MaxLogClockSkewNs;
+        threshold_clock.offset_uncertainty_ns = 1;
+        threshold_clock.paired_samples[0].exchange_wall_ns =
+            threshold_clock.paired_samples[0].local_wall_ns - kPlaza2MaxLogClockSkewNs;
+        threshold_clock.paired_samples[1].exchange_wall_ns =
+            threshold_clock.paired_samples[1].local_wall_ns - kPlaza2MaxLogClockSkewNs;
+        require(plaza2_clock_evidence_passes(threshold_clock),
+                "clock evidence exactly at the one-second offset threshold should pass");
+        threshold_clock.wall_offset_ns = kPlaza2MaxLogClockSkewNs + 1;
+        require(!plaza2_clock_evidence_passes(threshold_clock),
+                "clock evidence over the one-second offset threshold must fail");
+        clock.paired_samples[0].exchange_wall_ns = 1'699'999'999'880'000'000;
         clock.sync_status_ok = false;
         require(!plaza2_clock_evidence_passes(clock), "unsynchronized clock must fail");
         clock.sync_status_ok = true;
         clock.paired_samples.clear();
         require(!plaza2_clock_evidence_passes(clock), "clock evidence without paired timestamps must fail");
+
+        clock = {.sync_source = "chrony",
+                 .sync_status_ok = true,
+                 .wall_offset_ns = 120'000'000,
+                 .offset_uncertainty_ns = 20'000'000,
+                 .monotonic_clock_id = "CLOCK_MONOTONIC_RAW",
+                 .paired_samples = {{.local_wall_ns = 1'700'000'000'000'000'000,
+                                     .local_monotonic_ns = 1'000'000'000,
+                                     .exchange_wall_ns = 1'699'999'999'880'000'000,
+                                     .provenance = "test-current-clock",
+                                     .current_reference = true},
+                                    {.local_wall_ns = 1'700'000'000'500'000'000,
+                                     .local_monotonic_ns = 1'000'000'000,
+                                     .exchange_wall_ns = 1'700'000'000'380'000'000,
+                                     .provenance = "test-current-clock",
+                                     .current_reference = true}},
+                 .current_local_wall_ns = 1'700'000'001'000'000'000,
+                 .current_local_monotonic_ns = 3'000'000'000,
+                 .sync_status_monotonic_ns = 2'500'000'000};
+        require(!plaza2_clock_evidence_passes(clock), "repeated monotonic samples must fail");
+        clock.paired_samples[1].local_monotonic_ns = 500'000'000;
+        require(!plaza2_clock_evidence_passes(clock), "decreasing monotonic samples must fail");
+        clock.paired_samples[1].local_monotonic_ns = 2'000'000'000;
+        clock.paired_samples[1].provenance.clear();
+        require(!plaza2_clock_evidence_passes(clock), "unlabelled samples must fail");
+        clock.paired_samples[1].provenance = "old-snapshot-row";
+        clock.paired_samples[1].current_reference = false;
+        require(!plaza2_clock_evidence_passes(clock), "old snapshot rows must not qualify as clock references");
+        clock.paired_samples[1].current_reference = true;
+        clock.paired_samples[1].local_wall_ns = 1'700'000'000'000'000'000;
+        require(!plaza2_clock_evidence_passes(clock), "stale wall samples must fail the freshness gate");
+        clock.paired_samples[1].local_wall_ns = 1'700'000'000'500'000'000;
+        clock.paired_samples[1].exchange_wall_ns = 1'700'000'000'200'000'000;
+        require(!plaza2_clock_evidence_passes(clock), "offset steps beyond uncertainty must fail");
+        clock.paired_samples[1].exchange_wall_ns = 1'700'000'000'380'000'000;
+        clock.wall_offset_ns = std::numeric_limits<std::int64_t>::min();
+        require(!plaza2_clock_evidence_passes(clock), "signed offset extremes must fail without overflow");
+        clock.wall_offset_ns = 120'000'000;
+        clock.paired_samples[0].local_wall_ns = std::numeric_limits<std::int64_t>::max();
+        clock.paired_samples[0].exchange_wall_ns = std::numeric_limits<std::int64_t>::min();
+        require(!plaza2_clock_evidence_passes(clock), "paired timestamp extremes must fail without overflow");
 
         const auto fake_library = std::filesystem::path(argv[1]);
         const auto fixture_root = make_temp_directory("plaza2_runtime_adapter_test");

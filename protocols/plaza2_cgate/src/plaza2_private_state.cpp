@@ -1,4 +1,5 @@
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -17,42 +18,8 @@
 namespace moex::plaza2::private_state {
 
 std::optional<SessionDecimal> parse_session_decimal(std::string_view text) noexcept {
-    if (text.empty())
-        return std::nullopt;
-    const bool negative = text.front() == '-';
-    if (negative || text.front() == '+')
-        text.remove_prefix(1);
-    if (text.empty())
-        return std::nullopt;
-    const auto limit = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + (negative ? 1U : 0U);
-    std::uint64_t magnitude = 0;
-    int fractional = 0;
-    bool point = false;
-    bool digit = false;
-    for (char c : text) {
-        if (c == '.' && !point && digit) {
-            point = true;
-            continue;
-        }
-        if (c < '0' || c > '9' || (point && ++fractional > 5))
-            return std::nullopt;
-        digit = true;
-        const auto value = static_cast<unsigned>(c - '0');
-        if (magnitude > (limit - value) / 10)
-            return std::nullopt;
-        magnitude = magnitude * 10 + value;
-    }
-    if (!digit || (point && fractional == 0))
-        return std::nullopt;
-    for (; fractional < 5; ++fractional) {
-        if (magnitude > limit / 10)
-            return std::nullopt;
-        magnitude *= 10;
-    }
-    if (negative && magnitude == limit)
-        return SessionDecimal{std::numeric_limits<std::int64_t>::min()};
-    const auto value = static_cast<std::int64_t>(magnitude);
-    return SessionDecimal{negative ? -value : value};
+    const auto units = cgate::parse_fixed_point(text, cgate::kPlaza2SessionFractionalDigits, true);
+    return units.has_value() ? std::optional<SessionDecimal>{SessionDecimal{*units}} : std::nullopt;
 }
 
 FuturePriceBounds evaluate_future_price_bounds(const FutureSessionTerms& terms) noexcept {

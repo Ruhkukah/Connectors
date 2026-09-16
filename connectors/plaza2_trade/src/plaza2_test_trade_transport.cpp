@@ -279,40 +279,7 @@ std::string position_row_fingerprint(const plaza2::private_state::PositionSnapsh
 }
 
 std::optional<std::int64_t> parse_scaled_decimal(std::string_view text) {
-    if (text.empty()) {
-        return std::nullopt;
-    }
-    const auto dot = text.find('.');
-    if (dot != std::string_view::npos && text.find('.', dot + 1) != std::string_view::npos) {
-        return std::nullopt;
-    }
-    const auto whole = dot == std::string_view::npos ? text : text.substr(0, dot);
-    const auto fraction = dot == std::string_view::npos ? std::string_view{} : text.substr(dot + 1);
-    if (whole.empty() || fraction.size() > 6 ||
-        !std::all_of(whole.begin(), whole.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; }) ||
-        !std::all_of(fraction.begin(), fraction.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
-        return std::nullopt;
-    }
-    std::int64_t value = 0;
-    for (const auto ch : whole) {
-        const auto digit = static_cast<std::int64_t>(ch - '0');
-        if (value > (std::numeric_limits<std::int64_t>::max() - digit) / 10) {
-            return std::nullopt;
-        }
-        value = value * 10 + digit;
-    }
-    if (value > std::numeric_limits<std::int64_t>::max() / 1000000) {
-        return std::nullopt;
-    }
-    value *= 1000000;
-    std::int64_t fractional_value = 0;
-    for (const auto ch : fraction) {
-        fractional_value = fractional_value * 10 + static_cast<std::int64_t>(ch - '0');
-    }
-    for (std::size_t index = fraction.size(); index < 6; ++index) {
-        fractional_value *= 10;
-    }
-    return value + fractional_value;
+    return cgate::parse_fixed_point(text, cgate::kPlaza2Aggr20FractionalDigits, false);
 }
 
 bool atomic_write_file(const std::filesystem::path& path, std::string_view contents, std::string& error) {
@@ -633,6 +600,8 @@ struct Plaza2TestSessionHost::Impl {
         std::chrono::steady_clock::time_point reopen_not_before{};
         bool reopen_pending{false};
         bool snapshot_completed_once{false};
+        std::optional<std::chrono::steady_clock::time_point> bootstrap_started_at;
+        std::uint64_t last_observed_commit_sequence{0};
     };
 
     explicit Impl(Plaza2TestSessionHostConfig initial)
@@ -842,6 +811,7 @@ struct Plaza2TestSessionHost::Impl {
         aggr_projector.reset();
         aggr_bridge.reset();
         deferred_trade_stream.reset();
+        aggr_bridge.set_bootstrap_watchdog(config.listener_bootstrap_watchdog);
         trade_replay_anchor_is_ready = !config.trade_replay_from_pos_anchor;
 
         private_listeners.reserve(all_private_streams.size());
@@ -864,6 +834,8 @@ struct Plaza2TestSessionHost::Impl {
             if (const auto error = managed.listener.open(managed.open_settings); error) {
                 return error;
             }
+            managed.bootstrap_started_at = recovery_now();
+            managed.last_observed_commit_sequence = 0;
         }
 
         const auto aggr_settings =
@@ -982,12 +954,15 @@ struct Plaza2TestSessionHost::Impl {
         if (const auto error = managed.listener.open(managed.open_settings); error) {
             return error;
         }
+        managed.bootstrap_started_at = recovery_now();
+        managed.last_observed_commit_sequence = 0;
         trade_listener_index = private_listeners.size() - 1;
         trade_replay_anchor_used = Plaza2TradeReplayAnchor{
             .trades_rev = pos_health->last_trades_rev,
             .trades_lifenum = pos_health->last_trades_lifenum,
             .server_time = pos_health->last_server_time,
         };
+        trade_replay_anchor_pos_commit_sequence = pos_health->last_commit_sequence;
         // cg_lsn_open only initiates an asynchronous open. The immutable POS
         // anchor is selected here, but replay readiness is established only
         // after TRADE is ACTIVE and its snapshot has reached ONLINE.
@@ -1012,19 +987,131 @@ struct Plaza2TestSessionHost::Impl {
                pos->last_trades_lifenum == trade_replay_anchor_used->trades_lifenum;
     }
 
+    enum class PosAnchorStatus : std::uint8_t {
+        Unavailable,
+        Matches,
+        NewerCommitted,
+        Conflict,
+    };
+
+    [[nodiscard]] PosAnchorStatus selected_pos_anchor_status() const noexcept {
+        if (!trade_replay_anchor_used.has_value()) {
+            return PosAnchorStatus::Unavailable;
+        }
+        const auto* pos = stream_health(StreamCode::kFortsPosRepl);
+        if (pos == nullptr || !pos->online || !pos->snapshot_complete) {
+            return PosAnchorStatus::Unavailable;
+        }
+        const auto& selected = *trade_replay_anchor_used;
+        if (pos->last_trades_rev == selected.trades_rev && pos->last_trades_lifenum == selected.trades_lifenum) {
+            return PosAnchorStatus::Matches;
+        }
+        if (pos->last_trades_rev <= 0 || pos->last_trades_lifenum <= 0 ||
+            pos->last_commit_sequence <= trade_replay_anchor_pos_commit_sequence ||
+            pos->last_trades_lifenum < selected.trades_lifenum ||
+            (pos->last_trades_lifenum == selected.trades_lifenum && pos->last_trades_rev <= selected.trades_rev) ||
+            (pos->last_server_time != 0 && selected.server_time != 0 && pos->last_server_time < selected.server_time)) {
+            return PosAnchorStatus::Conflict;
+        }
+        return PosAnchorStatus::NewerCommitted;
+    }
+
+    Plaza2Error discard_trade_replay_for_new_pos_anchor() {
+        if (!trade_listener_index.has_value()) {
+            trade_replay_anchor_used.reset();
+            trade_replay_anchor_pos_commit_sequence = 0;
+            trade_replay_anchor_is_ready = false;
+            return {};
+        }
+        const auto index = *trade_listener_index;
+        if (index >= private_listeners.size()) {
+            return invalid("FORTS_TRADE_REPL replay listener index is invalid", Plaza2ErrorCode::AdapterState);
+        }
+        if (const auto error = private_bridge.on_plaza2_listener_event(Plaza2ListenerEvent{
+                .kind = Plaza2ListenerEventKind::Close, .stream_code = StreamCode::kFortsTradeRepl});
+            error) {
+            return error;
+        }
+        if (const auto error = private_listeners[index].listener.close(); error) {
+            return error;
+        }
+        if (const auto error = private_listeners[index].listener.destroy(); error) {
+            return error;
+        }
+        private_listeners.erase(private_listeners.begin() + static_cast<std::ptrdiff_t>(index));
+        trade_listener_index.reset();
+        trade_replay_anchor_used.reset();
+        trade_replay_anchor_pos_commit_sequence = 0;
+        trade_replay_anchor_is_ready = false;
+        return {};
+    }
+
+    Plaza2Error reconcile_selected_pos_anchor() {
+        const auto status = selected_pos_anchor_status();
+        if (status == PosAnchorStatus::Matches) {
+            return {};
+        }
+        if (status == PosAnchorStatus::Unavailable) {
+            // Once TRADE was opened, a POS close/lifenum transition makes the
+            // old replay unsafe even before the replacement POS snapshot is
+            // ONLINE. Discard TRADE now and wait for the next committed anchor.
+            return discard_trade_replay_for_new_pos_anchor();
+        }
+        if (status == PosAnchorStatus::Conflict) {
+            failure_origin = Plaza2FailureOrigin::Bootstrap;
+            failure_service = "FORTS_TRADE_REPL";
+            return invalid("FORTS_TRADE_REPL POS.info anchor changed without a newer committed POS epoch",
+                           Plaza2ErrorCode::AdapterState);
+        }
+        failure_origin = Plaza2FailureOrigin::Bootstrap;
+        failure_service = "FORTS_TRADE_REPL";
+        return discard_trade_replay_for_new_pos_anchor();
+    }
+
     Plaza2Error supervise_initial_listener_opens() {
         const auto now = recovery_now();
+        if (trade_listener_index.has_value() && trade_replay_anchor_used.has_value()) {
+            const auto anchor_error = reconcile_selected_pos_anchor();
+            if (anchor_error) {
+                return anchor_error;
+            }
+            if (!trade_listener_index.has_value()) {
+                // A newer POS epoch invalidated the incomplete TRADE replay.
+                // Re-open it on the next pump only after the current POS state
+                // has become the sole selected anchor.
+                return {};
+            }
+        }
         for (auto& managed : private_listeners) {
             failure_service = declared_stream_name(managed.stream_code);
             const auto* health = stream_health(managed.stream_code);
             managed.snapshot_completed_once =
                 managed.snapshot_completed_once || (health != nullptr && health->online && health->snapshot_complete);
+            if (managed.snapshot_completed_once) {
+                managed.bootstrap_started_at.reset();
+                managed.last_observed_commit_sequence = health == nullptr ? 0 : health->last_commit_sequence;
+            } else if (health != nullptr && health->last_commit_sequence > managed.last_observed_commit_sequence) {
+                managed.last_observed_commit_sequence = health->last_commit_sequence;
+                managed.bootstrap_started_at = now;
+            }
 
             std::uint32_t state = kCgStateClosed;
             if (const auto error = managed.listener.state(state); error) {
                 return error;
             }
             if (state == kCgStateActive || state == kCgStateOpening) {
+                if (!managed.snapshot_completed_once) {
+                    if (!managed.bootstrap_started_at.has_value()) {
+                        managed.bootstrap_started_at = now;
+                    }
+                    if (now >= *managed.bootstrap_started_at &&
+                        now - *managed.bootstrap_started_at >= config.listener_bootstrap_watchdog) {
+                        failure_origin = Plaza2FailureOrigin::ListenerState;
+                        failure_health = sample_health();
+                        return invalid("declared replication listener bootstrap watchdog expired before ONLINE",
+                                       Plaza2ErrorCode::AdapterState);
+                    }
+                }
                 continue;
             }
             if (state == kCgStateError) {
@@ -1035,10 +1122,11 @@ struct Plaza2TestSessionHost::Impl {
                                    Plaza2ErrorCode::AdapterState);
                 }
                 if (managed.stream_code == StreamCode::kFortsTradeRepl && !pos_anchor_matches_selected()) {
-                    failure_origin = Plaza2FailureOrigin::Bootstrap;
-                    trade_replay_anchor_is_ready = false;
-                    return invalid("FORTS_TRADE_REPL entered ERROR and the immutable POS replay anchor changed",
-                                   Plaza2ErrorCode::AdapterState);
+                    const auto anchor_error = reconcile_selected_pos_anchor();
+                    if (anchor_error) {
+                        return anchor_error;
+                    }
+                    return {};
                 }
                 if (const auto error = private_bridge.on_plaza2_listener_event(Plaza2ListenerEvent{
                         .kind = Plaza2ListenerEventKind::Close, .stream_code = managed.stream_code});
@@ -1050,14 +1138,17 @@ struct Plaza2TestSessionHost::Impl {
                 }
                 managed.reopen_pending = true;
                 managed.reopen_not_before = now + kListenerReopenDelay;
+                managed.bootstrap_started_at.reset();
+                managed.last_observed_commit_sequence = 0;
                 continue;
             }
             if (state == kCgStateClosed && managed.reopen_pending && now >= managed.reopen_not_before) {
                 if (managed.stream_code == StreamCode::kFortsTradeRepl && !pos_anchor_matches_selected()) {
-                    failure_origin = Plaza2FailureOrigin::Bootstrap;
-                    trade_replay_anchor_is_ready = false;
-                    return invalid("FORTS_TRADE_REPL retry refused because the immutable POS replay anchor changed",
-                                   Plaza2ErrorCode::AdapterState);
+                    const auto anchor_error = reconcile_selected_pos_anchor();
+                    if (anchor_error) {
+                        return anchor_error;
+                    }
+                    return {};
                 }
                 failure_origin = Plaza2FailureOrigin::ListenerOpen;
                 if (const auto error = managed.listener.open(managed.open_settings); error) {
@@ -1065,6 +1156,8 @@ struct Plaza2TestSessionHost::Impl {
                     return error;
                 }
                 managed.reopen_pending = false;
+                managed.bootstrap_started_at = now;
+                managed.last_observed_commit_sequence = 0;
             }
         }
         return {};
@@ -1080,10 +1173,13 @@ struct Plaza2TestSessionHost::Impl {
             return {};
         }
         if (!pos_anchor_matches_selected()) {
-            failure_origin = Plaza2FailureOrigin::Bootstrap;
-            failure_service = "FORTS_TRADE_REPL";
-            return invalid("FORTS_TRADE_REPL replay no longer matches its immutable POS.info anchor",
-                           Plaza2ErrorCode::AdapterState);
+            const auto anchor_error = reconcile_selected_pos_anchor();
+            if (anchor_error) {
+                return anchor_error;
+            }
+            if (!trade_listener_index.has_value() || !trade_replay_anchor_used.has_value()) {
+                return {};
+            }
         }
         std::uint32_t state = kCgStateClosed;
         if (const auto error = private_listeners[*trade_listener_index].listener.state(state); error) {
@@ -1147,6 +1243,12 @@ struct Plaza2TestSessionHost::Impl {
             return state_query_cause;
         if (error)
             return error;
+        if (aggr_bridge.recovering() && aggr_bridge.last_recovery_error()) {
+            failure_origin = Plaza2FailureOrigin::ListenerState;
+            failure_service = "FORTS_AGGR20_REPL";
+            failure_health = health;
+            return aggr_bridge.last_recovery_error();
+        }
         if (config.transport_recovery_enabled && transport_lost(health)) {
             failure_health = health;
             identify_transport_loss(health);
@@ -1168,6 +1270,13 @@ struct Plaza2TestSessionHost::Impl {
             if (!failure_health)
                 failure_health = sample_health();
             return aggr_error;
+        }
+        if (aggr_bridge.recovering() && aggr_bridge.last_recovery_error()) {
+            failure_origin = Plaza2FailureOrigin::ListenerState;
+            failure_service = "FORTS_AGGR20_REPL";
+            if (!failure_health)
+                failure_health = sample_health();
+            return aggr_bridge.last_recovery_error();
         }
         if (const auto readiness_error = update_trade_replay_readiness(); readiness_error) {
             if (!failure_health)
@@ -1393,10 +1502,14 @@ struct Plaza2TestSessionHost::Impl {
             return recoverable_bootstrap_error(error);
         if (failure_origin == Plaza2FailureOrigin::ListenerOpen || failure_origin == Plaza2FailureOrigin::PublisherOpen)
             return is_service_unavailable(error);
+        const bool bootstrap_watchdog = failure_origin == Plaza2FailureOrigin::ListenerState &&
+                                        error.code == Plaza2ErrorCode::AdapterState &&
+                                        error.message.find("bootstrap watchdog") != std::string::npos;
         return (failure_origin == Plaza2FailureOrigin::ConnectionState ||
                 failure_origin == Plaza2FailureOrigin::Publisher ||
                 failure_origin == Plaza2FailureOrigin::ListenerState) &&
-               error.code == Plaza2ErrorCode::AdapterState && failure_health && transport_lost(*failure_health);
+               error.code == Plaza2ErrorCode::AdapterState &&
+               (bootstrap_watchdog || (failure_health && transport_lost(*failure_health)));
     }
 
     Plaza2Error supervise() {
@@ -1504,6 +1617,7 @@ struct Plaza2TestSessionHost::Impl {
         deferred_trade_stream.reset();
         trade_listener_index.reset();
         trade_replay_anchor_used.reset();
+        trade_replay_anchor_pos_commit_sequence = 0;
         trade_replay_anchor_is_ready = false;
         static_cast<void>(connection.close());
         static_cast<void>(connection.destroy());
@@ -1546,6 +1660,7 @@ struct Plaza2TestSessionHost::Impl {
     std::optional<Plaza2TestTradeStreamConfig> deferred_trade_stream;
     std::optional<std::size_t> trade_listener_index;
     std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used;
+    std::uint64_t trade_replay_anchor_pos_commit_sequence{0};
     std::string credentials_value;
     std::string software_key_value;
     bool reply_listener_is_open{false};
@@ -1582,8 +1697,10 @@ Plaza2Error Plaza2TestSessionHost::start() {
     if (impl_->recovery.operation != Plaza2SessionOperation::Stopped)
         return invalid("TEST host already has an operational lifetime", Plaza2ErrorCode::AdapterState);
     if (impl_->config.recovery_retry_interval < std::chrono::seconds(1) ||
-        impl_->config.recovery_alert_after.count() < 0)
-        return invalid("recovery requires interval >= 1 second and a non-negative alert threshold");
+        impl_->config.recovery_alert_after.count() < 0 || impl_->config.listener_bootstrap_watchdog.count() <= 0 ||
+        impl_->config.listener_bootstrap_watchdog < impl_->config.recovery_retry_interval)
+        return invalid("recovery requires interval >= 1 second, a non-negative alert threshold, and a bootstrap "
+                       "watchdog at least as long as the retry interval");
     impl_->previously_opened_connection_identity.reset();
     impl_->recovery.operation = Plaza2SessionOperation::Starting;
     auto error = impl_->start();

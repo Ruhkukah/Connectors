@@ -24,6 +24,10 @@ constexpr std::string_view kCredentialToken = "${MOEX_PLAZA2_TEST_CREDENTIALS}";
 constexpr std::string_view kLegacyCredentialToken = "${PLAZA2_TEST_CREDENTIALS}";
 constexpr std::string_view kSoftwareKeyToken = "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}";
 constexpr std::string_view kRelativeSchemeToken = "|FILE|scheme/forts_scheme.ini|";
+constexpr std::uint32_t kCgErrInternal = 131072;
+constexpr std::uint32_t kCgErrInvalidArgument = 131073;
+constexpr std::uint32_t kCgErrUnsupported = 131074;
+constexpr std::uint32_t kCgErrServiceUnavailable = 36866;
 
 bool is_loopback_host(std::string_view host) {
     std::string normalized(host);
@@ -108,39 +112,6 @@ std::optional<std::int64_t> parse_i64(std::string_view value) {
     return parsed;
 }
 
-std::int64_t decimal_to_scaled(std::string_view value) {
-    bool negative = false;
-    std::int64_t whole = 0;
-    std::int64_t fraction = 0;
-    std::int64_t scale = 1000000;
-    std::int64_t divisor = scale;
-    bool after_dot = false;
-
-    for (const char ch : value) {
-        if (ch == '-' && whole == 0 && fraction == 0 && !negative) {
-            negative = true;
-            continue;
-        }
-        if (ch == '.') {
-            after_dot = true;
-            continue;
-        }
-        if (ch < '0' || ch > '9') {
-            continue;
-        }
-        const auto digit = static_cast<std::int64_t>(ch - '0');
-        if (!after_dot) {
-            whole = whole * 10 + digit;
-        } else if (divisor > 1) {
-            divisor /= 10;
-            fraction += digit * divisor;
-        }
-    }
-
-    const auto scaled = whole * scale + fraction;
-    return negative ? -scaled : scaled;
-}
-
 std::optional<std::int64_t> signed_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCode code) {
     for (const auto& field : fields) {
         if (field.field_code != code) {
@@ -193,6 +164,49 @@ std::string text_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCod
     return {};
 }
 
+std::optional<std::string_view> fixed_point_text_field(std::span<const Plaza2DecodedFieldValue> fields,
+                                                       FieldCode code) {
+    for (const auto& field : fields) {
+        if (field.field_code != code) {
+            continue;
+        }
+        if (field.kind == Plaza2DecodedValueKind::String || field.kind == Plaza2DecodedValueKind::Decimal) {
+            return field.text_value;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+bool is_service_unavailable(const Plaza2Error& error) noexcept {
+    return error.runtime_code == kCgErrServiceUnavailable ||
+           error.message.find("SERV:NO_SERVICE") != std::string::npos ||
+           error.message.find("NO_SERVICE") != std::string::npos;
+}
+
+bool is_transient_listener_open_error(const Plaza2Error& error) noexcept {
+    // Service entitlement/upstream loss is explicitly retryable. CG_ERR_INTERNAL
+    // during an asynchronous reopen is also a transport/runtime outage, while
+    // invalid arguments, unsupported operations and unknown results are not.
+    return is_service_unavailable(error) ||
+           (error.code == Plaza2ErrorCode::RuntimeCallFailed && error.runtime_code == kCgErrInternal);
+}
+
+std::string_view classify_listener_open_error(const Plaza2Error& error) noexcept {
+    if (is_service_unavailable(error)) {
+        return "transient_service_unavailable";
+    }
+    if (error.code == Plaza2ErrorCode::RuntimeCallFailed && error.runtime_code == kCgErrInternal) {
+        return "transient_runtime_failure";
+    }
+    if (error.code == Plaza2ErrorCode::InvalidConfiguration || error.code == Plaza2ErrorCode::ProbeIncompatible ||
+        error.code == Plaza2ErrorCode::UnknownRuntimeResult || error.runtime_code == kCgErrInvalidArgument ||
+        error.runtime_code == kCgErrUnsupported) {
+        return "fatal_static_or_incompatible";
+    }
+    return "fatal_listener_reopen";
+}
+
 Plaza2Error first_fatal_issue(const Plaza2RuntimeProbeReport& report) {
     for (const auto& issue : report.issues) {
         if (issue.fatal) {
@@ -218,7 +232,24 @@ void Plaza2Aggr20ListenerBridge::reset() noexcept {
     snapshot_complete_ = false;
     reopen_required_ = false;
     retry_at_.reset();
+    bootstrap_started_at_.reset();
+    last_recovery_error_ = {};
+    recovery_failure_classification_.clear();
 }
+
+namespace {
+
+void reset_aggr_projection(Plaza2Aggr20BookProjector& projector, bool& online, bool& snapshot_complete,
+                           bool& reopen_required,
+                           std::optional<std::chrono::steady_clock::time_point>& retry_at) noexcept {
+    projector.reset();
+    online = false;
+    snapshot_complete = false;
+    reopen_required = false;
+    retry_at.reset();
+}
+
+} // namespace
 
 Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2ListenerEvent& event) {
     switch (event.kind) {
@@ -233,11 +264,22 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
             projector_.snapshot().row_count == 0 && projector_.snapshot().last_repl_rev == 0)
             return {};
         [[fallthrough]];
-    case Plaza2ListenerEventKind::Close:
+    case Plaza2ListenerEventKind::Close: {
         // Conservatively invalidate and request a fresh full snapshot. No partial book is advertised.
-        reset();
+        const bool had_visible_state = online_ || snapshot_complete_ || projector_.snapshot().row_count != 0;
+        reset_aggr_projection(projector_, online_, snapshot_complete_, reopen_required_, retry_at_);
         reopen_required_ = true;
+        bootstrap_started_at_.reset();
+        if (had_visible_state) {
+            last_recovery_error_ = {
+                .code = Plaza2ErrorCode::AdapterState,
+                .runtime_code = 0,
+                .message = "AGGR20 listener delivered CLOSE; visible book invalidated pending a fresh snapshot",
+            };
+            recovery_failure_classification_ = "transient_listener_close";
+        }
         return {};
+    }
     case Plaza2ListenerEventKind::TransactionBegin:
         projector_.begin_transaction();
         return {};
@@ -262,15 +304,52 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
 
 Plaza2Error Plaza2Aggr20ListenerBridge::supervise(Plaza2Listener& listener, std::chrono::steady_clock::time_point now) {
     std::uint32_t state = 0;
-    if (const auto error = listener.state(state); error)
+    if (const auto error = listener.state(state); error) {
+        last_recovery_error_ = error;
+        recovery_failure_classification_ = "fatal_listener_state";
         return error;
-    if (!reopen_required_ && !retry_at_ && state != 0 && state != 1)
+    }
+    if (!reopen_required_ && !retry_at_ && state != 0 && state != 1) {
+        if (!snapshot_complete_) {
+            if (!bootstrap_started_at_.has_value())
+                bootstrap_started_at_ = now;
+            if (now >= *bootstrap_started_at_ && now - *bootstrap_started_at_ >= bootstrap_watchdog_) {
+                if (const auto error = listener.close(); error) {
+                    last_recovery_error_ = error;
+                    recovery_failure_classification_ = "fatal_listener_close";
+                    return error;
+                }
+                reset_aggr_projection(projector_, online_, snapshot_complete_, reopen_required_, retry_at_);
+                reopen_required_ = true;
+                retry_at_ = now + std::chrono::seconds(1);
+                bootstrap_started_at_.reset();
+                last_recovery_error_ = {
+                    .code = Plaza2ErrorCode::AdapterState,
+                    .runtime_code = 0,
+                    .message = "AGGR20 listener bootstrap watchdog expired before ONLINE",
+                };
+                recovery_failure_classification_ = "transient_bootstrap_watchdog";
+            }
+        }
         return {};
+    }
     if (!retry_at_) {
-        if (const auto error = listener.close(); error)
+        if (state == 1) {
+            last_recovery_error_ = {
+                .code = Plaza2ErrorCode::AdapterState,
+                .runtime_code = 0,
+                .message = "AGGR20 listener entered ERROR; visible book invalidated pending a fresh snapshot",
+            };
+            recovery_failure_classification_ = "transient_listener_error";
+        }
+        if (const auto error = listener.close(); error) {
+            last_recovery_error_ = error;
+            recovery_failure_classification_ = "fatal_listener_close";
             return error;
-        reset();
+        }
+        reset_aggr_projection(projector_, online_, snapshot_complete_, reopen_required_, retry_at_);
         reopen_required_ = true;
+        bootstrap_started_at_.reset();
         retry_at_ = now + std::chrono::seconds(1);
         return {};
     }
@@ -281,10 +360,20 @@ Plaza2Error Plaza2Aggr20ListenerBridge::supervise(Plaza2Listener& listener, std:
     if (error) {
         reopen_required_ = true;
         retry_at_ = now + std::chrono::seconds(1);
+        last_recovery_error_ = error;
+        recovery_failure_classification_ = std::string(classify_listener_open_error(error));
+        if (!is_transient_listener_open_error(error)) {
+            reopen_required_ = false;
+            retry_at_.reset();
+            return error;
+        }
         return {};
     }
     reopen_required_ = false;
     retry_at_.reset();
+    bootstrap_started_at_ = now;
+    last_recovery_error_ = {};
+    recovery_failure_classification_.clear();
     return {};
 }
 
@@ -316,8 +405,24 @@ Plaza2Error Plaza2Aggr20BookProjector::on_row(std::span<const Plaza2DecodedField
 
     Plaza2Aggr20Level level;
     level.isin_id = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrIsinId).value_or(0);
-    level.price = text_field(fields, FieldCode::kFortsAggrReplOrdersAggrPrice);
-    level.price_scaled = decimal_to_scaled(level.price);
+    const auto price_text = fixed_point_text_field(fields, FieldCode::kFortsAggrReplOrdersAggrPrice);
+    if (!price_text.has_value()) {
+        return {
+            .code = Plaza2ErrorCode::DecodeFailed,
+            .runtime_code = 0,
+            .message = "AGGR20 orders_aggr.price is missing or has an unsupported runtime value kind",
+        };
+    }
+    const auto price_scaled = parse_fixed_point(*price_text, kPlaza2Aggr20FractionalDigits, false);
+    if (!price_scaled.has_value()) {
+        return {
+            .code = Plaza2ErrorCode::DecodeFailed,
+            .runtime_code = 0,
+            .message = "AGGR20 orders_aggr.price is malformed, over-precise, or outside checked fixed-point range",
+        };
+    }
+    level.price = std::string(*price_text);
+    level.price_scaled = *price_scaled;
     level.volume = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrVolume).value_or(0);
     if (signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrReplAct).value_or(0) != 0) {
         level.volume = 0;
@@ -495,6 +600,12 @@ std::string classify_plaza2_aggr20_failure(const Plaza2Aggr20MdHealthSnapshot& h
     if (!health.scheme_drift_ok) {
         return "schema_mismatch";
     }
+    if (!health.clock_evidence_present) {
+        return "clock_evidence_missing";
+    }
+    if (!health.clock_evidence_ok) {
+        return "clock_evidence_invalid";
+    }
     if (!health.stream_created || !health.stream_opened) {
         return "stream_open_failed";
     }
@@ -542,6 +653,9 @@ Plaza2Error validate_plaza2_aggr20_md_config(const Plaza2Aggr20MdConfig& config)
     if (config.stream.stream_code != StreamCode::kFortsAggrRepl) {
         return invalid_config("Phase 5D only allows FORTS_AGGR20_REPL");
     }
+    if (config.listener_bootstrap_watchdog.count() <= 0) {
+        return invalid_config("listener_bootstrap_watchdog must be positive");
+    }
     if (config.stream.settings.find("FORTS_AGGR20_REPL") == std::string::npos) {
         return invalid_config("Phase 5D stream settings must explicitly use FORTS_AGGR20_REPL");
     }
@@ -553,7 +667,9 @@ Plaza2Error validate_plaza2_aggr20_md_config(const Plaza2Aggr20MdConfig& config)
 
 struct Plaza2Aggr20MdRunner::Impl {
     explicit Impl(Plaza2Aggr20MdConfig initial_config)
-        : config(std::move(initial_config)), projector(config.now), listener_bridge(projector) {}
+        : config(std::move(initial_config)), projector(config.now), listener_bridge(projector) {
+        listener_bridge.set_bootstrap_watchdog(config.listener_bootstrap_watchdog);
+    }
 
     Plaza2Aggr20MdRunResult start() {
         if (started) {
@@ -564,6 +680,15 @@ struct Plaza2Aggr20MdRunner::Impl {
         append_operator_log("endpoint=" + config.endpoint_host + ":" + std::to_string(config.endpoint_port));
         if (const auto validation_error = validate_plaza2_aggr20_md_config(config); validation_error) {
             return fail(validation_error.message);
+        }
+        health.clock_evidence_present = config.clock_evidence.has_value();
+        health.clock_evidence_ok =
+            health.clock_evidence_present && plaza2_clock_evidence_passes(*config.clock_evidence);
+        if (!health.clock_evidence_present) {
+            return fail("AGGR20 TEST launch requires current paired clock evidence");
+        }
+        if (!health.clock_evidence_ok) {
+            return fail("AGGR20 TEST launch clock evidence is missing, stale, inconsistent, or unsafe");
         }
         if (const auto transport_gate =
                 Plaza2ManualOperatorGate::validate_transport_connect(config.endpoint_host, config.arm_state);
@@ -773,16 +898,25 @@ struct Plaza2Aggr20MdRunner::Impl {
         health.stream_snapshot_complete = listener_bridge.snapshot_complete();
         health.snapshot = projector.snapshot();
         health.ready = health.runtime_probe_ok && health.scheme_drift_ok && health.stream_created &&
-                       health.stream_opened && health.stream_online && health.stream_snapshot_complete &&
-                       health.snapshot.row_count > 0;
-        health.failure_classification = classify_plaza2_aggr20_failure(health);
+                       health.stream_opened && health.clock_evidence_ok && health.stream_online &&
+                       health.stream_snapshot_complete && health.snapshot.row_count > 0;
+        if (const auto& recovery_error = listener_bridge.last_recovery_error(); recovery_error) {
+            health.last_error = recovery_error.message;
+            health.failure_classification = std::string(listener_bridge.recovery_failure_classification());
+        } else {
+            health.failure_classification = classify_plaza2_aggr20_failure(health);
+        }
     }
 
     Plaza2Aggr20MdRunResult fail(std::string message) {
+        const auto bridge_classification = std::string(listener_bridge.recovery_failure_classification());
         listener_bridge.reset();
         health.state = Plaza2Aggr20MdRunnerState::Failed;
         health.last_error = message;
         refresh_health();
+        if (!bridge_classification.empty()) {
+            health.failure_classification = bridge_classification;
+        }
         append_operator_log("error=" + message);
         return {
             .ok = false,

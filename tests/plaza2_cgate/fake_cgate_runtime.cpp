@@ -2340,11 +2340,33 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
     const bool trade_error_once =
         typed->stream_code == StreamCode::kFortsTradeRepl &&
         (fake_flag("MOEX_FAKE_TRADE_OPEN_ERROR_ONCE") || fake_flag("MOEX_FAKE_TRADE_OPEN_ERROR_POS_DRIFT"));
-    if (typed->open_attempt_count == 1 && (refdata_error_once || trade_error_once)) {
+    const bool first_trade_error =
+        trade_error_once && (typed->connection == nullptr || !typed->connection->trade_open_error_seen);
+    if (typed->open_attempt_count == 1 && (refdata_error_once || first_trade_error)) {
         typed->state = kStateError;
-        if (trade_error_once && typed->connection != nullptr) {
+        if (first_trade_error && typed->connection != nullptr) {
             typed->connection->trade_open_error_seen = true;
         }
+        return kCgErrOk;
+    }
+    if (typed->stream_code == StreamCode::kFortsAggrRepl && typed->open_attempt_count >= 2) {
+        if (const auto result = configured_result("MOEX_FAKE_AGGR_REOPEN_OPEN_RESULT"); result != kCgErrOk) {
+            return result;
+        }
+        if (fake_flag("MOEX_FAKE_AGGR_REOPEN_OPEN_NO_SERVICE")) {
+            return kCgErrServiceUnavailable;
+        }
+    }
+    if (const auto* opening_once = std::getenv("MOEX_FAKE_LSN_OPENING_STATE_ONCE");
+        opening_once != nullptr && *opening_once != '\0' && typed->open_attempt_count == 1 &&
+        (std::string_view(opening_once) == "1" || typed->settings.find(opening_once) != std::string::npos)) {
+        typed->state = kStateOpening;
+        return kCgErrOk;
+    }
+    if (const auto* error_once = std::getenv("MOEX_FAKE_LSN_ERROR_STATE_ONCE");
+        error_once != nullptr && *error_once != '\0' && typed->open_attempt_count == 1 &&
+        (std::string_view(error_once) == "1" || typed->settings.find(error_once) != std::string::npos)) {
+        typed->state = kStateError;
         return kCgErrOk;
     }
     if (fake_flag("MOEX_FAKE_LSN_OPENING_STATE")) {

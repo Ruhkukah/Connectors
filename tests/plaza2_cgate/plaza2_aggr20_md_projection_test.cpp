@@ -55,6 +55,25 @@ int main() {
             signed_field(FieldCode::kFortsAggrReplOrdersAggrDir, 1),
             unsigned_field(FieldCode::kFortsAggrReplOrdersAggrMomentNs, 42),
         };
+        Plaza2Aggr20BookProjector strict_projector;
+        strict_projector.begin_transaction();
+        auto malformed_bid = bid;
+        malformed_bid[3].text_value = "100.5000001";
+        const auto malformed_error = strict_projector.on_row(malformed_bid);
+        require(malformed_error && malformed_error.code == Plaza2ErrorCode::DecodeFailed,
+                "AGGR20 malformed price must be surfaced as a decode failure");
+        require(parse_fixed_point("100.50", kPlaza2Aggr20FractionalDigits, false) == 100'500'000,
+                "AGGR20 fixed-point parser must preserve its six-decimal internal unit contract");
+        require(parse_fixed_point("12.345678", kPlaza2Aggr20FractionalDigits, false) == 12'345'678,
+                "AGGR20 fixed-point parser must accept exactly six fractional digits");
+        require(!parse_fixed_point("12.3456789", kPlaza2Aggr20FractionalDigits, false).has_value(),
+                "AGGR20 fixed-point parser must reject truncating excess precision");
+        require(!parse_fixed_point("12x34", kPlaza2Aggr20FractionalDigits, false).has_value(),
+                "AGGR20 fixed-point parser must reject non-numeric characters");
+        require(!parse_fixed_point("-1", kPlaza2Aggr20FractionalDigits, false).has_value(),
+                "AGGR20 prices must reject a negative sign");
+        require(!parse_fixed_point("9223372036854775808", 0, false).has_value(),
+                "fixed-point parser must reject signed overflow");
         require(!projector.on_row(bid), "bid AGGR20 row should be accepted while transaction is open");
         require(projector.snapshot().row_count == 0, "AGGR20 row must not be visible before TN_COMMIT");
 

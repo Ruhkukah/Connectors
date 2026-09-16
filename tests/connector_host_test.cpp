@@ -214,6 +214,63 @@ int main(int argc, char** argv) {
                           "private ERROR masks every effective gate");
             test::require(!host.stop(), "stop listener-error host");
         }
+        // A listener can be accepted by cg_lsn_open and then report ERROR
+        // asynchronously before its first ONLINE.  That is a recoverable
+        // bootstrap event, not evidence that the old generation is usable.
+        {
+            reset();
+            auto now = std::chrono::steady_clock::now();
+            auto config = config_for(fixture);
+            config.transport.host.recovery_now = [&] { return now; };
+            ConnectorHost host(config);
+            ::setenv("MOEX_FAKE_LSN_ERROR_STATE_ONCE", "FORTS_SESSIONSTATE_REPL", 1);
+            test::require(!host.start(), "asynchronous listener ERROR is accepted during initial start");
+            const auto first = host.poll();
+            ::unsetenv("MOEX_FAKE_LSN_ERROR_STATE_ONCE");
+            const auto errored = host.snapshot();
+            test::require(!first && errored.state != ConnectorHostState::Failed && !errored.observation_ready &&
+                              !errored.private_streams_ready && !errored.publisher_ready && !errored.reply_ready &&
+                              count(1) == 0,
+                          "pre-ONLINE asynchronous listener ERROR invalidates readiness without publishing");
+            now += std::chrono::seconds(1);
+            for (int i = 0; i < 12 && !host.snapshot().observation_ready; ++i)
+                test::require(!host.poll(), "asynchronous listener ERROR recovers without application restart");
+            const auto recovered = host.snapshot();
+            test::require(recovered.observation_ready && recovered.private_streams_ready && recovered.aggr_ready &&
+                              recovered.publisher_ready && recovered.reply_ready && count(1) == 0,
+                          "asynchronous listener ERROR reaches a fresh coherent generation");
+            test::require(!host.stop(), "stop asynchronous listener-error recovery");
+        }
+        // OPENING without progress is bounded per attempt.  It enters the
+        // existing operator-cancellable recovery wait and does not create a
+        // terminal outage deadline or a publisher side effect.
+        {
+            reset();
+            auto now = std::chrono::steady_clock::now();
+            auto config = config_for(fixture);
+            config.transport.host.recovery_now = [&] { return now; };
+            config.transport.host.listener_bootstrap_watchdog = std::chrono::seconds(3);
+            ConnectorHost host(config);
+            ::setenv("MOEX_FAKE_LSN_OPENING_STATE", "1", 1);
+            test::require(!host.start(), "stuck OPENING listener is accepted during initial start");
+            test::require(!host.poll(), "stuck OPENING listener is not immediately terminal");
+            now += std::chrono::seconds(3);
+            const auto watchdog = host.poll();
+            const auto waiting = host.snapshot();
+            test::require(!watchdog && waiting.state == ConnectorHostState::Recovering &&
+                              waiting.recovery.origin == Plaza2FailureOrigin::ListenerState &&
+                              waiting.recovery.cause.message.find("bootstrap watchdog") != std::string::npos &&
+                              !waiting.recovery.deadline_exhausted && !waiting.observation_ready && count(1) == 0,
+                          "stuck OPENING enters a visible recoverable wait after one watchdog interval");
+            ::unsetenv("MOEX_FAKE_LSN_OPENING_STATE");
+            now += std::chrono::seconds(1);
+            for (int i = 0; i < 15 && !host.snapshot().observation_ready; ++i)
+                test::require(!host.poll(), "stuck OPENING recovers after the listener becomes available");
+            const auto recovered = host.snapshot();
+            test::require(recovered.observation_ready && recovered.recovery.attempts == 1 && count(1) == 0,
+                          "watchdog recovery bootstraps one fresh generation without a publisher post");
+            test::require(!host.stop(), "stop stuck OPENING recovery");
+        }
         const auto timeout_polls = [&](ConnectorHost& host, bool ready) {
             const auto before = host.snapshot();
             const auto connections = connection_new_count();

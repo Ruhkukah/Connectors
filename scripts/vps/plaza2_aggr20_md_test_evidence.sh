@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  plaza2_aggr20_md_test_evidence.sh --bundle-root <dir> --profile <yaml> --secret-env-file <file> --output-dir <dir>
+  plaza2_aggr20_md_test_evidence.sh --bundle-root <dir> --profile <yaml> --clock-evidence-file <file> --secret-env-file <file> --output-dir <dir>
                                     --armed-test-network --armed-test-session --armed-test-plaza2
                                     --armed-test-market-data [--max-polls <n>]
                                     [--git-sha <sha>] [--docker-image <image>]
@@ -17,6 +17,7 @@ bundle_root=""
 profile=""
 secret_env_file=""
 output_dir=""
+clock_evidence_file=""
 max_polls=512
 git_sha="unknown"
 docker_image="${MOEX_BUILD_IMAGE:-unknown}"
@@ -31,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     --profile) profile="${2:-}"; shift 2 ;;
     --secret-env-file) secret_env_file="${2:-}"; shift 2 ;;
     --output-dir) output_dir="${2:-}"; shift 2 ;;
+    --clock-evidence-file) clock_evidence_file="${2:-}"; shift 2 ;;
     --max-polls) max_polls="${2:-}"; shift 2 ;;
     --git-sha) git_sha="${2:-}"; shift 2 ;;
     --docker-image) docker_image="${2:-}"; shift 2 ;;
@@ -43,8 +45,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$bundle_root" || -z "$profile" || -z "$secret_env_file" || -z "$output_dir" ]]; then
-  echo "--bundle-root, --profile, --secret-env-file, and --output-dir are required" >&2
+if [[ -z "$bundle_root" || -z "$profile" || -z "$clock_evidence_file" || -z "$secret_env_file" || -z "$output_dir" ]]; then
+  echo "--bundle-root, --profile, --clock-evidence-file, --secret-env-file, and --output-dir are required" >&2
   usage >&2
   exit 2
 fi
@@ -66,8 +68,8 @@ if [[ ! -x "$runner" ]]; then
   echo "runner missing or not executable: $runner" >&2
   exit 1
 fi
-if [[ ! -f "$profile" || ! -f "$secret_env_file" ]]; then
-  echo "profile or secret env file missing" >&2
+if [[ ! -f "$profile" || ! -f "$clock_evidence_file" || ! -f "$secret_env_file" ]]; then
+  echo "profile, clock evidence, or secret env file missing" >&2
   exit 1
 fi
 
@@ -98,6 +100,7 @@ cat > "$output_dir/run_manifest.json" <<EOF
   "phase": "5D",
   "bounded_by": "max_polls",
   "max_polls": "$max_polls",
+  "clock_evidence_file": "$clock_evidence_file",
   "public_stream": "FORTS_AGGR20_REPL",
   "deferred_streams": "FORTS_ORDLOG_REPL,FORTS_ORDBOOK_REPL,FORTS_DEALS_REPL"
 }
@@ -111,6 +114,7 @@ set +e
   --armed-test-session \
   --armed-test-plaza2 \
   --armed-test-market-data \
+  --clock-evidence-file "$clock_evidence_file" \
   --max-polls "$max_polls" > "$operator_log" 2>&1
 runner_status=$?
 set -e

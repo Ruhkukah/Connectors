@@ -186,6 +186,9 @@ struct Plaza2TestSessionHostConfig {
     // an automatic terminal deadline. This threshold only raises the
     // operator-visible waiting diagnostic.
     std::chrono::milliseconds recovery_alert_after{60000};
+    // This is a per-listener bootstrap progress watchdog. It bounds a single
+    // OPENING/ACTIVE-without-ONLINE attempt; it is not an outage deadline.
+    std::chrono::milliseconds listener_bootstrap_watchdog{30000};
     std::function<std::chrono::steady_clock::time_point()> recovery_now;
 
     // Local conservative cap; configure from the provisioned login limit, not a claimed exchange default.

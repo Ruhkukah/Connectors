@@ -1,5 +1,8 @@
 #include "moex/plaza2/cgate/plaza2_aggr20_md.hpp"
 
+#include <array>
+#include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -20,6 +23,7 @@ using moex::plaza2::cgate::Plaza2Aggr20Level;
 using moex::plaza2::cgate::Plaza2Aggr20MdConfig;
 using moex::plaza2::cgate::Plaza2Aggr20MdRunner;
 using moex::plaza2::cgate::Plaza2Aggr20MdRunnerState;
+using moex::plaza2::cgate::Plaza2ClockEvidence;
 using moex::plaza2::cgate::Plaza2CredentialSource;
 using moex::plaza2::cgate::Plaza2Environment;
 
@@ -51,6 +55,7 @@ struct RunnerArgs {
     bool armed_test_session{false};
     bool armed_test_plaza2{false};
     bool armed_test_market_data{false};
+    fs::path clock_evidence_file;
     std::uint32_t max_polls{8};
 };
 
@@ -94,6 +99,176 @@ std::optional<std::uint32_t> parse_u32(std::string_view value) {
     } catch (...) {
         return std::nullopt;
     }
+}
+
+std::string trim_copy(std::string_view value) {
+    std::size_t first = 0;
+    while (first < value.size() && std::isspace(static_cast<unsigned char>(value[first])) != 0)
+        ++first;
+    std::size_t last = value.size();
+    while (last > first && std::isspace(static_cast<unsigned char>(value[last - 1])) != 0)
+        --last;
+    return std::string(value.substr(first, last - first));
+}
+
+std::optional<std::int64_t> parse_i64(std::string_view value) {
+    if (value.empty())
+        return std::nullopt;
+    std::int64_t parsed = 0;
+    const auto [pointer, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc{} || pointer != value.data() + value.size())
+        return std::nullopt;
+    return parsed;
+}
+
+std::optional<std::uint64_t> parse_u64(std::string_view value) {
+    if (value.empty() || value.front() == '-')
+        return std::nullopt;
+    std::uint64_t parsed = 0;
+    const auto [pointer, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc{} || pointer != value.data() + value.size())
+        return std::nullopt;
+    return parsed;
+}
+
+std::optional<bool> parse_bool(std::string_view value) {
+    if (value == "true")
+        return true;
+    if (value == "false")
+        return false;
+    return std::nullopt;
+}
+
+struct ClockEvidenceLoadResult {
+    std::optional<Plaza2ClockEvidence> evidence;
+    std::string error;
+};
+
+ClockEvidenceLoadResult read_clock_evidence(const fs::path& path) {
+    if (path.empty()) {
+        return {.error = "--clock-evidence-file is required; certification launch has no current clock evidence"};
+    }
+
+    std::ifstream input(path);
+    if (!input) {
+        return {.error = "clock evidence file could not be opened: " + path.string()};
+    }
+
+    Plaza2ClockEvidence evidence;
+    std::array<bool, 8> seen{};
+    constexpr std::size_t kSyncSource = 0;
+    constexpr std::size_t kSyncStatus = 1;
+    constexpr std::size_t kWallOffset = 2;
+    constexpr std::size_t kOffsetUncertainty = 3;
+    constexpr std::size_t kClockId = 4;
+    constexpr std::size_t kCurrentWall = 5;
+    constexpr std::size_t kCurrentMonotonic = 6;
+    constexpr std::size_t kSyncMonotonic = 7;
+    std::string line;
+    std::size_t line_number = 0;
+    while (std::getline(input, line)) {
+        ++line_number;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const auto trimmed = trim_copy(line);
+        if (trimmed.empty() || trimmed.front() == '#')
+            continue;
+        const auto separator = trimmed.find('=');
+        if (separator == std::string::npos || separator == 0) {
+            return {.error = "clock evidence line " + std::to_string(line_number) + " must be a key=value record"};
+        }
+        const auto key = trim_copy(std::string_view(trimmed).substr(0, separator));
+        const auto value = trim_copy(std::string_view(trimmed).substr(separator + 1));
+        const auto duplicate = [&](std::size_t index) {
+            if (seen[index])
+                return true;
+            seen[index] = true;
+            return false;
+        };
+        if (key == "sync_source") {
+            if (duplicate(kSyncSource) || value.empty())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " has a duplicate or empty sync_source"};
+            evidence.sync_source = value;
+        } else if (key == "sync_status_ok") {
+            const auto parsed = parse_bool(value);
+            if (duplicate(kSyncStatus) || !parsed.has_value())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " has an invalid or duplicate sync_status_ok"};
+            evidence.sync_status_ok = *parsed;
+        } else if (key == "wall_offset_ns") {
+            const auto parsed = parse_i64(value);
+            if (duplicate(kWallOffset) || !parsed.has_value())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " has an invalid or duplicate wall_offset_ns"};
+            evidence.wall_offset_ns = *parsed;
+        } else if (key == "offset_uncertainty_ns") {
+            const auto parsed = parse_u64(value);
+            if (duplicate(kOffsetUncertainty) || !parsed.has_value())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " has an invalid or duplicate offset_uncertainty_ns"};
+            evidence.offset_uncertainty_ns = *parsed;
+        } else if (key == "monotonic_clock_id") {
+            if (duplicate(kClockId) || value.empty())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " has a duplicate or empty monotonic_clock_id"};
+            evidence.monotonic_clock_id = value;
+        } else if (key == "current_local_wall_ns") {
+            const auto parsed = parse_i64(value);
+            if (duplicate(kCurrentWall) || !parsed.has_value())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " has an invalid or duplicate current_local_wall_ns"};
+            evidence.current_local_wall_ns = *parsed;
+        } else if (key == "current_local_monotonic_ns") {
+            const auto parsed = parse_u64(value);
+            if (duplicate(kCurrentMonotonic) || !parsed.has_value())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " has an invalid or duplicate current_local_monotonic_ns"};
+            evidence.current_local_monotonic_ns = *parsed;
+        } else if (key == "sync_status_monotonic_ns") {
+            const auto parsed = parse_u64(value);
+            if (duplicate(kSyncMonotonic) || !parsed.has_value())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " has an invalid or duplicate sync_status_monotonic_ns"};
+            evidence.sync_status_monotonic_ns = *parsed;
+        } else if (key == "sample") {
+            std::vector<std::string_view> fields;
+            std::size_t begin = 0;
+            while (begin <= value.size()) {
+                const auto comma = value.find(',', begin);
+                const auto end = comma == std::string::npos ? value.size() : comma;
+                fields.push_back(std::string_view(value).substr(begin, end - begin));
+                if (comma == std::string::npos)
+                    break;
+                begin = comma + 1;
+            }
+            if (fields.size() != 6 || fields[5].empty())
+                return {.error = "clock evidence line " + std::to_string(line_number) +
+                                 " sample requires six comma-separated fields"};
+            const auto local_wall = parse_i64(trim_copy(fields[0]));
+            const auto local_monotonic = parse_u64(trim_copy(fields[1]));
+            const auto exchange_wall = parse_i64(trim_copy(fields[2]));
+            const auto transport_delay = parse_u64(trim_copy(fields[3]));
+            const auto event_age = parse_u64(trim_copy(fields[4]));
+            const auto provenance = trim_copy(fields[5]);
+            if (!local_wall.has_value() || !local_monotonic.has_value() || !exchange_wall.has_value() ||
+                !transport_delay.has_value() || !event_age.has_value() || provenance.empty()) {
+                return {.error = "clock evidence line " + std::to_string(line_number) + " contains an invalid sample"};
+            }
+            evidence.paired_samples.push_back({.local_wall_ns = *local_wall,
+                                               .local_monotonic_ns = *local_monotonic,
+                                               .exchange_wall_ns = *exchange_wall,
+                                               .provenance = provenance,
+                                               .current_reference = true,
+                                               .transport_delay_ns = *transport_delay,
+                                               .exchange_event_age_ns = *event_age});
+        } else {
+            return {.error = "clock evidence line " + std::to_string(line_number) + " uses an unknown key: " + key};
+        }
+    }
+    if (!input.eof())
+        return {.error = "clock evidence file read failed: " + path.string()};
+    return {.evidence = std::move(evidence)};
 }
 
 std::string credential_source_name(Plaza2CredentialSource source) {
@@ -196,6 +371,8 @@ std::optional<RunnerArgs> parse_args(int argc, char** argv) {
             args.armed_test_plaza2 = true;
         } else if (argument == "--armed-test-market-data") {
             args.armed_test_market_data = true;
+        } else if (argument == "--clock-evidence-file" && index + 1 < argc) {
+            args.clock_evidence_file = argv[++index];
         } else if (argument == "--max-polls" && index + 1 < argc) {
             const auto parsed = parse_u32(argv[++index]);
             if (!parsed.has_value()) {
@@ -302,8 +479,13 @@ int main(int argc, char** argv) {
         const auto summary_path = args.output_dir / (args.profile_id + ".aggr20.summary.json");
         const auto snapshot_path = args.output_dir / "aggr20_snapshot.json";
 
-        Plaza2Aggr20MdRunner runner(make_config(args));
+        const auto clock_evidence = read_clock_evidence(args.clock_evidence_file);
+        auto config = make_config(args);
+        config.clock_evidence = clock_evidence.evidence;
+        Plaza2Aggr20MdRunner runner(std::move(config));
         auto result = runner.start();
+        if (!clock_evidence.error.empty() && !result.ok)
+            result.message += "; " + clock_evidence.error;
         if (result.ok) {
             for (std::uint32_t poll = 0; poll < args.max_polls && !runner.health_snapshot().ready; ++poll) {
                 result = runner.poll_once();
@@ -327,6 +509,11 @@ int main(int argc, char** argv) {
         lines.push_back("scheme_drift_ok=" + std::string(health.scheme_drift_ok ? "true" : "false"));
         lines.push_back("scheme_drift_status=" + std::string(plaza2_compatibility_name(health.scheme_drift_status)));
         lines.push_back("credentials_source=" + credential_source_name(args.credentials_source));
+        lines.push_back("clock_evidence_file=" + args.clock_evidence_file.string());
+        lines.push_back("clock_evidence_present=" + std::string(health.clock_evidence_present ? "true" : "false"));
+        lines.push_back("clock_evidence_ok=" + std::string(health.clock_evidence_ok ? "true" : "false"));
+        if (!clock_evidence.error.empty())
+            lines.push_back("clock_evidence_error=" + clock_evidence.error);
         lines.push_back("stream_opened=" + std::string(health.stream_opened ? "true" : "false"));
         lines.push_back("stream_online=" + std::string(health.stream_online ? "true" : "false"));
         lines.push_back("stream_snapshot_complete=" + std::string(health.stream_snapshot_complete ? "true" : "false"));
@@ -351,6 +538,10 @@ int main(int argc, char** argv) {
                 {"scheme_drift_status", std::string(plaza2_compatibility_name(health.scheme_drift_status))},
                 {"scheme_drift_warning_count", std::to_string(health.scheme_drift_warning_count)},
                 {"scheme_drift_fatal_count", std::to_string(health.scheme_drift_fatal_count)},
+                {"clock_evidence_file", args.clock_evidence_file.string()},
+                {"clock_evidence_present", health.clock_evidence_present ? "true" : "false"},
+                {"clock_evidence_ok", health.clock_evidence_ok ? "true" : "false"},
+                {"clock_evidence_error", clock_evidence.error},
                 {"stream_opened", health.stream_opened ? "true" : "false"},
                 {"stream_online", health.stream_online ? "true" : "false"},
                 {"stream_snapshot_complete", health.stream_snapshot_complete ? "true" : "false"},

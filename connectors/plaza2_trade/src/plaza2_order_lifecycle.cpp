@@ -1,15 +1,18 @@
 #include "moex/plaza2_trade/plaza2_order_lifecycle.hpp"
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
+#include <fcntl.h>
 #include <fstream>
-#include <limits>
 #include <set>
 #include <sstream>
 #include <system_error>
+#include <unistd.h>
 #include <utility>
 
 namespace moex::plaza2_trade {
@@ -19,53 +22,13 @@ namespace {
 namespace cgate = plaza2::cgate;
 namespace private_state = plaza2::private_state;
 
-constexpr std::int64_t kDecimalScale = 100000;
-
 struct ParsedDecimal {
     std::int64_t scaled{0};
 };
 
 std::optional<ParsedDecimal> parse_nonnegative_decimal(std::string_view text) {
-    if (text.empty()) {
-        return std::nullopt;
-    }
-    const auto dot = text.find('.');
-    if (dot != std::string_view::npos && text.find('.', dot + 1) != std::string_view::npos) {
-        return std::nullopt;
-    }
-    const auto whole = dot == std::string_view::npos ? text : text.substr(0, dot);
-    const auto fractional = dot == std::string_view::npos ? std::string_view{} : text.substr(dot + 1);
-    if (whole.empty() || fractional.size() > 5) {
-        return std::nullopt;
-    }
-    const auto digits_only = [](std::string_view value) {
-        return std::all_of(value.begin(), value.end(),
-                           [](unsigned char character) { return std::isdigit(character) != 0; });
-    };
-    if (!digits_only(whole) || !digits_only(fractional)) {
-        return std::nullopt;
-    }
-
-    std::int64_t whole_value = 0;
-    for (const auto character : whole) {
-        const auto digit = static_cast<std::int64_t>(character - '0');
-        if (whole_value > (std::numeric_limits<std::int64_t>::max() / 10 - digit)) {
-            return std::nullopt;
-        }
-        whole_value = whole_value * 10 + digit;
-    }
-    if (whole_value > std::numeric_limits<std::int64_t>::max() / kDecimalScale) {
-        return std::nullopt;
-    }
-
-    std::int64_t fractional_value = 0;
-    for (const auto character : fractional) {
-        fractional_value = fractional_value * 10 + static_cast<std::int64_t>(character - '0');
-    }
-    for (std::size_t index = fractional.size(); index < 5; ++index) {
-        fractional_value *= 10;
-    }
-    return ParsedDecimal{.scaled = whole_value * kDecimalScale + fractional_value};
+    const auto scaled = cgate::parse_fixed_point(text, cgate::kPlaza2SessionFractionalDigits, false);
+    return scaled.has_value() ? std::optional<ParsedDecimal>{ParsedDecimal{.scaled = *scaled}} : std::nullopt;
 }
 
 bool valid_sha256(std::string_view text) {
@@ -110,30 +73,64 @@ std::string json_escape(std::string_view text) {
 }
 
 bool atomic_write(const std::filesystem::path& path, std::string_view contents, std::string& error) {
+    if (path.empty() || path.parent_path().empty()) {
+        error = "journal durable write requires an explicit parent directory";
+        return false;
+    }
     std::error_code filesystem_error;
     std::filesystem::create_directories(path.parent_path(), filesystem_error);
     if (filesystem_error) {
         error = "failed to create output directory: " + filesystem_error.message();
         return false;
     }
+    // Keep a deterministic temporary name so a stale file from an interrupted
+    // writer blocks closed rather than being silently replaced. O_EXCL and
+    // O_NOFOLLOW prevent concurrent writers and symlink redirection.
     auto temporary = path;
     temporary += ".tmp";
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            error = "failed to open temporary journal file";
-            return false;
-        }
-        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-        output.flush();
-        if (!output) {
-            error = "failed to flush temporary journal file";
-            return false;
-        }
+    const int descriptor = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (descriptor < 0) {
+        error = "failed to create exclusive temporary journal file";
+        return false;
     }
-    std::filesystem::rename(temporary, path, filesystem_error);
-    if (filesystem_error) {
-        error = "failed to publish journal file: " + filesystem_error.message();
+
+    bool write_ok = true;
+    std::size_t offset = 0;
+    while (offset < contents.size()) {
+        const auto written = ::write(descriptor, contents.data() + offset, contents.size() - offset);
+        if (written < 0 && errno == EINTR)
+            continue;
+        if (written <= 0) {
+            write_ok = false;
+            break;
+        }
+        offset += static_cast<std::size_t>(written);
+    }
+    if (write_ok && ::fsync(descriptor) != 0)
+        write_ok = false;
+    if (::close(descriptor) != 0)
+        write_ok = false;
+    if (!write_ok) {
+        ::unlink(temporary.c_str());
+        error = "failed to durably write temporary journal file";
+        return false;
+    }
+
+    if (::rename(temporary.c_str(), path.c_str()) != 0) {
+        ::unlink(temporary.c_str());
+        error = "failed to publish journal file";
+        return false;
+    }
+
+    const int directory = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (directory < 0) {
+        error = "failed to open journal directory for durable publication";
+        return false;
+    }
+    const bool directory_synced = ::fsync(directory) == 0;
+    const bool directory_closed = ::close(directory) == 0;
+    if (!directory_synced || !directory_closed) {
+        error = "failed to fsync journal directory";
         return false;
     }
     return true;
