@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdint>
+#include <cstring>
 #include <fcntl.h>
 #include <fstream>
 #include <set>
