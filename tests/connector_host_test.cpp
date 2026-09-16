@@ -1,4 +1,5 @@
 #include "moex/connector_host/operator_config.hpp"
+#include "moex/connector_host/dtc_market_data.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "plaza2_trade/fixtures/cgate99_messages.hpp"
 
@@ -173,6 +174,92 @@ int main(int argc, char** argv) {
         auto connection_new_count =
             reinterpret_cast<std::uint64_t (*)()>(dlsym(library, "moex_fake_connection_new_count"));
         test::require(reset && count && env_open_count && connection_new_count, "independent fake counters");
+
+        // The DTC adapter is deliberately restricted to the target-scoped
+        // AGGR20 market-data view. This fixture also exercises the current
+        // session_data_ready authority gate and the non-execution capability
+        // boundary without copying qualification/account state.
+        {
+            auto config = config_for(fixture);
+            config.target_board = "RFUD";
+            ConnectorHost host(config);
+            warm(host);
+            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host, {});
+            const auto first = source.snapshot();
+            test::require(first.valid && first.target_authoritative && first.transport_active &&
+                              first.source_online && first.snapshot_complete && first.session_data_ready,
+                          "DTC source requires current authoritative AGGR state");
+            test::require(first.isin_id == 1001, "DTC source target ISIN");
+            test::require(first.board == "RFUD", "DTC source target board");
+            test::require(first.symbol == "RTS-6.26", "DTC source target symbol");
+            test::require(first.levels.size() == 2, "DTC source target level count");
+            test::require(first.two_sided, "DTC source target has two sides");
+            test::require(first.levels[0].side == moex::connector_host::dtc::DtcDepthSide::Bid &&
+                              first.levels[1].side == moex::connector_host::dtc::DtcDepthSide::Ask,
+                          "DTC target levels retain deterministic side ordering");
+            const auto before = first;
+            ::setenv("MOEX_FAKE_AGGR_UNRELATED_UPDATE_AFTER_READY", "1", 1);
+            test::require(!host.poll(), "unrelated AGGR update poll");
+            ::unsetenv("MOEX_FAKE_AGGR_UNRELATED_UPDATE_AFTER_READY");
+            const auto after = source.snapshot();
+            test::require(after.source_snapshot_version == before.source_snapshot_version &&
+                              after.source_snapshot_hash == before.source_snapshot_hash &&
+                              after.snapshot_watermark == before.snapshot_watermark &&
+                              after.exchange_moment_ns == before.exchange_moment_ns &&
+                              after.levels == before.levels,
+                          "unrelated ISIN update cannot refresh target DTC provenance or freshness");
+            test::require(source.capabilities().market_depth && !source.capabilities().accounts &&
+                              !source.capabilities().positions && !source.capabilities().orders &&
+                              !source.capabilities().order_entry,
+                          "DTC source does not leak account/order capability");
+            test::require(!host.stop(), "target-scoped DTC source host stop");
+        }
+        {
+            ::setenv("MOEX_FAKE_AGGR_ONE_SIDED", "1", 1);
+            auto config = config_for(fixture);
+            ConnectorHost host(config);
+            test::require(!host.start(), "one-sided DTC source start");
+            for (unsigned i = 0; i < 10; ++i)
+                test::require(!host.poll(), "one-sided DTC source poll");
+            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host, {});
+            const auto one_sided = source.snapshot();
+            test::require(one_sided.valid && one_sided.target_authoritative && !one_sided.two_sided &&
+                              one_sided.levels.size() == 1,
+                          "one-sided target book remains valid but is not reported as two-sided");
+            test::require(!host.stop(), "one-sided DTC source stop");
+            ::unsetenv("MOEX_FAKE_AGGR_ONE_SIDED");
+        }
+        {
+            ::setenv("MOEX_FAKE_AGGR_EMPTY", "1", 1);
+            auto config = config_for(fixture);
+            ConnectorHost host(config);
+            test::require(!host.start(), "empty DTC source start");
+            for (unsigned i = 0; i < 10; ++i)
+                test::require(!host.poll(), "empty DTC source poll");
+            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host, {});
+            const auto empty = source.snapshot();
+            test::require(empty.valid && empty.target_authoritative && empty.levels.empty() &&
+                              !empty.two_sided && empty.snapshot_level_count == 0,
+                          "empty target book retains authority without fabricating levels");
+            test::require(!host.stop(), "empty DTC source stop");
+            ::unsetenv("MOEX_FAKE_AGGR_EMPTY");
+        }
+        {
+            auto config = config_for(fixture);
+            ConnectorHost host(config);
+            warm(host);
+            moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host, {});
+            const auto before = source.snapshot();
+            ::setenv("MOEX_FAKE_AGGR_CLEAR_AFTER_READY", "1", 1);
+            test::require(!host.poll(), "AGGR invalidation poll");
+            ::unsetenv("MOEX_FAKE_AGGR_CLEAR_AFTER_READY");
+            const auto invalidated = source.snapshot();
+            test::require(!invalidated.valid && !invalidated.target_authoritative && invalidated.levels.empty() &&
+                              invalidated.market_data_authority_epoch > before.market_data_authority_epoch &&
+                              invalidated.stream_epoch > before.stream_epoch,
+                          "AGGR invalidation clears the target DTC book and authority immediately");
+            test::require(!host.stop(), "invalidated DTC source stop");
+        }
         // Recovery-disabled baseline: an externally observed loss is still
         // terminal when the caller explicitly disables transport recovery.
         {

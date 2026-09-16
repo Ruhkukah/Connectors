@@ -14,8 +14,19 @@ std::uint16_t read_u16(const std::uint8_t* bytes) noexcept {
 
 std::uint64_t unix_now_ns() noexcept {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
+
+std::uint64_t unix_now_ms() noexcept {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+void append_frame(std::span<const std::uint8_t> bytes, std::vector<DtcFrame>& completed) {
+    DtcFrame frame;
+    frame.message_type = read_u16(bytes.data() + 2);
+    frame.payload.assign(bytes.begin() + static_cast<std::ptrdiff_t>(kDtcFrameHeaderSize), bytes.end());
+    completed.push_back(std::move(frame));
 }
 
 } // namespace
@@ -25,43 +36,80 @@ DtcFrameDecoder::DtcFrameDecoder(std::size_t max_frame_size)
     buffer_.reserve(max_frame_size_);
 }
 
-bool DtcFrameDecoder::append(std::span<const std::uint8_t> bytes,
-                             std::vector<DtcFrame>& completed,
+bool DtcFrameDecoder::append(std::span<const std::uint8_t> bytes, std::vector<DtcFrame>& completed,
                              std::string& error) {
     error.clear();
-    if (bytes.size() > max_frame_size_ || buffer_.size() > max_frame_size_ - bytes.size()) {
-        error = "DTC receive buffer exceeds the configured frame bound";
-        reset();
+    if (faulted_) {
+        error = "DTC decoder is fenced after a protocol error; reset is required";
         return false;
     }
-    buffer_.insert(buffer_.end(), bytes.begin(), bytes.end());
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        // Parse complete frames directly from a large coalesced receive
+        // chunk. The bounded buffer is only used for one incomplete frame.
+        if (buffer_.empty() && bytes.size() - offset >= kDtcFrameHeaderSize) {
+            const auto total_size = static_cast<std::size_t>(read_u16(bytes.data() + offset));
+            if (total_size < kDtcFrameHeaderSize || total_size > max_frame_size_) {
+                error = "invalid DTC frame length " + std::to_string(total_size);
+                buffer_.clear();
+                faulted_ = true;
+                return false;
+            }
+            if (bytes.size() - offset >= total_size) {
+                append_frame(bytes.subspan(offset, total_size), completed);
+                offset += total_size;
+                continue;
+            }
+        }
 
-    while (buffer_.size() >= kDtcFrameHeaderSize) {
+        const auto needed_header = kDtcFrameHeaderSize - buffer_.size();
+        const auto header_bytes = std::min(needed_header, bytes.size() - offset);
+        buffer_.insert(buffer_.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                       bytes.begin() + static_cast<std::ptrdiff_t>(offset + header_bytes));
+        offset += header_bytes;
+        if (buffer_.size() < kDtcFrameHeaderSize)
+            break;
+
         const auto total_size = static_cast<std::size_t>(read_u16(buffer_.data()));
         if (total_size < kDtcFrameHeaderSize || total_size > max_frame_size_) {
             error = "invalid DTC frame length " + std::to_string(total_size);
-            reset();
+            buffer_.clear();
+            faulted_ = true;
             return false;
         }
+        const auto remaining = total_size - buffer_.size();
+        const auto body_bytes = std::min(remaining, bytes.size() - offset);
+        buffer_.insert(buffer_.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                       bytes.begin() + static_cast<std::ptrdiff_t>(offset + body_bytes));
+        offset += body_bytes;
         if (buffer_.size() < total_size)
             break;
-
-        DtcFrame frame;
-        frame.message_type = read_u16(buffer_.data() + 2);
-        frame.payload.assign(buffer_.begin() + static_cast<std::ptrdiff_t>(kDtcFrameHeaderSize),
-                             buffer_.begin() + static_cast<std::ptrdiff_t>(total_size));
-        completed.push_back(std::move(frame));
-        buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(total_size));
+        append_frame(std::span<const std::uint8_t>(buffer_.data(), buffer_.size()), completed);
+        buffer_.clear();
     }
     return true;
 }
 
-void DtcFrameDecoder::reset() noexcept {
+bool DtcFrameDecoder::finish(std::string& error) {
+    error.clear();
+    if (faulted_) {
+        error = "DTC decoder is fenced after a protocol error; reset is required";
+        return false;
+    }
+    if (buffer_.empty())
+        return true;
+    error = "truncated DTC frame on disconnect";
     buffer_.clear();
+    faulted_ = true;
+    return false;
 }
 
-ConnectorHostDtcMarketDataSource::ConnectorHostDtcMarketDataSource(ConnectorHost& host,
-                                                                   std::string board)
+void DtcFrameDecoder::reset() noexcept {
+    buffer_.clear();
+    faulted_ = false;
+}
+
+ConnectorHostDtcMarketDataSource::ConnectorHostDtcMarketDataSource(ConnectorHost& host, std::string board)
     : host_(host), board_(std::move(board)) {}
 
 DtcReadOnlyCapabilities ConnectorHostDtcMarketDataSource::capabilities() const noexcept {
@@ -75,49 +123,60 @@ DtcReadOnlyCapabilities ConnectorHostDtcMarketDataSource::capabilities() const n
 }
 
 DtcMarketDataSnapshot ConnectorHostDtcMarketDataSource::snapshot() const {
-    const auto host_view = host_.snapshot();
-    const auto qualification = host_.qualification_snapshot();
+    const auto market_data = host_.market_data_snapshot();
 
     DtcMarketDataSnapshot out;
-    out.connector_generation = host_view.recovery.generation;
+    out.connector_generation = market_data.connector_generation;
+    out.market_data_authority_epoch = market_data.market_data_authority_epoch;
+    out.stream_epoch = market_data.stream_epoch;
+    out.source_snapshot_version = market_data.source_snapshot_version;
+    out.snapshot_watermark = market_data.snapshot_watermark;
+    out.snapshot_level_count = market_data.levels.size();
+    out.source_snapshot_hash = market_data.source_snapshot_hash;
+    out.engine_ingress_unix_ms = unix_now_ms();
+    out.engine_emit_unix_ms = out.engine_ingress_unix_ms;
     out.sampled_at_unix_ns = unix_now_ns();
-    out.isin_id = host_view.target_isin_id;
-    out.symbol = host_view.target;
-    out.board = board_;
-    out.min_step = host_view.min_step;
-    out.source_online = qualification.aggr_online;
-    out.snapshot_complete = qualification.aggr_snapshot_complete;
-    out.exchange_moment_ns = qualification.book.exchange_moment_ns;
-    out.source_repl_id = qualification.book.last_repl_id;
-    out.source_repl_rev = qualification.book.last_repl_rev;
+    out.isin_id = market_data.target_isin_id;
+    out.symbol = market_data.symbol;
+    out.board = board_.empty() ? market_data.board : board_;
+    out.min_step = market_data.min_step;
+    out.transport_active = market_data.transport_active;
+    // Compatibility field: "online" means the target AGGR stream reached
+    // ONLINE/snapshot-complete, not that the book is authoritative.
+    out.source_online = market_data.transport_active && market_data.snapshot_complete;
+    out.snapshot_complete = market_data.snapshot_complete;
+    out.session_data_ready = market_data.session_data_ready;
+    out.target_authoritative = market_data.target_authoritative;
+    out.exchange_moment_ns = market_data.exchange_moment_ns;
+    out.source_repl_id = market_data.source_repl_id;
+    out.source_repl_rev = market_data.source_repl_rev;
 
-    for (const auto& level : qualification.book.levels) {
-        if (level.isin_id != out.isin_id || (level.dir != 1 && level.dir != 2))
+    for (const auto& level : market_data.levels) {
+        if (level.side != static_cast<std::int32_t>(DtcDepthSide::Bid) &&
+            level.side != static_cast<std::int32_t>(DtcDepthSide::Ask))
             continue;
-        out.levels.push_back({.price_scaled = level.price_scaled,
-                              .volume = level.volume,
-                              .side = level.dir == 1 ? DtcDepthSide::Bid : DtcDepthSide::Ask,
-                              .source_repl_id = level.repl_id,
-                              .source_repl_rev = level.repl_rev,
-                              .exchange_moment_ns = level.moment_ns,
-                              .price = level.price});
+        out.levels.push_back(
+            {.price_scaled = level.price_scaled,
+             .volume = level.volume,
+             .side = level.side == static_cast<std::int32_t>(DtcDepthSide::Bid) ? DtcDepthSide::Bid : DtcDepthSide::Ask,
+             .source_repl_id = level.source_repl_id,
+             .source_repl_rev = level.source_repl_rev,
+             .source_sequence = level.source_repl_id,
+             .exchange_moment_ns = level.exchange_moment_ns,
+             .price = level.price});
     }
 
-    const auto bid = std::find_if(out.levels.begin(), out.levels.end(), [](const auto& level) {
-        return level.side == DtcDepthSide::Bid;
-    });
-    const auto ask = std::find_if(out.levels.begin(), out.levels.end(), [](const auto& level) {
-        return level.side == DtcDepthSide::Ask;
-    });
+    const auto bid = std::find_if(out.levels.begin(), out.levels.end(),
+                                  [](const auto& level) { return level.side == DtcDepthSide::Bid; });
+    const auto ask = std::find_if(out.levels.begin(), out.levels.end(),
+                                  [](const auto& level) { return level.side == DtcDepthSide::Ask; });
     out.two_sided = bid != out.levels.end() && ask != out.levels.end();
-    out.valid = out.isin_id != 0 && out.source_online && out.snapshot_complete;
+    out.valid = market_data.valid && out.target_authoritative && out.isin_id != 0;
     if (!out.valid) {
         if (out.isin_id == 0)
             out.invalid_reason = "target instrument is not selected";
-        else if (!out.source_online)
-            out.invalid_reason = "AGGR20 source is offline";
-        else if (!out.snapshot_complete)
-            out.invalid_reason = "AGGR20 snapshot is incomplete";
+        else
+            out.invalid_reason = market_data.invalid_reason;
     }
     return out;
 }

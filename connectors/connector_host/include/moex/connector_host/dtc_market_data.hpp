@@ -52,15 +52,18 @@ class DtcFrameDecoder final {
   public:
     explicit DtcFrameDecoder(std::size_t max_frame_size = kDtcMaxFrameSize);
 
-    [[nodiscard]] bool append(std::span<const std::uint8_t> bytes,
-                              std::vector<DtcFrame>& completed,
+    [[nodiscard]] bool append(std::span<const std::uint8_t> bytes, std::vector<DtcFrame>& completed,
                               std::string& error);
+    [[nodiscard]] bool finish(std::string& error);
     void reset() noexcept;
-    [[nodiscard]] std::size_t buffered_bytes() const noexcept { return buffer_.size(); }
+    [[nodiscard]] std::size_t buffered_bytes() const noexcept {
+        return buffer_.size();
+    }
 
   private:
     std::size_t max_frame_size_;
     std::vector<std::uint8_t> buffer_;
+    bool faulted_{false};
 };
 
 enum class DtcDepthSide : std::int32_t {
@@ -78,12 +81,28 @@ struct DtcMarketDataLevel {
     DtcDepthSide side{DtcDepthSide::Bid};
     std::uint64_t source_repl_id{0};
     std::int64_t source_repl_rev{0};
+    // Exact row-level source identity; this is deliberately separate from a
+    // DTC batch sequence and is never synthesized from vector position.
+    std::uint64_t source_sequence{0};
     std::uint64_t exchange_moment_ns{0};
     std::string price;
+
+    friend bool operator==(const DtcMarketDataLevel&, const DtcMarketDataLevel&) = default;
 };
 
 struct DtcMarketDataSnapshot {
     std::uint64_t connector_generation{0};
+    std::uint64_t market_data_authority_epoch{0};
+    std::uint64_t stream_epoch{0};
+    // Assigned by the future ConnectorHost-owned DTC server, not by CGate or
+    // this source adapter. Zero means no server batch has been emitted yet.
+    std::uint64_t dtc_batch_sequence{0};
+    std::uint64_t source_snapshot_version{0};
+    std::uint64_t snapshot_watermark{0};
+    std::size_t snapshot_level_count{0};
+    std::uint64_t source_snapshot_hash{0};
+    std::uint64_t engine_ingress_unix_ms{0};
+    std::uint64_t engine_emit_unix_ms{0};
     std::uint64_t source_repl_id{0};
     std::int64_t source_repl_rev{0};
     std::uint64_t exchange_moment_ns{0};
@@ -92,8 +111,14 @@ struct DtcMarketDataSnapshot {
     std::string symbol;
     std::string board;
     std::string min_step;
+    // These are deliberately separate: a live CGate transport, an ONLINE
+    // snapshot, current session_data_ready, and a target-authoritative book
+    // are different states at the DTC boundary.
+    bool transport_active{false};
     bool source_online{false};
     bool snapshot_complete{false};
+    bool session_data_ready{false};
+    bool target_authoritative{false};
     bool two_sided{false};
     bool valid{false};
     std::string invalid_reason;

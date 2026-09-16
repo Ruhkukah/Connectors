@@ -150,6 +150,7 @@ struct FakeConnection {
     bool forced_trade_terminal_emitted{false};
     bool session_price_revision_emitted{false};
     bool first_order_bbo_shift_emitted{false};
+    bool unrelated_aggr_update_emitted{false};
     bool trade_open_error_seen{false};
 };
 
@@ -366,6 +367,40 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .kind = SignedInteger,
                          .signed_value = 2},
                         {.field_code = FieldCode::kFortsAggrReplOrdersAggrSynthVolume, .kind = Text, .text = "0"},
+                    },
+            },
+            {
+                // This bootstrap sys_events row deliberately looks like the
+                // session_data_ready event but is not authoritative: it is
+                // delivered before the stream's Online marker.
+                .table_code = kFortsAggrReplSysEvents,
+                .rev = 23,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsAggrReplSysEventsReplId,
+                         .kind = SignedInteger,
+                         .signed_value = 2301},
+                        {.field_code = FieldCode::kFortsAggrReplSysEventsReplRev,
+                         .kind = SignedInteger,
+                         .signed_value = 23},
+                        {.field_code = FieldCode::kFortsAggrReplSysEventsReplAct,
+                         .kind = SignedInteger,
+                         .signed_value = 0},
+                        {.field_code = FieldCode::kFortsAggrReplSysEventsEventType,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsAggrReplSysEventsEventId,
+                         .kind = SignedInteger,
+                         .signed_value = 23},
+                        {.field_code = FieldCode::kFortsAggrReplSysEventsSessId,
+                         .kind = SignedInteger,
+                         .signed_value = 321},
+                        {.field_code = FieldCode::kFortsAggrReplSysEventsMessage,
+                         .kind = Text,
+                         .text = "session_data_ready"},
+                        {.field_code = FieldCode::kFortsAggrReplSysEventsServerTime,
+                         .kind = UnsignedInteger,
+                         .unsigned_value = 1700000012},
                     },
             },
         };
@@ -946,6 +981,12 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     }
 
     if (stream_code == StreamCode::kFortsAggrRepl) {
+        if (fake_flag("MOEX_FAKE_AGGR_EMPTY")) {
+            for (auto& message : script) {
+                if (auto* volume = find_field(message, kFortsAggrReplOrdersAggrVolume))
+                    volume->signed_value = 0;
+            }
+        }
         if (fake_flag("MOEX_FAKE_AGGR_ONE_SIDED")) {
             std::erase_if(script, [](const auto& message) {
                 const auto* direction = find_field(message, kFortsAggrReplOrdersAggrDir);
@@ -966,12 +1007,14 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
             const auto original = script;
             for (const auto& source : original) {
                 FakeMessageScript other = source;
+                const auto* direction = find_field(source, kFortsAggrReplOrdersAggrDir);
+                if (direction == nullptr)
+                    continue;
                 if (auto* isin = find_field(other, kFortsAggrReplOrdersAggrIsinId)) {
                     isin->signed_value = 2002;
                 }
                 if (auto* price = find_field(other, kFortsAggrReplOrdersAggrPrice)) {
-                    price->text =
-                        find_field(source, kFortsAggrReplOrdersAggrDir)->signed_value == 1 ? "10000000" : "10001000";
+                    price->text = direction->signed_value == 1 ? "10000000" : "10001000";
                 }
                 if (auto* repl = find_field(other, kFortsAggrReplOrdersAggrReplId)) {
                     repl->signed_value += 100;
@@ -1532,7 +1575,52 @@ std::uint32_t emit_script(FakeListener& listener) {
     if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk) {
         return result;
     }
-    return emit_simple_message(listener, kCgMsgP2replOnline);
+    if (const auto result = emit_simple_message(listener, kCgMsgP2replOnline); result != kCgErrOk) {
+        return result;
+    }
+    if (listener.stream_code == StreamCode::kFortsAggrRepl) {
+        // A current session_data_ready event is a separate transaction after
+        // Online. The bridge must not promote the bootstrap sys_events row.
+        if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk) {
+            return result;
+        }
+        FakeMessageScript current_ready{
+            .table_code = TableCode::kFortsAggrReplSysEvents,
+            .rev = 24,
+            .fields =
+                {
+                    {.field_code = FieldCode::kFortsAggrReplSysEventsReplId,
+                     .kind = FakeValueKind::SignedInteger,
+                     .signed_value = 2401},
+                    {.field_code = FieldCode::kFortsAggrReplSysEventsReplRev,
+                     .kind = FakeValueKind::SignedInteger,
+                     .signed_value = 24},
+                    {.field_code = FieldCode::kFortsAggrReplSysEventsReplAct,
+                     .kind = FakeValueKind::SignedInteger,
+                     .signed_value = 0},
+                    {.field_code = FieldCode::kFortsAggrReplSysEventsEventType,
+                     .kind = FakeValueKind::SignedInteger,
+                     .signed_value = 1},
+                    {.field_code = FieldCode::kFortsAggrReplSysEventsEventId,
+                     .kind = FakeValueKind::SignedInteger,
+                     .signed_value = 24},
+                    {.field_code = FieldCode::kFortsAggrReplSysEventsSessId,
+                     .kind = FakeValueKind::SignedInteger,
+                     .signed_value = 321},
+                    {.field_code = FieldCode::kFortsAggrReplSysEventsMessage,
+                     .kind = FakeValueKind::Text,
+                     .text = "session_data_ready"},
+                    {.field_code = FieldCode::kFortsAggrReplSysEventsServerTime,
+                     .kind = FakeValueKind::UnsignedInteger,
+                     .unsigned_value = 1700000013},
+                },
+        };
+        if (const auto result = emit_stream_message(listener, current_ready); result != kCgErrOk) {
+            return result;
+        }
+        return emit_simple_message(listener, kCgMsgTnCommit);
+    }
+    return kCgErrOk;
 }
 
 void detach_listener(FakeConnection* connection, FakeListener* listener) {
@@ -1787,6 +1875,7 @@ std::uint32_t cg_conn_open(void* conn, const char*) {
     connection->liveness_event_emitted = false;
     connection->userbook_periodic_clear_emitted = false;
     connection->userbook_periodic_info_emitted = false;
+    connection->unrelated_aggr_update_emitted = false;
     return kCgErrOk;
 }
 
@@ -1942,6 +2031,38 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
                 return error;
         }
         connection->first_order_bbo_shift_emitted = true;
+        return kCgErrOk;
+    }
+
+    if (connection->script_emitted && fake_flag("MOEX_FAKE_AGGR_UNRELATED_UPDATE_AFTER_READY") &&
+        !connection->unrelated_aggr_update_emitted) {
+        for (auto* listener : connection->listeners) {
+            if (listener == nullptr || listener->reply_listener || listener->state != kStateActive ||
+                listener->stream_code != StreamCode::kFortsAggrRepl)
+                continue;
+            const auto script = script_for_stream(listener->stream_code);
+            const auto unrelated = std::ranges::find_if(script, [](const auto& message) {
+                return message.table_code == TableCode::kFortsAggrReplOrdersAggr;
+            });
+            if (unrelated == script.end())
+                return kCgErrIncorrectState;
+            auto row = *unrelated;
+            if (auto* isin = find_field(row, FieldCode::kFortsAggrReplOrdersAggrIsinId))
+                isin->signed_value = 2002;
+            if (auto* repl = find_field(row, FieldCode::kFortsAggrReplOrdersAggrReplId))
+                repl->signed_value = 9202;
+            if (auto* rev = find_field(row, FieldCode::kFortsAggrReplOrdersAggrReplRev))
+                rev->signed_value = 92;
+            if (auto* moment = find_field(row, FieldCode::kFortsAggrReplOrdersAggrMoment))
+                moment->signed_value = 1700000092;
+            if (const auto result = emit_simple_message(*listener, kCgMsgTnBegin); result != kCgErrOk)
+                return result;
+            if (const auto result = emit_stream_message(*listener, row); result != kCgErrOk)
+                return result;
+            if (const auto result = emit_simple_message(*listener, kCgMsgTnCommit); result != kCgErrOk)
+                return result;
+        }
+        connection->unrelated_aggr_update_emitted = true;
         return kCgErrOk;
     }
 

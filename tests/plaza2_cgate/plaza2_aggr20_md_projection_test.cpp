@@ -124,6 +124,12 @@ int main() {
         require(target->top_bid->price == "100.50" && target->top_ask->price == "101.25",
                 "instrument-scoped BBO must not use another instrument");
         require(target->committed_at == local_now, "scoped snapshot must carry local monotonic commit time");
+        require(target->source_snapshot_version != 0 && target->source_snapshot_hash != 0,
+                "target snapshot must expose a version and deterministic source hash");
+        require(target->levels.size() == 2 && target->levels[0].dir == 1 && target->levels[1].dir == 2,
+                "target levels must be sorted bid-descending then ask-ascending");
+        const auto initial_target_version = target->source_snapshot_version;
+        const auto initial_target_hash = target->source_snapshot_hash;
         require(!projector.snapshot_for_isin(9999).has_value(), "absent instrument must have no scoped snapshot");
 
         local_now += std::chrono::seconds(1);
@@ -144,6 +150,9 @@ int main() {
         require(one_sided->committed_at == local_now, "scoped timestamp must advance on every commit");
         require(one_sided->last_repl_id == 2 && one_sided->last_repl_rev == 15,
                 "scoped deletion must retain the target's latest replication identity");
+        require(one_sided->source_snapshot_version > initial_target_version &&
+                    one_sided->source_snapshot_hash != initial_target_hash,
+                "target value changes must advance version and hash");
 
         local_now += std::chrono::seconds(1);
         projector.begin_transaction();
@@ -162,6 +171,9 @@ int main() {
                 "updating another instrument must not change target BBO");
         require(target_after_other_update->committed_at == local_now - std::chrono::seconds(1),
                 "updating another instrument must not refresh target local freshness");
+        require(target_after_other_update->source_snapshot_version == one_sided->source_snapshot_version &&
+                    target_after_other_update->source_snapshot_hash == one_sided->source_snapshot_hash,
+                "unrelated ISIN updates must not refresh target source version or hash");
 
         // Replication slots can move price/side without a zero-volume old-price row.
         Plaza2Aggr20BookProjector slots;

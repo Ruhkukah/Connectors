@@ -2,6 +2,7 @@
 
 #include "moex/plaza2_trade/plaza2_test_trade_transport.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -18,6 +19,11 @@ struct Plaza2HostConfig {
     HostPurpose purpose{HostPurpose::Qualify};
     plaza2_trade::Plaza2TestTradeTransportConfig transport;
     plaza2_trade::OrderLifecycleConfig order;
+    // Optional authoritative board label supplied by the ConnectorHost
+    // integration. An empty value is never inferred from a user tick size or
+    // endpoint; the future DTC security-definition response will be the
+    // source of truth.
+    std::string target_board;
 };
 
 // Application-selected terms for one serial TEST epoch.  Collision-prone
@@ -42,6 +48,12 @@ struct ConnectorHostSnapshot {
     bool reply_handle_open{false};
     bool private_snapshot_state_ready{false};
     bool aggr_snapshot_state_ready{false};
+    bool aggr_transport_active{false};
+    bool aggr_session_data_ready{false};
+    bool aggr_target_authoritative{false};
+    std::uint64_t aggr_stream_epoch{0};
+    std::uint64_t aggr_source_snapshot_version{0};
+    std::uint64_t aggr_source_snapshot_hash{0};
     bool aggr_ready{false};
     plaza2_trade::Plaza2TransportHealth transport_health;
     bool publisher_ready{false};
@@ -128,6 +140,50 @@ struct ConnectorHostQualificationSnapshot {
     bool aggr_snapshot_complete{false};
 };
 
+struct ConnectorHostMarketDataLevel {
+    std::int64_t price_scaled{0};
+    std::int64_t volume{0};
+    std::int32_t side{0};
+    std::uint64_t source_repl_id{0};
+    std::int64_t source_repl_rev{0};
+    std::uint64_t exchange_moment{0};
+    std::uint64_t exchange_moment_ns{0};
+    std::string price;
+
+    friend bool operator==(const ConnectorHostMarketDataLevel&, const ConnectorHostMarketDataLevel&) = default;
+};
+
+// Narrow owner-thread market-data view used by the DTC boundary. It never
+// copies private account/order state and never reads the global AGGR
+// qualification book for a target decision.
+struct ConnectorHostMarketDataSnapshot {
+    std::uint64_t connector_generation{0};
+    std::uint64_t market_data_authority_epoch{0};
+    std::uint64_t stream_epoch{0};
+    std::int64_t target_isin_id{0};
+    std::string symbol;
+    std::string board;
+    std::string min_step;
+    std::string invalid_reason;
+    std::uint64_t source_snapshot_version{0};
+    std::uint64_t source_snapshot_hash{0};
+    std::uint64_t source_repl_id{0};
+    std::int64_t source_repl_rev{0};
+    // AGGR20 target last_repl_id, explicitly used as the target-source
+    // watermark. It is not a DTC batch sequence.
+    std::uint64_t snapshot_watermark{0};
+    std::uint64_t exchange_moment{0};
+    std::uint64_t exchange_moment_ns{0};
+    std::chrono::steady_clock::time_point committed_at{};
+    bool transport_active{false};
+    bool snapshot_complete{false};
+    bool session_data_ready{false};
+    bool target_authoritative{false};
+    bool valid{false};
+    bool two_sided{false};
+    std::vector<ConnectorHostMarketDataLevel> levels;
+};
+
 [[nodiscard]] std::string_view host_state_name(ConnectorHostState state) noexcept;
 [[nodiscard]] std::string render_snapshot(const ConnectorHostSnapshot& snapshot, bool json,
                                           const ConnectorHostQualificationSnapshot* qualification = nullptr);
@@ -143,6 +199,7 @@ class ConnectorHost final {
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] ConnectorHostSnapshot snapshot() const;
+    [[nodiscard]] ConnectorHostMarketDataSnapshot market_data_snapshot() const;
     [[nodiscard]] plaza2_trade::DeepPassiveProposal first_order_price_proposal() const;
     [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot(bool private_identity = false) const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan() const;

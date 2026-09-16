@@ -2,9 +2,11 @@
 
 #include "plaza2_runtime_test_support.hpp"
 
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <string_view>
 
 namespace {
 
@@ -55,6 +57,52 @@ moex::plaza2::cgate::Plaza2Aggr20MdConfig make_config(const moex::plaza2::test::
     config.process_timeout_ms = 0;
     config.clock_evidence = make_clock_evidence();
     return config;
+}
+
+std::array<moex::plaza2::cgate::Plaza2DecodedFieldValue, 8>
+sys_event_fields(std::int64_t repl_id, std::int64_t repl_rev, std::int64_t event_id, std::int64_t sess_id,
+                 std::string_view message) {
+    using namespace moex::plaza2::cgate;
+    using moex::plaza2::generated::FieldCode;
+    return {
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsReplId,
+                                .kind = Plaza2DecodedValueKind::SignedInteger,
+                                .signed_value = repl_id},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsReplRev,
+                                .kind = Plaza2DecodedValueKind::SignedInteger,
+                                .signed_value = repl_rev},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsReplAct,
+                                .kind = Plaza2DecodedValueKind::SignedInteger},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsEventType,
+                                .kind = Plaza2DecodedValueKind::SignedInteger,
+                                .signed_value = 1},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsEventId,
+                                .kind = Plaza2DecodedValueKind::SignedInteger,
+                                .signed_value = event_id},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsSessId,
+                                .kind = Plaza2DecodedValueKind::SignedInteger,
+                                .signed_value = sess_id},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsMessage,
+                                .kind = Plaza2DecodedValueKind::String,
+                                .text_value = message},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsServerTime,
+                                .kind = Plaza2DecodedValueKind::UnsignedInteger,
+                                .unsigned_value = 1700000000},
+    };
+}
+
+void emit_sys_event(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge, std::int64_t repl_id,
+                    std::int64_t repl_rev, std::int64_t event_id, std::int64_t sess_id, bool in_snapshot) {
+    using namespace moex::plaza2::cgate;
+    const auto fields = sys_event_fields(repl_id, repl_rev, event_id, sess_id, "session_data_ready");
+    if (in_snapshot)
+        static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionBegin}));
+    static_cast<void>(
+        bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                         .table_code = moex::plaza2::generated::TableCode::kFortsAggrReplSysEvents,
+                                         .fields = fields}));
+    if (in_snapshot)
+        static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionCommit}));
 }
 
 } // namespace
@@ -217,6 +265,43 @@ int main(int argc, char** argv) {
                     "AGGR20 stuck OPENING must recover after the stream becomes available");
             require(recovery.stop().ok, "AGGR20 watchdog fixture stop");
         }
+
+        Plaza2Aggr20BookProjector authority_projector;
+        Plaza2Aggr20ListenerBridge authority_bridge(authority_projector, 321);
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Open}),
+                "authority bridge open");
+        require(
+            !authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 7}),
+            "authority bridge lifenum");
+        emit_sys_event(authority_bridge, 2301, 23, 23, 321, true);
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}),
+                "authority bridge online");
+        require(authority_bridge.online() && authority_bridge.snapshot_complete() &&
+                    !authority_bridge.session_data_ready() && !authority_bridge.authoritative(),
+                "bootstrap rows and an old snapshot sys_events row must not authorize the book");
+        require(authority_bridge.authority_snapshot().last_sys_event.has_value() &&
+                    authority_bridge.authority_snapshot().last_sys_event->seen_during_snapshot,
+                "bootstrap sys_events provenance must be retained as non-authoritative");
+        const auto before_resync_epoch = authority_bridge.authority_snapshot().stream_epoch;
+        emit_sys_event(authority_bridge, 2401, 24, 24, 321, false);
+        require(authority_bridge.session_data_ready() && authority_bridge.authoritative(),
+                "a current post-bootstrap session_data_ready row must restore authority");
+        require(!authority_bridge.authority_snapshot().last_sys_event->seen_during_snapshot,
+                "current sys_events provenance must not be marked as bootstrap");
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted}) &&
+                    authority_bridge.recovering() && !authority_bridge.authoritative() &&
+                    authority_projector.snapshot().row_count == 0 &&
+                    authority_bridge.authority_snapshot().stream_epoch > before_resync_epoch,
+                "clearing an authoritative stream must invalidate the visible book and epoch");
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Open}), "resync open");
+        require(
+            !authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 8}),
+            "resync lifenum");
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}), "resync online");
+        emit_sys_event(authority_bridge, 2501, 25, 25, 999, false);
+        require(!authority_bridge.authoritative(), "wrong-session sys_events must not authorize the target");
+        emit_sys_event(authority_bridge, 2502, 26, 26, 321, false);
+        require(authority_bridge.authoritative(), "matching current sys_events must restore authority after resync");
 
         Plaza2Aggr20BookProjector staged;
         Plaza2Aggr20ListenerBridge staged_bridge(staged);
