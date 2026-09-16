@@ -2,12 +2,14 @@
 
 #include "plaza2_runtime_test_support.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -45,6 +47,50 @@ std::string read_text(const std::filesystem::path& path) {
     return out.str();
 }
 
+Plaza2Aggr20AuthorityProbeAttempt make_complete_attempt(bool session_data_ready_after_online) {
+    Plaza2Aggr20AuthorityProbeAttempt attempt;
+    attempt.listener_created = true;
+    attempt.listener_opened = true;
+    attempt.online = true;
+    attempt.snapshot_complete = true;
+    attempt.session_data_ready_after_online = session_data_ready_after_online;
+    return attempt;
+}
+
+bool contains_trace(const Plaza2Aggr20AuthorityProbeAttempt& attempt, std::string_view needle) {
+    for (const auto& line : attempt.event_trace) {
+        if (line.find(needle) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void test_attempt_classification() {
+    const auto both_ready =
+        std::vector<Plaza2Aggr20AuthorityProbeAttempt>{make_complete_attempt(true), make_complete_attempt(true)};
+    moex::plaza2::test::require(plaza2_aggr20_authority_probe_classify_attempts(both_ready) ==
+                                    Plaza2Aggr20AuthorityProbeResult::Yes,
+                                "overall YES must require both complete attempts to observe readiness");
+
+    const auto one_missing =
+        std::vector<Plaza2Aggr20AuthorityProbeAttempt>{make_complete_attempt(true), make_complete_attempt(false)};
+    moex::plaza2::test::require(plaza2_aggr20_authority_probe_classify_attempts(one_missing) ==
+                                    Plaza2Aggr20AuthorityProbeResult::No,
+                                "complete attempts without readiness must produce NO");
+
+    auto failed = make_complete_attempt(true);
+    failed.error = "listener open failed";
+    const auto one_failed =
+        std::vector<Plaza2Aggr20AuthorityProbeAttempt>{std::move(failed), make_complete_attempt(true)};
+    moex::plaza2::test::require(plaza2_aggr20_authority_probe_classify_attempts(one_failed) ==
+                                    Plaza2Aggr20AuthorityProbeResult::Inconclusive,
+                                "an attempt error must produce INCONCLUSIVE");
+    moex::plaza2::test::require(plaza2_aggr20_authority_probe_classify_attempts({make_complete_attempt(true)}) ==
+                                    Plaza2Aggr20AuthorityProbeResult::Inconclusive,
+                                "a missing repeated attempt must produce INCONCLUSIVE");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -61,6 +107,10 @@ int main(int argc, char** argv) {
         const auto scheme = build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test");
         const auto fixture = materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme);
         const auto audit_path = fixture.root / "read_only_probe.audit";
+
+        require(Plaza2Aggr20AuthorityProbeConfig{}.observation_window >= std::chrono::seconds(60),
+                "diagnostic probe observation default must be at least 60 seconds");
+        test_attempt_classification();
 
         ::setenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "READ-ONLY-PROBE-KEY", 1);
         ::setenv("MOEX_FAKE_CAPTURE_AUDIT", audit_path.c_str(), 1);
@@ -82,11 +132,18 @@ int main(int argc, char** argv) {
                     report.selection->session_source.has_value(),
                 "probe selection must retain all REFDATA provenance");
         require(report.attempts.size() == 2, "probe must repeat the listener-only AGGR attempt");
+        require(report.initial_open_session_data_ready_after_online == std::optional<bool>{true},
+                "initial listener result must be reported independently");
+        require(report.listener_reopen_session_data_ready_after_online == std::optional<bool>{true},
+                "reopened listener result must be reported independently");
+        require(report.attempts[0].name == "INITIAL_OPEN" && report.attempts[1].name == "LISTENER_REOPEN",
+                "probe attempts must retain stable names");
         for (const auto& attempt : report.attempts) {
             require(attempt.listener_created && attempt.listener_opened && attempt.online && attempt.snapshot_complete,
                     "each AGGR attempt must reach snapshot+ONLINE");
             require(attempt.session_data_ready_after_online && attempt.target_authoritative,
                     "each AGGR attempt must establish target authority after ONLINE");
+            require(attempt.experiment_complete, "each AGGR attempt must finish without error");
             require(attempt.sys_events.size() >= 2, "each AGGR attempt must record bootstrap and current sys_events");
             require(attempt.sys_events.front().observed_before_online,
                     "bootstrap sys_event must be recorded before ONLINE");
@@ -96,6 +153,14 @@ int main(int argc, char** argv) {
             require(attempt.sys_events.front().transaction_id != 0 &&
                         attempt.sys_events.front().transaction_id != attempt.sys_events.back().transaction_id,
                     "sys_events must retain enclosing transaction identities");
+            require(contains_trace(attempt, "event=LIFENUM"), "each attempt must retain LifeNum evidence");
+            require(contains_trace(attempt, "event=TN_BEGIN"), "each attempt must retain TN_BEGIN evidence");
+            require(contains_trace(attempt, "event=TN_COMMIT"), "each attempt must retain TN_COMMIT evidence");
+            require(contains_trace(attempt, "event=ONLINE"), "each attempt must retain ONLINE evidence");
+            require(contains_trace(attempt, "probe=listener_close_complete"),
+                    "each attempt must retain listener close evidence");
+            require(contains_trace(attempt, "probe=listener_destroy_complete"),
+                    "each attempt must retain listener destroy evidence");
         }
 
         const auto audit = read_text(audit_path);

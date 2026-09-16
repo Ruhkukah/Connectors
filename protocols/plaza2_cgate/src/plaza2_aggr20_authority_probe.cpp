@@ -316,13 +316,23 @@ bool has_ready_after_online(const std::vector<Plaza2Aggr20AuthorityProbeSysEvent
     });
 }
 
+bool attempt_completed_cleanly(const Plaza2Aggr20AuthorityProbeAttempt& attempt) noexcept {
+    return attempt.listener_created && attempt.listener_opened && attempt.online && attempt.snapshot_complete &&
+           attempt.error.empty();
+}
+
+std::string attempt_name(std::uint32_t ordinal) {
+    return ordinal == 1 ? "INITIAL_OPEN" : "LISTENER_REOPEN";
+}
+
 Plaza2Aggr20AuthorityProbeAttempt
 run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeConfig& config,
                  const std::string& aggr_settings, const std::string& aggr_open_settings,
                  const Plaza2Aggr20AuthorityProbeSelection& selection, std::uint32_t ordinal) {
     Plaza2Aggr20AuthorityProbeAttempt attempt;
     attempt.ordinal = ordinal;
-    attempt.event_trace.push_back("probe=listener_open attempt=" + std::to_string(ordinal));
+    attempt.name = attempt_name(ordinal);
+    attempt.event_trace.push_back("probe=listener_open attempt=" + std::to_string(ordinal) + " name=" + attempt.name);
 
     Plaza2Aggr20BookProjector projector;
     Plaza2Aggr20ListenerBridge bridge(projector, selection.sess_id);
@@ -350,7 +360,8 @@ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeC
                 attempt.error = error.message + "; runtime_code=" + std::to_string(runtime_code);
                 break;
             }
-            if (has_ready_after_online(handler.records(), selection.sess_id)) {
+            if (bridge.online() && bridge.snapshot_complete() &&
+                has_ready_after_online(handler.records(), selection.sess_id)) {
                 break;
             }
             if (config.process_timeout_ms == 0) {
@@ -366,14 +377,20 @@ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeC
     const auto target_snapshot = projector.snapshot_for_isin(selection.isin_id);
     attempt.target_authoritative = bridge.authoritative() && target_snapshot.has_value();
 
-    attempt.event_trace.push_back("probe=listener_close attempt=" + std::to_string(ordinal));
+    attempt.event_trace.push_back("probe=listener_close attempt=" + std::to_string(ordinal) + " name=" + attempt.name);
     if (const auto error = listener.close(); error && attempt.error.empty()) {
         attempt.error = error.message;
     }
+    attempt.event_trace.push_back("probe=listener_close_complete attempt=" + std::to_string(ordinal) +
+                                  " name=" + attempt.name);
+    attempt.event_trace.push_back("probe=listener_destroy attempt=" + std::to_string(ordinal) +
+                                  " name=" + attempt.name);
     if (const auto error = listener.destroy(); error && attempt.error.empty()) {
         attempt.error = error.message;
     }
-    attempt.event_trace.push_back("probe=listener_closed attempt=" + std::to_string(ordinal));
+    attempt.event_trace.push_back("probe=listener_destroy_complete attempt=" + std::to_string(ordinal) +
+                                  " name=" + attempt.name);
+    attempt.experiment_complete = attempt_completed_cleanly(attempt);
     return attempt;
 }
 
@@ -528,6 +545,25 @@ std::string_view plaza2_aggr20_authority_probe_result_name(Plaza2Aggr20Authority
     return "INCONCLUSIVE";
 }
 
+Plaza2Aggr20AuthorityProbeResult plaza2_aggr20_authority_probe_classify_attempts(
+    const std::vector<Plaza2Aggr20AuthorityProbeAttempt>& attempts) noexcept {
+    if (attempts.size() != 2) {
+        return Plaza2Aggr20AuthorityProbeResult::Inconclusive;
+    }
+
+    const auto& initial_open = attempts[0];
+    const auto& listener_reopen = attempts[1];
+    const bool initial_open_complete = attempt_completed_cleanly(initial_open);
+    const bool listener_reopen_complete = attempt_completed_cleanly(listener_reopen);
+    if (!initial_open_complete || !listener_reopen_complete) {
+        return Plaza2Aggr20AuthorityProbeResult::Inconclusive;
+    }
+    if (initial_open.session_data_ready_after_online && listener_reopen.session_data_ready_after_online) {
+        return Plaza2Aggr20AuthorityProbeResult::Yes;
+    }
+    return Plaza2Aggr20AuthorityProbeResult::No;
+}
+
 Plaza2Aggr20AuthorityProbe::Plaza2Aggr20AuthorityProbe(Plaza2Aggr20AuthorityProbeConfig config)
     : config_(std::move(config)) {}
 
@@ -663,11 +699,7 @@ Plaza2Aggr20AuthorityProbeReport Plaza2Aggr20AuthorityProbe::run() {
         for (std::uint32_t ordinal = 1; ordinal <= 2; ++ordinal) {
             auto attempt = run_aggr_attempt(connection, config_, effective_aggr_settings, effective_aggr_open_settings,
                                             *report.selection, ordinal);
-            const auto opened = attempt.listener_opened;
             report.attempts.push_back(std::move(attempt));
-            if (!opened && ordinal == 1) {
-                break;
-            }
         }
     }
 
@@ -683,21 +715,13 @@ Plaza2Aggr20AuthorityProbeReport Plaza2Aggr20AuthorityProbe::run() {
         return report;
     }
 
-    const bool any_ready_after_online =
-        std::any_of(report.attempts.begin(), report.attempts.end(),
-                    [](const auto& attempt) { return attempt.session_data_ready_after_online; });
-    const bool repeated_complete = report.attempts.size() == 2 &&
-                                   std::all_of(report.attempts.begin(), report.attempts.end(), [](const auto& attempt) {
-                                       return attempt.listener_created && attempt.listener_opened && attempt.online &&
-                                              attempt.snapshot_complete && attempt.error.empty();
-                                   });
-    if (any_ready_after_online) {
-        report.result = Plaza2Aggr20AuthorityProbeResult::Yes;
-    } else if (repeated_complete) {
-        report.result = Plaza2Aggr20AuthorityProbeResult::No;
-    } else {
-        report.result = Plaza2Aggr20AuthorityProbeResult::Inconclusive;
+    if (report.attempts.size() >= 1) {
+        report.initial_open_session_data_ready_after_online = report.attempts[0].session_data_ready_after_online;
     }
+    if (report.attempts.size() >= 2) {
+        report.listener_reopen_session_data_ready_after_online = report.attempts[1].session_data_ready_after_online;
+    }
+    report.result = plaza2_aggr20_authority_probe_classify_attempts(report.attempts);
     report.read_only_contract_ok = true;
     return report;
 }

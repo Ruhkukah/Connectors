@@ -44,7 +44,7 @@ struct ProbeArgs {
     std::string aggr_settings{"p2repl://FORTS_AGGR20_REPL"};
     std::string aggr_open_settings{"mode=snapshot+online"};
     std::uint32_t process_timeout_ms{50};
-    std::uint32_t observation_seconds{5};
+    std::uint32_t observation_seconds{60};
     Plaza2CredentialSource credentials_source{Plaza2CredentialSource::None};
     std::string credentials_env_var;
     fs::path credentials_file;
@@ -341,6 +341,21 @@ void write_bool(std::ostream& out, bool value) {
     out << (value ? "true" : "false");
 }
 
+void write_optional_bool(std::ostream& out, const std::optional<bool>& value) {
+    if (!value.has_value()) {
+        out << "null";
+        return;
+    }
+    write_bool(out, *value);
+}
+
+std::string_view optional_bool_text(const std::optional<bool>& value) {
+    if (!value.has_value()) {
+        return "unavailable";
+    }
+    return *value ? "true" : "false";
+}
+
 void write_provenance(std::ostream& out,
                       const std::optional<moex::plaza2::private_state::SourceRowProvenance>& provenance) {
     if (!provenance.has_value()) {
@@ -363,6 +378,10 @@ void write_report_json(const fs::path& path, const Plaza2Aggr20AuthorityProbeRep
     write_string(out, moex::plaza2::cgate::plaza2_aggr20_authority_probe_result_name(report.result));
     out << ",\n  \"MIDSESSION_SESSION_DATA_READY_AFTER_ONLINE\": ";
     write_string(out, moex::plaza2::cgate::plaza2_aggr20_authority_probe_result_name(report.result));
+    out << ",\n  \"INITIAL_OPEN_SESSION_DATA_READY_AFTER_ONLINE\": ";
+    write_optional_bool(out, report.initial_open_session_data_ready_after_online);
+    out << ",\n  \"LISTENER_REOPEN_SESSION_DATA_READY_AFTER_ONLINE\": ";
+    write_optional_bool(out, report.listener_reopen_session_data_ready_after_online);
     out << ",\n  \"read_only_contract_ok\": ";
     write_bool(out, report.read_only_contract_ok);
     out << ",\n  \"publisher_create_attempted\": false,\n"
@@ -404,7 +423,9 @@ void write_report_json(const fs::path& path, const Plaza2Aggr20AuthorityProbeRep
     out << ",\n  \"attempts\": [\n";
     for (std::size_t attempt_index = 0; attempt_index < report.attempts.size(); ++attempt_index) {
         const auto& attempt = report.attempts[attempt_index];
-        out << "    {\"ordinal\":" << attempt.ordinal << ",\"listener_created\":";
+        out << "    {\"ordinal\":" << attempt.ordinal << ",\"name\": ";
+        write_string(out, attempt.name);
+        out << ",\"listener_created\":";
         write_bool(out, attempt.listener_created);
         out << ",\"listener_opened\":";
         write_bool(out, attempt.listener_opened);
@@ -416,6 +437,8 @@ void write_report_json(const fs::path& path, const Plaza2Aggr20AuthorityProbeRep
         write_bool(out, attempt.session_data_ready_after_online);
         out << ",\"target_authoritative\":";
         write_bool(out, attempt.target_authoritative);
+        out << ",\"experiment_complete\":";
+        write_bool(out, attempt.experiment_complete);
         out << ",\"error\": ";
         write_string(out, attempt.error);
         out << ",\"sys_events\":[\n";
@@ -451,6 +474,10 @@ void write_report_log(const fs::path& path, const Plaza2Aggr20AuthorityProbeRepo
     }
     out << "MIDSESSION_SESSION_DATA_READY_AFTER_ONLINE = "
         << moex::plaza2::cgate::plaza2_aggr20_authority_probe_result_name(report.result) << '\n';
+    out << "INITIAL_OPEN_SESSION_DATA_READY_AFTER_ONLINE = "
+        << optional_bool_text(report.initial_open_session_data_ready_after_online) << '\n';
+    out << "LISTENER_REOPEN_SESSION_DATA_READY_AFTER_ONLINE = "
+        << optional_bool_text(report.listener_reopen_session_data_ready_after_online) << '\n';
     out << "read_only_contract_ok=" << (report.read_only_contract_ok ? "true" : "false") << '\n';
     out << "publisher_create_attempted=false\npublisher_open_attempted=false\ncommand_api_used=false\n"
            "order_api_used=false\nauthorization_hash_used=false\n";
@@ -464,12 +491,14 @@ void write_report_log(const fs::path& path, const Plaza2Aggr20AuthorityProbeRepo
             << " refdata_lifenum=" << selection.refdata_lifenum << '\n';
     }
     for (const auto& attempt : report.attempts) {
-        out << "attempt=" << attempt.ordinal << " listener_created=" << (attempt.listener_created ? "true" : "false")
+        out << "attempt=" << attempt.ordinal << " name=" << attempt.name
+            << " listener_created=" << (attempt.listener_created ? "true" : "false")
             << " listener_opened=" << (attempt.listener_opened ? "true" : "false")
             << " online=" << (attempt.online ? "true" : "false")
             << " snapshot_complete=" << (attempt.snapshot_complete ? "true" : "false")
             << " session_data_ready_after_online=" << (attempt.session_data_ready_after_online ? "true" : "false")
-            << " target_authoritative=" << (attempt.target_authoritative ? "true" : "false") << '\n';
+            << " target_authoritative=" << (attempt.target_authoritative ? "true" : "false")
+            << " experiment_complete=" << (attempt.experiment_complete ? "true" : "false") << '\n';
         for (const auto& event : attempt.sys_events) {
             out << "sys_event attempt=" << attempt.ordinal << " transaction_id=" << event.transaction_id
                 << " transaction_row_index=" << event.transaction_row_index

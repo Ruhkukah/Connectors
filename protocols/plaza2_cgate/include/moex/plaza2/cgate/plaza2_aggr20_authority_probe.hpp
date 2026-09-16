@@ -52,12 +52,14 @@ struct Plaza2Aggr20AuthorityProbeSelection {
 
 struct Plaza2Aggr20AuthorityProbeAttempt {
     std::uint32_t ordinal{0};
+    std::string name;
     bool listener_created{false};
     bool listener_opened{false};
     bool online{false};
     bool snapshot_complete{false};
     bool session_data_ready_after_online{false};
     bool target_authoritative{false};
+    bool experiment_complete{false};
     std::vector<Plaza2Aggr20AuthorityProbeSysEvent> sys_events;
     std::vector<std::string> event_trace;
     std::string error;
@@ -70,10 +72,15 @@ struct Plaza2Aggr20AuthorityProbeReport {
     bool refdata_listener_opened{false};
     bool refdata_online{false};
     bool refdata_snapshot_complete{false};
+    std::optional<bool> initial_open_session_data_ready_after_online;
+    std::optional<bool> listener_reopen_session_data_ready_after_online;
     std::optional<Plaza2Aggr20AuthorityProbeSelection> selection;
     std::vector<Plaza2Aggr20AuthorityProbeAttempt> attempts;
     std::string error;
 };
+
+[[nodiscard]] Plaza2Aggr20AuthorityProbeResult plaza2_aggr20_authority_probe_classify_attempts(
+    const std::vector<Plaza2Aggr20AuthorityProbeAttempt>& attempts) noexcept;
 
 struct Plaza2Aggr20AuthorityProbeConfig {
     // This is a diagnostic identity, not an authorized order profile.
@@ -97,7 +104,7 @@ struct Plaza2Aggr20AuthorityProbeConfig {
     Plaza2CredentialConfig software_key{};
     Plaza2RuntimeArmState arm_state{};
     std::uint32_t process_timeout_ms{50};
-    std::chrono::milliseconds observation_window{5000};
+    std::chrono::milliseconds observation_window{std::chrono::seconds(60)};
 };
 
 class Plaza2Aggr20AuthorityProbe final {
