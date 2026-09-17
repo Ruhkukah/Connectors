@@ -62,6 +62,8 @@ struct Plaza2Aggr20AuthorityProbeAttempt {
     bool experiment_complete{false};
     std::vector<Plaza2Aggr20AuthorityProbeSysEvent> sys_events;
     std::vector<std::string> event_trace;
+    std::optional<Plaza2Error> listener_last_callback_error;
+    std::optional<Plaza2Aggr20DecimalRejection> first_decimal_rejection;
     std::string error;
 };
 

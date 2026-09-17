@@ -1,6 +1,11 @@
 #include "plaza2_generated_metadata.hpp"
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 
 #include <iostream>
+
+static_assert(moex::plaza2::cgate::kPlaza2D16_5DecimalPrecision == 16);
+static_assert(moex::plaza2::cgate::kPlaza2D16_5FractionalDigits == 5);
+static_assert(moex::plaza2::cgate::kPlaza2D16_5PriceScale == 100'000);
 
 int main() {
     using namespace moex::plaza2::generated;
@@ -46,8 +51,16 @@ int main() {
         std::cerr << "d16.5 type descriptor missing\n";
         return 1;
     }
-    if (decimal_type->value_class != ValueClass::kDecimal || decimal_type->decimal_scale != 5) {
+    if (decimal_type->value_class != ValueClass::kDecimal || decimal_type->decimal_digits != 16 ||
+        decimal_type->decimal_scale != 5) {
         std::cerr << "d16.5 type descriptor invariants broken\n";
+        return 1;
+    }
+
+    const auto* aggr_price = FindFieldByCode(FieldCode::kFortsAggrReplOrdersAggrPrice);
+    if (aggr_price == nullptr || aggr_price->type_token != "d16.5" || aggr_price->decimal_digits != 16 ||
+        aggr_price->decimal_scale != 5 || aggr_price->value_class != ValueClass::kDecimal) {
+        std::cerr << "AGGR orders_aggr.price must remain generated d16.5\n";
         return 1;
     }
 

@@ -1,10 +1,12 @@
 #include <unistd.h>
 #include "fake_cgate_abi.hpp"
+#include "moex/plaza2/cgate/plaza2_public_decode.hpp"
 #include "plaza2_public_wire.hpp"
 #include "../plaza2_trade/fixtures/cgate99_messages.hpp"
 #include "plaza2_generated_metadata.hpp"
 
 #include <fstream>
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -15,6 +17,7 @@
 #include <cstring>
 #include <memory>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -101,6 +104,7 @@ struct FieldPlan {
     ValueClass value_class{ValueClass::kSignedInteger};
     std::size_t offset{0};
     std::size_t size{0};
+    std::string type_token;
 };
 
 struct MessagePlan {
@@ -210,15 +214,58 @@ std::string copy_c_string(const char* value, std::size_t size) {
     return std::string(value, count);
 }
 
-std::size_t size_for_value_class(ValueClass value_class) {
+std::optional<moex::plaza2::public_wire::Bcd16_5> encode_d16_5(std::string_view text) {
+    const auto scaled = moex::plaza2::cgate::parse_fixed_point(text, moex::plaza2::cgate::kPlaza2D16_5FractionalDigits,
+                                                               true, moex::plaza2::cgate::kPlaza2D16_5DecimalPrecision);
+    if (!scaled.has_value())
+        return std::nullopt;
+
+    const auto magnitude =
+        *scaled < 0 ? static_cast<std::uint64_t>(-(*scaled + 1)) + 1U : static_cast<std::uint64_t>(*scaled);
+    auto encoded = moex::plaza2::public_wire::Bcd16_5{5, 16};
+    auto base100 = magnitude * 10U;
+    for (std::size_t index = encoded.size(); index-- > 2;)
+        encoded[index] = static_cast<std::uint8_t>(base100 % 100U), base100 /= 100U;
+    if (*scaled < 0)
+        encoded[2] |= 0x80U;
+    return encoded;
+}
+
+std::optional<std::string> format_d16_5(const moex::plaza2::public_wire::Bcd16_5& bytes) {
+    const auto decoded = moex::plaza2::public_wire::decimal_value(bytes);
+    if (!decoded.has_value())
+        return std::nullopt;
+
+    const auto magnitude = decoded->mantissa < 0 ? static_cast<std::uint64_t>(-(decoded->mantissa + 1)) + 1U
+                                                 : static_cast<std::uint64_t>(decoded->mantissa);
+    const auto whole = magnitude / moex::plaza2::cgate::kPlaza2D16_5PriceScale;
+    const auto fractional = magnitude % static_cast<std::uint64_t>(moex::plaza2::cgate::kPlaza2D16_5PriceScale);
+    std::string result;
+    if (decoded->mantissa < 0)
+        result.push_back('-');
+    result += std::to_string(whole);
+    if (fractional != 0) {
+        auto fraction =
+            std::to_string(fractional + static_cast<std::uint64_t>(moex::plaza2::cgate::kPlaza2D16_5PriceScale))
+                .substr(1);
+        while (!fraction.empty() && fraction.back() == '0')
+            fraction.pop_back();
+        result.push_back('.');
+        result += fraction;
+    }
+    return result;
+}
+
+std::size_t size_for_value_class(ValueClass value_class, std::string_view type_token) {
     switch (value_class) {
     case ValueClass::kSignedInteger:
     case ValueClass::kUnsignedInteger:
         return 8;
     case ValueClass::kFixedString:
-    case ValueClass::kDecimal:
     case ValueClass::kFloatingPoint:
         return 32;
+    case ValueClass::kDecimal:
+        return type_token == "d16.5" ? sizeof(moex::plaza2::public_wire::Bcd16_5) : 32;
     case ValueClass::kTimestamp:
         return sizeof(CgTime);
     case ValueClass::kBinary:
@@ -1022,6 +1069,22 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                 script.push_back(std::move(other));
             }
         }
+        if (fake_flag("MOEX_FAKE_AGGR_NEGATIVE_UNRELATED")) {
+            const auto source = std::ranges::find_if(
+                script, [](const auto& message) { return message.table_code == TableCode::kFortsAggrReplOrdersAggr; });
+            if (source != script.end()) {
+                auto unrelated = *source;
+                if (auto* isin = find_field(unrelated, kFortsAggrReplOrdersAggrIsinId))
+                    isin->signed_value = 2002;
+                if (auto* repl = find_field(unrelated, kFortsAggrReplOrdersAggrReplId))
+                    repl->signed_value = 9302;
+                if (auto* rev = find_field(unrelated, kFortsAggrReplOrdersAggrReplRev))
+                    rev->signed_value = 93;
+                if (auto* price = find_field(unrelated, kFortsAggrReplOrdersAggrPrice))
+                    price->text = "-100.50000";
+                script.push_back(std::move(unrelated));
+            }
+        }
     } else if (stream_code == StreamCode::kFortsRefdataRepl) {
         if (fake_flag("MOEX_FAKE_MISSING_INSTRUMENT")) {
             std::erase_if(script, [](const auto& message) {
@@ -1337,7 +1400,7 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             owned_field->desc.id = static_cast<std::uint32_t>(field->field_code);
             owned_field->desc.name = owned_field->name.data();
             owned_field->desc.type = owned_field->type_token.data();
-            owned_field->desc.size = size_for_value_class(field->value_class);
+            owned_field->desc.size = size_for_value_class(field->value_class, field->type_token);
             owned_field->desc.offset = offset;
 
             plan.fields.push_back({
@@ -1345,6 +1408,7 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
                 .value_class = field->value_class,
                 .offset = offset,
                 .size = owned_field->desc.size,
+                .type_token = std::string(field->type_token),
             });
 
             offset += owned_field->desc.size;
@@ -1434,6 +1498,13 @@ void write_field_value(std::vector<std::byte>& buffer, const FieldPlan& plan, co
     case ValueClass::kFixedString:
     case ValueClass::kDecimal:
     case ValueClass::kFloatingPoint: {
+        if (plan.type_token == "d16.5") {
+            std::memset(dest, 0, plan.size);
+            if (const auto encoded = encode_d16_5(value.text); encoded.has_value() && plan.size == encoded->size()) {
+                std::memcpy(dest, encoded->data(), encoded->size());
+            }
+            break;
+        }
         std::memset(dest, 0, plan.size);
         const auto copy_size = std::min(plan.size == 0 ? 0U : plan.size - 1, value.text.size());
         if (copy_size > 0) {
@@ -2737,7 +2808,15 @@ std::uint32_t cg_getstr(const char* type, const void* data, char* buffer, std::s
     }
 
     std::string text;
-    if (type && (std::string_view(type) == "i8" || std::string_view(type) == "i4" || std::string_view(type) == "i1")) {
+    if (type && std::string_view(type) == "d16.5") {
+        moex::plaza2::public_wire::Bcd16_5 bytes{};
+        std::memcpy(bytes.data(), data, bytes.size());
+        const auto formatted = format_d16_5(bytes);
+        if (!formatted.has_value())
+            return kCgErrInvalidArgument;
+        text = *formatted;
+    } else if (type &&
+               (std::string_view(type) == "i8" || std::string_view(type) == "i4" || std::string_view(type) == "i1")) {
         if (std::string_view(type) == "i8") {
             std::int64_t v{};
             std::memcpy(&v, data, sizeof(v));

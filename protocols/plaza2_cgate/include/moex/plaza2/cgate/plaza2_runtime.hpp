@@ -181,6 +181,14 @@ struct Plaza2DecodedFieldValue {
     std::int64_t signed_value{0};
     std::uint64_t unsigned_value{0};
     std::string_view text_value{};
+    // The runtime-owned field bytes are valid only for the duration of the
+    // callback. They preserve the exact vendor representation for bounded
+    // diagnostics and exact decimal consumers.
+    std::span<const std::byte> raw_value{};
+    std::string_view type_token{};
+    std::int64_t decimal_mantissa{0};
+    std::int32_t decimal_scale{0};
+    bool decimal_exact{false};
 };
 
 struct Plaza2ListenerEvent {

@@ -1,4 +1,5 @@
 #include "moex/plaza2/cgate/plaza2_aggr20_md.hpp"
+#include "moex/plaza2/cgate/plaza2_public_decode.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <set>
 #include <string>
 #include <string_view>
@@ -165,18 +167,45 @@ std::string text_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCod
     return {};
 }
 
-std::optional<std::string_view> fixed_point_text_field(std::span<const Plaza2DecodedFieldValue> fields,
-                                                       FieldCode code) {
+const Plaza2DecodedFieldValue* find_decoded_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCode code) {
     for (const auto& field : fields) {
-        if (field.field_code != code) {
-            continue;
-        }
-        if (field.kind == Plaza2DecodedValueKind::String || field.kind == Plaza2DecodedValueKind::Decimal) {
-            return field.text_value;
-        }
-        return std::nullopt;
+        if (field.field_code == code)
+            return &field;
     }
-    return std::nullopt;
+    return nullptr;
+}
+
+std::string_view decoded_value_kind_name(Plaza2DecodedValueKind kind) noexcept {
+    switch (kind) {
+    case Plaza2DecodedValueKind::None:
+        return "none";
+    case Plaza2DecodedValueKind::SignedInteger:
+        return "signed_integer";
+    case Plaza2DecodedValueKind::UnsignedInteger:
+        return "unsigned_integer";
+    case Plaza2DecodedValueKind::Decimal:
+        return "decimal";
+    case Plaza2DecodedValueKind::FloatingPoint:
+        return "floating_point";
+    case Plaza2DecodedValueKind::String:
+        return "string";
+    case Plaza2DecodedValueKind::Timestamp:
+        return "timestamp";
+    }
+    return "unknown";
+}
+
+std::string bytes_to_hex(std::span<const std::byte> bytes) {
+    constexpr char digits[] = "0123456789abcdef";
+    const auto bounded_size = std::min<std::size_t>(bytes.size(), 64);
+    std::string result;
+    result.reserve(bounded_size * 2);
+    for (const auto byte : bytes.first(bounded_size)) {
+        const auto value = std::to_integer<std::uint8_t>(byte);
+        result.push_back(digits[value >> 4]);
+        result.push_back(digits[value & 0x0fU]);
+    }
+    return result;
 }
 
 bool is_service_unavailable(const Plaza2Error& error) noexcept {
@@ -444,6 +473,7 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
     const auto before = authority_snapshot();
     switch (event.kind) {
     case Plaza2ListenerEventKind::Open:
+        first_decimal_rejection_.reset();
         invalidate(false, true);
         reopen_retry_count_ = 0;
         first_recovery_error_.reset();
@@ -519,8 +549,14 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
     case Plaza2ListenerEventKind::StreamData:
         if (reopen_required_)
             return {};
-        if (event.table_code == generated::TableCode::kFortsAggrReplOrdersAggr)
-            return projector_.on_row(event.fields);
+        if (event.table_code == generated::TableCode::kFortsAggrReplOrdersAggr) {
+            const auto error = projector_.on_row(event.fields);
+            if (error && error.code == Plaza2ErrorCode::DecodeFailed &&
+                error.message.find("AGGR20 orders_aggr.price") != std::string::npos) {
+                capture_decimal_rejection(event);
+            }
+            return error;
+        }
         if (event.table_code == generated::TableCode::kFortsAggrReplSysEvents) {
             Plaza2Aggr20SysEventSnapshot sys_event;
             sys_event.source_repl_id =
@@ -563,6 +599,39 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
         return {};
     default:
         return {};
+    }
+}
+
+void Plaza2Aggr20ListenerBridge::capture_decimal_rejection(const Plaza2ListenerEvent& event) noexcept {
+    if (first_decimal_rejection_.has_value())
+        return;
+
+    try {
+        Plaza2Aggr20DecimalRejection receipt;
+        const auto* price = find_decoded_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrPrice);
+        receipt.repl_id = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrReplId).value_or(0);
+        receipt.repl_rev = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrReplRev).value_or(0);
+        receipt.repl_act = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrReplAct).value_or(0);
+        receipt.isin_id = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrIsinId).value_or(0);
+        receipt.dir = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrDir).value_or(0);
+        receipt.volume = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrVolume).value_or(0);
+        if (price != nullptr) {
+            receipt.decoded_field_kind = std::string(decoded_value_kind_name(price->kind));
+            receipt.cg_getstr_text = std::string(price->text_value);
+            receipt.text_byte_length = price->text_value.size();
+            receipt.raw_bcd_bytes_hex = bytes_to_hex(price->raw_value);
+            if (price->raw_value.size() == sizeof(public_wire::Bcd16_5)) {
+                const auto bcd = public_wire::load<public_wire::Bcd16_5>(price->raw_value);
+                if (const auto decoded = public_wire::decimal_value(bcd); decoded.has_value()) {
+                    receipt.bcd_mantissa = decoded->mantissa;
+                    receipt.bcd_scale = decoded->scale;
+                }
+            }
+        }
+        first_decimal_rejection_ = std::move(receipt);
+    } catch (...) {
+        // A diagnostic allocation must never turn a bounded decode failure
+        // into an unbounded callback failure.
     }
 }
 
@@ -680,15 +749,28 @@ Plaza2Error Plaza2Aggr20BookProjector::on_row(std::span<const Plaza2DecodedField
 
     Plaza2Aggr20Level level;
     level.isin_id = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrIsinId).value_or(0);
-    const auto price_text = fixed_point_text_field(fields, FieldCode::kFortsAggrReplOrdersAggrPrice);
-    if (!price_text.has_value()) {
+    const auto* price_field = find_decoded_field(fields, FieldCode::kFortsAggrReplOrdersAggrPrice);
+    if (price_field == nullptr ||
+        (price_field->kind != Plaza2DecodedValueKind::String && price_field->kind != Plaza2DecodedValueKind::Decimal)) {
         return {
             .code = Plaza2ErrorCode::DecodeFailed,
             .runtime_code = 0,
             .message = "AGGR20 orders_aggr.price is missing or has an unsupported runtime value kind",
         };
     }
-    const auto price_scaled = parse_fixed_point(*price_text, kPlaza2Aggr20FractionalDigits, false);
+
+    std::optional<std::int64_t> price_scaled;
+    if (price_field->decimal_exact &&
+        price_field->decimal_scale == static_cast<std::int32_t>(kPlaza2D16_5FractionalDigits)) {
+        // The runtime already decoded the native d16.5 BCD. Keep this hot
+        // path as BCD -> exact mantissa; do not round-trip through text.
+        price_scaled = price_field->decimal_mantissa;
+    } else if (price_field->raw_value.empty() && price_field->type_token.empty()) {
+        // Unit-level callers may provide a decoded text value without a
+        // runtime field view. Keep that test seam exact and signed too.
+        price_scaled = parse_fixed_point(price_field->text_value, kPlaza2D16_5FractionalDigits, true,
+                                         kPlaza2D16_5DecimalPrecision);
+    }
     if (!price_scaled.has_value()) {
         return {
             .code = Plaza2ErrorCode::DecodeFailed,
@@ -696,7 +778,7 @@ Plaza2Error Plaza2Aggr20BookProjector::on_row(std::span<const Plaza2DecodedField
             .message = "AGGR20 orders_aggr.price is malformed, over-precise, or outside checked fixed-point range",
         };
     }
-    level.price = std::string(*price_text);
+    level.price = std::string(price_field->text_value);
     level.price_scaled = *price_scaled;
     level.volume = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrVolume).value_or(0);
     if (signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrReplAct).value_or(0) != 0) {

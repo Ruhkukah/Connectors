@@ -1532,6 +1532,8 @@ struct Plaza2ListenerCallbackState {
                 const auto* field_ptr = static_cast<const std::byte*>(payload->data) + field.offset;
                 Plaza2DecodedFieldValue decoded{
                     .field_code = field.field_code,
+                    .raw_value = {field_ptr, field.size},
+                    .type_token = field.type_token,
                 };
 
                 switch (field.value_class) {
@@ -1552,6 +1554,15 @@ struct Plaza2ListenerCallbackState {
                     break;
                 case generated::ValueClass::kDecimal:
                     decoded.kind = Plaza2DecodedValueKind::Decimal;
+                    if (field.type_token == "d16.5" && field.size == sizeof(public_wire::Bcd16_5)) {
+                        const auto exact = public_wire::decimal_value(
+                            public_wire::load<public_wire::Bcd16_5>({field_ptr, field.size}));
+                        if (exact.has_value()) {
+                            decoded.decimal_mantissa = exact->mantissa;
+                            decoded.decimal_scale = exact->scale;
+                            decoded.decimal_exact = true;
+                        }
+                    }
                     state->text_storage.emplace_back();
                     if (const auto error = convert_runtime_field_to_string(*state->shared->api, field.type_token,
                                                                            field_ptr, state->text_storage.back());
@@ -1586,7 +1597,10 @@ struct Plaza2ListenerCallbackState {
                 .stream_code = state->stream_code,
                 .table_code = plan->table_code,
                 .fields = state->decoded_fields,
+                .raw_payload = {static_cast<const std::byte*>(payload->data), payload->data_size},
                 .signed_value = payload->rev,
+                .raw_nulls = {payload->nulls, payload->num_nulls},
+                .table_index = payload->msg_index,
             };
             if (auto* observer = state->shared->settings.qualification_observer;
                 observer && observer->wants_forensic_row(event)) {

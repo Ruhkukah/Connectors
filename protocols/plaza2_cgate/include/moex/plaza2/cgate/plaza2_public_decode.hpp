@@ -1,5 +1,6 @@
 #pragma once
 
+#include "plaza2_fixed_point.hpp"
 #include "plaza2_public_wire.hpp"
 
 #include <bit>
@@ -12,11 +13,16 @@ namespace moex::plaza2::public_wire {
 
 static_assert(std::endian::native == std::endian::little);
 
+struct ExactDecimal {
+    std::int64_t mantissa{0};
+    std::int32_t scale{0};
+};
+
 // Preserve the original BCD alongside this exact convenience conversion.
 // d16.5: scale/precision, base-100 digits, sign in the first digit, final half digit.
 // Qualified against CGate 9.9 cg_bcd_get in a network-disabled SDK run.
-inline std::optional<std::int64_t> decimal_scaled(const Bcd16_5& bytes) noexcept {
-    if (bytes[0] != 5 || bytes[1] != 16) {
+inline std::optional<ExactDecimal> decimal_value(const Bcd16_5& bytes) noexcept {
+    if (bytes[0] != cgate::kPlaza2D16_5FractionalDigits || bytes[1] != cgate::kPlaza2D16_5DecimalPrecision) {
         return std::nullopt;
     }
     const bool negative = (bytes[2] & 0x80U) != 0;
@@ -35,7 +41,13 @@ inline std::optional<std::int64_t> decimal_scaled(const Bcd16_5& bytes) noexcept
         return std::nullopt;
     }
     value /= 10;
-    return negative ? -value : value;
+    return ExactDecimal{.mantissa = negative ? -value : value,
+                        .scale = static_cast<std::int32_t>(cgate::kPlaza2D16_5FractionalDigits)};
+}
+
+inline std::optional<std::int64_t> decimal_scaled(const Bcd16_5& bytes) noexcept {
+    const auto value = decimal_value(bytes);
+    return value.has_value() ? std::optional<std::int64_t>{value->mantissa} : std::nullopt;
 }
 
 // Precondition: validate the complete wire record once before loading any fields.

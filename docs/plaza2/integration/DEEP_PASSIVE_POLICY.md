@@ -15,8 +15,8 @@ and exchange timestamps when supplied. Existing exact session-term binding still
 LifeNum/revision and transport generation. Deep-policy authority validates its reviewed candidate; immediately
 before publisher allocation/post, current terms must still match exactly and the current fresh BBO must retain
 at least 20 ticks of cushion. A safe BBO move may retain authority; a lost cushion invalidates it without moving
-the order. AGGR's internal scale differs from session decimal units: this boundary parses the exact textual
-values into scale 100000 and never mixes the two representations or uses double.
+the order. AGGR and session prices both use the generated SPECTRA d16.5 scale-5 contract at this boundary:
+this code parses exact values into scale 100000 and never uses double.
 
 A fill observed under this policy latches FIRST_ORDER_FILLED and disables subsequent Add authority for the
 owner even after epoch finish. Cancellation of an exact remainder remains explicit; no flatten or automatic

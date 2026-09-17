@@ -165,6 +165,7 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME", "1", 1);
 
         ::setenv("MOEX_FAKE_AGGR_CLEAR_ON_BOOTSTRAP", "1", 1);
+        ::setenv("MOEX_FAKE_AGGR_NEGATIVE_UNRELATED", "1", 1);
         Plaza2Aggr20MdRunner runner(make_config(fixture));
         const auto start = runner.start();
         require(start.ok, "AGGR20 runner start should succeed with fake runtime and all arm flags");
@@ -186,12 +187,15 @@ int main(int argc, char** argv) {
         require(health.stream_created && health.stream_opened, "AGGR20 stream should be created and opened");
         require(health.stream_online && health.stream_snapshot_complete,
                 "AGGR20 stream should become online and snapshot-complete");
-        require(health.snapshot.row_count == 2, "AGGR20 fake runtime should emit two rows");
-        require(health.snapshot.instrument_count == 1, "AGGR20 fake runtime instrument count mismatch");
+        require(health.snapshot.row_count == 3, "AGGR20 fake runtime should emit the unrelated negative row");
+        require(health.snapshot.instrument_count == 2, "AGGR20 fake runtime instrument count mismatch");
         require(health.snapshot.top_bid.has_value() && health.snapshot.top_bid->price == "102500",
                 "AGGR20 fake top bid mismatch");
         require(health.snapshot.top_ask.has_value() && health.snapshot.top_ask->price == "102750",
                 "AGGR20 fake top ask mismatch");
+        require(health.snapshot.top_bid->price_scaled == 10'250'000'000LL &&
+                    health.snapshot.top_ask->price_scaled == 10'275'000'000LL,
+                "AGGR20 fake d16.5 mantissas must use scale 100000");
         require(contains_log(runner.operator_log_lines(), "event=OPEN"),
                 "AGGR20 operator log must retain native OPEN event");
         require(contains_log(runner.operator_log_lines(), "event=LIFENUM"),
@@ -212,6 +216,8 @@ int main(int argc, char** argv) {
 
         const auto stop = runner.stop();
         require(stop.ok, "AGGR20 runner stop should succeed");
+
+        ::unsetenv("MOEX_FAKE_AGGR_NEGATIVE_UNRELATED");
 
         require(!runner.health_snapshot().ready && runner.health_snapshot().snapshot.row_count == 0,
                 "stop invalidates visible AGGR book and readiness");

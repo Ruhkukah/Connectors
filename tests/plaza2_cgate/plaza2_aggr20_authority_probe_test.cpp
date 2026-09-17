@@ -86,6 +86,15 @@ void test_attempt_classification() {
     moex::plaza2::test::require(plaza2_aggr20_authority_probe_classify_attempts(one_failed) ==
                                     Plaza2Aggr20AuthorityProbeResult::Inconclusive,
                                 "an attempt error must produce INCONCLUSIVE");
+
+    auto callback_failed = make_complete_attempt(true);
+    callback_failed.listener_last_callback_error = Plaza2Error{.code = Plaza2ErrorCode::DecodeFailed,
+                                                               .runtime_code = 0,
+                                                               .message = "synthetic listener callback decode failure"};
+    moex::plaza2::test::require(
+        plaza2_aggr20_authority_probe_classify_attempts(std::vector<Plaza2Aggr20AuthorityProbeAttempt>{
+            std::move(callback_failed), make_complete_attempt(true)}) == Plaza2Aggr20AuthorityProbeResult::Inconclusive,
+        "a preserved listener callback error must make the overall experiment INCONCLUSIVE");
     moex::plaza2::test::require(plaza2_aggr20_authority_probe_classify_attempts({make_complete_attempt(true)}) ==
                                     Plaza2Aggr20AuthorityProbeResult::Inconclusive,
                                 "a missing repeated attempt must produce INCONCLUSIVE");

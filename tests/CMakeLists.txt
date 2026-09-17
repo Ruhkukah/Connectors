@@ -594,6 +594,7 @@ target_link_libraries(plaza2_fake_cgate_runtime
         moex_plaza2_cgate_metadata)
 target_include_directories(plaza2_fake_cgate_runtime
     PRIVATE
+        "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/include"
         "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/generated")
 target_compile_features(plaza2_fake_cgate_runtime PUBLIC cxx_std_20)
 set_target_properties(plaza2_fake_cgate_runtime PROPERTIES

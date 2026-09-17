@@ -14,7 +14,7 @@ inline std::string first_order_deep_passive_sha256() {
     return plaza2::cgate::plaza2_sha256_hex(kFirstOrderDeepPassiveDefinition);
 }
 struct DeepPassiveBboBinding {
-    std::int64_t bid_units{}, ask_units{}; // exact scale=100000, not AGGR's internal scale
+    std::int64_t bid_units{}, ask_units{}; // exact SPECTRA d16.5 scale=100000
     std::uint64_t repl_id{};
     std::int64_t repl_rev{}, committed_monotonic_ns{};
     std::uint64_t exchange_moment{}, exchange_moment_ns{};

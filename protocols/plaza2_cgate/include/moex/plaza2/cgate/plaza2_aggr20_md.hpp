@@ -24,8 +24,8 @@ namespace moex::plaza2::cgate {
 
 struct Plaza2Aggr20Level {
     std::int64_t isin_id{0};
-    // AGGR20 keeps six decimal places internally. Session/order values use
-    // scale 1e5 and must not be compared by mixing the two unit systems.
+    // FORTS_AGGR##_REPL.orders_aggr.price is generated SPECTRA d16.5 and is
+    // normalized to signed integer units at scale 1e5.
     std::int64_t price_scaled{0};
     std::int64_t volume{0};
     std::int32_t dir{0};
@@ -52,6 +52,25 @@ struct Plaza2Aggr20Snapshot {
     std::chrono::steady_clock::time_point committed_at{};
     std::uint64_t exchange_moment{0};
     std::uint64_t exchange_moment_ns{0};
+};
+
+// Bounded receipt of the first AGGR d16.5 row that cannot be converted. The
+// raw field bytes are callback-scoped at the runtime boundary, so this record
+// owns only the small diagnostic strings needed after the callback returns.
+struct Plaza2Aggr20DecimalRejection {
+    std::int64_t repl_id{0};
+    std::int64_t repl_rev{0};
+    std::int64_t repl_act{0};
+    std::int64_t isin_id{0};
+    std::int64_t dir{0};
+    std::int64_t volume{0};
+    std::string decoded_field_kind;
+    std::string cg_getstr_text;
+    std::size_t text_byte_length{0};
+    std::string raw_bcd_bytes_hex;
+    std::optional<std::int64_t> bcd_mantissa;
+    std::optional<std::int32_t> bcd_scale;
+    unsigned generated_expected_scale{kPlaza2D16_5FractionalDigits};
 };
 
 struct Plaza2Aggr20InstrumentSnapshot {
@@ -196,6 +215,9 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
     [[nodiscard]] const Plaza2Error& last_recovery_error() const noexcept {
         return last_recovery_error_;
     }
+    [[nodiscard]] const std::optional<Plaza2Aggr20DecimalRejection>& first_decimal_rejection() const noexcept {
+        return first_decimal_rejection_;
+    }
     [[nodiscard]] std::string_view recovery_failure_classification() const noexcept {
         return recovery_failure_classification_;
     }
@@ -213,6 +235,7 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
   private:
     void invalidate(bool request_reopen, bool transport_active) noexcept;
     [[nodiscard]] bool accepts_session(std::int32_t sess_id) const noexcept;
+    void capture_decimal_rejection(const Plaza2ListenerEvent& event) noexcept;
     void trace_event(const Plaza2ListenerEvent& event, const Plaza2Aggr20AuthoritySnapshot& before,
                      std::string detail = {}) const;
     Plaza2Aggr20BookProjector& projector_;
@@ -241,6 +264,9 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
     std::uint32_t reopen_retry_count_{0};
     std::optional<Plaza2Error> first_recovery_error_;
     std::optional<Plaza2Error> current_recovery_error_;
+    // Deliberately survives callback-error reset so the first bad public row
+    // remains available to the authority evidence writer.
+    std::optional<Plaza2Aggr20DecimalRejection> first_decimal_rejection_;
     std::function<void(std::string)> event_trace_;
 };
 

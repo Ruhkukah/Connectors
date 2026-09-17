@@ -318,11 +318,29 @@ bool has_ready_after_online(const std::vector<Plaza2Aggr20AuthorityProbeSysEvent
 
 bool attempt_completed_cleanly(const Plaza2Aggr20AuthorityProbeAttempt& attempt) noexcept {
     return attempt.listener_created && attempt.listener_opened && attempt.online && attempt.snapshot_complete &&
-           attempt.error.empty();
+           !attempt.listener_last_callback_error.has_value() && attempt.error.empty();
 }
 
 std::string attempt_name(std::uint32_t ordinal) {
     return ordinal == 1 ? "INITIAL_OPEN" : "LISTENER_REOPEN";
+}
+
+void capture_listener_callback_error(Plaza2Listener& listener, Plaza2Aggr20AuthorityProbeAttempt& attempt) {
+    const auto& callback_error = listener.last_callback_error();
+    if (!callback_error) {
+        return;
+    }
+
+    const bool changed = !attempt.listener_last_callback_error.has_value() ||
+                         attempt.listener_last_callback_error->code != callback_error.code ||
+                         attempt.listener_last_callback_error->runtime_code != callback_error.runtime_code ||
+                         attempt.listener_last_callback_error->message != callback_error.message;
+    attempt.listener_last_callback_error = callback_error;
+    if (changed) {
+        attempt.event_trace.push_back(
+            "event=LISTENER_CALLBACK_ERROR code=" + std::to_string(static_cast<std::uint32_t>(callback_error.code)) +
+            " runtime_code=" + std::to_string(callback_error.runtime_code) + " message=" + callback_error.message);
+    }
 }
 
 Plaza2Aggr20AuthorityProbeAttempt
@@ -341,6 +359,10 @@ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeC
     bridge.set_event_trace([&attempt](std::string line) { attempt.event_trace.push_back(std::move(line)); });
 
     Plaza2Listener listener;
+    const auto capture_decimal_rejection = [&]() {
+        if (!attempt.first_decimal_rejection.has_value() && bridge.first_decimal_rejection().has_value())
+            attempt.first_decimal_rejection = bridge.first_decimal_rejection();
+    };
     if (const auto error = listener.create(connection, StreamCode::kFortsAggrRepl, aggr_settings, &handler); error) {
         attempt.error = error.message;
         return attempt;
@@ -351,15 +373,21 @@ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeC
     } else {
         attempt.listener_opened = true;
     }
+    capture_listener_callback_error(listener, attempt);
+    capture_decimal_rejection();
 
     if (attempt.error.empty()) {
         const auto deadline = std::chrono::steady_clock::now() + config.observation_window;
         while (std::chrono::steady_clock::now() < deadline) {
             std::uint32_t runtime_code = 0;
             if (const auto error = connection.process(config.process_timeout_ms, &runtime_code); error) {
+                capture_listener_callback_error(listener, attempt);
+                capture_decimal_rejection();
                 attempt.error = error.message + "; runtime_code=" + std::to_string(runtime_code);
                 break;
             }
+            capture_listener_callback_error(listener, attempt);
+            capture_decimal_rejection();
             if (bridge.online() && bridge.snapshot_complete() &&
                 has_ready_after_online(handler.records(), selection.sess_id)) {
                 break;
@@ -369,6 +397,8 @@ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeC
             }
         }
     }
+    capture_listener_callback_error(listener, attempt);
+    capture_decimal_rejection();
 
     attempt.sys_events = handler.records();
     attempt.online = bridge.online();
@@ -381,12 +411,17 @@ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeC
     if (const auto error = listener.close(); error && attempt.error.empty()) {
         attempt.error = error.message;
     }
+    capture_listener_callback_error(listener, attempt);
+    capture_decimal_rejection();
     attempt.event_trace.push_back("probe=listener_close_complete attempt=" + std::to_string(ordinal) +
                                   " name=" + attempt.name);
     attempt.event_trace.push_back("probe=listener_destroy attempt=" + std::to_string(ordinal) +
                                   " name=" + attempt.name);
-    if (const auto error = listener.destroy(); error && attempt.error.empty()) {
-        attempt.error = error.message;
+    const auto destroy_error = listener.destroy();
+    if (destroy_error && attempt.error.empty()) {
+        capture_listener_callback_error(listener, attempt);
+        capture_decimal_rejection();
+        attempt.error = destroy_error.message;
     }
     attempt.event_trace.push_back("probe=listener_destroy_complete attempt=" + std::to_string(ordinal) +
                                   " name=" + attempt.name);

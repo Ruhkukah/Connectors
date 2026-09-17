@@ -21,8 +21,11 @@ using moex::plaza2::cgate::Plaza2Aggr20AuthorityProbe;
 using moex::plaza2::cgate::Plaza2Aggr20AuthorityProbeConfig;
 using moex::plaza2::cgate::Plaza2Aggr20AuthorityProbeReport;
 using moex::plaza2::cgate::Plaza2Aggr20AuthorityProbeResult;
+using moex::plaza2::cgate::Plaza2Aggr20DecimalRejection;
 using moex::plaza2::cgate::Plaza2CredentialSource;
 using moex::plaza2::cgate::Plaza2Environment;
+using moex::plaza2::cgate::Plaza2Error;
+using moex::plaza2::cgate::Plaza2ErrorCode;
 
 struct ProbeArgs {
     std::string profile_id;
@@ -349,6 +352,80 @@ void write_optional_bool(std::ostream& out, const std::optional<bool>& value) {
     write_bool(out, *value);
 }
 
+std::string_view error_code_name(Plaza2ErrorCode code) {
+    switch (code) {
+    case Plaza2ErrorCode::None:
+        return "None";
+    case Plaza2ErrorCode::InvalidConfiguration:
+        return "InvalidConfiguration";
+    case Plaza2ErrorCode::MissingRuntime:
+        return "MissingRuntime";
+    case Plaza2ErrorCode::SymbolLoadFailed:
+        return "SymbolLoadFailed";
+    case Plaza2ErrorCode::AdapterState:
+        return "AdapterState";
+    case Plaza2ErrorCode::RuntimeCallFailed:
+        return "RuntimeCallFailed";
+    case Plaza2ErrorCode::DecodeFailed:
+        return "DecodeFailed";
+    case Plaza2ErrorCode::CallbackFailed:
+        return "CallbackFailed";
+    case Plaza2ErrorCode::ProbeIncompatible:
+        return "ProbeIncompatible";
+    case Plaza2ErrorCode::UnknownRuntimeResult:
+        return "UnknownRuntimeResult";
+    case Plaza2ErrorCode::SendDisabledPreSendPhase:
+        return "SendDisabledPreSendPhase";
+    }
+    return "Unknown";
+}
+
+void write_error(std::ostream& out, const Plaza2Error& error) {
+    out << "{\"code\":" << static_cast<std::uint32_t>(error.code) << ",\"code_name\":";
+    write_string(out, error_code_name(error.code));
+    out << ",\"runtime_code\":" << error.runtime_code << ",\"message\":";
+    write_string(out, error.message);
+    out << '}';
+}
+
+void write_optional_error(std::ostream& out, const std::optional<Plaza2Error>& error) {
+    if (!error.has_value()) {
+        out << "null";
+        return;
+    }
+    write_error(out, *error);
+}
+
+void write_decimal_rejection(std::ostream& out, const Plaza2Aggr20DecimalRejection& receipt) {
+    out << "{\"repl_id\":" << receipt.repl_id << ",\"repl_rev\":" << receipt.repl_rev
+        << ",\"repl_act\":" << receipt.repl_act << ",\"isin_id\":" << receipt.isin_id << ",\"dir\":" << receipt.dir
+        << ",\"volume\":" << receipt.volume << ",\"decoded_field_kind\":";
+    write_string(out, receipt.decoded_field_kind);
+    out << ",\"cg_getstr_text\":";
+    write_string(out, receipt.cg_getstr_text);
+    out << ",\"text_byte_length\":" << receipt.text_byte_length << ",\"raw_d16_5_bcd_hex\":";
+    write_string(out, receipt.raw_bcd_bytes_hex);
+    out << ",\"bcd_mantissa\":";
+    if (receipt.bcd_mantissa.has_value())
+        out << *receipt.bcd_mantissa;
+    else
+        out << "null";
+    out << ",\"bcd_scale\":";
+    if (receipt.bcd_scale.has_value())
+        out << *receipt.bcd_scale;
+    else
+        out << "null";
+    out << ",\"generated_expected_scale\":" << receipt.generated_expected_scale << '}';
+}
+
+void write_optional_decimal_rejection(std::ostream& out, const std::optional<Plaza2Aggr20DecimalRejection>& receipt) {
+    if (!receipt.has_value()) {
+        out << "null";
+        return;
+    }
+    write_decimal_rejection(out, *receipt);
+}
+
 std::string_view optional_bool_text(const std::optional<bool>& value) {
     if (!value.has_value()) {
         return "unavailable";
@@ -441,6 +518,10 @@ void write_report_json(const fs::path& path, const Plaza2Aggr20AuthorityProbeRep
         write_bool(out, attempt.experiment_complete);
         out << ",\"error\": ";
         write_string(out, attempt.error);
+        out << ",\"listener_last_callback_error\":";
+        write_optional_error(out, attempt.listener_last_callback_error);
+        out << ",\"first_decimal_rejection\":";
+        write_optional_decimal_rejection(out, attempt.first_decimal_rejection);
         out << ",\"sys_events\":[\n";
         for (std::size_t event_index = 0; event_index < attempt.sys_events.size(); ++event_index) {
             const auto& event = attempt.sys_events[event_index];
@@ -510,6 +591,34 @@ void write_report_log(const fs::path& path, const Plaza2Aggr20AuthorityProbeRepo
         }
         for (const auto& line : attempt.event_trace) {
             out << line << '\n';
+        }
+        if (attempt.listener_last_callback_error.has_value()) {
+            const auto& callback_error = *attempt.listener_last_callback_error;
+            out << "listener_last_callback_error=code=" << error_code_name(callback_error.code) << "("
+                << static_cast<std::uint32_t>(callback_error.code) << ")"
+                << " runtime_code=" << callback_error.runtime_code << " message=" << callback_error.message << '\n';
+        } else {
+            out << "listener_last_callback_error=none\n";
+        }
+        if (attempt.first_decimal_rejection.has_value()) {
+            const auto& receipt = *attempt.first_decimal_rejection;
+            out << "first_decimal_rejection repl_id=" << receipt.repl_id << " repl_rev=" << receipt.repl_rev
+                << " repl_act=" << receipt.repl_act << " isin_id=" << receipt.isin_id << " dir=" << receipt.dir
+                << " volume=" << receipt.volume << " decoded_field_kind=" << receipt.decoded_field_kind
+                << " text_byte_length=" << receipt.text_byte_length
+                << " raw_d16_5_bcd_hex=" << receipt.raw_bcd_bytes_hex << " bcd_mantissa=";
+            if (receipt.bcd_mantissa.has_value())
+                out << *receipt.bcd_mantissa;
+            else
+                out << "unavailable";
+            out << " bcd_scale=";
+            if (receipt.bcd_scale.has_value())
+                out << *receipt.bcd_scale;
+            else
+                out << "unavailable";
+            out << " generated_expected_scale=" << receipt.generated_expected_scale << " cg_getstr_text_escaped=";
+            write_string(out, receipt.cg_getstr_text);
+            out << '\n';
         }
         if (!attempt.error.empty()) {
             out << "attempt_error=" << attempt.error << '\n';
