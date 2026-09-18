@@ -1,0 +1,23 @@
+2026-09-18T09:03:46+03:00
+router_pid=3704670
+3704670 /home/azgaldov/moex/vendor/cgate-test-9.9.1853/staged/deb-root/opt/moex/cgate/bin/P2MQRouter-229.123.0.7233 /ini:/home/azgaldov/moex/vendor/cgate-test-9.9.1853/runtime/t1.ini
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
+LISTEN 0      5            0.0.0.0:4101      0.0.0.0:*          
+/home/azgaldov/moex/vendor/cgate-test-9.9.1853/runtime/log/router.t1.4.log
+total 0
+lr-x------ 1 azgaldov azgaldov 64 Sep 15 04:07 0 -> pipe:[47654723]
+l-wx------ 1 azgaldov azgaldov 64 Sep 15 04:07 1 -> /home/azgaldov/moex/qualification/20260911-router-pr55/control/router.stdout
+lr-x------ 1 azgaldov azgaldov 64 Sep 11 12:04 10 -> /p2mqueue_lrpcqserv_4101
+lr-x------ 1 azgaldov azgaldov 64 Sep 11 12:04 11 -> /p2mqueue_P2Repl_FastLink_tgfzcm_FZ0001o
+lrwx------ 1 azgaldov azgaldov 64 Sep 11 12:04 12 -> socket:[48609467]
+lrwx------ 1 azgaldov azgaldov 64 Sep 11 12:04 13 -> socket:[48608426]
+lrwx------ 1 azgaldov azgaldov 64 Sep 11 12:04 14 -> socket:[48609469]
+lrwx------ 1 azgaldov azgaldov 64 Sep 13 22:13 16 -> socket:[48608437]
+l-wx------ 1 azgaldov azgaldov 64 Sep 15 04:07 2 -> /home/azgaldov/moex/qualification/20260911-router-pr55/control/router.stderr
+lrwx------ 1 azgaldov azgaldov 64 Sep 15 04:07 3 -> anon_inode:[timerfd]
+lrwx------ 1 azgaldov azgaldov 64 Sep 15 04:07 4 -> /dev/shm/P2Trace_Shmem_3_b3d5809ac5919422_3704670
+l-wx------ 1 azgaldov azgaldov 64 Sep 15 04:07 5 -> /home/azgaldov/moex/vendor/cgate-test-9.9.1853/runtime/log/router.t1.4.log
+lrwx------ 1 azgaldov azgaldov 64 Sep 15 04:07 6 -> anon_inode:[eventfd]
+lrwx------ 1 azgaldov azgaldov 64 Sep 11 12:04 7 -> anon_inode:[eventpoll]
+lrwx------ 1 azgaldov azgaldov 64 Sep 11 12:04 8 -> anon_inode:[timerfd]
+lrwx------ 1 azgaldov azgaldov 64 Sep 11 12:04 9 -> socket:[47656628]

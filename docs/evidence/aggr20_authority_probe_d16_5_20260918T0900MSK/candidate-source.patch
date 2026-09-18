@@ -1,0 +1,1232 @@
+diff --git a/apps/plaza2_aggr20_authority_probe.cpp b/apps/plaza2_aggr20_authority_probe.cpp
+index eeb2e09..448fd29 100644
+--- a/apps/plaza2_aggr20_authority_probe.cpp
++++ b/apps/plaza2_aggr20_authority_probe.cpp
+@@ -21,8 +21,11 @@ using moex::plaza2::cgate::Plaza2Aggr20AuthorityProbe;
+ using moex::plaza2::cgate::Plaza2Aggr20AuthorityProbeConfig;
+ using moex::plaza2::cgate::Plaza2Aggr20AuthorityProbeReport;
+ using moex::plaza2::cgate::Plaza2Aggr20AuthorityProbeResult;
++using moex::plaza2::cgate::Plaza2Aggr20DecimalRejection;
+ using moex::plaza2::cgate::Plaza2CredentialSource;
+ using moex::plaza2::cgate::Plaza2Environment;
++using moex::plaza2::cgate::Plaza2Error;
++using moex::plaza2::cgate::Plaza2ErrorCode;
+ 
+ struct ProbeArgs {
+     std::string profile_id;
+@@ -349,6 +352,80 @@ void write_optional_bool(std::ostream& out, const std::optional<bool>& value) {
+     write_bool(out, *value);
+ }
+ 
++std::string_view error_code_name(Plaza2ErrorCode code) {
++    switch (code) {
++    case Plaza2ErrorCode::None:
++        return "None";
++    case Plaza2ErrorCode::InvalidConfiguration:
++        return "InvalidConfiguration";
++    case Plaza2ErrorCode::MissingRuntime:
++        return "MissingRuntime";
++    case Plaza2ErrorCode::SymbolLoadFailed:
++        return "SymbolLoadFailed";
++    case Plaza2ErrorCode::AdapterState:
++        return "AdapterState";
++    case Plaza2ErrorCode::RuntimeCallFailed:
++        return "RuntimeCallFailed";
++    case Plaza2ErrorCode::DecodeFailed:
++        return "DecodeFailed";
++    case Plaza2ErrorCode::CallbackFailed:
++        return "CallbackFailed";
++    case Plaza2ErrorCode::ProbeIncompatible:
++        return "ProbeIncompatible";
++    case Plaza2ErrorCode::UnknownRuntimeResult:
++        return "UnknownRuntimeResult";
++    case Plaza2ErrorCode::SendDisabledPreSendPhase:
++        return "SendDisabledPreSendPhase";
++    }
++    return "Unknown";
++}
++
++void write_error(std::ostream& out, const Plaza2Error& error) {
++    out << "{\"code\":" << static_cast<std::uint32_t>(error.code) << ",\"code_name\":";
++    write_string(out, error_code_name(error.code));
++    out << ",\"runtime_code\":" << error.runtime_code << ",\"message\":";
++    write_string(out, error.message);
++    out << '}';
++}
++
++void write_optional_error(std::ostream& out, const std::optional<Plaza2Error>& error) {
++    if (!error.has_value()) {
++        out << "null";
++        return;
++    }
++    write_error(out, *error);
++}
++
++void write_decimal_rejection(std::ostream& out, const Plaza2Aggr20DecimalRejection& receipt) {
++    out << "{\"repl_id\":" << receipt.repl_id << ",\"repl_rev\":" << receipt.repl_rev
++        << ",\"repl_act\":" << receipt.repl_act << ",\"isin_id\":" << receipt.isin_id << ",\"dir\":" << receipt.dir
++        << ",\"volume\":" << receipt.volume << ",\"decoded_field_kind\":";
++    write_string(out, receipt.decoded_field_kind);
++    out << ",\"cg_getstr_text\":";
++    write_string(out, receipt.cg_getstr_text);
++    out << ",\"text_byte_length\":" << receipt.text_byte_length << ",\"raw_d16_5_bcd_hex\":";
++    write_string(out, receipt.raw_bcd_bytes_hex);
++    out << ",\"bcd_mantissa\":";
++    if (receipt.bcd_mantissa.has_value())
++        out << *receipt.bcd_mantissa;
++    else
++        out << "null";
++    out << ",\"bcd_scale\":";
++    if (receipt.bcd_scale.has_value())
++        out << *receipt.bcd_scale;
++    else
++        out << "null";
++    out << ",\"generated_expected_scale\":" << receipt.generated_expected_scale << '}';
++}
++
++void write_optional_decimal_rejection(std::ostream& out, const std::optional<Plaza2Aggr20DecimalRejection>& receipt) {
++    if (!receipt.has_value()) {
++        out << "null";
++        return;
++    }
++    write_decimal_rejection(out, *receipt);
++}
++
+ std::string_view optional_bool_text(const std::optional<bool>& value) {
+     if (!value.has_value()) {
+         return "unavailable";
+@@ -441,6 +518,10 @@ void write_report_json(const fs::path& path, const Plaza2Aggr20AuthorityProbeRep
+         write_bool(out, attempt.experiment_complete);
+         out << ",\"error\": ";
+         write_string(out, attempt.error);
++        out << ",\"listener_last_callback_error\":";
++        write_optional_error(out, attempt.listener_last_callback_error);
++        out << ",\"first_decimal_rejection\":";
++        write_optional_decimal_rejection(out, attempt.first_decimal_rejection);
+         out << ",\"sys_events\":[\n";
+         for (std::size_t event_index = 0; event_index < attempt.sys_events.size(); ++event_index) {
+             const auto& event = attempt.sys_events[event_index];
+@@ -511,6 +592,34 @@ void write_report_log(const fs::path& path, const Plaza2Aggr20AuthorityProbeRepo
+         for (const auto& line : attempt.event_trace) {
+             out << line << '\n';
+         }
++        if (attempt.listener_last_callback_error.has_value()) {
++            const auto& callback_error = *attempt.listener_last_callback_error;
++            out << "listener_last_callback_error=code=" << error_code_name(callback_error.code) << "("
++                << static_cast<std::uint32_t>(callback_error.code) << ")"
++                << " runtime_code=" << callback_error.runtime_code << " message=" << callback_error.message << '\n';
++        } else {
++            out << "listener_last_callback_error=none\n";
++        }
++        if (attempt.first_decimal_rejection.has_value()) {
++            const auto& receipt = *attempt.first_decimal_rejection;
++            out << "first_decimal_rejection repl_id=" << receipt.repl_id << " repl_rev=" << receipt.repl_rev
++                << " repl_act=" << receipt.repl_act << " isin_id=" << receipt.isin_id << " dir=" << receipt.dir
++                << " volume=" << receipt.volume << " decoded_field_kind=" << receipt.decoded_field_kind
++                << " text_byte_length=" << receipt.text_byte_length
++                << " raw_d16_5_bcd_hex=" << receipt.raw_bcd_bytes_hex << " bcd_mantissa=";
++            if (receipt.bcd_mantissa.has_value())
++                out << *receipt.bcd_mantissa;
++            else
++                out << "unavailable";
++            out << " bcd_scale=";
++            if (receipt.bcd_scale.has_value())
++                out << *receipt.bcd_scale;
++            else
++                out << "unavailable";
++            out << " generated_expected_scale=" << receipt.generated_expected_scale << " cg_getstr_text_escaped=";
++            write_string(out, receipt.cg_getstr_text);
++            out << '\n';
++        }
+         if (!attempt.error.empty()) {
+             out << "attempt_error=" << attempt.error << '\n';
+         }
+diff --git a/connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_deep_passive.hpp b/connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_deep_passive.hpp
+index 70fff72..6427058 100644
+--- a/connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_deep_passive.hpp
++++ b/connectors/plaza2_trade/include/moex/plaza2_trade/plaza2_deep_passive.hpp
+@@ -14,7 +14,7 @@ inline std::string first_order_deep_passive_sha256() {
+     return plaza2::cgate::plaza2_sha256_hex(kFirstOrderDeepPassiveDefinition);
+ }
+ struct DeepPassiveBboBinding {
+-    std::int64_t bid_units{}, ask_units{}; // exact scale=100000, not AGGR's internal scale
++    std::int64_t bid_units{}, ask_units{}; // exact SPECTRA d16.5 scale=100000
+     std::uint64_t repl_id{};
+     std::int64_t repl_rev{}, committed_monotonic_ns{};
+     std::uint64_t exchange_moment{}, exchange_moment_ns{};
+diff --git a/docs/plaza2/AGGR_SIGNED_PRICE_EXECUTION_FOLLOW_UP.md b/docs/plaza2/AGGR_SIGNED_PRICE_EXECUTION_FOLLOW_UP.md
+new file mode 100644
+index 0000000..095644f
+--- /dev/null
++++ b/docs/plaza2/AGGR_SIGNED_PRICE_EXECUTION_FOLLOW_UP.md
+@@ -0,0 +1,25 @@
++# Signed AGGR price execution follow-up
++
++The read-only AGGR20 correction treats `orders_aggr.price` as the generated
++SPECTRA `d16.5` contract: precision 16, scale 5, and exact signed integer units
++at scale `100000`. The decoder, fake CGate runtime, and authority probe may
++therefore preserve negative, zero, and positive finite values without
++rounding. This does not authorize an order, publisher, or command API.
++
++Execution-side support remains a separate qualification item. Before any
++signed-price order path is considered, reconcile the following against fresh
++REFDATA and the command schema for the specific instrument and session:
++
++1. Whether the venue/session permits negative or zero limit prices, and which
++   bounds and tick-size rules apply.
++2. Exact signed `d16.5` parsing and serialization through the order command,
++   including overflow and scale guards.
++3. Side-aware tick rounding around zero, passive/non-marketable checks, and
++   deep-passive boundary calculations for negative prices.
++4. Risk, margin, P&L, persistence, logging, and operator-review behavior for
++   signed prices.
++5. A separately authorized TEST execution canary with no automatic send or
++   production promotion.
++
++The current execution-side positive-price assumptions are intentionally not
++changed by this read-only foundation correction.
+diff --git a/docs/plaza2/integration/DEEP_PASSIVE_POLICY.md b/docs/plaza2/integration/DEEP_PASSIVE_POLICY.md
+index 348fe49..d4845e5 100644
+--- a/docs/plaza2/integration/DEEP_PASSIVE_POLICY.md
++++ b/docs/plaza2/integration/DEEP_PASSIVE_POLICY.md
+@@ -15,8 +15,8 @@ and exchange timestamps when supplied. Existing exact session-term binding still
+ LifeNum/revision and transport generation. Deep-policy authority validates its reviewed candidate; immediately
+ before publisher allocation/post, current terms must still match exactly and the current fresh BBO must retain
+ at least 20 ticks of cushion. A safe BBO move may retain authority; a lost cushion invalidates it without moving
+-the order. AGGR's internal scale differs from session decimal units: this boundary parses the exact textual
+-values into scale 100000 and never mixes the two representations or uses double.
++the order. AGGR and session prices both use the generated SPECTRA d16.5 scale-5 contract at this boundary:
++this code parses exact values into scale 100000 and never uses double.
+ 
+ A fill observed under this policy latches FIRST_ORDER_FILLED and disables subsequent Add authority for the
+ owner even after epoch finish. Cancellation of an exact remainder remains explicit; no flatten or automatic
+diff --git a/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_aggr20_authority_probe.hpp b/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_aggr20_authority_probe.hpp
+index 62021e5..6cb7b2c 100644
+--- a/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_aggr20_authority_probe.hpp
++++ b/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_aggr20_authority_probe.hpp
+@@ -62,6 +62,8 @@ struct Plaza2Aggr20AuthorityProbeAttempt {
+     bool experiment_complete{false};
+     std::vector<Plaza2Aggr20AuthorityProbeSysEvent> sys_events;
+     std::vector<std::string> event_trace;
++    std::optional<Plaza2Error> listener_last_callback_error;
++    std::optional<Plaza2Aggr20DecimalRejection> first_decimal_rejection;
+     std::string error;
+ };
+ 
+diff --git a/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_aggr20_md.hpp b/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_aggr20_md.hpp
+index 062bbb4..ec78f0e 100644
+--- a/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_aggr20_md.hpp
++++ b/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_aggr20_md.hpp
+@@ -24,8 +24,8 @@ namespace moex::plaza2::cgate {
+ 
+ struct Plaza2Aggr20Level {
+     std::int64_t isin_id{0};
+-    // AGGR20 keeps six decimal places internally. Session/order values use
+-    // scale 1e5 and must not be compared by mixing the two unit systems.
++    // FORTS_AGGR##_REPL.orders_aggr.price is generated SPECTRA d16.5 and is
++    // normalized to signed integer units at scale 1e5.
+     std::int64_t price_scaled{0};
+     std::int64_t volume{0};
+     std::int32_t dir{0};
+@@ -54,6 +54,25 @@ struct Plaza2Aggr20Snapshot {
+     std::uint64_t exchange_moment_ns{0};
+ };
+ 
++// Bounded receipt of the first AGGR d16.5 row that cannot be converted. The
++// raw field bytes are callback-scoped at the runtime boundary, so this record
++// owns only the small diagnostic strings needed after the callback returns.
++struct Plaza2Aggr20DecimalRejection {
++    std::int64_t repl_id{0};
++    std::int64_t repl_rev{0};
++    std::int64_t repl_act{0};
++    std::int64_t isin_id{0};
++    std::int64_t dir{0};
++    std::int64_t volume{0};
++    std::string decoded_field_kind;
++    std::string cg_getstr_text;
++    std::size_t text_byte_length{0};
++    std::string raw_bcd_bytes_hex;
++    std::optional<std::int64_t> bcd_mantissa;
++    std::optional<std::int32_t> bcd_scale;
++    unsigned generated_expected_scale{kPlaza2D16_5FractionalDigits};
++};
++
+ struct Plaza2Aggr20InstrumentSnapshot {
+     std::int64_t isin_id{0};
+     std::size_t row_count{0};
+@@ -196,6 +215,9 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
+     [[nodiscard]] const Plaza2Error& last_recovery_error() const noexcept {
+         return last_recovery_error_;
+     }
++    [[nodiscard]] const std::optional<Plaza2Aggr20DecimalRejection>& first_decimal_rejection() const noexcept {
++        return first_decimal_rejection_;
++    }
+     [[nodiscard]] std::string_view recovery_failure_classification() const noexcept {
+         return recovery_failure_classification_;
+     }
+@@ -213,6 +235,7 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
+   private:
+     void invalidate(bool request_reopen, bool transport_active) noexcept;
+     [[nodiscard]] bool accepts_session(std::int32_t sess_id) const noexcept;
++    void capture_decimal_rejection(const Plaza2ListenerEvent& event) noexcept;
+     void trace_event(const Plaza2ListenerEvent& event, const Plaza2Aggr20AuthoritySnapshot& before,
+                      std::string detail = {}) const;
+     Plaza2Aggr20BookProjector& projector_;
+@@ -241,6 +264,9 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
+     std::uint32_t reopen_retry_count_{0};
+     std::optional<Plaza2Error> first_recovery_error_;
+     std::optional<Plaza2Error> current_recovery_error_;
++    // Deliberately survives callback-error reset so the first bad public row
++    // remains available to the authority evidence writer.
++    std::optional<Plaza2Aggr20DecimalRejection> first_decimal_rejection_;
+     std::function<void(std::string)> event_trace_;
+ };
+ 
+diff --git a/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_fixed_point.hpp b/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_fixed_point.hpp
+index 8991875..341fcd6 100644
+--- a/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_fixed_point.hpp
++++ b/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_fixed_point.hpp
+@@ -7,18 +7,19 @@
+ 
+ namespace moex::plaza2::cgate {
+ 
+-// Parse an exact decimal into signed integer units.  The scale is explicit at
+-// every call site because the CGate AGGR representation (10^6) and negotiated
+-// session/order representation (10^5) are different contracts.
++// Parse an exact decimal into signed integer units. The scale is explicit at
++// every call site because each CGate decimal descriptor is its own contract.
+ //
+ // The parser accepts an optional leading sign only when allow_sign is true,
+ // requires digits on both sides of a decimal point when the point is present,
+-// rejects excess precision and rejects all arithmetic overflow.  It never
+-// rounds, truncates, skips characters, or passes through a floating-point
+-// conversion.
++// rejects excess precision and rejects all arithmetic overflow. A non-zero
++// decimal_precision also enforces the descriptor's total precision after
++// padding to the requested scale. It never rounds, truncates, skips
++// characters, or passes through a floating-point conversion.
+ [[nodiscard]] inline std::optional<std::int64_t> parse_fixed_point(std::string_view text, unsigned fractional_digits,
+-                                                                   bool allow_sign) noexcept {
+-    if (text.empty() || fractional_digits > 18) {
++                                                                   bool allow_sign,
++                                                                   unsigned decimal_precision = 0) noexcept {
++    if (text.empty() || fractional_digits > 18 || (decimal_precision != 0 && decimal_precision < fractional_digits)) {
+         return std::nullopt;
+     }
+ 
+@@ -38,6 +39,7 @@ namespace moex::plaza2::cgate {
+                        (negative ? std::uint64_t{1} : std::uint64_t{0});
+     std::uint64_t magnitude = 0;
+     unsigned fractional = 0;
++    unsigned whole_digits = 0;
+     bool point = false;
+     bool whole_digit = false;
+     bool fraction_digit = false;
+@@ -60,6 +62,7 @@ namespace moex::plaza2::cgate {
+             fraction_digit = true;
+         } else {
+             whole_digit = true;
++            ++whole_digits;
+         }
+ 
+         const auto digit = static_cast<std::uint64_t>(character - '0');
+@@ -72,6 +75,9 @@ namespace moex::plaza2::cgate {
+     if (!whole_digit || (point && !fraction_digit)) {
+         return std::nullopt;
+     }
++    if (decimal_precision != 0 && whole_digits > decimal_precision - fractional_digits) {
++        return std::nullopt;
++    }
+ 
+     for (unsigned index = fractional; index < fractional_digits; ++index) {
+         if (magnitude > limit / 10U) {
+@@ -89,9 +95,20 @@ namespace moex::plaza2::cgate {
+     return static_cast<std::int64_t>(magnitude);
+ }
+ 
+-inline constexpr unsigned kPlaza2SessionFractionalDigits = 5;
+-inline constexpr unsigned kPlaza2Aggr20FractionalDigits = 6;
+-inline constexpr std::int64_t kPlaza2SessionPriceScale = 100'000;
+-inline constexpr std::int64_t kPlaza2Aggr20PriceScale = 1'000'000;
++// Generated SPECTRA metadata: d16.5 means precision 16 and scale 5.
++inline constexpr unsigned kPlaza2D16_5DecimalPrecision = 16;
++inline constexpr unsigned kPlaza2D16_5FractionalDigits = 5;
++inline constexpr std::int64_t kPlaza2D16_5PriceScale = 100'000;
++
++// Compatibility aliases retained for callers that name their source domain.
++// They must remain exact aliases of the generated d16.5 economic contract.
++inline constexpr unsigned kPlaza2SessionFractionalDigits = kPlaza2D16_5FractionalDigits;
++inline constexpr unsigned kPlaza2Aggr20FractionalDigits = kPlaza2D16_5FractionalDigits;
++inline constexpr std::int64_t kPlaza2SessionPriceScale = kPlaza2D16_5PriceScale;
++inline constexpr std::int64_t kPlaza2Aggr20PriceScale = kPlaza2D16_5PriceScale;
++
++static_assert(kPlaza2D16_5DecimalPrecision == 16);
++static_assert(kPlaza2D16_5FractionalDigits == 5);
++static_assert(kPlaza2D16_5PriceScale == 100'000);
+ 
+ } // namespace moex::plaza2::cgate
+diff --git a/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_public_decode.hpp b/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_public_decode.hpp
+index 50649f5..42a2caf 100644
+--- a/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_public_decode.hpp
++++ b/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_public_decode.hpp
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include "plaza2_fixed_point.hpp"
+ #include "plaza2_public_wire.hpp"
+ 
+ #include <bit>
+@@ -12,11 +13,16 @@ namespace moex::plaza2::public_wire {
+ 
+ static_assert(std::endian::native == std::endian::little);
+ 
++struct ExactDecimal {
++    std::int64_t mantissa{0};
++    std::int32_t scale{0};
++};
++
+ // Preserve the original BCD alongside this exact convenience conversion.
+ // d16.5: scale/precision, base-100 digits, sign in the first digit, final half digit.
+ // Qualified against CGate 9.9 cg_bcd_get in a network-disabled SDK run.
+-inline std::optional<std::int64_t> decimal_scaled(const Bcd16_5& bytes) noexcept {
+-    if (bytes[0] != 5 || bytes[1] != 16) {
++inline std::optional<ExactDecimal> decimal_value(const Bcd16_5& bytes) noexcept {
++    if (bytes[0] != cgate::kPlaza2D16_5FractionalDigits || bytes[1] != cgate::kPlaza2D16_5DecimalPrecision) {
+         return std::nullopt;
+     }
+     const bool negative = (bytes[2] & 0x80U) != 0;
+@@ -35,7 +41,13 @@ inline std::optional<std::int64_t> decimal_scaled(const Bcd16_5& bytes) noexcept
+         return std::nullopt;
+     }
+     value /= 10;
+-    return negative ? -value : value;
++    return ExactDecimal{.mantissa = negative ? -value : value,
++                        .scale = static_cast<std::int32_t>(cgate::kPlaza2D16_5FractionalDigits)};
++}
++
++inline std::optional<std::int64_t> decimal_scaled(const Bcd16_5& bytes) noexcept {
++    const auto value = decimal_value(bytes);
++    return value.has_value() ? std::optional<std::int64_t>{value->mantissa} : std::nullopt;
+ }
+ 
+ // Precondition: validate the complete wire record once before loading any fields.
+diff --git a/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_runtime.hpp b/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_runtime.hpp
+index 035eec9..3e64548 100644
+--- a/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_runtime.hpp
++++ b/protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_runtime.hpp
+@@ -181,6 +181,14 @@ struct Plaza2DecodedFieldValue {
+     std::int64_t signed_value{0};
+     std::uint64_t unsigned_value{0};
+     std::string_view text_value{};
++    // The runtime-owned field bytes are valid only for the duration of the
++    // callback. They preserve the exact vendor representation for bounded
++    // diagnostics and exact decimal consumers.
++    std::span<const std::byte> raw_value{};
++    std::string_view type_token{};
++    std::int64_t decimal_mantissa{0};
++    std::int32_t decimal_scale{0};
++    bool decimal_exact{false};
+ };
+ 
+ struct Plaza2ListenerEvent {
+diff --git a/protocols/plaza2_cgate/src/plaza2_aggr20_authority_probe.cpp b/protocols/plaza2_cgate/src/plaza2_aggr20_authority_probe.cpp
+index c30f6ae..32d7170 100644
+--- a/protocols/plaza2_cgate/src/plaza2_aggr20_authority_probe.cpp
++++ b/protocols/plaza2_cgate/src/plaza2_aggr20_authority_probe.cpp
+@@ -318,13 +318,31 @@ bool has_ready_after_online(const std::vector<Plaza2Aggr20AuthorityProbeSysEvent
+ 
+ bool attempt_completed_cleanly(const Plaza2Aggr20AuthorityProbeAttempt& attempt) noexcept {
+     return attempt.listener_created && attempt.listener_opened && attempt.online && attempt.snapshot_complete &&
+-           attempt.error.empty();
++           !attempt.listener_last_callback_error.has_value() && attempt.error.empty();
+ }
+ 
+ std::string attempt_name(std::uint32_t ordinal) {
+     return ordinal == 1 ? "INITIAL_OPEN" : "LISTENER_REOPEN";
+ }
+ 
++void capture_listener_callback_error(Plaza2Listener& listener, Plaza2Aggr20AuthorityProbeAttempt& attempt) {
++    const auto& callback_error = listener.last_callback_error();
++    if (!callback_error) {
++        return;
++    }
++
++    const bool changed = !attempt.listener_last_callback_error.has_value() ||
++                         attempt.listener_last_callback_error->code != callback_error.code ||
++                         attempt.listener_last_callback_error->runtime_code != callback_error.runtime_code ||
++                         attempt.listener_last_callback_error->message != callback_error.message;
++    attempt.listener_last_callback_error = callback_error;
++    if (changed) {
++        attempt.event_trace.push_back(
++            "event=LISTENER_CALLBACK_ERROR code=" + std::to_string(static_cast<std::uint32_t>(callback_error.code)) +
++            " runtime_code=" + std::to_string(callback_error.runtime_code) + " message=" + callback_error.message);
++    }
++}
++
+ Plaza2Aggr20AuthorityProbeAttempt
+ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeConfig& config,
+                  const std::string& aggr_settings, const std::string& aggr_open_settings,
+@@ -341,6 +359,10 @@ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeC
+     bridge.set_event_trace([&attempt](std::string line) { attempt.event_trace.push_back(std::move(line)); });
+ 
+     Plaza2Listener listener;
++    const auto capture_decimal_rejection = [&]() {
++        if (!attempt.first_decimal_rejection.has_value() && bridge.first_decimal_rejection().has_value())
++            attempt.first_decimal_rejection = bridge.first_decimal_rejection();
++    };
+     if (const auto error = listener.create(connection, StreamCode::kFortsAggrRepl, aggr_settings, &handler); error) {
+         attempt.error = error.message;
+         return attempt;
+@@ -351,15 +373,21 @@ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeC
+     } else {
+         attempt.listener_opened = true;
+     }
++    capture_listener_callback_error(listener, attempt);
++    capture_decimal_rejection();
+ 
+     if (attempt.error.empty()) {
+         const auto deadline = std::chrono::steady_clock::now() + config.observation_window;
+         while (std::chrono::steady_clock::now() < deadline) {
+             std::uint32_t runtime_code = 0;
+             if (const auto error = connection.process(config.process_timeout_ms, &runtime_code); error) {
++                capture_listener_callback_error(listener, attempt);
++                capture_decimal_rejection();
+                 attempt.error = error.message + "; runtime_code=" + std::to_string(runtime_code);
+                 break;
+             }
++            capture_listener_callback_error(listener, attempt);
++            capture_decimal_rejection();
+             if (bridge.online() && bridge.snapshot_complete() &&
+                 has_ready_after_online(handler.records(), selection.sess_id)) {
+                 break;
+@@ -369,6 +397,8 @@ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeC
+             }
+         }
+     }
++    capture_listener_callback_error(listener, attempt);
++    capture_decimal_rejection();
+ 
+     attempt.sys_events = handler.records();
+     attempt.online = bridge.online();
+@@ -381,12 +411,17 @@ run_aggr_attempt(Plaza2Connection& connection, const Plaza2Aggr20AuthorityProbeC
+     if (const auto error = listener.close(); error && attempt.error.empty()) {
+         attempt.error = error.message;
+     }
++    capture_listener_callback_error(listener, attempt);
++    capture_decimal_rejection();
+     attempt.event_trace.push_back("probe=listener_close_complete attempt=" + std::to_string(ordinal) +
+                                   " name=" + attempt.name);
+     attempt.event_trace.push_back("probe=listener_destroy attempt=" + std::to_string(ordinal) +
+                                   " name=" + attempt.name);
+-    if (const auto error = listener.destroy(); error && attempt.error.empty()) {
+-        attempt.error = error.message;
++    const auto destroy_error = listener.destroy();
++    if (destroy_error && attempt.error.empty()) {
++        capture_listener_callback_error(listener, attempt);
++        capture_decimal_rejection();
++        attempt.error = destroy_error.message;
+     }
+     attempt.event_trace.push_back("probe=listener_destroy_complete attempt=" + std::to_string(ordinal) +
+                                   " name=" + attempt.name);
+diff --git a/protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp b/protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp
+index f6ad08a..ef2e955 100644
+--- a/protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp
++++ b/protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp
+@@ -1,4 +1,5 @@
+ #include "moex/plaza2/cgate/plaza2_aggr20_md.hpp"
++#include "moex/plaza2/cgate/plaza2_public_decode.hpp"
+ 
+ #include <algorithm>
+ #include <cctype>
+@@ -8,6 +9,7 @@
+ #include <filesystem>
+ #include <limits>
+ #include <optional>
++#include <sstream>
+ #include <set>
+ #include <string>
+ #include <string_view>
+@@ -165,18 +167,45 @@ std::string text_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCod
+     return {};
+ }
+ 
+-std::optional<std::string_view> fixed_point_text_field(std::span<const Plaza2DecodedFieldValue> fields,
+-                                                       FieldCode code) {
++const Plaza2DecodedFieldValue* find_decoded_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCode code) {
+     for (const auto& field : fields) {
+-        if (field.field_code != code) {
+-            continue;
+-        }
+-        if (field.kind == Plaza2DecodedValueKind::String || field.kind == Plaza2DecodedValueKind::Decimal) {
+-            return field.text_value;
+-        }
+-        return std::nullopt;
++        if (field.field_code == code)
++            return &field;
+     }
+-    return std::nullopt;
++    return nullptr;
++}
++
++std::string_view decoded_value_kind_name(Plaza2DecodedValueKind kind) noexcept {
++    switch (kind) {
++    case Plaza2DecodedValueKind::None:
++        return "none";
++    case Plaza2DecodedValueKind::SignedInteger:
++        return "signed_integer";
++    case Plaza2DecodedValueKind::UnsignedInteger:
++        return "unsigned_integer";
++    case Plaza2DecodedValueKind::Decimal:
++        return "decimal";
++    case Plaza2DecodedValueKind::FloatingPoint:
++        return "floating_point";
++    case Plaza2DecodedValueKind::String:
++        return "string";
++    case Plaza2DecodedValueKind::Timestamp:
++        return "timestamp";
++    }
++    return "unknown";
++}
++
++std::string bytes_to_hex(std::span<const std::byte> bytes) {
++    constexpr char digits[] = "0123456789abcdef";
++    const auto bounded_size = std::min<std::size_t>(bytes.size(), 64);
++    std::string result;
++    result.reserve(bounded_size * 2);
++    for (const auto byte : bytes.first(bounded_size)) {
++        const auto value = std::to_integer<std::uint8_t>(byte);
++        result.push_back(digits[value >> 4]);
++        result.push_back(digits[value & 0x0fU]);
++    }
++    return result;
+ }
+ 
+ bool is_service_unavailable(const Plaza2Error& error) noexcept {
+@@ -444,6 +473,7 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
+     const auto before = authority_snapshot();
+     switch (event.kind) {
+     case Plaza2ListenerEventKind::Open:
++        first_decimal_rejection_.reset();
+         invalidate(false, true);
+         reopen_retry_count_ = 0;
+         first_recovery_error_.reset();
+@@ -519,8 +549,14 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
+     case Plaza2ListenerEventKind::StreamData:
+         if (reopen_required_)
+             return {};
+-        if (event.table_code == generated::TableCode::kFortsAggrReplOrdersAggr)
+-            return projector_.on_row(event.fields);
++        if (event.table_code == generated::TableCode::kFortsAggrReplOrdersAggr) {
++            const auto error = projector_.on_row(event.fields);
++            if (error && error.code == Plaza2ErrorCode::DecodeFailed &&
++                error.message.find("AGGR20 orders_aggr.price") != std::string::npos) {
++                capture_decimal_rejection(event);
++            }
++            return error;
++        }
+         if (event.table_code == generated::TableCode::kFortsAggrReplSysEvents) {
+             Plaza2Aggr20SysEventSnapshot sys_event;
+             sys_event.source_repl_id =
+@@ -566,6 +602,39 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
+     }
+ }
+ 
++void Plaza2Aggr20ListenerBridge::capture_decimal_rejection(const Plaza2ListenerEvent& event) noexcept {
++    if (first_decimal_rejection_.has_value())
++        return;
++
++    try {
++        Plaza2Aggr20DecimalRejection receipt;
++        const auto* price = find_decoded_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrPrice);
++        receipt.repl_id = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrReplId).value_or(0);
++        receipt.repl_rev = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrReplRev).value_or(0);
++        receipt.repl_act = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrReplAct).value_or(0);
++        receipt.isin_id = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrIsinId).value_or(0);
++        receipt.dir = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrDir).value_or(0);
++        receipt.volume = signed_field(event.fields, FieldCode::kFortsAggrReplOrdersAggrVolume).value_or(0);
++        if (price != nullptr) {
++            receipt.decoded_field_kind = std::string(decoded_value_kind_name(price->kind));
++            receipt.cg_getstr_text = std::string(price->text_value);
++            receipt.text_byte_length = price->text_value.size();
++            receipt.raw_bcd_bytes_hex = bytes_to_hex(price->raw_value);
++            if (price->raw_value.size() == sizeof(public_wire::Bcd16_5)) {
++                const auto bcd = public_wire::load<public_wire::Bcd16_5>(price->raw_value);
++                if (const auto decoded = public_wire::decimal_value(bcd); decoded.has_value()) {
++                    receipt.bcd_mantissa = decoded->mantissa;
++                    receipt.bcd_scale = decoded->scale;
++                }
++            }
++        }
++        first_decimal_rejection_ = std::move(receipt);
++    } catch (...) {
++        // A diagnostic allocation must never turn a bounded decode failure
++        // into an unbounded callback failure.
++    }
++}
++
+ Plaza2Error Plaza2Aggr20ListenerBridge::supervise(Plaza2Listener& listener, std::chrono::steady_clock::time_point now) {
+     std::uint32_t state = 0;
+     if (const auto error = listener.state(state); error) {
+@@ -680,15 +749,28 @@ Plaza2Error Plaza2Aggr20BookProjector::on_row(std::span<const Plaza2DecodedField
+ 
+     Plaza2Aggr20Level level;
+     level.isin_id = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrIsinId).value_or(0);
+-    const auto price_text = fixed_point_text_field(fields, FieldCode::kFortsAggrReplOrdersAggrPrice);
+-    if (!price_text.has_value()) {
++    const auto* price_field = find_decoded_field(fields, FieldCode::kFortsAggrReplOrdersAggrPrice);
++    if (price_field == nullptr ||
++        (price_field->kind != Plaza2DecodedValueKind::String && price_field->kind != Plaza2DecodedValueKind::Decimal)) {
+         return {
+             .code = Plaza2ErrorCode::DecodeFailed,
+             .runtime_code = 0,
+             .message = "AGGR20 orders_aggr.price is missing or has an unsupported runtime value kind",
+         };
+     }
+-    const auto price_scaled = parse_fixed_point(*price_text, kPlaza2Aggr20FractionalDigits, false);
++
++    std::optional<std::int64_t> price_scaled;
++    if (price_field->decimal_exact &&
++        price_field->decimal_scale == static_cast<std::int32_t>(kPlaza2D16_5FractionalDigits)) {
++        // The runtime already decoded the native d16.5 BCD. Keep this hot
++        // path as BCD -> exact mantissa; do not round-trip through text.
++        price_scaled = price_field->decimal_mantissa;
++    } else if (price_field->raw_value.empty() && price_field->type_token.empty()) {
++        // Unit-level callers may provide a decoded text value without a
++        // runtime field view. Keep that test seam exact and signed too.
++        price_scaled = parse_fixed_point(price_field->text_value, kPlaza2D16_5FractionalDigits, true,
++                                         kPlaza2D16_5DecimalPrecision);
++    }
+     if (!price_scaled.has_value()) {
+         return {
+             .code = Plaza2ErrorCode::DecodeFailed,
+@@ -696,7 +778,7 @@ Plaza2Error Plaza2Aggr20BookProjector::on_row(std::span<const Plaza2DecodedField
+             .message = "AGGR20 orders_aggr.price is malformed, over-precise, or outside checked fixed-point range",
+         };
+     }
+-    level.price = std::string(*price_text);
++    level.price = std::string(price_field->text_value);
+     level.price_scaled = *price_scaled;
+     level.volume = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrVolume).value_or(0);
+     if (signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrReplAct).value_or(0) != 0) {
+diff --git a/protocols/plaza2_cgate/src/plaza2_runtime.cpp b/protocols/plaza2_cgate/src/plaza2_runtime.cpp
+index 4d77700..b3ad61f 100644
+--- a/protocols/plaza2_cgate/src/plaza2_runtime.cpp
++++ b/protocols/plaza2_cgate/src/plaza2_runtime.cpp
+@@ -1532,6 +1532,8 @@ struct Plaza2ListenerCallbackState {
+                 const auto* field_ptr = static_cast<const std::byte*>(payload->data) + field.offset;
+                 Plaza2DecodedFieldValue decoded{
+                     .field_code = field.field_code,
++                    .raw_value = {field_ptr, field.size},
++                    .type_token = field.type_token,
+                 };
+ 
+                 switch (field.value_class) {
+@@ -1552,6 +1554,15 @@ struct Plaza2ListenerCallbackState {
+                     break;
+                 case generated::ValueClass::kDecimal:
+                     decoded.kind = Plaza2DecodedValueKind::Decimal;
++                    if (field.type_token == "d16.5" && field.size == sizeof(public_wire::Bcd16_5)) {
++                        const auto exact = public_wire::decimal_value(
++                            public_wire::load<public_wire::Bcd16_5>({field_ptr, field.size}));
++                        if (exact.has_value()) {
++                            decoded.decimal_mantissa = exact->mantissa;
++                            decoded.decimal_scale = exact->scale;
++                            decoded.decimal_exact = true;
++                        }
++                    }
+                     state->text_storage.emplace_back();
+                     if (const auto error = convert_runtime_field_to_string(*state->shared->api, field.type_token,
+                                                                            field_ptr, state->text_storage.back());
+@@ -1586,7 +1597,10 @@ struct Plaza2ListenerCallbackState {
+                 .stream_code = state->stream_code,
+                 .table_code = plan->table_code,
+                 .fields = state->decoded_fields,
++                .raw_payload = {static_cast<const std::byte*>(payload->data), payload->data_size},
+                 .signed_value = payload->rev,
++                .raw_nulls = {payload->nulls, payload->num_nulls},
++                .table_index = payload->msg_index,
+             };
+             if (auto* observer = state->shared->settings.qualification_observer;
+                 observer && observer->wants_forensic_row(event)) {
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 0704b4d..1c77f08 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -594,6 +594,7 @@ target_link_libraries(plaza2_fake_cgate_runtime
+         moex_plaza2_cgate_metadata)
+ target_include_directories(plaza2_fake_cgate_runtime
+     PRIVATE
++        "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/include"
+         "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/generated")
+ target_compile_features(plaza2_fake_cgate_runtime PUBLIC cxx_std_20)
+ set_target_properties(plaza2_fake_cgate_runtime PROPERTIES
+diff --git a/tests/plaza2_cgate/fake_cgate_runtime.cpp b/tests/plaza2_cgate/fake_cgate_runtime.cpp
+index a1ec4fd..b88a0c6 100644
+--- a/tests/plaza2_cgate/fake_cgate_runtime.cpp
++++ b/tests/plaza2_cgate/fake_cgate_runtime.cpp
+@@ -1,10 +1,12 @@
+ #include <unistd.h>
+ #include "fake_cgate_abi.hpp"
++#include "moex/plaza2/cgate/plaza2_public_decode.hpp"
+ #include "plaza2_public_wire.hpp"
+ #include "../plaza2_trade/fixtures/cgate99_messages.hpp"
+ #include "plaza2_generated_metadata.hpp"
+ 
+ #include <fstream>
++#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
+ #include <algorithm>
+ #include <array>
+ #include <charconv>
+@@ -15,6 +17,7 @@
+ #include <cstring>
+ #include <memory>
+ #include <limits>
++#include <optional>
+ #include <string>
+ #include <string_view>
+ #include <unordered_map>
+@@ -101,6 +104,7 @@ struct FieldPlan {
+     ValueClass value_class{ValueClass::kSignedInteger};
+     std::size_t offset{0};
+     std::size_t size{0};
++    std::string type_token;
+ };
+ 
+ struct MessagePlan {
+@@ -210,15 +214,58 @@ std::string copy_c_string(const char* value, std::size_t size) {
+     return std::string(value, count);
+ }
+ 
+-std::size_t size_for_value_class(ValueClass value_class) {
++std::optional<moex::plaza2::public_wire::Bcd16_5> encode_d16_5(std::string_view text) {
++    const auto scaled = moex::plaza2::cgate::parse_fixed_point(text, moex::plaza2::cgate::kPlaza2D16_5FractionalDigits,
++                                                               true, moex::plaza2::cgate::kPlaza2D16_5DecimalPrecision);
++    if (!scaled.has_value())
++        return std::nullopt;
++
++    const auto magnitude =
++        *scaled < 0 ? static_cast<std::uint64_t>(-(*scaled + 1)) + 1U : static_cast<std::uint64_t>(*scaled);
++    auto encoded = moex::plaza2::public_wire::Bcd16_5{5, 16};
++    auto base100 = magnitude * 10U;
++    for (std::size_t index = encoded.size(); index-- > 2;)
++        encoded[index] = static_cast<std::uint8_t>(base100 % 100U), base100 /= 100U;
++    if (*scaled < 0)
++        encoded[2] |= 0x80U;
++    return encoded;
++}
++
++std::optional<std::string> format_d16_5(const moex::plaza2::public_wire::Bcd16_5& bytes) {
++    const auto decoded = moex::plaza2::public_wire::decimal_value(bytes);
++    if (!decoded.has_value())
++        return std::nullopt;
++
++    const auto magnitude = decoded->mantissa < 0 ? static_cast<std::uint64_t>(-(decoded->mantissa + 1)) + 1U
++                                                 : static_cast<std::uint64_t>(decoded->mantissa);
++    const auto whole = magnitude / moex::plaza2::cgate::kPlaza2D16_5PriceScale;
++    const auto fractional = magnitude % static_cast<std::uint64_t>(moex::plaza2::cgate::kPlaza2D16_5PriceScale);
++    std::string result;
++    if (decoded->mantissa < 0)
++        result.push_back('-');
++    result += std::to_string(whole);
++    if (fractional != 0) {
++        auto fraction =
++            std::to_string(fractional + static_cast<std::uint64_t>(moex::plaza2::cgate::kPlaza2D16_5PriceScale))
++                .substr(1);
++        while (!fraction.empty() && fraction.back() == '0')
++            fraction.pop_back();
++        result.push_back('.');
++        result += fraction;
++    }
++    return result;
++}
++
++std::size_t size_for_value_class(ValueClass value_class, std::string_view type_token) {
+     switch (value_class) {
+     case ValueClass::kSignedInteger:
+     case ValueClass::kUnsignedInteger:
+         return 8;
+     case ValueClass::kFixedString:
+-    case ValueClass::kDecimal:
+     case ValueClass::kFloatingPoint:
+         return 32;
++    case ValueClass::kDecimal:
++        return type_token == "d16.5" ? sizeof(moex::plaza2::public_wire::Bcd16_5) : 32;
+     case ValueClass::kTimestamp:
+         return sizeof(CgTime);
+     case ValueClass::kBinary:
+@@ -1022,6 +1069,22 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
+                 script.push_back(std::move(other));
+             }
+         }
++        if (fake_flag("MOEX_FAKE_AGGR_NEGATIVE_UNRELATED")) {
++            const auto source = std::ranges::find_if(
++                script, [](const auto& message) { return message.table_code == TableCode::kFortsAggrReplOrdersAggr; });
++            if (source != script.end()) {
++                auto unrelated = *source;
++                if (auto* isin = find_field(unrelated, kFortsAggrReplOrdersAggrIsinId))
++                    isin->signed_value = 2002;
++                if (auto* repl = find_field(unrelated, kFortsAggrReplOrdersAggrReplId))
++                    repl->signed_value = 9302;
++                if (auto* rev = find_field(unrelated, kFortsAggrReplOrdersAggrReplRev))
++                    rev->signed_value = 93;
++                if (auto* price = find_field(unrelated, kFortsAggrReplOrdersAggrPrice))
++                    price->text = "-100.50000";
++                script.push_back(std::move(unrelated));
++            }
++        }
+     } else if (stream_code == StreamCode::kFortsRefdataRepl) {
+         if (fake_flag("MOEX_FAKE_MISSING_INSTRUMENT")) {
+             std::erase_if(script, [](const auto& message) {
+@@ -1337,7 +1400,7 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
+             owned_field->desc.id = static_cast<std::uint32_t>(field->field_code);
+             owned_field->desc.name = owned_field->name.data();
+             owned_field->desc.type = owned_field->type_token.data();
+-            owned_field->desc.size = size_for_value_class(field->value_class);
++            owned_field->desc.size = size_for_value_class(field->value_class, field->type_token);
+             owned_field->desc.offset = offset;
+ 
+             plan.fields.push_back({
+@@ -1345,6 +1408,7 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
+                 .value_class = field->value_class,
+                 .offset = offset,
+                 .size = owned_field->desc.size,
++                .type_token = std::string(field->type_token),
+             });
+ 
+             offset += owned_field->desc.size;
+@@ -1434,6 +1498,13 @@ void write_field_value(std::vector<std::byte>& buffer, const FieldPlan& plan, co
+     case ValueClass::kFixedString:
+     case ValueClass::kDecimal:
+     case ValueClass::kFloatingPoint: {
++        if (plan.type_token == "d16.5") {
++            std::memset(dest, 0, plan.size);
++            if (const auto encoded = encode_d16_5(value.text); encoded.has_value() && plan.size == encoded->size()) {
++                std::memcpy(dest, encoded->data(), encoded->size());
++            }
++            break;
++        }
+         std::memset(dest, 0, plan.size);
+         const auto copy_size = std::min(plan.size == 0 ? 0U : plan.size - 1, value.text.size());
+         if (copy_size > 0) {
+@@ -2737,7 +2808,15 @@ std::uint32_t cg_getstr(const char* type, const void* data, char* buffer, std::s
+     }
+ 
+     std::string text;
+-    if (type && (std::string_view(type) == "i8" || std::string_view(type) == "i4" || std::string_view(type) == "i1")) {
++    if (type && std::string_view(type) == "d16.5") {
++        moex::plaza2::public_wire::Bcd16_5 bytes{};
++        std::memcpy(bytes.data(), data, bytes.size());
++        const auto formatted = format_d16_5(bytes);
++        if (!formatted.has_value())
++            return kCgErrInvalidArgument;
++        text = *formatted;
++    } else if (type &&
++               (std::string_view(type) == "i8" || std::string_view(type) == "i4" || std::string_view(type) == "i1")) {
+         if (std::string_view(type) == "i8") {
+             std::int64_t v{};
+             std::memcpy(&v, data, sizeof(v));
+diff --git a/tests/plaza2_cgate/plaza2_aggr20_authority_probe_test.cpp b/tests/plaza2_cgate/plaza2_aggr20_authority_probe_test.cpp
+index 9da86be..c24bbe1 100644
+--- a/tests/plaza2_cgate/plaza2_aggr20_authority_probe_test.cpp
++++ b/tests/plaza2_cgate/plaza2_aggr20_authority_probe_test.cpp
+@@ -86,6 +86,15 @@ void test_attempt_classification() {
+     moex::plaza2::test::require(plaza2_aggr20_authority_probe_classify_attempts(one_failed) ==
+                                     Plaza2Aggr20AuthorityProbeResult::Inconclusive,
+                                 "an attempt error must produce INCONCLUSIVE");
++
++    auto callback_failed = make_complete_attempt(true);
++    callback_failed.listener_last_callback_error = Plaza2Error{.code = Plaza2ErrorCode::DecodeFailed,
++                                                               .runtime_code = 0,
++                                                               .message = "synthetic listener callback decode failure"};
++    moex::plaza2::test::require(
++        plaza2_aggr20_authority_probe_classify_attempts(std::vector<Plaza2Aggr20AuthorityProbeAttempt>{
++            std::move(callback_failed), make_complete_attempt(true)}) == Plaza2Aggr20AuthorityProbeResult::Inconclusive,
++        "a preserved listener callback error must make the overall experiment INCONCLUSIVE");
+     moex::plaza2::test::require(plaza2_aggr20_authority_probe_classify_attempts({make_complete_attempt(true)}) ==
+                                     Plaza2Aggr20AuthorityProbeResult::Inconclusive,
+                                 "a missing repeated attempt must produce INCONCLUSIVE");
+diff --git a/tests/plaza2_cgate/plaza2_aggr20_md_projection_test.cpp b/tests/plaza2_cgate/plaza2_aggr20_md_projection_test.cpp
+index 5640892..44599b4 100644
+--- a/tests/plaza2_cgate/plaza2_aggr20_md_projection_test.cpp
++++ b/tests/plaza2_cgate/plaza2_aggr20_md_projection_test.cpp
+@@ -62,16 +62,34 @@ int main() {
+         const auto malformed_error = strict_projector.on_row(malformed_bid);
+         require(malformed_error && malformed_error.code == Plaza2ErrorCode::DecodeFailed,
+                 "AGGR20 malformed price must be surfaced as a decode failure");
+-        require(parse_fixed_point("100.50", kPlaza2Aggr20FractionalDigits, false) == 100'500'000,
+-                "AGGR20 fixed-point parser must preserve its six-decimal internal unit contract");
+-        require(parse_fixed_point("12.345678", kPlaza2Aggr20FractionalDigits, false) == 12'345'678,
+-                "AGGR20 fixed-point parser must accept exactly six fractional digits");
+-        require(!parse_fixed_point("12.3456789", kPlaza2Aggr20FractionalDigits, false).has_value(),
+-                "AGGR20 fixed-point parser must reject truncating excess precision");
++        require(kPlaza2Aggr20FractionalDigits == 5 && kPlaza2Aggr20PriceScale == 100'000,
++                "AGGR20 must use the generated d16.5 scale-5 contract");
++        require(parse_fixed_point("100.50000", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision) ==
++                    10'050'000,
++                "AGGR20 d16.5 must preserve scale-5 units");
++        require(parse_fixed_point("0", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision) == 0 &&
++                    parse_fixed_point("0.00000", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision) ==
++                        0,
++                "AGGR20 d16.5 must accept zero spellings");
++        require(
++            parse_fixed_point("-0.00001", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision) == -1 &&
++                parse_fixed_point("-100.50000", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision) ==
++                    -10'050'000,
++            "AGGR20 d16.5 must accept signed values");
++        require(parse_fixed_point("99999999999.99999", kPlaza2Aggr20FractionalDigits, true,
++                                  kPlaza2D16_5DecimalPrecision) == 9'999'999'999'999'999LL &&
++                    parse_fixed_point("-99999999999.99999", kPlaza2Aggr20FractionalDigits, true,
++                                      kPlaza2D16_5DecimalPrecision) == -9'999'999'999'999'999LL,
++                "AGGR20 d16.5 must accept both valid domain extremes");
++        require(!parse_fixed_point("12.345678", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision)
++                     .has_value(),
++                "AGGR20 fixed-point parser must reject six fractional digits");
+         require(!parse_fixed_point("12x34", kPlaza2Aggr20FractionalDigits, false).has_value(),
+                 "AGGR20 fixed-point parser must reject non-numeric characters");
+-        require(!parse_fixed_point("-1", kPlaza2Aggr20FractionalDigits, false).has_value(),
+-                "AGGR20 prices must reject a negative sign");
++        require(
++            !parse_fixed_point("100000000000.00000", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision)
++                 .has_value(),
++            "AGGR20 d16.5 parser must reject precision overflow");
+         require(!parse_fixed_point("9223372036854775808", 0, false).has_value(),
+                 "fixed-point parser must reject signed overflow");
+         require(!projector.on_row(bid), "bid AGGR20 row should be accepted while transaction is open");
+@@ -112,9 +130,11 @@ int main() {
+         const auto& snapshot = projector.snapshot();
+         require(snapshot.row_count == 4, "AGGR20 snapshot row count mismatch");
+         require(snapshot.instrument_count == 2, "AGGR20 instrument count mismatch");
+-        require(snapshot.top_bid.has_value() && snapshot.top_bid->price == "10000.00",
++        require(snapshot.top_bid.has_value() && snapshot.top_bid->price == "10000.00" &&
++                    snapshot.top_bid->price_scaled == 1'000'000'000,
+                 "global AGGR20 diagnostic top bid mismatch");
+-        require(snapshot.top_ask.has_value() && snapshot.top_ask->price == "101.25",
++        require(snapshot.top_ask.has_value() && snapshot.top_ask->price == "101.25" &&
++                    snapshot.top_ask->price_scaled == 10'125'000,
+                 "global AGGR20 diagnostic top ask mismatch");
+         require(snapshot.last_repl_id == 4, "AGGR20 last replID mismatch");
+         require(snapshot.last_repl_rev == 14, "AGGR20 last replRev mismatch");
+@@ -123,6 +143,8 @@ int main() {
+                 "target instrument should have a two-sided scoped snapshot");
+         require(target->top_bid->price == "100.50" && target->top_ask->price == "101.25",
+                 "instrument-scoped BBO must not use another instrument");
++        require(target->top_bid->price_scaled == 10'050'000 && target->top_ask->price_scaled == 10'125'000,
++                "instrument-scoped d16.5 units must use scale 100000");
+         require(target->committed_at == local_now, "scoped snapshot must carry local monotonic commit time");
+         require(target->source_snapshot_version != 0 && target->source_snapshot_hash != 0,
+                 "target snapshot must expose a version and deterministic source hash");
+@@ -235,6 +257,39 @@ int main() {
+         require(!slots.commit(), "instrument move commit");
+         require(slots.snapshot_for_isin(4433036)->row_count == 0 && slots.snapshot_for_isin(1001)->row_count == 1,
+                 "instrument move must rebuild both old and new instrument snapshots");
++
++        Plaza2Aggr20BookProjector signed_book;
++        const auto stage_signed = [&](std::uint64_t id, std::int64_t dir, std::string_view price) {
++            const std::array row = {
++                unsigned_field(FieldCode::kFortsAggrReplOrdersAggrReplId, id),
++                signed_field(FieldCode::kFortsAggrReplOrdersAggrReplRev, static_cast<std::int64_t>(id)),
++                signed_field(FieldCode::kFortsAggrReplOrdersAggrIsinId, 3003),
++                signed_field(FieldCode::kFortsAggrReplOrdersAggrDir, dir),
++                decimal_field(FieldCode::kFortsAggrReplOrdersAggrPrice, price),
++                signed_field(FieldCode::kFortsAggrReplOrdersAggrVolume, 1),
++            };
++            require(!signed_book.on_row(row), "signed AGGR20 row must stage");
++        };
++        signed_book.begin_transaction();
++        stage_signed(11, 1, "-100.50000");
++        stage_signed(12, 1, "0");
++        stage_signed(13, 1, "100.50000");
++        stage_signed(14, 2, "-100.50000");
++        stage_signed(15, 2, "0.00000");
++        stage_signed(16, 2, "100.50000");
++        require(!signed_book.commit(), "signed AGGR20 rows must commit");
++        const auto signed_snapshot = signed_book.snapshot_for_isin(3003);
++        require(signed_snapshot.has_value() && signed_snapshot->top_bid.has_value() &&
++                    signed_snapshot->top_ask.has_value() && signed_snapshot->top_bid->price == "100.50000" &&
++                    signed_snapshot->top_bid->price_scaled == 10'050'000 &&
++                    signed_snapshot->top_ask->price == "-100.50000" &&
++                    signed_snapshot->top_ask->price_scaled == -10'050'000,
++                "signed AGGR20 BBO must preserve negative, zero, and positive values");
++        require(signed_snapshot->levels.size() == 6 && signed_snapshot->levels[0].price == "100.50000" &&
++                    signed_snapshot->levels[1].price == "0" && signed_snapshot->levels[2].price == "-100.50000" &&
++                    signed_snapshot->levels[3].price == "-100.50000" && signed_snapshot->levels[4].price == "0.00000" &&
++                    signed_snapshot->levels[5].price == "100.50000",
++                "signed AGGR20 levels must sort bids descending and asks ascending");
+         slots.reset();
+         require(slots.snapshot().row_count == 0 && !slots.snapshot_for_isin(1001),
+                 "epoch reset must discard slot state");
+diff --git a/tests/plaza2_cgate/plaza2_aggr20_md_runner_test.cpp b/tests/plaza2_cgate/plaza2_aggr20_md_runner_test.cpp
+index d4e3f45..5fb1dc2 100644
+--- a/tests/plaza2_cgate/plaza2_aggr20_md_runner_test.cpp
++++ b/tests/plaza2_cgate/plaza2_aggr20_md_runner_test.cpp
+@@ -165,6 +165,7 @@ int main(int argc, char** argv) {
+         ::setenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME", "1", 1);
+ 
+         ::setenv("MOEX_FAKE_AGGR_CLEAR_ON_BOOTSTRAP", "1", 1);
++        ::setenv("MOEX_FAKE_AGGR_NEGATIVE_UNRELATED", "1", 1);
+         Plaza2Aggr20MdRunner runner(make_config(fixture));
+         const auto start = runner.start();
+         require(start.ok, "AGGR20 runner start should succeed with fake runtime and all arm flags");
+@@ -186,12 +187,15 @@ int main(int argc, char** argv) {
+         require(health.stream_created && health.stream_opened, "AGGR20 stream should be created and opened");
+         require(health.stream_online && health.stream_snapshot_complete,
+                 "AGGR20 stream should become online and snapshot-complete");
+-        require(health.snapshot.row_count == 2, "AGGR20 fake runtime should emit two rows");
+-        require(health.snapshot.instrument_count == 1, "AGGR20 fake runtime instrument count mismatch");
++        require(health.snapshot.row_count == 3, "AGGR20 fake runtime should emit the unrelated negative row");
++        require(health.snapshot.instrument_count == 2, "AGGR20 fake runtime instrument count mismatch");
+         require(health.snapshot.top_bid.has_value() && health.snapshot.top_bid->price == "102500",
+                 "AGGR20 fake top bid mismatch");
+         require(health.snapshot.top_ask.has_value() && health.snapshot.top_ask->price == "102750",
+                 "AGGR20 fake top ask mismatch");
++        require(health.snapshot.top_bid->price_scaled == 10'250'000'000LL &&
++                    health.snapshot.top_ask->price_scaled == 10'275'000'000LL,
++                "AGGR20 fake d16.5 mantissas must use scale 100000");
+         require(contains_log(runner.operator_log_lines(), "event=OPEN"),
+                 "AGGR20 operator log must retain native OPEN event");
+         require(contains_log(runner.operator_log_lines(), "event=LIFENUM"),
+@@ -213,6 +217,8 @@ int main(int argc, char** argv) {
+         const auto stop = runner.stop();
+         require(stop.ok, "AGGR20 runner stop should succeed");
+ 
++        ::unsetenv("MOEX_FAKE_AGGR_NEGATIVE_UNRELATED");
++
+         require(!runner.health_snapshot().ready && runner.health_snapshot().snapshot.row_count == 0,
+                 "stop invalidates visible AGGR book and readiness");
+         for (const auto* scenario : {"MOEX_FAKE_AGGR_CLOSE_AFTER_READY", "MOEX_FAKE_AGGR_LIFENUM_AFTER_READY",
+diff --git a/tests/plaza2_cgate/plaza2_generated_metadata_test.cpp b/tests/plaza2_cgate/plaza2_generated_metadata_test.cpp
+index d1cb70d..9d26156 100644
+--- a/tests/plaza2_cgate/plaza2_generated_metadata_test.cpp
++++ b/tests/plaza2_cgate/plaza2_generated_metadata_test.cpp
+@@ -1,7 +1,12 @@
+ #include "plaza2_generated_metadata.hpp"
++#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
+ 
+ #include <iostream>
+ 
++static_assert(moex::plaza2::cgate::kPlaza2D16_5DecimalPrecision == 16);
++static_assert(moex::plaza2::cgate::kPlaza2D16_5FractionalDigits == 5);
++static_assert(moex::plaza2::cgate::kPlaza2D16_5PriceScale == 100'000);
++
+ int main() {
+     using namespace moex::plaza2::generated;
+ 
+@@ -46,11 +51,19 @@ int main() {
+         std::cerr << "d16.5 type descriptor missing\n";
+         return 1;
+     }
+-    if (decimal_type->value_class != ValueClass::kDecimal || decimal_type->decimal_scale != 5) {
++    if (decimal_type->value_class != ValueClass::kDecimal || decimal_type->decimal_digits != 16 ||
++        decimal_type->decimal_scale != 5) {
+         std::cerr << "d16.5 type descriptor invariants broken\n";
+         return 1;
+     }
+ 
++    const auto* aggr_price = FindFieldByCode(FieldCode::kFortsAggrReplOrdersAggrPrice);
++    if (aggr_price == nullptr || aggr_price->type_token != "d16.5" || aggr_price->decimal_digits != 16 ||
++        aggr_price->decimal_scale != 5 || aggr_price->value_class != ValueClass::kDecimal) {
++        std::cerr << "AGGR orders_aggr.price must remain generated d16.5\n";
++        return 1;
++    }
++
+     const auto trade_tables = TablesForStream(StreamCode::kFortsTradeRepl);
+     if (trade_tables.size() != trade_stream->table_count) {
+         std::cerr << "stream table span does not match descriptor count\n";
+diff --git a/tests/plaza2_cgate/plaza2_public_decimal_vendor_check.cpp b/tests/plaza2_cgate/plaza2_public_decimal_vendor_check.cpp
+index a38dc91..8a44b77 100644
+--- a/tests/plaza2_cgate/plaza2_public_decimal_vendor_check.cpp
++++ b/tests/plaza2_cgate/plaza2_public_decimal_vendor_check.cpp
+@@ -1,12 +1,70 @@
+ #include <cgate.h>
+ #include "moex/plaza2/cgate/plaza2_public_decode.hpp"
++#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
++#include <array>
+ #include <cstdio>
++#include <string_view>
+ using moex::plaza2::public_wire::Bcd16_5;
++
++namespace {
++
++Bcd16_5 encode_d16_5(std::int64_t n) {
++    const auto magnitude = n < 0 ? static_cast<std::uint64_t>(-(n + 1)) + 1U : static_cast<std::uint64_t>(n);
++    auto bytes = Bcd16_5{5, 16};
++    auto value = magnitude * 10U;
++    for (std::size_t index = bytes.size(); index-- > 2;)
++        bytes[index] = static_cast<std::uint8_t>(value % 100U), value /= 100U;
++    if (n < 0)
++        bytes[2] |= 0x80U;
++    return bytes;
++}
++
++std::string_view cg_text(std::array<char, 128>& buffer, std::size_t size) {
++    if (size == 0 || size > buffer.size())
++        return {};
++    std::size_t length = 0;
++    while (length < size && buffer[length] != '\0')
++        ++length;
++    return {buffer.data(), length};
++}
++
++} // namespace
++
+ int main() {
+     if (cg_env_open(""))
+         return 1;
+     unsigned long long state = 1;
+     unsigned count = 0;
++    const auto verify = [&](std::int64_t n) {
++        const auto bytes = encode_d16_5(n);
++        std::int64_t native = 0;
++        std::int8_t scale = 0;
++        if (cg_bcd_get(bytes.data(), &native, &scale) || native != n ||
++            scale != static_cast<std::int8_t>(moex::plaza2::cgate::kPlaza2D16_5FractionalDigits))
++            return false;
++        const auto exact = moex::plaza2::public_wire::decimal_value(bytes);
++        if (!exact.has_value() || exact->mantissa != n ||
++            exact->scale != static_cast<std::int32_t>(moex::plaza2::cgate::kPlaza2D16_5FractionalDigits))
++            return false;
++
++        std::array<char, 128> buffer{};
++        std::size_t buffer_size = buffer.size();
++        if (cg_getstr("d16.5", bytes.data(), buffer.data(), &buffer_size) != 0)
++            return false;
++        const auto text = cg_text(buffer, buffer_size);
++        const auto parsed =
++            moex::plaza2::cgate::parse_fixed_point(text, moex::plaza2::cgate::kPlaza2D16_5FractionalDigits, true,
++                                                   moex::plaza2::cgate::kPlaza2D16_5DecimalPrecision);
++        return parsed.has_value() && *parsed == n;
++    };
++    for (const auto n : std::array<std::int64_t, 7>{0, 1, -1, 10'050'000, -10'050'000, 9'999'999'999'999'999LL,
++                                                    -9'999'999'999'999'999LL}) {
++        if (!verify(n)) {
++            cg_env_close();
++            return 2;
++        }
++        ++count;
++    }
+     for (unsigned i = 0; i < 100004; ++i) {
+         state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+         long long n = i == 0   ? 0
+@@ -15,19 +73,10 @@ int main() {
+                                : static_cast<long long>(state % 10000000000000000ULL);
+         if (i & 1)
+             n = -n;
+-        Bcd16_5 bytes{5, 16};
+-        auto value = static_cast<unsigned long long>(n < 0 ? -n : n) * 10;
+-        for (int j = 10; j >= 2; --j) {
+-            bytes[j] = value % 100;
+-            value /= 100;
+-        }
+-        if (n < 0)
+-            bytes[2] |= 0x80;
+-        int64_t native = 0;
+-        int8_t scale = 0;
+-        if (cg_bcd_get(bytes.data(), &native, &scale) || native != n || scale != 5 ||
+-            moex::plaza2::public_wire::decimal_scaled(bytes) != n)
++        if (!verify(n)) {
++            cg_env_close();
+             return 2;
++        }
+         ++count;
+     }
+     cg_env_close();

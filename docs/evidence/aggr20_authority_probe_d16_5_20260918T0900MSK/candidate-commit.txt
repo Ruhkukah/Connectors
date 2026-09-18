@@ -1,0 +1,29 @@
+commit 2c5464a96f2014b3d53f3f32015a4d4a7dbc47d5
+Author:     Ruhkukah <67687769+Ruhkukah@users.noreply.github.com>
+AuthorDate: Thu Sep 17 15:44:03 2026 +0300
+Commit:     Ruhkukah <67687769+Ruhkukah@users.noreply.github.com>
+CommitDate: Thu Sep 17 15:44:03 2026 +0300
+
+    Fix AGGR d16.5 signed price decoding and diagnostics
+
+ apps/plaza2_aggr20_authority_probe.cpp             | 109 ++++++++++++++++++++
+ .../moex/plaza2_trade/plaza2_deep_passive.hpp      |   2 +-
+ .../AGGR_SIGNED_PRICE_EXECUTION_FOLLOW_UP.md       |  25 +++++
+ docs/plaza2/integration/DEEP_PASSIVE_POLICY.md     |   4 +-
+ .../plaza2/cgate/plaza2_aggr20_authority_probe.hpp |   2 +
+ .../include/moex/plaza2/cgate/plaza2_aggr20_md.hpp |  30 +++++-
+ .../moex/plaza2/cgate/plaza2_fixed_point.hpp       |  41 +++++---
+ .../moex/plaza2/cgate/plaza2_public_decode.hpp     |  18 +++-
+ .../include/moex/plaza2/cgate/plaza2_runtime.hpp   |   8 ++
+ .../src/plaza2_aggr20_authority_probe.cpp          |  41 +++++++-
+ protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp    | 114 ++++++++++++++++++---
+ protocols/plaza2_cgate/src/plaza2_runtime.cpp      |  14 +++
+ tests/CMakeLists.txt                               |   1 +
+ tests/plaza2_cgate/fake_cgate_runtime.cpp          |  87 +++++++++++++++-
+ .../plaza2_aggr20_authority_probe_test.cpp         |   9 ++
+ .../plaza2_aggr20_md_projection_test.cpp           |  75 ++++++++++++--
+ .../plaza2_cgate/plaza2_aggr20_md_runner_test.cpp  |  10 +-
+ .../plaza2_generated_metadata_test.cpp             |  15 ++-
+ .../plaza2_public_decimal_vendor_check.cpp         |  73 ++++++++++---
+ 19 files changed, 610 insertions(+), 68 deletions(-)
+ create mode 100644 docs/plaza2/AGGR_SIGNED_PRICE_EXECUTION_FOLLOW_UP.md

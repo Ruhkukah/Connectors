@@ -1,0 +1,18 @@
+--- INITIAL_OPEN ---
+probe=listener_open attempt=1 name=INITIAL_OPEN
+event=LIFENUM local_unix_ns=1789711431257557815 authority_before=waiting_for_transport authority_after=waiting_for_transport authority_transition=false lifenum=66740
+event=ONLINE local_unix_ns=1789711431484865212 authority_before=waiting_for_snapshot authority_after=waiting_for_session_data_ready authority_transition=true
+probe=listener_close attempt=1 name=INITIAL_OPEN
+event=CLOSE local_unix_ns=1789711551262980301 authority_before=waiting_for_session_data_ready authority_after=recovering authority_transition=true
+probe=listener_close_complete attempt=1 name=INITIAL_OPEN
+probe=listener_destroy attempt=1 name=INITIAL_OPEN
+probe=listener_destroy_complete attempt=1 name=INITIAL_OPEN
+--- LISTENER_REOPEN ---
+probe=listener_open attempt=2 name=LISTENER_REOPEN
+event=LIFENUM local_unix_ns=1789711551274295120 authority_before=waiting_for_transport authority_after=waiting_for_transport authority_transition=false lifenum=66740
+event=ONLINE local_unix_ns=1789711551459836430 authority_before=waiting_for_snapshot authority_after=waiting_for_session_data_ready authority_transition=true
+probe=listener_close attempt=2 name=LISTENER_REOPEN
+event=CLOSE local_unix_ns=1789711671305282144 authority_before=waiting_for_session_data_ready authority_after=recovering authority_transition=true
+probe=listener_close_complete attempt=2 name=LISTENER_REOPEN
+probe=listener_destroy attempt=2 name=LISTENER_REOPEN
+probe=listener_destroy_complete attempt=2 name=LISTENER_REOPEN

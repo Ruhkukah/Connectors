@@ -1,0 +1,26 @@
+preflight=PASS
+source_base_sha=deff561dd524633268734a4a7eb3dc0763475027
+candidate_source_sha=2c5464a96f2014b3d53f3f32015a4d4a7dbc47d5
+candidate_binary_sha256=279bee891355e4920c4e5531d237604b02752d50477167cd96a2846f16f63e3c
+runtime_release=SPECTRA9.9.0
+runtime_root=/home/azgaldov/moex/vendor/cgate-test-9.9.1853/staged/deb-root/opt/moex/cgate
+library_path=/home/azgaldov/moex/vendor/cgate-test-9.9.1853/staged/deb-root/opt/moex/cgate/lib/libcgate.so.6.102.0.6118
+scheme_path=/home/azgaldov/moex/vendor/cgate-test-9.9.1853/staged/deb-root/opt/moex/cgate/scheme/latest/forts_scheme.ini
+config_path=/home/azgaldov/moex/vendor/cgate-test-9.9.1853/runtime/t1.ini
+router_pid=3704670
+native_router_log=/home/azgaldov/moex/vendor/cgate-test-9.9.1853/runtime/log/router.t1.4.log
+endpoint=127.0.0.1:4101
+connection_app_name=read_only_aggr20_probe_d16_5_20260918T0900MSK
+observation_seconds=120
+process_timeout_ms=50
+credentials=none
+software_key_source=env
+read_only_contract=public_refdata_and_aggr20_only;publisher=false;command_api=false;order_api=false
+279bee891355e4920c4e5531d237604b02752d50477167cd96a2846f16f63e3c  /home/azgaldov/moex/qualification/authority-probe-d16-5-20260918T0900MSK/bin/moex_plaza2_aggr20_authority_probe
+f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f  /home/azgaldov/moex/vendor/cgate-test-9.9.1853/staged/deb-root/opt/moex/cgate/lib/libcgate.so.6.102.0.6118
+7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746  /home/azgaldov/moex/vendor/cgate-test-9.9.1853/staged/deb-root/opt/moex/cgate/scheme/latest/forts_scheme.ini
+6ea6ad50d6e3300fee99e43900eb22a21c207166f2455d2fc850f7e30bc91423  /home/azgaldov/moex/vendor/cgate-test-9.9.1853/staged/deb-root/opt/moex/cgate/bin/P2MQRouter-229.123.0.7233
+30ff2ec566edac9e7b8d8d255c1fa2161edc77f4741076ded9b80fd9ad573d68  /home/azgaldov/moex/vendor/cgate-test-9.9.1853/runtime/t1.ini
+/home/azgaldov/moex/qualification/authority-probe-d16-5-20260918T0900MSK/bin/moex_plaza2_aggr20_authority_probe: ELF 64-bit LSB pie executable, x86-64, version 1 (GNU/Linux), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=7cc22dd5736b84f0e29a06c09aa6902611efca1e, for GNU/Linux 3.2.0, with debug_info, not stripped
+/home/azgaldov/moex/vendor/cgate-test-9.9.1853/staged/deb-root/opt/moex/cgate/lib/libcgate.so.6.102.0.6118:      ELF 64-bit LSB shared object, x86-64, version 1 (SYSV), dynamically linked, BuildID[sha1]=e6fd2fb6ac46c4d8f5983864d5e9b2d0aebba23a, stripped
+/home/azgaldov/moex/vendor/cgate-test-9.9.1853/staged/deb-root/opt/moex/cgate/bin/P2MQRouter-229.123.0.7233:     ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=bfb180ee2663b1444d2526ffb95b435a47cf09fa, for GNU/Linux 2.6.32, stripped
