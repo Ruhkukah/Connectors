@@ -2,15 +2,24 @@
 
 #include "plaza2_runtime_test_support.hpp"
 
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 
 moex::plaza2::cgate::Plaza2ClockEvidence make_clock_evidence() {
     using namespace moex::plaza2::cgate;
     constexpr std::int64_t base_wall = 1'700'000'000'000'000'000;
+    const auto generated_wall_ns = static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
     return {
         .sync_source = "chrony",
         .sync_status_ok = true,
@@ -30,6 +39,8 @@ moex::plaza2::cgate::Plaza2ClockEvidence make_clock_evidence() {
         .current_local_wall_ns = base_wall + 1'000'000'000,
         .current_local_monotonic_ns = 3'000'000'000,
         .sync_status_monotonic_ns = 2'500'000'000,
+        .evidence_generated_wall_ns = generated_wall_ns,
+        .boot_id = "test-boot",
     };
 }
 
@@ -57,6 +68,79 @@ moex::plaza2::cgate::Plaza2Aggr20MdConfig make_config(const moex::plaza2::test::
     return config;
 }
 
+std::array<moex::plaza2::cgate::Plaza2DecodedFieldValue, 8>
+sys_event_fields(std::int64_t repl_id, std::int64_t repl_rev, std::int64_t event_id, std::int64_t sess_id,
+                 std::string_view message) {
+    using namespace moex::plaza2::cgate;
+    using moex::plaza2::generated::FieldCode;
+    return {
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsReplId,
+                                .kind = Plaza2DecodedValueKind::SignedInteger,
+                                .signed_value = repl_id},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsReplRev,
+                                .kind = Plaza2DecodedValueKind::SignedInteger,
+                                .signed_value = repl_rev},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsReplAct,
+                                .kind = Plaza2DecodedValueKind::SignedInteger},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsEventType,
+                                .kind = Plaza2DecodedValueKind::SignedInteger,
+                                .signed_value = 1},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsEventId,
+                                .kind = Plaza2DecodedValueKind::SignedInteger,
+                                .signed_value = event_id},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsSessId,
+                                .kind = Plaza2DecodedValueKind::SignedInteger,
+                                .signed_value = sess_id},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsMessage,
+                                .kind = Plaza2DecodedValueKind::String,
+                                .text_value = message},
+        Plaza2DecodedFieldValue{.field_code = FieldCode::kFortsAggrReplSysEventsServerTime,
+                                .kind = Plaza2DecodedValueKind::UnsignedInteger,
+                                .unsigned_value = 1700000000},
+    };
+}
+
+void begin_sys_event_transaction(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge) {
+    using namespace moex::plaza2::cgate;
+    static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionBegin}));
+}
+
+void stage_sys_event(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge, std::int64_t repl_id,
+                     std::int64_t repl_rev, std::int64_t event_id, std::int64_t sess_id, std::string_view message) {
+    using namespace moex::plaza2::cgate;
+    const auto fields = sys_event_fields(repl_id, repl_rev, event_id, sess_id, message);
+    static_cast<void>(
+        bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                         .table_code = moex::plaza2::generated::TableCode::kFortsAggrReplSysEvents,
+                                         .fields = fields}));
+}
+
+void commit_sys_event_transaction(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge) {
+    using namespace moex::plaza2::cgate;
+    static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionCommit}));
+}
+
+void emit_sys_event(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge, std::int64_t repl_id,
+                    std::int64_t repl_rev, std::int64_t event_id, std::int64_t sess_id, bool in_snapshot) {
+    static_cast<void>(in_snapshot);
+    begin_sys_event_transaction(bridge);
+    stage_sys_event(bridge, repl_id, repl_rev, event_id, sess_id, "session_data_ready");
+    commit_sys_event_transaction(bridge);
+}
+
+void prepare_current_session(moex::plaza2::cgate::Plaza2Aggr20ListenerBridge& bridge, std::uint64_t lifenum) {
+    using namespace moex::plaza2::cgate;
+    static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Open}));
+    static_cast<void>(
+        bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = lifenum}));
+    static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}));
+}
+
+bool contains_log(const std::vector<std::string>& lines, std::string_view needle) {
+    return std::any_of(lines.begin(), lines.end(),
+                       [needle](const std::string& line) { return line.find(needle) != std::string::npos; });
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -81,6 +165,7 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME", "1", 1);
 
         ::setenv("MOEX_FAKE_AGGR_CLEAR_ON_BOOTSTRAP", "1", 1);
+        ::setenv("MOEX_FAKE_AGGR_NEGATIVE_UNRELATED", "1", 1);
         Plaza2Aggr20MdRunner runner(make_config(fixture));
         const auto start = runner.start();
         require(start.ok, "AGGR20 runner start should succeed with fake runtime and all arm flags");
@@ -102,12 +187,27 @@ int main(int argc, char** argv) {
         require(health.stream_created && health.stream_opened, "AGGR20 stream should be created and opened");
         require(health.stream_online && health.stream_snapshot_complete,
                 "AGGR20 stream should become online and snapshot-complete");
-        require(health.snapshot.row_count == 2, "AGGR20 fake runtime should emit two rows");
-        require(health.snapshot.instrument_count == 1, "AGGR20 fake runtime instrument count mismatch");
+        require(health.snapshot.row_count == 3, "AGGR20 fake runtime should emit the unrelated negative row");
+        require(health.snapshot.instrument_count == 2, "AGGR20 fake runtime instrument count mismatch");
         require(health.snapshot.top_bid.has_value() && health.snapshot.top_bid->price == "102500",
                 "AGGR20 fake top bid mismatch");
         require(health.snapshot.top_ask.has_value() && health.snapshot.top_ask->price == "102750",
                 "AGGR20 fake top ask mismatch");
+        require(health.snapshot.top_bid->price_scaled == 10'250'000'000LL &&
+                    health.snapshot.top_ask->price_scaled == 10'275'000'000LL,
+                "AGGR20 fake d16.5 mantissas must use scale 100000");
+        require(contains_log(runner.operator_log_lines(), "event=OPEN"),
+                "AGGR20 operator log must retain native OPEN event");
+        require(contains_log(runner.operator_log_lines(), "event=LIFENUM"),
+                "AGGR20 operator log must retain native LifeNum event");
+        require(contains_log(runner.operator_log_lines(), "event=TN_BEGIN"),
+                "AGGR20 operator log must retain transaction begin event");
+        require(contains_log(runner.operator_log_lines(), "event=ONLINE"),
+                "AGGR20 operator log must retain native ONLINE event");
+        require(contains_log(runner.operator_log_lines(), "source_repl_id=2401"),
+                "AGGR20 operator log must retain current sys_events identity");
+        require(contains_log(runner.operator_log_lines(), "authority_transition=true"),
+                "AGGR20 operator log must retain authority transitions");
 
         for (const auto& line : runner.operator_log_lines()) {
             require(line.find("PHASE5D-REDACTION-SAMPLE") == std::string::npos,
@@ -116,6 +216,8 @@ int main(int argc, char** argv) {
 
         const auto stop = runner.stop();
         require(stop.ok, "AGGR20 runner stop should succeed");
+
+        ::unsetenv("MOEX_FAKE_AGGR_NEGATIVE_UNRELATED");
 
         require(!runner.health_snapshot().ready && runner.health_snapshot().snapshot.row_count == 0,
                 "stop invalidates visible AGGR book and readiness");
@@ -148,6 +250,9 @@ int main(int argc, char** argv) {
             require(recovery.stop().ok, "recovery fixture stop");
         }
 
+        // A remote route that temporarily omits the declared service is
+        // recoverable, but the native code/message, first cause, current
+        // cause, service identity, and retry count remain observable.
         {
             auto now = std::chrono::steady_clock::time_point{};
             auto config = make_config(fixture);
@@ -180,6 +285,37 @@ int main(int argc, char** argv) {
             config.now = [&] { return now; };
             Plaza2Aggr20MdRunner recovery(config);
             require(recovery.start().ok && recovery.poll_once().ok && recovery.health_snapshot().ready,
+                    "service-unavailable fixture reaches ready");
+            ::setenv("MOEX_FAKE_AGGR_CLOSE_AFTER_READY", "1", 1);
+            require(recovery.poll_once().ok, "service-unavailable loss callback");
+            ::unsetenv("MOEX_FAKE_AGGR_CLOSE_AFTER_READY");
+            ::setenv("MOEX_FAKE_LISTENER_OPEN_NO_SERVICE", "1", 1);
+            now += std::chrono::seconds(1);
+            require(recovery.poll_once().ok, "temporary service-unavailable reopen is recoverable");
+            const auto& recovering_health = recovery.health_snapshot();
+            require(recovering_health.state == Plaza2Aggr20MdRunnerState::Recovering &&
+                        recovering_health.recovery_service == "FORTS_AGGR20_REPL" &&
+                        recovering_health.reopen_retry_count == 1 &&
+                        recovering_health.first_recovery_error.has_value() &&
+                        recovering_health.current_recovery_error.has_value() &&
+                        recovering_health.current_recovery_error->runtime_code == 36866 &&
+                        recovering_health.current_recovery_error->message.find("SERV:NO_SERVICE") != std::string::npos,
+                    "recoverable reopen preserves native service-unavailable diagnostics");
+            ::unsetenv("MOEX_FAKE_LISTENER_OPEN_NO_SERVICE");
+            now += std::chrono::seconds(1);
+            require(recovery.poll_once().ok && recovery.health_snapshot().ready,
+                    "service-unavailable recovery restores readiness after a fresh snapshot");
+            require(recovery.stop().ok, "service-unavailable fixture stop");
+        }
+
+        // A malformed listener-open result is not a transient service outage
+        // and must reach the runner as a terminal, classified error.
+        {
+            auto now = std::chrono::steady_clock::time_point{};
+            auto config = make_config(fixture);
+            config.now = [&] { return now; };
+            Plaza2Aggr20MdRunner recovery(config);
+            require(recovery.start().ok && recovery.poll_once().ok && recovery.health_snapshot().ready,
                     "fatal AGGR20 reopen fixture reaches ready");
             ::setenv("MOEX_FAKE_AGGR_CLOSE_AFTER_READY", "1", 1);
             require(recovery.poll_once().ok, "fatal AGGR20 reopen fixture enters recovery");
@@ -194,6 +330,31 @@ int main(int argc, char** argv) {
                     "fatal AGGR20 reopen cause must be exposed, not suppressed");
             ::unsetenv("MOEX_FAKE_AGGR_REOPEN_OPEN_RESULT");
             require(recovery.stop().ok, "fatal AGGR20 reopen fixture stop");
+        }
+
+        {
+            auto now = std::chrono::steady_clock::time_point{};
+            auto config = make_config(fixture);
+            config.now = [&] { return now; };
+            Plaza2Aggr20MdRunner fatal_recovery(config);
+            require(fatal_recovery.start().ok && fatal_recovery.poll_once().ok &&
+                        fatal_recovery.health_snapshot().ready,
+                    "fatal reopen fixture reaches ready");
+            ::setenv("MOEX_FAKE_AGGR_CLOSE_AFTER_READY", "1", 1);
+            require(fatal_recovery.poll_once().ok, "fatal reopen loss callback");
+            ::unsetenv("MOEX_FAKE_AGGR_CLOSE_AFTER_READY");
+            ::setenv("MOEX_FAKE_LISTENER_OPEN_RESULT", "invalid", 1);
+            now += std::chrono::seconds(1);
+            const auto fatal = fatal_recovery.poll_once();
+            ::unsetenv("MOEX_FAKE_LISTENER_OPEN_RESULT");
+            require(!fatal.ok && fatal_recovery.health_snapshot().state == Plaza2Aggr20MdRunnerState::Failed,
+                    "fatal listener-open result must stop recovery");
+            require(fatal_recovery.health_snapshot().current_recovery_error.has_value() &&
+                        fatal_recovery.health_snapshot().current_recovery_error->code ==
+                            Plaza2ErrorCode::InvalidConfiguration &&
+                        fatal_recovery.health_snapshot().current_recovery_error->runtime_code == 131073,
+                    "fatal listener-open result preserves its original runtime classification");
+            require(fatal_recovery.stop().ok, "fatal reopen fixture stop");
         }
 
         {
@@ -218,7 +379,228 @@ int main(int argc, char** argv) {
             require(recovery.stop().ok, "AGGR20 watchdog fixture stop");
         }
 
+        Plaza2Aggr20BookProjector authority_projector;
+        Plaza2Aggr20ListenerBridge authority_bridge(authority_projector, 321);
+        std::vector<std::string> authority_trace;
+        authority_bridge.set_event_trace(
+            [&authority_trace](std::string line) { authority_trace.push_back(std::move(line)); });
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Open}),
+                "authority bridge open");
+        require(
+            !authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 7}),
+            "authority bridge lifenum");
+        emit_sys_event(authority_bridge, 2301, 23, 23, 321, true);
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}),
+                "authority bridge online");
+        require(authority_bridge.online() && authority_bridge.snapshot_complete() &&
+                    !authority_bridge.session_data_ready() && !authority_bridge.authoritative(),
+                "bootstrap rows and an old snapshot sys_events row must not authorize the book");
+        require(authority_bridge.authority_snapshot().last_sys_event.has_value() &&
+                    authority_bridge.authority_snapshot().last_sys_event->seen_during_snapshot,
+                "bootstrap sys_events provenance must be retained as non-authoritative");
+        require(authority_bridge.authority_snapshot().last_sys_event->source_repl_id == 2301 &&
+                    authority_bridge.authority_snapshot().last_sys_event->source_repl_rev == 23 &&
+                    authority_bridge.authority_snapshot().last_sys_event->event_id == 23 &&
+                    authority_bridge.authority_snapshot().last_sys_event->sess_id == 321 &&
+                    authority_bridge.authority_snapshot().last_sys_event->server_time == 1700000000,
+                "bootstrap sys_events source identity and server time must be preserved");
+        const auto before_resync_epoch = authority_bridge.authority_snapshot().stream_epoch;
+        require(authority_bridge.authority_snapshot().aggr_online &&
+                    authority_bridge.authority_snapshot().snapshot_ready_witness.has_value() &&
+                    authority_bridge.authority_snapshot().snapshot_ready_witness->event_id == 23 &&
+                    !authority_bridge.authority_snapshot().online_ready_witness.has_value(),
+                "late-join snapshot witness must remain distinct from online synchronization");
+        const auto current_fields = sys_event_fields(2401, 24, 24, 321, "session_data_ready");
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionBegin}),
+                "current sys_events transaction begin");
+        require(!authority_bridge.on_plaza2_listener_event(
+                    {.kind = Plaza2ListenerEventKind::StreamData,
+                     .table_code = moex::plaza2::generated::TableCode::kFortsAggrReplSysEvents,
+                     .fields = current_fields}),
+                "current sys_events row staging");
+        require(!authority_bridge.session_data_ready() && !authority_bridge.authoritative(),
+                "uncommitted current sys_events row must not authorize the stream");
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionCommit}),
+                "current sys_events transaction commit");
+        require(authority_bridge.session_data_ready() && authority_bridge.authoritative(),
+                "a current post-bootstrap session_data_ready row must restore authority");
+        require(authority_bridge.authority_snapshot().online_ready_witness.has_value() &&
+                    authority_bridge.authority_snapshot().online_ready_witness->event_id == 24,
+                "online witness must retain the committed synchronous event identity");
+        require(!authority_bridge.authority_snapshot().last_sys_event->seen_during_snapshot,
+                "current sys_events provenance must not be marked as bootstrap");
+        require(authority_bridge.authority_snapshot().last_sys_event->source_repl_id == 2401 &&
+                    authority_bridge.authority_snapshot().last_sys_event->source_repl_rev == 24 &&
+                    authority_bridge.authority_snapshot().last_sys_event->event_id == 24 &&
+                    authority_bridge.authority_snapshot().last_sys_event->sess_id == 321,
+                "current sys_events source identity must be preserved after commit");
+        require(contains_log(authority_trace, "event=OPEN") && contains_log(authority_trace, "event=LIFENUM") &&
+                    contains_log(authority_trace, "event=ONLINE") && contains_log(authority_trace, "event=TN_COMMIT") &&
+                    contains_log(authority_trace, "source_repl_id=2401") &&
+                    contains_log(authority_trace, "authority_transition=true"),
+                "bridge event trace must retain source events and authority transitions");
+        const auto invalidated_fields = sys_event_fields(2450, 25, 25, 321, "session_data_ready");
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionBegin}),
+                "invalidation candidate transaction begin");
+        require(!authority_bridge.on_plaza2_listener_event(
+                    {.kind = Plaza2ListenerEventKind::StreamData,
+                     .table_code = moex::plaza2::generated::TableCode::kFortsAggrReplSysEvents,
+                     .fields = invalidated_fields}),
+                "invalidation candidate row staging");
+        require(authority_bridge.authoritative(),
+                "a staged replacement must not revoke an already committed authority before commit");
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted}) &&
+                    authority_bridge.recovering() && !authority_bridge.authoritative() &&
+                    authority_projector.snapshot().row_count == 0 &&
+                    authority_bridge.authority_snapshot().stream_epoch > before_resync_epoch,
+                "clearing an authoritative stream must invalidate the visible book and epoch");
+        require(!authority_bridge.authority_snapshot().snapshot_ready_witness &&
+                    !authority_bridge.authority_snapshot().online_ready_witness,
+                "ClearDeleted must revoke both witness kinds");
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Open}), "resync open");
+        require(
+            !authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 8}),
+            "resync lifenum");
+        require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}), "resync online");
+        emit_sys_event(authority_bridge, 2501, 25, 25, 999, false);
+        require(!authority_bridge.authoritative(), "wrong-session sys_events must not authorize the target");
+        emit_sys_event(authority_bridge, 2502, 26, 26, 321, false);
+        require(authority_bridge.authoritative(), "matching current sys_events must restore authority after resync");
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 11);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 2601, 26, 26, 321, "session_data_ready");
+            stage_sys_event(bridge, 2602, 27, 27, 321, "other_event");
+            require(!bridge.session_data_ready() && !bridge.authoritative(),
+                    "ready-then-other rows must not authorize before their transaction commits");
+            commit_sys_event_transaction(bridge);
+            require(bridge.session_data_ready() && bridge.authoritative(),
+                    "ready-then-other rows must authorize when any matching row commits");
+            require(bridge.authority_snapshot().last_sys_event.has_value() &&
+                        bridge.authority_snapshot().last_sys_event->event_id == 27 &&
+                        bridge.authority_snapshot().last_sys_event->message == "other_event",
+                    "all committed sys_events rows must be processed in source order");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 12);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 2701, 28, 28, 321, "other_event");
+            stage_sys_event(bridge, 2702, 29, 29, 321, "session_data_ready");
+            require(!bridge.session_data_ready() && !bridge.authoritative(),
+                    "other-then-ready rows must remain pending before commit");
+            commit_sys_event_transaction(bridge);
+            require(bridge.session_data_ready() && bridge.authoritative(),
+                    "other-then-ready rows must authorize after the matching row commits");
+            require(bridge.authority_snapshot().last_sys_event.has_value() &&
+                        bridge.authority_snapshot().last_sys_event->event_id == 29,
+                    "the final row in an other-then-ready transaction must remain observable");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 13);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 2801, 30, 30, 321, "other_event");
+            stage_sys_event(bridge, 2802, 31, 31, 321, "another_event");
+            commit_sys_event_transaction(bridge);
+            require(!bridge.session_data_ready() && !bridge.authoritative(),
+                    "a transaction without session_data_ready must not authorize the target");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 14);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 2901, 32, 32, 321, "session_data_ready");
+            stage_sys_event(bridge, 2902, 33, 33, 321, "other_event");
+            require(!bridge.session_data_ready(), "aborted sys_events transaction must remain uncommitted");
+            static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Close}));
+            require(bridge.recovering() && !bridge.authoritative(),
+                    "close must discard every pending sys_events row and fence authority");
+            prepare_current_session(bridge, 15);
+            require(!bridge.authoritative(), "discarded rows must not authorize after a listener reopen");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 16);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 3001, 34, 34, 321, "session_data_ready");
+            static_cast<void>(
+                bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 17}));
+            static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}));
+            require(!bridge.authoritative(), "LifeNum must discard an uncommitted authority candidate");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 18);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 3101, 35, 35, 321, "session_data_ready");
+            static_cast<void>(bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted}));
+            require(bridge.recovering() && !bridge.authoritative(),
+                    "ClearDeleted must discard an uncommitted authority candidate");
+            prepare_current_session(bridge, 19);
+            require(!bridge.authoritative(), "ClearDeleted-discarded rows must not authorize after reopen");
+        }
+
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            prepare_current_session(bridge, 20);
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 3201, 36, 36, 321, "session_data_ready");
+            projector.rollback();
+            require(static_cast<bool>(
+                        bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionCommit})),
+                    "a commit after projector rollback must fail closed");
+            require(!bridge.authoritative(), "failed commit must discard pending sys_events authority");
+        }
+
         Plaza2Aggr20BookProjector staged;
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Open}), "late join open");
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 4001, 41, 678984, 321, "session_data_ready");
+            require(!bridge.authority_snapshot().snapshot_ready_witness,
+                    "uncommitted snapshot evidence must never be visible");
+            commit_sys_event_transaction(bridge);
+            require(bridge.authority_snapshot().snapshot_ready_witness.has_value(), "committed snapshot retained");
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 4002, 42, 678985, 999, "session_data_ready");
+            stage_sys_event(bridge, 4003, 43, 678986, 321, "other_event");
+            commit_sys_event_transaction(bridge);
+            require(bridge.authority_snapshot().snapshot_ready_witness->event_id == 678984,
+                    "unrelated and wrong-session rows must not replace matching evidence");
+            require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}), "late join online");
+            require(!bridge.authoritative(), "snapshot witness alone cannot authorize orders");
+            begin_sys_event_transaction(bridge);
+            auto deleted = sys_event_fields(4001, 44, 678984, 321, "session_data_ready");
+            deleted[2].signed_value = 4001;
+            require(!bridge.on_plaza2_listener_event(
+                        {.kind = Plaza2ListenerEventKind::StreamData,
+                         .table_code = moex::plaza2::generated::TableCode::kFortsAggrReplSysEvents,
+                         .fields = deleted}),
+                    "witness tombstone staged");
+            commit_sys_event_transaction(bridge);
+            require(!bridge.authority_snapshot().snapshot_ready_witness && !bridge.authoritative(),
+                    "deleted ready row must revoke snapshot evidence without granting online authority");
+            bridge.on_plaza2_listener_error({.code = Plaza2ErrorCode::DecodeFailed, .message = "fixture decode error"});
+            require(!bridge.authority_snapshot().aggr_online && !bridge.authority_snapshot().snapshot_ready_witness,
+                    "callback error must fence display and clear all witnesses");
+        }
         Plaza2Aggr20ListenerBridge staged_bridge(staged);
         require(!staged_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionBegin}),
                 "begin staged bootstrap");

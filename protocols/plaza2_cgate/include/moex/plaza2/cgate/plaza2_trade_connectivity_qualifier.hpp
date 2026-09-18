@@ -74,6 +74,8 @@ struct Plaza2QualificationSnapshot {
     bool aggr20_has_lifenum{false};
     std::uint64_t aggr20_lifenum{0};
     std::size_t aggr20_row_count{0};
+    bool aggr20_session_data_ready{false};
+    bool aggr20_authoritative{false};
 
     bool participant_limit_unique{false};
     bool participant_limits_set{false};

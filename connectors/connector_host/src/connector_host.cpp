@@ -1,4 +1,5 @@
 #include "moex/connector_host/connector_host.hpp"
+#include "moex/connector_host/late_join_display.hpp"
 
 #include <algorithm>
 #include <array>
@@ -147,6 +148,11 @@ template <class Integer> std::optional<Integer> checkpoint_integer_field(std::st
     if (error != std::errc{} || pointer != value.data() + value.size())
         return std::nullopt;
     return parsed;
+}
+
+bool valid_current_min_step(std::string_view value) {
+    const auto parsed = ps::parse_session_decimal(value);
+    return parsed.has_value() && parsed->units > 0;
 }
 
 struct PersistentSessionCheckpoint {
@@ -696,8 +702,18 @@ struct ConnectorHost::Impl {
         out.reply_handle_open = host.p2mqreply_open();
         out.publisher_ready = live && out.publisher_handle_open && health.publisher == 3;
         out.reply_ready = live && out.reply_handle_open && health.reply == 3;
-        out.aggr_snapshot_state_ready = host.aggr_online() && host.aggr_snapshot_complete();
-        out.aggr_ready = live && health.aggr == 3 && out.aggr_snapshot_state_ready;
+        const auto aggr_authority = host.aggr_authority_snapshot();
+        out.aggr_transport_active = aggr_authority.transport_active && health.aggr == 3;
+        out.aggr_snapshot_state_ready = aggr_authority.snapshot_complete;
+        out.aggr_session_data_ready = aggr_authority.session_data_ready;
+        const auto target_aggr_snapshot = host.aggr20_projector().snapshot_for_isin(out.target_isin_id);
+        // The listener bridge certifies the current AGGR source generation;
+        // the DTC boundary additionally requires a target-scoped projection.
+        // A global AGGR row or global BBO is never enough for this flag.
+        out.aggr_target_authoritative = aggr_authority.target_authoritative && target_aggr_snapshot.has_value();
+        out.aggr_stream_epoch = aggr_authority.stream_epoch;
+        out.aggr_ready = live && health.aggr == 3 && out.aggr_transport_active && out.aggr_snapshot_state_ready &&
+                         out.aggr_session_data_ready && out.aggr_target_authoritative;
         out.publisher_calls = host.publisher_call_counts();
         out.streams.assign(data.stream_health().begin(), data.stream_health().end());
         constexpr std::array required{StreamCode::kFortsTradeRepl,
@@ -768,6 +784,8 @@ struct ConnectorHost::Impl {
             out.bbo_age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
                                                                                    bbo->committed_at)
                                  .count();
+            out.aggr_source_snapshot_version = bbo->source_snapshot_version;
+            out.aggr_source_snapshot_hash = bbo->source_snapshot_hash;
         }
         const auto max_age = config.order.policy.max_aggr20_age_ms;
         out.observation_ready = host.started() && state != ConnectorHostState::Failed && out.publisher_ready &&
@@ -1139,6 +1157,120 @@ DeepPassiveProposal ConnectorHost::first_order_price_proposal() const {
 
 ConnectorHostSnapshot ConnectorHost::snapshot() const {
     return impl_->snapshot();
+}
+
+ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
+    ConnectorHostMarketDataSnapshot out;
+    const auto& host = impl_->transport.host();
+    const auto& config = impl_->config;
+    const auto& health = host.runtime_health();
+    const auto authority = host.aggr_authority_snapshot();
+    out.connector_generation = host.recovery_status().generation;
+    out.market_data_authority_epoch = authority.market_data_authority_epoch;
+    out.stream_epoch = authority.stream_epoch;
+    out.target_isin_id = config.transport.target_isin_id != 0 ? config.transport.target_isin_id : config.order.isin_id;
+    out.board = config.target_board;
+    out.transport_active = host.started() && health.aggr == 3 && authority.transport_active;
+    out.snapshot_complete = authority.snapshot_complete;
+    out.session_data_ready = authority.session_data_ready;
+    out.aggr_online = authority.aggr_online;
+
+    bool target_instrument_refdata_current = false;
+    for (const auto& instrument : host.private_state().instruments()) {
+        if (instrument.isin_id != out.target_isin_id)
+            continue;
+        out.symbol = instrument.isin;
+        out.min_step = instrument.min_step;
+        target_instrument_refdata_current =
+            instrument.kind == ps::InstrumentKind::kFuture && instrument.current_session_member &&
+            instrument.sess_id == config.transport.target_session_id && instrument.trade_mode_id != 0 &&
+            !instrument.isin.empty() && valid_current_min_step(instrument.min_step);
+        break;
+    }
+
+    std::optional<std::int32_t> session_status;
+    std::optional<std::int32_t> instrument_status;
+    for (const auto& instrument : host.private_state().instruments()) {
+        if (instrument.isin_id == out.target_isin_id && instrument.has_current_status)
+            instrument_status = instrument.current_status;
+    }
+    for (const auto& session : host.private_state().sessions()) {
+        if (session.sess_id == config.transport.target_session_id && session.has_current_status)
+            session_status = session.current_status;
+    }
+
+    const auto scoped = host.aggr20_projector().snapshot_for_isin(out.target_isin_id);
+    if (scoped.has_value()) {
+        out.source_snapshot_version = scoped->source_snapshot_version;
+        out.source_snapshot_hash = scoped->source_snapshot_hash;
+        out.source_repl_id = scoped->last_repl_id;
+        out.source_repl_rev = scoped->last_repl_rev;
+        out.snapshot_watermark = scoped->last_repl_rev > 0 ? static_cast<std::uint64_t>(scoped->last_repl_rev) : 0;
+        out.exchange_moment = scoped->exchange_moment;
+        out.exchange_moment_ns = scoped->exchange_moment_ns;
+        out.committed_at = scoped->committed_at;
+        out.two_sided = scoped->top_bid.has_value() && scoped->top_ask.has_value();
+        out.levels.reserve(scoped->levels.size());
+        for (const auto& level : scoped->levels) {
+            out.levels.push_back({.price_scaled = level.price_scaled,
+                                  .volume = level.volume,
+                                  .side = level.dir,
+                                  .source_repl_id = level.repl_id,
+                                  .source_repl_rev = level.repl_rev,
+                                  .exchange_moment = level.moment,
+                                  .exchange_moment_ns = level.moment_ns,
+                                  .price = level.price});
+        }
+    }
+
+    const auto& data = host.private_state();
+    const bool healthy = host.started() && !host.recovering() && impl_->state != ConnectorHostState::Failed &&
+                         host.last_callback_error().empty() && data.connector_health().callback_error_count == 0 &&
+                         health.valid && health.connection == 3;
+    const bool identity_current = market_data_identity_current(
+        {.authority = authority,
+         .transport = health,
+         .streams = data.stream_health(),
+         .sessions = data.sessions(),
+         .instruments = data.instruments(),
+         .provenance = {data.instrument_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplFutInstruments,
+                                                          out.target_isin_id),
+                        data.instrument_source_provenance(
+                            plaza2::generated::TableCode::kFortsRefdataReplFutSessContents, out.target_isin_id),
+                        data.session_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplSession,
+                                                       config.transport.target_session_id)},
+         .refdata_lifenum = data.refdata_lifenum(),
+         .session_id = config.transport.target_session_id,
+         .isin_id = out.target_isin_id,
+         .now_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                            (config.market_data_now ? config.market_data_now() : std::chrono::system_clock::now())
+                                .time_since_epoch())
+                            .count(),
+         .healthy = healthy});
+    out.refdata_metadata_current = !out.board.empty() && target_instrument_refdata_current;
+    out.session_tradable = identity_current && session_status == std::optional<std::int32_t>{1};
+    out.instrument_tradable = identity_current && instrument_status == std::optional<std::int32_t>{1};
+    apply_market_data_display_authority(out, authority, healthy, identity_current, config.transport.target_session_id,
+                                        scoped.has_value());
+    if (out.valid)
+        out.invalid_reason.clear();
+    else if (!healthy)
+        out.invalid_reason = "market-data callback/transport/recovery health is not current";
+    else if (!out.transport_active)
+        out.invalid_reason = "AGGR20 transport is not active";
+    else if (!out.snapshot_complete)
+        out.invalid_reason = "AGGR20 snapshot is incomplete";
+    else if (!identity_current)
+        out.invalid_reason = "current session identity/status/refdata corroboration is missing or expired";
+    else if (!out.session_data_ready)
+        out.invalid_reason = "AGGR20 current session_data_ready synchronization is missing";
+    else if (!scoped.has_value())
+        out.invalid_reason = "target AGGR20 snapshot is absent";
+    else if (!authority.target_authoritative)
+        out.invalid_reason = "AGGR20 target source is not authoritative";
+    else if (!out.refdata_metadata_current)
+        out.invalid_reason = "target refdata symbol/board/min_step is not current";
+    return out;
 }
 
 ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot(bool private_identity) const {

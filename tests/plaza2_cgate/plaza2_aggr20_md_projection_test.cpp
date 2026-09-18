@@ -62,16 +62,34 @@ int main() {
         const auto malformed_error = strict_projector.on_row(malformed_bid);
         require(malformed_error && malformed_error.code == Plaza2ErrorCode::DecodeFailed,
                 "AGGR20 malformed price must be surfaced as a decode failure");
-        require(parse_fixed_point("100.50", kPlaza2Aggr20FractionalDigits, false) == 100'500'000,
-                "AGGR20 fixed-point parser must preserve its six-decimal internal unit contract");
-        require(parse_fixed_point("12.345678", kPlaza2Aggr20FractionalDigits, false) == 12'345'678,
-                "AGGR20 fixed-point parser must accept exactly six fractional digits");
-        require(!parse_fixed_point("12.3456789", kPlaza2Aggr20FractionalDigits, false).has_value(),
-                "AGGR20 fixed-point parser must reject truncating excess precision");
+        require(kPlaza2Aggr20FractionalDigits == 5 && kPlaza2Aggr20PriceScale == 100'000,
+                "AGGR20 must use the generated d16.5 scale-5 contract");
+        require(parse_fixed_point("100.50000", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision) ==
+                    10'050'000,
+                "AGGR20 d16.5 must preserve scale-5 units");
+        require(parse_fixed_point("0", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision) == 0 &&
+                    parse_fixed_point("0.00000", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision) ==
+                        0,
+                "AGGR20 d16.5 must accept zero spellings");
+        require(
+            parse_fixed_point("-0.00001", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision) == -1 &&
+                parse_fixed_point("-100.50000", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision) ==
+                    -10'050'000,
+            "AGGR20 d16.5 must accept signed values");
+        require(parse_fixed_point("99999999999.99999", kPlaza2Aggr20FractionalDigits, true,
+                                  kPlaza2D16_5DecimalPrecision) == 9'999'999'999'999'999LL &&
+                    parse_fixed_point("-99999999999.99999", kPlaza2Aggr20FractionalDigits, true,
+                                      kPlaza2D16_5DecimalPrecision) == -9'999'999'999'999'999LL,
+                "AGGR20 d16.5 must accept both valid domain extremes");
+        require(!parse_fixed_point("12.345678", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision)
+                     .has_value(),
+                "AGGR20 fixed-point parser must reject six fractional digits");
         require(!parse_fixed_point("12x34", kPlaza2Aggr20FractionalDigits, false).has_value(),
                 "AGGR20 fixed-point parser must reject non-numeric characters");
-        require(!parse_fixed_point("-1", kPlaza2Aggr20FractionalDigits, false).has_value(),
-                "AGGR20 prices must reject a negative sign");
+        require(
+            !parse_fixed_point("100000000000.00000", kPlaza2Aggr20FractionalDigits, true, kPlaza2D16_5DecimalPrecision)
+                 .has_value(),
+            "AGGR20 d16.5 parser must reject precision overflow");
         require(!parse_fixed_point("9223372036854775808", 0, false).has_value(),
                 "fixed-point parser must reject signed overflow");
         require(!projector.on_row(bid), "bid AGGR20 row should be accepted while transaction is open");
@@ -112,9 +130,11 @@ int main() {
         const auto& snapshot = projector.snapshot();
         require(snapshot.row_count == 4, "AGGR20 snapshot row count mismatch");
         require(snapshot.instrument_count == 2, "AGGR20 instrument count mismatch");
-        require(snapshot.top_bid.has_value() && snapshot.top_bid->price == "10000.00",
+        require(snapshot.top_bid.has_value() && snapshot.top_bid->price == "10000.00" &&
+                    snapshot.top_bid->price_scaled == 1'000'000'000,
                 "global AGGR20 diagnostic top bid mismatch");
-        require(snapshot.top_ask.has_value() && snapshot.top_ask->price == "101.25",
+        require(snapshot.top_ask.has_value() && snapshot.top_ask->price == "101.25" &&
+                    snapshot.top_ask->price_scaled == 10'125'000,
                 "global AGGR20 diagnostic top ask mismatch");
         require(snapshot.last_repl_id == 4, "AGGR20 last replID mismatch");
         require(snapshot.last_repl_rev == 14, "AGGR20 last replRev mismatch");
@@ -123,7 +143,15 @@ int main() {
                 "target instrument should have a two-sided scoped snapshot");
         require(target->top_bid->price == "100.50" && target->top_ask->price == "101.25",
                 "instrument-scoped BBO must not use another instrument");
+        require(target->top_bid->price_scaled == 10'050'000 && target->top_ask->price_scaled == 10'125'000,
+                "instrument-scoped d16.5 units must use scale 100000");
         require(target->committed_at == local_now, "scoped snapshot must carry local monotonic commit time");
+        require(target->source_snapshot_version != 0 && target->source_snapshot_hash != 0,
+                "target snapshot must expose a version and deterministic source hash");
+        require(target->levels.size() == 2 && target->levels[0].dir == 1 && target->levels[1].dir == 2,
+                "target levels must be sorted bid-descending then ask-ascending");
+        const auto initial_target_version = target->source_snapshot_version;
+        const auto initial_target_hash = target->source_snapshot_hash;
         require(!projector.snapshot_for_isin(9999).has_value(), "absent instrument must have no scoped snapshot");
 
         local_now += std::chrono::seconds(1);
@@ -144,6 +172,9 @@ int main() {
         require(one_sided->committed_at == local_now, "scoped timestamp must advance on every commit");
         require(one_sided->last_repl_id == 2 && one_sided->last_repl_rev == 15,
                 "scoped deletion must retain the target's latest replication identity");
+        require(one_sided->source_snapshot_version > initial_target_version &&
+                    one_sided->source_snapshot_hash != initial_target_hash,
+                "target value changes must advance version and hash");
 
         local_now += std::chrono::seconds(1);
         projector.begin_transaction();
@@ -162,6 +193,9 @@ int main() {
                 "updating another instrument must not change target BBO");
         require(target_after_other_update->committed_at == local_now - std::chrono::seconds(1),
                 "updating another instrument must not refresh target local freshness");
+        require(target_after_other_update->source_snapshot_version == one_sided->source_snapshot_version &&
+                    target_after_other_update->source_snapshot_hash == one_sided->source_snapshot_hash,
+                "unrelated ISIN updates must not refresh target source version or hash");
 
         // Replication slots can move price/side without a zero-volume old-price row.
         Plaza2Aggr20BookProjector slots;
@@ -223,6 +257,39 @@ int main() {
         require(!slots.commit(), "instrument move commit");
         require(slots.snapshot_for_isin(4433036)->row_count == 0 && slots.snapshot_for_isin(1001)->row_count == 1,
                 "instrument move must rebuild both old and new instrument snapshots");
+
+        Plaza2Aggr20BookProjector signed_book;
+        const auto stage_signed = [&](std::uint64_t id, std::int64_t dir, std::string_view price) {
+            const std::array row = {
+                unsigned_field(FieldCode::kFortsAggrReplOrdersAggrReplId, id),
+                signed_field(FieldCode::kFortsAggrReplOrdersAggrReplRev, static_cast<std::int64_t>(id)),
+                signed_field(FieldCode::kFortsAggrReplOrdersAggrIsinId, 3003),
+                signed_field(FieldCode::kFortsAggrReplOrdersAggrDir, dir),
+                decimal_field(FieldCode::kFortsAggrReplOrdersAggrPrice, price),
+                signed_field(FieldCode::kFortsAggrReplOrdersAggrVolume, 1),
+            };
+            require(!signed_book.on_row(row), "signed AGGR20 row must stage");
+        };
+        signed_book.begin_transaction();
+        stage_signed(11, 1, "-100.50000");
+        stage_signed(12, 1, "0");
+        stage_signed(13, 1, "100.50000");
+        stage_signed(14, 2, "-100.50000");
+        stage_signed(15, 2, "0.00000");
+        stage_signed(16, 2, "100.50000");
+        require(!signed_book.commit(), "signed AGGR20 rows must commit");
+        const auto signed_snapshot = signed_book.snapshot_for_isin(3003);
+        require(signed_snapshot.has_value() && signed_snapshot->top_bid.has_value() &&
+                    signed_snapshot->top_ask.has_value() && signed_snapshot->top_bid->price == "100.50000" &&
+                    signed_snapshot->top_bid->price_scaled == 10'050'000 &&
+                    signed_snapshot->top_ask->price == "-100.50000" &&
+                    signed_snapshot->top_ask->price_scaled == -10'050'000,
+                "signed AGGR20 BBO must preserve negative, zero, and positive values");
+        require(signed_snapshot->levels.size() == 6 && signed_snapshot->levels[0].price == "100.50000" &&
+                    signed_snapshot->levels[1].price == "0" && signed_snapshot->levels[2].price == "-100.50000" &&
+                    signed_snapshot->levels[3].price == "-100.50000" && signed_snapshot->levels[4].price == "0.00000" &&
+                    signed_snapshot->levels[5].price == "100.50000",
+                "signed AGGR20 levels must sort bids descending and asks ascending");
         slots.reset();
         require(slots.snapshot().row_count == 0 && !slots.snapshot_for_isin(1001),
                 "epoch reset must discard slot state");

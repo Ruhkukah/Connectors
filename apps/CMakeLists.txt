@@ -62,6 +62,14 @@ moex_add_app(moex_plaza2_test_runner plaza2_test_runner.cpp moex_plaza2_cgate_li
 moex_add_app(moex_plaza2_test_connectivity_qualifier plaza2_test_connectivity_qualifier.cpp
     moex_plaza2_cgate_connectivity_qualifier)
 moex_add_app(moex_plaza2_aggr20_md_test_runner plaza2_aggr20_md_test_runner.cpp moex_plaza2_cgate_aggr20_md)
+moex_add_app(moex_plaza2_aggr20_authority_probe plaza2_aggr20_authority_probe.cpp moex_plaza2_cgate_aggr20_md)
+moex_add_app(moex_plaza2_day_observer plaza2_day_observer.cpp moex_plaza2_cgate_runtime)
+if(BUILD_TESTING)
+    add_test(NAME plaza2_day_observer_fixture
+        COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/scripts/plaza2_day_observer_fixture_test.py"
+            "$<TARGET_FILE:moex_plaza2_day_observer>")
+    set_tests_properties(plaza2_day_observer_fixture PROPERTIES LABELS "plaza2;sanitizer;read-only")
+endif()
 moex_add_app(moex_plaza2_order_lifecycle_runner plaza2_order_lifecycle_runner.cpp moex_plaza2_trade_order_lifecycle)
 moex_add_app(moex_plaza2_twime_integrated_test_runner plaza2_twime_integrated_test_runner.cpp
     moex_plaza2_twime_integrated_test)

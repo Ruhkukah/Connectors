@@ -55,6 +55,7 @@ git_sha="${git_sha:-$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || echo unk
 required_apps=(
   "$build_dir/apps/moex_plaza2_test_runner"
   "$build_dir/apps/moex_plaza2_cert_runner"
+  "$build_dir/apps/moex_plaza2_aggr20_authority_probe"
 )
 
 for app in "${required_apps[@]}"; do
@@ -69,6 +70,7 @@ trap 'rm -rf "$staging"' EXIT
 
 mkdir -p "$staging/build-docker-linux/apps"
 cp "$build_dir/apps/moex_plaza2_test_runner" "$staging/build-docker-linux/apps/"
+cp "$build_dir/apps/moex_plaza2_aggr20_authority_probe" "$staging/build-docker-linux/apps/"
 if [[ -x "$build_dir/apps/moex_plaza2_twime_integrated_test_runner" ]]; then
   cp "$build_dir/apps/moex_plaza2_twime_integrated_test_runner" "$staging/build-docker-linux/apps/"
 fi

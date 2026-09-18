@@ -110,6 +110,8 @@ struct Plaza2ExecutionSafetyReceipt {
     std::size_t runtime_scheme_warning_drift_count{0};
     bool aggr_online{false};
     bool aggr_snapshot_complete{false};
+    bool aggr_session_data_ready{false};
+    bool aggr_authoritative{false};
     std::string limit_fingerprint_sha256;
     std::uint64_t limit_source_commit_sequence{0};
     PositionEvidenceClass position_evidence_class{PositionEvidenceClass::Unresolved};
@@ -169,6 +171,10 @@ struct Plaza2TestSessionHostConfig {
     // exact five private replication streams above.
     std::vector<Plaza2TestTradeStreamConfig> status_streams;
     Plaza2TestTradeStreamConfig aggr20_stream;
+    // Optional exact AGGR20 sys_events session identity. Zero accepts a
+    // non-zero current session id and is suitable only before refdata
+    // negotiation has supplied the target session.
+    std::int32_t aggr20_target_session_id{0};
     std::string publisher_settings;
     std::string publisher_open_settings;
     std::string publisher_name{"PUB"};
@@ -281,6 +287,9 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] const plaza2::cgate::Plaza2Aggr20BookProjector& aggr20_projector() const noexcept;
     [[nodiscard]] bool aggr_online() const noexcept;
     [[nodiscard]] bool aggr_snapshot_complete() const noexcept;
+    [[nodiscard]] bool aggr_session_data_ready() const noexcept;
+    [[nodiscard]] bool aggr_authoritative() const noexcept;
+    [[nodiscard]] plaza2::cgate::Plaza2Aggr20AuthoritySnapshot aggr_authority_snapshot() const;
     [[nodiscard]] bool p2mqreply_open() const noexcept;
     [[nodiscard]] bool publisher_open() const noexcept;
     // Sanitized connection instance identity used for operator/certification

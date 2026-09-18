@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "verification_date": "2026-09-18",
+  "local_root": "/Users/pavel/CSharp/MoexConnector/.codex-tmp/aggr20-authority-probe-d16-5-20260918T0900MSK",
+  "remote_root_reported_by_sealed_readme": "/home/azgaldov/moex/qualification/authority-probe-d16-5-20260918T0900MSK",
+  "remote_manifest_reverified": false,
+  "local_sha256_manifest_entries_verified": 24,
+  "source_commit": "2c5464a96f2014b3d53f3f32015a4d4a7dbc47d5",
+  "files": [
+    {
+      "path": "LOCAL_SHA256SUMS",
+      "bytes": 2185,
+      "sha256": "ee6784698e6183b55aaf94a1593e02c685f5e21a3d5394da11bd36400c699b1a"
+    },
+    {
+      "path": "SHA256SUMS",
+      "bytes": 2928,
+      "sha256": "f9ed4d7a03bdd9643cd0a8970dc9dbd6430eb5ad42ecb24de65a56de07b69838"
+    },
+    {
+      "path": "evidence/aggr20_authority_probe.json",
+      "bytes": 1959275,
+      "sha256": "9a007bf720330b83b9f6e60e9aff625bfdc32269f16e5e04243851e8bde33a23",
+      "utf8_valid": false
+    },
+    {
+      "path": "online-lifecycle-trace.txt",
+      "bytes": 1534,
+      "sha256": "53dd83c4185eb29e9f1bfd63ce882cb63373eef76f361baa7efcc76515e0a65d"
+    },
+    {
+      "path": "candidate-provenance.txt",
+      "bytes": 2791,
+      "sha256": "b77096e9ddd0966f199148cf814b0e54bc9376f5053743bcb4c9108e5abcedb7"
+    },
+    {
+      "path": "bin/moex_plaza2_aggr20_authority_probe",
+      "bytes": 18032384,
+      "sha256": "279bee891355e4920c4e5531d237604b02752d50477167cd96a2846f16f63e3c"
+    },
+    {
+      "path": "connector-2c5464a.tar.gz",
+      "bytes": 1220850,
+      "sha256": "9ac9f423636b3e036fa7be712f77a14a179f7408363536e87c38d4696b9b07a2"
+    }
+  ],
+  "runtime_identities": {
+    "provenance": "Sealed README and repository SPECTRA9.9.0 runtime manifest; installed binaries not reread",
+    "release": "SPECTRA9.9.0",
+    "library_version": "6.102.0.6118",
+    "library_sha256": "f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f",
+    "scheme_sha256": "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746",
+    "router_version": "P2MQRouter-229.123.0.7233"
+  },
+  "official_document_local_copy": {
+    "path": "/Users/pavel/CSharp/MoexConnector/.codex-tmp/cgate99_installed_p2gate_en.html",
+    "title": "PLAZA II gateway (version 9.9)",
+    "bytes": 1931165,
+    "sha256": "5e2bfa2f6e8b3bc48f72e2eb46230e61200fde2a4bb5dbf723eabc28f1193c2e",
+    "official_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/docs/p2gate_en.html",
+    "remote_html_fetch": "timeout; citations verified against hashed local copy"
+  },
+  "policy": "References only: sealed files unchanged; no raw log, binary or archive copied into this packet"
+}

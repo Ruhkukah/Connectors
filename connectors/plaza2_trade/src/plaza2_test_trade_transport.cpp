@@ -605,7 +605,8 @@ struct Plaza2TestSessionHost::Impl {
     };
 
     explicit Impl(Plaza2TestSessionHostConfig initial)
-        : config(std::move(initial)), private_bridge(private_projector), aggr_bridge(aggr_projector),
+        : config(std::move(initial)), private_bridge(private_projector),
+          aggr_bridge(aggr_projector, config.aggr20_target_session_id),
           rate_gate(config.publisher_messages_per_second) {
         reply_bridge.apply_penalty = [this](std::uint32_t ms) { rate_gate.penalize(publisher_now_ms(), ms); };
     }
@@ -807,6 +808,7 @@ struct Plaza2TestSessionHost::Impl {
             return bridge_error;
         }
         bridge_started = true;
+        status_refresh_generation.reset();
         reply_bridge.clear();
         aggr_projector.reset();
         aggr_bridge.reset();
@@ -1068,6 +1070,50 @@ struct Plaza2TestSessionHost::Impl {
         return discard_trade_replay_for_new_pos_anchor();
     }
 
+    Plaza2Error refresh_status_after_refdata() {
+        const auto* refdata = stream_health(StreamCode::kFortsRefdataRepl);
+        if (!refdata || !refdata->online || !refdata->snapshot_complete || private_bridge.state().transaction_open)
+            return {};
+        const auto generation = private_projector.status_binding_generation();
+        if (status_refresh_generation == generation)
+            return {};
+        // One refresh per committed membership generation. Finish the old
+        // snapshots before closing so asynchronous bootstrap rows cannot race.
+        for (const auto code : {StreamCode::kFortsSessionstateRepl, StreamCode::kFortsInstrumentstateRepl}) {
+            const auto* health = stream_health(code);
+            if (!health || !health->online || !health->snapshot_complete)
+                return {};
+        }
+        for (auto& managed : private_listeners) {
+            if (managed.stream_code != StreamCode::kFortsSessionstateRepl &&
+                managed.stream_code != StreamCode::kFortsInstrumentstateRepl)
+                continue;
+            failure_service = declared_stream_name(managed.stream_code);
+            failure_origin = Plaza2FailureOrigin::ListenerOpen;
+            if (const auto error = managed.listener.close(); error)
+                return error;
+            if (const auto error = private_bridge.reset_status_snapshot(managed.stream_code); error)
+                return error;
+            managed.snapshot_completed_once = false;
+            managed.reopen_pending = false;
+            managed.last_observed_commit_sequence = 0;
+            managed.bootstrap_started_at = recovery_now();
+        }
+        // Invalidate both streams before either reopen can fail or synchronously
+        // deliver fresh rows. No partially refreshed pair may retain old status.
+        for (auto& managed : private_listeners) {
+            if (managed.stream_code != StreamCode::kFortsSessionstateRepl &&
+                managed.stream_code != StreamCode::kFortsInstrumentstateRepl)
+                continue;
+            failure_service = declared_stream_name(managed.stream_code);
+            // Fresh snapshot, never a replstate resume of stale status.
+            if (const auto error = managed.listener.open("mode=snapshot+online"); error)
+                return error;
+        }
+        status_refresh_generation = generation;
+        return {};
+    }
+
     Plaza2Error supervise_initial_listener_opens() {
         const auto now = recovery_now();
         if (trade_listener_index.has_value() && trade_replay_anchor_used.has_value()) {
@@ -1243,12 +1289,6 @@ struct Plaza2TestSessionHost::Impl {
             return state_query_cause;
         if (error)
             return error;
-        if (aggr_bridge.recovering() && aggr_bridge.last_recovery_error()) {
-            failure_origin = Plaza2FailureOrigin::ListenerState;
-            failure_service = "FORTS_AGGR20_REPL";
-            failure_health = health;
-            return aggr_bridge.last_recovery_error();
-        }
         if (config.transport_recovery_enabled && transport_lost(health)) {
             failure_health = health;
             identify_transport_loss(health);
@@ -1266,17 +1306,12 @@ struct Plaza2TestSessionHost::Impl {
         }
         failure_service = "FORTS_AGGR20_REPL";
         failure_origin = Plaza2FailureOrigin::ListenerState;
+        if (const auto status_error = refresh_status_after_refdata(); status_error)
+            return status_error;
         if (const auto aggr_error = aggr_bridge.supervise(aggr_listener, recovery_now()); aggr_error) {
             if (!failure_health)
                 failure_health = sample_health();
             return aggr_error;
-        }
-        if (aggr_bridge.recovering() && aggr_bridge.last_recovery_error()) {
-            failure_origin = Plaza2FailureOrigin::ListenerState;
-            failure_service = "FORTS_AGGR20_REPL";
-            if (!failure_health)
-                failure_health = sample_health();
-            return aggr_bridge.last_recovery_error();
         }
         if (const auto readiness_error = update_trade_replay_readiness(); readiness_error) {
             if (!failure_health)
@@ -1652,6 +1687,7 @@ struct Plaza2TestSessionHost::Impl {
     cgate::Plaza2Listener reply_listener;
     cgate::Plaza2Listener aggr_listener;
     std::vector<ManagedPrivateListener> private_listeners;
+    std::optional<std::uint64_t> status_refresh_generation;
     private_state::Plaza2PrivateStateProjector private_projector;
     cgate::Plaza2Aggr20BookProjector aggr_projector;
     PrivateProjectorBridge private_bridge;
@@ -1785,6 +1821,15 @@ bool Plaza2TestSessionHost::aggr_online() const noexcept {
 bool Plaza2TestSessionHost::aggr_snapshot_complete() const noexcept {
     return impl_->aggr_bridge.snapshot_complete();
 }
+bool Plaza2TestSessionHost::aggr_session_data_ready() const noexcept {
+    return impl_->aggr_bridge.session_data_ready();
+}
+bool Plaza2TestSessionHost::aggr_authoritative() const noexcept {
+    return impl_->aggr_bridge.authoritative();
+}
+cgate::Plaza2Aggr20AuthoritySnapshot Plaza2TestSessionHost::aggr_authority_snapshot() const {
+    return impl_->aggr_bridge.authority_snapshot();
+}
 std::vector<Plaza2TestSessionHost::ReplyEvent> Plaza2TestSessionHost::take_reply_events() {
     return impl_->reply_bridge.take();
 }
@@ -1876,9 +1921,15 @@ struct Plaza2TestTradeTransport::Impl {
         std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used;
     };
 
+    static Plaza2TestSessionHostConfig host_config_with_target(const Plaza2TestTradeTransportConfig& value) {
+        auto result = value.host;
+        result.aggr20_target_session_id = value.target_session_id;
+        return result;
+    }
+
     explicit Impl(Plaza2TestTradeTransportConfig initial)
         : config(std::move(initial)), base_execution_safety_receipt_path(config.execution_safety_receipt_path),
-          host(config.host) {}
+          host(host_config_with_target(config)) {}
 
     [[nodiscard]] const Plaza2AuthorizedOrderIntent* intent() const noexcept {
         return config.authorized_intent.has_value() ? &*config.authorized_intent : nullptr;
@@ -2271,8 +2322,7 @@ struct Plaza2TestTradeTransport::Impl {
         bool fresh = host.started() && !host.recovering() && host.runtime_health().all_active() &&
                      host.recovery_status().operation == Plaza2SessionOperation::Running &&
                      host.trade_replay_anchor_ready() && host.trade_replay_anchor_used() && provenance.ready &&
-                     host.aggr_online() && host.aggr_snapshot_complete() && participant.match_count == 1 &&
-                     participant.exact &&
+                     host.aggr_authoritative() && participant.match_count == 1 && participant.exact &&
                      participant.exact->participant_kind == private_state::LimitParticipantKind::Client;
         for (auto required : kRequiredPrivateStreams) {
             fresh &= std::count_if(state.stream_health().begin(), state.stream_health().end(), [&](const auto& stream) {
@@ -2455,7 +2505,7 @@ struct Plaza2TestTradeTransport::Impl {
             return {};
         const auto& authorized = *intent();
         const auto book = host.aggr20_projector().snapshot_for_isin(authorized.isin_id);
-        if (!book || !book->top_bid || !book->top_ask || !host.aggr_online() || !host.aggr_snapshot_complete() ||
+        if (!book || !book->top_bid || !book->top_ask || !host.aggr_authoritative() ||
             !host.runtime_health().all_active() || host.recovering() || !authorized.session_price_binding)
             return invalid("FIRST_ORDER_BBO_NOT_CURRENT");
         const auto bid = private_state::parse_session_decimal(book->top_bid->price);
@@ -2507,8 +2557,22 @@ struct Plaza2TestTradeTransport::Impl {
                 }
             }
         }
-        if (!host.aggr_online() || !host.aggr_snapshot_complete()) {
-            return invalid("target AGGR20 replication is not online and snapshot-complete");
+        const auto status_refresh_pending =
+            std::any_of(host.private_state().stream_health().begin(), host.private_state().stream_health().end(),
+                        [](const auto& stream) {
+                            return (stream.stream_code == StreamCode::kFortsSessionstateRepl ||
+                                    stream.stream_code == StreamCode::kFortsInstrumentstateRepl) &&
+                                   (!stream.online || !stream.snapshot_complete);
+                        });
+        if (status_refresh_pending) {
+            // A completed REFDATA bootstrap may have only initiated the fresh
+            // status snapshots. Allow one process turn, just like anchored
+            // TRADE above; all normal currentness and send guards still apply.
+            if (const auto error = host.poll(); error)
+                return error;
+        }
+        if (!host.aggr_authoritative()) {
+            return invalid("target AGGR20 replication is not current-authoritative");
         }
         const auto scoped = host.aggr20_projector().snapshot_for_isin(target);
         if (!scoped.has_value() || !scoped->top_bid.has_value() || !scoped->top_ask.has_value()) {
@@ -2681,6 +2745,8 @@ struct Plaza2TestTradeTransport::Impl {
         receipt.runtime_scheme_warning_drift_count = host.probe_report().scheme_drift.warning_drift_count;
         receipt.aggr_online = host.aggr_online();
         receipt.aggr_snapshot_complete = host.aggr_snapshot_complete();
+        receipt.aggr_session_data_ready = host.aggr_session_data_ready();
+        receipt.aggr_authoritative = host.aggr_authoritative();
         receipt.limit_fingerprint_sha256 = limit_row_fingerprint(*limit);
         for (const auto& stream : state.stream_health()) {
             if (stream.stream_code == generated::StreamCode::kFortsPartRepl) {
@@ -2736,6 +2802,8 @@ struct Plaza2TestTradeTransport::Impl {
         receipt.private_streams_ready &= transport_active;
         receipt.aggr_online &= transport_active;
         receipt.aggr_snapshot_complete &= transport_active;
+        receipt.aggr_session_data_ready &= transport_active;
+        receipt.aggr_authoritative &= transport_active;
         receipt.p2mqreply_open = transport_active && host.p2mqreply_open();
         receipt.publisher_open = transport_active && host.publisher_open();
         receipt.trading_capable = host.probe_report().trading_capable;
@@ -2794,6 +2862,8 @@ struct Plaza2TestTradeTransport::Impl {
              << "  \"exchange_moment_ns\": " << scoped->exchange_moment_ns << ",\n"
              << "  \"aggr_online\": " << (receipt.aggr_online ? "true" : "false") << ",\n"
              << "  \"aggr_snapshot_complete\": " << (receipt.aggr_snapshot_complete ? "true" : "false") << ",\n"
+             << "  \"aggr_session_data_ready\": " << (receipt.aggr_session_data_ready ? "true" : "false") << ",\n"
+             << "  \"aggr_authoritative\": " << (receipt.aggr_authoritative ? "true" : "false") << ",\n"
              << "  \"session_id\": " << session->sess_id << ",\n"
              << "  \"session_state\": " << session->state << ",\n"
              << "  \"session_current_status\": " << session->current_status << ",\n"
@@ -2859,7 +2929,8 @@ struct Plaza2TestTradeTransport::Impl {
         if (!receipt.target_refdata_provenance_ready || !receipt.target_aggr20_uncrossed ||
             !receipt.passive_non_marketable || !receipt.bbo_distance_allowed || !receipt.quantity_one ||
             !receipt.private_streams_ready || !receipt.aggr_online || !receipt.aggr_snapshot_complete ||
-            !receipt.p2mqreply_open || !receipt.publisher_open || !receipt.trading_capable ||
+            !receipt.aggr_session_data_ready || !receipt.aggr_authoritative || !receipt.p2mqreply_open ||
+            !receipt.publisher_open || !receipt.trading_capable ||
             (receipt.active_own_order_count != 0 && host.mode() != Plaza2TestSessionHostMode::OfflineFake) ||
             (receipt.require_zero_starting_position && !receipt.zero_starting_position_proven)) {
             return invalid("execution-safety receipt rejected the current target conditions");

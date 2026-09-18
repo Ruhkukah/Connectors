@@ -22,6 +22,8 @@ class Plaza2PrivateStateBridge final : public Plaza2ListenerEventHandler {
     [[nodiscard]] Plaza2Error reset(std::span<const generated::StreamCode> streams);
     [[nodiscard]] Plaza2Error begin_run();
     [[nodiscard]] Plaza2Error end_run();
+    // Local reset before a fresh status snapshot; no fabricated exchange event.
+    [[nodiscard]] Plaza2Error reset_status_snapshot(generated::StreamCode stream_code);
 
     [[nodiscard]] const fake::EngineState& state() const noexcept;
     [[nodiscard]] const std::string& last_resync_reason() const noexcept;

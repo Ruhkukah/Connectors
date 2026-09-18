@@ -84,7 +84,10 @@ int main(int argc, char** argv) {
                                                       .current_reference = true}},
                                   .current_local_wall_ns = 1'700'000'001'000'000'000,
                                   .current_local_monotonic_ns = 3'000'000'000,
-                                  .sync_status_monotonic_ns = 2'500'000'000};
+                                  .sync_status_monotonic_ns = 2'500'000'000,
+                                  .evidence_generated_wall_ns = 1'700'000'001'000'000'000,
+                                  .boot_id = "test-boot"};
+        const auto baseline_clock = clock;
         require(plaza2_clock_evidence_passes(clock), "clock evidence within one second should pass");
         clock.paired_samples[0].exchange_wall_ns -= 1'000'000'001;
         require(!plaza2_clock_evidence_passes(clock), "clock evidence over one second must fail");
@@ -124,7 +127,9 @@ int main(int argc, char** argv) {
                                      .current_reference = true}},
                  .current_local_wall_ns = 1'700'000'001'000'000'000,
                  .current_local_monotonic_ns = 3'000'000'000,
-                 .sync_status_monotonic_ns = 2'500'000'000};
+                 .sync_status_monotonic_ns = 2'500'000'000,
+                 .evidence_generated_wall_ns = 1'700'000'001'000'000'000,
+                 .boot_id = "test-boot"};
         require(!plaza2_clock_evidence_passes(clock), "repeated monotonic samples must fail");
         clock.paired_samples[1].local_monotonic_ns = 500'000'000;
         require(!plaza2_clock_evidence_passes(clock), "decreasing monotonic samples must fail");
@@ -147,6 +152,39 @@ int main(int argc, char** argv) {
         clock.paired_samples[0].local_wall_ns = std::numeric_limits<std::int64_t>::max();
         clock.paired_samples[0].exchange_wall_ns = std::numeric_limits<std::int64_t>::min();
         require(!plaza2_clock_evidence_passes(clock), "paired timestamp extremes must fail without overflow");
+
+        {
+            constexpr std::uint64_t one_day_ns = 86'400'000'000'000;
+            auto freshness_clock = baseline_clock;
+            const auto generated_wall_ns = *freshness_clock.evidence_generated_wall_ns;
+            require(plaza2_clock_evidence_passes_at(freshness_clock, generated_wall_ns, kPlaza2MaxClockSampleAgeNs),
+                    "fresh generated wall evidence should pass against the current wall clock");
+
+            auto yesterday = freshness_clock;
+            require(generated_wall_ns <=
+                        std::numeric_limits<std::int64_t>::max() - static_cast<std::int64_t>(one_day_ns),
+                    "test wall-clock fixture must leave room for deterministic age checks");
+            require(!plaza2_clock_evidence_passes_at(yesterday,
+                                                     generated_wall_ns + static_cast<std::int64_t>(one_day_ns),
+                                                     kPlaza2MaxClockSampleAgeNs),
+                    "yesterday's generated wall evidence must fail the freshness gate");
+
+            auto future = freshness_clock;
+            future.evidence_generated_wall_ns = generated_wall_ns + kPlaza2MaxClockEvidenceFutureNs + 1;
+            require(!plaza2_clock_evidence_passes_at(future, generated_wall_ns, kPlaza2MaxClockSampleAgeNs),
+                    "future-generated wall evidence beyond tolerance must fail");
+
+            auto overflow_old = freshness_clock;
+            overflow_old.evidence_generated_wall_ns = std::numeric_limits<std::int64_t>::min();
+            require(!plaza2_clock_evidence_passes_at(overflow_old, std::numeric_limits<std::int64_t>::max(),
+                                                     kPlaza2MaxClockSampleAgeNs),
+                    "wall-clock age overflow must fail closed");
+            auto overflow_future = freshness_clock;
+            overflow_future.evidence_generated_wall_ns = std::numeric_limits<std::int64_t>::max();
+            require(!plaza2_clock_evidence_passes_at(overflow_future, std::numeric_limits<std::int64_t>::min(),
+                                                     kPlaza2MaxClockSampleAgeNs),
+                    "wall-clock future overflow must fail closed");
+        }
 
         const auto fake_library = std::filesystem::path(argv[1]);
         const auto fixture_root = make_temp_directory("plaza2_runtime_adapter_test");

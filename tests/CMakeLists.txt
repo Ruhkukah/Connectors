@@ -471,6 +471,18 @@ target_link_libraries(connector_host_test PRIVATE plaza2_runtime_test_support mo
 add_dependencies(connector_host_test plaza2_fake_cgate_runtime)
 add_test(NAME connector_host_test COMMAND connector_host_test "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
 set_tests_properties(connector_host_test PROPERTIES LABELS "plaza2;sanitizer")
+
+add_executable(connector_host_dtc_protocol_test
+    ${MOEX_SOURCE_ROOT}/tests/connector_host_dtc_protocol_test.cpp)
+target_link_libraries(connector_host_dtc_protocol_test PRIVATE moex_connector_host)
+target_compile_features(connector_host_dtc_protocol_test PRIVATE cxx_std_20)
+add_test(NAME connector_host_dtc_protocol_test COMMAND connector_host_dtc_protocol_test)
+set_tests_properties(connector_host_dtc_protocol_test PROPERTIES LABELS "dtc;read-only")
+add_executable(connector_host_dtc_server_test
+    ${MOEX_SOURCE_ROOT}/tests/connector_host_dtc_server_test.cpp)
+target_link_libraries(connector_host_dtc_server_test PRIVATE moex_connector_host)
+add_test(NAME connector_host_dtc_server_test COMMAND connector_host_dtc_server_test)
+set_tests_properties(connector_host_dtc_server_test PROPERTIES LABELS "dtc;read-only;sanitizer")
 add_test(NAME moexctl_test COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/assert_moexctl.py"
     "$<TARGET_FILE:moexctl>" "$<TARGET_FILE:connector_host_test>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
 set_tests_properties(moexctl_test PROPERTIES LABELS "plaza2;sanitizer")
@@ -587,6 +599,7 @@ target_link_libraries(plaza2_fake_cgate_runtime
         moex_plaza2_cgate_metadata)
 target_include_directories(plaza2_fake_cgate_runtime
     PRIVATE
+        "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/include"
         "${MOEX_SOURCE_ROOT}/protocols/plaza2_cgate/generated")
 target_compile_features(plaza2_fake_cgate_runtime PUBLIC cxx_std_20)
 set_target_properties(plaza2_fake_cgate_runtime PROPERTIES
@@ -611,6 +624,7 @@ endfunction()
 moex_add_plaza2_cgate_test(plaza2_runtime_probe_test ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_runtime_probe_test.cpp)
 moex_add_plaza2_cgate_test(plaza2_scheme_drift_test ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_scheme_drift_test.cpp)
 moex_add_plaza2_cgate_test(plaza2_runtime_adapter_test ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_runtime_adapter_test.cpp)
+moex_add_plaza2_cgate_test(plaza2_runtime_listener_test ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_runtime_listener_test.cpp)
 target_compile_definitions(plaza2_runtime_adapter_test PRIVATE MOEX_SOURCE_ROOT="${MOEX_SOURCE_ROOT}")
 
 add_executable(plaza2_manual_operator_gate_test
@@ -678,6 +692,8 @@ moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_projection_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_md_projection_test.cpp)
 moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_runner_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_md_runner_test.cpp)
+moex_add_plaza2_aggr20_md_test(plaza2_aggr20_authority_probe_test
+    ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_authority_probe_test.cpp)
 
 function(moex_add_plaza2_twime_reconciler_test target_name source_file)
     add_executable(${target_name} "${source_file}")
@@ -1080,6 +1096,19 @@ target_link_libraries(plaza2_restart_order_recovery_test PRIVATE plaza2_runtime_
 add_dependencies(plaza2_restart_order_recovery_test plaza2_fake_cgate_runtime)
 add_test(NAME plaza2_restart_order_recovery_test COMMAND plaza2_restart_order_recovery_test "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
 set_tests_properties(plaza2_restart_order_recovery_test PROPERTIES LABELS "plaza2;sanitizer")
+
+add_executable(plaza2_text_test plaza2_cgate/plaza2_text_test.cpp)
+add_executable(plaza2_observer_io_test plaza2_cgate/plaza2_observer_io_test.cpp)
+target_link_libraries(plaza2_observer_io_test PRIVATE moex_plaza2_cgate_runtime)
+add_test(NAME plaza2_observer_io_stress
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/scripts/plaza2_observer_io_test.py"
+        "$<TARGET_FILE:plaza2_observer_io_test>")
+set_tests_properties(plaza2_observer_io_stress PROPERTIES LABELS "unit;plaza2;sanitizer;read-only" TIMEOUT 120)
+target_link_libraries(plaza2_text_test PRIVATE moex_plaza2_cgate_aggr20_md)
+add_test(NAME plaza2_text_roundtrip_test
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/plaza2_cgate/plaza2_text_roundtrip_test.py"
+        "$<TARGET_FILE:plaza2_text_test>")
+set_tests_properties(plaza2_text_roundtrip_test PROPERTIES LABELS "unit;plaza2;sanitizer")
 
 add_executable(plaza2_deep_passive_test ${MOEX_SOURCE_ROOT}/tests/plaza2_trade/plaza2_deep_passive_test.cpp)
 target_link_libraries(plaza2_deep_passive_test PRIVATE moex_plaza2_trade_order_lifecycle)

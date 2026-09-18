@@ -33,76 +33,7 @@ bool parse_isin_id(std::string_view value, std::int32_t& out) {
     return true;
 }
 
-class QualificationAggr20Bridge final : public Plaza2ListenerEventHandler {
-  public:
-    explicit QualificationAggr20Bridge(Plaza2Aggr20BookProjector& projector) : projector_(projector) {}
-
-    [[nodiscard]] bool online() const noexcept {
-        return online_;
-    }
-
-    [[nodiscard]] bool snapshot_complete() const noexcept {
-        return snapshot_complete_;
-    }
-
-    [[nodiscard]] bool has_lifenum() const noexcept {
-        return has_lifenum_;
-    }
-
-    [[nodiscard]] std::uint64_t last_lifenum() const noexcept {
-        return last_lifenum_;
-    }
-
-    Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override {
-        switch (event.kind) {
-        case Plaza2ListenerEventKind::Open:
-        case Plaza2ListenerEventKind::Timeout:
-        case Plaza2ListenerEventKind::ReplState:
-            return {};
-        case Plaza2ListenerEventKind::LifeNum:
-            if (has_lifenum_ && last_lifenum_ != event.unsigned_value) {
-                online_ = false;
-                snapshot_complete_ = false;
-                projector_.reset();
-            }
-            has_lifenum_ = true;
-            last_lifenum_ = event.unsigned_value;
-            return {};
-        case Plaza2ListenerEventKind::Close:
-            online_ = false;
-            snapshot_complete_ = false;
-            projector_.reset();
-            return {};
-        case Plaza2ListenerEventKind::TransactionBegin:
-            projector_.begin_transaction();
-            return {};
-        case Plaza2ListenerEventKind::TransactionCommit:
-            return projector_.commit();
-        case Plaza2ListenerEventKind::StreamData:
-            if (event.table_code != generated::TableCode::kFortsAggrReplOrdersAggr) {
-                return {};
-            }
-            return projector_.on_row(event.fields);
-        case Plaza2ListenerEventKind::Online:
-            online_ = true;
-            snapshot_complete_ = true;
-            return {};
-        case Plaza2ListenerEventKind::ClearDeleted:
-            online_ = false;
-            projector_.reset();
-            snapshot_complete_ = false;
-            return {};
-        }
-        return {};
-    }
-
-  private:
-    Plaza2Aggr20BookProjector& projector_;
-    bool online_{false};
-    bool snapshot_complete_{false};
-    bool has_lifenum_{false};
-    std::uint64_t last_lifenum_{0};
-};
+using QualificationAggr20Bridge = Plaza2Aggr20ListenerBridge;
 
 bool is_stream_ready(const Plaza2LiveStreamStatus& stream) {
     const bool initial_ready = !stream.required_online || (stream.online && stream.snapshot_complete);
@@ -313,6 +244,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         snapshot.aggr20_has_lifenum = aggr_bridge.has_lifenum();
         snapshot.aggr20_lifenum = aggr_bridge.last_lifenum();
         snapshot.aggr20_row_count = aggr_projector.snapshot().row_count;
+        snapshot.aggr20_session_data_ready = aggr_bridge.session_data_ready();
+        snapshot.aggr20_authoritative = aggr_bridge.authoritative();
         snapshot.participant_limit_unique = false;
         snapshot.participant_limits_set = false;
         snapshot.applicable_position_count = 0;
@@ -388,7 +321,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
 
         const bool aggr_age_ok = snapshot.target_aggr20_age_ms <= config.max_aggr20_age_ms &&
                                  snapshot.target_aggr20_repl_id != 0 && snapshot.target_aggr20_repl_rev != 0 &&
-                                 aggr_bridge.online() && aggr_bridge.snapshot_complete();
+                                 aggr_bridge.online() && aggr_bridge.snapshot_complete() &&
+                                 snapshot.aggr20_session_data_ready && snapshot.aggr20_authoritative;
         snapshot.market_state_ready = health.runtime_probe_ok && health.scheme_drift_ok &&
                                       snapshot.target_refdata_present && snapshot.target_session_add_capable &&
                                       snapshot.target_instrument_add_capable && snapshot.target_aggr20_two_sided &&
@@ -417,6 +351,8 @@ struct Plaza2TradeConnectivityQualifier::Impl {
         add_failure(snapshot, !snapshot.target_aggr20_two_sided || snapshot.target_aggr20_uncrossed,
                     "target AGGR20 BBO is crossed or locked");
         add_failure(snapshot, aggr_age_ok, "target AGGR20 evidence is missing, unversioned, stale, or offline");
+        add_failure(snapshot, snapshot.aggr20_session_data_ready,
+                    "AGGR20 current session_data_ready synchronization is missing");
         add_failure(snapshot, snapshot.participant_limit_unique && snapshot.participant_limits_set,
                     "participant limit identity is missing, ambiguous, or limits_set=false");
         add_failure(snapshot, snapshot.position_identity_exact,

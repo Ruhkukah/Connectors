@@ -727,6 +727,17 @@ void test_multi_instrument_and_terminal_controller(const moex::plaza2::test::Run
         ScopedEnv multi("MOEX_FAKE_AGGR_MULTI_INSTRUMENT", "1");
         auto transport_config = prepared_config(fixture, add, recovery);
         const auto plan = bound_plan(*transport_config.authorized_intent, add, recovery);
+        {
+            ScopedEnv stalled_status("MOEX_FAKE_STATUS_REFRESH_STALL", "1");
+            Plaza2TestTradeTransport stalled(transport_config);
+            bind_test_plan(stalled, plan);
+            const auto refused = stalled.post(add, 701);
+            expect_case(refused.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                            !refused.post_invoked &&
+                            contains_text(refused.validation_error.message, "current trading-day status"),
+                        "bounded fresh-status wait must not bypass Add guard when refresh remains incomplete");
+            expect_case(!stalled.host().stop(), "stalled fresh-status transport stops without sending");
+        }
         Plaza2TestTradeTransport transport(std::move(transport_config));
         bind_test_plan(transport, plan);
         const auto posted = transport.post(add, 701);
