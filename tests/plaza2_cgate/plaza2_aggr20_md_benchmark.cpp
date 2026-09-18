@@ -230,8 +230,8 @@ void validate_level(const cg::Plaza2Aggr20Level& level, const RowSpec& expected)
     check(level.synth_volume.empty());
 }
 
-std::uint64_t validate_semantic_state(const cg::Plaza2Aggr20BookProjector& projector,
-                                      const ExpectedRows& expected, int instruments) {
+std::uint64_t validate_semantic_state(const cg::Plaza2Aggr20BookProjector& projector, const ExpectedRows& expected,
+                                      int instruments) {
     std::uint64_t checksum = 1469598103934665603ULL;
     for (int isin = 1; isin <= instruments; ++isin) {
         const auto snapshot = projector.snapshot_for_isin(isin);
@@ -343,9 +343,8 @@ struct ChurnResult {
     std::uint64_t semantic_checksum{0};
 };
 
-Result measure(cg::Plaza2Aggr20BookProjector& projector, const RetentionProfile& profile,
-               std::vector<RowSpec> rows, std::string updated, std::string update_pattern, int rows_per_commit,
-               int measured_commits) {
+Result measure(cg::Plaza2Aggr20BookProjector& projector, const RetentionProfile& profile, std::vector<RowSpec> rows,
+               std::string updated, std::string update_pattern, int rows_per_commit, int measured_commits) {
     check(rows_per_commit == static_cast<int>(rows.size()));
     const auto retained_rows = static_cast<std::size_t>(profile.instruments * kLevelsPerInstrument);
     const auto expected_seed = seed_rows(profile.instruments);
@@ -616,10 +615,10 @@ int main() {
             seed_projector(projector, seed_rows(profile.instruments));
             auto rows = burst_rows(profile.instruments, burst_size);
             const auto distinct_count = distinct_repl_id_count(rows);
-            const auto pattern = burst_pattern(
-                static_cast<std::size_t>(profile.instruments * kLevelsPerInstrument), distinct_count, burst_size);
-            emit(measure(projector, profile, std::move(rows), "existing_slot_burst", std::string(pattern),
-                         burst_size, kBurstMeasuredCommits),
+            const auto pattern = burst_pattern(static_cast<std::size_t>(profile.instruments * kLevelsPerInstrument),
+                                               distinct_count, burst_size);
+            emit(measure(projector, profile, std::move(rows), "existing_slot_burst", std::string(pattern), burst_size,
+                         kBurstMeasuredCommits),
                  first);
         }
     }
