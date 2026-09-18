@@ -705,17 +705,23 @@ struct Plaza2TestSessionHost::Impl {
             };
         }
         if (config.runtime.runtime_root.empty() || config.connection_settings.empty() ||
-            config.publisher_settings.empty() || config.private_streams.empty() ||
+            (!config.read_only_market_data && config.publisher_settings.empty()) || config.private_streams.empty() ||
             config.aggr20_stream.settings.empty()) {
-            return invalid("TEST session host requires runtime, connection, publisher, private, and AGGR20 settings");
+            return invalid(
+                config.read_only_market_data
+                    ? "read-only TEST session host requires runtime, connection, private, and AGGR20 settings"
+                    : "TEST session host requires runtime, connection, publisher, private, and AGGR20 settings");
         }
-        if (config.mode != Plaza2TestSessionHostMode::OfflineFake && config.p2mqreply_settings.empty()) {
+        if (!config.read_only_market_data && config.mode != Plaza2TestSessionHostMode::OfflineFake &&
+            config.p2mqreply_settings.empty()) {
             return invalid("LiveTestPreSend requires explicit p2mqreply_settings");
         }
         const auto effective_reply_settings =
             config.p2mqreply_settings.empty() ? "p2mqreply://;ref=" + config.publisher_name : config.p2mqreply_settings;
-        if (const auto identity = validate_publisher_reply_identity(config, effective_reply_settings); identity) {
-            return identity;
+        if (!config.read_only_market_data) {
+            if (const auto identity = validate_publisher_reply_identity(config, effective_reply_settings); identity) {
+                return identity;
+            }
         }
         if (config.runtime.env_open_settings.find(kCredentialToken) != std::string::npos ||
             config.runtime.env_open_settings.find(kLegacyCredentialToken) != std::string::npos) {
@@ -735,36 +741,61 @@ struct Plaza2TestSessionHost::Impl {
             return invalid("LiveTestPreSend requires a trading-capable CGate runtime",
                            Plaza2ErrorCode::ProbeIncompatible);
         }
-        const auto credentials = load_secret(config.credentials);
-        const auto software_key = load_secret(config.software_key);
-        if (!credentials.has_value() || !software_key.has_value()) {
-            return invalid("TEST session host secret source is missing or empty");
-        }
-        credentials_value = credentials.value();
-        software_key_value = software_key.value();
         const auto contains_token = [](std::string_view value, std::string_view token) {
             return value.find(token) != std::string_view::npos;
         };
-        const auto requires_credentials = contains_token(config.runtime.env_open_settings, kCredentialToken) ||
-                                          contains_token(config.runtime.env_open_settings, kLegacyCredentialToken) ||
-                                          contains_token(config.connection_settings, kCredentialToken) ||
-                                          contains_token(config.connection_settings, kLegacyCredentialToken) ||
-                                          contains_token(config.publisher_settings, kCredentialToken) ||
-                                          contains_token(config.publisher_settings, kLegacyCredentialToken) ||
-                                          contains_token(effective_reply_settings, kCredentialToken) ||
-                                          contains_token(effective_reply_settings, kLegacyCredentialToken);
-        const auto requires_software_key = contains_token(config.runtime.env_open_settings, kSoftwareKeyToken) ||
-                                           contains_token(config.connection_settings, kSoftwareKeyToken) ||
-                                           contains_token(config.publisher_settings, kSoftwareKeyToken) ||
-                                           contains_token(effective_reply_settings, kSoftwareKeyToken);
-        if ((requires_credentials && credentials->empty()) || (requires_software_key && software_key->empty())) {
+        const auto setting_requires_credentials = [&](std::string_view value) {
+            return contains_token(value, kCredentialToken) || contains_token(value, kLegacyCredentialToken);
+        };
+        const auto streams_require_token = [&](const auto& streams, std::string_view token) {
+            return std::any_of(streams.begin(), streams.end(),
+                               [&](const auto& stream) { return contains_token(stream.settings, token); });
+        };
+        const auto streams_require_credentials = [&](const auto& streams) {
+            return streams_require_token(streams, kCredentialToken) ||
+                   streams_require_token(streams, kLegacyCredentialToken);
+        };
+        // Read-only ConnectorHost sessions normally use a router-authenticated
+        // connection and do not render the exchange-credential token at all.
+        // Do not load a dummy/order credential in that case. Every setting
+        // passed through render_copy is included here so adding a token to a
+        // read-side stream remains fail-closed.
+        const auto requires_credentials =
+            setting_requires_credentials(config.runtime.env_open_settings) ||
+            setting_requires_credentials(config.connection_settings) ||
+            streams_require_credentials(config.private_streams) || streams_require_credentials(config.status_streams) ||
+            setting_requires_credentials(config.aggr20_stream.settings) ||
+            (!config.read_only_market_data && (setting_requires_credentials(config.publisher_settings) ||
+                                               setting_requires_credentials(effective_reply_settings) ||
+                                               setting_requires_credentials(config.p2mqreply_open_settings)));
+        const auto requires_software_key =
+            contains_token(config.runtime.env_open_settings, kSoftwareKeyToken) ||
+            contains_token(config.connection_settings, kSoftwareKeyToken) ||
+            streams_require_token(config.private_streams, kSoftwareKeyToken) ||
+            streams_require_token(config.status_streams, kSoftwareKeyToken) ||
+            contains_token(config.aggr20_stream.settings, kSoftwareKeyToken) ||
+            (!config.read_only_market_data && (contains_token(config.publisher_settings, kSoftwareKeyToken) ||
+                                               contains_token(effective_reply_settings, kSoftwareKeyToken) ||
+                                               contains_token(config.p2mqreply_open_settings, kSoftwareKeyToken)));
+        // Preserve the existing non-readonly identity/credential contract;
+        // only the strict readonly market-data boundary may omit an unused
+        // exchange credential source.
+        const bool load_credentials = !config.read_only_market_data || requires_credentials;
+        const auto credentials = load_credentials ? load_secret(config.credentials) : std::optional<std::string>{};
+        const auto software_key = load_secret(config.software_key);
+        if (!software_key.has_value() || (load_credentials && !credentials.has_value())) {
+            return invalid("TEST session host secret source is missing or empty");
+        }
+        credentials_value = credentials.value_or(std::string{});
+        software_key_value = software_key.value();
+        if ((load_credentials && requires_credentials && credentials_value.empty()) ||
+            (requires_software_key && software_key_value.empty())) {
             return invalid("TEST session host settings require a configured secret source");
         }
         effective_runtime = config.runtime;
-        render(effective_runtime.env_open_settings, credentials.value(), software_key.value());
+        render(effective_runtime.env_open_settings, credentials_value, software_key_value);
         effective_runtime.env_open_settings = resolve_ini(effective_runtime.env_open_settings, probe.layout.config_dir);
-        const auto rendered_connection =
-            render_copy(config.connection_settings, credentials.value(), software_key.value());
+        const auto rendered_connection = render_copy(config.connection_settings, credentials_value, software_key_value);
         const auto app_name = setting_value(rendered_connection, "app_name");
         if (!app_name || app_name->empty())
             return invalid("TEST connection settings require a non-empty app_name");
@@ -825,8 +856,8 @@ struct Plaza2TestSessionHost::Impl {
             private_listeners.emplace_back(stream.stream_code, stream.open_settings);
             auto& managed = private_listeners.back();
             failure_service = declared_stream_name(stream.stream_code);
-            const auto settings = resolve_scheme(
-                render_copy(stream.settings, credentials.value(), software_key.value()), probe.layout.scheme_path);
+            const auto settings = resolve_scheme(render_copy(stream.settings, credentials_value, software_key_value),
+                                                 probe.layout.scheme_path);
             failure_origin = Plaza2FailureOrigin::ListenerCreate;
             if (const auto error = managed.listener.create(connection, stream.stream_code, settings, &private_bridge);
                 error) {
@@ -841,7 +872,7 @@ struct Plaza2TestSessionHost::Impl {
         }
 
         const auto aggr_settings =
-            resolve_scheme(render_copy(config.aggr20_stream.settings, credentials.value(), software_key.value()),
+            resolve_scheme(render_copy(config.aggr20_stream.settings, credentials_value, software_key_value),
                            probe.layout.scheme_path);
         failure_service = "FORTS_AGGR20_REPL";
         failure_origin = Plaza2FailureOrigin::ListenerCreate;
@@ -854,7 +885,7 @@ struct Plaza2TestSessionHost::Impl {
         if (const auto error = aggr_listener.open(config.aggr20_stream.open_settings); error) {
             return error;
         }
-        if (recovery.operation != Plaza2SessionOperation::Recovering) {
+        if (!config.read_only_market_data && recovery.operation != Plaza2SessionOperation::Recovering) {
             if (const auto error = open_publisher_reply(); error)
                 return error;
         }
@@ -1358,8 +1389,10 @@ struct Plaza2TestSessionHost::Impl {
             }
         };
         sample(connection, out.connection, Plaza2FailureOrigin::ConnectionState);
-        sample(publisher, out.publisher, Plaza2FailureOrigin::Publisher);
-        sample(reply_listener, out.reply, Plaza2FailureOrigin::ListenerState);
+        if (!config.read_only_market_data) {
+            sample(publisher, out.publisher, Plaza2FailureOrigin::Publisher);
+            sample(reply_listener, out.reply, Plaza2FailureOrigin::ListenerState);
+        }
         sample(aggr_listener, out.aggr, Plaza2FailureOrigin::ListenerState, config.aggr20_stream.stream_code);
         out.private_active = !private_listeners.empty();
         for (const auto& item : private_listeners) {
@@ -1376,6 +1409,11 @@ struct Plaza2TestSessionHost::Impl {
         return out;
     }
 
+    bool read_side_active(const Plaza2TransportHealth& health) const noexcept {
+        return health.valid && health.connection == kCgStateActive && health.aggr == kCgStateActive &&
+               health.private_active;
+    }
+
     void identify_transport_loss(const Plaza2TransportHealth& h) {
         const auto lost = [](std::uint32_t state) { return state == kCgStateClosed || state == kCgStateError; };
         if (lost(h.connection)) {
@@ -1383,12 +1421,12 @@ struct Plaza2TestSessionHost::Impl {
             failure_service = "P2MQRouter connection";
             return;
         }
-        if (publisher_is_open && lost(h.publisher)) {
+        if (!config.read_only_market_data && publisher_is_open && lost(h.publisher)) {
             failure_origin = Plaza2FailureOrigin::Publisher;
             failure_service = "FORTS_SRV";
             return;
         }
-        if (reply_listener_is_open && lost(h.reply)) {
+        if (!config.read_only_market_data && reply_listener_is_open && lost(h.reply)) {
             failure_origin = Plaza2FailureOrigin::ListenerState;
             failure_service = "p2mqreply";
             return;
@@ -1412,8 +1450,10 @@ struct Plaza2TestSessionHost::Impl {
         const auto lost = [](std::uint32_t state) { return state == kCgStateClosed || state == kCgStateError; };
         if (lost(h.connection))
             return true;
-        if ((fully_bootstrapped || (publisher_is_open && reply_listener_is_open)) &&
+        if (!config.read_only_market_data && (fully_bootstrapped || (publisher_is_open && reply_listener_is_open)) &&
             (lost(h.publisher) || lost(h.reply) || lost(h.aggr)))
+            return true;
+        if (config.read_only_market_data && lost(h.aggr))
             return true;
         for (std::size_t i = 0; i < private_listeners.size() && i < h.private_count; ++i) {
             const auto& managed = private_listeners[i];
@@ -1601,7 +1641,7 @@ struct Plaza2TestSessionHost::Impl {
             next_recovery_attempt = now + config.recovery_retry_interval;
             return {};
         }
-        if (replication_complete() && !publisher_is_open) {
+        if (!config.read_only_market_data && replication_complete() && !publisher_is_open) {
             if (const auto open_error = open_publisher_reply(); open_error) {
                 failure_health.reset();
                 record_failure(open_error);
@@ -1617,7 +1657,8 @@ struct Plaza2TestSessionHost::Impl {
                 return {};
             }
         }
-        if (replication_complete() && sample_health().all_active()) {
+        const auto health = sample_health();
+        if (replication_complete() && (config.read_only_market_data ? read_side_active(health) : health.all_active())) {
             fully_bootstrapped = true;
             if (recovery.operation != Plaza2SessionOperation::Running)
                 ++recovery.transitions;
@@ -1844,6 +1885,11 @@ const std::string& Plaza2TestSessionHost::last_callback_error() const noexcept {
 Plaza2PublisherMessageResult Plaza2TestSessionHost::post(std::string_view message_name,
                                                          std::span<const std::byte> payload, std::uint32_t user_id,
                                                          bool need_reply) {
+    if (impl_->config.read_only_market_data) {
+        Plaza2PublisherMessageResult result;
+        result.validation_error = invalid("read-only market-data TEST host has no publisher surface");
+        return result;
+    }
     if (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestAuthorizedSend) {
         Plaza2PublisherMessageResult result;
         result.validation_error = invalid("authorized TEST send requires the validated trade transport");
@@ -1855,6 +1901,11 @@ Plaza2PublisherMessageResult Plaza2TestSessionHost::post(std::string_view messag
 Plaza2PublisherMessageResult Plaza2TestSessionHost::post_validated(std::string_view message_name,
                                                                    std::span<const std::byte> payload,
                                                                    std::uint32_t user_id, bool need_reply) {
+    if (impl_->config.read_only_market_data) {
+        Plaza2PublisherMessageResult result;
+        result.validation_error = invalid("read-only market-data TEST host has no publisher surface");
+        return result;
+    }
     if (impl_->config.mode == Plaza2TestSessionHostMode::LiveTestPreSend) {
         Plaza2PublisherMessageResult result;
         result.certainty = cgate::Plaza2SubmissionCertainty::DefinitelyNotSent;

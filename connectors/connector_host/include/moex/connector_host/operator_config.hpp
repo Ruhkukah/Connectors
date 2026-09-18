@@ -19,6 +19,7 @@ struct OperatorRequest {
 // configuration format or a general profile framework.
 struct Plaza2HostConfigInputs {
     HostPurpose purpose{HostPurpose::Qualify};
+    bool read_only_market_data{false};
     std::filesystem::path runtime_root;
     std::filesystem::path library_path;
     std::filesystem::path scheme_dir;

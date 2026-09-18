@@ -633,6 +633,28 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_FAKE_MISSING_ORDER", "1", 1);
         ::setenv("MOEX_FAKE_CLIENT_CODE", "BRK1C01", 1);
         ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
+        {
+            const std::vector<std::string> readonly_owned{"plaza2",
+                                                          "qualify",
+                                                          "--read-only-market-data",
+                                                          "--runtime-root",
+                                                          fixture.root.string(),
+                                                          "--scheme-dir",
+                                                          fixture.scheme_dir.string(),
+                                                          "--config-dir",
+                                                          fixture.config_dir.string(),
+                                                          "--env-settings-var",
+                                                          "HOST_TEST_ENV",
+                                                          "--isin-id",
+                                                          "1001",
+                                                          "--session-id",
+                                                          "321"};
+            std::vector<std::string_view> readonly_args(readonly_owned.begin(), readonly_owned.end());
+            const auto readonly = parse_operator_arguments(readonly_args).config;
+            test::require(readonly.read_only_market_data && readonly.order.broker_code.empty() &&
+                              readonly.order.client_code.empty() && readonly.transport.observation_client_code.empty(),
+                          "readonly operator mode skips broker/client order identity inputs");
+        }
         if (argc == 3) {
             ConnectorHost host(config_for(fixture));
             warm(host);
@@ -851,6 +873,53 @@ int main(int argc, char** argv) {
                               "actual ConnectorHost source capability and 506/507 wire agree");
             }
             test::require(!host.stop(), "target-scoped DTC source host stop");
+        }
+        // Phase5 uses a separate strict-readonly transport mode. The source
+        // still owns the five private/AGGR read-side streams, but must never
+        // create publisher or p2mqreply handles or reach an order API.
+        {
+            auto config = config_for(fixture);
+            config.target_board = "RFUD";
+            config.target_currency = "RUB";
+            config.read_only_market_data = true;
+            // Read-only startup must not require an exchange/order credential
+            // when the rendered CGate settings use only the router-authenticated
+            // connection and software key. Keep the order profile empty too:
+            // this is a transport boundary test, not an armed order setup.
+            ::unsetenv("MOEX_READONLY_MISSING_CREDENTIAL");
+            config.transport.host.credentials = {.source = cg::Plaza2CredentialSource::Env,
+                                                 .env_var = "MOEX_READONLY_MISSING_CREDENTIAL"};
+            config.order.profile_enabled = false;
+            config.order.profile_id.clear();
+            config.order.profile_fingerprint.clear();
+            config.order.base_contract_code.clear();
+            config.order.price.clear();
+            config.order.broker_code.clear();
+            config.order.client_code.clear();
+            ConnectorHost host(config);
+            test::require(!host.start(), "readonly ConnectorHost TEST start");
+            dtc::ConnectorHostDtcMarketDataSource source(host);
+            for (unsigned i = 0; i < 12 && !source.snapshot().valid; ++i)
+                test::require(!host.poll(), "readonly ConnectorHost TEST poll");
+            const auto data = source.snapshot();
+            const auto snapshot = host.snapshot();
+            test::require(data.valid && data.target_authoritative && data.board == "RFUD" && data.currency == "RUB",
+                          "readonly ConnectorHost keeps authoritative target market data");
+            test::require(!snapshot.publisher_handle_open && !snapshot.reply_handle_open &&
+                              snapshot.transport_health.publisher == 0 && snapshot.transport_health.reply == 0 &&
+                              snapshot.publisher_calls.msgnew == 0 && snapshot.publisher_calls.post == 0,
+                          "readonly ConnectorHost opens no publisher/reply surface and makes no calls");
+            const auto plan = host.plan();
+            test::require(!plan.ok && plan.failure == PreSendFailure::ConflictingMode,
+                          "readonly ConnectorHost rejects order planning");
+            test::require(host.authorize("{}", "").code != cg::Plaza2ErrorCode::None,
+                          "readonly ConnectorHost rejects authorization");
+            test::require(host.submit().message.find("read-only") != std::string::npos,
+                          "readonly ConnectorHost rejects submission");
+            const auto after = host.snapshot();
+            test::require(after.publisher_calls.msgnew == 0 && after.publisher_calls.post == 0,
+                          "readonly order attempts do not reach publisher calls");
+            test::require(!host.stop(), "readonly ConnectorHost TEST stop");
         }
         {
             ::setenv("MOEX_FAKE_AGGR_ONE_SIDED", "1", 1);

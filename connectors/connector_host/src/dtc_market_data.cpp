@@ -111,10 +111,10 @@ ConnectorHostDtcMarketDataSource::ConnectorHostDtcMarketDataSource(ConnectorHost
 DtcReadOnlyCapabilities ConnectorHostDtcMarketDataSource::capabilities() const noexcept {
     return {.market_data = false,
             .market_depth = true,
-            // ConnectorHost supplies authoritative target identity, board and
-            // tick metadata.  The DTC server supplies only explicitly
-            // configured replay terms that are absent from this source; it
-            // never infers financial values.
+            // ConnectorHost supplies target identity, board, tick, and (when
+            // joined) fut_vcb currency metadata. Operator bindings remain
+            // visible separately; live contract size and tick currency value
+            // are current REFDATA terms. The DTC server never infers values.
             .security_definitions = true,
             .accounts = false,
             .positions = false,
@@ -143,9 +143,21 @@ DtcMarketDataSnapshot make_dtc_market_data_snapshot(const ConnectorHostMarketDat
     out.engine_emit_unix_ms = 0;
     out.sampled_at_unix_ns = unix_now_ns();
     out.isin_id = market_data.target_isin_id;
+    out.session_id = market_data.target_session_id;
     out.symbol = market_data.symbol;
     out.board = market_data.board;
     out.min_step = market_data.min_step;
+    out.description = market_data.description;
+    out.currency = market_data.currency;
+    out.contract_size = market_data.contract_size;
+    out.currency_value_per_increment = market_data.currency_value_per_increment;
+    out.refdata_vcb_join_current = market_data.refdata_vcb_join_current;
+    out.refdata_vcb_join_ambiguous = market_data.refdata_vcb_join_ambiguous;
+    out.refdata_board_proven = market_data.refdata_board_proven;
+    out.refdata_currency_proven = market_data.refdata_currency_proven;
+    out.future_vcb_provenance_present = market_data.future_vcb_provenance.present;
+    out.future_vcb_repl_rev = market_data.future_vcb_provenance.repl_rev;
+    out.future_vcb_lifenum = market_data.future_vcb_provenance.lifenum;
     out.transport_active = market_data.transport_active;
     // Compatibility field: "online" means the target AGGR stream reached
     // ONLINE/snapshot-complete, not that the book is authoritative.

@@ -6,9 +6,19 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace moex::connector_host::dtc {
+
+enum class DtcSourceMode : std::uint8_t {
+    Replay = 0,
+    LiveTest = 1,
+};
+
+[[nodiscard]] constexpr std::string_view dtc_source_mode_name(DtcSourceMode mode) noexcept {
+    return mode == DtcSourceMode::LiveTest ? "live_test" : "replay";
+}
 
 // DTC v8 uses a little-endian uint16 size (including this four-byte header)
 // followed by a little-endian uint16 message type.  The protobuf payload is
@@ -111,9 +121,23 @@ struct DtcMarketDataSnapshot {
     std::uint64_t exchange_moment_ns{0};
     std::uint64_t sampled_at_unix_ns{0};
     std::int64_t isin_id{0};
+    std::int32_t session_id{0};
     std::string symbol;
     std::string board;
     std::string min_step;
+    std::string description;
+    std::string currency;
+    std::string contract_size;
+    std::string currency_value_per_increment;
+    bool refdata_vcb_join_current{false};
+    bool refdata_vcb_join_ambiguous{false};
+    bool refdata_board_proven{false};
+    // Supported monetary/tick denomination proof, currently exact RUB in
+    // the live TEST path; raw non-RUB quotation codes are not enough.
+    bool refdata_currency_proven{false};
+    bool future_vcb_provenance_present{false};
+    std::int64_t future_vcb_repl_rev{0};
+    std::uint64_t future_vcb_lifenum{0};
     // These are deliberately separate: a live CGate transport, an ONLINE
     // snapshot, current session_data_ready, and a target-authoritative book
     // are different states at the DTC boundary.

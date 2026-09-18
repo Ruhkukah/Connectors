@@ -160,12 +160,13 @@ DtcReadOnlyServerConfig config() {
 }
 struct Harness {
     Replay source;
+    DtcSourceMode source_mode{DtcSourceMode::Replay};
     DtcReadOnlyServer server;
     int fd{-1};
     DtcFrameDecoder decoder;
     std::vector<DtcFrame> got;
     bool eof{};
-    explicit Harness(DtcReadOnlyServerConfig c = config()) : server(source, std::move(c)) {
+    explicit Harness(DtcReadOnlyServerConfig c = config()) : source_mode(c.source_mode), server(source, std::move(c)) {
         std::string error;
         check(server.start(error), error.c_str());
         connect();
@@ -222,7 +223,8 @@ struct Harness {
         check(false, "expected response type missing");
         return got.front();
     }
-    void logon(bool expect_security_definitions = true) {
+    void logon(bool expect_security_definitions = true, std::string_view username = {}, std::string_view password = {},
+               bool expect_success = true) {
         // Literal official binary negotiation, deliberately fragmented.
         const Bytes handshake{16, 0, 6, 0, 8, 0, 0, 0, 4, 0, 0, 0, 'D', 'T', 'C', 0};
         send(Bytes(handshake.begin(), handshake.begin() + 3));
@@ -234,15 +236,24 @@ struct Harness {
         Bytes p;
         num(p, 1, 8);
         num(p, 7, 10);
+        if (!username.empty() || !password.empty()) {
+            txt(p, 2, std::string(username));
+            txt(p, 3, std::string(password));
+        }
         txt(p, 11, "Kairos-test");
         send(packet(1, p));
         pump(5);
+        if (!expect_success)
+            return;
         Read reply(first(2).payload);
         check(reply.n[1] == 8 && reply.n[2] == 1 && reply.n[12] == (expect_security_definitions ? 1 : 0) &&
                   reply.n[15] == 1,
               "v8 read-only capability logon");
         for (unsigned f : {8U, 9U, 10U, 17U, 19U, 20U})
             check(reply.n[f] == 0, "no trading or trade tape capability");
+        if (source_mode == DtcSourceMode::LiveTest)
+            check(reply.s[3] == "Read-only live TEST; trading disabled" && reply.s[6] == "MOEX live TEST DTC",
+                  "live TEST logon identity is not replay text");
     }
     Bytes definition_request() {
         Bytes p;
@@ -251,7 +262,9 @@ struct Harness {
         txt(p, 3, source.state.board);
         return packet(506, p);
     }
-    Bytes depth(unsigned action = 1, unsigned id = 7) {
+    Bytes depth(unsigned action = 1, unsigned id = 0) {
+        if (id == 0)
+            id = server.symbol_id() == 0 ? 7 : server.symbol_id();
         Bytes p;
         num(p, 1, action);
         num(p, 2, id);
@@ -302,7 +315,8 @@ void replay_roundtrip() {
     Read a(h.first(700).payload);
     check(a.n[2] == 0, "authority is nonpopup");
     check(a.s[1] == "moex.source_authority.v1 "
-                    "{\"symbol_id\":7,\"stream_epoch\":73,\"aggr_online\":true,\"book_snapshot_current\":true,"
+                    "{\"symbol_id\":7,\"source_mode\":\"replay\",\"stream_epoch\":73,\"aggr_online\":true,"
+                    "\"book_snapshot_current\":true,"
                     "\"session_ready_witness_kind\":\"LateJoinCorroboratedSnapshot\",\"market_data_display_allowed\":"
                     "true,\"order_entry_allowed\":false,\"exchange_confirmed\":false}",
           "exact agreed authority JSON envelope");
@@ -336,6 +350,101 @@ void replay_roundtrip() {
     ++h.source.state.source_snapshot_version;
     h.pump();
     check(h.count(145) == 0, "one shot does not subscribe");
+}
+void live_test_metadata_and_auth() {
+    const auto mark_refdata_vcb_proven = [](Harness& harness) {
+        harness.source.state.refdata_vcb_join_current = true;
+        harness.source.state.future_vcb_provenance_present = true;
+        harness.source.state.refdata_board_proven = true;
+        harness.source.state.refdata_currency_proven = true;
+    };
+    auto c = config();
+    c.source_mode = DtcSourceMode::LiveTest;
+    c.symbol_id = 17;
+    // Deliberately conflicting replay terms must be ignored by live_test.
+    c.currency = "REPLAY-CURRENCY";
+    c.description = "replay description must not leak";
+    c.contract_size = 999;
+    c.currency_value_per_increment = 999;
+    Harness h(c);
+    mark_refdata_vcb_proven(h);
+    h.source.state.description = "Authoritative TEST future";
+    h.source.state.currency = "RUB";
+    h.source.state.contract_size = "10";
+    h.source.state.currency_value_per_increment = "2.5";
+    h.logon();
+    h.subscribe();
+    Read definition(h.first(507).payload);
+    check(definition.n[4] == 17 && definition.n[33] == 123, "live TEST definition uses fixed symbol and source ISIN");
+    check(definition.s[5] == "Authoritative TEST future" && definition.s[28] == "RUB" && definition.f[29] == 10 &&
+              definition.f[8] == 2.5F,
+          "live TEST 507 uses source metadata, not replay economics");
+    for (const auto field : {7U, 9U, 10U, 11U, 22U, 24U})
+        check(!definition.n.contains(field) && !definition.f.contains(field),
+              "live TEST 507 omits unmapped optional economics");
+    check(Read(h.first(145).payload).n[1] == 17, "live TEST depth uses fixed DTC symbol identity");
+    const auto authority = Read(h.first(700).payload).s[1];
+    check(authority.find("\"source_mode\":\"live_test\"") != std::string::npos &&
+              authority.find("\"symbol_id\":17") != std::string::npos,
+          "live TEST authority is explicitly identified");
+    auto unsupported = c;
+    Harness unsupported_currency(unsupported);
+    mark_refdata_vcb_proven(unsupported_currency);
+    unsupported_currency.source.state.description = "Authoritative TEST future";
+    unsupported_currency.source.state.currency = "USD";
+    unsupported_currency.source.state.refdata_currency_proven = false;
+    unsupported_currency.source.state.contract_size = "10";
+    unsupported_currency.source.state.currency_value_per_increment = "2.5";
+    unsupported_currency.logon(false);
+    unsupported_currency.subscribe();
+    check(unsupported_currency.count(509) == 1 && unsupported_currency.count(507) == 0,
+          "live TEST unsupported quotation currency fails 507 closed");
+    h.got.clear();
+    h.source.state.refdata_vcb_join_current = false;
+    h.pump();
+    check(h.count(700) == 1 && h.count(145) == 0 && h.count(5) == 1 && h.eof,
+          "live TEST fut_vcb revocation fences depth and closes the session");
+
+    auto missing = c;
+    Harness invalid(missing);
+    mark_refdata_vcb_proven(invalid);
+    invalid.source.state.description.clear();
+    invalid.source.state.currency.clear();
+    invalid.source.state.contract_size.clear();
+    invalid.source.state.currency_value_per_increment.clear();
+    invalid.logon(false);
+    invalid.subscribe();
+    check(invalid.count(509) == 1 && invalid.count(507) == 0 && invalid.count(145) == 0,
+          "live TEST missing authoritative 507 metadata fails closed");
+
+    Harness ambiguous(c);
+    mark_refdata_vcb_proven(ambiguous);
+    ambiguous.source.state.refdata_vcb_join_ambiguous = true;
+    ambiguous.source.state.description = "Authoritative TEST future";
+    ambiguous.source.state.currency = "RUB";
+    ambiguous.source.state.contract_size = "10";
+    ambiguous.source.state.currency_value_per_increment = "2.5";
+    ambiguous.logon(false);
+    ambiguous.subscribe();
+    check(ambiguous.count(509) == 1 && ambiguous.count(507) == 0, "live TEST ambiguous fut_vcb join fails 507 closed");
+
+    auto auth = c;
+    auth.require_local_auth = true;
+    auth.local_username = "local-user";
+    auth.local_password = "local-password";
+    Harness wrong(auth);
+    mark_refdata_vcb_proven(wrong);
+    wrong.logon(false, "wrong-user", "wrong-password", false);
+    wrong.pump(3);
+    check(wrong.count(5) == 1 && wrong.eof, "dedicated local DTC credentials fence invalid logon");
+    Harness correct(auth);
+    mark_refdata_vcb_proven(correct);
+    correct.source.state.description = "Authoritative TEST future";
+    correct.source.state.currency = "RUB";
+    correct.source.state.contract_size = "10";
+    correct.source.state.currency_value_per_increment = "2.5";
+    correct.logon(true, "local-user", "local-password");
+    check(correct.count(2) == 1, "dedicated local DTC credentials permit valid logon");
 }
 void revoke_and_reconnect() {
     Harness h;
@@ -574,6 +683,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     replay_roundtrip();
+    live_test_metadata_and_auth();
     revoke_and_reconnect();
     rejects();
     bounds();

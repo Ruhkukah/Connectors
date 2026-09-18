@@ -25,6 +25,14 @@ struct Plaza2HostConfig {
     // endpoint; the future DTC security-definition response will be the
     // source of truth.
     std::string target_board;
+    // Board/currency are not inferred from an endpoint, symbol, or tick size.
+    // The runner may provide them only as explicit operator bindings when the
+    // current Connector/REFDATA surface does not carry the field. Currency is
+    // not claimed to be REFDATA-proven by this field alone.
+    std::string target_currency;
+    // A read-only market-data host never creates publisher/reply handles and
+    // rejects all order authorization APIs. It remains TEST-only.
+    bool read_only_market_data{false};
     // Wall-clock seam for current-session display checks; production defaults
     // to system_clock::now. Does not participate in order authorization.
     std::function<std::chrono::system_clock::time_point()> market_data_now;
@@ -165,9 +173,26 @@ struct ConnectorHostMarketDataSnapshot {
     std::uint64_t market_data_authority_epoch{0};
     std::uint64_t stream_epoch{0};
     std::int64_t target_isin_id{0};
+    std::int32_t target_session_id{0};
     std::string symbol;
     std::string board;
     std::string min_step;
+    std::string description;
+    // When the committed fut_vcb join is resolved, these are its raw source
+    // values. Otherwise they retain explicit operator bindings only.
+    std::string currency;
+    // These values are raw authoritative REFDATA text. Empty means that the
+    // current source cannot prove the corresponding DTC 507 value.
+    std::string contract_size;
+    std::string currency_value_per_increment;
+    bool refdata_vcb_join_current{false};
+    bool refdata_vcb_join_ambiguous{false};
+    bool refdata_board_proven{false};
+    // This is deliberately narrower than raw fut_vcb.curr presence: it is
+    // true only for a supported monetary/tick denomination path (Phase5
+    // currently exact RUB), not for an arbitrary quotation code.
+    bool refdata_currency_proven{false};
+    plaza2::private_state::SourceRowProvenance future_vcb_provenance;
     std::string invalid_reason;
     std::uint64_t source_snapshot_version{0};
     std::uint64_t source_snapshot_hash{0};

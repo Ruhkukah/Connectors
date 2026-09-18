@@ -6,12 +6,33 @@ project(
     DESCRIPTION "Standalone C++20/Linux-first MOEX connector suite"
     LANGUAGES CXX)
 
-execute_process(
-    COMMAND git rev-parse HEAD
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    OUTPUT_VARIABLE MOEX_SOURCE_GIT_SHA
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET)
+# Archive/VPS builds have no .git directory. Operators provide the source
+# revision through a separate override cache entry. The resolved SHA is a
+# normal configure variable so a checkout re-discovers the current HEAD on
+# every configure rather than retaining a prior auto-discovered cache value.
+unset(MOEX_SOURCE_GIT_SHA CACHE)
+set(MOEX_SOURCE_GIT_SHA_OVERRIDE "" CACHE STRING
+    "Explicit validated 40-hex source revision for archive/VPS build receipts")
+set(MOEX_SOURCE_GIT_SHA "")
+if(NOT MOEX_SOURCE_GIT_SHA_OVERRIDE STREQUAL "")
+    set(MOEX_SOURCE_GIT_SHA "${MOEX_SOURCE_GIT_SHA_OVERRIDE}")
+else()
+    execute_process(
+        COMMAND git rev-parse HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE MOEX_SOURCE_GIT_SHA_DISCOVERED
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(MOEX_SOURCE_GIT_SHA_DISCOVERED)
+        set(MOEX_SOURCE_GIT_SHA "${MOEX_SOURCE_GIT_SHA_DISCOVERED}")
+    endif()
+endif()
+if(MOEX_SOURCE_GIT_SHA)
+    string(LENGTH "${MOEX_SOURCE_GIT_SHA}" MOEX_SOURCE_GIT_SHA_LENGTH)
+    if(NOT MOEX_SOURCE_GIT_SHA_LENGTH EQUAL 40 OR NOT MOEX_SOURCE_GIT_SHA MATCHES "^[0-9a-fA-F]+$")
+        message(FATAL_ERROR "MOEX_SOURCE_GIT_SHA must be exactly 40 hexadecimal characters")
+    endif()
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

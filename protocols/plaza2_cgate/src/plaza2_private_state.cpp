@@ -155,6 +155,7 @@ struct TradeKeyHash {
 
 using SessionMap = std::unordered_map<std::int32_t, TradingSessionSnapshot>;
 using InstrumentMap = std::unordered_map<std::int32_t, InstrumentSnapshot>;
+using FutureVcbMap = std::unordered_map<std::string, FutureVcbSnapshot>;
 using MatchingMap = std::unordered_map<std::int32_t, MatchingMapSnapshot>;
 using SystemMessageMap = std::unordered_map<std::int64_t, SystemMessageSnapshot>;
 using LimitMap = std::unordered_map<LimitKey, LimitSnapshot, LimitKeyHash>;
@@ -214,6 +215,18 @@ struct RowReader {
         return field == nullptr ? std::string{} : std::string(field->text_value);
     }
 };
+
+std::string future_vcb_row_key(const RowReader& row) {
+    const auto repl_id = row.i64(FieldCode::kFortsRefdataReplFutVcbReplId);
+    if (repl_id != 0) {
+        return std::string("repl|") + std::to_string(repl_id);
+    }
+    const auto base_contract_id = row.i32(FieldCode::kFortsRefdataReplFutVcbBaseContractId);
+    if (base_contract_id != 0) {
+        return std::string("base|") + std::to_string(base_contract_id);
+    }
+    return std::string("code|") + row.text(FieldCode::kFortsRefdataReplFutVcbBaseContractCode);
+}
 
 std::string revision_key(std::initializer_list<std::string_view> parts) {
     std::string key;
@@ -409,6 +422,7 @@ struct StagedState {
     bool active{false};
     std::optional<SessionMap> sessions;
     std::optional<InstrumentMap> instruments;
+    std::optional<FutureVcbMap> future_vcb;
     std::optional<MatchingMap> matching_map;
     std::optional<SystemMessageMap> system_messages;
     std::optional<LimitMap> limits;
@@ -457,6 +471,7 @@ struct Plaza2PrivateStateProjector::Impl {
 
     SessionMap sessions_by_id;
     InstrumentMap instruments_by_isin;
+    FutureVcbMap future_vcb_by_row;
     MatchingMap matching_by_base_contract;
     SystemMessageMap system_messages_by_id;
     LimitMap limits_by_key;
@@ -470,6 +485,7 @@ struct Plaza2PrivateStateProjector::Impl {
 
     std::vector<TradingSessionSnapshot> session_snapshots;
     std::vector<InstrumentSnapshot> instrument_snapshots;
+    std::vector<FutureVcbSnapshot> future_vcb_snapshots;
     std::vector<MatchingMapSnapshot> matching_snapshots;
     std::vector<SystemMessageSnapshot> system_message_snapshots;
     std::vector<LimitSnapshot> limit_snapshots;
@@ -494,6 +510,7 @@ struct Plaza2PrivateStateProjector::Impl {
         stream_health.clear();
         sessions_by_id.clear();
         instruments_by_isin.clear();
+        future_vcb_by_row.clear();
         matching_by_base_contract.clear();
         system_messages_by_id.clear();
         limits_by_key.clear();
@@ -506,6 +523,7 @@ struct Plaza2PrivateStateProjector::Impl {
         lifenums_by_stream.clear();
         session_snapshots.clear();
         instrument_snapshots.clear();
+        future_vcb_snapshots.clear();
         matching_snapshots.clear();
         system_message_snapshots.clear();
         limit_snapshots.clear();
@@ -712,6 +730,8 @@ struct Plaza2PrivateStateProjector::Impl {
             return revision_key(row.i32(FieldCode::kFortsRefdataReplFutInstrumentsIsinId));
         case TableCode::kFortsRefdataReplFutSessContents:
             return revision_key(row.i32(FieldCode::kFortsRefdataReplFutSessContentsIsinId));
+        case TableCode::kFortsRefdataReplFutVcb:
+            return future_vcb_row_key(row);
         case TableCode::kFortsRefdataReplOptSessContents:
             return revision_key(row.i32(FieldCode::kFortsRefdataReplOptSessContentsIsinId));
         case TableCode::kFortsRefdataReplMultilegDict:
@@ -750,7 +770,61 @@ struct Plaza2PrivateStateProjector::Impl {
             });
     }
 
+    void rebuild_future_vcb() {
+        future_vcb_snapshots = sorted_values<FutureVcbSnapshot>(
+            future_vcb_by_row, [](const FutureVcbSnapshot& lhs, const FutureVcbSnapshot& rhs) {
+                if (lhs.base_contract_code != rhs.base_contract_code)
+                    return lhs.base_contract_code < rhs.base_contract_code;
+                if (lhs.base_contract_id != rhs.base_contract_id)
+                    return lhs.base_contract_id < rhs.base_contract_id;
+                return lhs.repl_id < rhs.repl_id;
+            });
+    }
+
+    void join_future_vcb_into_instruments() {
+        for (auto& [unused_isin_id, instrument] : instruments_by_isin) {
+            static_cast<void>(unused_isin_id);
+            instrument.base_contract_id = 0;
+            instrument.future_vcb_join_status = FutureVcbJoinStatus::Missing;
+            instrument.future_vcb_currency.clear();
+            instrument.future_vcb_board_md.clear();
+            instrument.future_vcb_provenance = {};
+            if (instrument.kind != InstrumentKind::kFuture || instrument.base_contract_code.empty())
+                continue;
+
+            std::size_t match_count = 0;
+            const FutureVcbSnapshot* match = nullptr;
+            for (const auto& [unused_key, row] : future_vcb_by_row) {
+                static_cast<void>(unused_key);
+                if (row.base_contract_code != instrument.base_contract_code)
+                    continue;
+                ++match_count;
+                if (match_count == 1)
+                    match = &row;
+            }
+            if (match_count != 1) {
+                instrument.future_vcb_join_status =
+                    match_count > 1 ? FutureVcbJoinStatus::Ambiguous : FutureVcbJoinStatus::Missing;
+                continue;
+            }
+
+            // The locked schema supplies the join identity, quotation currency,
+            // ASTS SECBOARD and row provenance. Any missing piece is not a
+            // partially usable definition: it remains fail-closed.
+            if (match == nullptr || match->base_contract_id <= 0 || match->currency.empty() ||
+                match->board_md.empty() || !match->source.present) {
+                continue;
+            }
+            instrument.base_contract_id = match->base_contract_id;
+            instrument.future_vcb_join_status = FutureVcbJoinStatus::Resolved;
+            instrument.future_vcb_currency = match->currency;
+            instrument.future_vcb_board_md = match->board_md;
+            instrument.future_vcb_provenance = match->source;
+        }
+    }
+
     void rebuild_instruments() {
+        join_future_vcb_into_instruments();
         instrument_snapshots = sorted_values<InstrumentSnapshot>(
             instruments_by_isin,
             [](const InstrumentSnapshot& lhs, const InstrumentSnapshot& rhs) { return lhs.isin_id < rhs.isin_id; });
@@ -850,6 +924,7 @@ struct Plaza2PrivateStateProjector::Impl {
 
     void rebuild_all_snapshots() {
         rebuild_sessions();
+        rebuild_future_vcb();
         rebuild_instruments();
         rebuild_matching_map();
         rebuild_system_messages();
@@ -907,6 +982,7 @@ struct Plaza2PrivateStateProjector::Impl {
         auto& sessions = staged.active ? ensure_stage_copy(staged.sessions, sessions_by_id) : sessions_by_id;
         auto& instruments =
             staged.active ? ensure_stage_copy(staged.instruments, instruments_by_isin) : instruments_by_isin;
+        auto& future_vcb = staged.active ? ensure_stage_copy(staged.future_vcb, future_vcb_by_row) : future_vcb_by_row;
         auto& matching = staged.active ? ensure_stage_copy(staged.matching_map, matching_by_base_contract)
                                        : matching_by_base_contract;
         auto& system_messages =
@@ -938,6 +1014,7 @@ struct Plaza2PrivateStateProjector::Impl {
             case TableCode::kFortsPartReplPartSa:
                 return StreamCode::kFortsPartRepl;
             case TableCode::kFortsRefdataReplSession:
+            case TableCode::kFortsRefdataReplFutVcb:
             case TableCode::kFortsRefdataReplFutInstruments:
             case TableCode::kFortsRefdataReplFutSessContents:
             case TableCode::kFortsRefdataReplOptSessContents:
@@ -1107,6 +1184,16 @@ struct Plaza2PrivateStateProjector::Impl {
                 }
             }
             break;
+        case TableCode::kFortsRefdataReplFutVcb:
+            for (auto it = future_vcb.begin(); it != future_vcb.end();) {
+                if (source_row_is_stale(table_code, it->first, clear_revision)) {
+                    erase_source_row(table_code, it->first);
+                    it = future_vcb.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            break;
         case TableCode::kFortsRefdataReplFutInstruments:
         case TableCode::kFortsRefdataReplOptSessContents:
             for (auto it = instruments.begin(); it != instruments.end();) {
@@ -1248,9 +1335,11 @@ struct Plaza2PrivateStateProjector::Impl {
                                                 .current_status = instrument.current_status};
             std::erase_if(instruments_by_isin, [](const auto& item) { return !item.second.has_current_status; });
         }
+            future_vcb_by_row.clear();
             matching_by_base_contract.clear();
             system_messages_by_id.clear();
             rebuild_sessions();
+            rebuild_future_vcb();
             rebuild_instruments();
             rebuild_matching_map();
             rebuild_system_messages();
@@ -1314,6 +1403,7 @@ struct Plaza2PrivateStateProjector::Impl {
                                                 .has_current_status = instrument.has_current_status,
                                                 .current_status = instrument.current_status};
             std::erase_if(instruments, [](const auto& item) { return !item.second.has_current_status; });
+            ensure_stage_copy(staged.future_vcb, future_vcb_by_row).clear();
         }
             ensure_stage_copy(staged.matching_map, matching_by_base_contract).clear();
             ensure_stage_copy(staged.system_messages, system_messages_by_id).clear();
@@ -1357,6 +1447,11 @@ struct Plaza2PrivateStateProjector::Impl {
     InstrumentMap& ensure_staged_instruments() {
         staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
         return ensure_stage_copy(staged.instruments, instruments_by_isin);
+    }
+
+    FutureVcbMap& ensure_staged_future_vcb() {
+        staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
+        return ensure_stage_copy(staged.future_vcb, future_vcb_by_row);
     }
 
     MatchingMap& ensure_staged_matching_map() {
@@ -1718,10 +1813,29 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.is_spread = row.boolean(FieldCode::kFortsRefdataReplFutInstrumentsIsSpread);
         instrument.min_step = row.text(FieldCode::kFortsRefdataReplFutInstrumentsMinStep);
         instrument.step_price = row.text(FieldCode::kFortsRefdataReplFutInstrumentsStepPrice);
+        instrument.step_price_curr = row.text(FieldCode::kFortsRefdataReplFutInstrumentsStepPriceCurr);
         instrument.settlement_price = row.text(FieldCode::kFortsRefdataReplFutInstrumentsSettlementPrice);
         instrument.last_trade_date = row.i64(FieldCode::kFortsRefdataReplFutInstrumentsLastTradeDate);
         instrument.group_mask = row.i64(FieldCode::kFortsRefdataReplFutInstrumentsGroupMask);
         instrument.trade_period_access = row.i64(FieldCode::kFortsRefdataReplFutInstrumentsTradePeriodAccess);
+    }
+
+    void apply_future_vcb_row(const fake::EventSpec& event, const RowReader& row) {
+        auto& rows = ensure_staged_future_vcb();
+        const auto key = future_vcb_row_key(row);
+        auto& vcb = rows[key];
+        vcb.repl_id = row.i64(FieldCode::kFortsRefdataReplFutVcbReplId);
+        vcb.base_contract_id = row.i32(FieldCode::kFortsRefdataReplFutVcbBaseContractId);
+        vcb.base_contract_code = row.text(FieldCode::kFortsRefdataReplFutVcbBaseContractCode);
+        // These are the locked schema fields: curr is quotation currency and
+        // board_md is the ASTS SECBOARD identifier. Preserve raw text.
+        vcb.currency = row.text(FieldCode::kFortsRefdataReplFutVcbCurr);
+        vcb.board_md = row.text(FieldCode::kFortsRefdataReplFutVcbBoardMd);
+        vcb.source = {.stream_code = StreamCode::kFortsRefdataRepl,
+                      .table_code = TableCode::kFortsRefdataReplFutVcb,
+                      .repl_rev = event.signed_value,
+                      .lifenum = refdata_lifenum().value_or(0),
+                      .present = refdata_lifenum().has_value()};
     }
 
     void apply_future_session_contents_row(const fake::EventSpec& event, const RowReader& row) {
@@ -1752,6 +1866,7 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.is_spread = row.boolean(FieldCode::kFortsRefdataReplFutSessContentsIsSpread);
         instrument.min_step = row.text(FieldCode::kFortsRefdataReplFutSessContentsMinStep);
         instrument.step_price = row.text(FieldCode::kFortsRefdataReplFutSessContentsStepPrice);
+        instrument.step_price_curr = row.text(FieldCode::kFortsRefdataReplFutSessContentsStepPriceCurr);
         instrument.settlement_price = row.text(FieldCode::kFortsRefdataReplFutSessContentsSettlementPrice);
         instrument.last_trade_date = row.i64(FieldCode::kFortsRefdataReplFutSessContentsLastTradeDate);
         instrument.group_mask = row.i64(FieldCode::kFortsRefdataReplFutSessContentsGroupMask);
@@ -1988,6 +2103,9 @@ struct Plaza2PrivateStateProjector::Impl {
         case TableCode::kFortsRefdataReplFutInstruments:
             apply_future_instrument_row(row);
             break;
+        case TableCode::kFortsRefdataReplFutVcb:
+            apply_future_vcb_row(event, row);
+            break;
         case TableCode::kFortsRefdataReplFutSessContents:
             apply_future_session_contents_row(event, row);
             break;
@@ -2028,8 +2146,14 @@ struct Plaza2PrivateStateProjector::Impl {
             sessions_by_id = std::move(*staged.sessions);
             rebuild_sessions();
         }
-        if (staged.instruments.has_value()) {
+        const bool refdata_instruments_changed = staged.instruments.has_value();
+        const bool refdata_vcb_changed = staged.future_vcb.has_value();
+        if (staged.instruments.has_value())
             instruments_by_isin = std::move(*staged.instruments);
+        if (staged.future_vcb.has_value())
+            future_vcb_by_row = std::move(*staged.future_vcb);
+        if (refdata_instruments_changed || refdata_vcb_changed) {
+            rebuild_future_vcb();
             rebuild_instruments();
         }
         if (staged.matching_map.has_value()) {
@@ -2104,6 +2228,7 @@ struct Plaza2PrivateStateProjector::Impl {
                 return table_code == TableCode::kFortsPartReplPart;
             case StreamCode::kFortsRefdataRepl:
                 return table_code == TableCode::kFortsRefdataReplSession ||
+                       table_code == TableCode::kFortsRefdataReplFutVcb ||
                        table_code == TableCode::kFortsRefdataReplFutInstruments ||
                        table_code == TableCode::kFortsRefdataReplFutSessContents ||
                        table_code == TableCode::kFortsRefdataReplOptSessContents ||
@@ -2195,6 +2320,10 @@ Plaza2PrivateStateProjector::find_future_session_terms(std::int32_t isin_id, std
 
 std::span<const InstrumentSnapshot> Plaza2PrivateStateProjector::instruments() const {
     return impl_->instrument_snapshots;
+}
+
+std::span<const FutureVcbSnapshot> Plaza2PrivateStateProjector::future_vcb() const {
+    return impl_->future_vcb_snapshots;
 }
 
 std::span<const MatchingMapSnapshot> Plaza2PrivateStateProjector::matching_map() const {

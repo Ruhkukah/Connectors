@@ -180,6 +180,11 @@ struct Plaza2TestSessionHostConfig {
     std::string publisher_name{"PUB"};
     std::string p2mqreply_settings;
     std::string p2mqreply_open_settings;
+    // ConnectorHost's live DTC runner uses the same CGate owner and
+    // read-side replication, but deliberately does not create a publisher or
+    // reply listener. This is a transport capability boundary, not a send
+    // mode or an execution authorization.
+    bool read_only_market_data{false};
     // When enabled, FORTS_TRADE_REPL is opened after the negotiated POS.info
     // anchor is available, using that exact trades_rev/lifenum anchor.
     bool trade_replay_from_pos_anchor{false};

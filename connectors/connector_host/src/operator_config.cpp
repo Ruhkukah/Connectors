@@ -43,7 +43,9 @@ Order:    --armed-test-order-send --plan FILE --authorize-sha256 SHA
           --run-id ID --journal-root PATH --receipt-path PATH
           --profile-id ID --profile-fingerprint SHA --policy-version ID --policy-sha256 SHA
 Order quantity is exactly 1, LIMIT; zero position required, at most 4 ticks/5000ms.
-qualify/status reject the send arm. Canonical plan input is byte-exact (no reformatting).
+    qualify/status reject the send arm. Canonical plan input is byte-exact (no reformatting).
+    --read-only-market-data is an internal ConnectorHost runner mode: it skips
+    order/account identity inputs and never creates publisher/reply handles.
 )";
 }
 
@@ -52,12 +54,14 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     using plaza2::generated::StreamCode;
 
     if (inputs.runtime_root.empty() || inputs.scheme_dir.empty() || inputs.config_dir.empty() ||
-        inputs.env_open_settings.empty() || inputs.broker_code.empty() || inputs.client_code.empty() ||
+        inputs.env_open_settings.empty() ||
+        (!inputs.read_only_market_data && (inputs.broker_code.empty() || inputs.client_code.empty())) ||
         inputs.isin_id <= 0 || inputs.session_id <= 0)
         throw std::invalid_argument("incomplete ConnectorHost TEST configuration");
 
     Plaza2HostConfig out;
     out.purpose = inputs.purpose;
+    out.read_only_market_data = inputs.read_only_market_data;
     auto& host = out.transport.host;
     host.mode = inputs.purpose == HostPurpose::OrderTest ? Plaza2TestSessionHostMode::LiveTestAuthorizedSend
                                                          : Plaza2TestSessionHostMode::LiveTestPreSend;
@@ -131,7 +135,7 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     out.transport.target_isin_id = inputs.isin_id;
     out.transport.target_session_id = inputs.session_id;
     out.transport.observation_client_code = inputs.broker_code + inputs.client_code;
-    out.transport.require_zero_starting_position = true;
+    out.transport.require_zero_starting_position = !inputs.read_only_market_data;
     out.transport.max_aggr20_age = std::chrono::milliseconds(5000);
     out.transport.target_max_distance_ticks = 4;
     out.transport.execution_safety_receipt_path = inputs.receipt_path;
@@ -151,8 +155,12 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
     const bool order = out.command == "order-test";
     std::map<std::string, std::string> values;
     std::set<std::string> flags;
-    const std::set<std::string_view> flag_names{"--json", "--armed-test-network", "--armed-test-session",
-                                                "--armed-test-plaza2", "--armed-test-order-send"};
+    const std::set<std::string_view> flag_names{"--json",
+                                                "--armed-test-network",
+                                                "--armed-test-session",
+                                                "--armed-test-plaza2",
+                                                "--armed-test-order-send",
+                                                "--read-only-market-data"};
     const std::set<std::string_view> value_names{"--runtime-root",
                                                  "--scheme-dir",
                                                  "--config-dir",
@@ -207,6 +215,7 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
     };
     Plaza2HostConfigInputs inputs;
     inputs.purpose = order ? HostPurpose::OrderTest : HostPurpose::Qualify;
+    inputs.read_only_market_data = flags.contains("--read-only-market-data");
     inputs.runtime_root = required("--runtime-root");
     inputs.scheme_dir = required("--scheme-dir");
     inputs.config_dir = required("--config-dir");
@@ -216,8 +225,10 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
     inputs.env_open_settings = environment(required("--env-settings-var"));
     inputs.credentials_env_var = get("--credentials-env", "MOEX_PLAZA2_TEST_CREDENTIALS");
     inputs.software_key_env_var = get("--software-key-env", "MOEX_PLAZA2_CGATE_SOFTWARE_KEY");
-    inputs.broker_code = environment(required("--broker-code-env"));
-    inputs.client_code = environment(required("--client-code-env"));
+    if (!inputs.read_only_market_data) {
+        inputs.broker_code = environment(required("--broker-code-env"));
+        inputs.client_code = environment(required("--client-code-env"));
+    }
     inputs.isin_id = integer<std::int64_t>(required("--isin-id"));
     inputs.session_id = integer<std::int32_t>(required("--session-id"));
     inputs.arm_state = {.test_network_armed = flags.contains("--armed-test-network"),

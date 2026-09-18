@@ -56,8 +56,15 @@ function(moex_add_app target_name source_file link_library)
     set_target_properties(${target_name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}")
 endfunction()
 
+if(NOT MOEX_SOURCE_GIT_SHA)
+    message(FATAL_ERROR
+        "moex_connector_host_dtc_runner requires -DMOEX_SOURCE_GIT_SHA_OVERRIDE=<40-hex-source-revision> "
+        "for archive/VPS provenance")
+endif()
+
 moex_add_app(moex_twime_cert_runner twime_cert_runner.cpp moex_twime_trade)
 moex_add_app(moexctl moexctl.cpp moex_connector_host)
+moex_add_app(moex_connector_host_dtc_runner moex_connector_host_dtc_runner.cpp moex_connector_host)
 moex_add_app(moex_plaza2_test_runner plaza2_test_runner.cpp moex_plaza2_cgate_live_session)
 moex_add_app(moex_plaza2_test_connectivity_qualifier plaza2_test_connectivity_qualifier.cpp
     moex_plaza2_cgate_connectivity_qualifier)
