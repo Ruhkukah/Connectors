@@ -567,13 +567,11 @@ LargeIndexScenario make_large_index_scenario() {
         const auto old_isin = 5000 + static_cast<std::int64_t>(slot / kLevelsPerInstrument);
         const auto dir = level < 20 ? 1 : 2;
         if (slot < kDeletedSlots) {
-            scenario.mutation.push_back(make_row(repl_id, 2, old_isin, dir, large_index_price(level), 0, 0,
-                                                 1000 + slot, slot));
+            scenario.mutation.push_back(
+                make_row(repl_id, 2, old_isin, dir, large_index_price(level), 0, 0, 1000 + slot, slot));
             continue;
         }
-        const auto isin_id = slot >= 64 && slot < 96
-                                 ? 6000 + static_cast<std::int64_t>(slot % 2)
-                                 : old_isin;
+        const auto isin_id = slot >= 64 && slot < 96 ? 6000 + static_cast<std::int64_t>(slot % 2) : old_isin;
         scenario.mutation.push_back(make_row(repl_id, 2, isin_id, dir, large_index_price(level),
                                              20 + static_cast<std::int64_t>(level), 0, 1000 + slot, slot));
     }
@@ -597,12 +595,10 @@ LargeIndexScenario make_large_index_scenario() {
     for (std::size_t slot = 0; slot < kSeededSlots; ++slot) {
         const auto level = slot % kLevelsPerInstrument;
         const auto repl_id = slot < 8 ? 10'000 + slot : slot < kDeletedSlots ? 20'000 + slot : 10'000 + slot;
-        const auto isin_id = slot < 8
-                                 ? 6002
-                                 : slot < kDeletedSlots
-                                       ? 6003
-                                       : slot >= 64 && slot < 96 ? 6000 + static_cast<std::int64_t>(slot % 2)
-                                                                  : 5000 + static_cast<std::int64_t>(slot / 40);
+        const auto isin_id = slot < 8                  ? 6002
+                             : slot < kDeletedSlots    ? 6003
+                             : slot >= 64 && slot < 96 ? 6000 + static_cast<std::int64_t>(slot % 2)
+                                                       : 5000 + static_cast<std::int64_t>(slot / 40);
         const auto dir = level < 20 ? 1 : 2;
         if (slot < kDeletedSlots) {
             scenario.rollback.push_back(make_row(repl_id, 100 + static_cast<std::int64_t>(slot), isin_id, dir,
@@ -614,12 +610,12 @@ LargeIndexScenario make_large_index_scenario() {
         }
     }
     for (std::size_t index = 0; index < 8; ++index) {
-        scenario.rollback.push_back(make_row(10'000 + index, 200, 6004, index % 2 == 0 ? 1 : 2, "203.00000", 60, 0,
-                                             5000 + index, index));
+        scenario.rollback.push_back(
+            make_row(10'000 + index, 200, 6004, index % 2 == 0 ? 1 : 2, "203.00000", 60, 0, 5000 + index, index));
     }
     for (std::size_t index = 8; index < kDeletedSlots; ++index) {
-        scenario.rollback.push_back(make_row(20'000 + index, 200, 6005, index % 2 == 0 ? 1 : 2, "204.00000", 70, 0,
-                                             5000 + index, index));
+        scenario.rollback.push_back(
+            make_row(20'000 + index, 200, 6005, index % 2 == 0 ? 1 : 2, "204.00000", 70, 0, 5000 + index, index));
     }
     for (std::size_t index = 0; index < kDeletedSlots; ++index) {
         const auto repl_id = index < 8 ? 10'000 + index : 20'000 + index;
@@ -629,8 +625,8 @@ LargeIndexScenario make_large_index_scenario() {
     }
 
     if (scenario.seed.size() < 256 || scenario.mutation.size() < 256 || scenario.rollback.size() < 256 ||
-        scenario.mutation.size() != scenario.existing_update_rows + scenario.delete_rows +
-                                         scenario.reinsertion_rows + scenario.follow_up_update_rows)
+        scenario.mutation.size() != scenario.existing_update_rows + scenario.delete_rows + scenario.reinsertion_rows +
+                                        scenario.follow_up_update_rows)
         throw std::runtime_error("large-index scenario did not cross the 256-row threshold");
     return scenario;
 }

@@ -954,10 +954,9 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
             planned_repl_indices.emplace_back(row.repl_id, kNoSlotIndex);
         std::sort(planned_repl_indices.begin(), planned_repl_indices.end(),
                   [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
-        planned_repl_indices.erase(
-            std::unique(planned_repl_indices.begin(), planned_repl_indices.end(),
-                        [](const auto& lhs, const auto& rhs) { return lhs.first == rhs.first; }),
-            planned_repl_indices.end());
+        planned_repl_indices.erase(std::unique(planned_repl_indices.begin(), planned_repl_indices.end(),
+                                               [](const auto& lhs, const auto& rhs) { return lhs.first == rhs.first; }),
+                                   planned_repl_indices.end());
         const auto lookup_capacity = slot_rows_.size() + staged_row_count;
         planned_slot_indices.assign(lookup_capacity, kNoSlotIndex);
         deleted_slot_indices.assign(lookup_capacity, false);
@@ -974,8 +973,7 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
             const auto indexed = std::lower_bound(
                 planned_repl_indices.begin(), planned_repl_indices.end(), repl_id,
                 [](const auto& entry, std::uint64_t wanted_repl_id) { return entry.first < wanted_repl_id; });
-            if (indexed == planned_repl_indices.end() || indexed->first != repl_id ||
-                indexed->second == kNoSlotIndex)
+            if (indexed == planned_repl_indices.end() || indexed->first != repl_id || indexed->second == kNoSlotIndex)
                 return nullptr;
             return &planned_repls[indexed->second];
         }
