@@ -754,6 +754,9 @@ void Plaza2Aggr20BookProjector::reset() {
     affected_isin_ids_.clear();
     staged_metadata_.clear();
     slot_rows_.clear();
+    active_slot_order_.clear();
+    slot_order_position_.clear();
+    free_slot_indices_.clear();
     slot_index_by_repl_id_.clear();
     instrument_slot_ownership_.clear();
     active_row_count_ = 0;
@@ -839,7 +842,12 @@ void Plaza2Aggr20BookProjector::add_slot_to_instrument(std::int64_t isin_id, std
         ++active_instrument_count_;
     }
     auto& slots = it->second;
-    slots.insert(std::lower_bound(slots.begin(), slots.end(), slot_index), slot_index);
+    const auto position = slot_order_position_[slot_index];
+    const auto insertion = std::lower_bound(slots.begin(), slots.end(), position,
+                                            [this](std::size_t existing_slot, std::size_t wanted_position) {
+                                                return slot_order_position_[existing_slot] < wanted_position;
+                                            });
+    slots.insert(insertion, slot_index);
 }
 
 void Plaza2Aggr20BookProjector::remove_slot_from_instrument(std::int64_t isin_id, std::size_t slot_index) {
@@ -859,6 +867,20 @@ void Plaza2Aggr20BookProjector::remove_slot_from_instrument(std::int64_t isin_id
     }
 }
 
+void Plaza2Aggr20BookProjector::compact_slot_order() noexcept {
+    const auto hole_count = active_slot_order_.size() - active_row_count_;
+    if (hole_count < kCompactionHoleThreshold) {
+        return;
+    }
+
+    const auto new_end = std::remove(active_slot_order_.begin(), active_slot_order_.end(), kNoSlotIndex);
+    active_slot_order_.erase(new_end, active_slot_order_.end());
+    std::fill(slot_order_position_.begin(), slot_order_position_.end(), kNoSlotIndex);
+    for (std::size_t position = 0; position < active_slot_order_.size(); ++position) {
+        slot_order_position_[active_slot_order_[position]] = position;
+    }
+}
+
 Plaza2Error Plaza2Aggr20BookProjector::commit() {
     if (!transaction_open_) {
         return {
@@ -868,54 +890,259 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
         };
     }
 
+    // Everything through the reserve/resize block below is a preflight. It
+    // may allocate, but it does not mutate the published projector state.
+    // The publish block only uses reserved vectors, node handles, and
+    // noexcept moves/swaps, so a bad_alloc cannot leave a half-applied row.
+    const auto committed_at = now_();
+    const auto staged_row_count = staged_rows_.size();
+    std::uint64_t planned_last_repl_id = committed_.last_repl_id;
+    std::int64_t planned_last_repl_rev = committed_.last_repl_rev;
     for (const auto& row : staged_rows_) {
-        committed_.last_repl_id = std::max(committed_.last_repl_id, row.repl_id);
-        committed_.last_repl_rev = std::max(committed_.last_repl_rev, row.repl_rev);
+        planned_last_repl_id = std::max(planned_last_repl_id, row.repl_id);
+        planned_last_repl_rev = std::max(planned_last_repl_rev, row.repl_rev);
+    }
 
-        const auto existing = slot_index_by_repl_id_.find(row.repl_id);
-        if (row.volume <= 0) {
+    enum class AllocationSource : std::uint8_t { None, TransactionFree, ExistingFree, Append };
+    enum class OperationKind : std::uint8_t { Noop, Delete, Insert, Update };
+    struct PlannedRepl {
+        std::uint64_t repl_id{0};
+        bool initially_active{false};
+        bool active{false};
+        std::size_t slot_index{kNoSlotIndex};
+        std::size_t order_position{kNoSlotIndex};
+        std::size_t final_row_index{kNoSlotIndex};
+        std::int64_t isin_id{0};
+    };
+    struct PlannedOperation {
+        OperationKind kind{OperationKind::Noop};
+        AllocationSource allocation_source{AllocationSource::None};
+        std::size_t row_index{0};
+        std::size_t old_slot{kNoSlotIndex};
+        std::size_t new_slot{kNoSlotIndex};
+        std::size_t old_order{kNoSlotIndex};
+        std::size_t new_order{kNoSlotIndex};
+        std::int64_t old_isin{0};
+        std::int64_t new_isin{0};
+    };
+    struct PlannedOwnership {
+        std::int64_t isin_id{0};
+        std::vector<std::size_t> slots;
+    };
+
+    std::vector<PlannedRepl> planned_repls;
+    planned_repls.reserve(staged_row_count);
+    std::vector<PlannedOperation> planned_operations;
+    planned_operations.reserve(staged_row_count);
+    std::vector<std::size_t> transaction_free_slots;
+    transaction_free_slots.reserve(staged_row_count);
+    std::vector<std::int64_t> affected_isins;
+    affected_isins.reserve(affected_isin_ids_.size() + staged_row_count);
+
+    const auto mark_affected = [&](std::int64_t isin_id) {
+        // This is transaction-local staging state, not published projector
+        // state. Preserve the original insertion history so source-version
+        // numbering remains byte-for-byte compatible with the legacy loop.
+        affected_isin_ids_.insert(isin_id);
+    };
+    const auto find_planned_repl = [&](std::uint64_t repl_id) -> PlannedRepl* {
+        const auto it = std::find_if(planned_repls.begin(), planned_repls.end(),
+                                     [repl_id](const PlannedRepl& planned) { return planned.repl_id == repl_id; });
+        return it == planned_repls.end() ? nullptr : &*it;
+    };
+
+    std::size_t free_cursor = free_slot_indices_.size();
+    std::size_t appended_slot_count = 0;
+    std::size_t appended_order_count = 0;
+    std::size_t planned_active_row_count = active_row_count_;
+    const auto allocate_slot = [&]() {
+        if (!transaction_free_slots.empty()) {
+            const auto slot_index = transaction_free_slots.back();
+            transaction_free_slots.pop_back();
+            return std::pair{slot_index, AllocationSource::TransactionFree};
+        }
+        if (free_cursor != 0) {
+            const auto slot_index = free_slot_indices_[--free_cursor];
+            return std::pair{slot_index, AllocationSource::ExistingFree};
+        }
+        return std::pair{slot_rows_.size() + appended_slot_count++, AllocationSource::Append};
+    };
+
+    for (std::size_t row_index = 0; row_index < staged_rows_.size(); ++row_index) {
+        const auto& row = staged_rows_[row_index];
+        auto* planned = find_planned_repl(row.repl_id);
+        if (planned == nullptr) {
+            const auto existing = slot_index_by_repl_id_.find(row.repl_id);
             if (existing != slot_index_by_repl_id_.end()) {
                 const auto slot_index = existing->second;
                 const auto& old_row = *slot_rows_[slot_index];
-                affected_isin_ids_.insert(old_row.isin_id);
-                remove_slot_from_instrument(old_row.isin_id, slot_index);
-                slot_rows_[slot_index].reset();
-                slot_index_by_repl_id_.erase(existing);
-                --active_row_count_;
+                planned_repls.push_back({.repl_id = row.repl_id,
+                                         .initially_active = true,
+                                         .active = true,
+                                         .slot_index = slot_index,
+                                         .order_position = slot_order_position_[slot_index],
+                                         .final_row_index = kNoSlotIndex,
+                                         .isin_id = old_row.isin_id});
+                planned = &planned_repls.back();
+                mark_affected(old_row.isin_id);
             }
+        }
+
+        PlannedOperation operation;
+        operation.row_index = row_index;
+        if (row.volume <= 0) {
+            if (planned != nullptr && planned->active) {
+                operation.kind = OperationKind::Delete;
+                operation.old_slot = planned->slot_index;
+                operation.old_order = planned->order_position;
+                operation.old_isin = planned->isin_id;
+                mark_affected(operation.old_isin);
+                transaction_free_slots.push_back(planned->slot_index);
+                planned->active = false;
+                planned->slot_index = kNoSlotIndex;
+                planned->order_position = kNoSlotIndex;
+                planned->final_row_index = kNoSlotIndex;
+                --planned_active_row_count;
+            }
+            planned_operations.push_back(operation);
             continue;
         }
 
-        if (existing == slot_index_by_repl_id_.end()) {
-            const auto slot_index = slot_rows_.size();
-            slot_rows_.emplace_back(row);
-            slot_index_by_repl_id_.emplace(row.repl_id, slot_index);
-            add_slot_to_instrument(row.isin_id, slot_index);
-            ++active_row_count_;
+        if (planned == nullptr) {
+            planned_repls.push_back({.repl_id = row.repl_id});
+            planned = &planned_repls.back();
+        }
+        mark_affected(row.isin_id);
+        if (planned->active) {
+            operation.kind = OperationKind::Update;
+            operation.old_slot = planned->slot_index;
+            operation.new_slot = planned->slot_index;
+            operation.old_order = planned->order_position;
+            operation.new_order = planned->order_position;
+            operation.old_isin = planned->isin_id;
+            operation.new_isin = row.isin_id;
+            mark_affected(operation.old_isin);
+            planned->isin_id = row.isin_id;
+            planned->final_row_index = row_index;
         } else {
-            const auto slot_index = existing->second;
-            const auto& old_row = *slot_rows_[slot_index];
-            affected_isin_ids_.insert(old_row.isin_id);
-            if (old_row.isin_id != row.isin_id) {
-                remove_slot_from_instrument(old_row.isin_id, slot_index);
-                add_slot_to_instrument(row.isin_id, slot_index);
-            }
-            *slot_rows_[slot_index] = row;
+            const auto [slot_index, allocation_source] = allocate_slot();
+            operation.kind = OperationKind::Insert;
+            operation.allocation_source = allocation_source;
+            operation.new_slot = slot_index;
+            operation.new_order = active_slot_order_.size() + appended_order_count++;
+            operation.new_isin = row.isin_id;
+            planned->active = true;
+            planned->slot_index = slot_index;
+            planned->order_position = operation.new_order;
+            planned->final_row_index = row_index;
+            planned->isin_id = row.isin_id;
+            ++planned_active_row_count;
+        }
+        planned_operations.push_back(operation);
+    }
+
+    // Keep the old observable version-assignment order: the original
+    // projector iterated this unordered affected set after old-ISIN
+    // migrations had been inserted into it.
+    affected_isins.clear();
+    affected_isins.reserve(affected_isin_ids_.size());
+    for (const auto isin_id : affected_isin_ids_)
+        affected_isins.push_back(isin_id);
+
+    std::vector<PlannedOwnership> planned_ownership;
+    planned_ownership.reserve(affected_isins.size());
+    for (const auto isin_id : affected_isins) {
+        PlannedOwnership ownership{.isin_id = isin_id};
+        const auto existing = instrument_slot_ownership_.find(isin_id);
+        if (existing != instrument_slot_ownership_.end())
+            ownership.slots = existing->second;
+        planned_ownership.push_back(std::move(ownership));
+    }
+
+    const auto find_ownership_plan = [&](std::int64_t isin_id) -> PlannedOwnership* {
+        const auto it = std::find_if(affected_isins.begin(), affected_isins.end(),
+                                     [isin_id](std::int64_t candidate) { return candidate == isin_id; });
+        if (it == affected_isins.end())
+            return nullptr;
+        const auto index = static_cast<std::size_t>(std::distance(affected_isins.begin(), it));
+        return &planned_ownership[index];
+    };
+
+    const auto position_for_slot = [&](std::size_t slot_index) {
+        for (auto operation = planned_operations.rbegin(); operation != planned_operations.rend(); ++operation) {
+            if (operation->kind == OperationKind::Insert && operation->new_slot == slot_index)
+                return operation->new_order;
+        }
+        return slot_order_position_[slot_index];
+    };
+    const auto remove_owned_slot = [](PlannedOwnership& ownership, std::size_t slot_index) {
+        const auto it = std::find(ownership.slots.begin(), ownership.slots.end(), slot_index);
+        if (it != ownership.slots.end())
+            ownership.slots.erase(it);
+    };
+    const auto add_owned_slot = [&](PlannedOwnership& ownership, std::size_t slot_index, std::size_t order_position) {
+        const auto insertion = std::lower_bound(ownership.slots.begin(), ownership.slots.end(), order_position,
+                                                [&](std::size_t existing_slot, std::size_t wanted_position) {
+                                                    return position_for_slot(existing_slot) < wanted_position;
+                                                });
+        ownership.slots.insert(insertion, slot_index);
+    };
+    for (const auto& operation : planned_operations) {
+        if (operation.kind == OperationKind::Delete) {
+            remove_owned_slot(*find_ownership_plan(operation.old_isin), operation.old_slot);
+        } else if (operation.kind == OperationKind::Insert) {
+            add_owned_slot(*find_ownership_plan(operation.new_isin), operation.new_slot, operation.new_order);
+        } else if (operation.kind == OperationKind::Update && operation.old_isin != operation.new_isin) {
+            remove_owned_slot(*find_ownership_plan(operation.old_isin), operation.old_slot);
+            add_owned_slot(*find_ownership_plan(operation.new_isin), operation.new_slot, operation.new_order);
         }
     }
 
-    committed_.row_count = active_row_count_;
-    committed_.instrument_count = active_instrument_count_;
-    committed_.committed_at = now_();
-    global_diagnostics_dirty_ = global_diagnostics_dirty_ || !staged_rows_.empty();
-    // Refresh instrument-scoped snapshots only for instruments touched by
-    // this transaction. An unrelated instrument update must not make the
-    // target BBO look newer than its last local row.
-    for (const auto& isin_id : affected_isin_ids_) {
+    std::size_t planned_active_instrument_count = active_instrument_count_;
+    for (const auto& ownership : planned_ownership) {
+        const bool was_active = instrument_slot_ownership_.find(ownership.isin_id) != instrument_slot_ownership_.end();
+        const bool is_active = !ownership.slots.empty();
+        if (was_active != is_active)
+            is_active ? ++planned_active_instrument_count : --planned_active_instrument_count;
+    }
+
+    const auto final_repl_for_slot = [&](std::size_t slot_index) -> const PlannedRepl* {
+        for (const auto& planned : planned_repls) {
+            if (planned.active && planned.slot_index == slot_index)
+                return &planned;
+        }
+        return nullptr;
+    };
+    const auto slot_was_deleted = [&](std::size_t slot_index) {
+        return std::any_of(planned_operations.begin(), planned_operations.end(),
+                           [slot_index](const PlannedOperation& operation) {
+                               return operation.kind == OperationKind::Delete && operation.old_slot == slot_index;
+                           });
+    };
+    const auto final_level_for_slot = [&](std::size_t slot_index) -> const Plaza2Aggr20Level& {
+        if (const auto* planned = final_repl_for_slot(slot_index);
+            planned != nullptr && planned->final_row_index != kNoSlotIndex) {
+            return staged_rows_[planned->final_row_index];
+        }
+        return *slot_rows_[slot_index];
+    };
+
+    std::unordered_map<std::int64_t, Plaza2Aggr20InstrumentSnapshot> planned_snapshots;
+    planned_snapshots.reserve(affected_isins.size());
+    std::uint64_t planned_snapshot_version_counter = snapshot_version_counter_;
+    for (const auto isin_id : affected_isins) {
         const auto previous = instrument_snapshots_.find(isin_id);
         Plaza2Aggr20InstrumentSnapshot scoped;
-        if (previous != instrument_snapshots_.end())
-            scoped = previous->second;
+        if (previous != instrument_snapshots_.end()) {
+            scoped.isin_id = previous->second.isin_id;
+            scoped.last_repl_id = previous->second.last_repl_id;
+            scoped.last_repl_rev = previous->second.last_repl_rev;
+            scoped.exchange_moment = previous->second.exchange_moment;
+            scoped.exchange_moment_ns = previous->second.exchange_moment_ns;
+            scoped.source_snapshot_version = previous->second.source_snapshot_version;
+            scoped.source_snapshot_hash = previous->second.source_snapshot_hash;
+            scoped.committed_at = previous->second.committed_at;
+        }
         scoped.isin_id = isin_id;
         if (const auto metadata = staged_metadata_.find(isin_id); metadata != staged_metadata_.end()) {
             // Keep the last relevant replication metadata even when this row
@@ -925,31 +1152,24 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
             scoped.exchange_moment = std::max(scoped.exchange_moment, metadata->second.exchange_moment);
             scoped.exchange_moment_ns = std::max(scoped.exchange_moment_ns, metadata->second.exchange_moment_ns);
         }
-        scoped.row_count = 0;
+        const auto& ownership = *find_ownership_plan(isin_id);
+        scoped.levels.reserve(ownership.slots.size());
+        for (const auto slot_index : ownership.slots)
+            scoped.levels.push_back(final_level_for_slot(slot_index));
+        scoped.row_count = scoped.levels.size();
         scoped.bid_depth_levels = 0;
         scoped.ask_depth_levels = 0;
         scoped.top_bid.reset();
         scoped.top_ask.reset();
-        scoped.levels.clear();
-        const auto owned = instrument_slot_ownership_.find(isin_id);
-        if (owned != instrument_slot_ownership_.end()) {
-            scoped.levels.reserve(owned->second.size());
-            for (const auto slot_index : owned->second) {
-                scoped.levels.push_back(*slot_rows_[slot_index]);
-            }
-        }
         for (const auto& level : scoped.levels) {
-            scoped.row_count += 1;
             if (level.dir == 1) {
-                scoped.bid_depth_levels += 1;
-                if (!scoped.top_bid.has_value() || level.price_scaled > scoped.top_bid->price_scaled) {
+                ++scoped.bid_depth_levels;
+                if (!scoped.top_bid.has_value() || level.price_scaled > scoped.top_bid->price_scaled)
                     scoped.top_bid = level;
-                }
             } else if (level.dir == 2) {
-                scoped.ask_depth_levels += 1;
-                if (!scoped.top_ask.has_value() || level.price_scaled < scoped.top_ask->price_scaled) {
+                ++scoped.ask_depth_levels;
+                if (!scoped.top_ask.has_value() || level.price_scaled < scoped.top_ask->price_scaled)
                     scoped.top_ask = level;
-                }
             }
         }
         std::ranges::sort(scoped.levels, aggr_level_less);
@@ -960,15 +1180,186 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
             previous == instrument_snapshots_.end() || scoped.source_snapshot_hash != source_hash;
         scoped.source_snapshot_hash = source_hash;
         if (source_changed) {
-            scoped.source_snapshot_version = ++snapshot_version_counter_;
-            scoped.committed_at = committed_.committed_at;
+            scoped.source_snapshot_version = ++planned_snapshot_version_counter;
+            scoped.committed_at = committed_at;
         }
-        instrument_snapshots_[isin_id] = std::move(scoped);
+        planned_snapshots.emplace(isin_id, std::move(scoped));
     }
-    if (qualification_observer_) {
-        ensure_global_diagnostics();
+
+    std::unordered_map<std::uint64_t, std::size_t> planned_slot_nodes;
+    planned_slot_nodes.reserve(planned_repls.size());
+    for (const auto& planned : planned_repls) {
+        if (planned.active && !planned.initially_active)
+            planned_slot_nodes.emplace(planned.repl_id, planned.slot_index);
+    }
+
+    std::optional<Plaza2Aggr20Snapshot> planned_global;
+    if (qualification_observer_ != nullptr && (global_diagnostics_dirty_ || !staged_rows_.empty())) {
+        Plaza2Aggr20Snapshot global;
+        global.row_count = planned_active_row_count;
+        global.instrument_count = planned_active_instrument_count;
+        global.last_repl_id = planned_last_repl_id;
+        global.last_repl_rev = planned_last_repl_rev;
+        global.committed_at = committed_at;
+        global.levels.reserve(planned_active_row_count);
+        const auto append_global_level = [&](const Plaza2Aggr20Level& level) {
+            global.levels.push_back(level);
+            global.exchange_moment = std::max(global.exchange_moment, level.moment);
+            global.exchange_moment_ns = std::max(global.exchange_moment_ns, level.moment_ns);
+            if (level.dir == 1) {
+                ++global.bid_depth_levels;
+                if (!global.top_bid.has_value() || level.price_scaled > global.top_bid->price_scaled)
+                    global.top_bid = level;
+            } else if (level.dir == 2) {
+                ++global.ask_depth_levels;
+                if (!global.top_ask.has_value() || level.price_scaled < global.top_ask->price_scaled)
+                    global.top_ask = level;
+            }
+        };
+        for (std::size_t position = 0; position < active_slot_order_.size(); ++position) {
+            const auto slot_index = active_slot_order_[position];
+            if (slot_index == kNoSlotIndex)
+                continue;
+            const auto* planned = final_repl_for_slot(slot_index);
+            if (planned != nullptr) {
+                if (planned->order_position != position)
+                    continue;
+                append_global_level(staged_rows_[planned->final_row_index]);
+            } else if (slot_was_deleted(slot_index)) {
+                continue;
+            } else {
+                append_global_level(*slot_rows_[slot_index]);
+            }
+        }
+        std::vector<const PlannedRepl*> appended_repls;
+        appended_repls.reserve(planned_repls.size());
+        for (const auto& planned : planned_repls) {
+            if (planned.active && planned.order_position >= active_slot_order_.size())
+                appended_repls.push_back(&planned);
+        }
+        std::ranges::sort(appended_repls,
+                          [](const auto* lhs, const auto* rhs) { return lhs->order_position < rhs->order_position; });
+        for (const auto* planned : appended_repls)
+            append_global_level(staged_rows_[planned->final_row_index]);
+        planned_global.emplace(std::move(global));
+    }
+
+    static_assert(
+        noexcept(std::declval<Plaza2Aggr20InstrumentSnapshot&>() = std::declval<Plaza2Aggr20InstrumentSnapshot&&>()));
+
+    std::size_t missing_ownership_nodes = 0;
+    for (const auto& ownership : planned_ownership) {
+        if (!ownership.slots.empty() &&
+            instrument_slot_ownership_.find(ownership.isin_id) == instrument_slot_ownership_.end())
+            ++missing_ownership_nodes;
+    }
+    std::size_t missing_snapshot_nodes = 0;
+    for (const auto isin_id : affected_isins) {
+        if (instrument_snapshots_.find(isin_id) == instrument_snapshots_.end())
+            ++missing_snapshot_nodes;
+    }
+    // Build and allocate every ownership node before touching canonical slot,
+    // order, free-list, or map state. The moved-from plan remains local and
+    // is discarded safely if any later reserve/resize fails.
+    std::unordered_map<std::int64_t, std::vector<std::size_t>> ownership_nodes;
+    ownership_nodes.reserve(affected_isins.size());
+    for (auto& ownership : planned_ownership) {
+        if (!ownership.slots.empty())
+            ownership_nodes.emplace(ownership.isin_id, std::move(ownership.slots));
+    }
+    slot_rows_.reserve(slot_rows_.size() + appended_slot_count);
+    slot_order_position_.reserve(slot_order_position_.size() + appended_slot_count);
+    active_slot_order_.reserve(active_slot_order_.size() + appended_order_count);
+    free_slot_indices_.reserve(free_slot_indices_.size() + staged_row_count);
+    slot_index_by_repl_id_.reserve(slot_index_by_repl_id_.size() + planned_slot_nodes.size());
+    instrument_slot_ownership_.reserve(instrument_slot_ownership_.size() + missing_ownership_nodes);
+    instrument_snapshots_.reserve(instrument_snapshots_.size() + missing_snapshot_nodes);
+    slot_rows_.resize(slot_rows_.size() + appended_slot_count);
+    slot_order_position_.resize(slot_order_position_.size() + appended_slot_count, kNoSlotIndex);
+
+    // No allocation is permitted below this line. Replacing a vector value,
+    // extracting/inserting a prepared node, and the reserved push/pop/reset
+    // operations are all noexcept for these concrete types.
+    for (const auto& operation : planned_operations) {
+        if (operation.kind == OperationKind::Delete) {
+            slot_rows_[operation.old_slot].reset();
+            slot_order_position_[operation.old_slot] = kNoSlotIndex;
+            active_slot_order_[operation.old_order] = kNoSlotIndex;
+            free_slot_indices_.push_back(operation.old_slot);
+        } else if (operation.kind == OperationKind::Insert) {
+            if (operation.allocation_source == AllocationSource::TransactionFree ||
+                operation.allocation_source == AllocationSource::ExistingFree)
+                free_slot_indices_.pop_back();
+            slot_rows_[operation.new_slot] = std::move(staged_rows_[operation.row_index]);
+            active_slot_order_.push_back(operation.new_slot);
+            slot_order_position_[operation.new_slot] = operation.new_order;
+        } else if (operation.kind == OperationKind::Update) {
+            slot_rows_[operation.new_slot] = std::move(staged_rows_[operation.row_index]);
+        }
+    }
+
+    for (const auto& planned : planned_repls) {
+        const auto existing = slot_index_by_repl_id_.find(planned.repl_id);
+        if (planned.initially_active) {
+            if (planned.active) {
+                if (existing != slot_index_by_repl_id_.end())
+                    existing->second = planned.slot_index;
+            } else if (existing != slot_index_by_repl_id_.end()) {
+                slot_index_by_repl_id_.erase(existing);
+            }
+        } else if (planned.active) {
+            auto node = planned_slot_nodes.extract(planned.repl_id);
+            slot_index_by_repl_id_.insert(std::move(node));
+        }
+    }
+
+    for (const auto& ownership : planned_ownership) {
+        const auto existing = instrument_slot_ownership_.find(ownership.isin_id);
+        const bool final_active = ownership_nodes.find(ownership.isin_id) != ownership_nodes.end();
+        if (!final_active) {
+            if (existing != instrument_slot_ownership_.end())
+                instrument_slot_ownership_.erase(existing);
+            continue;
+        }
+        auto node = ownership_nodes.extract(ownership.isin_id);
+        if (existing == instrument_slot_ownership_.end()) {
+            instrument_slot_ownership_.insert(std::move(node));
+        } else {
+            existing->second.swap(node.mapped());
+        }
+    }
+
+    for (const auto isin_id : affected_isins) {
+        auto node = planned_snapshots.extract(isin_id);
+        const auto existing = instrument_snapshots_.find(isin_id);
+        if (existing == instrument_snapshots_.end())
+            instrument_snapshots_.insert(std::move(node));
+        else
+            existing->second = std::move(node.mapped());
+    }
+
+    active_row_count_ = planned_active_row_count;
+    active_instrument_count_ = planned_active_instrument_count;
+    snapshot_version_counter_ = planned_snapshot_version_counter;
+    committed_.row_count = active_row_count_;
+    committed_.instrument_count = active_instrument_count_;
+    committed_.last_repl_id = planned_last_repl_id;
+    committed_.last_repl_rev = planned_last_repl_rev;
+    committed_.committed_at = committed_at;
+    global_diagnostics_dirty_ = global_diagnostics_dirty_ || !staged_rows_.empty();
+    if (planned_global.has_value()) {
+        committed_.levels.swap(planned_global->levels);
+        committed_.bid_depth_levels = planned_global->bid_depth_levels;
+        committed_.ask_depth_levels = planned_global->ask_depth_levels;
+        committed_.top_bid = std::move(planned_global->top_bid);
+        committed_.top_ask = std::move(planned_global->top_ask);
+        committed_.exchange_moment = planned_global->exchange_moment;
+        committed_.exchange_moment_ns = planned_global->exchange_moment_ns;
+        global_diagnostics_dirty_ = false;
+    }
+    compact_slot_order();
+    if (qualification_observer_)
         qualification_observer_->committed(committed_);
-    }
     staged_rows_.clear();
     affected_isin_ids_.clear();
     staged_metadata_.clear();
@@ -988,36 +1379,44 @@ void Plaza2Aggr20BookProjector::ensure_global_diagnostics() const {
         return;
     }
 
-    committed_.levels.clear();
-    committed_.levels.reserve(active_row_count_);
-    committed_.exchange_moment = 0;
-    committed_.exchange_moment_ns = 0;
-    committed_.bid_depth_levels = 0;
-    committed_.ask_depth_levels = 0;
-    committed_.top_bid.reset();
-    committed_.top_ask.reset();
-    for (const auto& slot : slot_rows_) {
-        if (!slot.has_value()) {
-            continue;
-        }
-        const auto& level = *slot;
-        committed_.levels.push_back(level);
-        committed_.exchange_moment = std::max(committed_.exchange_moment, level.moment);
-        committed_.exchange_moment_ns = std::max(committed_.exchange_moment_ns, level.moment_ns);
+    Plaza2Aggr20Snapshot rebuilt;
+    rebuilt.row_count = active_row_count_;
+    rebuilt.instrument_count = active_instrument_count_;
+    rebuilt.last_repl_id = committed_.last_repl_id;
+    rebuilt.last_repl_rev = committed_.last_repl_rev;
+    rebuilt.committed_at = committed_.committed_at;
+    rebuilt.levels.reserve(active_row_count_);
+    const auto append_level = [&](const Plaza2Aggr20Level& level) {
+        rebuilt.levels.push_back(level);
+        rebuilt.exchange_moment = std::max(rebuilt.exchange_moment, level.moment);
+        rebuilt.exchange_moment_ns = std::max(rebuilt.exchange_moment_ns, level.moment_ns);
         if (level.dir == 1) {
-            ++committed_.bid_depth_levels;
-            if (!committed_.top_bid.has_value() || level.price_scaled > committed_.top_bid->price_scaled) {
-                committed_.top_bid = level;
-            }
+            ++rebuilt.bid_depth_levels;
+            if (!rebuilt.top_bid.has_value() || level.price_scaled > rebuilt.top_bid->price_scaled)
+                rebuilt.top_bid = level;
         } else if (level.dir == 2) {
-            ++committed_.ask_depth_levels;
-            if (!committed_.top_ask.has_value() || level.price_scaled < committed_.top_ask->price_scaled) {
-                committed_.top_ask = level;
-            }
+            ++rebuilt.ask_depth_levels;
+            if (!rebuilt.top_ask.has_value() || level.price_scaled < rebuilt.top_ask->price_scaled)
+                rebuilt.top_ask = level;
         }
+    };
+    for (const auto slot_index : active_slot_order_) {
+        if (slot_index != kNoSlotIndex)
+            append_level(*slot_rows_[slot_index]);
     }
-    committed_.row_count = active_row_count_;
-    committed_.instrument_count = active_instrument_count_;
+
+    // Publish only after the complete diagnostic copy succeeded. If reserve
+    // or any level copy throws, the old committed snapshot and dirty flag are
+    // untouched and a later snapshot() can retry safely.
+    committed_.levels.swap(rebuilt.levels);
+    committed_.bid_depth_levels = rebuilt.bid_depth_levels;
+    committed_.ask_depth_levels = rebuilt.ask_depth_levels;
+    committed_.top_bid = std::move(rebuilt.top_bid);
+    committed_.top_ask = std::move(rebuilt.top_ask);
+    committed_.exchange_moment = rebuilt.exchange_moment;
+    committed_.exchange_moment_ns = rebuilt.exchange_moment_ns;
+    committed_.row_count = rebuilt.row_count;
+    committed_.instrument_count = rebuilt.instrument_count;
     global_diagnostics_dirty_ = false;
 }
 

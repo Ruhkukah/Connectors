@@ -55,6 +55,7 @@ struct RowSpec {
     std::int64_t isin_id{0};
     std::int64_t dir{0};
     std::int64_t volume{10};
+    std::int64_t repl_act{0};
     std::string price;
 };
 
@@ -69,7 +70,9 @@ Fields fields(const RowSpec& row) {
         {.field_code = Field::kFortsAggrReplOrdersAggrReplRev,
          .kind = Kind::SignedInteger,
          .signed_value = row.repl_rev},
-        {.field_code = Field::kFortsAggrReplOrdersAggrReplAct, .kind = Kind::SignedInteger, .signed_value = 0},
+        {.field_code = Field::kFortsAggrReplOrdersAggrReplAct,
+         .kind = Kind::SignedInteger,
+         .signed_value = row.repl_act},
         {.field_code = Field::kFortsAggrReplOrdersAggrDir, .kind = Kind::SignedInteger, .signed_value = row.dir},
         {.field_code = Field::kFortsAggrReplOrdersAggrVolume, .kind = Kind::SignedInteger, .signed_value = row.volume},
         {.field_code = Field::kFortsAggrReplOrdersAggrPrice,
@@ -128,6 +131,23 @@ struct Result {
     double selected_snapshot_mean_us{0};
     double snapshot_new_calls{0};
     double snapshot_new_bytes{0};
+    double global_materialization_us{0};
+    double global_materialization_new_calls{0};
+    double global_materialization_new_bytes{0};
+    std::size_t global_row_count{0};
+    std::size_t global_instrument_count{0};
+};
+
+struct ChurnResult {
+    int retained_rows{0};
+    int rows_per_commit{2};
+    int commits{0};
+    int distinct_repl_ids{0};
+    double median_us{0};
+    double p95_us{0};
+    double commits_per_second{0};
+    double new_calls_per_commit{0};
+    double new_bytes_per_commit{0};
     double global_materialization_us{0};
     double global_materialization_new_calls{0};
     double global_materialization_new_bytes{0};
@@ -243,6 +263,112 @@ void emit(const Result& result, bool& first) {
               << ",\"global_instrument_count\":" << result.global_instrument_count << '}';
 }
 
+ChurnResult measure_churn(cg::Plaza2Aggr20BookProjector& projector, int measured_commits) {
+    constexpr int retained_rows = 40;
+    constexpr std::uint64_t first_churn_repl_id = 1'000'000;
+    std::vector<RowSpec> rows(2);
+    std::uint64_t current_repl_id = 1;
+    std::uint64_t next_repl_id = first_churn_repl_id;
+    for (int warmup = 0; warmup < 20; ++warmup) {
+        rows[0] = {.repl_id = current_repl_id,
+                   .repl_rev = warmup + 1,
+                   .isin_id = 1,
+                   .dir = 1,
+                   .volume = 0,
+                   .repl_act = 0,
+                   .price = "50.00000"};
+        rows[1] = {.repl_id = next_repl_id,
+                   .repl_rev = warmup + 1,
+                   .isin_id = 1,
+                   .dir = 1,
+                   .volume = 10,
+                   .repl_act = 0,
+                   .price = "50.00000"};
+        replay_burst(projector, rows);
+        current_repl_id = next_repl_id++;
+    }
+    check(projector.snapshot_for_isin(1)->levels.size() == retained_rows);
+
+    std::vector<double> samples;
+    samples.reserve(static_cast<std::size_t>(measured_commits));
+    allocations = 0;
+    allocated_bytes = 0;
+    double total_us = 0;
+    for (int iteration = 0; iteration < measured_commits; ++iteration) {
+        rows[0] = {.repl_id = current_repl_id,
+                   .repl_rev = 100 + iteration * 2,
+                   .isin_id = 1,
+                   .dir = 1,
+                   .volume = 0,
+                   .repl_act = 0,
+                   .price = "50.00000"};
+        rows[1] = {.repl_id = next_repl_id,
+                   .repl_rev = 101 + iteration * 2,
+                   .isin_id = 1,
+                   .dir = 1,
+                   .volume = 10,
+                   .repl_act = 0,
+                   .price = "50.00000"};
+        ++next_repl_id;
+        count_allocations = true;
+        const auto started = Clock::now();
+        replay_burst(projector, rows);
+        const auto finished = Clock::now();
+        count_allocations = false;
+        const auto elapsed = std::chrono::duration<double, std::micro>(finished - started).count();
+        samples.push_back(elapsed);
+        total_us += elapsed;
+        current_repl_id = rows[1].repl_id;
+    }
+    const auto measured_allocations = allocations;
+    const auto measured_bytes = allocated_bytes;
+    check(projector.snapshot_for_isin(1)->levels.size() == retained_rows);
+
+    allocations = 0;
+    allocated_bytes = 0;
+    count_allocations = true;
+    const auto global_started = Clock::now();
+    const auto& global = projector.snapshot();
+    const auto global_finished = Clock::now();
+    count_allocations = false;
+    check(global.row_count == retained_rows && global.instrument_count == 1);
+
+    std::sort(samples.begin(), samples.end());
+    return {.retained_rows = retained_rows,
+            .rows_per_commit = 2,
+            .commits = measured_commits,
+            .distinct_repl_ids = static_cast<int>(next_repl_id - first_churn_repl_id),
+            .median_us = samples[static_cast<std::size_t>(measured_commits / 2)],
+            .p95_us = samples[static_cast<std::size_t>(measured_commits * 95 / 100)],
+            .commits_per_second = measured_commits * 1'000'000.0 / total_us,
+            .new_calls_per_commit = static_cast<double>(measured_allocations) / measured_commits,
+            .new_bytes_per_commit = static_cast<double>(measured_bytes) / measured_commits,
+            .global_materialization_us =
+                std::chrono::duration<double, std::micro>(global_finished - global_started).count(),
+            .global_materialization_new_calls = static_cast<double>(allocations),
+            .global_materialization_new_bytes = static_cast<double>(allocated_bytes),
+            .global_row_count = global.row_count,
+            .global_instrument_count = global.instrument_count};
+}
+
+void emit_churn(const ChurnResult& result, bool& first) {
+    if (!first)
+        std::cout << ',';
+    first = false;
+    std::cout << "{\"instruments\":1,\"retained_rows\":" << result.retained_rows
+              << ",\"updated\":\"unique_insert_delete_churn\",\"rows_per_commit\":" << result.rows_per_commit
+              << ",\"commits\":" << result.commits << ",\"distinct_repl_ids\":" << result.distinct_repl_ids
+              << ",\"median_us\":" << result.median_us << ",\"p95_us\":" << result.p95_us
+              << ",\"commits_per_second\":" << result.commits_per_second
+              << ",\"new_calls_per_commit\":" << result.new_calls_per_commit
+              << ",\"new_bytes_per_commit\":" << result.new_bytes_per_commit
+              << ",\"global_materialization_us\":" << result.global_materialization_us
+              << ",\"global_materialization_new_calls\":" << result.global_materialization_new_calls
+              << ",\"global_materialization_new_bytes\":" << result.global_materialization_new_bytes
+              << ",\"global_row_count\":" << result.global_row_count
+              << ",\"global_instrument_count\":" << result.global_instrument_count << '}';
+}
+
 } // namespace
 
 int main() {
@@ -293,5 +419,16 @@ int main() {
         }
         emit(measure(projector, instruments, std::move(rows), "multi_instrument_burst", burst_rows, 500), first);
     }
+    std::cout << "],\"churn\":[";
+    first = true;
+    cg::Plaza2Aggr20BookProjector churn_projector;
+    churn_projector.begin_transaction();
+    for (int level = 0; level < 40; ++level) {
+        const auto row = seed_row(1, level);
+        const auto decoded = fields(row);
+        check(!churn_projector.on_row(decoded));
+    }
+    check(!churn_projector.commit());
+    emit_churn(measure_churn(churn_projector, 500), first);
     std::cout << "],\"wall_seconds\":" << std::chrono::duration<double>(Clock::now() - started).count() << "}\n";
 }
