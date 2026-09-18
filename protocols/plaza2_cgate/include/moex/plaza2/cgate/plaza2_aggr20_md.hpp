@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -121,18 +122,48 @@ class Plaza2Aggr20BookProjector {
     [[nodiscard]] Plaza2Error commit();
     void rollback();
 
-    [[nodiscard]] const Plaza2Aggr20Snapshot& snapshot() const noexcept;
+    // Global levels and diagnostics are reconstructed on demand; scoped
+    // snapshots remain incrementally maintained at commit time.
+    [[nodiscard]] const Plaza2Aggr20Snapshot& snapshot() const;
     [[nodiscard]] std::optional<Plaza2Aggr20InstrumentSnapshot> snapshot_for_isin(std::int64_t isin_id) const;
     [[nodiscard]] bool transaction_open() const noexcept;
 
   private:
+    struct StagedInstrumentMetadata {
+        std::uint64_t last_repl_id{0};
+        std::int64_t last_repl_rev{0};
+        std::uint64_t exchange_moment{0};
+        std::uint64_t exchange_moment_ns{0};
+    };
+
+    void add_slot_to_instrument(std::int64_t isin_id, std::size_t slot_index);
+    void remove_slot_from_instrument(std::int64_t isin_id, std::size_t slot_index);
+    void compact_slot_order() noexcept;
+    void ensure_global_diagnostics() const;
+
+    static constexpr std::size_t kNoSlotIndex = std::numeric_limits<std::size_t>::max();
+    static constexpr std::size_t kCompactionHoleThreshold = 64;
+
     Plaza2Aggr20QualificationObserver* qualification_observer_{nullptr};
     std::vector<Plaza2Aggr20Level> staged_rows_;
     std::unordered_set<std::int64_t> affected_isin_ids_;
-    Plaza2Aggr20Snapshot committed_;
+    std::unordered_map<std::int64_t, StagedInstrumentMetadata> staged_metadata_;
+    // Physical slots are reused after deletion. active_slot_order_ is the
+    // public-order sequence; its bounded tombstones are compacted
+    // amortized, so global reconstruction never scans slot_rows_ holes.
+    std::vector<std::optional<Plaza2Aggr20Level>> slot_rows_;
+    std::vector<std::size_t> active_slot_order_;
+    std::vector<std::size_t> slot_order_position_;
+    std::vector<std::size_t> free_slot_indices_;
+    std::unordered_map<std::uint64_t, std::size_t> slot_index_by_repl_id_;
+    std::unordered_map<std::int64_t, std::vector<std::size_t>> instrument_slot_ownership_;
+    std::size_t active_row_count_{0};
+    std::size_t active_instrument_count_{0};
+    mutable Plaza2Aggr20Snapshot committed_;
     std::unordered_map<std::int64_t, Plaza2Aggr20InstrumentSnapshot> instrument_snapshots_;
     std::uint64_t snapshot_version_counter_{0};
     NowFn now_;
+    mutable bool global_diagnostics_dirty_{false};
     bool transaction_open_{false};
 };
 
