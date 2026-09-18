@@ -30,6 +30,8 @@ constexpr std::uint32_t kCgErrInternal = 131072;
 constexpr std::uint32_t kCgErrInvalidArgument = 131073;
 constexpr std::uint32_t kCgErrUnsupported = 131074;
 constexpr std::uint32_t kCgErrServiceUnavailable = 36866;
+constexpr std::size_t kTransactionLookupIndexThreshold = 256;
+constexpr std::size_t kTransactionLookupStateThreshold = 256;
 
 bool is_loopback_host(std::string_view host) {
     std::string normalized(host);
@@ -938,6 +940,28 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
     transaction_free_slots.reserve(staged_row_count);
     std::vector<std::int64_t> affected_isins;
     affected_isins.reserve(affected_isin_ids_.size() + staged_row_count);
+    const bool use_transaction_lookup_index =
+        staged_row_count >= kTransactionLookupIndexThreshold && slot_rows_.size() >= kTransactionLookupStateThreshold;
+    std::vector<std::pair<std::uint64_t, std::size_t>> planned_repl_indices;
+    std::vector<std::size_t> planned_slot_indices;
+    std::vector<bool> deleted_slot_indices;
+    if (use_transaction_lookup_index) {
+        // These are transaction-local preflight structures. They are never
+        // published and are fully built before the no-allocation publish
+        // block, so allocation failure preserves the existing projector.
+        planned_repl_indices.reserve(staged_row_count);
+        for (const auto& row : staged_rows_)
+            planned_repl_indices.emplace_back(row.repl_id, kNoSlotIndex);
+        std::sort(planned_repl_indices.begin(), planned_repl_indices.end(),
+                  [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+        planned_repl_indices.erase(
+            std::unique(planned_repl_indices.begin(), planned_repl_indices.end(),
+                        [](const auto& lhs, const auto& rhs) { return lhs.first == rhs.first; }),
+            planned_repl_indices.end());
+        const auto lookup_capacity = slot_rows_.size() + staged_row_count;
+        planned_slot_indices.assign(lookup_capacity, kNoSlotIndex);
+        deleted_slot_indices.assign(lookup_capacity, false);
+    }
 
     const auto mark_affected = [&](std::int64_t isin_id) {
         // This is transaction-local staging state, not published projector
@@ -946,9 +970,26 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
         affected_isin_ids_.insert(isin_id);
     };
     const auto find_planned_repl = [&](std::uint64_t repl_id) -> PlannedRepl* {
+        if (use_transaction_lookup_index) {
+            const auto indexed = std::lower_bound(
+                planned_repl_indices.begin(), planned_repl_indices.end(), repl_id,
+                [](const auto& entry, std::uint64_t wanted_repl_id) { return entry.first < wanted_repl_id; });
+            if (indexed == planned_repl_indices.end() || indexed->first != repl_id ||
+                indexed->second == kNoSlotIndex)
+                return nullptr;
+            return &planned_repls[indexed->second];
+        }
         const auto it = std::find_if(planned_repls.begin(), planned_repls.end(),
                                      [repl_id](const PlannedRepl& planned) { return planned.repl_id == repl_id; });
         return it == planned_repls.end() ? nullptr : &*it;
+    };
+    const auto register_planned_repl = [&](std::uint64_t repl_id, std::size_t planned_index) {
+        if (use_transaction_lookup_index) {
+            const auto indexed = std::lower_bound(
+                planned_repl_indices.begin(), planned_repl_indices.end(), repl_id,
+                [](const auto& entry, std::uint64_t wanted_repl_id) { return entry.first < wanted_repl_id; });
+            indexed->second = planned_index;
+        }
     };
 
     std::size_t free_cursor = free_slot_indices_.size();
@@ -983,6 +1024,7 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
                                          .order_position = slot_order_position_[slot_index],
                                          .final_row_index = kNoSlotIndex,
                                          .isin_id = old_row.isin_id});
+                register_planned_repl(row.repl_id, planned_repls.size() - 1);
                 planned = &planned_repls.back();
                 mark_affected(old_row.isin_id);
             }
@@ -998,6 +1040,10 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
                 operation.old_isin = planned->isin_id;
                 mark_affected(operation.old_isin);
                 transaction_free_slots.push_back(planned->slot_index);
+                if (use_transaction_lookup_index) {
+                    planned_slot_indices[planned->slot_index] = kNoSlotIndex;
+                    deleted_slot_indices[planned->slot_index] = true;
+                }
                 planned->active = false;
                 planned->slot_index = kNoSlotIndex;
                 planned->order_position = kNoSlotIndex;
@@ -1010,6 +1056,7 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
 
         if (planned == nullptr) {
             planned_repls.push_back({.repl_id = row.repl_id});
+            register_planned_repl(row.repl_id, planned_repls.size() - 1);
             planned = &planned_repls.back();
         }
         mark_affected(row.isin_id);
@@ -1024,6 +1071,8 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
             mark_affected(operation.old_isin);
             planned->isin_id = row.isin_id;
             planned->final_row_index = row_index;
+            if (use_transaction_lookup_index)
+                planned_slot_indices[planned->slot_index] = planned - planned_repls.data();
         } else {
             const auto [slot_index, allocation_source] = allocate_slot();
             operation.kind = OperationKind::Insert;
@@ -1036,6 +1085,8 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
             planned->order_position = operation.new_order;
             planned->final_row_index = row_index;
             planned->isin_id = row.isin_id;
+            if (use_transaction_lookup_index)
+                planned_slot_indices[slot_index] = planned - planned_repls.data();
             ++planned_active_row_count;
         }
         planned_operations.push_back(operation);
@@ -1107,13 +1158,21 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
     }
 
     const auto final_repl_for_slot = [&](std::size_t slot_index) -> const PlannedRepl* {
+        if (use_transaction_lookup_index) {
+            const auto planned_index = planned_slot_indices[slot_index];
+            if (planned_index == kNoSlotIndex || !planned_repls[planned_index].active)
+                return nullptr;
+            return &planned_repls[planned_index];
+        }
         for (const auto& planned : planned_repls) {
             if (planned.active && planned.slot_index == slot_index)
                 return &planned;
         }
         return nullptr;
     };
-    const auto slot_was_deleted = [&](std::size_t slot_index) {
+    const auto slot_was_deleted = [&](std::size_t slot_index) -> bool {
+        if (use_transaction_lookup_index)
+            return deleted_slot_indices[slot_index];
         return std::any_of(planned_operations.begin(), planned_operations.end(),
                            [slot_index](const PlannedOperation& operation) {
                                return operation.kind == OperationKind::Delete && operation.old_slot == slot_index;
