@@ -10,7 +10,6 @@
 #include <limits>
 #include <optional>
 #include <sstream>
-#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -753,14 +752,22 @@ Plaza2Aggr20BookProjector::Plaza2Aggr20BookProjector(NowFn now)
 void Plaza2Aggr20BookProjector::reset() {
     staged_rows_.clear();
     affected_isin_ids_.clear();
+    staged_metadata_.clear();
+    slot_rows_.clear();
+    slot_index_by_repl_id_.clear();
+    instrument_slot_ownership_.clear();
+    active_row_count_ = 0;
+    active_instrument_count_ = 0;
     committed_ = {};
     instrument_snapshots_.clear();
+    global_diagnostics_dirty_ = false;
     transaction_open_ = false;
 }
 
 void Plaza2Aggr20BookProjector::begin_transaction() {
     staged_rows_.clear();
     affected_isin_ids_.clear();
+    staged_metadata_.clear();
     transaction_open_ = true;
 }
 
@@ -817,8 +824,39 @@ Plaza2Error Plaza2Aggr20BookProjector::on_row(std::span<const Plaza2DecodedField
     level.moment_ns = unsigned_field(fields, FieldCode::kFortsAggrReplOrdersAggrMomentNs).value_or(0);
     level.synth_volume = text_field(fields, FieldCode::kFortsAggrReplOrdersAggrSynthVolume);
     affected_isin_ids_.insert(level.isin_id);
+    auto& metadata = staged_metadata_[level.isin_id];
+    metadata.last_repl_id = std::max(metadata.last_repl_id, level.repl_id);
+    metadata.last_repl_rev = std::max(metadata.last_repl_rev, level.repl_rev);
+    metadata.exchange_moment = std::max(metadata.exchange_moment, level.moment);
+    metadata.exchange_moment_ns = std::max(metadata.exchange_moment_ns, level.moment_ns);
     staged_rows_.push_back(std::move(level));
     return {};
+}
+
+void Plaza2Aggr20BookProjector::add_slot_to_instrument(std::int64_t isin_id, std::size_t slot_index) {
+    auto [it, inserted] = instrument_slot_ownership_.try_emplace(isin_id);
+    if (inserted) {
+        ++active_instrument_count_;
+    }
+    auto& slots = it->second;
+    slots.insert(std::lower_bound(slots.begin(), slots.end(), slot_index), slot_index);
+}
+
+void Plaza2Aggr20BookProjector::remove_slot_from_instrument(std::int64_t isin_id, std::size_t slot_index) {
+    const auto it = instrument_slot_ownership_.find(isin_id);
+    if (it == instrument_slot_ownership_.end()) {
+        return;
+    }
+    auto& slots = it->second;
+    const auto slot = std::find(slots.begin(), slots.end(), slot_index);
+    if (slot == slots.end()) {
+        return;
+    }
+    slots.erase(slot);
+    if (slots.empty()) {
+        instrument_slot_ownership_.erase(it);
+        --active_instrument_count_;
+    }
 }
 
 Plaza2Error Plaza2Aggr20BookProjector::commit() {
@@ -831,58 +869,61 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
     }
 
     for (const auto& row : staged_rows_) {
-        auto existing = std::find_if(committed_.levels.begin(), committed_.levels.end(), [&](const auto& level) {
-            // AGGR rows are mutable replication slots, not immutable price levels.
-            // A price, side, or instrument change replaces the previous slot.
-            return level.repl_id == row.repl_id;
-        });
-        if (existing != committed_.levels.end()) {
-            affected_isin_ids_.insert(existing->isin_id);
-        }
         committed_.last_repl_id = std::max(committed_.last_repl_id, row.repl_id);
         committed_.last_repl_rev = std::max(committed_.last_repl_rev, row.repl_rev);
+
+        const auto existing = slot_index_by_repl_id_.find(row.repl_id);
         if (row.volume <= 0) {
-            if (existing != committed_.levels.end()) {
-                committed_.levels.erase(existing);
+            if (existing != slot_index_by_repl_id_.end()) {
+                const auto slot_index = existing->second;
+                const auto& old_row = *slot_rows_[slot_index];
+                affected_isin_ids_.insert(old_row.isin_id);
+                remove_slot_from_instrument(old_row.isin_id, slot_index);
+                slot_rows_[slot_index].reset();
+                slot_index_by_repl_id_.erase(existing);
+                --active_row_count_;
             }
             continue;
         }
-        if (existing == committed_.levels.end()) {
-            committed_.levels.push_back(row);
+
+        if (existing == slot_index_by_repl_id_.end()) {
+            const auto slot_index = slot_rows_.size();
+            slot_rows_.emplace_back(row);
+            slot_index_by_repl_id_.emplace(row.repl_id, slot_index);
+            add_slot_to_instrument(row.isin_id, slot_index);
+            ++active_row_count_;
         } else {
-            *existing = row;
+            const auto slot_index = existing->second;
+            const auto& old_row = *slot_rows_[slot_index];
+            affected_isin_ids_.insert(old_row.isin_id);
+            if (old_row.isin_id != row.isin_id) {
+                remove_slot_from_instrument(old_row.isin_id, slot_index);
+                add_slot_to_instrument(row.isin_id, slot_index);
+            }
+            *slot_rows_[slot_index] = row;
         }
     }
 
-    committed_.row_count = committed_.levels.size();
+    committed_.row_count = active_row_count_;
+    committed_.instrument_count = active_instrument_count_;
     committed_.committed_at = now_();
-    committed_.exchange_moment = 0;
-    committed_.exchange_moment_ns = 0;
-    committed_.bid_depth_levels = 0;
-    committed_.ask_depth_levels = 0;
-    committed_.top_bid.reset();
-    committed_.top_ask.reset();
-    // Rebuild the diagnostic/global view from the committed levels, but only
-    // refresh instrument-scoped freshness for instruments touched by this
-    // transaction.  An unrelated instrument update must not make the target
-    // BBO look newer than its last local row.
-    std::set<std::int64_t> instruments;
+    global_diagnostics_dirty_ = global_diagnostics_dirty_ || !staged_rows_.empty();
+    // Refresh instrument-scoped snapshots only for instruments touched by
+    // this transaction. An unrelated instrument update must not make the
+    // target BBO look newer than its last local row.
     for (const auto& isin_id : affected_isin_ids_) {
         const auto previous = instrument_snapshots_.find(isin_id);
         Plaza2Aggr20InstrumentSnapshot scoped;
         if (previous != instrument_snapshots_.end())
             scoped = previous->second;
         scoped.isin_id = isin_id;
-        for (const auto& row : staged_rows_) {
-            if (row.isin_id != isin_id) {
-                continue;
-            }
+        if (const auto metadata = staged_metadata_.find(isin_id); metadata != staged_metadata_.end()) {
             // Keep the last relevant replication metadata even when this row
             // is a deletion and no level remains in the visible book.
-            scoped.last_repl_id = std::max(scoped.last_repl_id, row.repl_id);
-            scoped.last_repl_rev = std::max(scoped.last_repl_rev, row.repl_rev);
-            scoped.exchange_moment = std::max(scoped.exchange_moment, row.moment);
-            scoped.exchange_moment_ns = std::max(scoped.exchange_moment_ns, row.moment_ns);
+            scoped.last_repl_id = std::max(scoped.last_repl_id, metadata->second.last_repl_id);
+            scoped.last_repl_rev = std::max(scoped.last_repl_rev, metadata->second.last_repl_rev);
+            scoped.exchange_moment = std::max(scoped.exchange_moment, metadata->second.exchange_moment);
+            scoped.exchange_moment_ns = std::max(scoped.exchange_moment_ns, metadata->second.exchange_moment_ns);
         }
         scoped.row_count = 0;
         scoped.bid_depth_levels = 0;
@@ -890,11 +931,14 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
         scoped.top_bid.reset();
         scoped.top_ask.reset();
         scoped.levels.clear();
-        for (const auto& level : committed_.levels) {
-            if (level.isin_id != isin_id) {
-                continue;
+        const auto owned = instrument_slot_ownership_.find(isin_id);
+        if (owned != instrument_slot_ownership_.end()) {
+            scoped.levels.reserve(owned->second.size());
+            for (const auto slot_index : owned->second) {
+                scoped.levels.push_back(*slot_rows_[slot_index]);
             }
-            scoped.levels.push_back(level);
+        }
+        for (const auto& level : scoped.levels) {
             scoped.row_count += 1;
             if (level.dir == 1) {
                 scoped.bid_depth_levels += 1;
@@ -921,27 +965,13 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
         }
         instrument_snapshots_[isin_id] = std::move(scoped);
     }
-    for (const auto& level : committed_.levels) {
-        instruments.insert(level.isin_id);
-        committed_.exchange_moment = std::max(committed_.exchange_moment, level.moment);
-        committed_.exchange_moment_ns = std::max(committed_.exchange_moment_ns, level.moment_ns);
-        if (level.dir == 1) {
-            committed_.bid_depth_levels += 1;
-            if (!committed_.top_bid.has_value() || level.price_scaled > committed_.top_bid->price_scaled) {
-                committed_.top_bid = level;
-            }
-        } else if (level.dir == 2) {
-            committed_.ask_depth_levels += 1;
-            if (!committed_.top_ask.has_value() || level.price_scaled < committed_.top_ask->price_scaled) {
-                committed_.top_ask = level;
-            }
-        }
-    }
-    committed_.instrument_count = instruments.size();
-    if (qualification_observer_)
+    if (qualification_observer_) {
+        ensure_global_diagnostics();
         qualification_observer_->committed(committed_);
+    }
     staged_rows_.clear();
     affected_isin_ids_.clear();
+    staged_metadata_.clear();
     transaction_open_ = false;
     return {};
 }
@@ -949,10 +979,50 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
 void Plaza2Aggr20BookProjector::rollback() {
     staged_rows_.clear();
     affected_isin_ids_.clear();
+    staged_metadata_.clear();
     transaction_open_ = false;
 }
 
-const Plaza2Aggr20Snapshot& Plaza2Aggr20BookProjector::snapshot() const noexcept {
+void Plaza2Aggr20BookProjector::ensure_global_diagnostics() const {
+    if (!global_diagnostics_dirty_) {
+        return;
+    }
+
+    committed_.levels.clear();
+    committed_.levels.reserve(active_row_count_);
+    committed_.exchange_moment = 0;
+    committed_.exchange_moment_ns = 0;
+    committed_.bid_depth_levels = 0;
+    committed_.ask_depth_levels = 0;
+    committed_.top_bid.reset();
+    committed_.top_ask.reset();
+    for (const auto& slot : slot_rows_) {
+        if (!slot.has_value()) {
+            continue;
+        }
+        const auto& level = *slot;
+        committed_.levels.push_back(level);
+        committed_.exchange_moment = std::max(committed_.exchange_moment, level.moment);
+        committed_.exchange_moment_ns = std::max(committed_.exchange_moment_ns, level.moment_ns);
+        if (level.dir == 1) {
+            ++committed_.bid_depth_levels;
+            if (!committed_.top_bid.has_value() || level.price_scaled > committed_.top_bid->price_scaled) {
+                committed_.top_bid = level;
+            }
+        } else if (level.dir == 2) {
+            ++committed_.ask_depth_levels;
+            if (!committed_.top_ask.has_value() || level.price_scaled < committed_.top_ask->price_scaled) {
+                committed_.top_ask = level;
+            }
+        }
+    }
+    committed_.row_count = active_row_count_;
+    committed_.instrument_count = active_instrument_count_;
+    global_diagnostics_dirty_ = false;
+}
+
+const Plaza2Aggr20Snapshot& Plaza2Aggr20BookProjector::snapshot() const {
+    ensure_global_diagnostics();
     return committed_;
 }
 
