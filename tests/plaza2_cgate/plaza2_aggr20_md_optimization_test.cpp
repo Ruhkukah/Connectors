@@ -399,6 +399,15 @@ class RecordingObserver final : public Plaza2Aggr20QualificationObserver {
     std::optional<Plaza2Aggr20Snapshot> last;
 };
 
+void verify_observer_global_order(const RecordingObserver& observer, const Plaza2Aggr20Snapshot& actual,
+                                  std::string_view phase) {
+    if (!observer.last.has_value() || !equal_snapshot(*observer.last, actual))
+        throw std::runtime_error("qualification observer global ordered view mismatch: " + std::string(phase));
+    if (observer.last->levels.size() != actual.levels.size() ||
+        !std::equal(observer.last->levels.begin(), observer.last->levels.end(), actual.levels.begin(), equal_level))
+        throw std::runtime_error("qualification observer global level order mismatch: " + std::string(phase));
+}
+
 struct DifferentialCounts {
     std::size_t transactions{0};
     std::size_t commits{0};
@@ -485,8 +494,7 @@ void replay_transaction(moex::plaza2::cgate::Plaza2Aggr20BookProjector& actual, 
         if (actual_error)
             throw std::runtime_error("optimized projector commit failed");
         legacy.commit();
-        if (!observer.last.has_value() || !equal_snapshot(*observer.last, actual.snapshot()))
-            throw std::runtime_error("qualification observer did not receive the committed global snapshot");
+        verify_observer_global_order(observer, actual.snapshot(), phase);
     }
     compare_projectors(actual, legacy, isins, phase);
 }
@@ -504,6 +512,127 @@ InputRow make_row(std::uint64_t repl_id, std::int64_t rev, std::int64_t isin_id,
             .moment_ns = moment_ns,
             .price = std::string(price),
             .synth_volume = {}};
+}
+
+struct LargeIndexScenario {
+    std::vector<InputRow> seed;
+    std::vector<InputRow> mutation;
+    std::vector<InputRow> rollback;
+    std::vector<std::int64_t> isins;
+    std::size_t existing_update_rows{0};
+    std::size_t delete_rows{0};
+    std::size_t reinsertion_rows{0};
+    std::size_t follow_up_update_rows{0};
+};
+
+std::string large_index_price(std::size_t level) {
+    const auto whole = level < 20 ? 100 - static_cast<int>(level) : 101 + static_cast<int>(level - 20);
+    return std::to_string(whole) + ".00000";
+}
+
+LargeIndexScenario make_large_index_scenario() {
+    constexpr std::size_t kInstrumentCount = 8;
+    constexpr std::size_t kLevelsPerInstrument = 40;
+    constexpr std::size_t kSeededSlots = kInstrumentCount * kLevelsPerInstrument;
+    constexpr std::size_t kDeletedSlots = 16;
+
+    LargeIndexScenario scenario;
+    scenario.seed.reserve(kSeededSlots);
+    scenario.mutation.reserve(kSeededSlots + kDeletedSlots * 3);
+    scenario.rollback.reserve(kSeededSlots + kDeletedSlots * 3);
+    scenario.existing_update_rows = kSeededSlots - kDeletedSlots;
+    scenario.delete_rows = kDeletedSlots;
+    scenario.reinsertion_rows = kDeletedSlots;
+    scenario.follow_up_update_rows = kDeletedSlots;
+    for (std::size_t instrument = 0; instrument < kInstrumentCount; ++instrument)
+        scenario.isins.push_back(5000 + static_cast<std::int64_t>(instrument));
+    for (std::size_t instrument = 0; instrument < 2; ++instrument)
+        scenario.isins.push_back(6000 + static_cast<std::int64_t>(instrument));
+    scenario.isins.insert(scenario.isins.end(), {6002, 6003, 6004, 6005});
+
+    for (std::size_t slot = 0; slot < kSeededSlots; ++slot) {
+        const auto level = slot % kLevelsPerInstrument;
+        const auto isin_id = 5000 + static_cast<std::int64_t>(slot / kLevelsPerInstrument);
+        const auto dir = level < 20 ? 1 : 2;
+        scenario.seed.push_back(make_row(10'000 + slot, 1, isin_id, dir, large_index_price(level),
+                                         10 + static_cast<std::int64_t>(level), 0, 1 + slot, slot));
+    }
+
+    // One transaction has 304 existing-row updates, 16 deletes, 16 reinsertions,
+    // and 16 same-burst follow-up updates. It therefore crosses both 256-row
+    // thresholds while exercising migration and free-slot reuse.
+    for (std::size_t slot = 0; slot < kSeededSlots; ++slot) {
+        const auto level = slot % kLevelsPerInstrument;
+        const auto repl_id = 10'000 + slot;
+        const auto old_isin = 5000 + static_cast<std::int64_t>(slot / kLevelsPerInstrument);
+        const auto dir = level < 20 ? 1 : 2;
+        if (slot < kDeletedSlots) {
+            scenario.mutation.push_back(make_row(repl_id, 2, old_isin, dir, large_index_price(level), 0, 0,
+                                                 1000 + slot, slot));
+            continue;
+        }
+        const auto isin_id = slot >= 64 && slot < 96
+                                 ? 6000 + static_cast<std::int64_t>(slot % 2)
+                                 : old_isin;
+        scenario.mutation.push_back(make_row(repl_id, 2, isin_id, dir, large_index_price(level),
+                                             20 + static_cast<std::int64_t>(level), 0, 1000 + slot, slot));
+    }
+    for (std::size_t index = 0; index < 8; ++index) {
+        scenario.mutation.push_back(make_row(10'000 + index, 3, 6002, index % 2 == 0 ? 1 : 2, "200.00000",
+                                             30 + static_cast<std::int64_t>(index), 0, 2000 + index, index));
+    }
+    for (std::size_t index = 8; index < kDeletedSlots; ++index) {
+        scenario.mutation.push_back(make_row(20'000 + index, 1, 6003, index % 2 == 0 ? 1 : 2, "201.00000",
+                                             40 + static_cast<std::int64_t>(index), 0, 2000 + index, index));
+    }
+    for (std::size_t index = 0; index < kDeletedSlots; ++index) {
+        const auto repl_id = index < 8 ? 10'000 + index : 20'000 + index;
+        const auto revision = index < 8 ? 4 : 2;
+        const auto isin_id = index < 8 ? 6002 : 6003;
+        scenario.mutation.push_back(make_row(repl_id, revision, isin_id, index % 2 == 0 ? 2 : 1,
+                                             index < 8 ? "200.50000" : "201.50000",
+                                             31 + static_cast<std::int64_t>(index), 0, 3000 + index, index));
+    }
+
+    for (std::size_t slot = 0; slot < kSeededSlots; ++slot) {
+        const auto level = slot % kLevelsPerInstrument;
+        const auto repl_id = slot < 8 ? 10'000 + slot : slot < kDeletedSlots ? 20'000 + slot : 10'000 + slot;
+        const auto isin_id = slot < 8
+                                 ? 6002
+                                 : slot < kDeletedSlots
+                                       ? 6003
+                                       : slot >= 64 && slot < 96 ? 6000 + static_cast<std::int64_t>(slot % 2)
+                                                                  : 5000 + static_cast<std::int64_t>(slot / 40);
+        const auto dir = level < 20 ? 1 : 2;
+        if (slot < kDeletedSlots) {
+            scenario.rollback.push_back(make_row(repl_id, 100 + static_cast<std::int64_t>(slot), isin_id, dir,
+                                                 "202.00000", 0, 0, 4000 + slot, slot));
+        } else {
+            scenario.rollback.push_back(make_row(repl_id, 100 + static_cast<std::int64_t>(slot), isin_id, dir,
+                                                 "202.00000", 50 + static_cast<std::int64_t>(level), 0, 4000 + slot,
+                                                 slot));
+        }
+    }
+    for (std::size_t index = 0; index < 8; ++index) {
+        scenario.rollback.push_back(make_row(10'000 + index, 200, 6004, index % 2 == 0 ? 1 : 2, "203.00000", 60, 0,
+                                             5000 + index, index));
+    }
+    for (std::size_t index = 8; index < kDeletedSlots; ++index) {
+        scenario.rollback.push_back(make_row(20'000 + index, 200, 6005, index % 2 == 0 ? 1 : 2, "204.00000", 70, 0,
+                                             5000 + index, index));
+    }
+    for (std::size_t index = 0; index < kDeletedSlots; ++index) {
+        const auto repl_id = index < 8 ? 10'000 + index : 20'000 + index;
+        scenario.rollback.push_back(make_row(repl_id, 201, index < 8 ? 6004 : 6005, index % 2 == 0 ? 2 : 1,
+                                             index < 8 ? "203.50000" : "204.50000", 61 + index, 0, 6000 + index,
+                                             index));
+    }
+
+    if (scenario.seed.size() < 256 || scenario.mutation.size() < 256 || scenario.rollback.size() < 256 ||
+        scenario.mutation.size() != scenario.existing_update_rows + scenario.delete_rows +
+                                         scenario.reinsertion_rows + scenario.follow_up_update_rows)
+        throw std::runtime_error("large-index scenario did not cross the 256-row threshold");
+    return scenario;
 }
 
 template <typename Actual, typename Legacy>
@@ -702,6 +831,130 @@ AllocationProbeResult run_allocation_failure_probe() {
     return result;
 }
 
+struct LargeIndexProbeResult {
+    std::size_t seeded_slots{0};
+    std::size_t mutation_rows{0};
+    std::size_t rollback_rows{0};
+    std::size_t existing_update_rows{0};
+    std::size_t delete_rows{0};
+    std::size_t reinsertion_rows{0};
+    std::size_t follow_up_update_rows{0};
+    std::size_t allocation_commit_failures{0};
+    std::size_t allocation_commit_success_threshold{0};
+};
+
+LargeIndexProbeResult run_large_index_allocation_probe(const LargeIndexScenario& scenario,
+                                                       std::span<const std::int64_t> isins) {
+    using moex::plaza2::cgate::Plaza2Aggr20BookProjector;
+    using test_allocation_injection::attempts;
+    using test_allocation_injection::enabled;
+    using test_allocation_injection::remaining;
+
+    auto now = Plaza2Aggr20BookProjector::Clock::time_point{} + std::chrono::seconds(1600);
+    auto now_fn = [&now] { return now; };
+    LargeIndexProbeResult result{.seeded_slots = scenario.seed.size(),
+                                 .mutation_rows = scenario.mutation.size(),
+                                 .rollback_rows = scenario.rollback.size(),
+                                 .existing_update_rows = scenario.existing_update_rows,
+                                 .delete_rows = scenario.delete_rows,
+                                 .reinsertion_rows = scenario.reinsertion_rows,
+                                 .follow_up_update_rows = scenario.follow_up_update_rows};
+    bool commit_succeeded = false;
+
+    // The threshold sweep repeats a fully seeded candidate so every attempted
+    // large commit has at least 320 retained slots before its 352-row mutation.
+    constexpr std::size_t kMaxAllocationThreshold = 8192;
+    for (std::size_t threshold = 0; threshold < kMaxAllocationThreshold && !commit_succeeded; ++threshold) {
+        Plaza2Aggr20BookProjector candidate(now_fn);
+        LegacyProjector legacy(now_fn);
+        RecordingObserver observer;
+        candidate.set_qualification_observer(&observer);
+
+        candidate.begin_transaction();
+        legacy.begin_transaction();
+        for (const auto& row : scenario.seed)
+            stage_actual_and_legacy(candidate, legacy, row);
+        if (const auto error = candidate.commit(); error)
+            throw std::runtime_error("large-index allocation probe seed commit failed: " + error.message);
+        legacy.commit();
+        verify_observer_global_order(observer, candidate.snapshot(), "large-index allocation seed");
+        compare_projectors(candidate, legacy, isins, "large-index allocation seed");
+        const auto before = candidate.snapshot();
+
+        candidate.begin_transaction();
+        legacy.begin_transaction();
+        for (const auto& row : scenario.mutation)
+            stage_actual_and_legacy(candidate, legacy, row);
+        compare_projectors(candidate, legacy, isins, "large-index allocation before publication");
+
+        enabled = true;
+        remaining = threshold;
+        attempts = 0;
+        bool failed = false;
+        try {
+            if (const auto error = candidate.commit(); error) {
+                enabled = false;
+                throw std::runtime_error("large-index allocation probe commit returned an error: " + error.message);
+            }
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        enabled = false;
+
+        if (failed) {
+            ++result.allocation_commit_failures;
+            if (!candidate.transaction_open())
+                throw std::runtime_error("large-index allocation failure closed the transaction before rollback");
+            if (!equal_snapshot(before, candidate.snapshot()))
+                throw std::runtime_error("large-index allocation failure changed the published snapshot");
+            if (!observer.last.has_value() || !equal_snapshot(*observer.last, before))
+                throw std::runtime_error("large-index allocation failure changed the observer snapshot");
+            candidate.rollback();
+            legacy.rollback();
+            compare_projectors(candidate, legacy, isins, "large-index allocation rollback");
+            if (candidate.transaction_open() || !equal_snapshot(before, candidate.snapshot()))
+                throw std::runtime_error("large-index allocation rollback did not restore the seed snapshot");
+        } else {
+            legacy.commit();
+            verify_observer_global_order(observer, candidate.snapshot(), "large-index allocation commit");
+            compare_projectors(candidate, legacy, isins, "large-index allocation commit");
+            result.allocation_commit_success_threshold = threshold;
+            commit_succeeded = true;
+        }
+    }
+
+    if (!commit_succeeded || result.allocation_commit_failures == 0)
+        throw std::runtime_error("large-index allocation probe did not cover both failing and successful commits");
+    return result;
+}
+
+LargeIndexProbeResult run_large_index_differential_case() {
+    using moex::plaza2::cgate::Plaza2Aggr20BookProjector;
+
+    const auto scenario = make_large_index_scenario();
+    auto now = Plaza2Aggr20BookProjector::Clock::time_point{} + std::chrono::seconds(1400);
+    auto now_fn = [&now] { return now; };
+    Plaza2Aggr20BookProjector actual(now_fn);
+    LegacyProjector legacy(now_fn);
+    RecordingObserver observer;
+    DifferentialCounts counts;
+    actual.set_qualification_observer(&observer);
+    const std::span<const std::int64_t> isins(scenario.isins);
+
+    replay_transaction(actual, legacy, scenario.seed, false, isins, "large-index seed", observer, counts);
+    replay_transaction(actual, legacy, scenario.mutation, false, isins, "large-index mutation", observer, counts);
+    const auto before_rollback = actual.snapshot();
+    const auto observer_before_rollback = observer.last;
+    replay_transaction(actual, legacy, scenario.rollback, true, isins, "large-index rollback", observer, counts);
+    if (!equal_snapshot(before_rollback, actual.snapshot()))
+        throw std::runtime_error("large-index rollback changed the published global snapshot");
+    if (!observer_before_rollback.has_value() || !observer.last.has_value() ||
+        !equal_snapshot(*observer_before_rollback, *observer.last))
+        throw std::runtime_error("large-index rollback changed the qualification observer snapshot");
+
+    return run_large_index_allocation_probe(scenario, isins);
+}
+
 } // namespace
 
 int main() {
@@ -779,12 +1032,24 @@ int main() {
         const auto lazy_commits = run_lazy_sequence();
         const auto churn_transactions = run_unique_churn();
         const auto allocation_probe = run_allocation_failure_probe();
+        const auto large_index_probe = run_large_index_differential_case();
         std::cout << "differential transactions=" << counts.transactions << " commits=" << counts.commits
                   << " rollbacks=" << counts.rollbacks << " rows=" << counts.rows << " lazy_commits=" << lazy_commits
                   << " churn_transactions=" << churn_transactions
                   << " allocation_commit_failures=" << allocation_probe.commit_failures
                   << " allocation_commit_success_threshold=" << allocation_probe.commit_success_threshold
-                  << " allocation_global_failures=" << allocation_probe.global_materialization_failures << "\n";
+                  << " allocation_global_failures=" << allocation_probe.global_materialization_failures
+                  << " large_index_seeded_slots=" << large_index_probe.seeded_slots
+                  << " large_index_mutation_rows=" << large_index_probe.mutation_rows
+                  << " large_index_rollback_rows=" << large_index_probe.rollback_rows
+                  << " large_index_existing_updates=" << large_index_probe.existing_update_rows
+                  << " large_index_delete_rows=" << large_index_probe.delete_rows
+                  << " large_index_reinsert_rows=" << large_index_probe.reinsertion_rows
+                  << " large_index_follow_up_updates=" << large_index_probe.follow_up_update_rows
+                  << " large_index_allocation_failures=" << large_index_probe.allocation_commit_failures
+                  << " large_index_allocation_success_threshold="
+                  << large_index_probe.allocation_commit_success_threshold
+                  << " small_40x1000_index_path=threshold_disabled_linear_unchanged\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
