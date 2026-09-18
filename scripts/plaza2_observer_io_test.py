@@ -74,6 +74,11 @@ def main():
             raise AssertionError("row without begin accepted")
         except ValueError as error:
             assert "matching transaction begin" in str(error)
+        clean_marker = dict(seq=3, kind="clean_shutdown")
+        fault.write_text("".join(json.dumps(x) + "\n" for x in (begin, row, clean_marker)), encoding="utf-8")
+        unfinished = READER.inspect(fault)
+        assert unfinished["clean_shutdown_marker"] and not unfinished["clean_shutdown"]
+        assert unfinished["incomplete_transactions"] == 1 and unfinished["committed_rows"] == 0
         print(json.dumps(dict(stress=metrics, committed=summary, crash=incomplete), sort_keys=True))
 
 

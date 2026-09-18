@@ -192,6 +192,30 @@ class Handler final : public Plaza2ListenerEventHandler {
     bool recovery_requested{false};
 
   private:
+    static void check_serialized_bounds(const Plaza2ListenerEvent& event) {
+        // Bound before hex/JSON expansion and before constructing the stream.
+        // Conservative upper bounds include quote escaping and field metadata.
+        std::size_t budget = Journal::record_limit - 4096;
+        const auto consume = [&](std::size_t bytes, std::size_t expansion) {
+            if (bytes > budget / expansion)
+                throw std::runtime_error("observer callback exceeds serialization bound");
+            budget -= bytes * expansion;
+        };
+        consume(event.text_value.size(), 6);
+        if (event.kind != Plaza2ListenerEventKind::StreamData)
+            return;
+        if (event.raw_payload.size() > 128 * 1024 || event.fields.size() > 512)
+            throw std::runtime_error("observer callback payload or field count exceeds bound");
+        consume(event.raw_payload.size(), 2);
+        for (const auto& field : event.fields) {
+            consume(512, 1);
+            const auto* desc = generated::FindFieldByCode(field.field_code);
+            consume(desc ? desc->field_name.size() : 7, 6);
+            consume(field.text_value.size(), 6);
+            consume(field.raw_value.size(), 2);
+        }
+    }
+
     std::string prefix() const {
         return "\"stream\":" + quote(generated::FindStreamByCode(stream_)->stream_name) +
                ",\"generation\":" + std::to_string(generation_) + ",";
@@ -239,15 +263,16 @@ class Handler final : public Plaza2ListenerEventHandler {
             if (aggr && event.table_code != generated::TableCode::kFortsAggrReplSysEvents)
                 return;
             ++relevant_rows_;
-            if (!pending_begin_.empty()) {
-                journal_.append(pending_begin_, pending_stamp_);
-                pending_begin_.clear();
-            }
         }
         if (aggr && event.kind == K::TransactionCommit && relevant_rows_ == 0) {
             transaction_ = 0;
             pending_begin_.clear();
             return;
+        }
+        check_serialized_bounds(event);
+        if (event.kind == K::StreamData && !pending_begin_.empty()) {
+            journal_.append(pending_begin_, pending_stamp_);
+            pending_begin_.clear();
         }
         std::ostringstream out;
         out << prefix() << "\"kind\":" << quote(names.at(static_cast<unsigned>(event.kind)))

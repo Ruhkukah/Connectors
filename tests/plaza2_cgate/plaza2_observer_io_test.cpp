@@ -20,6 +20,17 @@ int main(int argc, char** argv) {
             }
             if (!rejected || journal.metrics().write_calls || journal.metrics().sync_calls)
                 throw std::runtime_error("oversized record must fail before write/sync");
+            Handler bounded(journal, generated::StreamCode::kFortsRefdataRepl, 1);
+            using K = cgate::Plaza2ListenerEventKind;
+            if (bounded.on_plaza2_listener_event({.kind = K::TransactionBegin}))
+                throw std::runtime_error("bounds fixture begin failed");
+            const std::vector<std::byte> oversized(128 * 1024 + 1);
+            const auto error =
+                bounded.on_plaza2_listener_event({.kind = K::StreamData,
+                                                  .table_code = generated::TableCode::kFortsRefdataReplSession,
+                                                  .raw_payload = oversized});
+            if (!error || !bounded.failed || journal.metrics().write_calls || journal.metrics().sync_calls)
+                throw std::runtime_error("oversized callback must fail before serialization or I/O");
             journal.finish();
             return 0;
         }

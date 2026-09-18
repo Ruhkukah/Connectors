@@ -14,6 +14,7 @@ def inspect(path):
     pending = {}
     result = dict(committed_transactions=0, committed_rows=0, discarded_rows=0,
                   incomplete_transactions=0, incomplete_rows=0, clean_shutdown=False,
+                  clean_shutdown_marker=False,
                   torn_tail=False)
     artifact_hash = hashlib.sha256()
     sequence = 0
@@ -31,14 +32,14 @@ def inspect(path):
                 raise ValueError("journal record exceeds bound")
             if not raw.endswith(b"\n"):
                 result["torn_tail"] = True
-                result["clean_shutdown"] = False
+                result["clean_shutdown_marker"] = False
                 break
             event = json.loads(raw.decode("utf-8"))
             sequence += 1
             if event["seq"] != sequence:
                 raise ValueError("journal sequence gap")
             kind = event["kind"]
-            result["clean_shutdown"] = kind == "clean_shutdown"
+            result["clean_shutdown_marker"] = kind == "clean_shutdown"
             key = (event.get("generation"), event.get("stream"))
             if kind == "transaction_begin":
                 discard(key)
@@ -76,6 +77,8 @@ def inspect(path):
                 raise ValueError("more than four simultaneous public-stream transactions")
     for key in list(pending):
         discard(key)
+    result["clean_shutdown"] = (result["clean_shutdown_marker"] and not result["torn_tail"] and
+                                result["incomplete_transactions"] == 0)
     result["sha256"] = artifact_hash.hexdigest()
     return result
 

@@ -26,6 +26,12 @@ shutdown. A deliberately corrupt commit hash is rejected; a torn final marker
 cannot commit its rows. Every emitted identifier, payload byte and P2TIME component
 is checked in the clean case. CTest has a 120-second execution limit.
 
+Callback size checks run before serialization or a deferred AGGR begin is written:
+128 KiB raw payload, 512 fields, and a conservative escaped-output budget below
+the 1 MiB record limit. Oversize input fails closed without allocating its JSON.
+The reader distinguishes a clean-shutdown marker from a clean journal: pending
+transactions or a torn tail make `clean_shutdown` false even if a marker exists.
+
 Reader FNV-1a is a transaction consistency check, not a cryptographic signature.
 Whole-artifact SHA-256 is retained for forensic integrity. The reader never treats
 the mere presence of a row or ONLINE as committed authority. An abrupt-process
