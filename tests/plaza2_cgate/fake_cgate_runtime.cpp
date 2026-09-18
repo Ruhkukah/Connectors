@@ -958,6 +958,22 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     using enum FieldCode;
     using enum TableCode;
 
+    // Explicit opt-in for the runtime text-boundary test. Default observer and
+    // host fixtures remain ASCII, including their session_data_ready messages.
+    if (fake_flag("MOEX_FAKE_CP1251_TEXT")) {
+        for (auto& message : script) {
+            if (message.table_code == kFortsRefdataReplFutInstruments) {
+                message.fields.push_back({.field_code = kFortsRefdataReplFutInstrumentsName,
+                                          .kind = FakeValueKind::Text,
+                                          .text = "\xd4\xfc\xfe\xf7\xe5\xf0\xf1\xed\xfb\xe9 "
+                                                  "\xea\xee\xed\xf2\xf0\xe0\xea\xf2 ALRS-12.26"});
+            }
+            if (auto* value = find_field(message, kFortsAggrReplSysEventsMessage)) {
+                value->text = "\xd1\xe5\xf1\xf1\xe8\xff";
+            }
+        }
+    }
+
     if (stream_code == StreamCode::kFortsTradeRepl) {
         if (fake_flag("MOEX_FAKE_MISSING_TRADE_ORDER")) {
             std::erase_if(script, [](const auto& message) {

@@ -1,4 +1,5 @@
 #include "moex/plaza2/cgate/plaza2_aggr20_authority_probe.hpp"
+#include "moex/plaza2/cgate/plaza2_text.hpp"
 
 #include <charconv>
 #include <chrono>
@@ -305,35 +306,7 @@ Plaza2Aggr20AuthorityProbeConfig make_config(const ProbeArgs& args) {
 }
 
 std::string json_escape(std::string_view value) {
-    std::ostringstream out;
-    out << std::hex << std::setfill('0');
-    for (const auto ch : value) {
-        switch (ch) {
-        case '\\':
-            out << "\\\\";
-            break;
-        case '"':
-            out << "\\\"";
-            break;
-        case '\n':
-            out << "\\n";
-            break;
-        case '\r':
-            out << "\\r";
-            break;
-        case '\t':
-            out << "\\t";
-            break;
-        default:
-            if (static_cast<unsigned char>(ch) < 0x20) {
-                out << "\\u" << std::setw(4) << static_cast<unsigned int>(static_cast<unsigned char>(ch));
-            } else {
-                out << ch;
-            }
-            break;
-        }
-    }
-    return out.str();
+    return moex::plaza2::cgate::text::json_escape_utf8(value);
 }
 
 void write_string(std::ostream& out, std::string_view value) {

@@ -1,4 +1,5 @@
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
+#include "moex/plaza2/cgate/plaza2_text.hpp"
 
 #include "plaza2_generated_metadata.hpp"
 #include "moex/plaza2/cgate/plaza2_public_decode.hpp"
@@ -1547,9 +1548,8 @@ struct Plaza2ListenerCallbackState {
                     break;
                 case generated::ValueClass::kFixedString:
                     decoded.kind = Plaza2DecodedValueKind::String;
-                    state->text_storage.push_back(
-                        field.type_token == "a" ? copy_c_string(reinterpret_cast<const char*>(field_ptr), 1)
-                                                : copy_c_string(reinterpret_cast<const char*>(field_ptr), field.size));
+                    state->text_storage.push_back(text::spectra_fixed_string_to_utf8(
+                        {reinterpret_cast<const char*>(field_ptr), field.type_token == "a" ? 1 : field.size}));
                     decoded.text_value = state->text_storage.back();
                     break;
                 case generated::ValueClass::kDecimal:
