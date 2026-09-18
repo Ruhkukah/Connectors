@@ -14,17 +14,17 @@ connectivity qualification; REFDATA and AGGR use `REFDATA` and `Aggr` selectors.
 ```sh
 cmake -S . -B /private/tmp/moex-day-observer-build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DMOEX_BUILD_DOTNET_TESTS=OFF
-cmake --build /private/tmp/moex-day-observer-build --target moex_plaza2_day_observer -j4
-ctest --test-dir /private/tmp/moex-day-observer-build -R '^plaza2_day_observer_fixture$' --output-on-failure
+cmake --build /private/tmp/moex-day-observer-build --target moex_plaza2_day_observer plaza2_observer_io_test -j4
+ctest --test-dir /private/tmp/moex-day-observer-build -R 'plaza2_day_observer_fixture|plaza2_observer_io_stress' --output-on-failure
 ```
 
 Build a Linux executable directly on the evidence host using
 `/home/azgaldov/.local/bin/cmake` and `g++` (no Docker required), with the same
 configure/build/test commands and a separate absolute Linux build directory.
 A macOS executable is only suitable for local offline validation.
-Record the source base SHA, dirty source diff/file hashes and Linux binary hash
-alongside the external deployment package. This change intentionally makes no
-commit and does not label an uncommitted build as the PR head alone.
+Deploy only the exact committed source; record its full SHA, source-archive hash,
+Linux binary hash and scoped Linux test results alongside the external package.
+Do not substitute a working-tree build for the reviewed commit.
 
 ## Deployment recipe (prepared only; not executed)
 
@@ -57,10 +57,15 @@ seven days. No stop occurs when session_data_ready first appears.
 
 ## Evidence contract
 
-`events.jsonl` is append-only, exclusively created, mode 0600; each complete
-record is synchronously written and fsynced. The directory entry is fsynced at
-creation. Memory is bounded by one decoded row and four listener states; there
-is no accumulating event vector or in-memory identity/book projection. Disk
+`events.jsonl` is append-only, exclusively created, mode 0600. Ordinary rows and
+transaction beginnings use a bounded 64 KiB write buffer, with no per-row fsync.
+Full buffers are written without syncing. TN_COMMIT appends the marker, writes
+all preceding bytes and performs exactly one fsync. OPEN, ONLINE, LifeNum,
+ClearDeleted, close/error, generation boundaries, the 30-second heartbeat and
+clean shutdown explicitly flush and sync. The directory entry is synced once
+at creation, separately from journal metrics. A record is limited to 1 MiB.
+Memory is bounded by this buffer, one decoded/serialized row and four listener
+states; there is no accumulating transaction vector or book projection. Disk
 usage grows with evidence; disk-full/write/sync failures are fatal and must
 never be interpreted as a complete day. Watch free disk and callback latency
 on the target host; full-day vendor throughput is not established offline.
@@ -80,8 +85,14 @@ subscription is `FORTS_AGGR20_REPL`.
 Committed membership is a journal relation: join each row to the later
 `transaction_commit` by `(stream, generation, transaction_id)` with
 `transaction_committed=true`. No matching marker, or a false marker, means the
-row must not count as a committed witness. A partial final line after a crash
-is discarded. LifeNum, Close and ClearDeleted invalidate an outstanding
+row must not count as a committed witness. Format-v2 commits include the emitted
+row count and FNV-1a-64 over exact row-record UTF-8 bytes including newline; this
+detects accidental transaction corruption, not adversarial tampering. Sealed
+artifact SHA-256 supplies independent whole-file integrity. The bounded streaming
+reader `tools/plaza2_observer_read.py` validates sequence, count and hash before
+counting committed rows. A partial final line after a crash is discarded, and
+unmatched transaction prefixes are reported as incomplete. Lost buffered tails
+are never promoted to committed evidence. LifeNum, Close and ClearDeleted invalidate an outstanding
 transaction. ClearDeleted includes table_code, revision and flags; it does not
 erase earlier forensic records. Do not infer exchange order across streams from
 equal receive timestamps. Fresh snapshot+online is used for every generation;
@@ -99,6 +110,11 @@ The shared runtime explicitly decodes CP1251 into UTF-8 once. The journal uses
 `text::json_escape_utf8` on the already decoded strings, with no second codec.
 Raw field/payload hex preserves original bytes. Malformed UTF-8 is escaped as
 U+FFFD. ASCII identifiers remain unchanged after JSON parsing.
+Ten-byte timestamp fields additionally expose raw P2TIME calendar components,
+including milliseconds. The existing decoded integer remains explicitly labeled
+as timegm-calendar seconds with timezone unconfirmed, not asserted exchange UTC.
+Explicit moment_ns fields are retained alongside them without inventing a match
+between unrelated events. Local wall and monotonic receive times remain separate.
 The offline fixture includes the exact CP1251 bytes for
 `Фьючерсный контракт ALRS-12.26`. No DTC/UI code is modified here.
 
@@ -115,9 +131,8 @@ Exit 0 means deadline reached with all streams ONLINE at the end and no recorded
 recovery gap, not a certification result. Exit 2 means interrupted, recovered
 with gaps, or incomplete streams; 1 means a fatal failure. A missing final `end`
 record also means incomplete capture. SIGKILL cannot write a final record.
-The required `MOEX_OBSERVER_SOURCE_SHA` must be the reviewed source identity
-(40 hex digits); it is recorded in provenance. For an uncommitted build, preserve
-its diff and new-file hashes externally as described above, not just the base SHA.
+The required `MOEX_OBSERVER_SOURCE_SHA` must be the reviewed committed source
+identity (40 hex digits); it is recorded in provenance.
 The wrapper retains stdout/stderr, exit status, provenance and SHA256SUMS,
 verifies the manifest into `SHA256SUMS.verify`, then seals the exact newly created
 evidence directory with `chmod -R a-w`. It records native log identity without

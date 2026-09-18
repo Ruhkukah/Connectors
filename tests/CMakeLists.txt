@@ -1098,6 +1098,12 @@ add_test(NAME plaza2_restart_order_recovery_test COMMAND plaza2_restart_order_re
 set_tests_properties(plaza2_restart_order_recovery_test PROPERTIES LABELS "plaza2;sanitizer")
 
 add_executable(plaza2_text_test plaza2_cgate/plaza2_text_test.cpp)
+add_executable(plaza2_observer_io_test plaza2_cgate/plaza2_observer_io_test.cpp)
+target_link_libraries(plaza2_observer_io_test PRIVATE moex_plaza2_cgate_runtime)
+add_test(NAME plaza2_observer_io_stress
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/scripts/plaza2_observer_io_test.py"
+        "$<TARGET_FILE:plaza2_observer_io_test>")
+set_tests_properties(plaza2_observer_io_stress PROPERTIES LABELS "unit;plaza2;sanitizer;read-only" TIMEOUT 120)
 target_link_libraries(plaza2_text_test PRIVATE moex_plaza2_cgate_aggr20_md)
 add_test(NAME plaza2_text_roundtrip_test
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/plaza2_cgate/plaza2_text_roundtrip_test.py"

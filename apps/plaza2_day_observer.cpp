@@ -171,6 +171,7 @@ int run(int argc, char** argv) {
     Journal journal(output);
     if (offline) {
         fixture(journal);
+        journal.finish();
         return 0;
     }
     if (!armed || settings.library_path.empty() || settings.scheme_dir.empty() || settings.config_dir.empty())
@@ -186,9 +187,10 @@ int run(int argc, char** argv) {
     check(validate_plaza2_settings(settings));
     std::signal(SIGINT, stop);
     std::signal(SIGTERM, stop);
-    journal.append("\"kind\":\"start\",\"order_entry_allowed\":false,\"endpoint\":\"127.0.0.1:4101\","
-                   "\"text_policy\":\"runtime_utf8_and_raw_hex\",\"observation_seconds\":" +
-                   std::to_string(seconds));
+    journal.append_durable(
+        "\"kind\":\"start\",\"journal_format\":2,\"order_entry_allowed\":false,\"endpoint\":\"127.0.0.1:4101\","
+        "\"text_policy\":\"runtime_utf8_and_raw_hex\",\"observation_seconds\":" +
+        std::to_string(seconds));
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
     Plaza2Env env;
     check(env.open(settings));
@@ -203,7 +205,7 @@ int run(int argc, char** argv) {
     bool all_online = false, had_gap = false;
     while (!stopping && std::chrono::steady_clock::now() < deadline) {
         ++generation;
-        journal.append("\"kind\":\"generation_begin\",\"generation\":" + std::to_string(generation));
+        journal.append_durable("\"kind\":\"generation_begin\",\"generation\":" + std::to_string(generation));
         Plaza2Connection connection;
         std::array<std::unique_ptr<Handler>, 4> handlers;
         std::array<Plaza2Listener, 4> listeners;
@@ -216,6 +218,9 @@ int run(int argc, char** argv) {
                 handlers[i] = std::make_unique<Handler>(journal, streams[i], generation);
                 check(listeners[i].create(connection, streams[i], urls[i], handlers[i].get()));
                 check(listeners[i].open("mode=snapshot+online"));
+                journal.append_durable(
+                    "\"kind\":\"listener_open_accepted\",\"generation\":" + std::to_string(generation) +
+                    ",\"stream\":" + quote(generated::FindStreamByCode(streams[i])->stream_name));
             }
             auto heartbeat = std::chrono::steady_clock::now();
             while (!stopping && std::chrono::steady_clock::now() < deadline) {
@@ -238,8 +243,15 @@ int run(int argc, char** argv) {
                     all_online = all_online && handlers[i]->online;
                 }
                 if (std::chrono::steady_clock::now() >= heartbeat) {
-                    journal.append("\"kind\":\"heartbeat\",\"generation\":" + std::to_string(generation) +
-                                   ",\"all_online\":" + (all_online ? "true" : "false"));
+                    const auto io = journal.metrics();
+                    journal.append_durable("\"kind\":\"heartbeat\",\"generation\":" + std::to_string(generation) +
+                                           ",\"all_online\":" + (all_online ? "true" : "false") +
+                                           ",\"journal_bytes_written\":" + std::to_string(io.bytes) +
+                                           ",\"journal_write_calls\":" + std::to_string(io.write_calls) +
+                                           ",\"journal_sync_calls\":" + std::to_string(io.sync_calls) +
+                                           ",\"max_write_ns\":" + std::to_string(io.max_write_ns) +
+                                           ",\"max_sync_ns\":" + std::to_string(io.max_sync_ns) +
+                                           ",\"peak_buffer_bytes\":" + std::to_string(io.peak_buffer_bytes));
                     heartbeat = std::chrono::steady_clock::now() + std::chrono::seconds(30);
                 }
             }
@@ -253,40 +265,45 @@ int run(int argc, char** argv) {
             }
             // Decode/schema errors remain terminal. Availability failures are visible gaps;
             // the next generation always requests fresh snapshots, never stale replstate.
-            journal.append("\"kind\":\"generation_error\",\"generation\":" + std::to_string(generation) +
-                           ",\"code\":" + std::to_string(static_cast<unsigned>(error.code)) + ",\"runtime_code\":" +
-                           std::to_string(error.runtime_code) + ",\"message\":" + quote(diagnostic(error.message)));
+            journal.append_durable("\"kind\":\"generation_error\",\"generation\":" + std::to_string(generation) +
+                                   ",\"code\":" + std::to_string(static_cast<unsigned>(error.code)) +
+                                   ",\"runtime_code\":" + std::to_string(error.runtime_code) +
+                                   ",\"message\":" + quote(diagnostic(error.message)));
             if (error.code != Plaza2ErrorCode::RuntimeCallFailed)
                 throw;
             retry = true;
             had_gap = true;
             all_online = false;
         }
-        for (auto& listener : listeners) {
+        for (std::size_t i = 0; i < listeners.size(); ++i) {
+            auto& listener = listeners[i];
             if (listener.is_created()) {
                 if (const auto error = listener.close(); error)
-                    journal.append("\"kind\":\"cleanup_close_error\",\"runtime_code\":" +
-                                   std::to_string(error.runtime_code));
+                    journal.append_durable("\"kind\":\"cleanup_close_error\",\"runtime_code\":" +
+                                           std::to_string(error.runtime_code));
                 check(listener.last_callback_error());
                 check(listener.destroy());
+                journal.append_durable("\"kind\":\"listener_destroyed\",\"generation\":" + std::to_string(generation) +
+                                       ",\"stream\":" + quote(generated::FindStreamByCode(streams[i])->stream_name));
             }
         }
         if (connection.is_created()) {
             if (const auto error = connection.close(); error)
-                journal.append("\"kind\":\"cleanup_connection_close_error\",\"runtime_code\":" +
-                               std::to_string(error.runtime_code));
+                journal.append_durable("\"kind\":\"cleanup_connection_close_error\",\"runtime_code\":" +
+                                       std::to_string(error.runtime_code));
             check(connection.destroy());
         }
-        journal.append("\"kind\":\"generation_end\",\"generation\":" + std::to_string(generation));
+        journal.append_durable("\"kind\":\"generation_end\",\"generation\":" + std::to_string(generation));
         if (!retry)
             break;
         for (int tick = 0; tick < 50 && !stopping && std::chrono::steady_clock::now() < deadline; ++tick)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     check(env.close());
-    journal.append("\"kind\":\"end\",\"reason\":" + quote(stopping ? "signal" : "deadline") +
-                   ",\"all_online_at_end\":" + (all_online ? "true" : "false") +
-                   ",\"had_gap\":" + (had_gap ? "true" : "false"));
+    journal.append_durable("\"kind\":\"end\",\"reason\":" + quote(stopping ? "signal" : "deadline") +
+                           ",\"all_online_at_end\":" + (all_online ? "true" : "false") +
+                           ",\"had_gap\":" + (had_gap ? "true" : "false"));
+    journal.finish();
     return stopping || had_gap || !all_online ? 2 : 0;
 }
 } // namespace
