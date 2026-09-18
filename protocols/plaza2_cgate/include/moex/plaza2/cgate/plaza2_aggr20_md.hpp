@@ -156,11 +156,38 @@ enum class Plaza2Aggr20AuthorityState : std::uint8_t {
     Recovering = 4,
 };
 
+// These witnesses have deliberately different protocol meanings. A historical
+// snapshot row is never promoted to an online synchronization barrier.
+enum class SessionReadyWitnessKind : std::uint8_t {
+    None = 0,
+    OnlineSynchronousEvent = 1,
+    PersistedOnlineWitness = 2,
+    LateJoinCorroboratedSnapshot = 3,
+};
+
+[[nodiscard]] constexpr std::string_view session_ready_witness_kind_name(SessionReadyWitnessKind kind) noexcept {
+    switch (kind) {
+    case SessionReadyWitnessKind::OnlineSynchronousEvent:
+        return "OnlineSynchronousEvent";
+    case SessionReadyWitnessKind::PersistedOnlineWitness:
+        return "PersistedOnlineWitness";
+    case SessionReadyWitnessKind::LateJoinCorroboratedSnapshot:
+        return "LateJoinCorroboratedSnapshot";
+    default:
+        return "None";
+    }
+}
+
 struct Plaza2Aggr20AuthoritySnapshot {
     Plaza2Aggr20AuthorityState state{Plaza2Aggr20AuthorityState::WaitingForTransport};
     bool transport_active{false};
     bool snapshot_complete{false};
     bool session_data_ready{false};
+    bool aggr_online{false};
+    // Committed snapshot evidence only; consumers must independently validate
+    // current REFDATA and both status streams before permitting display.
+    std::optional<Plaza2Aggr20SysEventSnapshot> snapshot_ready_witness;
+    std::optional<Plaza2Aggr20SysEventSnapshot> online_ready_witness;
     // Source-level authority. ConnectorHost additionally requires a
     // target-scoped snapshot_for_isin() record before exposing a target book.
     bool target_authoritative{false};
@@ -251,6 +278,8 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
     std::uint64_t stream_epoch_{0};
     std::uint64_t market_data_authority_epoch_{0};
     std::optional<Plaza2Aggr20SysEventSnapshot> last_sys_event_;
+    std::optional<Plaza2Aggr20SysEventSnapshot> snapshot_ready_witness_;
+    std::optional<Plaza2Aggr20SysEventSnapshot> online_ready_witness_;
     // sys_events is part of the source transaction. Every row is retained in
     // source order and is only promoted to last_sys_event_ or allowed to
     // change authority after TN_COMMIT.

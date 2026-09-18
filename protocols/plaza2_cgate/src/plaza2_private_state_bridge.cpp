@@ -136,6 +136,20 @@ Plaza2Error Plaza2PrivateStateBridge::handle_event(const Plaza2ListenerEvent& ev
     return {};
 }
 
+Plaza2Error Plaza2PrivateStateBridge::reset_status_snapshot(StreamCode stream_code) {
+    if (state_.transaction_open ||
+        (stream_code != StreamCode::kFortsSessionstateRepl && stream_code != StreamCode::kFortsInstrumentstateRepl))
+        return ordering_error("status snapshot reset requires an idle declared status stream");
+    if (const auto error = handle_close(stream_code); error)
+        return error;
+    const auto index = stream_index(state_, stream_code);
+    pending_row_deltas_[index] = 0;
+    pending_clear_deleted_[index].clear();
+    state_.streams[index].committed_row_count = 0;
+    projector_.reset_status_snapshot(stream_code);
+    return {};
+}
+
 Plaza2Error Plaza2PrivateStateBridge::handle_close(StreamCode stream_code) {
     const auto index = stream_index(state_, stream_code);
     if (index == state_.streams.size()) {

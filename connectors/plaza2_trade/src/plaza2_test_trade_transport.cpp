@@ -808,6 +808,7 @@ struct Plaza2TestSessionHost::Impl {
             return bridge_error;
         }
         bridge_started = true;
+        status_refresh_generation.reset();
         reply_bridge.clear();
         aggr_projector.reset();
         aggr_bridge.reset();
@@ -1069,6 +1070,50 @@ struct Plaza2TestSessionHost::Impl {
         return discard_trade_replay_for_new_pos_anchor();
     }
 
+    Plaza2Error refresh_status_after_refdata() {
+        const auto* refdata = stream_health(StreamCode::kFortsRefdataRepl);
+        if (!refdata || !refdata->online || !refdata->snapshot_complete || private_bridge.state().transaction_open)
+            return {};
+        const auto generation = private_projector.status_binding_generation();
+        if (status_refresh_generation == generation)
+            return {};
+        // One refresh per committed membership generation. Finish the old
+        // snapshots before closing so asynchronous bootstrap rows cannot race.
+        for (const auto code : {StreamCode::kFortsSessionstateRepl, StreamCode::kFortsInstrumentstateRepl}) {
+            const auto* health = stream_health(code);
+            if (!health || !health->online || !health->snapshot_complete)
+                return {};
+        }
+        for (auto& managed : private_listeners) {
+            if (managed.stream_code != StreamCode::kFortsSessionstateRepl &&
+                managed.stream_code != StreamCode::kFortsInstrumentstateRepl)
+                continue;
+            failure_service = declared_stream_name(managed.stream_code);
+            failure_origin = Plaza2FailureOrigin::ListenerOpen;
+            if (const auto error = managed.listener.close(); error)
+                return error;
+            if (const auto error = private_bridge.reset_status_snapshot(managed.stream_code); error)
+                return error;
+            managed.snapshot_completed_once = false;
+            managed.reopen_pending = false;
+            managed.last_observed_commit_sequence = 0;
+            managed.bootstrap_started_at = recovery_now();
+        }
+        // Invalidate both streams before either reopen can fail or synchronously
+        // deliver fresh rows. No partially refreshed pair may retain old status.
+        for (auto& managed : private_listeners) {
+            if (managed.stream_code != StreamCode::kFortsSessionstateRepl &&
+                managed.stream_code != StreamCode::kFortsInstrumentstateRepl)
+                continue;
+            failure_service = declared_stream_name(managed.stream_code);
+            // Fresh snapshot, never a replstate resume of stale status.
+            if (const auto error = managed.listener.open("mode=snapshot+online"); error)
+                return error;
+        }
+        status_refresh_generation = generation;
+        return {};
+    }
+
     Plaza2Error supervise_initial_listener_opens() {
         const auto now = recovery_now();
         if (trade_listener_index.has_value() && trade_replay_anchor_used.has_value()) {
@@ -1261,6 +1306,8 @@ struct Plaza2TestSessionHost::Impl {
         }
         failure_service = "FORTS_AGGR20_REPL";
         failure_origin = Plaza2FailureOrigin::ListenerState;
+        if (const auto status_error = refresh_status_after_refdata(); status_error)
+            return status_error;
         if (const auto aggr_error = aggr_bridge.supervise(aggr_listener, recovery_now()); aggr_error) {
             if (!failure_health)
                 failure_health = sample_health();
@@ -1640,6 +1687,7 @@ struct Plaza2TestSessionHost::Impl {
     cgate::Plaza2Listener reply_listener;
     cgate::Plaza2Listener aggr_listener;
     std::vector<ManagedPrivateListener> private_listeners;
+    std::optional<std::uint64_t> status_refresh_generation;
     private_state::Plaza2PrivateStateProjector private_projector;
     cgate::Plaza2Aggr20BookProjector aggr_projector;
     PrivateProjectorBridge private_bridge;
@@ -2508,6 +2556,20 @@ struct Plaza2TestTradeTransport::Impl {
                     return error;
                 }
             }
+        }
+        const auto status_refresh_pending =
+            std::any_of(host.private_state().stream_health().begin(), host.private_state().stream_health().end(),
+                        [](const auto& stream) {
+                            return (stream.stream_code == StreamCode::kFortsSessionstateRepl ||
+                                    stream.stream_code == StreamCode::kFortsInstrumentstateRepl) &&
+                                   (!stream.online || !stream.snapshot_complete);
+                        });
+        if (status_refresh_pending) {
+            // A completed REFDATA bootstrap may have only initiated the fresh
+            // status snapshots. Allow one process turn, just like anchored
+            // TRADE above; all normal currentness and send guards still apply.
+            if (const auto error = host.poll(); error)
+                return error;
         }
         if (!host.aggr_authoritative()) {
             return invalid("target AGGR20 replication is not current-authoritative");

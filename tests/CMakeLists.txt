@@ -478,6 +478,11 @@ target_link_libraries(connector_host_dtc_protocol_test PRIVATE moex_connector_ho
 target_compile_features(connector_host_dtc_protocol_test PRIVATE cxx_std_20)
 add_test(NAME connector_host_dtc_protocol_test COMMAND connector_host_dtc_protocol_test)
 set_tests_properties(connector_host_dtc_protocol_test PROPERTIES LABELS "dtc;read-only")
+add_executable(connector_host_dtc_server_test
+    ${MOEX_SOURCE_ROOT}/tests/connector_host_dtc_server_test.cpp)
+target_link_libraries(connector_host_dtc_server_test PRIVATE moex_connector_host)
+add_test(NAME connector_host_dtc_server_test COMMAND connector_host_dtc_server_test)
+set_tests_properties(connector_host_dtc_server_test PROPERTIES LABELS "dtc;read-only;sanitizer")
 add_test(NAME moexctl_test COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/assert_moexctl.py"
     "$<TARGET_FILE:moexctl>" "$<TARGET_FILE:connector_host_test>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
 set_tests_properties(moexctl_test PROPERTIES LABELS "plaza2;sanitizer")

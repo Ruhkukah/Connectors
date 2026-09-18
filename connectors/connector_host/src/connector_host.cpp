@@ -1,4 +1,5 @@
 #include "moex/connector_host/connector_host.hpp"
+#include "moex/connector_host/late_join_display.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1172,6 +1173,7 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
     out.transport_active = host.started() && health.aggr == 3 && authority.transport_active;
     out.snapshot_complete = authority.snapshot_complete;
     out.session_data_ready = authority.session_data_ready;
+    out.aggr_online = authority.aggr_online;
 
     bool target_instrument_refdata_current = false;
     for (const auto& instrument : host.private_state().instruments()) {
@@ -1221,19 +1223,45 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
         }
     }
 
-    out.source_consistent = out.transport_active && out.snapshot_complete && out.session_data_ready &&
-                            authority.target_authoritative && scoped.has_value();
+    const auto& data = host.private_state();
+    const bool healthy = host.started() && !host.recovering() && impl_->state != ConnectorHostState::Failed &&
+                         host.last_callback_error().empty() && data.connector_health().callback_error_count == 0 &&
+                         health.valid && health.connection == 3;
+    const bool identity_current = market_data_identity_current(
+        {.authority = authority,
+         .transport = health,
+         .streams = data.stream_health(),
+         .sessions = data.sessions(),
+         .instruments = data.instruments(),
+         .provenance = {data.instrument_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplFutInstruments,
+                                                          out.target_isin_id),
+                        data.instrument_source_provenance(
+                            plaza2::generated::TableCode::kFortsRefdataReplFutSessContents, out.target_isin_id),
+                        data.session_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplSession,
+                                                       config.transport.target_session_id)},
+         .refdata_lifenum = data.refdata_lifenum(),
+         .session_id = config.transport.target_session_id,
+         .isin_id = out.target_isin_id,
+         .now_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                            (config.market_data_now ? config.market_data_now() : std::chrono::system_clock::now())
+                                .time_since_epoch())
+                            .count(),
+         .healthy = healthy});
     out.refdata_metadata_current = !out.board.empty() && target_instrument_refdata_current;
-    out.market_data_live = out.source_consistent;
-    out.session_tradable = session_status == std::optional<std::int32_t>{1};
-    out.instrument_tradable = instrument_status == std::optional<std::int32_t>{1};
-    out.order_entry_allowed = false;
-    out.target_authoritative = out.source_consistent && out.refdata_metadata_current;
-    out.valid = out.target_authoritative;
-    if (!out.transport_active)
+    out.session_tradable = identity_current && session_status == std::optional<std::int32_t>{1};
+    out.instrument_tradable = identity_current && instrument_status == std::optional<std::int32_t>{1};
+    apply_market_data_display_authority(out, authority, healthy, identity_current, config.transport.target_session_id,
+                                        scoped.has_value());
+    if (out.valid)
+        out.invalid_reason.clear();
+    else if (!healthy)
+        out.invalid_reason = "market-data callback/transport/recovery health is not current";
+    else if (!out.transport_active)
         out.invalid_reason = "AGGR20 transport is not active";
     else if (!out.snapshot_complete)
         out.invalid_reason = "AGGR20 snapshot is incomplete";
+    else if (!identity_current)
+        out.invalid_reason = "current session identity/status/refdata corroboration is missing or expired";
     else if (!out.session_data_ready)
         out.invalid_reason = "AGGR20 current session_data_ready synchronization is missing";
     else if (!scoped.has_value())

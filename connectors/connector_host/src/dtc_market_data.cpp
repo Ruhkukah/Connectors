@@ -119,8 +119,10 @@ DtcReadOnlyCapabilities ConnectorHostDtcMarketDataSource::capabilities() const n
 }
 
 DtcMarketDataSnapshot ConnectorHostDtcMarketDataSource::snapshot() const {
-    const auto market_data = host_.market_data_snapshot();
+    return make_dtc_market_data_snapshot(host_.market_data_snapshot());
+}
 
+DtcMarketDataSnapshot make_dtc_market_data_snapshot(const ConnectorHostMarketDataSnapshot& market_data) {
     DtcMarketDataSnapshot out;
     out.connector_generation = market_data.connector_generation;
     out.market_data_authority_epoch = market_data.market_data_authority_epoch;
@@ -143,15 +145,20 @@ DtcMarketDataSnapshot ConnectorHostDtcMarketDataSource::snapshot() const {
     out.transport_active = market_data.transport_active;
     // Compatibility field: "online" means the target AGGR stream reached
     // ONLINE/snapshot-complete, not that the book is authoritative.
-    out.source_online = market_data.transport_active && market_data.snapshot_complete;
+    out.source_online = market_data.transport_active && market_data.aggr_online && market_data.snapshot_complete;
     out.snapshot_complete = market_data.snapshot_complete;
     out.session_data_ready = market_data.session_data_ready;
     out.target_authoritative = market_data.target_authoritative;
+    out.aggr_online = market_data.aggr_online;
+    out.book_snapshot_current = market_data.book_snapshot_current;
+    out.session_ready_witness = market_data.session_ready_witness;
+    out.session_ready_witness_kind = market_data.session_ready_witness_kind;
+    out.market_data_display_allowed = market_data.market_data_display_allowed;
     out.source_consistent = market_data.source_consistent;
     out.market_data_live = market_data.market_data_live;
     out.session_tradable = market_data.session_tradable;
     out.instrument_tradable = market_data.instrument_tradable;
-    out.order_entry_allowed = market_data.order_entry_allowed;
+    out.order_entry_allowed = false;
     out.refdata_metadata_current = market_data.refdata_metadata_current;
     out.exchange_moment_ns = market_data.exchange_moment_ns;
     out.source_repl_id = market_data.source_repl_id;
@@ -179,7 +186,7 @@ DtcMarketDataSnapshot ConnectorHostDtcMarketDataSource::snapshot() const {
     const auto ask = std::find_if(out.levels.begin(), out.levels.end(),
                                   [](const auto& level) { return level.side == DtcDepthSide::Ask; });
     out.two_sided = bid != out.levels.end() && ask != out.levels.end();
-    out.valid = market_data.valid && out.target_authoritative && out.isin_id != 0;
+    out.valid = market_data.valid && out.market_data_display_allowed && out.isin_id != 0;
     if (!out.valid) {
         if (out.isin_id == 0)
             out.invalid_reason = "target instrument is not selected";

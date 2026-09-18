@@ -405,6 +405,11 @@ int main(int argc, char** argv) {
                     authority_bridge.authority_snapshot().last_sys_event->server_time == 1700000000,
                 "bootstrap sys_events source identity and server time must be preserved");
         const auto before_resync_epoch = authority_bridge.authority_snapshot().stream_epoch;
+        require(authority_bridge.authority_snapshot().aggr_online &&
+                    authority_bridge.authority_snapshot().snapshot_ready_witness.has_value() &&
+                    authority_bridge.authority_snapshot().snapshot_ready_witness->event_id == 23 &&
+                    !authority_bridge.authority_snapshot().online_ready_witness.has_value(),
+                "late-join snapshot witness must remain distinct from online synchronization");
         const auto current_fields = sys_event_fields(2401, 24, 24, 321, "session_data_ready");
         require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionBegin}),
                 "current sys_events transaction begin");
@@ -419,6 +424,9 @@ int main(int argc, char** argv) {
                 "current sys_events transaction commit");
         require(authority_bridge.session_data_ready() && authority_bridge.authoritative(),
                 "a current post-bootstrap session_data_ready row must restore authority");
+        require(authority_bridge.authority_snapshot().online_ready_witness.has_value() &&
+                    authority_bridge.authority_snapshot().online_ready_witness->event_id == 24,
+                "online witness must retain the committed synchronous event identity");
         require(!authority_bridge.authority_snapshot().last_sys_event->seen_during_snapshot,
                 "current sys_events provenance must not be marked as bootstrap");
         require(authority_bridge.authority_snapshot().last_sys_event->source_repl_id == 2401 &&
@@ -446,6 +454,9 @@ int main(int argc, char** argv) {
                     authority_projector.snapshot().row_count == 0 &&
                     authority_bridge.authority_snapshot().stream_epoch > before_resync_epoch,
                 "clearing an authoritative stream must invalidate the visible book and epoch");
+        require(!authority_bridge.authority_snapshot().snapshot_ready_witness &&
+                    !authority_bridge.authority_snapshot().online_ready_witness,
+                "ClearDeleted must revoke both witness kinds");
         require(!authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Open}), "resync open");
         require(
             !authority_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 8}),
@@ -557,6 +568,39 @@ int main(int argc, char** argv) {
         }
 
         Plaza2Aggr20BookProjector staged;
+        {
+            Plaza2Aggr20BookProjector projector;
+            Plaza2Aggr20ListenerBridge bridge(projector, 321);
+            require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Open}), "late join open");
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 4001, 41, 678984, 321, "session_data_ready");
+            require(!bridge.authority_snapshot().snapshot_ready_witness,
+                    "uncommitted snapshot evidence must never be visible");
+            commit_sys_event_transaction(bridge);
+            require(bridge.authority_snapshot().snapshot_ready_witness.has_value(), "committed snapshot retained");
+            begin_sys_event_transaction(bridge);
+            stage_sys_event(bridge, 4002, 42, 678985, 999, "session_data_ready");
+            stage_sys_event(bridge, 4003, 43, 678986, 321, "other_event");
+            commit_sys_event_transaction(bridge);
+            require(bridge.authority_snapshot().snapshot_ready_witness->event_id == 678984,
+                    "unrelated and wrong-session rows must not replace matching evidence");
+            require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::Online}), "late join online");
+            require(!bridge.authoritative(), "snapshot witness alone cannot authorize orders");
+            begin_sys_event_transaction(bridge);
+            auto deleted = sys_event_fields(4001, 44, 678984, 321, "session_data_ready");
+            deleted[2].signed_value = 4001;
+            require(!bridge.on_plaza2_listener_event(
+                        {.kind = Plaza2ListenerEventKind::StreamData,
+                         .table_code = moex::plaza2::generated::TableCode::kFortsAggrReplSysEvents,
+                         .fields = deleted}),
+                    "witness tombstone staged");
+            commit_sys_event_transaction(bridge);
+            require(!bridge.authority_snapshot().snapshot_ready_witness && !bridge.authoritative(),
+                    "deleted ready row must revoke snapshot evidence without granting online authority");
+            bridge.on_plaza2_listener_error({.code = Plaza2ErrorCode::DecodeFailed, .message = "fixture decode error"});
+            require(!bridge.authority_snapshot().aggr_online && !bridge.authority_snapshot().snapshot_ready_witness,
+                    "callback error must fence display and clear all witnesses");
+        }
         Plaza2Aggr20ListenerBridge staged_bridge(staged);
         require(!staged_bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::TransactionBegin}),
                 "begin staged bootstrap");

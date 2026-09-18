@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -24,6 +25,9 @@ struct Plaza2HostConfig {
     // endpoint; the future DTC security-definition response will be the
     // source of truth.
     std::string target_board;
+    // Wall-clock seam for current-session display checks; production defaults
+    // to system_clock::now. Does not participate in order authorization.
+    std::function<std::chrono::system_clock::time_point()> market_data_now;
 };
 
 // Application-selected terms for one serial TEST epoch.  Collision-prone
@@ -179,6 +183,11 @@ struct ConnectorHostMarketDataSnapshot {
     bool snapshot_complete{false};
     bool session_data_ready{false};
     bool target_authoritative{false};
+    bool aggr_online{false};
+    bool book_snapshot_current{false};
+    std::optional<plaza2::cgate::Plaza2Aggr20SysEventSnapshot> session_ready_witness;
+    plaza2::cgate::SessionReadyWitnessKind session_ready_witness_kind{plaza2::cgate::SessionReadyWitnessKind::None};
+    bool market_data_display_allowed{false};
     // Data consistency and trading state are intentionally separate. A
     // closed/clearing session may retain a valid frozen synchronized book.
     bool source_consistent{false};

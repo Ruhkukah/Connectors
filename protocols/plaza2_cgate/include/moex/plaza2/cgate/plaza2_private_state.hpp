@@ -156,6 +156,10 @@ struct InstrumentSnapshot {
     std::int32_t current_session_state{0};
     bool has_current_status{false};
     std::int32_t current_status{0};
+    // A status row was independently received after the current REFDATA
+    // membership was established. Reset on membership/generation invalidation.
+    // Raw has_current_status remains available to legacy private consumers.
+    bool current_status_refdata_bound{false};
     std::int32_t signs{0};
     bool put{false};
     bool is_spread{false};
@@ -349,6 +353,9 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::optional<SourceRowProvenance> session_source_provenance(generated::TableCode table_code,
                                                                                std::int32_t sess_id) const;
     [[nodiscard]] std::optional<std::uint64_t> refdata_lifenum() const;
+    // Local committed freshness generation, not an exchange session identifier.
+    [[nodiscard]] std::uint64_t status_binding_generation() const;
+    void reset_status_snapshot(generated::StreamCode stream_code);
 
     // A regular-table-scoped USERORDERBOOK refresh makes the periodic snapshot
     // inconsistent while preserving listener ONLINE/currentness.

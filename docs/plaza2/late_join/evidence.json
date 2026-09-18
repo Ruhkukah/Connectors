@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "kind": "compact_derived_review_evidence",
+  "prepared_date": "2026-09-18",
+  "environment": "T1",
+  "source_commit": "2c5464a96f2014b3d53f3f32015a4d4a7dbc47d5",
+  "external_manifest": "external_manifest.json",
+  "derivation": {
+    "source": "evidence/aggr20_authority_probe.json",
+    "original_modified": false,
+    "original_utf8_valid": false,
+    "first_utf8_error_byte_offset_zero_based": 618,
+    "inspection_decode": "Windows-1251, strict; JSON parsed in memory",
+    "output_encoding": "UTF-8",
+    "scope": "Selected facts only; not a repaired copy or replacement for the original"
+  },
+  "selection": {
+    "sess_id": 11709,
+    "isin_id": 4519450,
+    "symbol": "ALRS-12.26",
+    "short_symbol": "ALZ6",
+    "name": "Фьючерсный контракт ALRS-12.26",
+    "name_windows1251_hex": "d4fcfef7e5f0f1edfbe920eaeeedf2f0e0eaf220414c52532d31322e3236",
+    "refdata_lifenum": 101518051,
+    "refdata_online": true,
+    "refdata_snapshot_complete": true,
+    "fresh_sessionstate_corroboration_proven": false,
+    "fresh_instrumentstate_corroboration_proven": false
+  },
+  "shared_snapshot_witness": {
+    "event_id": 678984,
+    "event_type": 1,
+    "sess_id": 11709,
+    "message": "session_data_ready",
+    "source_repl_id": 3,
+    "source_repl_rev": 3,
+    "source_repl_act": 0,
+    "server_time_probe_value": 1789662416,
+    "server_time_as_unix_utc": "2026-09-17T16:26:56Z",
+    "server_time_as_unix_msk": "2026-09-17T19:26:56+03:00",
+    "server_time_note": "Prior evening as Unix seconds; timegm converts CGate calendar fields; raw t timezone remains unconfirmed",
+    "transaction_id": 16,
+    "transaction_row_index": 3,
+    "transaction_committed": true,
+    "observed_before_online": true
+  },
+  "attempts": [
+    {
+      "name": "INITIAL_OPEN",
+      "observation_seconds": 120,
+      "listener_opened": true,
+      "snapshot_complete": true,
+      "online": true,
+      "aggr_lifenum": 66740,
+      "online_local_unix_ns": "1789711431484865212",
+      "close_local_unix_ns": "1789711551262980301",
+      "sys_event_count": 21,
+      "session_data_ready_after_online": false,
+      "target_authoritative": false,
+      "listener_last_callback_error": null,
+      "experiment_complete": true
+    },
+    {
+      "name": "LISTENER_REOPEN",
+      "observation_seconds": 120,
+      "listener_opened": true,
+      "snapshot_complete": true,
+      "online": true,
+      "aggr_lifenum": 66740,
+      "online_local_unix_ns": "1789711551459836430",
+      "close_local_unix_ns": "1789711671305282144",
+      "sys_event_count": 21,
+      "session_data_ready_after_online": false,
+      "target_authoritative": false,
+      "listener_last_callback_error": null,
+      "experiment_complete": true
+    }
+  ],
+  "read_only_contract": {
+    "passed": true,
+    "publisher_create_attempted": false,
+    "publisher_open_attempted": false,
+    "command_api_used": false,
+    "order_api_used": false,
+    "authorization_hash_used": false
+  },
+  "interpretation": {
+    "original_result": "NO",
+    "result_scope": "No post-ONLINE current-session readiness in either bounded observation",
+    "late_join_policy": "provisional read-only proposal",
+    "late_join_corroboration_proven_by_this_run": false,
+    "persisted_online_witness_proven": false,
+    "moex_confirmation_received": false,
+    "order_entry_allowed": false,
+    "support_request_sent": false,
+    "full_day_observer_execution_established_by_packet": false,
+    "current_ci_established_by_packet": false
+  }
+}

@@ -122,6 +122,11 @@ struct DtcMarketDataSnapshot {
     bool snapshot_complete{false};
     bool session_data_ready{false};
     bool target_authoritative{false};
+    bool aggr_online{false};
+    bool book_snapshot_current{false};
+    std::optional<plaza2::cgate::Plaza2Aggr20SysEventSnapshot> session_ready_witness;
+    plaza2::cgate::SessionReadyWitnessKind session_ready_witness_kind{plaza2::cgate::SessionReadyWitnessKind::None};
+    bool market_data_display_allowed{false};
     bool source_consistent{false};
     bool market_data_live{false};
     bool session_tradable{false};
@@ -136,6 +141,9 @@ struct DtcMarketDataSnapshot {
     std::string invalid_reason;
     std::vector<DtcMarketDataLevel> levels;
 };
+
+// Value conversion shared by the live owner-thread adapter and replay tests.
+[[nodiscard]] DtcMarketDataSnapshot make_dtc_market_data_snapshot(const ConnectorHostMarketDataSnapshot& market_data);
 
 struct DtcReadOnlyCapabilities {
     bool market_data{false};

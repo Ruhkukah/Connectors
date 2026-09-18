@@ -1,5 +1,6 @@
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/connector_host/dtc_market_data.hpp"
+#include "moex/connector_host/late_join_display.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "plaza2_trade/fixtures/cgate99_messages.hpp"
 
@@ -50,6 +51,7 @@ Plaza2HostConfig config_for(const test::RuntimeFixturePaths& f) {
     std::vector<std::string_view> args(owned.begin(), owned.end());
     auto config = parse_operator_arguments(args).config;
     config.transport.host.process_timeout_ms = 0;
+    config.market_data_now = [] { return std::chrono::system_clock::time_point{std::chrono::seconds{1700000100}}; };
     auto& c = config.order;
     c.profile_id = "offline-plaza2-test";
     c.profile_fingerprint = std::string(64, 'e');
@@ -102,10 +104,331 @@ void warm(ConnectorHost& host) {
         std::cerr << render_snapshot(host.snapshot(), true);
     test::require(host.snapshot().observation_ready, "host ready");
 }
+
+struct LateJoinFixture {
+    using Stream = moex::plaza2::generated::StreamCode;
+    using Table = moex::plaza2::generated::TableCode;
+    cg::Plaza2Aggr20AuthoritySnapshot authority;
+    Plaza2TransportHealth transport;
+    std::array<moex::plaza2::private_state::StreamHealthSnapshot, 3> streams;
+    std::vector<moex::plaza2::private_state::TradingSessionSnapshot> sessions;
+    std::vector<moex::plaza2::private_state::InstrumentSnapshot> instruments;
+    std::array<std::optional<moex::plaza2::private_state::SourceRowProvenance>, 3> provenance;
+    std::optional<std::uint64_t> lifenum{7};
+    std::int64_t now{150};
+    bool healthy{true};
+
+    LateJoinFixture() {
+        authority.state = cg::Plaza2Aggr20AuthorityState::WaitingForSessionDataReady;
+        authority.transport_active = authority.snapshot_complete = authority.aggr_online = true;
+        authority.snapshot_ready_witness = cg::Plaza2Aggr20SysEventSnapshot{.source_repl_id = 123,
+                                                                            .source_repl_rev = 456,
+                                                                            .event_type = 1,
+                                                                            .event_id = 789,
+                                                                            .sess_id = 321,
+                                                                            .message = "session_data_ready",
+                                                                            .server_time = 101,
+                                                                            .seen_during_snapshot = true};
+        transport.valid = true;
+        transport.connection = transport.aggr = 3;
+        // Publisher, reply and unrelated private streams deliberately absent:
+        // read-only display must not depend on order readiness.
+        transport.private_count = 3;
+        const std::array codes{Stream::kFortsRefdataRepl, Stream::kFortsSessionstateRepl,
+                               Stream::kFortsInstrumentstateRepl};
+        const std::array tables{Table::kFortsRefdataReplFutInstruments, Table::kFortsRefdataReplFutSessContents,
+                                Table::kFortsRefdataReplSession};
+        for (std::size_t i = 0; i < codes.size(); ++i) {
+            transport.private_streams[i] = codes[i];
+            transport.private_states[i] = 3;
+            streams[i] = {.stream_code = codes[i], .online = true, .snapshot_complete = true};
+            provenance[i] = moex::plaza2::private_state::SourceRowProvenance{.stream_code = Stream::kFortsRefdataRepl,
+                                                                             .table_code = tables[i],
+                                                                             .repl_rev = 20,
+                                                                             .lifenum = 7,
+                                                                             .present = true};
+        }
+        sessions.push_back({.sess_id = 321, .begin = 100, .end = 200, .has_current_status = true, .current_status = 1});
+        instruments.push_back({.isin_id = 1001,
+                               .sess_id = 321,
+                               .kind = moex::plaza2::private_state::InstrumentKind::kFuture,
+                               .trade_mode_id = 1,
+                               .current_session_member = true,
+                               .has_current_status = true,
+                               .current_status = 1,
+                               .current_status_refdata_bound = true});
+    }
+
+    LateJoinDisplayEvidence evidence() const {
+        return {.authority = authority,
+                .transport = transport,
+                .streams = streams,
+                .sessions = sessions,
+                .instruments = instruments,
+                .provenance = provenance,
+                .refdata_lifenum = lifenum,
+                .session_id = 321,
+                .isin_id = 1001,
+                .now_seconds = now,
+                .healthy = healthy};
+    }
+    bool corroborated() const {
+        return late_join_display_corroborated(evidence());
+    }
+
+    ConnectorHostMarketDataSnapshot snapshot(bool present = true, bool metadata = true) const {
+        ConnectorHostMarketDataSnapshot out;
+        out.target_isin_id = 1001;
+        out.transport_active = authority.transport_active;
+        out.snapshot_complete = authority.snapshot_complete;
+        out.aggr_online = authority.aggr_online;
+        out.session_data_ready = authority.session_data_ready;
+        out.refdata_metadata_current = metadata;
+        out.session_tradable = !sessions.empty() && sessions[0].has_current_status && sessions[0].current_status == 1;
+        out.instrument_tradable =
+            !instruments.empty() && instruments[0].has_current_status && instruments[0].current_status == 1;
+        out.levels = {{.price_scaled = -100000, .volume = 2, .side = 1, .price = "-1.00000"},
+                      {.price_scaled = 0, .volume = 3, .side = 2, .price = "0.00000"}};
+        apply_market_data_display_authority(out, authority, healthy, market_data_identity_current(evidence()), 321,
+                                            present);
+        return out;
+    }
+};
+
+void test_late_join_display() {
+    const LateJoinFixture baseline;
+    test::require(baseline.corroborated(), "fresh same-session evidence corroborates snapshot");
+    const auto displayed = dtc::make_dtc_market_data_snapshot(baseline.snapshot());
+    test::require(displayed.valid && displayed.aggr_online && displayed.book_snapshot_current &&
+                      displayed.market_data_display_allowed && !displayed.target_authoritative &&
+                      !displayed.session_data_ready && !displayed.source_consistent && !displayed.order_entry_allowed &&
+                      displayed.session_ready_witness_kind ==
+                          cg::SessionReadyWitnessKind::LateJoinCorroboratedSnapshot &&
+                      displayed.session_ready_witness && displayed.session_ready_witness->event_id == 789,
+                  "provisional DTC display retains witness without strict online or order authority");
+    test::require(displayed.levels.size() == 2 && displayed.levels[0].price_scaled == -100000 &&
+                      displayed.levels[0].price == "-1.00000" && displayed.levels[1].price_scaled == 0 &&
+                      displayed.levels[1].price == "0.00000" && displayed.levels[1].volume == 3,
+                  "provisional DTC preserves negative and zero prices with nonzero volume");
+    const auto reject = [&](auto mutate, const char* reason) {
+        auto fixture = baseline;
+        mutate(fixture);
+        test::require(!fixture.corroborated(), reason);
+        const auto out = dtc::make_dtc_market_data_snapshot(fixture.snapshot());
+        test::require(!out.valid && !out.market_data_display_allowed && !out.order_entry_allowed &&
+                          !out.session_ready_witness &&
+                          out.session_ready_witness_kind == cg::SessionReadyWitnessKind::None,
+                      reason);
+    };
+    reject([](auto& f) { f.authority.snapshot_ready_witness.reset(); }, "missing snapshot witness");
+    reject([](auto& f) { f.authority.snapshot_ready_witness->sess_id = 322; }, "wrong witness session");
+    reject([](auto& f) { f.authority.snapshot_ready_witness->event_type = 2; }, "wrong witness type");
+    reject([](auto& f) { f.authority.snapshot_ready_witness->message = "session_data_ready-old"; },
+           "exact witness message");
+    reject([](auto& f) { f.authority.snapshot_ready_witness->source_repl_act = 1; }, "deleted witness");
+    reject([](auto& f) { f.authority.snapshot_ready_witness->seen_during_snapshot = false; }, "wrong witness origin");
+    reject([](auto& f) { f.authority.snapshot_complete = false; }, "incomplete AGGR snapshot");
+    reject([](auto& f) { f.authority.aggr_online = false; }, "AGGR not online");
+    reject([](auto& f) { f.authority.transport_active = false; }, "AGGR transport inactive");
+    reject([](auto& f) { f.authority.state = cg::Plaza2Aggr20AuthorityState::Recovering; }, "AGGR recovering");
+    reject([](auto& f) { f.authority.current_recovery_error.emplace(); }, "unresolved current recovery diagnostic");
+    auto recovered = baseline;
+    recovered.authority.first_recovery_error =
+        cg::Plaza2Error{.code = cg::Plaza2ErrorCode::AdapterState, .message = "historical resolved outage"};
+    test::require(recovered.corroborated() && recovered.snapshot().valid,
+                  "historical first recovery error does not fence fresh healthy evidence");
+    reject([](auto& f) { f.healthy = false; }, "host recovery or callback error");
+    reject([](auto& f) { f.transport.valid = false; }, "invalid transport health");
+    reject([](auto& f) { f.transport.connection = 0; }, "connection inactive");
+    reject([](auto& f) { f.transport.aggr = 0; }, "AGGR listener inactive");
+    reject([](auto& f) { f.transport.private_count = 100; }, "private count bounds checked before iterators");
+    reject([](auto& f) { f.transport.private_count = 0; }, "private listeners absent");
+    for (std::size_t i = 0; i < 3; ++i) {
+        reject([i](auto& f) { f.streams[i].online = false; }, "corroborating stream offline");
+        reject([i](auto& f) { f.streams[i].snapshot_complete = false; }, "corroborating snapshot incomplete");
+        reject([i](auto& f) { f.transport.private_states[i] = 0; }, "corroborating listener inactive");
+        reject([i](auto& f) { f.streams[i].stream_code = LateJoinFixture::Stream::kFortsAggrRepl; },
+               "corroborating stream absent");
+        reject([i](auto& f) { f.provenance[i].reset(); }, "missing REFDATA provenance");
+        reject([i](auto& f) { f.provenance[i]->lifenum = 6; }, "stale REFDATA LifeNum");
+        reject([i](auto& f) { f.provenance[i]->present = false; }, "deleted provenance");
+        reject([i](auto& f) { f.provenance[i]->stream_code = LateJoinFixture::Stream::kFortsAggrRepl; },
+               "wrong provenance stream");
+        reject([i](auto& f) { f.provenance[i]->table_code = LateJoinFixture::Table::kFortsAggrReplOrdersAggr; },
+               "wrong provenance table");
+    }
+    reject([](auto& f) { f.lifenum.reset(); }, "missing REFDATA LifeNum");
+    reject([](auto& f) { f.sessions.clear(); }, "missing session");
+    reject([](auto& f) { f.sessions[0].sess_id = 322; }, "wrong current session");
+    reject([](auto& f) { f.sessions.push_back(f.sessions[0]); }, "ambiguous current sessions");
+    reject([](auto& f) { f.now = 200; }, "stale session at end boundary");
+    reject([](auto& f) { f.now = 99; }, "future session");
+    reject([](auto& f) { f.sessions[0].has_current_status = false; }, "missing session status");
+    reject([](auto& f) { f.sessions[0].current_status = 3; }, "unknown session status");
+    reject([](auto& f) { f.instruments.clear(); }, "missing selected instrument");
+    reject([](auto& f) { f.instruments[0].isin_id = 1002; }, "wrong instrument");
+    reject([](auto& f) { f.instruments[0].sess_id = 322; }, "wrong instrument session membership");
+    reject([](auto& f) { f.instruments[0].current_session_member = false; }, "missing current membership");
+    reject([](auto& f) { f.instruments[0].has_current_status = false; }, "missing instrument status");
+    reject([](auto& f) { f.instruments[0].current_status = 3; }, "unknown instrument status");
+    reject([](auto& f) { f.instruments[0].trade_mode_id = 0; }, "missing trade mode");
+    reject([](auto& f) { f.instruments[0].kind = moex::plaza2::private_state::InstrumentKind::kUnknown; },
+           "unknown instrument kind");
+    // Rollover cannot borrow yesterday's instrument status solely because the
+    // same ISIN is retained: membership, witness and status refresh all matter.
+    auto rollover = baseline;
+    rollover.sessions[0].sess_id = 322;
+    rollover.instruments[0].sess_id = 322;
+    test::require(!rollover.snapshot().valid, "rollover cannot reuse the old session witness");
+    rollover = baseline;
+    rollover.streams[2].online = false;
+    rollover.streams[2].snapshot_complete = false;
+    rollover.instruments[0].has_current_status = false;
+    test::require(!rollover.snapshot().valid, "instrument status invalidation fences provisional display");
+    rollover.streams[2].online = rollover.streams[2].snapshot_complete = true;
+    test::require(!rollover.snapshot().valid, "ONLINE alone cannot replace current instrument status");
+    rollover.instruments[0].has_current_status = true;
+    test::require(rollover.snapshot().valid, "fresh matching status restores corroborated display");
+    for (const auto session_state : {0, 1, 2, 4}) {
+        for (const auto instrument_state : {0, 1, 2, 4, 5, 6, 7, 8, 9}) {
+            auto fixture = baseline;
+            fixture.sessions[0].current_status = session_state;
+            fixture.instruments[0].current_status = instrument_state;
+            const auto out = dtc::make_dtc_market_data_snapshot(fixture.snapshot());
+            test::require(out.valid && out.session_tradable == (session_state == 1) &&
+                              out.instrument_tradable == (instrument_state == 1) && !out.order_entry_allowed,
+                          "documented public states corroborate identity separately from tradability");
+        }
+    }
+    test::require(!baseline.snapshot(false).valid && !baseline.snapshot(true, false).valid,
+                  "corroboration cannot replace a target book or valid metadata");
+    auto online = baseline;
+    online.authority.session_data_ready = online.authority.target_authoritative = true;
+    online.authority.online_ready_witness = online.authority.snapshot_ready_witness;
+    online.authority.online_ready_witness->seen_during_snapshot = false;
+    const auto strict = dtc::make_dtc_market_data_snapshot(online.snapshot());
+    test::require(strict.valid && strict.target_authoritative && strict.source_consistent &&
+                      strict.session_ready_witness_kind == cg::SessionReadyWitnessKind::OnlineSynchronousEvent &&
+                      !strict.order_entry_allowed,
+                  "online synchronous authority retains its distinct meaning");
+    online.authority.snapshot_ready_witness.reset();
+    online.now = 199;
+    test::require(online.snapshot().valid, "online witness needs current identity but no historical witness");
+    online.now = 200;
+    test::require(!online.snapshot().valid && !online.snapshot().target_authoritative &&
+                      !online.snapshot().session_ready_witness,
+                  "online witness expires at session end boundary");
+    online.now = 99;
+    test::require(!online.snapshot().valid, "online witness cannot authorize future session");
+    online.now = 150;
+    online.instruments[0].has_current_status = false;
+    test::require(!online.snapshot().valid, "online witness cannot replace current instrument status");
+    online.instruments[0].has_current_status = true;
+    online.authority.online_ready_witness->sess_id = 322;
+    test::require(!online.snapshot().valid, "online witness must match current session");
+    auto invalidated = baseline.snapshot();
+    auto no_witness = baseline;
+    no_witness.authority.snapshot_ready_witness.reset();
+    apply_market_data_display_authority(invalidated, no_witness.authority, true, true, 321, true);
+    test::require(!invalidated.valid && !invalidated.session_ready_witness &&
+                      invalidated.session_ready_witness_kind == cg::SessionReadyWitnessKind::None,
+                  "invalidation clears provisional evidence without fabricating persisted witness");
+}
+void test_projected_status_rollover() {
+    namespace fake = moex::plaza2::fake;
+    namespace ps = moex::plaza2::private_state;
+    using F = moex::plaza2::generated::FieldCode;
+    using S = moex::plaza2::generated::StreamCode;
+    using T = moex::plaza2::generated::TableCode;
+    ps::Plaza2PrivateStateProjector projector;
+    fake::EngineState state;
+    std::int64_t revision = 0;
+    const auto integer = [](F code, std::int64_t value) {
+        return fake::FieldValueSpec{.field_code = code, .kind = fake::ValueKind::kSignedInteger, .signed_value = value};
+    };
+    const auto commit_row = [&](S stream, T table, std::initializer_list<fake::FieldValueSpec> fields) {
+        state.transaction_open = true;
+        projector.on_event({}, {.kind = fake::EventKind::kTransactionBegin, .stream_code = stream}, state);
+        const fake::EventSpec event{.kind = fake::EventKind::kStreamData,
+                                    .stream_code = stream,
+                                    .table_code = table,
+                                    .signed_value = ++revision};
+        projector.on_stream_row({}, event, {}, {fields.begin(), fields.size()}, state);
+        state.transaction_open = false;
+        ++state.commit_count;
+        projector.on_transaction_commit({}, {.kind = fake::EventKind::kTransactionCommit, .stream_code = stream},
+                                        state);
+    };
+    const auto membership = [&](int session) {
+        commit_row(S::kFortsRefdataRepl, T::kFortsRefdataReplFutSessContents,
+                   {integer(F::kFortsRefdataReplFutSessContentsIsinId, 1001),
+                    integer(F::kFortsRefdataReplFutSessContentsSessId, session),
+                    integer(F::kFortsRefdataReplFutSessContentsReplAct, 0),
+                    integer(F::kFortsRefdataReplFutSessContentsTradeModeId, 1)});
+    };
+    const auto status = [&] {
+        commit_row(S::kFortsInstrumentstateRepl, T::kFortsInstrumentstateReplInstrumentState,
+                   {integer(F::kFortsInstrumentstateReplInstrumentStateIsinId, 1001),
+                    integer(F::kFortsInstrumentstateReplInstrumentStatePublicState, 1)});
+    };
+    const auto current = [&] {
+        const auto rows = projector.instruments();
+        return !rows.empty() && rows[0].has_current_status && rows[0].current_status_refdata_bound;
+    };
+    const auto display = [&] {
+        LateJoinFixture fixture;
+        const auto rows = projector.instruments();
+        fixture.instruments.assign(rows.begin(), rows.end());
+        return fixture.snapshot().valid;
+    };
+    status();
+    membership(321);
+    test::require(!current() && !display(), "real projector rejects status preceding initial membership");
+    status();
+    test::require(current() && display(), "fresh status after membership restores display");
+    membership(321);
+    test::require(current() && display(), "same-session REFDATA revision preserves current status");
+    membership(322);
+    test::require(!current() && !display(), "same-ISIN session rollover invalidates real projected status");
+    membership(321);
+    test::require(!current() && !display(), "return to former session cannot resurrect status");
+    status();
+    test::require(current() && display(), "independent status refresh restores currentness");
+    projector.on_event({}, {.kind = fake::EventKind::kLifeNum, .stream_code = S::kFortsRefdataRepl, .numeric_value = 7},
+                       state);
+    projector.on_event({}, {.kind = fake::EventKind::kLifeNum, .stream_code = S::kFortsRefdataRepl, .numeric_value = 8},
+                       state);
+    test::require(!current(), "REFDATA LifeNum reset does not retain instrument status");
+    membership(321);
+    test::require(!current() && !display(), "new REFDATA generation cannot borrow old status");
+    status();
+    test::require(current() && display(), "fresh status after LifeNum rebuild restores display");
+    for (bool staged : {false, true}) {
+        if (staged) {
+            state.transaction_open = true;
+            projector.on_event({}, {.kind = fake::EventKind::kTransactionBegin, .stream_code = S::kFortsRefdataRepl},
+                               state);
+        }
+        projector.on_event({}, {.kind = fake::EventKind::kClearDeleted, .stream_code = S::kFortsRefdataRepl}, state);
+        if (staged) {
+            test::require(current(), "staged reset does not leak before commit");
+            state.transaction_open = false;
+            ++state.commit_count;
+            projector.on_transaction_commit(
+                {}, {.kind = fake::EventKind::kTransactionCommit, .stream_code = S::kFortsRefdataRepl}, state);
+        }
+        membership(321);
+        test::require(!current() && !display(), "REFDATA clear requires independent status refresh");
+        status();
+        test::require(current() && display(), "status refresh after clear restores display");
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
     try {
+        test_late_join_display();
+        test_projected_status_rollover();
         test::require(argc == 2 || argc == 3, "fake runtime path [fixture output]");
         auto root = argc == 3 ? std::filesystem::path(argv[2]) : test::make_temp_directory("connector_host");
         const auto fixture =
@@ -174,6 +497,96 @@ int main(int argc, char** argv) {
         auto connection_new_count =
             reinterpret_cast<std::uint64_t (*)()>(dlsym(library, "moex_fake_connection_new_count"));
         test::require(reset && count && env_open_count && connection_new_count, "independent fake counters");
+        auto status_opens = reinterpret_cast<std::uint64_t (*)()>(dlsym(library, "moex_fake_status_open_count"));
+        test::require(status_opens != nullptr, "independent status refresh counter");
+        {
+            auto config = config_for(fixture);
+            config.transport.host.status_streams = {
+                {.stream_code = moex::plaza2::generated::StreamCode::kFortsSessionstateRepl,
+                 .settings = "p2repl://FORTS_SESSIONSTATE_REPL;scheme=|FILE|scheme/forts_scheme.ini|"}};
+            const auto before = status_opens();
+            Plaza2TestSessionHost host(config.transport.host);
+            test::require(!host.start(), "partial optional status profile starts");
+            for (int i = 0; i < 6; ++i)
+                test::require(!host.poll(), "optional profile does not force missing status listener refresh");
+            test::require(status_opens() == before + 1,
+                          "partial status profile stays usable without forced refresh or missing listeners");
+            test::require(!host.stop(), "optional profile stop");
+        }
+        {
+            auto config = config_for(fixture);
+            config.target_board = "RFUD";
+            config.transport.host.transport_recovery_enabled = false;
+            Plaza2TestSessionHost host(config.transport.host);
+            const auto status_current = [&] {
+                const auto rows = host.private_state().instruments();
+                return !rows.empty() && rows[0].has_current_status && rows[0].current_status_refdata_bound;
+            };
+            ::setenv("MOEX_FAKE_STATUS_REFRESH_OPEN_ERROR_ONCE", "1", 1);
+            test::require(!host.start(), "status reopen failure host starts");
+            cg::Plaza2Error error;
+            for (int i = 0; i < 6 && !error; ++i)
+                error = host.poll();
+            test::require(static_cast<bool>(error) && !status_current(),
+                          "failed fresh status open propagates failure and denies display");
+            ::unsetenv("MOEX_FAKE_STATUS_REFRESH_OPEN_ERROR_ONCE");
+            test::require(!host.stop(), "failed refresh host stop");
+            const auto before = status_opens();
+            test::require(!host.start(), "restart after failed refresh");
+            for (int i = 0; i < 8 && !status_current(); ++i)
+                test::require(!host.poll(), "restart refresh after open failure");
+            test::require(status_current() && status_opens() == before + 4,
+                          "failed refresh marker is not reused across rebuild");
+            test::require(!host.stop(), "restart after refresh failure stop");
+            const auto restarted = status_opens();
+            test::require(!host.start(), "same-object session host restart after success");
+            for (int i = 0; i < 8; ++i)
+                test::require(!host.poll(), "same-object session host repeated polls");
+            test::require(status_current() && status_opens() == restarted + 4,
+                          "successful same-object restart refreshes once, without reopen storm");
+            test::require(!host.stop(), "same-object session host stop");
+        }
+        {
+            ::setenv("MOEX_FAKE_STATUS_BEFORE_REFDATA", "1", 1);
+            ::setenv("MOEX_FAKE_STATUS_REFRESH_STALL", "1", 1);
+            auto config = config_for(fixture);
+            config.target_board = "RFUD";
+            auto now = std::chrono::system_clock::time_point{std::chrono::seconds{1700000100}};
+            config.market_data_now = [&] { return now; };
+            const auto before = status_opens();
+            ConnectorHost host(config);
+            test::require(!host.start(), "status-before-refdata host start");
+            for (int i = 0; i < 6; ++i)
+                test::require(!host.poll(), "status refresh pending poll");
+            test::require(status_opens() == before + 4 && !host.market_data_snapshot().valid,
+                          "initial unordered statuses trigger exactly one fresh pair and fail closed while stalled");
+            ::unsetenv("MOEX_FAKE_STATUS_REFRESH_STALL");
+            for (int i = 0; i < 6 && !host.market_data_snapshot().valid; ++i)
+                test::require(!host.poll(), "fresh status completion");
+            test::require(host.market_data_snapshot().valid && status_opens() == before + 4,
+                          "explicit fresh status snapshot recovers status-before-membership startup");
+            ::unsetenv("MOEX_FAKE_STATUS_BEFORE_REFDATA");
+            ::setenv("MOEX_FAKE_REFDATA_ONLY_NEW_GENERATION", "1", 1);
+            ::setenv("MOEX_FAKE_STATUS_REFRESH_STALL", "1", 1);
+            test::require(!host.poll(), "REFDATA-only new LifeNum snapshot");
+            test::require(!host.market_data_snapshot().valid && status_opens() == before + 6,
+                          "REFDATA-only generation refreshes both ONLINE status streams exactly once");
+            for (int i = 0; i < 6; ++i)
+                test::require(!host.poll(), "new-generation status refresh stalled");
+            test::require(status_opens() == before + 6 && !host.market_data_snapshot().valid,
+                          "no spontaneous status row and no reopen storm while freshness is missing");
+            ::unsetenv("MOEX_FAKE_STATUS_REFRESH_STALL");
+            for (int i = 0; i < 6 && !host.market_data_snapshot().valid; ++i)
+                test::require(!host.poll(), "new-generation status refresh completion");
+            test::require(host.market_data_snapshot().valid,
+                          "new-generation display restored by fresh status snapshot");
+            now = std::chrono::system_clock::time_point{std::chrono::seconds{1700003600}};
+            const auto expired = host.market_data_snapshot();
+            test::require(expired.aggr_online && !expired.valid && !expired.target_authoritative &&
+                              !expired.session_tradable && !expired.instrument_tradable,
+                          "actual host online witness expires with session wall clock without AGGR disconnect");
+            test::require(!host.stop(), "fresh status test host stop");
+        }
 
         // The DTC adapter is deliberately restricted to the target-scoped
         // AGGR20 market-data view. This fixture also exercises the current
@@ -186,9 +599,15 @@ int main(int argc, char** argv) {
             warm(host);
             moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host);
             const auto first = source.snapshot();
+            if (!first.valid)
+                std::cerr << "DTC display rejected: " << first.invalid_reason << '\n';
             test::require(first.valid && first.target_authoritative && first.transport_active && first.source_online &&
                               first.snapshot_complete && first.session_data_ready,
                           "DTC source requires current authoritative AGGR state");
+            test::require(first.aggr_online && first.book_snapshot_current && first.market_data_display_allowed &&
+                              first.session_ready_witness &&
+                              first.session_ready_witness_kind == cg::SessionReadyWitnessKind::OnlineSynchronousEvent,
+                          "live host exposes the committed online witness through DTC");
             test::require(first.isin_id == 1001, "DTC source target ISIN");
             test::require(first.board == "RFUD", "DTC source target board");
             test::require(first.symbol == "RTS-6.26", "DTC source target symbol");
@@ -273,6 +692,9 @@ int main(int argc, char** argv) {
                               invalidated.market_data_authority_epoch > before.market_data_authority_epoch &&
                               invalidated.stream_epoch > before.stream_epoch,
                           "AGGR invalidation clears the target DTC book and authority immediately");
+            test::require(!invalidated.book_snapshot_current && !invalidated.market_data_display_allowed &&
+                              !invalidated.session_ready_witness && !invalidated.order_entry_allowed,
+                          "ClearDeleted also revokes display and witness");
             test::require(!host.stop(), "invalidated DTC source stop");
         }
         // Recovery-disabled baseline: an externally observed loss is still
@@ -288,6 +710,8 @@ int main(int argc, char** argv) {
             const auto failure = host.poll();
             ::unsetenv("MOEX_FAKE_CONNECTION_ERROR");
             const auto failed = host.snapshot();
+            test::require(!host.market_data_snapshot().market_data_display_allowed,
+                          "connection failure fences market-data display");
             test::require(failure.code == cg::Plaza2ErrorCode::AdapterState && failure.runtime_code != 0 &&
                               failure.message.find("CG_ERR_INCORRECTSTATE") != std::string::npos,
                           "original runtime cause preserved");
@@ -605,6 +1029,10 @@ int main(int argc, char** argv) {
             ::unsetenv(fault);
             ::unsetenv("MOEX_FAKE_SINGLE_PRIVATE_ERROR");
             const auto lost = host.snapshot();
+            const auto lost_display = host.market_data_snapshot();
+            test::require(!lost_display.market_data_display_allowed && !lost_display.book_snapshot_current &&
+                              !lost_display.session_ready_witness && !lost_display.order_entry_allowed,
+                          "actual host recovery fences display and clears witness across all fault sources");
             test::require(lost.state == ConnectorHostState::Recovering && !lost.observation_ready &&
                               !lost.private_streams_ready && !lost.aggr_ready && !lost.publisher_ready &&
                               !lost.reply_ready && !lost.new_order_allowed && lost.causal_error,

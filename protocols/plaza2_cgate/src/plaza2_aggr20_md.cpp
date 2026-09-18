@@ -404,6 +404,8 @@ void Plaza2Aggr20ListenerBridge::invalidate(bool request_reopen, bool transport_
     target_authoritative_ = false;
     reopen_required_ = request_reopen;
     last_sys_event_.reset();
+    snapshot_ready_witness_.reset();
+    online_ready_witness_.reset();
     pending_sys_events_.clear();
     retry_at_.reset();
     bootstrap_started_at_.reset();
@@ -447,6 +449,9 @@ const Plaza2Aggr20AuthoritySnapshot Plaza2Aggr20ListenerBridge::authority_snapsh
     out.transport_active = transport_active_;
     out.snapshot_complete = snapshot_complete_;
     out.session_data_ready = session_data_ready_;
+    out.aggr_online = online_;
+    out.snapshot_ready_witness = snapshot_ready_witness_;
+    out.online_ready_witness = online_ready_witness_;
     out.target_authoritative = target_authoritative_;
     out.stream_epoch = stream_epoch_;
     out.market_data_authority_epoch = market_data_authority_epoch_;
@@ -533,14 +538,35 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
         pending_sys_events_.clear();
         for (const auto& committed_event : committed_events) {
             last_sys_event_ = committed_event;
+            // A replacement or tombstone for the retained source row revokes
+            // its evidence. A later valid row may establish a new witness.
+            const auto replaces = [&](const auto& witness) {
+                return witness &&
+                       (witness->source_repl_id == committed_event.source_repl_id ||
+                        (committed_event.source_repl_act > 0 &&
+                         witness->source_repl_id == static_cast<std::uint64_t>(committed_event.source_repl_act)));
+            };
+            if (replaces(snapshot_ready_witness_))
+                snapshot_ready_witness_.reset();
+            if (replaces(online_ready_witness_)) {
+                online_ready_witness_.reset();
+                session_data_ready_ = false;
+                target_authoritative_ = false;
+            }
+            if (committed_event.source_repl_act == 0 && committed_event.event_type == 1 &&
+                is_session_data_ready_message(committed_event.message) && accepts_session(committed_event.sess_id)) {
+                if (committed_event.seen_during_snapshot)
+                    snapshot_ready_witness_ = committed_event;
+            }
             // A sys_events row can certify only after its containing source
             // transaction has committed and after ONLINE has fenced the
             // bootstrap generation from the current session generation.
             if (!committed_event.seen_during_snapshot && snapshot_complete_ && online_ &&
-                committed_event.event_type == 1 && is_session_data_ready_message(committed_event.message) &&
-                accepts_session(committed_event.sess_id)) {
+                committed_event.source_repl_act == 0 && committed_event.event_type == 1 &&
+                is_session_data_ready_message(committed_event.message) && accepts_session(committed_event.sess_id)) {
                 session_data_ready_ = true;
                 target_authoritative_ = true;
+                online_ready_witness_ = committed_event;
             }
         }
         trace_event(event, before);

@@ -405,6 +405,7 @@ void append_or_replace_leg(std::vector<InstrumentLegSnapshot>& legs, InstrumentL
 }
 
 struct StagedState {
+    bool status_bindings_invalidated{false};
     bool active{false};
     std::optional<SessionMap> sessions;
     std::optional<InstrumentMap> instruments;
@@ -477,8 +478,17 @@ struct Plaza2PrivateStateProjector::Impl {
     std::vector<OwnTradeSnapshot> trade_snapshots;
 
     StagedState staged;
+    std::uint64_t status_binding_generation{0};
+
+    void invalidate_status_bindings() {
+        if (staged.active)
+            staged.status_bindings_invalidated = true;
+        else
+            ++status_binding_generation;
+    }
 
     void reset() {
+        ++status_binding_generation;
         connector_health = {};
         resume_markers = {};
         stream_health.clear();
@@ -1086,6 +1096,8 @@ struct Plaza2PrivateStateProjector::Impl {
                 erase_source_row(table_code, key);
                 if (keep_other) {
                     it->second.sess_id = 0;
+                    invalidate_status_bindings();
+                    it->second.current_status_refdata_bound = false;
                     it->second.current_session_member = false;
                     it->second.current_session_state = 0;
                     it->second.future_session_terms.reset();
@@ -1180,6 +1192,7 @@ struct Plaza2PrivateStateProjector::Impl {
                     has_source_row(TableCode::kFortsRefdataReplOptSessContents, key)) {
                     it->second.has_current_status = false;
                     it->second.current_status = 0;
+                    it->second.current_status_refdata_bound = false;
                     ++it;
                 } else {
                     it = instruments.erase(it);
@@ -1219,35 +1232,21 @@ struct Plaza2PrivateStateProjector::Impl {
             rebuild_limits();
             break;
         case StreamCode::kFortsRefdataRepl: {
-            std::unordered_map<std::int32_t, std::int32_t> session_status;
-            for (const auto& [sess_id, session] : sessions_by_id) {
-                if (session.has_current_status) {
-                    session_status.emplace(sess_id, session.current_status);
-                }
-            }
-            std::unordered_map<std::int32_t, std::int32_t> instrument_status;
-            for (const auto& [isin_id, instrument] : instruments_by_isin) {
-                if (instrument.has_current_status) {
-                    instrument_status.emplace(isin_id, instrument.current_status);
-                }
-            }
-            sessions_by_id.clear();
-            for (const auto& [sess_id, status] : session_status) {
-                sessions_by_id.emplace(sess_id, TradingSessionSnapshot{
-                                                    .sess_id = sess_id,
-                                                    .state = status,
-                                                    .has_current_status = true,
-                                                    .current_status = status,
-                                                });
-            }
-            instruments_by_isin.clear();
-            for (const auto& [isin_id, status] : instrument_status) {
-                instruments_by_isin.emplace(isin_id, InstrumentSnapshot{
-                                                         .isin_id = isin_id,
-                                                         .has_current_status = true,
-                                                         .current_status = status,
-                                                     });
-            }
+            invalidate_status_bindings();
+            // INSTRUMENTSTATE has no session key. A REFDATA generation
+            // reset cannot carry its old status into new session membership.
+            // Require independently received status again after reconstruction.
+            for (auto& [sess_id, session] : sessions_by_id)
+                session = TradingSessionSnapshot{.sess_id = sess_id,
+                                                 .state = session.current_status,
+                                                 .has_current_status = session.has_current_status,
+                                                 .current_status = session.current_status};
+            std::erase_if(sessions_by_id, [](const auto& item) { return !item.second.has_current_status; });
+            for (auto& [isin_id, instrument] : instruments_by_isin)
+                instrument = InstrumentSnapshot{.isin_id = isin_id,
+                                                .has_current_status = instrument.has_current_status,
+                                                .current_status = instrument.current_status};
+            std::erase_if(instruments_by_isin, [](const auto& item) { return !item.second.has_current_status; });
         }
             matching_by_base_contract.clear();
             system_messages_by_id.clear();
@@ -1269,6 +1268,7 @@ struct Plaza2PrivateStateProjector::Impl {
                 static_cast<void>(unused_id);
                 instrument.has_current_status = false;
                 instrument.current_status = 0;
+                instrument.current_status_refdata_bound = false;
             }
             rebuild_instruments();
             break;
@@ -1301,36 +1301,19 @@ struct Plaza2PrivateStateProjector::Impl {
             break;
         case StreamCode::kFortsRefdataRepl: {
             auto& sessions = ensure_stage_copy(staged.sessions, sessions_by_id);
-            std::unordered_map<std::int32_t, std::int32_t> session_status;
-            for (const auto& [sess_id, session] : sessions) {
-                if (session.has_current_status) {
-                    session_status.emplace(sess_id, session.current_status);
-                }
-            }
-            sessions.clear();
-            for (const auto& [sess_id, status] : session_status) {
-                sessions.emplace(sess_id, TradingSessionSnapshot{
-                                              .sess_id = sess_id,
-                                              .state = status,
-                                              .has_current_status = true,
-                                              .current_status = status,
-                                          });
-            }
+            invalidate_status_bindings();
+            for (auto& [sess_id, session] : sessions)
+                session = TradingSessionSnapshot{.sess_id = sess_id,
+                                                 .state = session.current_status,
+                                                 .has_current_status = session.has_current_status,
+                                                 .current_status = session.current_status};
+            std::erase_if(sessions, [](const auto& item) { return !item.second.has_current_status; });
             auto& instruments = ensure_stage_copy(staged.instruments, instruments_by_isin);
-            std::unordered_map<std::int32_t, std::int32_t> instrument_status;
-            for (const auto& [isin_id, instrument] : instruments) {
-                if (instrument.has_current_status) {
-                    instrument_status.emplace(isin_id, instrument.current_status);
-                }
-            }
-            instruments.clear();
-            for (const auto& [isin_id, status] : instrument_status) {
-                instruments.emplace(isin_id, InstrumentSnapshot{
-                                                 .isin_id = isin_id,
-                                                 .has_current_status = true,
-                                                 .current_status = status,
-                                             });
-            }
+            for (auto& [isin_id, instrument] : instruments)
+                instrument = InstrumentSnapshot{.isin_id = isin_id,
+                                                .has_current_status = instrument.has_current_status,
+                                                .current_status = instrument.current_status};
+            std::erase_if(instruments, [](const auto& item) { return !item.second.has_current_status; });
         }
             ensure_stage_copy(staged.matching_map, matching_by_base_contract).clear();
             ensure_stage_copy(staged.system_messages, system_messages_by_id).clear();
@@ -1349,6 +1332,7 @@ struct Plaza2PrivateStateProjector::Impl {
                 static_cast<void>(unused_id);
                 instrument.has_current_status = false;
                 instrument.current_status = 0;
+                instrument.current_status_refdata_bound = false;
             }
             staged.touched_streams.insert(StreamCode::kFortsInstrumentstateRepl);
             break;
@@ -1746,7 +1730,14 @@ struct Plaza2PrivateStateProjector::Impl {
         const auto isin_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsIsinId);
         auto& instrument = instruments[isin_id];
         instrument.isin_id = isin_id;
-        instrument.sess_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsSessId);
+        const auto sess_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsSessId);
+        if (instrument.sess_id != sess_id || !instrument.current_session_member) {
+            invalidate_status_bindings();
+            // Also handles status-before-membership at initial startup. Only
+            // a subsequent independent status row can re-establish currentness.
+            instrument.current_status_refdata_bound = false;
+        }
+        instrument.sess_id = sess_id;
         instrument.kind = InstrumentKind::kFuture;
         instrument.isin = row.text(FieldCode::kFortsRefdataReplFutSessContentsIsin);
         instrument.short_isin = row.text(FieldCode::kFortsRefdataReplFutSessContentsShortIsin);
@@ -1815,6 +1806,7 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.isin_id = isin_id;
         instrument.has_current_status = true;
         instrument.current_status = row.i32(FieldCode::kFortsInstrumentstateReplInstrumentStatePublicState);
+        instrument.current_status_refdata_bound = instrument.sess_id > 0 && instrument.current_session_member;
     }
 
     void apply_option_instrument_row(const RowReader& row) {
@@ -2087,6 +2079,8 @@ struct Plaza2PrivateStateProjector::Impl {
             auto& health = ensure_stream_health(stream_health, stream_code);
             health.last_commit_sequence = state.commit_count;
         }
+        if (staged.status_bindings_invalidated)
+            ++status_binding_generation;
         staged = {};
     }
 
@@ -2265,6 +2259,17 @@ Plaza2PrivateStateProjector::session_source_provenance(generated::TableCode tabl
 
 std::optional<std::uint64_t> Plaza2PrivateStateProjector::refdata_lifenum() const {
     return impl_->refdata_lifenum();
+}
+
+std::uint64_t Plaza2PrivateStateProjector::status_binding_generation() const {
+    return impl_->status_binding_generation;
+}
+
+void Plaza2PrivateStateProjector::reset_status_snapshot(generated::StreamCode stream_code) {
+    if (stream_code != StreamCode::kFortsSessionstateRepl && stream_code != StreamCode::kFortsInstrumentstateRepl)
+        return;
+    impl_->invalidate_stream_domain(stream_code);
+    impl_->invalidate_closed_stream(stream_code);
 }
 
 void Plaza2PrivateStateProjector::invalidate_periodic_snapshot(generated::StreamCode stream_code,

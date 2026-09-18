@@ -177,6 +177,7 @@ std::uint32_t g_persistent_order_epoch = 0;
 std::uint64_t g_pub_msgnew_calls = 0;
 std::uint64_t g_pub_post_calls = 0;
 std::uint64_t g_env_open_count = 0;
+std::uint64_t g_status_open_count = 0;
 std::uint64_t g_conn_new_count = 0;
 std::unordered_map<void*, FakePublisherMessage*> g_publisher_messages;
 
@@ -462,11 +463,11 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .kind = SignedInteger,
                          .signed_value = 321},
                         {.field_code = FieldCode::kFortsRefdataReplSessionBegin,
-                         .kind = SignedInteger,
-                         .signed_value = 1700000000},
+                         .kind = Timestamp,
+                         .unsigned_value = 1700000000},
                         {.field_code = FieldCode::kFortsRefdataReplSessionEnd,
-                         .kind = SignedInteger,
-                         .signed_value = 1700003600},
+                         .kind = Timestamp,
+                         .unsigned_value = 1700003600},
                         {.field_code = FieldCode::kFortsRefdataReplSessionState,
                          .kind = SignedInteger,
                          .signed_value = 1},
@@ -1619,7 +1620,11 @@ std::uint32_t emit_script(FakeListener& listener) {
     }
 
     CgDataLifeNum lifenum{
-        .life_number = fake_flag("MOEX_FAKE_FRESH_POS_ANCHOR") ? 8u : 7u,
+        .life_number =
+            (fake_flag("MOEX_FAKE_FRESH_POS_ANCHOR") || (listener.stream_code == StreamCode::kFortsRefdataRepl &&
+                                                         fake_flag("MOEX_FAKE_REFDATA_ONLY_NEW_GENERATION")))
+                ? 8u
+                : 7u,
         .flags = 0,
     };
     if (const auto result = emit_simple_message(listener, kCgMsgP2replLifenum, &lifenum, sizeof(lifenum));
@@ -2243,7 +2248,14 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         }
     }
 
-    if (connection->script_emitted && connection->pending_replies.empty() && !connection->liveness_event_emitted) {
+    const bool pending_status_snapshot =
+        std::any_of(connection->listeners.begin(), connection->listeners.end(), [](const auto* listener) {
+            return listener && !listener->script_emitted &&
+                   (listener->stream_code == StreamCode::kFortsSessionstateRepl ||
+                    listener->stream_code == StreamCode::kFortsInstrumentstateRepl);
+        });
+    if (connection->script_emitted && connection->pending_replies.empty() && !connection->liveness_event_emitted &&
+        !pending_status_snapshot) {
         if (fake_flag("MOEX_FAKE_REMOVE_TARGET_AFTER_READY")) {
             for (auto* listener : connection->listeners) {
                 if (listener == nullptr || listener->reply_listener || listener->state != kStateActive ||
@@ -2321,6 +2333,15 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
             return kCgErrOk;
         }
     }
+    if (connection->script_emitted && fake_flag("MOEX_FAKE_REFDATA_ONLY_NEW_GENERATION")) {
+        for (auto* listener : connection->listeners) {
+            if (listener && listener->stream_code == StreamCode::kFortsRefdataRepl && listener->state == kStateActive) {
+                const auto result = emit_script(*listener);
+                ::unsetenv("MOEX_FAKE_REFDATA_ONLY_NEW_GENERATION");
+                return result;
+            }
+        }
+    }
     if (connection->script_emitted && connection->pending_replies.empty()) {
         const bool pending_new_listener =
             std::any_of(connection->listeners.begin(), connection->listeners.end(), [](const auto* listener) {
@@ -2348,6 +2369,10 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
             }
             return kCgErrOk;
         }
+        if (fake_flag("MOEX_FAKE_STATUS_REFRESH_STALL") && listener->open_attempt_count >= 2 &&
+            (listener->stream_code == StreamCode::kFortsSessionstateRepl ||
+             listener->stream_code == StreamCode::kFortsInstrumentstateRepl))
+            return kCgErrOk;
         const auto result = emit_script(*listener);
         if (result != kCgErrOk) {
             return result;
@@ -2356,6 +2381,15 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         emitted_any = true;
         return kCgErrOk;
     };
+    if (fake_flag("MOEX_FAKE_STATUS_BEFORE_REFDATA")) {
+        for (auto* listener : connection->listeners) {
+            if (listener && (listener->stream_code == StreamCode::kFortsSessionstateRepl ||
+                             listener->stream_code == StreamCode::kFortsInstrumentstateRepl)) {
+                if (const auto result = emit_listener(listener); result != kCgErrOk)
+                    return result;
+            }
+        }
+    }
     const auto reply_first = fake_flag("MOEX_FAKE_REPLY_BEFORE_REPLICATION");
     for (const auto pass_reply : {reply_first, !reply_first}) {
         for (auto* listener : connection->listeners) {
@@ -2533,9 +2567,20 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
     }
     auto* typed = static_cast<FakeListener*>(listener);
     typed->open_settings = settings ? settings : "";
-    if (typed->stream_code == StreamCode::kFortsAggrRepl)
+    if (typed->stream_code == StreamCode::kFortsSessionstateRepl ||
+        typed->stream_code == StreamCode::kFortsInstrumentstateRepl)
+        ++g_status_open_count;
+    if (typed->stream_code == StreamCode::kFortsAggrRepl || typed->stream_code == StreamCode::kFortsSessionstateRepl ||
+        typed->stream_code == StreamCode::kFortsInstrumentstateRepl)
         typed->script_emitted = false;
     ++typed->open_attempt_count;
+    if (typed->open_attempt_count >= 2 &&
+        (typed->stream_code == StreamCode::kFortsSessionstateRepl ||
+         typed->stream_code == StreamCode::kFortsInstrumentstateRepl) &&
+        fake_flag("MOEX_FAKE_STATUS_REFRESH_OPEN_ERROR_ONCE")) {
+        ::unsetenv("MOEX_FAKE_STATUS_REFRESH_OPEN_ERROR_ONCE");
+        return kCgErrInternal;
+    }
     if (const auto* no_service = std::getenv("MOEX_FAKE_LISTENER_OPEN_NO_SERVICE");
         no_service != nullptr && *no_service != '\0' &&
         (std::string_view(no_service) == "1" || typed->settings.find(no_service) != std::string::npos)) {
@@ -2873,6 +2918,9 @@ extern "C" std::uint64_t moex_fake_publisher_count(std::uint32_t which) {
 }
 extern "C" std::uint64_t moex_fake_environment_open_count() {
     return g_env_open_count;
+}
+extern "C" std::uint64_t moex_fake_status_open_count() {
+    return g_status_open_count;
 }
 extern "C" std::uint64_t moex_fake_connection_new_count() {
     return g_conn_new_count;
