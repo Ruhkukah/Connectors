@@ -102,6 +102,8 @@ struct Read {
 };
 struct Replay : DtcMarketDataSource {
     DtcMarketDataSnapshot state;
+    bool security_definitions{true};
+    bool optimistic_capabilities{false};
     unsigned failure_mode{0};
     Replay() {
         state.symbol = "ALRS-12.26";
@@ -135,7 +137,13 @@ struct Replay : DtcMarketDataSource {
         return state;
     }
     DtcReadOnlyCapabilities capabilities() const noexcept override {
-        return {.market_depth = true, .security_definitions = true, .orders = true, .order_entry = true};
+        return {.market_data = false,
+                .market_depth = true,
+                .security_definitions = security_definitions,
+                .accounts = optimistic_capabilities,
+                .positions = optimistic_capabilities,
+                .orders = optimistic_capabilities,
+                .order_entry = optimistic_capabilities};
     }
 };
 std::string description() {
@@ -214,7 +222,7 @@ struct Harness {
         check(false, "expected response type missing");
         return got.front();
     }
-    void logon() {
+    void logon(bool expect_security_definitions = true) {
         // Literal official binary negotiation, deliberately fragmented.
         const Bytes handshake{16, 0, 6, 0, 8, 0, 0, 0, 4, 0, 0, 0, 'D', 'T', 'C', 0};
         send(Bytes(handshake.begin(), handshake.begin() + 3));
@@ -230,7 +238,9 @@ struct Harness {
         send(packet(1, p));
         pump(5);
         Read reply(first(2).payload);
-        check(reply.n[1] == 8 && reply.n[2] == 1 && reply.n[15] == 1, "v8 depth logon");
+        check(reply.n[1] == 8 && reply.n[2] == 1 && reply.n[12] == (expect_security_definitions ? 1 : 0) &&
+                  reply.n[15] == 1,
+              "v8 read-only capability logon");
         for (unsigned f : {8U, 9U, 10U, 17U, 19U, 20U})
             check(reply.n[f] == 0, "no trading or trade tape capability");
     }
@@ -262,6 +272,9 @@ struct Harness {
 
 void replay_roundtrip() {
     Harness h;
+    const auto capabilities = h.source.capabilities();
+    check(!capabilities.accounts && !capabilities.positions && !capabilities.orders && !capabilities.order_entry,
+          "normal replay fixture keeps account and order capabilities false");
     h.logon();
     h.subscribe();
     check(h.count(145) == 2, "provisional late join emits complete signed/zero depth");
@@ -346,10 +359,39 @@ void rejects() {
         auto c = config();
         c.currency_value_per_increment = value;
         Harness h(c);
-        h.logon();
+        h.logon(false);
         h.subscribe();
         check(h.count(509) == 1 && h.count(507) == 0 && h.count(145) == 0,
               "missing or invalid currency value per increment rejects metadata and depth");
+    }
+    {
+        Harness h;
+        h.source.security_definitions = false;
+        h.logon(false);
+        h.send(h.definition_request());
+        h.pump(5);
+        check(h.count(509) == 1 && h.count(507) == 0,
+              "unsupported source security definitions reject 506 without emitting 507");
+        h.source.security_definitions = true;
+        h.got.clear();
+        h.send(h.definition_request());
+        h.pump(5);
+        check(h.count(509) == 1 && h.count(507) == 0,
+              "a capability denied at logon requires a fresh connection before upgrade");
+    }
+    {
+        Harness h;
+        h.source.optimistic_capabilities = true;
+        const auto capabilities = h.source.capabilities();
+        check(capabilities.accounts && capabilities.positions && capabilities.orders && capabilities.order_entry,
+              "optimistic replay fixture exposes malicious account and order capabilities");
+        h.logon();
+        h.got.clear();
+        h.send(packet(201, {}));
+        h.pump(5);
+        check(h.count(5) == 1 && h.eof && h.count(301) == 0,
+              "read-only server does not propagate optimistic account/order capability");
+        check(Read(h.first(5).payload).n[2] == 1, "optimistic capability request is fenced without reconnect");
     }
     for (std::uint8_t encoding : {0, 1, 2, 3, 5}) {
         Harness h;
@@ -411,7 +453,7 @@ void rejects() {
         auto c = config();
         c.description = "\xff";
         Harness h(c);
-        h.logon();
+        h.logon(false);
         h.subscribe();
         check(h.count(509) == 1 && h.count(507) == 0 && h.count(145) == 0, "malformed UTF-8 source metadata rejected");
     }

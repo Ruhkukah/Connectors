@@ -157,7 +157,7 @@ struct DtcReadOnlyServer::Impl {
     std::uint16_t bound_port{};
     Bytes output;
     std::size_t sent{};
-    bool negotiated{}, logged_on{}, closing{}, definition{}, subscribed{};
+    bool negotiated{}, logged_on{}, closing{}, definition{}, subscribed{}, definitions_advertised{};
     std::uint32_t symbol_id{};
     std::size_t depth_limit{};
     std::uint64_t batch{}, version{}, epoch{}, authority_epoch{};
@@ -180,6 +180,7 @@ struct DtcReadOnlyServer::Impl {
         output.clear();
         sent = 0;
         negotiated = logged_on = closing = definition = subscribed = false;
+        definitions_advertised = false;
         symbol_id = 0;
         batch = version = epoch = authority_epoch = 0;
     }
@@ -221,9 +222,9 @@ struct DtcReadOnlyServer::Impl {
         if (!s.refdata_metadata_current || s.isin_id <= 0 || s.symbol.empty() || s.board.empty() ||
             s.symbol.size() > 128 || s.board.size() > 128 || !utf8(s.symbol) || !utf8(s.board) ||
             config.currency.empty() || config.currency.size() > 16 || !utf8(config.currency) ||
-            config.description.size() > 512 || !utf8(config.description) || !std::isfinite(config.contract_size) ||
-            config.contract_size <= 0 || !std::isfinite(config.currency_value_per_increment) ||
-            config.currency_value_per_increment <= 0)
+            config.description.empty() || config.description.size() > 512 || !utf8(config.description) ||
+            !std::isfinite(config.contract_size) || config.contract_size <= 0 ||
+            !std::isfinite(config.currency_value_per_increment) || config.currency_value_per_increment <= 0)
             return false;
         try {
             std::size_t end = 0;
@@ -232,6 +233,13 @@ struct DtcReadOnlyServer::Impl {
         } catch (...) {
             return false;
         }
+    }
+    bool security_definitions_available(const DtcMarketDataSnapshot& s, float& increment) const {
+        return source.capabilities().security_definitions && metadata(s, increment);
+    }
+    bool security_definitions_available(const DtcMarketDataSnapshot& s) const {
+        float increment{};
+        return security_definitions_available(s, increment);
     }
     void status(const DtcMarketDataSnapshot& s) {
         Bytes p;
@@ -403,6 +411,7 @@ struct DtcReadOnlyServer::Impl {
                 return;
             }
             heartbeat = std::chrono::seconds(interval ? interval : 10);
+            const auto s = source.snapshot();
             Bytes reply;
             integer(reply, 1, 8);
             integer(reply, 2, 1);
@@ -410,12 +419,15 @@ struct DtcReadOnlyServer::Impl {
             str(reply, 6, "MOEX replay DTC");
             for (auto field : {7U, 8U, 9U, 10U, 13U, 17U, 19U, 20U})
                 integer(reply, field, 0);
-            integer(reply, 12, 1);
+            // Advertise exactly what a 506 request can satisfy for this
+            // source and this explicitly configured replay endpoint.
+            definitions_advertised = security_definitions_available(s);
+            integer(reply, 12, definitions_advertised);
             integer(reply, 14, 1);
             integer(reply, 15, source.capabilities().market_depth);
             if (queue(2, reply)) {
                 logged_on = true;
-                status(source.snapshot());
+                status(s);
             }
             return;
         }
@@ -430,7 +442,8 @@ struct DtcReadOnlyServer::Impl {
             float increment{};
             Bytes reply;
             integer(reply, 1, p.number(1));
-            if (p.text(2) != s.symbol || p.text(3) != s.board || !metadata(s, increment)) {
+            if (!definitions_advertised || !security_definitions_available(s, increment) || p.text(2) != s.symbol ||
+                p.text(3) != s.board) {
                 str(reply, 2, "unknown instrument or metadata unavailable");
                 queue(509, reply);
                 return;

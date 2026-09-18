@@ -111,7 +111,11 @@ ConnectorHostDtcMarketDataSource::ConnectorHostDtcMarketDataSource(ConnectorHost
 DtcReadOnlyCapabilities ConnectorHostDtcMarketDataSource::capabilities() const noexcept {
     return {.market_data = false,
             .market_depth = true,
-            .security_definitions = false,
+            // ConnectorHost supplies authoritative target identity, board and
+            // tick metadata.  The DTC server supplies only explicitly
+            // configured replay terms that are absent from this source; it
+            // never infers financial values.
+            .security_definitions = true,
             .accounts = false,
             .positions = false,
             .orders = false,

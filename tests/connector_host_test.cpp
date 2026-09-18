@@ -1,21 +1,34 @@
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/connector_host/dtc_market_data.hpp"
+#include "moex/connector_host/dtc_read_only_server.hpp"
 #include "moex/connector_host/late_join_display.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "plaza2_trade/fixtures/cgate99_messages.hpp"
 
 #include <cstring>
 
+#include <array>
+#include <bit>
+#include <cerrno>
 #include <cstdlib>
 #include <dlfcn.h>
 #include <fstream>
+#include <fcntl.h>
 #include <iostream>
+#include <map>
+#include <netinet/in.h>
+#include <span>
+#include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
+#include <utility>
 
 namespace {
 using namespace moex::connector_host;
 using namespace moex::plaza2_trade;
 namespace cg = moex::plaza2::cgate;
 namespace test = moex::plaza2::test;
+namespace dtc = moex::connector_host::dtc;
 template <class T>
 concept RawPublisher = requires(T& host) { host.publisher(); };
 template <class T>
@@ -104,6 +117,183 @@ void warm(ConnectorHost& host) {
         std::cerr << render_snapshot(host.snapshot(), true);
     test::require(host.snapshot().observation_ready, "host ready");
 }
+
+using DtcBytes = std::vector<std::uint8_t>;
+
+void dtc_vint(DtcBytes& out, std::uint64_t value) {
+    while (value > 127) {
+        out.push_back(static_cast<std::uint8_t>(value) | 128);
+        value >>= 7;
+    }
+    out.push_back(static_cast<std::uint8_t>(value));
+}
+
+void dtc_integer(DtcBytes& out, unsigned field, std::uint64_t value) {
+    dtc_vint(out, field * 8);
+    dtc_vint(out, value);
+}
+
+void dtc_text(DtcBytes& out, unsigned field, const std::string& value) {
+    dtc_vint(out, field * 8 + 2);
+    dtc_vint(out, value.size());
+    out.insert(out.end(), value.begin(), value.end());
+}
+
+DtcBytes dtc_packet(std::uint16_t type, DtcBytes payload) {
+    const auto size = payload.size() + dtc::kDtcFrameHeaderSize;
+    DtcBytes out{static_cast<std::uint8_t>(size), static_cast<std::uint8_t>(size >> 8), static_cast<std::uint8_t>(type),
+                 static_cast<std::uint8_t>(type >> 8)};
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+
+struct DtcProtoRead {
+    std::map<unsigned, std::uint64_t> numbers;
+    std::map<unsigned, std::string> strings;
+    std::map<unsigned, float> reals;
+
+    explicit DtcProtoRead(const std::vector<std::uint8_t>& bytes) {
+        std::size_t position = 0;
+        const auto varint = [&]() {
+            std::uint64_t value = 0;
+            unsigned shift = 0;
+            while (position < bytes.size() && shift < 70) {
+                const auto byte = bytes[position++];
+                value |= std::uint64_t(byte & 127) << shift;
+                if (!(byte & 128))
+                    return value;
+                shift += 7;
+            }
+            test::require(false, "DTC integration protobuf varint bounds");
+            return std::uint64_t{};
+        };
+        while (position < bytes.size()) {
+            const auto tag = varint();
+            const auto field = static_cast<unsigned>(tag >> 3);
+            switch (tag & 7) {
+            case 0:
+                numbers[field] = varint();
+                break;
+            case 2: {
+                const auto length = varint();
+                test::require(length <= bytes.size() - position, "DTC integration protobuf string bounds");
+                strings[field] = std::string(bytes.begin() + static_cast<std::ptrdiff_t>(position),
+                                             bytes.begin() + static_cast<std::ptrdiff_t>(position + length));
+                position += length;
+                break;
+            }
+            case 5: {
+                test::require(position + 4 <= bytes.size(), "DTC integration protobuf float bounds");
+                std::uint32_t bits = 0;
+                for (unsigned i = 0; i < 4; ++i)
+                    bits |= std::uint32_t(bytes[position++]) << (i * 8);
+                reals[field] = std::bit_cast<float>(bits);
+                break;
+            }
+            default:
+                test::require(false, "DTC integration protobuf wire type");
+            }
+        }
+    }
+};
+
+struct DtcHostWireHarness {
+    dtc::DtcReadOnlyServer server;
+    int fd{-1};
+    dtc::DtcFrameDecoder decoder;
+    std::vector<dtc::DtcFrame> frames;
+    bool eof{false};
+
+    DtcHostWireHarness(dtc::DtcMarketDataSource& source, dtc::DtcReadOnlyServerConfig config)
+        : server(source, std::move(config)) {
+        std::string error;
+        test::require(server.start(error), error.c_str());
+        connect();
+    }
+
+    ~DtcHostWireHarness() {
+        server.stop();
+        if (fd >= 0)
+            ::close(fd);
+    }
+
+    void connect() {
+        fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        test::require(fd >= 0, "DTC integration client socket");
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = htons(server.port());
+        test::require(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0,
+                      "DTC integration loopback connect");
+        test::require(fcntl(fd, F_SETFL, O_NONBLOCK) == 0, "DTC integration client nonblocking");
+        server.poll();
+    }
+
+    void send(const DtcBytes& bytes) {
+        test::require(::send(fd, bytes.data(), bytes.size(), 0) == static_cast<ssize_t>(bytes.size()),
+                      "DTC integration client send");
+    }
+
+    void pump(unsigned iterations = 50) {
+        for (unsigned i = 0; i < iterations; ++i) {
+            server.poll();
+            std::array<std::uint8_t, 8192> bytes{};
+            const auto count = ::recv(fd, bytes.data(), bytes.size(), 0);
+            if (count > 0) {
+                std::string error;
+                test::require(decoder.append(std::span(bytes.data(), static_cast<std::size_t>(count)), frames, error),
+                              error.c_str());
+            } else if (count == 0) {
+                eof = true;
+                return;
+            } else {
+                test::require(errno == EAGAIN || errno == EWOULDBLOCK, "DTC integration client recv");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
+    const dtc::DtcFrame& first(std::uint16_t type) const {
+        for (const auto& frame : frames)
+            if (frame.message_type == type)
+                return frame;
+        test::require(false, "DTC integration response type missing");
+        return frames.front();
+    }
+
+    void logon() {
+        const DtcBytes handshake{16, 0, 6, 0, 8, 0, 0, 0, 4, 0, 0, 0, 'D', 'T', 'C', 0};
+        send(DtcBytes(handshake.begin(), handshake.begin() + 3));
+        pump(2);
+        test::require(frames.empty(), "DTC integration handshake fragment produced response");
+        send(DtcBytes(handshake.begin() + 3, handshake.end()));
+        pump(5);
+        test::require(first(7).payload == DtcBytes(handshake.begin() + 4, handshake.end()),
+                      "DTC integration encoding response");
+        DtcBytes payload;
+        dtc_integer(payload, 1, 8);
+        dtc_integer(payload, 7, 10);
+        dtc_text(payload, 11, "ConnectorHost-integration");
+        send(dtc_packet(1, std::move(payload)));
+        pump(5);
+        DtcProtoRead reply(first(2).payload);
+        test::require(reply.numbers[1] == 8 && reply.numbers[2] == 1 && reply.numbers[12] == 1 &&
+                          reply.numbers[15] == 1,
+                      "actual ConnectorHost source capability reaches LOGON_RESPONSE");
+        for (const auto field : {8U, 9U, 10U, 17U, 19U, 20U})
+            test::require(reply.numbers[field] == 0, "actual ConnectorHost wire remains non-execution");
+    }
+
+    void request_definition(const dtc::DtcMarketDataSnapshot& snapshot) {
+        DtcBytes payload;
+        dtc_integer(payload, 1, 41);
+        dtc_text(payload, 2, snapshot.symbol);
+        dtc_text(payload, 3, snapshot.board);
+        send(dtc_packet(506, std::move(payload)));
+        pump();
+    }
+};
 
 struct LateJoinFixture {
     using Stream = moex::plaza2::generated::StreamCode;
@@ -639,10 +829,27 @@ int main(int argc, char** argv) {
                               after.snapshot_watermark == before.snapshot_watermark &&
                               after.exchange_moment_ns == before.exchange_moment_ns && after.levels == before.levels,
                           "unrelated ISIN update cannot refresh target DTC provenance or freshness");
-            test::require(source.capabilities().market_depth && !source.capabilities().accounts &&
-                              !source.capabilities().positions && !source.capabilities().orders &&
-                              !source.capabilities().order_entry,
-                          "DTC source does not leak account/order capability");
+            test::require(source.capabilities().market_depth && source.capabilities().security_definitions &&
+                              !source.capabilities().accounts && !source.capabilities().positions &&
+                              !source.capabilities().orders && !source.capabilities().order_entry,
+                          "DTC source capability contract is read-only with authoritative definitions");
+            {
+                dtc::DtcReadOnlyServerConfig server_config;
+                server_config.currency = "RUB";
+                server_config.description = "RTS-6.26 explicit replay definition";
+                server_config.contract_size = 1;
+                server_config.currency_value_per_increment = 1;
+                DtcHostWireHarness wire(source, std::move(server_config));
+                wire.logon();
+                const auto authoritative = source.snapshot();
+                wire.request_definition(authoritative);
+                auto definition = DtcProtoRead(wire.first(507).payload);
+                test::require(definition.numbers[1] == 41 && definition.strings[2] == authoritative.symbol &&
+                                  definition.strings[3] == authoritative.board && definition.numbers[23] == 1 &&
+                                  definition.numbers[33] == static_cast<std::uint64_t>(authoritative.isin_id) &&
+                                  definition.reals[6] == std::stof(authoritative.min_step),
+                              "actual ConnectorHost source capability and 506/507 wire agree");
+            }
             test::require(!host.stop(), "target-scoped DTC source host stop");
         }
         {
