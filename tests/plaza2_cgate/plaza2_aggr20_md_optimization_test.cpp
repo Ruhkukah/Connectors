@@ -6,8 +6,10 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <new>
 #include <optional>
 #include <random>
 #include <set>
@@ -18,6 +20,50 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+namespace test_allocation_injection {
+
+bool enabled = false;
+std::size_t remaining = 0;
+std::size_t attempts = 0;
+
+void* allocate(std::size_t size) {
+    if (enabled) {
+        ++attempts;
+        if (remaining == 0)
+            throw std::bad_alloc();
+        --remaining;
+    }
+    if (void* pointer = std::malloc(size == 0 ? 1 : size))
+        return pointer;
+    throw std::bad_alloc();
+}
+
+} // namespace test_allocation_injection
+
+void* operator new(std::size_t size) {
+    return test_allocation_injection::allocate(size);
+}
+
+void* operator new[](std::size_t size) {
+    return test_allocation_injection::allocate(size);
+}
+
+void operator delete(void* pointer) noexcept {
+    std::free(pointer);
+}
+
+void operator delete[](void* pointer) noexcept {
+    std::free(pointer);
+}
+
+void operator delete(void* pointer, std::size_t) noexcept {
+    std::free(pointer);
+}
+
+void operator delete[](void* pointer, std::size_t) noexcept {
+    std::free(pointer);
+}
 
 namespace {
 
@@ -460,6 +506,202 @@ InputRow make_row(std::uint64_t repl_id, std::int64_t rev, std::int64_t isin_id,
             .synth_volume = {}};
 }
 
+template <typename Actual, typename Legacy>
+void compare_scoped_only(Actual& actual, Legacy& legacy, std::span<const std::int64_t> isins, std::string_view phase) {
+    for (const auto isin_id : isins) {
+        const auto actual_scoped = actual.snapshot_for_isin(isin_id);
+        const auto legacy_scoped = legacy.snapshot_for_isin(isin_id);
+        if (actual_scoped.has_value() != legacy_scoped.has_value() ||
+            (actual_scoped.has_value() && !equal_instrument_snapshot(*actual_scoped, *legacy_scoped)))
+            throw std::runtime_error("scoped-only differential mismatch: " + std::string(phase) +
+                                     " isin=" + std::to_string(isin_id));
+    }
+}
+
+void replay_scoped_transaction(moex::plaza2::cgate::Plaza2Aggr20BookProjector& actual, LegacyProjector& legacy,
+                               std::span<const InputRow> rows, std::span<const std::int64_t> isins,
+                               std::string_view phase) {
+    actual.begin_transaction();
+    legacy.begin_transaction();
+    for (const auto& row : rows)
+        stage_actual_and_legacy(actual, legacy, row);
+    const auto actual_error = actual.commit();
+    if (actual_error)
+        throw std::runtime_error("optimized projector commit failed in scoped-only sequence");
+    legacy.commit();
+    compare_scoped_only(actual, legacy, isins, phase);
+}
+
+void stage_projector(moex::plaza2::cgate::Plaza2Aggr20BookProjector& projector, std::span<const InputRow> rows) {
+    projector.begin_transaction();
+    for (const auto& row : rows) {
+        const auto fields = decoded_fields(row);
+        if (const auto error = projector.on_row(fields); error)
+            throw std::runtime_error("optimized projector rejected a valid allocation-probe row: " + error.message);
+    }
+}
+
+std::size_t run_lazy_sequence() {
+    using moex::plaza2::cgate::Plaza2Aggr20BookProjector;
+    auto now = Plaza2Aggr20BookProjector::Clock::time_point{} + std::chrono::seconds(400);
+    auto now_fn = [&now] { return now; };
+    Plaza2Aggr20BookProjector actual(now_fn);
+    LegacyProjector legacy(now_fn);
+    const std::array<std::int64_t, 5> isins = {1001, 1002, 1003, 1004, 1005};
+
+    replay_scoped_transaction(actual, legacy,
+                              std::array{make_row(1, 1, 1001, 1, "1.00000", 2, 0, 1),
+                                         make_row(2, 2, 1002, 2, "2.00000", 3, 0, 2),
+                                         make_row(3, 3, 1003, 1, "3.00000", 4, 0, 3)},
+                              isins, "lazy seed");
+    std::size_t commits = 1;
+    for (std::size_t index = 0; index < 8; ++index) {
+        now += std::chrono::seconds(1);
+        std::vector<InputRow> rows;
+        rows.push_back(make_row(1, static_cast<std::int64_t>(10 + index), 1001, index % 2 == 0 ? 2 : 1,
+                                index % 2 == 0 ? "1.50000" : "1.25000", 5 + static_cast<std::int64_t>(index), 0,
+                                10 + index));
+        rows.push_back(make_row(2, static_cast<std::int64_t>(20 + index), 1002 + static_cast<std::int64_t>(index % 2),
+                                2, "2.25000", 6, 0, 20 + index));
+        if (index % 3 == 0)
+            rows.push_back(
+                make_row(100 + index, static_cast<std::int64_t>(30 + index), 1004, 1, "4.00000", 1, 0, 30 + index));
+        if (index % 3 == 1)
+            rows.push_back(
+                make_row(100 + index - 1, static_cast<std::int64_t>(40 + index), 1004, 1, "4.00000", 0, 0, 40 + index));
+        replay_scoped_transaction(actual, legacy, rows, isins, "lazy commit " + std::to_string(index));
+        ++commits;
+    }
+
+    // This is the first global observation after several commits. The
+    // scoped comparisons above deliberately never materialize the global
+    // diagnostic vector.
+    compare_projectors(actual, legacy, isins, "lazy final global");
+    return commits;
+}
+
+std::size_t run_unique_churn() {
+    using moex::plaza2::cgate::Plaza2Aggr20BookProjector;
+    auto now = Plaza2Aggr20BookProjector::Clock::time_point{} + std::chrono::seconds(800);
+    auto now_fn = [&now] { return now; };
+    Plaza2Aggr20BookProjector actual(now_fn);
+    LegacyProjector legacy(now_fn);
+    const std::array<std::int64_t, 2> isins = {1001, 1002};
+    replay_scoped_transaction(
+        actual, legacy,
+        std::array{make_row(1, 1, 1001, 1, "1.00000", 10, 0, 1), make_row(2, 1, 1002, 2, "2.00000", 10, 0, 2)}, isins,
+        "churn seed");
+    std::size_t transactions = 1;
+    constexpr std::size_t cycles = 128;
+    for (std::size_t cycle = 0; cycle < cycles; ++cycle) {
+        const auto repl_id = static_cast<std::uint64_t>(10'000 + cycle);
+        const auto revision = static_cast<std::int64_t>(10 + cycle * 4);
+        now += std::chrono::microseconds(1);
+        replay_scoped_transaction(actual, legacy,
+                                  std::array{make_row(repl_id, revision, 1001, 1, "5.00000", 3, 0, repl_id)}, isins,
+                                  "churn insert " + std::to_string(cycle));
+        now += std::chrono::microseconds(1);
+        replay_scoped_transaction(actual, legacy,
+                                  std::array{make_row(repl_id, revision + 1, 1001, 1, "5.00000", 0, 0, repl_id + 1)},
+                                  isins, "churn delete " + std::to_string(cycle));
+        now += std::chrono::microseconds(1);
+        replay_scoped_transaction(actual, legacy,
+                                  std::array{make_row(repl_id, revision + 2, 1001, 2, "5.50000", 4, 0, repl_id + 2)},
+                                  isins, "churn reinsert " + std::to_string(cycle));
+        now += std::chrono::microseconds(1);
+        replay_scoped_transaction(actual, legacy,
+                                  std::array{make_row(repl_id, revision + 3, 1001, 2, "5.50000", 0, 0, repl_id + 3)},
+                                  isins, "churn final delete " + std::to_string(cycle));
+        transactions += 4;
+    }
+    compare_projectors(actual, legacy, isins, "churn final global");
+    return transactions;
+}
+
+struct AllocationProbeResult {
+    std::size_t commit_failures{0};
+    std::size_t commit_success_threshold{0};
+    std::size_t global_materialization_failures{0};
+};
+
+AllocationProbeResult run_allocation_failure_probe() {
+    using moex::plaza2::cgate::Plaza2Aggr20BookProjector;
+    using test_allocation_injection::attempts;
+    using test_allocation_injection::enabled;
+    using test_allocation_injection::remaining;
+    auto now = Plaza2Aggr20BookProjector::Clock::time_point{} + std::chrono::seconds(1200);
+    auto now_fn = [&now] { return now; };
+    const auto seed =
+        std::array{make_row(1, 1, 1001, 1, "1.00000", 2, 0, 1), make_row(2, 2, 1001, 2, "2.00000", 3, 0, 2),
+                   make_row(3, 3, 1002, 1, "3.00000", 4, 0, 3)};
+    const auto mutation =
+        std::array{make_row(1, 10, 1002, 2, "1.50000", 5, 0, 10), make_row(2, 11, 1001, 1, "2.50000", 6, 0, 11),
+                   make_row(3, 12, 1002, 1, "3.00000", 0, 0, 12), make_row(1000, 13, 1001, 2, "4.00000", 7, 0, 13),
+                   make_row(1000, 14, 1003, 1, "4.50000", 8, 0, 14)};
+    AllocationProbeResult result;
+    bool commit_succeeded = false;
+    for (std::size_t threshold = 0; threshold < 1024 && !commit_succeeded; ++threshold) {
+        Plaza2Aggr20BookProjector candidate(now_fn);
+        stage_projector(candidate, seed);
+        if (const auto error = candidate.commit(); error)
+            throw std::runtime_error("allocation probe seed commit failed: " + error.message);
+        const auto before = candidate.snapshot();
+        stage_projector(candidate, mutation);
+        enabled = true;
+        remaining = threshold;
+        attempts = 0;
+        bool failed = false;
+        try {
+            if (const auto error = candidate.commit(); error)
+                throw std::runtime_error("allocation probe commit returned an error: " + error.message);
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        enabled = false;
+        if (failed) {
+            ++result.commit_failures;
+            if (!candidate.transaction_open())
+                throw std::runtime_error("allocation failure closed the transaction before rollback");
+            if (!equal_snapshot(before, candidate.snapshot()))
+                throw std::runtime_error("allocation failure changed the published snapshot");
+            candidate.rollback();
+            if (candidate.transaction_open() || !equal_snapshot(before, candidate.snapshot()))
+                throw std::runtime_error("rollback did not restore the allocation-failure snapshot");
+        } else {
+            result.commit_success_threshold = threshold;
+            commit_succeeded = true;
+        }
+    }
+    if (!commit_succeeded || result.commit_failures == 0)
+        throw std::runtime_error("allocation probe did not cover both failing and successful commit plans");
+
+    Plaza2Aggr20BookProjector global_candidate(now_fn);
+    stage_projector(global_candidate, seed);
+    if (const auto error = global_candidate.commit(); error)
+        throw std::runtime_error("global allocation probe seed commit failed: " + error.message);
+    const auto before_global = global_candidate.snapshot();
+    stage_projector(global_candidate, std::array{make_row(2000, 20, 1001, 1, "6.00000", 9, 0, 20)});
+    if (const auto error = global_candidate.commit(); error)
+        throw std::runtime_error("global allocation probe commit failed: " + error.message);
+    enabled = true;
+    remaining = 0;
+    attempts = 0;
+    bool global_failed = false;
+    try {
+        static_cast<void>(global_candidate.snapshot());
+    } catch (const std::bad_alloc&) {
+        global_failed = true;
+    }
+    enabled = false;
+    if (!global_failed)
+        throw std::runtime_error("lazy global materialization did not expose the injected allocation failure");
+    ++result.global_materialization_failures;
+    const auto& recovered_global = global_candidate.snapshot();
+    if (recovered_global.row_count != before_global.row_count + 1 || recovered_global.levels.size() != 4)
+        throw std::runtime_error("lazy global materialization retry did not publish the complete book");
+    return result;
+}
+
 } // namespace
 
 int main() {
@@ -534,8 +776,15 @@ int main() {
             replay_transaction(actual, legacy, rows, burst % 11 == 0, isins,
                                "random multi-row burst " + std::to_string(burst), observer, counts);
         }
+        const auto lazy_commits = run_lazy_sequence();
+        const auto churn_transactions = run_unique_churn();
+        const auto allocation_probe = run_allocation_failure_probe();
         std::cout << "differential transactions=" << counts.transactions << " commits=" << counts.commits
-                  << " rollbacks=" << counts.rollbacks << " rows=" << counts.rows << "\n";
+                  << " rollbacks=" << counts.rollbacks << " rows=" << counts.rows << " lazy_commits=" << lazy_commits
+                  << " churn_transactions=" << churn_transactions
+                  << " allocation_commit_failures=" << allocation_probe.commit_failures
+                  << " allocation_commit_success_threshold=" << allocation_probe.commit_success_threshold
+                  << " allocation_global_failures=" << allocation_probe.global_materialization_failures << "\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

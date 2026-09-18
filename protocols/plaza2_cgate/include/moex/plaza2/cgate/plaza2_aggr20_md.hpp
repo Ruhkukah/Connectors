@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -137,16 +138,23 @@ class Plaza2Aggr20BookProjector {
 
     void add_slot_to_instrument(std::int64_t isin_id, std::size_t slot_index);
     void remove_slot_from_instrument(std::int64_t isin_id, std::size_t slot_index);
+    void compact_slot_order() noexcept;
     void ensure_global_diagnostics() const;
+
+    static constexpr std::size_t kNoSlotIndex = std::numeric_limits<std::size_t>::max();
+    static constexpr std::size_t kCompactionHoleThreshold = 64;
 
     Plaza2Aggr20QualificationObserver* qualification_observer_{nullptr};
     std::vector<Plaza2Aggr20Level> staged_rows_;
     std::unordered_set<std::int64_t> affected_isin_ids_;
     std::unordered_map<std::int64_t, StagedInstrumentMetadata> staged_metadata_;
-    // Stable slot storage preserves the old public vector order while making
-    // mutable repl_id updates O(1). Deleted slots remain holes until the
-    // lazy global diagnostic vector is materialized.
+    // Physical slots are reused after deletion. active_slot_order_ is the
+    // public-order sequence; its bounded tombstones are compacted
+    // amortized, so global reconstruction never scans slot_rows_ holes.
     std::vector<std::optional<Plaza2Aggr20Level>> slot_rows_;
+    std::vector<std::size_t> active_slot_order_;
+    std::vector<std::size_t> slot_order_position_;
+    std::vector<std::size_t> free_slot_indices_;
     std::unordered_map<std::uint64_t, std::size_t> slot_index_by_repl_id_;
     std::unordered_map<std::int64_t, std::vector<std::size_t>> instrument_slot_ownership_;
     std::size_t active_row_count_{0};
