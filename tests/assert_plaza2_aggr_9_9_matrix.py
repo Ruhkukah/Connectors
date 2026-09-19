@@ -63,6 +63,7 @@ ALLOWED_OFFLINE = {"PASS_OFFLINE", "DEFERRED_FULL_ORDLOG_PHASE"}
 ALLOWED_T1 = {
     "PASS_T1",
     "NOT_RUN_T1_SESSION_CLOSED",
+    "NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED",
     "MOEX_COORDINATED",
     "N/A_CLIENT_SCHEME",
     "N/A_PRODUCT_SCOPE",
@@ -149,7 +150,7 @@ def main() -> int:
             f"{identifier} must remain an AGGR-required behavior",
         )
         require(
-            official[identifier]["T1 result"] == "NOT_RUN_T1_SESSION_CLOSED",
+            official[identifier]["T1 result"] == "NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED",
             f"{identifier} must remain pending until a safe client fault attempt",
         )
     for identifier in ("R04", "R05"):
@@ -158,7 +159,10 @@ def main() -> int:
             and official[identifier]["T1 result"] == "N/A_CLIENT_SCHEME",
             f"{identifier} must be explicitly N/A_CLIENT_SCHEME for the client-scheme profile",
         )
-    require(official["C08"]["T1 result"] == "NOT_RUN_T1_SESSION_CLOSED", "C08 local-router test must remain a pending T1 gate")
+    require(
+        official["C08"]["T1 result"] == "NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED",
+        "C08 local-router test must remain a pending T1 gate",
+    )
 
     manifest = json.loads((root / "cert/aggr_plaza2_certification_manifest_9_9.json").read_text(encoding="utf-8"))
     authority = manifest["official_sources"]["certification_authority"]

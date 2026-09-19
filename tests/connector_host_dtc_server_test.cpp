@@ -270,7 +270,15 @@ struct Harness {
         for (const auto& f : got)
             if (f.message_type == type)
                 return f;
-        check(false, "expected response type missing");
+        std::string received_types;
+        for (const auto& f : got) {
+            if (!received_types.empty())
+                received_types += ",";
+            received_types += std::to_string(f.message_type);
+        }
+        const auto message =
+            "expected response type " + std::to_string(type) + " missing; received types [" + received_types + "]";
+        check(false, message.c_str());
         return got.front();
     }
     void logon(bool expect_security_definitions = true, std::string_view username = {}, std::string_view password = {},
