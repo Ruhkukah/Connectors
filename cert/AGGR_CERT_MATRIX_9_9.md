@@ -138,29 +138,46 @@ that no T1 run was made and the current session status was not reconfirmed.
 - Exact T1 evidence: none on current candidate; record callback owner
 - Remaining action: preserve one-owner listener map
 
+### Effective receive-scheme policy (derived from configured listener URLs)
+
+The listener URL is the policy boundary: `Plaza2Listener::create()` forwards
+the configured URL to `cg_lsn_new`; it does not append a client scheme. The
+MOEX CGate manual says that omitting `scheme` selects the server-side scheme.
+The profiles therefore intentionally have mixed receive-scheme policy:
+
+| Effective profile | Explicit client-scheme listeners | Bare/server-scheme listeners | Initial open arguments |
+| --- | --- | --- | --- |
+| Four-stream read-only day observer | `FORTS_AGGR20_REPL` (`Aggr`), `FORTS_REFDATA_REPL` (`REFDATA`) | `FORTS_SESSIONSTATE_REPL`, `FORTS_INSTRUMENTSTATE_REPL` | `mode=snapshot+online` |
+| Eight-stream ConnectorHost profile | `FORTS_TRADE_REPL` (`Trade`), `FORTS_USERORDERBOOK_REPL` (`OrdBook`), `FORTS_POS_REPL` (`POS`), `FORTS_PART_REPL` (`PART`), `FORTS_REFDATA_REPL` (`REFDATA`), `FORTS_AGGR20_REPL` (`Aggr`) | `FORTS_SESSIONSTATE_REPL`, `FORTS_INSTRUMENTSTATE_REPL` | The configured `open_settings` values are empty; do not infer the negotiated mode from the observer profile |
+
+The eight-stream profile uses one CGate connection with eight replication
+listeners. This table describes configuration only; it is not a current-candidate
+OPEN receipt. The read-only observer does not contain USERORDERBOOK, so its
+four-stream diagnostic does not depend on the `OrdBook` alias.
+
 ### R03 — correct client receive scheme where applicable
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED
-- Code/test evidence: explicit `p2repl://...;scheme=|FILE|...forts_scheme.ini|...` bindings; runtime scheme lock; scheme drift tests
+- Code/test evidence: effective-config guard in `connector_host_test.cpp`; explicit client-scheme URLs for the six listeners listed above; `spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0`
 - Exact T1 evidence: no current negotiated-scheme receipt
 - Remaining action: capture negotiated stream schemes and hashes
 
 ### R04 — compatible server-scheme additions
-- Classification: N/A_CLIENT_SCHEME
+- Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
-- T1 result: N/A_CLIENT_SCHEME
-- Code/test evidence: compatibility checker and reviewed 9.9 additions retained as defense-in-depth/version validation
-- Exact T1 evidence: not applicable to this explicit client-scheme profile
-- Remaining action: keep machinery green; do not represent a server-scheme exercise as mandatory for this profile
+- T1 result: NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED
+- Code/test evidence: `plaza2_scheme_drift_test` adds a compatible field to the consumed `FORTS_SESSIONSTATE_REPL.session_state` table and requires a nonfatal warning; profile guard derives that two listeners are server-scheme
+- Exact T1 evidence: none for the two server-scheme status listeners on the current candidate
+- Remaining action: capture both status-listener OPEN schemes and hashes; local-scheme fixture coverage is not a live negotiation receipt
 
 ### R05 — incompatible removal/type-change detection
-- Classification: N/A_CLIENT_SCHEME
+- Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
-- T1 result: N/A_CLIENT_SCHEME
-- Code/test evidence: runtime drift tests; 9.9 removal guard retained as defense-in-depth/version validation
-- Exact T1 evidence: not applicable to this explicit client-scheme profile
-- Remaining action: keep fail-closed drift machinery; no mandatory server-scheme MOEX exercise for this profile
+- T1 result: NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED
+- Code/test evidence: `plaza2_scheme_drift_test` requires a missing or type-changed `public_state` field in `FORTS_SESSIONSTATE_REPL.session_state` to fail; status-state tables are now required tables in the scheme guard
+- Exact T1 evidence: none for the two server-scheme status listeners on the current candidate
+- Remaining action: capture both status-listener OPEN schemes and hashes; local-scheme fixture coverage is not a live negotiation receipt
 
 ### R06 — loss and correct reopening of every declared stream
 - Classification: AGGR_REQUIRED

@@ -21,6 +21,28 @@ std::string remove_field_from_table(std::string scheme_text, std::string_view ta
     return scheme_text;
 }
 
+std::string add_field_to_table(std::string scheme_text, std::string_view table_header, std::string_view field_line) {
+    const auto table_pos = scheme_text.find(table_header);
+    moex::plaza2::test::require(table_pos != std::string::npos, "expected runtime scheme fixture table missing");
+    const auto next_table_pos = scheme_text.find("\n[table:", table_pos + table_header.size());
+    const auto insert_pos = next_table_pos == std::string::npos ? scheme_text.size() : next_table_pos;
+    scheme_text.insert(insert_pos, std::string(field_line) + '\n');
+    return scheme_text;
+}
+
+std::string replace_field_in_table(std::string scheme_text, std::string_view table_header,
+                                   std::string_view old_field_line, std::string_view new_field_line) {
+    const auto table_pos = scheme_text.find(table_header);
+    moex::plaza2::test::require(table_pos != std::string::npos, "expected runtime scheme fixture table missing");
+    const auto next_table_pos = scheme_text.find("\n[table:", table_pos + table_header.size());
+    const auto search_end = next_table_pos == std::string::npos ? scheme_text.size() : next_table_pos;
+    const auto field_pos = scheme_text.find(old_field_line, table_pos);
+    moex::plaza2::test::require(field_pos != std::string::npos && field_pos < search_end,
+                                "expected runtime scheme fixture field missing");
+    scheme_text.replace(field_pos, old_field_line.size(), new_field_line);
+    return scheme_text;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -72,6 +94,54 @@ int main(int argc, char** argv) {
                 found_clearing_members_warning || table == "FORTS_REFDATA_REPL.clearing_members";
         }
         require(found_clearing_members_warning, "clearing_members warning table should be reported");
+
+        const auto status_table = "[table:FORTS_SESSIONSTATE_REPL:session_state]\n";
+        const auto status_addition_text =
+            add_field_to_table(baseline_scheme_text, status_table, "field=questionnaire_compatible_addition,i4");
+        const auto status_addition_fixture = materialize_runtime_fixture(fixture_root / "status_addition", fake_library,
+                                                                         Plaza2Environment::Test, status_addition_text);
+        Plaza2Settings status_addition_settings;
+        status_addition_settings.environment = Plaza2Environment::Test;
+        status_addition_settings.runtime_root = status_addition_fixture.root;
+        status_addition_settings.expected_spectra_release = "SPECTRA93";
+        const auto status_addition_report = Plaza2RuntimeProbe::probe(status_addition_settings);
+        require(status_addition_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
+                "compatible addition on consumed SESSIONSTATE status table must warn, not fail");
+        require(status_addition_report.scheme_drift.fatal_drift_count == 0 &&
+                    status_addition_report.scheme_drift.warning_drift_count > 0,
+                "compatible status-table addition must be nonfatal drift");
+        bool found_status_addition_warning = false;
+        for (const auto& table : status_addition_report.scheme_drift.warning_drift_tables) {
+            found_status_addition_warning =
+                found_status_addition_warning || table == "FORTS_SESSIONSTATE_REPL.session_state";
+        }
+        require(found_status_addition_warning, "SESSIONSTATE addition warning must identify the consumed table");
+
+        const auto status_field_removal_text =
+            remove_field_from_table(baseline_scheme_text, status_table, "field=public_state,i4\n");
+        const auto status_field_removal_fixture = materialize_runtime_fixture(
+            fixture_root / "status_field_removal", fake_library, Plaza2Environment::Test, status_field_removal_text);
+        Plaza2Settings status_field_removal_settings;
+        status_field_removal_settings.environment = Plaza2Environment::Test;
+        status_field_removal_settings.runtime_root = status_field_removal_fixture.root;
+        status_field_removal_settings.expected_spectra_release = "SPECTRA93";
+        const auto status_field_removal_report = Plaza2RuntimeProbe::probe(status_field_removal_settings);
+        require(status_field_removal_report.compatibility == Plaza2Compatibility::Incompatible &&
+                    status_field_removal_report.scheme_drift.fatal_drift_count > 0,
+                "removing a required SESSIONSTATE field must be fatal");
+
+        const auto status_type_change_text = replace_field_in_table(
+            baseline_scheme_text, status_table, "field=public_state,i4\n", "field=public_state,i8\n");
+        const auto status_type_change_fixture = materialize_runtime_fixture(
+            fixture_root / "status_type_change", fake_library, Plaza2Environment::Test, status_type_change_text);
+        Plaza2Settings status_type_change_settings;
+        status_type_change_settings.environment = Plaza2Environment::Test;
+        status_type_change_settings.runtime_root = status_type_change_fixture.root;
+        status_type_change_settings.expected_spectra_release = "SPECTRA93";
+        const auto status_type_change_report = Plaza2RuntimeProbe::probe(status_type_change_settings);
+        require(status_type_change_report.compatibility == Plaza2Compatibility::Incompatible &&
+                    status_type_change_report.scheme_drift.fatal_drift_count > 0,
+                "changing a required SESSIONSTATE field type must be fatal");
 
         auto fatal_scheme_text = remove_field_from_table(baseline_scheme_text, "[table:FORTS_TRADE_REPL:orders_log]\n",
                                                          "field=private_order_id,i8\n");

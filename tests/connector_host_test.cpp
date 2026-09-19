@@ -3,6 +3,7 @@
 #include "moex/connector_host/dtc_read_only_server.hpp"
 #include "moex/connector_host/late_join_display.hpp"
 #include "plaza2_runtime_test_support.hpp"
+#include "../../apps/plaza2_day_observer_profile.hpp"
 #include "plaza2_trade/fixtures/cgate99_messages.hpp"
 
 #include <cstring>
@@ -116,6 +117,47 @@ void warm(ConnectorHost& host) {
     if (!host.snapshot().observation_ready)
         std::cerr << render_snapshot(host.snapshot(), true);
     test::require(host.snapshot().observation_ready, "host ready");
+}
+
+void verify_effective_listener_scheme_profiles() {
+    using moex::plaza2::observer::make_day_observer_listener_profile;
+    using moex::plaza2::observer::uses_explicit_client_scheme;
+
+    const auto day_observer = make_day_observer_listener_profile("/tmp/moex-scheme-policy/forts_scheme.ini");
+    std::size_t observer_client_scheme_count = 0;
+    for (const auto& url : day_observer.urls)
+        observer_client_scheme_count += uses_explicit_client_scheme(url) ? 1U : 0U;
+    test::require(day_observer.streams.size() == 4 && observer_client_scheme_count == 2,
+                  "four-stream read-only observer derives two client-scheme and two server-scheme listeners");
+    test::require(
+        uses_explicit_client_scheme(day_observer.urls[0]) && uses_explicit_client_scheme(day_observer.urls[1]) &&
+            !uses_explicit_client_scheme(day_observer.urls[2]) && !uses_explicit_client_scheme(day_observer.urls[3]),
+        "observer effective URL policy keeps AGGR/REFDATA explicit and status streams server-scheme");
+
+    Plaza2HostConfigInputs inputs;
+    inputs.runtime_root = "/tmp/moex-scheme-policy";
+    inputs.scheme_dir = inputs.runtime_root / "scheme";
+    inputs.config_dir = inputs.runtime_root / "config";
+    inputs.env_open_settings = "ini=not-opened-by-this-configuration-test";
+    inputs.broker_code = "BRK1";
+    inputs.client_code = "C01";
+    inputs.isin_id = 1;
+    inputs.session_id = 1;
+    inputs.publisher_name = "scheme-policy-test";
+    const auto configured = build_plaza2_host_config(inputs);
+    const auto& host = configured.transport.host;
+    std::size_t full_profile_client_scheme_count = 0;
+    for (const auto& stream : host.private_streams)
+        full_profile_client_scheme_count += uses_explicit_client_scheme(stream.settings) ? 1U : 0U;
+    full_profile_client_scheme_count += uses_explicit_client_scheme(host.aggr20_stream.settings) ? 1U : 0U;
+    for (const auto& stream : host.status_streams)
+        test::require(!uses_explicit_client_scheme(stream.settings),
+                      "trading-profile status listeners must remain server-scheme");
+    test::require(host.private_streams.size() == 5 && host.status_streams.size() == 2 &&
+                      full_profile_client_scheme_count == 6,
+                  "eight-stream trading profile derives six client-scheme and two server-scheme listeners");
+    test::require(host.aggr20_stream.settings.find("FORTS_AGGR20_REPL") != std::string::npos,
+                  "configured AGGR listener remains part of the eight-stream profile");
 }
 
 using DtcBytes = std::vector<std::uint8_t>;
@@ -617,6 +659,7 @@ void test_projected_status_rollover() {
 
 int main(int argc, char** argv) {
     try {
+        verify_effective_listener_scheme_profiles();
         test_late_join_display();
         test_projected_status_rollover();
         test::require(argc == 2 || argc == 3, "fake runtime path [fixture output]");
