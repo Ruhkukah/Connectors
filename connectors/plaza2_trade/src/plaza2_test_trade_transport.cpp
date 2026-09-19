@@ -112,6 +112,21 @@ std::string declared_stream_name(StreamCode code) {
     return {};
 }
 
+bool replication_url_uses_service(std::string_view settings, std::string_view expected_service) {
+    constexpr std::string_view prefix = "p2repl://";
+    if (expected_service.empty() || !settings.starts_with(prefix))
+        return false;
+    const auto service_and_options = settings.substr(prefix.size());
+    const auto options = service_and_options.find(';');
+    const auto configured_service =
+        service_and_options.substr(0, options == std::string_view::npos ? service_and_options.size() : options);
+    return configured_service == expected_service;
+}
+
+bool replication_url_matches_stream(const Plaza2TestTradeStreamConfig& stream) {
+    return replication_url_uses_service(stream.settings, declared_stream_name(stream.stream_code));
+}
+
 Plaza2Error invalid(std::string message, Plaza2ErrorCode code = Plaza2ErrorCode::InvalidConfiguration) {
     return {.code = code, .runtime_code = 0, .message = std::move(message)};
 }
@@ -737,6 +752,17 @@ struct Plaza2TestSessionHost::Impl {
                 config.read_only_market_data
                     ? "read-only TEST session host requires runtime, connection, private, and AGGR20 settings"
                     : "TEST session host requires runtime, connection, publisher, private, and AGGR20 settings");
+        }
+        if (config.read_only_market_data) {
+            const auto all_configured_urls_match = [](const auto& streams) {
+                return std::all_of(streams.begin(), streams.end(), replication_url_matches_stream);
+            };
+            if (!all_configured_urls_match(config.private_streams) ||
+                !all_configured_urls_match(config.status_streams) ||
+                !replication_url_uses_service(config.aggr20_stream.settings, "FORTS_AGGR20_REPL")) {
+                return invalid(
+                    "read-only TEST session host replication URLs must match their declared stream services");
+            }
         }
         if (!config.read_only_market_data && config.mode != Plaza2TestSessionHostMode::OfflineFake &&
             config.p2mqreply_settings.empty()) {

@@ -133,6 +133,17 @@ Plaza2TestTradeTransportConfig make_config(const moex::plaza2::test::RuntimeFixt
 
 void test_mode_specific_listener_topology(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
     using generated::StreamCode;
+    const auto read_only_config = [&] {
+        auto config = make_config(fixture).host;
+        config.read_only_market_data = true;
+        config.trade_replay_from_pos_anchor = false;
+        config.publisher_settings.clear();
+        config.publisher_open_settings.clear();
+        config.p2mqreply_settings.clear();
+        config.p2mqreply_open_settings.clear();
+        config.private_streams = {stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL")};
+        return config;
+    };
     for (const auto missing : {StreamCode::kFortsTradeRepl, StreamCode::kFortsUserorderbookRepl,
                                StreamCode::kFortsPosRepl, StreamCode::kFortsPartRepl, StreamCode::kFortsRefdataRepl}) {
         auto config = make_config(fixture).host;
@@ -161,6 +172,32 @@ void test_mode_specific_listener_topology(const moex::plaza2::test::RuntimeFixtu
     expect_case(error.code == cgate::Plaza2ErrorCode::InvalidConfiguration &&
                     error.message.find("exactly FORTS_REFDATA_REPL") != std::string::npos,
                 "read-only topology rejects an extra private listener rather than silently ignoring it");
+
+    auto mismatched_refdata = read_only_config();
+    mismatched_refdata.private_streams.front() = stream(StreamCode::kFortsRefdataRepl, "FORTS_TRADE_REPL");
+    Plaza2TestSessionHost wrong_refdata_service(std::move(mismatched_refdata));
+    const auto refdata_error = wrong_refdata_service.start();
+    expect_case(refdata_error.code == cgate::Plaza2ErrorCode::InvalidConfiguration &&
+                    refdata_error.message.find("URLs must match their declared stream services") != std::string::npos,
+                "read-only REFDATA identity rejects a URL that would open the TRADE service");
+
+    auto mismatched_status = read_only_config();
+    mismatched_status.status_streams = {stream(StreamCode::kFortsSessionstateRepl, "FORTS_POS_REPL"),
+                                        stream(StreamCode::kFortsInstrumentstateRepl, "FORTS_INSTRUMENTSTATE_REPL")};
+    Plaza2TestSessionHost wrong_status_service(std::move(mismatched_status));
+    const auto status_url_error = wrong_status_service.start();
+    expect_case(status_url_error.code == cgate::Plaza2ErrorCode::InvalidConfiguration &&
+                    status_url_error.message.find("URLs must match their declared stream services") !=
+                        std::string::npos,
+                "read-only status stream identity rejects a URL that would open the POS service");
+
+    auto mismatched_aggr = read_only_config();
+    mismatched_aggr.aggr20_stream = stream(StreamCode::kFortsAggrRepl, "FORTS_USERORDERBOOK_REPL", "Aggr");
+    Plaza2TestSessionHost wrong_aggr_service(std::move(mismatched_aggr));
+    const auto aggr_url_error = wrong_aggr_service.start();
+    expect_case(aggr_url_error.code == cgate::Plaza2ErrorCode::InvalidConfiguration &&
+                    aggr_url_error.message.find("URLs must match their declared stream services") != std::string::npos,
+                "read-only AGGR identity rejects a URL that would open USERORDERBOOK");
 
     auto missing_status = make_config(fixture).host;
     missing_status.read_only_market_data = true;
