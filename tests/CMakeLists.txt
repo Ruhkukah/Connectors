@@ -711,6 +711,16 @@ moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_validation_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_md_validation_test.cpp)
 moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_projection_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_md_projection_test.cpp)
+moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_optimization_test
+    ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_md_optimization_test.cpp)
+add_executable(plaza2_aggr20_md_benchmark
+    ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_md_benchmark.cpp)
+add_dependencies(plaza2_aggr20_md_benchmark plaza2_fake_cgate_runtime)
+target_link_libraries(plaza2_aggr20_md_benchmark
+    PRIVATE
+        moex_plaza2_cgate_aggr20_md)
+target_compile_features(plaza2_aggr20_md_benchmark PRIVATE cxx_std_20)
+set_property(TARGET plaza2_aggr20_md_benchmark PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
 moex_add_plaza2_aggr20_md_test(plaza2_aggr20_md_runner_test
     ${MOEX_SOURCE_ROOT}/tests/plaza2_cgate/plaza2_aggr20_md_runner_test.cpp)
 moex_add_plaza2_aggr20_md_test(plaza2_aggr20_authority_probe_test
