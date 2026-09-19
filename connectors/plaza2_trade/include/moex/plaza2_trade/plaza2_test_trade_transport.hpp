@@ -167,8 +167,9 @@ struct Plaza2TestSessionHostConfig {
     std::string connection_settings;
     std::string connection_open_settings;
     std::vector<Plaza2TestTradeStreamConfig> private_streams;
-    // Current-day/session status service streams are supplementary to the
-    // exact five private replication streams above.
+    // The two current-day/session status streams are required alongside the
+    // REFDATA-only read-side profile, and supplementary to the five trading
+    // private replication streams above.
     std::vector<Plaza2TestTradeStreamConfig> status_streams;
     Plaza2TestTradeStreamConfig aggr20_stream;
     // Optional exact AGGR20 sys_events session identity. Zero accepts a

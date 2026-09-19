@@ -193,16 +193,47 @@ def main() -> int:
     evidence_refs = {ref for row in answers for ref in row["evidence_refs"]}
     require(evidence_refs <= set(questionnaire["evidence_catalog"]), "questionnaire answer has unresolved evidence reference")
     profiles = questionnaire["scheme_policy"]
-    four = profiles["four_stream_read_only_profile"]["streams"]
-    eight = profiles["eight_stream_connector_profile"]["streams"]
+    read_only_profile = profiles["read_only_dtc_profile"]
+    trading_profile = profiles["trading_connector_profile"]
+    four = read_only_profile["streams"]
+    eight = trading_profile["streams"]
+    require(read_only_profile["name"] == "READ_ONLY_DTC_PROFILE" and
+            trading_profile["name"] == "TRADING_CONNECTOR_PROFILE",
+            "questionnaire must use the canonical names for the two ConnectorHost profiles")
+    require({row["service"] for row in four} == {
+                "FORTS_REFDATA_REPL", "FORTS_SESSIONSTATE_REPL", "FORTS_INSTRUMENTSTATE_REPL", "FORTS_AGGR20_REPL"
+            } and read_only_profile["listener_count"] == 4 and
+            not read_only_profile["publisher_configured"] and not read_only_profile["p2mqreply_configured"] and
+            not read_only_profile["trade_replay_from_pos_anchor"],
+            "READ_ONLY_DTC_PROFILE must describe exactly four read listeners and no trading surface")
     require(len(four) == 4 and
             sum(row["policy"] == "CLIENT_EXPLICIT" for row in four) == 2 and
             sum(row["policy"] == "SERVER_DEFAULT" for row in four) == 2,
-            "four-stream observer scheme policy must derive as two client/two server listeners")
-    require(len(eight) == 8 and
+            "READ_ONLY_DTC_PROFILE scheme policy must derive as two client/two server listeners")
+    require({row["service"] for row in eight} == {
+                "FORTS_TRADE_REPL", "FORTS_USERORDERBOOK_REPL", "FORTS_POS_REPL", "FORTS_PART_REPL",
+                "FORTS_REFDATA_REPL", "FORTS_SESSIONSTATE_REPL", "FORTS_INSTRUMENTSTATE_REPL", "FORTS_AGGR20_REPL"
+            } and len(eight) == 8 and trading_profile["listener_count"] == 8 and
+            trading_profile["publisher_configured"] and trading_profile["p2mqreply_configured"] and
+            trading_profile["trade_replay_from_pos_anchor"] and
             sum(row["policy"] == "CLIENT_EXPLICIT" for row in eight) == 6 and
             sum(row["policy"] == "SERVER_DEFAULT" for row in eight) == 2,
-            "eight-stream ConnectorHost scheme policy must derive as six client/two server listeners")
+            "TRADING_CONNECTOR_PROFILE must retain its eight listeners, publisher/reply and 6/2 scheme policy")
+    require("apps/plaza2_day_observer" not in " ".join(questionnaire["evidence_catalog"]["profile"]["source_files"])
+            and "apps/plaza2_day_observer_profile.hpp" not in
+            " ".join(questionnaire["evidence_catalog"]["scheme"]["source_files"]),
+            "day observer must not be cited as the DTC runner topology source")
+    answer_by_id = {row["id"]: row["answer"] for row in answers}
+    require("READ_ONLY_DTC_PROFILE" in answer_by_id["1h"] and
+            all("READ_ONLY_DTC_PROFILE" in answer_by_id[identifier] and
+                "TRADING_CONNECTOR_PROFILE" in answer_by_id[identifier]
+                for identifier in ("2a.i", "2a.ii", "2a.iii", "2a.iv")),
+            "1h and 2a connection answers must identify their applicable profile")
+    require("TRADING_CONNECTOR_PROFILE" in answer_by_id["2a.stream.22"] and
+            "READ_ONLY_DTC_PROFILE" not in answer_by_id["2a.stream.22"] and
+            "TRADING_CONNECTOR_PROFILE" in profiles["ordbook_alias_review"]["disposition"] and
+            "READ_ONLY_DTC_PROFILE" in profiles["ordbook_alias_review"]["disposition"],
+            "OrdBook alias warning must apply only to trading and explicitly exclude read-only")
 
     signature_path = root / "spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json"
     signature = json.loads(signature_path.read_text(encoding="utf-8"))

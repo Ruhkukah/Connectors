@@ -40,7 +40,7 @@ def run(root, name, flags=None, options=None, write_failure=False, duration_ms=8
     result = subprocess.run(command, env=env, text=True, capture_output=True,
                             preexec_fn=limit if write_failure else None)
     assert SECRET not in result.stdout and SECRET not in result.stderr
-    calls = Counter(audit.read_text().splitlines()) if audit.exists() else Counter()
+    calls = Counter(line.split(' ', 1)[0] for line in audit.read_text().splitlines()) if audit.exists() else Counter()
     if not flags or not flags.get('MOEX_FAKE_CAPTURE_NO_AUDIT'):
         assert not (set(calls) - ALLOWED), calls
         assert sum(count for name, count in calls.items() if name.startswith('cg_pub_')) == 0

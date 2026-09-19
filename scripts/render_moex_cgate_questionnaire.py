@@ -64,31 +64,46 @@ def render(root: Path) -> str:
         "",
         "## Effective receive-scheme policy",
         "",
-        register["scheme_policy"]["rule"],
+        *wrapped(register["scheme_policy"]["rule"]),
+        "",
+        "| Profile | Replication listeners | Publisher | p2mqreply | POS→TRADE anchor |",
+        "| --- | ---: | --- | --- | --- |",
+    ]
+    profile_names = ("read_only_dtc_profile", "trading_connector_profile")
+    for profile_name in profile_names:
+        profile = register["scheme_policy"][profile_name]
+        lines.append(
+            f"| `{profile['name']}` | {profile['listener_count']} | "
+            f"{'yes' if profile['publisher_configured'] else 'no'} | "
+            f"{'yes' if profile['p2mqreply_configured'] else 'no'} | "
+            f"{'yes' if profile['trade_replay_from_pos_anchor'] else 'no'} |"
+        )
+    lines += [
         "",
         "| Profile | Service | Scheme alias | Effective policy |",
         "| --- | --- | --- | --- |",
     ]
-    for profile_name, label in (
-        ("four_stream_read_only_profile", "Four-stream read-only"),
-        ("eight_stream_connector_profile", "Eight-stream ConnectorHost"),
-    ):
+    for profile_name in profile_names:
         profile = register["scheme_policy"][profile_name]
         for stream in profile["streams"]:
             lines.append(
-                f"| {label} | `{stream['service']}` | `{stream['scheme_alias'] or 'server default'}` | `{stream['policy']}` |"
+                f"| `{profile['name']}` | `{stream['service']}` | "
+                f"`{stream['scheme_alias'] or 'server default'}` | `{stream['policy']}` |"
             )
-        lines.append(f"| {label} | *initial open arguments* | — | `{md(profile['initial_open_settings'])}` |")
+        lines.append(
+            f"| `{profile['name']}` | *initial open arguments* | — | `{md(profile['initial_open_settings'])}` |"
+        )
     alias = register["scheme_policy"]["ordbook_alias_review"]
     alias_prose = f"{alias['finding']} {alias['disposition']}"
     lines += [
         "",
         *wrapped(
-            "The effective-profile guard derives listener policy from configured URLs: four-stream profile = "
-            "2 explicit / 2 server-default; eight-stream profile = 6 explicit / 2 server-default. No URL changed."
+            "The effective-profile guard derives listener policy from ConnectorHost's configured URLs: "
+            "READ_ONLY_DTC_PROFILE = 2 explicit / 2 server-default; TRADING_CONNECTOR_PROFILE = 6 explicit / "
+            "2 server-default. The day observer is a separate program, not the DTC runner's topology source."
         ),
         "",
-        "### OrdBook alias limitation",
+        "### TRADING_CONNECTOR_PROFILE OrdBook alias limitation",
         "",
         *wrapped(alias_prose),
         "",
@@ -173,7 +188,8 @@ def render(root: Path) -> str:
         ),
         *wrapped(
             "Resolve the `OrdBook` versus USERORDERBOOK layout mismatch from an exact OPEN/client-scheme "
-            "receipt before claiming eight-stream qualification. Do not block the four-stream observer.",
+            "receipt before claiming trading-profile qualification. This limitation does not apply to "
+            "READ_ONLY_DTC_PROFILE, which has no USERORDERBOOK listener.",
             initial="- ",
         ),
         *wrapped(

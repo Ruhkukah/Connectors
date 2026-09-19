@@ -77,30 +77,37 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     host.publisher_messages_per_second = inputs.publisher_messages_per_second;
     host.endpoint_host = "127.0.0.1";
     host.arm_state = inputs.arm_state;
-    host.publisher_name = inputs.publisher_name.empty()
-                              ? "connector_host_" + std::to_string(::getpid()) + "_" +
-                                    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())
-                              : inputs.publisher_name;
-    host.connection_settings = "p2tcp://127.0.0.1:4101;app_name=" + host.publisher_name + ";timeout=2000";
+    const auto connection_app_name =
+        inputs.publisher_name.empty() ? "connector_host_" + std::to_string(::getpid()) + "_" +
+                                            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())
+                                      : inputs.publisher_name;
+    host.publisher_name = inputs.read_only_market_data ? std::string{} : connection_app_name;
+    host.connection_settings = "p2tcp://127.0.0.1:4101;app_name=" + connection_app_name + ";timeout=2000";
     const auto scheme = std::filesystem::absolute(host.runtime.scheme_dir).string();
     const auto stream = [&](StreamCode code, std::string name, std::string alias) {
         return Plaza2TestTradeStreamConfig{.stream_code = code,
                                            .settings = "p2repl://" + name + ";scheme=|FILE|" + scheme +
                                                        "/forts_scheme.ini|" + alias};
     };
-    host.private_streams = {stream(StreamCode::kFortsTradeRepl, "FORTS_TRADE_REPL", "Trade"),
-                            stream(StreamCode::kFortsUserorderbookRepl, "FORTS_USERORDERBOOK_REPL", "OrdBook"),
-                            stream(StreamCode::kFortsPosRepl, "FORTS_POS_REPL", "POS"),
-                            stream(StreamCode::kFortsPartRepl, "FORTS_PART_REPL", "PART"),
-                            stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", "REFDATA")};
+    if (inputs.read_only_market_data) {
+        host.private_streams = {stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", "REFDATA")};
+    } else {
+        host.private_streams = {stream(StreamCode::kFortsTradeRepl, "FORTS_TRADE_REPL", "Trade"),
+                                stream(StreamCode::kFortsUserorderbookRepl, "FORTS_USERORDERBOOK_REPL", "OrdBook"),
+                                stream(StreamCode::kFortsPosRepl, "FORTS_POS_REPL", "POS"),
+                                stream(StreamCode::kFortsPartRepl, "FORTS_PART_REPL", "PART"),
+                                stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", "REFDATA")};
+    }
     host.status_streams = {
         {.stream_code = StreamCode::kFortsSessionstateRepl, .settings = "p2repl://FORTS_SESSIONSTATE_REPL"},
         {.stream_code = StreamCode::kFortsInstrumentstateRepl, .settings = "p2repl://FORTS_INSTRUMENTSTATE_REPL"}};
     host.aggr20_stream = stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL", "Aggr");
-    host.publisher_settings = "p2mq://FORTS_SRV;category=FORTS_MSG;name=" + host.publisher_name +
-                              ";timeout=5000;scheme=|FILE|" + scheme + "/forts_messages.ini|message";
-    host.p2mqreply_settings = "p2mqreply://;ref=" + host.publisher_name;
-    host.trade_replay_from_pos_anchor = true;
+    if (!inputs.read_only_market_data) {
+        host.publisher_settings = "p2mq://FORTS_SRV;category=FORTS_MSG;name=" + host.publisher_name +
+                                  ";timeout=5000;scheme=|FILE|" + scheme + "/forts_messages.ini|message";
+        host.p2mqreply_settings = "p2mqreply://;ref=" + host.publisher_name;
+        host.trade_replay_from_pos_anchor = true;
+    }
     host.credentials = {.source = cg::Plaza2CredentialSource::Env, .env_var = inputs.credentials_env_var};
     host.software_key = {.source = cg::Plaza2CredentialSource::Env, .env_var = inputs.software_key_env_var};
 

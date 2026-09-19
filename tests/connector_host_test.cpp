@@ -6,6 +6,7 @@
 #include "../../apps/plaza2_day_observer_profile.hpp"
 #include "plaza2_trade/fixtures/cgate99_messages.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 #include <array>
@@ -88,6 +89,35 @@ Plaza2HostConfig config_for(const test::RuntimeFixturePaths& f) {
     return config;
 }
 
+Plaza2HostConfig read_only_config_for(const test::RuntimeFixturePaths& f) {
+    Plaza2HostConfigInputs inputs;
+    inputs.purpose = HostPurpose::Qualify;
+    inputs.read_only_market_data = true;
+    inputs.runtime_root = f.root;
+    inputs.library_path = f.library_path;
+    inputs.scheme_dir = f.scheme_dir;
+    inputs.config_dir = f.config_dir;
+    inputs.env_open_settings = "ini=config/t1.ini;key=00000000";
+    inputs.credentials_env_var = "MOEX_READONLY_MISSING_CREDENTIAL";
+    inputs.software_key_env_var = "MOEX_PLAZA2_CGATE_SOFTWARE_KEY";
+    inputs.expected_spectra_release = "SPECTRA93";
+    inputs.isin_id = 1001;
+    inputs.session_id = 321;
+    inputs.arm_state = {.test_network_armed = true, .test_session_armed = true, .test_plaza2_armed = true};
+    inputs.journal_root = f.root / "readonly-journals";
+    auto config = build_plaza2_host_config(inputs);
+    config.transport.host.process_timeout_ms = 0;
+    config.market_data_now = [] { return std::chrono::system_clock::time_point{std::chrono::seconds{1700000100}}; };
+    config.target_underlying_board = "RFUD";
+    config.target_currency = "RUB";
+    config.order.profile_enabled = false;
+    config.order.profile_id.clear();
+    config.order.profile_fingerprint.clear();
+    config.order.base_contract_code.clear();
+    config.order.price.clear();
+    return config;
+}
+
 struct QualificationObserver final : cg::Plaza2QualificationObserver, cg::Plaza2Aggr20QualificationObserver {
     std::size_t events{}, commits{}, forensic_rows{};
     bool forensic_identity{}, forensic_equal{true};
@@ -158,6 +188,37 @@ void verify_effective_listener_scheme_profiles() {
                   "eight-stream trading profile derives six client-scheme and two server-scheme listeners");
     test::require(host.aggr20_stream.settings.find("FORTS_AGGR20_REPL") != std::string::npos,
                   "configured AGGR listener remains part of the eight-stream profile");
+    test::require(host.trade_replay_from_pos_anchor && !host.publisher_settings.empty() &&
+                      !host.p2mqreply_settings.empty() && host.publisher_name == "scheme-policy-test",
+                  "trading profile retains POS anchoring and publisher/reply settings");
+
+    inputs.read_only_market_data = true;
+    inputs.broker_code.clear();
+    inputs.client_code.clear();
+    const auto read_only = build_plaza2_host_config(inputs);
+    const auto& read_host = read_only.transport.host;
+    std::size_t read_only_client_scheme_count =
+        uses_explicit_client_scheme(read_host.private_streams.front().settings) ? 1U : 0U;
+    read_only_client_scheme_count += uses_explicit_client_scheme(read_host.aggr20_stream.settings) ? 1U : 0U;
+    test::require(
+        read_host.private_streams.size() == 1 &&
+            read_host.private_streams.front().stream_code == moex::plaza2::generated::StreamCode::kFortsRefdataRepl &&
+            read_host.status_streams.size() == 2 &&
+            read_host.status_streams[0].stream_code == moex::plaza2::generated::StreamCode::kFortsSessionstateRepl &&
+            read_host.status_streams[1].stream_code == moex::plaza2::generated::StreamCode::kFortsInstrumentstateRepl &&
+            read_host.aggr20_stream.stream_code == moex::plaza2::generated::StreamCode::kFortsAggrRepl &&
+            read_only_client_scheme_count == 2 &&
+            uses_explicit_client_scheme(read_host.private_streams.front().settings) &&
+            uses_explicit_client_scheme(read_host.aggr20_stream.settings) &&
+            !uses_explicit_client_scheme(read_host.status_streams[0].settings) &&
+            !uses_explicit_client_scheme(read_host.status_streams[1].settings),
+        "read-only DTC profile builds exactly REFDATA, two status streams and AGGR with 2/2 scheme policy");
+    test::require(!read_host.trade_replay_from_pos_anchor && read_host.publisher_name.empty() &&
+                      read_host.publisher_settings.empty() && read_host.publisher_open_settings.empty() &&
+                      read_host.p2mqreply_settings.empty() && read_host.p2mqreply_open_settings.empty() &&
+                      read_only.order.broker_code.empty() && read_only.order.client_code.empty() &&
+                      read_only.transport.observation_client_code.empty(),
+                  "read-only DTC config has no trading topology and needs no broker/client identity");
 }
 
 using DtcBytes = std::vector<std::uint8_t>;
@@ -946,15 +1007,11 @@ int main(int argc, char** argv) {
             }
             test::require(!host.stop(), "target-scoped DTC source host stop");
         }
-        // Phase5 uses a separate strict-readonly transport mode. The source
-        // still owns the five private/AGGR read-side streams, but must never
+        // The read-only DTC transport owns exactly REFDATA, two status and
+        // AGGR listeners, and must never
         // create publisher or p2mqreply handles or reach an order API.
         {
-            auto config = config_for(fixture);
-            config.target_underlying_board = "RFUD";
-            config.target_currency = "RUB";
-            config.read_only_market_data = true;
-            config.transport.host.read_only_market_data = true;
+            auto config = read_only_config_for(fixture);
             // Read-only startup must not require an exchange/order credential
             // when the rendered CGate settings use only the router-authenticated
             // connection and software key. Keep the order profile empty too:
@@ -969,6 +1026,9 @@ int main(int argc, char** argv) {
             config.order.price.clear();
             config.order.broker_code.clear();
             config.order.client_code.clear();
+            const auto audit_path = fixture.root / "readonly-listener-audit.log";
+            std::filesystem::remove(audit_path);
+            ::setenv("MOEX_FAKE_CAPTURE_AUDIT", audit_path.c_str(), 1);
             std::filesystem::create_directories(config.order.journal_root);
             {
                 std::ofstream checkpoint(config.order.journal_root / "persistent_session.json");
@@ -988,6 +1048,10 @@ int main(int argc, char** argv) {
             test::require(data.valid && data.target_authoritative && data.underlying_board == "RFUD" &&
                               data.currency == "RUB",
                           "readonly ConnectorHost keeps authoritative target market data");
+            test::require(snapshot.state == ConnectorHostState::Started && snapshot.private_streams_ready &&
+                              snapshot.private_snapshot_state_ready && snapshot.aggr_ready &&
+                              !snapshot.observation_ready,
+                          "read-only data gates reach readiness without claiming trading observation readiness");
             test::require(!snapshot.publisher_handle_open && !snapshot.reply_handle_open &&
                               snapshot.transport_health.publisher == 0 && snapshot.transport_health.reply == 0 &&
                               snapshot.publisher_calls.msgnew == 0 && snapshot.publisher_calls.post == 0,
@@ -1027,8 +1091,102 @@ int main(int argc, char** argv) {
             test::require(after.publisher_calls.msgnew == 0 && after.publisher_calls.post == 0,
                           "readonly order attempts do not reach publisher calls");
             test::require(!host.stop(), "readonly ConnectorHost TEST stop");
+            ::unsetenv("MOEX_FAKE_CAPTURE_AUDIT");
+            std::ifstream audit_input(audit_path);
+            std::vector<std::string> audit_lines;
+            std::string audit_line;
+            while (std::getline(audit_input, audit_line))
+                audit_lines.push_back(audit_line);
+            const auto calls_for = [&](std::string_view call, std::string_view service) {
+                return std::count_if(audit_lines.begin(), audit_lines.end(), [&](const auto& line) {
+                    return line.starts_with(std::string(call) + " ") && line.find(service) != std::string::npos;
+                });
+            };
+            test::require(std::count_if(audit_lines.begin(), audit_lines.end(),
+                                        [](const auto& line) { return line.starts_with("cg_lsn_new "); }) == 4,
+                          "fake CGate runtime proves exactly four listener creations");
+            for (const auto [service, expected_opens] :
+                 {std::pair<std::string_view, std::size_t>{"FORTS_REFDATA_REPL", 1},
+                  {"FORTS_SESSIONSTATE_REPL", 2},
+                  {"FORTS_INSTRUMENTSTATE_REPL", 2},
+                  {"FORTS_AGGR20_REPL", 1}}) {
+                test::require(
+                    calls_for("cg_lsn_new", service) == 1 && calls_for("cg_lsn_open", service) == expected_opens,
+                    std::string("read-only runtime creates and opens required service: ") + std::string(service));
+            }
+            const auto audit_text = [&] {
+                std::string text;
+                for (const auto& line : audit_lines)
+                    text += line + '\n';
+                return text;
+            }();
+            test::require(audit_text.find("FORTS_TRADE_REPL") == std::string::npos &&
+                              audit_text.find("FORTS_USERORDERBOOK_REPL") == std::string::npos &&
+                              audit_text.find("FORTS_POS_REPL") == std::string::npos &&
+                              audit_text.find("FORTS_PART_REPL") == std::string::npos &&
+                              audit_text.find("cg_pub_new") == std::string::npos &&
+                              audit_text.find("cg_pub_open") == std::string::npos &&
+                              audit_text.find("p2mqreply://") == std::string::npos,
+                          "runtime evidence proves read-only mode never creates private order/account listeners or "
+                          "publisher/reply");
             std::filesystem::remove(config.order.journal_root / "persistent_session.json");
             std::filesystem::remove(config.order.journal_root / "persistent_session.json.required");
+        }
+        // These services may be unavailable without affecting the minimal
+        // read-side contract because no listener is configured for them.
+        for (const auto service :
+             {"FORTS_TRADE_REPL", "FORTS_USERORDERBOOK_REPL", "FORTS_POS_REPL", "FORTS_PART_REPL"}) {
+            auto config = read_only_config_for(fixture);
+            ::setenv("MOEX_FAKE_LISTENER_OPEN_NO_SERVICE", service, 1);
+            ConnectorHost host(config);
+            const auto start = host.start();
+            ::unsetenv("MOEX_FAKE_LISTENER_OPEN_NO_SERVICE");
+            test::require(!start, std::string("read-only start does not depend on absent service ") + service);
+            dtc::ConnectorHostDtcMarketDataSource source(host);
+            for (unsigned i = 0; i < 12 && !source.snapshot().valid; ++i)
+                test::require(!host.poll(), std::string("read-only poll without absent service ") + service);
+            test::require(source.snapshot().valid && host.snapshot().private_streams_ready &&
+                              host.snapshot().aggr_ready,
+                          std::string("read-only DTC authority succeeds without absent service ") + service);
+            test::require(!host.stop(), "stop read-only host with unrelated absent service");
+        }
+        // Loss of each configured read source must immediately fence DTC
+        // authority and return only after a fresh listener generation.
+        for (const auto service :
+             {"FORTS_REFDATA_REPL", "FORTS_SESSIONSTATE_REPL", "FORTS_INSTRUMENTSTATE_REPL", "FORTS_AGGR20_REPL"}) {
+            auto now = std::chrono::steady_clock::now();
+            auto config = read_only_config_for(fixture);
+            config.transport.host.recovery_now = [&now] { return now; };
+            ConnectorHost host(config);
+            test::require(!host.start(), std::string("read-only recovery host start: ") + service);
+            dtc::ConnectorHostDtcMarketDataSource source(host);
+            for (unsigned i = 0; i < 12 && !source.snapshot().valid; ++i)
+                test::require(!host.poll(), std::string("read-only recovery bootstrap: ") + service);
+            const auto before = host.snapshot();
+            test::require(source.snapshot().valid && before.private_streams_ready && before.aggr_ready,
+                          std::string("read-only recovery starts from ready state: ") + service);
+            if (std::string_view(service) == "FORTS_AGGR20_REPL")
+                ::setenv("MOEX_FAKE_AGGR_ERROR_AFTER_READY", "1", 1);
+            else
+                ::setenv("MOEX_FAKE_PRIVATE_ERROR_STREAM_AFTER_READY", service, 1);
+            test::require(!host.poll(), std::string("read-only listener loss is recoverable: ") + service);
+            ::unsetenv("MOEX_FAKE_AGGR_ERROR_AFTER_READY");
+            ::unsetenv("MOEX_FAKE_PRIVATE_ERROR_STREAM_AFTER_READY");
+            const auto lost = host.snapshot();
+            test::require(lost.state == ConnectorHostState::Recovering && !lost.private_streams_ready &&
+                              !lost.aggr_ready && !source.snapshot().valid &&
+                              !host.market_data_snapshot().market_data_display_allowed,
+                          std::string("read-side authority is revoked on loss of ") + service);
+            now += std::chrono::seconds(1);
+            for (unsigned i = 0; i < 24 && !source.snapshot().valid; ++i)
+                test::require(!host.poll(), std::string("read-only source recovery: ") + service);
+            const auto recovered = host.snapshot();
+            test::require(source.snapshot().valid && recovered.state == ConnectorHostState::Started &&
+                              recovered.recovery.generation == before.recovery.generation + 1 &&
+                              recovered.private_streams_ready && recovered.private_snapshot_state_ready &&
+                              recovered.aggr_ready && !recovered.observation_ready,
+                          std::string("read-only authority returns only after fresh complete recovery: ") + service);
+            test::require(!host.stop(), "stop read-only recovered host");
         }
         {
             ::setenv("MOEX_FAKE_AGGR_ONE_SIDED", "1", 1);

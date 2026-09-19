@@ -17,39 +17,46 @@
 ## Product and demonstration boundary
 
 - Certificate target: Connector / MoexConnector; legal product name and final release identity require user confirmation.
-- Current demonstration: Read-only market-data demo. Kairos is external UI, not certificate target. Order-entry/live qualification is unproven.
+- Current demonstration: Read-only DTC market-data demo. Kairos is external UI, not certificate target; order-entry/live qualification unproven.
 - Trading: AddOrder/DelOrder exist only in armed TEST path; disabled in read-only runner and not live-qualified.
 - FullOrderLog: Separate deferred phase; not part of the current read-only demonstration.
 
 ## Effective receive-scheme policy
 
-Explicit ;scheme= selects the named client scheme; a bare stream URL uses server-side scheme. Listener creation forwards URLs unchanged.
+Explicit ;scheme= means client scheme; bare URLs use server scheme. READ_ONLY_DTC_PROFILE=4 listeners;
+  TRADING_CONNECTOR_PROFILE=8+pub/reply.
+
+| Profile | Replication listeners | Publisher | p2mqreply | POS→TRADE anchor |
+| --- | ---: | --- | --- | --- |
+| `READ_ONLY_DTC_PROFILE` | 4 | no | no | no |
+| `TRADING_CONNECTOR_PROFILE` | 8 | yes | yes | yes |
 
 | Profile | Service | Scheme alias | Effective policy |
 | --- | --- | --- | --- |
-| Four-stream read-only | `FORTS_AGGR20_REPL` | `Aggr` | `CLIENT_EXPLICIT` |
-| Four-stream read-only | `FORTS_REFDATA_REPL` | `REFDATA` | `CLIENT_EXPLICIT` |
-| Four-stream read-only | `FORTS_SESSIONSTATE_REPL` | `server default` | `SERVER_DEFAULT` |
-| Four-stream read-only | `FORTS_INSTRUMENTSTATE_REPL` | `server default` | `SERVER_DEFAULT` |
-| Four-stream read-only | *initial open arguments* | — | `mode=snapshot+online` |
-| Eight-stream ConnectorHost | `FORTS_TRADE_REPL` | `Trade` | `CLIENT_EXPLICIT` |
-| Eight-stream ConnectorHost | `FORTS_USERORDERBOOK_REPL` | `OrdBook` | `CLIENT_EXPLICIT` |
-| Eight-stream ConnectorHost | `FORTS_POS_REPL` | `POS` | `CLIENT_EXPLICIT` |
-| Eight-stream ConnectorHost | `FORTS_PART_REPL` | `PART` | `CLIENT_EXPLICIT` |
-| Eight-stream ConnectorHost | `FORTS_REFDATA_REPL` | `REFDATA` | `CLIENT_EXPLICIT` |
-| Eight-stream ConnectorHost | `FORTS_SESSIONSTATE_REPL` | `server default` | `SERVER_DEFAULT` |
-| Eight-stream ConnectorHost | `FORTS_INSTRUMENTSTATE_REPL` | `server default` | `SERVER_DEFAULT` |
-| Eight-stream ConnectorHost | `FORTS_AGGR20_REPL` | `Aggr` | `CLIENT_EXPLICIT` |
-| Eight-stream ConnectorHost | *initial open arguments* | — | `ConnectorHost open_settings is empty; do not infer mode. TRADE may reopen from a POS replstate anchor.` |
+| `READ_ONLY_DTC_PROFILE` | `FORTS_AGGR20_REPL` | `Aggr` | `CLIENT_EXPLICIT` |
+| `READ_ONLY_DTC_PROFILE` | `FORTS_REFDATA_REPL` | `REFDATA` | `CLIENT_EXPLICIT` |
+| `READ_ONLY_DTC_PROFILE` | `FORTS_SESSIONSTATE_REPL` | `server default` | `SERVER_DEFAULT` |
+| `READ_ONLY_DTC_PROFILE` | `FORTS_INSTRUMENTSTATE_REPL` | `server default` | `SERVER_DEFAULT` |
+| `READ_ONLY_DTC_PROFILE` | *initial open arguments* | — | `empty for all four listeners; do not infer negotiated mode without a current-candidate OPEN receipt` |
+| `TRADING_CONNECTOR_PROFILE` | `FORTS_TRADE_REPL` | `Trade` | `CLIENT_EXPLICIT` |
+| `TRADING_CONNECTOR_PROFILE` | `FORTS_USERORDERBOOK_REPL` | `OrdBook` | `CLIENT_EXPLICIT` |
+| `TRADING_CONNECTOR_PROFILE` | `FORTS_POS_REPL` | `POS` | `CLIENT_EXPLICIT` |
+| `TRADING_CONNECTOR_PROFILE` | `FORTS_PART_REPL` | `PART` | `CLIENT_EXPLICIT` |
+| `TRADING_CONNECTOR_PROFILE` | `FORTS_REFDATA_REPL` | `REFDATA` | `CLIENT_EXPLICIT` |
+| `TRADING_CONNECTOR_PROFILE` | `FORTS_SESSIONSTATE_REPL` | `server default` | `SERVER_DEFAULT` |
+| `TRADING_CONNECTOR_PROFILE` | `FORTS_INSTRUMENTSTATE_REPL` | `server default` | `SERVER_DEFAULT` |
+| `TRADING_CONNECTOR_PROFILE` | `FORTS_AGGR20_REPL` | `Aggr` | `CLIENT_EXPLICIT` |
+| `TRADING_CONNECTOR_PROFILE` | *initial open arguments* | — | `empty for initial listeners; do not infer negotiated mode. TRADE may reopen from a POS replstate anchor.` |
 
-The effective-profile guard derives listener policy from configured URLs: four-stream profile = 2 explicit / 2
-  server-default; eight-stream profile = 6 explicit / 2 server-default. No URL changed.
+The effective-profile guard derives listener policy from ConnectorHost's configured URLs:
+  READ_ONLY_DTC_PROFILE = 2 explicit / 2 server-default; TRADING_CONNECTOR_PROFILE = 6 explicit / 2
+  server-default. The day observer is a separate program, not the DTC runner's topology source.
 
-### OrdBook alias limitation
+### TRADING_CONNECTOR_PROFILE OrdBook alias limitation
 
 Pinned OrdBook: orders/multileg_orders have 17/19 fields; USERORDERBOOK has 39/40. Equivalence is unproven;
-  OrderBook is absent. Do not guess-rename or claim full-profile qualification. Validate exact OPEN.
-  Four-stream observer has no USERORDERBOOK listener.
+  OrderBook is absent. TRADING_CONNECTOR_PROFILE only; validate exact OPEN. READ_ONLY_DTC_PROFILE has no
+  USERORDERBOOK listener and is unaffected.
 
 ## Current scheme inventory, requested streams, and consumed tables
 
@@ -153,10 +160,10 @@ Each row resolves its source, automated test, and live evidence through the evid
 - Proposed answer: CGate receives SPECTRA data. Demo: read-only DTC/AGGR. AddOrder/DelOrder are separate,
   unqualified TEST path; FullOrderLog deferred.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
@@ -177,16 +184,16 @@ Each row resolves its source, automated test, and live evidence through the evid
 - Proposed answer: Kairos is an external demonstration client/UI, not the certificate target. This read-only
   demonstration does not prove an order-entry UI.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 
 ### 1h — Клиентские подключения к ВПТС
 
-- Proposed answer: DTC accepts one active loopback client, separate from the CGate router. Commercial
-  distribution/customer count needs user input.
+- Proposed answer: READ_ONLY_DTC_PROFILE: one loopback DTC client, separate from CGate.
+  TRADING_CONNECTOR_PROFILE customer counts need user input.
 - Status: `implemented`
 - Source: `connectors/connector_host/src/dtc_read_only_server.cpp`,
   `connectors/connector_host/src/dtc_market_data.cpp`, `apps/moex_connector_host_dtc_runner.cpp`
@@ -201,10 +208,10 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 - Proposed answer: No for the present SPECTRA derivatives scope; no RFS stream is configured.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -215,10 +222,10 @@ Each row resolves its source, automated test, and live evidence through the evid
 - Proposed answer: TEST credentials are deployment inputs. DTC/local logon is not venue authorization.
   Deployment/account policy needs user decision.
 - Status: `user-input`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `connectors/connector_host/src/dtc_read_only_server.cpp`,
   `connectors/connector_host/src/dtc_market_data.cpp`, `apps/moex_connector_host_dtc_runner.cpp`
@@ -292,10 +299,10 @@ Each row resolves its source, automated test, and live evidence through the evid
 - Proposed answer: Proposed certification scope: SPECTRA derivatives. Do not check ASTS or RFS based on
   unrelated source artifacts.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -332,24 +339,24 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.i — Имя соединения и URL
 
-- Proposed answer: Use sanitized deployment settings. One local p2tcp CGate connection/eight listeners; DTC is
-  separate loopback, not Plaza. Omit credentials.
+- Proposed answer: READ_ONLY_DTC_PROFILE: 1 p2tcp/4 listeners + DTC loopback. TRADING_CONNECTOR_PROFILE: 1
+  p2tcp/8 listeners + pub/reply. Sanitize.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 
 ### 2a.ii — Максимальное количество соединений
 
-- Proposed answer: ConnectorHost has one CGate connection and eight listeners. DTC has one active client slot;
-  listeners are not router connections.
+- Proposed answer: READ_ONLY_DTC_PROFILE: 1 router/4 listeners + DTC client. TRADING_CONNECTOR_PROFILE: 1
+  router/8 listeners + pub/reply.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `connectors/connector_host/src/dtc_read_only_server.cpp`,
   `connectors/connector_host/src/dtc_market_data.cpp`, `apps/moex_connector_host_dtc_runner.cpp`
@@ -359,23 +366,24 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.iii — Тип соединения TCP/LRPC
 
-- Proposed answer: TCP (p2tcp) is configured; LRPC is not configured or claimed.
+- Proposed answer: Both profiles (READ_ONLY_DTC_PROFILE, TRADING_CONNECTOR_PROFILE) use TCP (p2tcp); no LRPC
+  claim. DTC uses separate loopback TCP.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 
 ### 2a.iv — Предназначение соединения
 
-- Proposed answer: Read path: replication/reference/status/private market data. Publisher/replies/order
-  commands belong only to the separate trading profile.
+- Proposed answer: READ_ONLY_DTC_PROFILE receives four read streams; TRADING_CONNECTOR_PROFILE adds
+  private/account, publisher/reply and TEST order paths.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`,
   `protocols/plaza2_cgate/src/plaza2_runtime.cpp`, `connectors/plaza2_trade/src/plaza2_order_lifecycle.cpp`
@@ -385,13 +393,13 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.01 — FORTS_TRADE_REPL checkbox
 
-- Proposed answer: Selected in the eight-stream ConnectorHost profile; own order/trade reconciliation, not
-  public tape.
+- Proposed answer: Selected only in TRADING_CONNECTOR_PROFILE for own-order/trade reconciliation; not public
+  tape.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `protocols/plaza2_cgate/src/plaza2_private_state.cpp`,
   `connectors/connector_host/src/connector_host.cpp`
@@ -400,12 +408,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.02 — FORTS_COMMON_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -413,12 +421,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.03 — FORTS_VM_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -434,12 +442,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.05 — FORTS_AGGRXX_REPL checkbox
 
-- Proposed answer: Selected as the actual FORTS_AGGR20_REPL service (scheme alias Aggr).
+- Proposed answer: Selected in both profiles as FORTS_AGGR20_REPL (scheme alias Aggr).
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp`,
   `protocols/plaza2_cgate/src/plaza2_aggr20_authority_probe.cpp`
@@ -448,12 +456,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.06 — FORTS_VOLAT_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -461,13 +469,13 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.07 — FORTS_DEALS_REPL checkbox
 
-- Proposed answer: Not selected; the current AGGR read-only product path does not use this separate public
+- Proposed answer: Not selected in either profile; READ_ONLY_DTC_PROFILE uses AGGR20, not this separate public
   trade stream.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -475,12 +483,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.08 — FORTS_POS_REPL checkbox
 
-- Proposed answer: Selected in the eight-stream profile; not part of the four-stream day observer.
+- Proposed answer: Selected only in TRADING_CONNECTOR_PROFILE; not part of READ_ONLY_DTC_PROFILE.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `protocols/plaza2_cgate/src/plaza2_private_state.cpp`,
   `connectors/connector_host/src/connector_host.cpp`
@@ -489,12 +497,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.09 — FORTS_RISKINFOBLACK_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -502,12 +510,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.10 — FORTS_FEE_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -515,12 +523,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.11 — FORTS_PART_REPL checkbox
 
-- Proposed answer: Selected in the eight-stream profile.
+- Proposed answer: Selected only in TRADING_CONNECTOR_PROFILE.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `protocols/plaza2_cgate/src/plaza2_private_state.cpp`,
   `connectors/connector_host/src/connector_host.cpp`
@@ -529,12 +537,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.12 — FORTS_RISKINFOBACH_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -542,12 +550,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.13 — FORTS_FEERATE_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -555,17 +563,20 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.14 — FORTS_REFDATA_REPL checkbox (first printed entry)
 
-- Proposed answer: Selected in both profiles; configured with explicit client scheme alias REFDATA.
+- Proposed answer: Selected in both READ_ONLY_DTC_PROFILE and TRADING_CONNECTOR_PROFILE; explicit client
+  scheme alias REFDATA.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
-- Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`, `apps/plaza2_day_observer_profile.hpp`,
+- Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`,
   `connectors/connector_host/src/operator_config.cpp`,
+  `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`,
   `spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json`
-- Automated test/evidence: connector_host_test effective-profile guard; plaza2_scheme_drift_test
+- Automated test/evidence: connector_host_test effective-profile guard and fake listener audit; runtime
+  scheme-lock checks; plaza2_scheme_drift_test
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE; no negotiated listener OPEN receipt
 - Source: `spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json`,
   `protocols/plaza2_cgate/src/plaza2_private_state.cpp`, `protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp`
@@ -574,12 +585,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.15 — FORTS_INFO_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -587,12 +598,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.16 — FORTS_BROKER_FEE_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -600,12 +611,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.17 — FORTS_MISCINFO_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -613,12 +624,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.18 — FORTS_TNPENALTY_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -626,12 +637,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.19 — FORTS_BROKER_FEE_PARAMS_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -639,12 +650,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.20 — FORTS_MM_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -652,12 +663,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.21 — MOEX_RATES_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -665,18 +676,20 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.22 — FORTS_USERORDERBOOK_REPL checkbox
 
-- Proposed answer: Selected in the eight-stream profile. OrdBook equivalence to USERORDERBOOK layout is
-  unproven; do not claim profile qualification.
+- Proposed answer: TRADING_CONNECTOR_PROFILE only. OrdBook/USERORDERBOOK layout equivalence is unproven;
+  qualification is pending.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
-- Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`, `apps/plaza2_day_observer_profile.hpp`,
+- Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`,
   `connectors/connector_host/src/operator_config.cpp`,
+  `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`,
   `spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json`
-- Automated test/evidence: connector_host_test effective-profile guard; plaza2_scheme_drift_test
+- Automated test/evidence: connector_host_test effective-profile guard and fake listener audit; runtime
+  scheme-lock checks; plaza2_scheme_drift_test
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE; no negotiated listener OPEN receipt
 - Source: `protocols/plaza2_cgate/src/plaza2_private_state.cpp`,
   `connectors/connector_host/src/connector_host.cpp`
@@ -685,12 +698,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.23 — FORTS_CLR_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -698,12 +711,12 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.24 — FORTS_FORECASTIM_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -714,25 +727,27 @@ Each row resolves its source, automated test, and live evidence through the evid
 - Proposed answer: Not selected. This is not the configured FORTS_USERORDERBOOK_REPL service; do not conflate
   names.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
-- Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`, `apps/plaza2_day_observer_profile.hpp`,
+- Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`,
   `connectors/connector_host/src/operator_config.cpp`,
+  `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`,
   `spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json`
-- Automated test/evidence: connector_host_test effective-profile guard; plaza2_scheme_drift_test
+- Automated test/evidence: connector_host_test effective-profile guard and fake listener audit; runtime
+  scheme-lock checks; plaza2_scheme_drift_test
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE; no negotiated listener OPEN receipt
 
 ### 2a.stream.26 — RTS_INDEX_REPL checkbox
 
-- Proposed answer: Not selected in the current profile.
+- Proposed answer: Not selected in either ConnectorHost profile.
 - Status: `not-in-scope`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: None; user-owned answer.
 - Automated test/evidence: NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE
@@ -788,13 +803,13 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2a.stream.33 — FORTS_REFDATA_REPL checkbox (second printed entry)
 
-- Proposed answer: Preserved as printed; same REFDATA stream as entry 14, not a second listener or separate
-  table request.
+- Proposed answer: Preserved as printed; same REFDATA stream selected by both profiles as entry 14, not a
+  second listener or separate table request.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json`,
   `protocols/plaza2_cgate/src/plaza2_private_state.cpp`, `protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp`
@@ -810,25 +825,25 @@ Each row resolves its source, automated test, and live evidence through the evid
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
 - Automated test/evidence: plaza2_scheme_drift_test; connector_host_test
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 
 ### 2b.II — Threads and purposes
 
-- Proposed answer: CGate owner polls and updates state; commands are separate armed profile only. Observer/DTC
-  do not publish.
+- Proposed answer: READ_ONLY_DTC_PROFILE never publishes. Commands exist only in armed
+  TRADING_CONNECTOR_PROFILE TEST mode.
 - Status: `implemented`
 - Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
 - Automated test/evidence: plaza2_scheme_drift_test; connector_host_test
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `connectors/connector_host/src/dtc_read_only_server.cpp`,
   `connectors/connector_host/src/dtc_market_data.cpp`, `apps/moex_connector_host_dtc_runner.cpp`
@@ -858,17 +873,20 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2c.I.1 — Replication stream names and initialization URLs
 
-- Proposed answer: Use both inventories. Status streams are ‘Другие потоки’. Sanitize deployment endpoints.
+- Proposed answer: Inventories: READ_ONLY_DTC_PROFILE and TRADING_CONNECTOR_PROFILE. Status streams are
+  ‘Другие потоки’; sanitize URLs.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
-- Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`, `apps/plaza2_day_observer_profile.hpp`,
+- Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`,
   `connectors/connector_host/src/operator_config.cpp`,
+  `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`,
   `spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json`
-- Automated test/evidence: connector_host_test effective-profile guard; plaza2_scheme_drift_test
+- Automated test/evidence: connector_host_test effective-profile guard and fake listener audit; runtime
+  scheme-lock checks; plaza2_scheme_drift_test
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE; no negotiated listener OPEN receipt
 - Source: `spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json`,
   `protocols/plaza2_cgate/src/plaza2_private_state.cpp`, `protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp`
@@ -877,13 +895,13 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2c.I.2 — Open/subscription mode per stream
 
-- Proposed answer: Observer opens snapshot+online. ConnectorHost mode is unknown until OPEN; TRADE may reopen
-  from POS replstate.
+- Proposed answer: Both profiles pass empty initial open-settings; negotiated mode awaits current-candidate
+  OPEN. POS-anchored TRADE reopen is trading-only.
 - Status: `implemented`
-- Source: `apps/plaza2_day_observer.cpp`, `apps/plaza2_day_observer_profile.hpp`,
-  `connectors/connector_host/src/operator_config.cpp`,
+- Source: `apps/moex_connector_host_dtc_runner.cpp`, `connectors/connector_host/src/operator_config.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
-- Automated test/evidence: connector_host_test; plaza2_day_observer_fixture
+- Automated test/evidence: connector_host_test (profile, runtime listener audit/recovery);
+  plaza2_trade_transport_scenarios_test (topology)
 - Live evidence: NOT_RUN_ON_CURRENT_CANDIDATE
 - Source: `protocols/plaza2_cgate/src/plaza2_runtime.cpp`,
   `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`
@@ -930,8 +948,8 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2d.I — Commands sent to the trading system
 
-- Proposed answer: Only AddOrder/DelOrder exist in armed TEST path. Read-only observer/DTC has no
-  publisher/order surface; other commands are not claimed.
+- Proposed answer: AddOrder/DelOrder exist only in armed TRADING_CONNECTOR_PROFILE TEST mode.
+  READ_ONLY_DTC_PROFILE has no order surface.
 - Status: `implemented`
 - Source: `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`,
   `protocols/plaza2_cgate/src/plaza2_runtime.cpp`, `connectors/plaza2_trade/src/plaza2_order_lifecycle.cpp`
@@ -957,8 +975,7 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 2d.III — Message allocation and destruction
 
-- Proposed answer: Publisher uses cg_pub_msgnew/post/cg_pub_msgfree, then closes/destroys its handle.
-  Read-only mode creates no publisher.
+- Proposed answer: TRADING_CONNECTOR_PROFILE owns publisher calls; READ_ONLY_DTC_PROFILE creates no publisher.
 - Status: `implemented`
 - Source: `connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp`,
   `protocols/plaza2_cgate/src/plaza2_runtime.cpp`, `connectors/plaza2_trade/src/plaza2_order_lifecycle.cpp`
@@ -973,8 +990,8 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 3a.I — Trading-stream heartbeats
 
-- Proposed answer: TRADE heartbeat rows are consumed for stream health/time in the full profile. No claim is
-  made for heartbeat support on unconfigured streams.
+- Proposed answer: TRADING_CONNECTOR_PROFILE consumes TRADE heartbeats; READ_ONLY_DTC_PROFILE has no TRADE
+  listener.
 - Status: `implemented`
 - Source: `protocols/plaza2_cgate/src/plaza2_private_state.cpp`,
   `connectors/connector_host/src/connector_host.cpp`
@@ -987,8 +1004,8 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 3a.II — sys_events support
 
-- Proposed answer: Consume AGGR20/TRADE/PART events with generation/session/revision handling. Status
-  sys_events are not consumed product tables.
+- Proposed answer: TRADING_CONNECTOR_PROFILE: AGGR20/TRADE/PART. READ_ONLY_DTC_PROFILE: AGGR20 authority only;
+  status events are not product tables.
 - Status: `implemented`
 - Source: `protocols/plaza2_cgate/src/plaza2_private_state.cpp`,
   `connectors/connector_host/src/connector_host.cpp`
@@ -1013,8 +1030,8 @@ Each row resolves its source, automated test, and live evidence through the evid
 
 ### 3a.IV — Market information
 
-- Proposed answer: AGGR20 aggregated book: yes. COMMONS: no. Full order log: deferred; do not select options
-  just because listed.
+- Proposed answer: READ_ONLY_DTC_PROFILE: AGGR20 aggregated book. COMMONS: no. Full order log: deferred; do
+  not select options just because listed.
 - Status: `implemented`
 - Source: `protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp`,
   `protocols/plaza2_cgate/src/plaza2_aggr20_authority_probe.cpp`
@@ -1074,7 +1091,8 @@ Each row resolves its source, automated test, and live evidence through the evid
 - Capture the exact current-candidate OPEN and negotiated scheme for each configured listener, especially both
   server-scheme status streams.
 - Resolve the `OrdBook` versus USERORDERBOOK layout mismatch from an exact OPEN/client-scheme receipt before
-  claiming eight-stream qualification. Do not block the four-stream observer.
+  claiming trading-profile qualification. This limitation does not apply to READ_ONLY_DTC_PROFILE, which has
+  no USERORDERBOOK listener.
 - Confirm legal identity, certificate holder, release version, business use, distribution, contacts, intended
   sessions, and consent with the user.
 - Do not infer `conn_process` cadence from sleeps; collect a measured active/idle/recovery sample.

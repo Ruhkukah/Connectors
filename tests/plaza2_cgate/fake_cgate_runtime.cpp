@@ -1725,12 +1725,15 @@ void detach_listener(FakeConnection* connection, FakeListener* listener) {
 } // namespace
 
 namespace {
-void capture_audit(const char* name) {
+void capture_audit(const char* name, const char* detail = nullptr) {
     if (fake_flag("MOEX_FAKE_CAPTURE_NO_AUDIT"))
         return;
     if (const char* path = std::getenv("MOEX_FAKE_CAPTURE_AUDIT")) {
         std::ofstream out(path, std::ios::app);
-        out << name << '\n';
+        out << name;
+        if (detail != nullptr && *detail != '\0')
+            out << ' ' << detail;
+        out << '\n';
     }
 }
 unsigned capture_regular = 0, capture_multileg = 0;
@@ -2283,9 +2286,12 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
             connection->liveness_event_emitted = true;
             return kCgErrOk;
         }
-        const bool private_liveness = fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY") ||
-                                      fake_flag("MOEX_FAKE_PRIVATE_LIFENUM_AFTER_READY") ||
-                                      fake_flag("MOEX_FAKE_PRIVATE_ERROR_AFTER_READY");
+        const char* targeted_private_error = std::getenv("MOEX_FAKE_PRIVATE_ERROR_STREAM_AFTER_READY");
+        const bool targeted_private_error_configured =
+            targeted_private_error != nullptr && *targeted_private_error != '\0';
+        const bool private_liveness =
+            targeted_private_error_configured || fake_flag("MOEX_FAKE_PRIVATE_CLOSE_AFTER_READY") ||
+            fake_flag("MOEX_FAKE_PRIVATE_LIFENUM_AFTER_READY") || fake_flag("MOEX_FAKE_PRIVATE_ERROR_AFTER_READY");
         const bool aggr_liveness =
             fake_flag("MOEX_FAKE_AGGR_CLOSE_AFTER_READY") || fake_flag("MOEX_FAKE_AGGR_LIFENUM_AFTER_READY") ||
             fake_flag("MOEX_FAKE_AGGR_CLEAR_AFTER_READY") || fake_flag("MOEX_FAKE_AGGR_ERROR_AFTER_READY");
@@ -2298,7 +2304,11 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
                 if ((is_aggr && !aggr_liveness) || (!is_aggr && !private_liveness)) {
                     continue;
                 }
-                if ((is_aggr && fake_flag("MOEX_FAKE_AGGR_ERROR_AFTER_READY")) ||
+                const bool targeted_error = !is_aggr && targeted_private_error_configured &&
+                                            listener->settings.find(targeted_private_error) != std::string::npos;
+                if (!is_aggr && targeted_private_error_configured && !targeted_error)
+                    continue;
+                if ((is_aggr && fake_flag("MOEX_FAKE_AGGR_ERROR_AFTER_READY")) || targeted_error ||
                     (!is_aggr && fake_flag("MOEX_FAKE_PRIVATE_ERROR_AFTER_READY"))) {
                     if (!is_aggr && fake_flag("MOEX_FAKE_SINGLE_PRIVATE_ERROR") &&
                         listener->stream_code != StreamCode::kFortsPosRepl)
@@ -2469,7 +2479,7 @@ std::uint32_t cg_conn_getstate(void* conn, std::uint32_t* state) {
 }
 
 std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback callback, void* data, void** lsnptr) {
-    capture_audit("cg_lsn_new");
+    capture_audit("cg_lsn_new", settings);
     if (!g_env_open || conn == nullptr || settings == nullptr || callback == nullptr || lsnptr == nullptr) {
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
     }
@@ -2559,13 +2569,13 @@ std::uint32_t cg_lsn_destroy(void* listener) {
 }
 
 std::uint32_t cg_lsn_open(void* listener, const char* settings) {
-    capture_audit("cg_lsn_open");
+    auto* typed = static_cast<FakeListener*>(listener);
+    capture_audit("cg_lsn_open", typed == nullptr ? nullptr : typed->settings.c_str());
     if (const auto result = configured_result("MOEX_FAKE_LISTENER_OPEN_RESULT"); result != kCgErrOk)
         return result;
     if (listener == nullptr) {
         return kCgErrInvalidArgument;
     }
-    auto* typed = static_cast<FakeListener*>(listener);
     typed->open_settings = settings ? settings : "";
     if (typed->stream_code == StreamCode::kFortsSessionstateRepl ||
         typed->stream_code == StreamCode::kFortsInstrumentstateRepl)
@@ -2666,7 +2676,7 @@ std::uint32_t cg_lsn_getscheme(void* listener, void** schemeptr) {
 }
 
 std::uint32_t cg_pub_new(void* conn, const char* settings, void** pubptr) {
-    capture_audit("cg_pub_new");
+    capture_audit("cg_pub_new", settings);
     if (conn == nullptr || settings == nullptr || pubptr == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2680,8 +2690,8 @@ std::uint32_t cg_pub_new(void* conn, const char* settings, void** pubptr) {
     return kCgErrOk;
 }
 
-std::uint32_t cg_pub_open(void* publisher, const char*) {
-    capture_audit("cg_pub_open");
+std::uint32_t cg_pub_open(void* publisher, const char* settings) {
+    capture_audit("cg_pub_open", settings);
     if (const auto result = configured_result("MOEX_FAKE_PUBLISHER_OPEN_RESULT"); result != kCgErrOk)
         return result;
     if (publisher == nullptr) {

@@ -712,9 +712,12 @@ struct ConnectorHost::Impl {
         out.connection_app_name = host.connection_app_name();
         out.transport_health = host.runtime_health();
         const auto& health = out.transport_health;
+        const bool transport_active = config.read_only_market_data ? health.valid && health.connection == 3 &&
+                                                                         health.aggr == 3 && health.private_active
+                                                                   : health.all_active();
         const bool live = host.started() && !host.recovering() && state != ConnectorHostState::Failed &&
                           state != ConnectorHostState::Recovering && state != ConnectorHostState::Stopping &&
-                          state != ConnectorHostState::Stopped && health.all_active();
+                          state != ConnectorHostState::Stopped && transport_active;
         out.publisher_handle_open = host.publisher_open();
         out.reply_handle_open = host.p2mqreply_open();
         out.publisher_ready = live && out.publisher_handle_open && health.publisher == 3;
@@ -733,18 +736,25 @@ struct ConnectorHost::Impl {
                          out.aggr_session_data_ready && out.aggr_target_authoritative;
         out.publisher_calls = host.publisher_call_counts();
         out.streams.assign(data.stream_health().begin(), data.stream_health().end());
-        constexpr std::array required{StreamCode::kFortsTradeRepl,
-                                      StreamCode::kFortsUserorderbookRepl,
-                                      StreamCode::kFortsPosRepl,
-                                      StreamCode::kFortsPartRepl,
-                                      StreamCode::kFortsRefdataRepl,
-                                      StreamCode::kFortsSessionstateRepl,
-                                      StreamCode::kFortsInstrumentstateRepl};
-        out.private_snapshot_state_ready = std::all_of(required.begin(), required.end(), [&](auto code) {
+        const auto snapshot_current = [&](auto code) {
             return std::count_if(out.streams.begin(), out.streams.end(), [&](const auto& row) {
                        return row.stream_code == code && row.online && row.snapshot_complete;
                    }) == 1;
-        });
+        };
+        if (config.read_only_market_data) {
+            constexpr std::array required{StreamCode::kFortsRefdataRepl, StreamCode::kFortsSessionstateRepl,
+                                          StreamCode::kFortsInstrumentstateRepl};
+            out.private_snapshot_state_ready = std::all_of(required.begin(), required.end(), snapshot_current);
+        } else {
+            constexpr std::array required{StreamCode::kFortsTradeRepl,
+                                          StreamCode::kFortsUserorderbookRepl,
+                                          StreamCode::kFortsPosRepl,
+                                          StreamCode::kFortsPartRepl,
+                                          StreamCode::kFortsRefdataRepl,
+                                          StreamCode::kFortsSessionstateRepl,
+                                          StreamCode::kFortsInstrumentstateRepl};
+            out.private_snapshot_state_ready = std::all_of(required.begin(), required.end(), snapshot_current);
+        }
         out.private_streams_ready = live && health.private_active && out.private_snapshot_state_ready;
         for (const auto& row : out.streams) {
             if (row.stream_code == StreamCode::kFortsUserorderbookRepl)
@@ -1041,7 +1051,8 @@ cg::Plaza2Error ConnectorHost::start() {
         c.order.environment != cg::Plaza2Environment::Test || c.transport.target_isin_id != c.order.isin_id ||
         c.order.isin_id <= 0 || c.transport.target_session_id <= 0 || c.transport.authorized_intent ||
         (c.read_only_market_data && c.purpose != HostPurpose::Qualify) ||
-        !c.transport.host.trade_replay_from_pos_anchor ||
+        (c.read_only_market_data ? c.transport.host.trade_replay_from_pos_anchor
+                                 : !c.transport.host.trade_replay_from_pos_anchor) ||
         (!c.read_only_market_data &&
          (c.transport.observation_client_code != c.order.broker_code + c.order.client_code ||
           c.order.broker_code.empty() || c.order.client_code.empty()))) {

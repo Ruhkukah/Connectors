@@ -20,6 +20,8 @@ namespace cgate = moex::plaza2::cgate;
 namespace generated = moex::plaza2::generated;
 using namespace moex::plaza2_trade;
 
+void expect_case(bool condition, std::string_view message);
+
 class ScopedEnv final {
   public:
     ScopedEnv(const char* name, const char* value) : name_(name) {
@@ -127,6 +129,53 @@ Plaza2TestTradeTransportConfig make_config(const moex::plaza2::test::RuntimeFixt
     config.observation_side = Plaza2TradeSide::Sell;
     config.observation_quantity = 1;
     return config;
+}
+
+void test_mode_specific_listener_topology(const moex::plaza2::test::RuntimeFixturePaths& fixture) {
+    using generated::StreamCode;
+    for (const auto missing : {StreamCode::kFortsTradeRepl, StreamCode::kFortsUserorderbookRepl,
+                               StreamCode::kFortsPosRepl, StreamCode::kFortsPartRepl, StreamCode::kFortsRefdataRepl}) {
+        auto config = make_config(fixture).host;
+        std::erase_if(config.private_streams,
+                      [&](const auto& stream_config) { return stream_config.stream_code == missing; });
+        Plaza2TestSessionHost host(std::move(config));
+        const auto error = host.start();
+        expect_case(error.code == cgate::Plaza2ErrorCode::InvalidConfiguration &&
+                        error.message.find("exact five private replication streams") != std::string::npos,
+                    "trading topology rejects each missing required private stream " +
+                        std::to_string(static_cast<unsigned>(missing)));
+    }
+
+    auto read_only = make_config(fixture).host;
+    read_only.read_only_market_data = true;
+    read_only.trade_replay_from_pos_anchor = false;
+    read_only.publisher_settings.clear();
+    read_only.publisher_open_settings.clear();
+    read_only.p2mqreply_settings.clear();
+    read_only.p2mqreply_open_settings.clear();
+    std::erase_if(read_only.private_streams,
+                  [](const auto& stream_config) { return stream_config.stream_code != StreamCode::kFortsRefdataRepl; });
+    read_only.private_streams.push_back(stream(StreamCode::kFortsTradeRepl, "FORTS_TRADE_REPL"));
+    Plaza2TestSessionHost malformed(std::move(read_only));
+    const auto error = malformed.start();
+    expect_case(error.code == cgate::Plaza2ErrorCode::InvalidConfiguration &&
+                    error.message.find("exactly FORTS_REFDATA_REPL") != std::string::npos,
+                "read-only topology rejects an extra private listener rather than silently ignoring it");
+
+    auto missing_status = make_config(fixture).host;
+    missing_status.read_only_market_data = true;
+    missing_status.private_streams = {stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL")};
+    missing_status.status_streams = {stream(StreamCode::kFortsSessionstateRepl, "FORTS_SESSIONSTATE_REPL")};
+    missing_status.trade_replay_from_pos_anchor = false;
+    missing_status.publisher_settings.clear();
+    missing_status.publisher_open_settings.clear();
+    missing_status.p2mqreply_settings.clear();
+    missing_status.p2mqreply_open_settings.clear();
+    Plaza2TestSessionHost incomplete_status(std::move(missing_status));
+    const auto status_error = incomplete_status.start();
+    expect_case(status_error.code == cgate::Plaza2ErrorCode::InvalidConfiguration &&
+                    status_error.message.find("exactly FORTS_SESSIONSTATE_REPL") != std::string::npos,
+                "read-only topology rejects a missing required status listener");
 }
 
 AddOrderRequest add_request() {
@@ -1157,6 +1206,7 @@ int main(int argc, char** argv) {
         const auto fixture =
             materialize_runtime_fixture(root, std::filesystem::path(argv[1]), cgate::Plaza2Environment::Test,
                                         build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test"));
+        test_mode_specific_listener_topology(fixture);
         ::setenv("MOEX_FAKE_CGATE_REQUIRE_ABSOLUTE_SCHEME", "1", 1);
         ::setenv("MOEX_FAKE_CLIENT_CODE", "BRK1C01", 1);
         ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);

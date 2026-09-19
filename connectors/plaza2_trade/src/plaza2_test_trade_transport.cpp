@@ -49,18 +49,29 @@ constexpr std::array<StreamCode, 5> kRequiredPrivateStreams = {
     StreamCode::kFortsTradeRepl, StreamCode::kFortsUserorderbookRepl, StreamCode::kFortsPosRepl,
     StreamCode::kFortsPartRepl,  StreamCode::kFortsRefdataRepl,
 };
+constexpr std::array<StreamCode, 1> kRequiredReadOnlyPrivateStreams = {StreamCode::kFortsRefdataRepl};
+constexpr std::array<StreamCode, 2> kRequiredReadOnlyStatusStreams = {
+    StreamCode::kFortsSessionstateRepl,
+    StreamCode::kFortsInstrumentstateRepl,
+};
 
-bool exact_required_private_streams(std::span<const Plaza2TestTradeStreamConfig> streams) {
-    if (streams.size() != kRequiredPrivateStreams.size()) {
+template <std::size_t N>
+bool exact_stream_set(std::span<const Plaza2TestTradeStreamConfig> streams, const std::array<StreamCode, N>& required) {
+    if (streams.size() != required.size()) {
         return false;
     }
-    for (const auto required : kRequiredPrivateStreams) {
+    for (const auto required_code : required) {
         if (std::count_if(streams.begin(), streams.end(),
-                          [&](const auto& stream) { return stream.stream_code == required; }) != 1) {
+                          [&](const auto& stream) { return stream.stream_code == required_code; }) != 1) {
             return false;
         }
     }
     return true;
+}
+
+bool exact_required_private_streams(std::span<const Plaza2TestTradeStreamConfig> streams, bool read_only) {
+    return read_only ? exact_stream_set(streams, kRequiredReadOnlyPrivateStreams)
+                     : exact_stream_set(streams, kRequiredPrivateStreams);
 }
 
 Plaza2TestTradeStreamConfig default_status_stream(StreamCode code, std::string_view name) {
@@ -695,14 +706,29 @@ struct Plaza2TestSessionHost::Impl {
                 return {.code = gate.error_code, .runtime_code = 0, .message = gate.reason};
             }
         }
-        if (!exact_required_private_streams(config.private_streams)) {
-            return invalid("TEST session host requires the exact five private replication streams");
+        if (!exact_required_private_streams(config.private_streams, config.read_only_market_data)) {
+            return invalid(config.read_only_market_data
+                               ? "read-only TEST session host requires exactly FORTS_REFDATA_REPL as its private stream"
+                               : "TEST session host requires the exact five private replication streams");
         }
         if (config.status_streams.empty()) {
             config.status_streams = {
                 default_status_stream(StreamCode::kFortsSessionstateRepl, "FORTS_SESSIONSTATE_REPL"),
                 default_status_stream(StreamCode::kFortsInstrumentstateRepl, "FORTS_INSTRUMENTSTATE_REPL"),
             };
+        }
+        if (config.read_only_market_data) {
+            if (!exact_stream_set(config.status_streams, kRequiredReadOnlyStatusStreams)) {
+                return invalid("read-only TEST session host requires exactly FORTS_SESSIONSTATE_REPL and "
+                               "FORTS_INSTRUMENTSTATE_REPL status streams");
+            }
+            if (config.trade_replay_from_pos_anchor) {
+                return invalid("read-only TEST session host must not use POS-anchored TRADE replay");
+            }
+            if (!config.publisher_settings.empty() || !config.publisher_open_settings.empty() ||
+                !config.p2mqreply_settings.empty() || !config.p2mqreply_open_settings.empty()) {
+                return invalid("read-only TEST session host must not configure a publisher or p2mqreply listener");
+            }
         }
         if (config.runtime.runtime_root.empty() || config.connection_settings.empty() ||
             (!config.read_only_market_data && config.publisher_settings.empty()) || config.private_streams.empty() ||
