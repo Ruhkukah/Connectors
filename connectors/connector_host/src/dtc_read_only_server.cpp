@@ -22,6 +22,30 @@ using Bytes = std::vector<std::uint8_t>;
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t kMaxLocalCredentialBytes = 256;
 
+// This DTC endpoint currently exposes futures books only. Keep the instrument
+// kind to wire-enum mapping explicit and independent of the client SymbolID.
+enum class SupportedInstrumentKind : std::uint8_t { Unsupported, Future };
+enum class DtcSecurityType : std::uint32_t { Future = 1 };
+
+std::optional<DtcSecurityType> dtc_security_type(SupportedInstrumentKind kind) noexcept {
+    switch (kind) {
+    case SupportedInstrumentKind::Unsupported:
+        return std::nullopt;
+    case SupportedInstrumentKind::Future:
+        return DtcSecurityType::Future;
+    }
+    return std::nullopt;
+}
+
+std::optional<SupportedInstrumentKind> supported_instrument_kind(const DtcMarketDataSnapshot& snapshot,
+                                                                 DtcSourceMode source_mode) noexcept {
+    if (source_mode == DtcSourceMode::Replay)
+        return SupportedInstrumentKind::Future; // replay definition fixtures in this endpoint are futures
+    if (snapshot.refdata_vcb_join_current && snapshot.future_vcb_provenance_present)
+        return SupportedInstrumentKind::Future;
+    return std::nullopt;
+}
+
 // Minimal wire subset of https://www.sierrachart.com/DTC_Files/DTCProtocol.proto
 // (DTC v8). Fields 8-20 of message 145 are the pinned Kairos extension, not
 // official DTC fields. No protobuf library or generated files are required.
@@ -518,9 +542,14 @@ struct DtcReadOnlyServer::Impl {
             auto s = source.snapshot();
             float increment{};
             DefinitionMetadata terms;
+            // LiveTest futures are derived from the committed fut_vcb join;
+            // replay fixtures for this endpoint have the explicit futures
+            // contract. Unsupported/unknown kinds have no wire enum mapping.
+            const auto kind = supported_instrument_kind(s, config.source_mode);
+            const auto security_type = kind ? dtc_security_type(*kind) : std::nullopt;
             Bytes reply;
             integer(reply, 1, p.number(1));
-            if (!definitions_advertised || !security_definitions_available(s, increment) ||
+            if (!security_type || !definitions_advertised || !security_definitions_available(s, increment) ||
                 !metadata(s, increment, terms) || p.text(2) != s.symbol || p.text(3) != s.board) {
                 str(reply, 2, "unknown instrument or metadata unavailable");
                 queue(509, reply);
@@ -530,16 +559,18 @@ struct DtcReadOnlyServer::Impl {
             // runner does not translate it into a guessed exchange code.
             str(reply, 2, s.symbol);
             str(reply, 3, s.board);
-            integer(reply, 4, config.symbol_id ? config.symbol_id : 1);
+            integer(reply, 4, static_cast<std::uint32_t>(*security_type));
             str(reply, 5, terms.description);
             real(reply, 6, increment);
             real(reply, 8, terms.currency_value_per_increment);
+            // A 507 is the complete final response for this single-instrument
+            // server, in both replay and live TEST modes.
+            integer(reply, 9, 1);
             if (config.source_mode == DtcSourceMode::Replay) {
                 // Preserve the existing replay fixture wire contract. These
                 // optional fields are intentionally absent for live TEST
                 // until each value has an authoritative source mapping.
                 integer(reply, 7, 5);
-                integer(reply, 9, 1);
                 real(reply, 10, 1);
                 real(reply, 11, 1);
                 real(reply, 22, 1);

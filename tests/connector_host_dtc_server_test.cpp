@@ -292,7 +292,8 @@ void replay_roundtrip() {
     h.subscribe();
     check(h.count(145) == 2, "provisional late join emits complete signed/zero depth");
     Read def(h.first(507).payload);
-    check(def.n[1] == 41 && def.n[9] == 1 && def.n[33] == 123, "final definition identity");
+    check(def.n[1] == 41 && def.n[4] == 1 && def.n[9] == 1 && def.n[33] == 123,
+          "future security type and final definition identity are independent of symbol ID");
     check(def.s[5] == "Фьючерсный контракт ALRS-12.26", "exact CP1251 to UTF-8 protobuf roundtrip");
     check(def.s[28] == "RUB" && def.f[29] == 100 && def.f[8] == 1,
           "explicit definition metadata and float tag8 tick value");
@@ -375,11 +376,12 @@ void live_test_metadata_and_auth() {
     h.logon();
     h.subscribe();
     Read definition(h.first(507).payload);
-    check(definition.n[4] == 17 && definition.n[33] == 123, "live TEST definition uses fixed symbol and source ISIN");
+    check(definition.n[4] == 1 && definition.n[9] == 1 && definition.n[33] == 123,
+          "live TEST definition uses FUTURE/final fields and source ISIN, not DTC symbol ID");
     check(definition.s[5] == "Authoritative TEST future" && definition.s[28] == "RUB" && definition.f[29] == 10 &&
               definition.f[8] == 2.5F,
           "live TEST 507 uses source metadata, not replay economics");
-    for (const auto field : {7U, 9U, 10U, 11U, 22U, 24U})
+    for (const auto field : {7U, 10U, 11U, 22U, 24U})
         check(!definition.n.contains(field) && !definition.f.contains(field),
               "live TEST 507 omits unmapped optional economics");
     check(Read(h.first(145).payload).n[1] == 17, "live TEST depth uses fixed DTC symbol identity");
@@ -673,13 +675,58 @@ int serve_fixture() {
     server.stop();
     return 0;
 }
+
+int serve_live507_fixture(std::uint32_t symbol_id, DtcSourceMode source_mode) {
+    Replay source;
+    source.state.refdata_vcb_join_current = source_mode == DtcSourceMode::LiveTest;
+    source.state.future_vcb_provenance_present = source_mode == DtcSourceMode::LiveTest;
+    source.state.refdata_board_proven = source_mode == DtcSourceMode::LiveTest;
+    source.state.refdata_currency_proven = source_mode == DtcSourceMode::LiveTest;
+    source.state.description = "Authoritative test future";
+    source.state.currency = "RUB";
+    source.state.contract_size = "10";
+    source.state.currency_value_per_increment = "2.5";
+    auto server_config = config();
+    server_config.port = 0;
+    server_config.source_mode = source_mode;
+    server_config.symbol_id = symbol_id;
+    DtcReadOnlyServer server(source, server_config);
+    std::string error;
+    if (!server.start(error)) {
+        std::cerr << error << '\n';
+        return 1;
+    }
+    std::cout << server.port() << '\n' << std::flush;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool connected = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        server.poll();
+        if (server.has_client())
+            connected = true;
+        else if (connected)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    server.stop();
+    return connected ? 0 : 2;
+}
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--serve-fixture")
         return serve_fixture();
+    if (argc == 4 && std::string(argv[1]) == "--serve-live507-fixture") {
+        char* end = nullptr;
+        const auto parsed = std::strtoul(argv[2], &end, 10);
+        if (!end || *end != '\0' || parsed == 0 || parsed > UINT32_MAX ||
+            (std::string_view(argv[3]) != "live" && std::string_view(argv[3]) != "replay"))
+            return 2;
+        return serve_live507_fixture(static_cast<std::uint32_t>(parsed), std::string_view(argv[3]) == "live"
+                                                                             ? DtcSourceMode::LiveTest
+                                                                             : DtcSourceMode::Replay);
+    }
     if (argc != 1) {
-        std::cerr << "Usage: connector_host_dtc_server_test [--serve-fixture]\n";
+        std::cerr << "Usage: connector_host_dtc_server_test [--serve-fixture|--serve-live507-fixture ID live|replay]\n";
         return 2;
     }
     replay_roundtrip();

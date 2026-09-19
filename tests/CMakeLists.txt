@@ -483,6 +483,20 @@ add_executable(connector_host_dtc_server_test
 target_link_libraries(connector_host_dtc_server_test PRIVATE moex_connector_host)
 add_test(NAME connector_host_dtc_server_test COMMAND connector_host_dtc_server_test)
 set_tests_properties(connector_host_dtc_server_test PROPERTIES LABELS "dtc;read-only;sanitizer")
+if(DOTNET_EXECUTABLE)
+    add_test(
+        NAME connector_host_dtc507_generated_schema_test
+        COMMAND "${DOTNET_EXECUTABLE}" run
+            --project "${MOEX_SOURCE_ROOT}/tests/fixtures/dtc507/Dtc507WireRegression.csproj"
+            --framework net10.0
+            -- "$<TARGET_FILE:connector_host_dtc_server_test>")
+    set_tests_properties(connector_host_dtc507_generated_schema_test PROPERTIES
+        RUN_SERIAL TRUE
+        TIMEOUT 90
+        LABELS "dtc;read-only;protocol"
+        ENVIRONMENT
+            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+endif()
 add_test(NAME moexctl_test COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/assert_moexctl.py"
     "$<TARGET_FILE:moexctl>" "$<TARGET_FILE:connector_host_test>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
 set_tests_properties(moexctl_test PROPERTIES LABELS "plaza2;sanitizer")
