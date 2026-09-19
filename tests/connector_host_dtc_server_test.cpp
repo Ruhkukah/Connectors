@@ -300,9 +300,14 @@ struct Harness {
         }
         txt(p, 11, "Kairos-test");
         send(packet(1, p));
-        pump(5);
-        if (!expect_success)
+        if (!expect_success) {
+            pump(5);
             return;
+        }
+        // Keep this loopback protocol test robust when the CI host schedules
+        // the client/server less promptly than the 5 ms fixture pump window.
+        for (unsigned i = 0; i < 100 && count(2) == 0 && !eof; ++i)
+            pump(1);
         Read reply(first(2).payload);
         check(reply.n[1] == 8 && reply.n[2] == 1 && reply.n[12] == (expect_security_definitions ? 1 : 0) &&
                   reply.n[15] == 1,
