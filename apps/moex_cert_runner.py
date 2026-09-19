@@ -2,10 +2,24 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 from pathlib import Path
 
 from moex_phase0_common import dump_json, ensure_dir, load_json_yaml, redact_secrets
+
+
+def _find_twime_cert_runner() -> Path | None:
+    configured = os.environ.get("MOEX_TWIME_CERT_RUNNER_BINARY")
+    candidates = [Path(configured)] if configured else []
+    candidates.extend(
+        [
+            Path.cwd() / "apps" / "moex_twime_cert_runner",
+            Path.cwd() / "build" / "apps" / "moex_twime_cert_runner",
+            Path(__file__).resolve().parents[1] / "build" / "apps" / "moex_twime_cert_runner",
+        ]
+    )
+    return next((path for path in candidates if path.exists()), None)
 
 
 def main() -> int:
@@ -36,12 +50,7 @@ def main() -> int:
         credentials = twime_tcp.get("credentials") or {}
         live_session = profile.get("twime_live_session") or {}
 
-        candidates = [
-            Path.cwd() / "apps" / "moex_twime_cert_runner",
-            Path.cwd() / "build" / "apps" / "moex_twime_cert_runner",
-            Path(__file__).resolve().parents[1] / "build" / "apps" / "moex_twime_cert_runner",
-        ]
-        runner = next((path for path in candidates if path.exists()), None)
+        runner = _find_twime_cert_runner()
         if runner is None:
             raise SystemExit("missing built moex_twime_cert_runner executable for TWIME TCP profile runs")
 
@@ -111,12 +120,7 @@ def main() -> int:
         raise SystemExit("live TWIME test-session scenarios require --profile")
 
     if scenario_id.startswith("twime_"):
-        candidates = [
-            Path.cwd() / "apps" / "moex_twime_cert_runner",
-            Path.cwd() / "build" / "apps" / "moex_twime_cert_runner",
-            Path(__file__).resolve().parents[1] / "build" / "apps" / "moex_twime_cert_runner",
-        ]
-        runner = next((path for path in candidates if path.exists()), None)
+        runner = _find_twime_cert_runner()
         if runner is None:
             raise SystemExit("missing built moex_twime_cert_runner executable for synthetic TWIME scenarios")
         subprocess.run(

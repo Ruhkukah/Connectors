@@ -63,6 +63,7 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     out.purpose = inputs.purpose;
     out.read_only_market_data = inputs.read_only_market_data;
     auto& host = out.transport.host;
+    host.read_only_market_data = inputs.read_only_market_data;
     host.mode = inputs.purpose == HostPurpose::OrderTest ? Plaza2TestSessionHostMode::LiveTestAuthorizedSend
                                                          : Plaza2TestSessionHostMode::LiveTestPreSend;
     host.runtime.environment = cg::Plaza2Environment::Test;

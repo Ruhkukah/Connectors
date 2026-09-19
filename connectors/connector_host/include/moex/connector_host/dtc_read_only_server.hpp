@@ -14,6 +14,24 @@ namespace moex::connector_host::dtc {
 // epoch; order_entry_allowed and exchange_confirmed are always false.
 inline constexpr std::uint16_t kDtcSourceAuthorityMessage = 700;
 
+// The exact numeric capability fields from the most recently fully written
+// LOGON_RESPONSE. Socket write completion does not assert that the peer read it.
+struct DtcWireLogonCapabilities {
+    bool response_fully_written_to_socket{false};
+    std::uint32_t market_depth_updates_best_bid_and_ask{0};
+    std::uint32_t trading_is_supported{0};
+    std::uint32_t oco_orders_supported{0};
+    std::uint32_t order_cancel_replace_supported{0};
+    std::uint32_t security_definitions_supported{0};
+    std::uint32_t historical_price_data_supported{0};
+    std::uint32_t resubscribe_when_market_data_feed_available{0};
+    std::uint32_t market_depth_is_supported{0};
+    std::uint32_t one_historical_price_data_request_per_connection{0};
+    std::uint32_t bracket_orders_supported{0};
+    std::uint32_t multiple_positions_per_symbol_and_trade_account{0};
+    std::uint32_t market_data_supported{0};
+};
+
 struct DtcReadOnlyServerConfig {
     std::uint16_t port{0}; // zero asks the OS for an unused loopback port
     // Replay remains the compatibility default. A live ConnectorHost runner
@@ -25,6 +43,8 @@ struct DtcReadOnlyServerConfig {
     std::uint32_t symbol_id{0};
     std::size_t max_frame_bytes{4096};
     std::size_t max_queued_bytes{65536};
+    // Hard ceiling is 4096; injectable for deterministic backpressure tests.
+    std::size_t max_write_bytes_per_poll{4096};
     std::size_t max_depth_levels{20}; // per side; hard ceiling 20 (AGGR20)
     std::chrono::milliseconds idle_timeout{30000};
     std::chrono::milliseconds write_timeout{5000};
@@ -67,6 +87,8 @@ class DtcReadOnlyServer final {
     [[nodiscard]] bool has_client() const noexcept;
     [[nodiscard]] std::size_t queued_bytes() const noexcept;
     [[nodiscard]] const std::string& last_error() const noexcept;
+    [[nodiscard]] const DtcWireLogonCapabilities& last_wire_logon_capabilities() const noexcept;
+    [[nodiscard]] std::uint64_t security_definition_responses_fully_written() const noexcept;
 
   private:
     struct Impl;

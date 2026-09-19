@@ -1795,7 +1795,7 @@ struct Plaza2PrivateStateProjector::Impl {
         session.margin_call_fix_schedule = row.i64(FieldCode::kFortsRefdataReplSessionMarginCallFixSchedule);
     }
 
-    void apply_future_instrument_row(const RowReader& row) {
+    void apply_future_instrument_row(const fake::EventSpec& event, const RowReader& row) {
         auto& instruments = ensure_staged_instruments();
         const auto isin_id = row.i32(FieldCode::kFortsRefdataReplFutInstrumentsIsinId);
         auto& instrument = instruments[isin_id];
@@ -1818,6 +1818,12 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.last_trade_date = row.i64(FieldCode::kFortsRefdataReplFutInstrumentsLastTradeDate);
         instrument.group_mask = row.i64(FieldCode::kFortsRefdataReplFutInstrumentsGroupMask);
         instrument.trade_period_access = row.i64(FieldCode::kFortsRefdataReplFutInstrumentsTradePeriodAccess);
+        const auto lifenum = refdata_lifenum();
+        instrument.definition_source_provenance = {.stream_code = StreamCode::kFortsRefdataRepl,
+                                                   .table_code = TableCode::kFortsRefdataReplFutInstruments,
+                                                   .repl_rev = event.signed_value,
+                                                   .lifenum = lifenum.value_or(0),
+                                                   .present = lifenum.has_value()};
     }
 
     void apply_future_vcb_row(const fake::EventSpec& event, const RowReader& row) {
@@ -1868,6 +1874,12 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.step_price = row.text(FieldCode::kFortsRefdataReplFutSessContentsStepPrice);
         instrument.step_price_curr = row.text(FieldCode::kFortsRefdataReplFutSessContentsStepPriceCurr);
         instrument.settlement_price = row.text(FieldCode::kFortsRefdataReplFutSessContentsSettlementPrice);
+        const auto lifenum = refdata_lifenum();
+        instrument.definition_source_provenance = {.stream_code = StreamCode::kFortsRefdataRepl,
+                                                   .table_code = TableCode::kFortsRefdataReplFutSessContents,
+                                                   .repl_rev = event.signed_value,
+                                                   .lifenum = lifenum.value_or(0),
+                                                   .present = lifenum.has_value()};
         instrument.last_trade_date = row.i64(FieldCode::kFortsRefdataReplFutSessContentsLastTradeDate);
         instrument.group_mask = row.i64(FieldCode::kFortsRefdataReplFutSessContentsGroupMask);
         instrument.trade_period_access = row.i64(FieldCode::kFortsRefdataReplFutSessContentsTradePeriodAccess);
@@ -2101,7 +2113,7 @@ struct Plaza2PrivateStateProjector::Impl {
             apply_session_row(row);
             break;
         case TableCode::kFortsRefdataReplFutInstruments:
-            apply_future_instrument_row(row);
+            apply_future_instrument_row(event, row);
             break;
         case TableCode::kFortsRefdataReplFutVcb:
             apply_future_vcb_row(event, row);

@@ -173,6 +173,9 @@ struct InstrumentSnapshot {
     std::string future_vcb_currency;
     std::string future_vcb_board_md;
     SourceRowProvenance future_vcb_provenance;
+    // Provenance of the last committed full instrument-term row copied into
+    // this merged view (fut_instruments or fut_sess_contents).
+    SourceRowProvenance definition_source_provenance;
     std::int32_t fut_isin_id{0};
     std::int32_t option_series_id{0};
     std::int32_t inst_term{0};

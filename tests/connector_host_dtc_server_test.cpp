@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <fcntl.h>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <limits>
@@ -100,6 +101,10 @@ struct Read {
         }
     }
 };
+std::uint64_t number_or_zero(const Read& message, unsigned field) {
+    const auto found = message.n.find(field);
+    return found == message.n.end() ? 0 : found->second;
+}
 struct Replay : DtcMarketDataSource {
     DtcMarketDataSnapshot state;
     bool security_definitions{true};
@@ -107,7 +112,7 @@ struct Replay : DtcMarketDataSource {
     unsigned failure_mode{0};
     Replay() {
         state.symbol = "ALRS-12.26";
-        state.board = "FORTS";
+        state.underlying_board = "RFUD";
         state.min_step = "0.01";
         state.isin_id = 123;
         state.transport_active = state.source_online = state.aggr_online = state.snapshot_complete = true;
@@ -157,6 +162,51 @@ DtcReadOnlyServerConfig config() {
     c.currency_value_per_increment = 1; // explicitly declared fake replay economics, RUB/tick/contract
     c.description = description();
     return c;
+}
+void mark_live_refdata_proven(Replay& source) {
+    auto& state = source.state;
+    state.session_id = 321;
+    state.refdata_vcb_join_current = true;
+    state.future_vcb_provenance_present = true;
+    state.refdata_board_proven = true;
+    state.refdata_currency_proven = true;
+    state.target_is_future = true;
+    state.future_vcb_base_contract_code = "ALRS";
+    state.future_vcb_base_contract_id = 42;
+    state.definition_source_provenance = {.stream_code = moex::plaza2::generated::StreamCode::kFortsRefdataRepl,
+                                          .table_code =
+                                              moex::plaza2::generated::TableCode::kFortsRefdataReplFutInstruments,
+                                          .repl_rev = 73,
+                                          .lifenum = 12,
+                                          .present = true};
+    state.future_instruments_provenance = {.stream_code = moex::plaza2::generated::StreamCode::kFortsRefdataRepl,
+                                           .table_code =
+                                               moex::plaza2::generated::TableCode::kFortsRefdataReplFutInstruments,
+                                           .repl_rev = 73,
+                                           .lifenum = 12,
+                                           .present = true};
+    state.future_sess_contents_provenance = {.stream_code = moex::plaza2::generated::StreamCode::kFortsRefdataRepl,
+                                             .table_code =
+                                                 moex::plaza2::generated::TableCode::kFortsRefdataReplFutSessContents,
+                                             .repl_rev = 74,
+                                             .lifenum = 12,
+                                             .present = true};
+    state.session_provenance = {.stream_code = moex::plaza2::generated::StreamCode::kFortsRefdataRepl,
+                                .table_code = moex::plaza2::generated::TableCode::kFortsRefdataReplSession,
+                                .repl_rev = 76,
+                                .lifenum = 12,
+                                .present = true};
+    state.future_vcb_provenance = {.stream_code = moex::plaza2::generated::StreamCode::kFortsRefdataRepl,
+                                   .table_code = moex::plaza2::generated::TableCode::kFortsRefdataReplFutVcb,
+                                   .repl_rev = 77,
+                                   .lifenum = 12,
+                                   .present = true};
+    state.future_vcb_repl_rev = 77;
+    state.future_vcb_lifenum = 12;
+    state.description = "Authoritative TEST future";
+    state.currency = "RUB";
+    state.contract_size = "10";
+    state.currency_value_per_increment = "2.5";
 }
 struct Harness {
     Replay source;
@@ -259,7 +309,7 @@ struct Harness {
         Bytes p;
         num(p, 1, 41);
         txt(p, 2, source.state.symbol);
-        txt(p, 3, source.state.board);
+        txt(p, 3, std::string(kDtcMoexSpectraExchange));
         return packet(506, p);
     }
     Bytes depth(unsigned action = 1, unsigned id = 0) {
@@ -269,7 +319,7 @@ struct Harness {
         num(p, 1, action);
         num(p, 2, id);
         txt(p, 3, source.state.symbol);
-        txt(p, 4, source.state.board);
+        txt(p, 4, std::string(kDtcMoexSpectraExchange));
         num(p, 5, 20);
         return packet(102, p);
     }
@@ -353,12 +403,6 @@ void replay_roundtrip() {
     check(h.count(145) == 0, "one shot does not subscribe");
 }
 void live_test_metadata_and_auth() {
-    const auto mark_refdata_vcb_proven = [](Harness& harness) {
-        harness.source.state.refdata_vcb_join_current = true;
-        harness.source.state.future_vcb_provenance_present = true;
-        harness.source.state.refdata_board_proven = true;
-        harness.source.state.refdata_currency_proven = true;
-    };
     auto c = config();
     c.source_mode = DtcSourceMode::LiveTest;
     c.symbol_id = 17;
@@ -368,18 +412,91 @@ void live_test_metadata_and_auth() {
     c.contract_size = 999;
     c.currency_value_per_increment = 999;
     Harness h(c);
-    mark_refdata_vcb_proven(h);
-    h.source.state.description = "Authoritative TEST future";
-    h.source.state.currency = "RUB";
-    h.source.state.contract_size = "10";
-    h.source.state.currency_value_per_increment = "2.5";
+    mark_live_refdata_proven(h.source);
+    const auto mapped = validate_dtc_security_definition(h.source.state, DtcSourceMode::LiveTest);
+    check(mapped.available() && mapped.definition->exchange == kDtcMoexSpectraExchange &&
+              mapped.definition->underlying_board == "RFUD" && mapped.definition->currency == "RUB" &&
+              mapped.definition->contract_size == 10 && mapped.definition->future_vcb_provenance.lifenum == 12,
+          "canonical definition keeps DTC venue separate from raw board and includes source terms/provenance");
+    const auto initial_definition_version = mapped.definition->definition_version;
+    auto book_only_change = h.source.state;
+    ++book_only_change.source_snapshot_version;
+    book_only_change.source_snapshot_hash ^= 0x100;
+    const auto same_definition = validate_dtc_security_definition(book_only_change, DtcSourceMode::LiveTest);
+    check(same_definition.available() && same_definition.definition->definition_version == initial_definition_version,
+          "canonical definition version is independent of AGGR book-only changes");
+    auto changed_session_source = h.source.state;
+    ++changed_session_source.session_provenance.repl_rev;
+    const auto changed_session_definition =
+        validate_dtc_security_definition(changed_session_source, DtcSourceMode::LiveTest);
+    check(changed_session_definition.available() &&
+              changed_session_definition.definition->definition_version != initial_definition_version,
+          "canonical definition version includes active-session source provenance");
+    auto wrong_generation = h.source.state;
+    wrong_generation.definition_source_provenance.lifenum = 13;
+    const auto wrong_generation_result = validate_dtc_security_definition(wrong_generation, DtcSourceMode::LiveTest);
+    check(!wrong_generation_result.available() &&
+              wrong_generation_result.reason ==
+                  "current futures terms lack matching-generation source-table provenance",
+          "canonical definition rejects cross-generation REFDATA provenance with a specific reason");
+    auto inconsistent_generation = h.source.state;
+    inconsistent_generation.future_instruments_provenance.lifenum = 13;
+    const auto inconsistent_generation_result =
+        validate_dtc_security_definition(inconsistent_generation, DtcSourceMode::LiveTest);
+    check(!inconsistent_generation_result.available() &&
+              inconsistent_generation_result.reason ==
+                  "additional current futures-table provenance is from another REFDATA generation",
+          "canonical definition rejects an additional source table from another REFDATA generation");
+    auto inconsistent_session_generation = h.source.state;
+    inconsistent_session_generation.session_provenance.lifenum = 13;
+    const auto inconsistent_session_result =
+        validate_dtc_security_definition(inconsistent_session_generation, DtcSourceMode::LiveTest);
+    check(!inconsistent_session_result.available() &&
+              inconsistent_session_result.reason ==
+                  "active session REFDATA source generation/provenance is missing or inconsistent",
+          "canonical definition rejects active-session provenance from another REFDATA generation");
+    auto missing_session_source = h.source.state;
+    missing_session_source.session_provenance.present = false;
+    const auto missing_session_result =
+        validate_dtc_security_definition(missing_session_source, DtcSourceMode::LiveTest);
+    check(!missing_session_result.available() &&
+              missing_session_result.reason ==
+                  "active session REFDATA source generation/provenance is missing or inconsistent",
+          "canonical definition requires committed active-session source provenance");
+    auto spread = h.source.state;
+    spread.target_is_spread = true;
+    check(!validate_dtc_security_definition(spread, DtcSourceMode::LiveTest).available(),
+          "calendar spread is not mapped to the outright futures DTC profile");
+    check(!h.server.last_wire_logon_capabilities().response_fully_written_to_socket,
+          "wire logon capabilities remain unobserved before a LOGON_RESPONSE is fully written");
     h.logon();
+    const auto logon_reply = Read(h.first(2).payload);
+    const auto& observed_wire_capabilities = h.server.last_wire_logon_capabilities();
+    check(observed_wire_capabilities.response_fully_written_to_socket &&
+              observed_wire_capabilities.market_depth_updates_best_bid_and_ask == number_or_zero(logon_reply, 7) &&
+              observed_wire_capabilities.trading_is_supported == number_or_zero(logon_reply, 8) &&
+              observed_wire_capabilities.oco_orders_supported == number_or_zero(logon_reply, 9) &&
+              observed_wire_capabilities.order_cancel_replace_supported == number_or_zero(logon_reply, 10) &&
+              observed_wire_capabilities.security_definitions_supported == number_or_zero(logon_reply, 12) &&
+              observed_wire_capabilities.historical_price_data_supported == number_or_zero(logon_reply, 13) &&
+              observed_wire_capabilities.resubscribe_when_market_data_feed_available ==
+                  number_or_zero(logon_reply, 14) &&
+              observed_wire_capabilities.market_depth_is_supported == number_or_zero(logon_reply, 15) &&
+              observed_wire_capabilities.one_historical_price_data_request_per_connection ==
+                  number_or_zero(logon_reply, 16) &&
+              observed_wire_capabilities.bracket_orders_supported == number_or_zero(logon_reply, 17) &&
+              observed_wire_capabilities.multiple_positions_per_symbol_and_trade_account ==
+                  number_or_zero(logon_reply, 19) &&
+              observed_wire_capabilities.market_data_supported == number_or_zero(logon_reply, 20),
+          "receipt wire-capability snapshot exactly matches the independent LOGON_RESPONSE decoder");
     h.subscribe();
     Read definition(h.first(507).payload);
     check(definition.n[4] == 1 && definition.n[9] == 1 && definition.n[33] == 123,
           "live TEST definition uses FUTURE/final fields and source ISIN, not DTC symbol ID");
-    check(definition.s[5] == "Authoritative TEST future" && definition.s[28] == "RUB" && definition.f[29] == 10 &&
-              definition.f[8] == 2.5F,
+    check(definition.s[3] == kDtcMoexSpectraExchange,
+          "DTC Exchange is the gateway venue identifier, not the source ASTS SECBOARD board");
+    check(definition.s[5] == "Authoritative TEST future" && definition.s[28] == "RUB" && definition.f[6] == 0.01F &&
+              definition.f[29] == 10 && definition.f[8] == 2.5F,
           "live TEST 507 uses source metadata, not replay economics");
     for (const auto field : {7U, 10U, 11U, 22U, 24U})
         check(!definition.n.contains(field) && !definition.f.contains(field),
@@ -391,13 +508,13 @@ void live_test_metadata_and_auth() {
           "live TEST authority is explicitly identified");
     auto unsupported = c;
     Harness unsupported_currency(unsupported);
-    mark_refdata_vcb_proven(unsupported_currency);
+    mark_live_refdata_proven(unsupported_currency.source);
     unsupported_currency.source.state.description = "Authoritative TEST future";
     unsupported_currency.source.state.currency = "USD";
     unsupported_currency.source.state.refdata_currency_proven = false;
     unsupported_currency.source.state.contract_size = "10";
     unsupported_currency.source.state.currency_value_per_increment = "2.5";
-    unsupported_currency.logon(false);
+    unsupported_currency.logon();
     unsupported_currency.subscribe();
     check(unsupported_currency.count(509) == 1 && unsupported_currency.count(507) == 0,
           "live TEST unsupported quotation currency fails 507 closed");
@@ -409,24 +526,24 @@ void live_test_metadata_and_auth() {
 
     auto missing = c;
     Harness invalid(missing);
-    mark_refdata_vcb_proven(invalid);
+    mark_live_refdata_proven(invalid.source);
     invalid.source.state.description.clear();
     invalid.source.state.currency.clear();
     invalid.source.state.contract_size.clear();
     invalid.source.state.currency_value_per_increment.clear();
-    invalid.logon(false);
+    invalid.logon();
     invalid.subscribe();
     check(invalid.count(509) == 1 && invalid.count(507) == 0 && invalid.count(145) == 0,
           "live TEST missing authoritative 507 metadata fails closed");
 
     Harness ambiguous(c);
-    mark_refdata_vcb_proven(ambiguous);
+    mark_live_refdata_proven(ambiguous.source);
     ambiguous.source.state.refdata_vcb_join_ambiguous = true;
     ambiguous.source.state.description = "Authoritative TEST future";
     ambiguous.source.state.currency = "RUB";
     ambiguous.source.state.contract_size = "10";
     ambiguous.source.state.currency_value_per_increment = "2.5";
-    ambiguous.logon(false);
+    ambiguous.logon();
     ambiguous.subscribe();
     check(ambiguous.count(509) == 1 && ambiguous.count(507) == 0, "live TEST ambiguous fut_vcb join fails 507 closed");
 
@@ -435,18 +552,39 @@ void live_test_metadata_and_auth() {
     auth.local_username = "local-user";
     auth.local_password = "local-password";
     Harness wrong(auth);
-    mark_refdata_vcb_proven(wrong);
+    mark_live_refdata_proven(wrong.source);
     wrong.logon(false, "wrong-user", "wrong-password", false);
     wrong.pump(3);
     check(wrong.count(5) == 1 && wrong.eof, "dedicated local DTC credentials fence invalid logon");
     Harness correct(auth);
-    mark_refdata_vcb_proven(correct);
+    mark_live_refdata_proven(correct.source);
     correct.source.state.description = "Authoritative TEST future";
     correct.source.state.currency = "RUB";
     correct.source.state.contract_size = "10";
     correct.source.state.currency_value_per_increment = "2.5";
     correct.logon(true, "local-user", "local-password");
     check(correct.count(2) == 1, "dedicated local DTC credentials permit valid logon");
+}
+void live_test_late_refdata_after_logon() {
+    auto c = config();
+    c.source_mode = DtcSourceMode::LiveTest;
+    c.symbol_id = 17;
+    Harness h(c);
+    // Implemented security-definition capability is advertised even while
+    // the committed source metadata is still cold.
+    h.logon();
+    check(Read(h.first(2).payload).n[12] == 1, "LiveTest feature capability survives cold REFDATA");
+    h.send(h.definition_request());
+    h.pump(5);
+    check(h.count(509) == 1 && h.count(507) == 0,
+          "cold current metadata rejects 506 without falsely emitting a definition");
+
+    h.got.clear();
+    mark_live_refdata_proven(h.source);
+    h.send(h.definition_request());
+    h.pump(5);
+    check(h.count(507) == 1 && h.count(509) == 0 && Read(h.first(507).payload).n[9] == 1,
+          "same logged-on connection emits a final 507 when committed REFDATA becomes ready");
 }
 void revoke_and_reconnect() {
     Harness h;
@@ -465,12 +603,133 @@ void revoke_and_reconnect() {
     h.subscribe();
     check(Read(h.first(145).payload).n[12] == 1, "reconnection needs fresh complete snapshot");
 }
+void definition_revocation_case(std::string_view name, const std::function<void(Replay&)>& mutate,
+                                const std::function<void(Replay&)>& restore,
+                                const std::function<void(const Read&)>& check_new_definition) {
+    auto c = config();
+    c.source_mode = DtcSourceMode::LiveTest;
+    c.symbol_id = 17;
+    Harness h(c);
+    mark_live_refdata_proven(h.source);
+    h.logon();
+    h.subscribe();
+    check(h.count(507) == 1 && h.count(145) == 2, "LiveTest definition established before mutation");
+    h.send(h.definition_request());
+    h.pump(5);
+    check(h.server.has_client() && h.count(507) == 2 && h.count(5) == 0,
+          "identical definition request is idempotent without a reconnect cycle");
+    const auto source_version = h.source.state.source_snapshot_version;
+    h.got.clear();
+    mutate(h.source);
+    check(h.source.state.source_snapshot_version == source_version,
+          "metadata mutation leaves the source book version unchanged");
+    h.pump(5);
+    check(!h.server.has_client() && h.eof && h.count(145) == 0 && h.count(5) == 1,
+          (std::string(name) + ": metadata change closes without publishing another depth batch").c_str());
+    check(h.count(700) == 1 && h.count(116) == 1,
+          (std::string(name) + ": authority and symbol invalidation precede close").c_str());
+
+    restore(h.source);
+    h.connect();
+    h.logon();
+    h.subscribe();
+    check(h.count(507) == 1 && h.count(145) == 2 && Read(h.first(145).payload).n[12] == 1,
+          (std::string(name) + ": a new connection gets a final definition and fresh snapshot").c_str());
+    check_new_definition(Read(h.first(507).payload));
+}
+void definition_revocation() {
+    const auto unchanged = [](Replay&) {};
+    definition_revocation_case(
+        "removed description", [](Replay& source) { source.state.description.clear(); },
+        [](Replay& source) { source.state.description = "Authoritative TEST future"; },
+        [](const Read& definition) {
+            check(definition.s.at(5) == "Authoritative TEST future", "fresh description restored");
+        });
+    definition_revocation_case(
+        "changed description", [](Replay& source) { source.state.description = "Revised TEST future"; }, unchanged,
+        [](const Read& definition) {
+            check(definition.s.at(5) == "Revised TEST future", "new description reaches fresh 507");
+        });
+    definition_revocation_case(
+        "removed currency", [](Replay& source) { source.state.currency.clear(); },
+        [](Replay& source) { source.state.currency = "RUB"; },
+        [](const Read& definition) { check(definition.s.at(28) == "RUB", "fresh currency restored"); });
+    definition_revocation_case(
+        "unsupported changed currency", [](Replay& source) { source.state.currency = "USD"; },
+        [](Replay& source) { source.state.currency = "RUB"; },
+        [](const Read& definition) { check(definition.s.at(28) == "RUB", "unsupported currency never reaches 507"); });
+    definition_revocation_case(
+        "removed contract size", [](Replay& source) { source.state.contract_size.clear(); },
+        [](Replay& source) { source.state.contract_size = "10"; },
+        [](const Read& definition) { check(definition.f.at(29) == 10, "fresh contract size restored"); });
+    definition_revocation_case(
+        "changed contract size", [](Replay& source) { source.state.contract_size = "20"; }, unchanged,
+        [](const Read& definition) { check(definition.f.at(29) == 20, "new contract size reaches fresh 507"); });
+    definition_revocation_case(
+        "removed tick value", [](Replay& source) { source.state.currency_value_per_increment.clear(); },
+        [](Replay& source) { source.state.currency_value_per_increment = "2.5"; },
+        [](const Read& definition) { check(definition.f.at(8) == 2.5F, "fresh tick value restored"); });
+    definition_revocation_case(
+        "changed tick value", [](Replay& source) { source.state.currency_value_per_increment = "3.75"; }, unchanged,
+        [](const Read& definition) { check(definition.f.at(8) == 3.75F, "new tick value reaches fresh 507"); });
+    definition_revocation_case(
+        "new REFDATA generation",
+        [](Replay& source) {
+            auto& state = source.state;
+            state.definition_source_provenance.lifenum = 13;
+            state.future_instruments_provenance.lifenum = 13;
+            state.future_sess_contents_provenance.lifenum = 13;
+            state.session_provenance.lifenum = 13;
+            state.future_vcb_provenance.lifenum = 13;
+            state.future_vcb_lifenum = 13;
+        },
+        unchanged,
+        [](const Read& definition) {
+            check(definition.n.at(33) == 123, "new generation retains instrument identity");
+        });
+}
+void partial_output_revocation() {
+    auto c = config();
+    c.source_mode = DtcSourceMode::LiveTest;
+    c.symbol_id = 17;
+    c.max_write_bytes_per_poll = 64;
+    Harness h(c);
+    mark_live_refdata_proven(h.source);
+    h.source.state.description.assign(512, 'X');
+    const auto initial_definition = validate_dtc_security_definition(h.source.state, DtcSourceMode::LiveTest);
+    check(initial_definition.available(), initial_definition.reason.c_str());
+    h.logon();
+    h.subscribe();
+    check(h.count(507) == 1, "maximum-sized LiveTest description reaches the independent 507 decoder");
+    h.got.clear();
+    const auto request = h.definition_request();
+    h.send(request);
+    for (unsigned i = 0; i < 20 && h.server.queued_bytes() == 0; ++i) {
+        h.server.poll();
+        if (h.server.queued_bytes() == 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(h.server.queued_bytes() > 0 && h.server.security_definition_responses_fully_written() == 1,
+          ("single oversized 507 remains incomplete after bounded socket write (queued=" +
+           std::to_string(h.server.queued_bytes()) + ", client=" + (h.server.has_client() ? "true" : "false") +
+           ", completed=" + std::to_string(h.server.security_definition_responses_fully_written()) +
+           ", error=" + h.server.last_error() + ")")
+              .c_str());
+    h.source.state.contract_size = "20";
+    h.server.poll();
+    check(!h.server.has_client() && h.server.queued_bytes() == 0,
+          "definition change closes instead of splicing a logoff into partial output");
+    h.pump(5);
+    check(h.eof && h.count(5) == 0, "partially written response is closed without appending a LOGOFF header");
+    std::string decoder_error;
+    check(!h.decoder.finish(decoder_error), "partial DTC frame is not completed with a different message");
+}
 void rejects() {
     for (float value : {0.0F, -1.0F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
         auto c = config();
         c.currency_value_per_increment = value;
         Harness h(c);
-        h.logon(false);
+        h.logon();
         h.subscribe();
         check(h.count(509) == 1 && h.count(507) == 0 && h.count(145) == 0,
               "missing or invalid currency value per increment rejects metadata and depth");
@@ -564,7 +823,7 @@ void rejects() {
         auto c = config();
         c.description = "\xff";
         Harness h(c);
-        h.logon(false);
+        h.logon();
         h.subscribe();
         check(h.count(509) == 1 && h.count(507) == 0 && h.count(145) == 0, "malformed UTF-8 source metadata rejected");
     }
@@ -574,6 +833,39 @@ void rejects() {
         h.logon();
         h.subscribe();
         check(h.count(145) == 0 && h.eof, "missing CGate identity never synthesized");
+    }
+}
+void float32_wire_representability() {
+    {
+        Replay source;
+        mark_live_refdata_proven(source);
+        const auto ordinary_tick = validate_dtc_security_definition(source.state, DtcSourceMode::LiveTest);
+        check(ordinary_tick.available() && ordinary_tick.definition->min_price_increment == 0.01F,
+              "supported fractional tick remains a positive DTC float32 increment");
+
+        source.state.contract_size = "16777217";
+        const auto lossy_lot_volume = validate_dtc_security_definition(source.state, DtcSourceMode::LiveTest);
+        check(!lossy_lot_volume.available() &&
+                  lossy_lot_volume.reason ==
+                      "current fut_instruments.lot_volume cannot be represented exactly by DTC float32 ContractSize",
+              "lot_volume that rounds at the float32 integer precision boundary is unavailable");
+    }
+    {
+        Harness exact;
+        exact.source.state.levels[0].volume = 16777216;
+        exact.logon();
+        exact.subscribe();
+        check(exact.count(145) == 2 && Read(exact.first(145).payload).f[3] == 16777216.0F,
+              "largest consecutive float32 integer quantity is preserved on the wire");
+    }
+    {
+        Harness lossy;
+        lossy.source.state.levels[0].volume = 16777217;
+        lossy.logon();
+        lossy.subscribe();
+        check(lossy.count(145) == 0 && lossy.eof && lossy.count(5) == 1 &&
+                  lossy.server.last_error() == "DTC depth quantity is not exactly representable as float32",
+              "source quantity that rounds from 16777217 to 16777216 is rejected before depth publication");
     }
 }
 void bounds() {
@@ -678,14 +970,8 @@ int serve_fixture() {
 
 int serve_live507_fixture(std::uint32_t symbol_id, DtcSourceMode source_mode) {
     Replay source;
-    source.state.refdata_vcb_join_current = source_mode == DtcSourceMode::LiveTest;
-    source.state.future_vcb_provenance_present = source_mode == DtcSourceMode::LiveTest;
-    source.state.refdata_board_proven = source_mode == DtcSourceMode::LiveTest;
-    source.state.refdata_currency_proven = source_mode == DtcSourceMode::LiveTest;
-    source.state.description = "Authoritative test future";
-    source.state.currency = "RUB";
-    source.state.contract_size = "10";
-    source.state.currency_value_per_increment = "2.5";
+    if (source_mode == DtcSourceMode::LiveTest)
+        mark_live_refdata_proven(source);
     auto server_config = config();
     server_config.port = 0;
     server_config.source_mode = source_mode;
@@ -710,6 +996,56 @@ int serve_live507_fixture(std::uint32_t symbol_id, DtcSourceMode source_mode) {
     server.stop();
     return connected ? 0 : 2;
 }
+
+int serve_live507_revocation_fixture() {
+    Replay source;
+    mark_live_refdata_proven(source);
+    const auto initial_book_version = source.state.source_snapshot_version;
+    auto server_config = config();
+    server_config.port = 0;
+    server_config.source_mode = DtcSourceMode::LiveTest;
+    server_config.symbol_id = 7;
+    DtcReadOnlyServer server(source, server_config);
+    std::string error;
+    if (!server.start(error)) {
+        std::cerr << error << '\n';
+        return 1;
+    }
+    std::cout << server.port() << '\n' << std::flush;
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    unsigned client_sessions = 0;
+    bool was_connected = false;
+    bool metadata_revoked = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        server.poll();
+        const bool connected = server.has_client();
+        if (connected && !was_connected)
+            ++client_sessions;
+
+        // Wait for the first real 507 bytes to be fully written to the local
+        // socket, then revoke only a definition term. The AGGR book version
+        // remains byte-for-byte unchanged for this same-client fence test.
+        if (client_sessions == 1 && connected && !metadata_revoked &&
+            server.security_definition_responses_fully_written() > 0) {
+            source.state.description = "Revised TEST future";
+            source.state.currency_value_per_increment = "3.75";
+            metadata_revoked = true;
+        }
+
+        if (client_sessions == 2 && !connected && was_connected)
+            break;
+        was_connected = connected;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const bool completed = client_sessions == 2 && metadata_revoked &&
+                           server.security_definition_responses_fully_written() >= 2 &&
+                           source.state.source_snapshot_version == initial_book_version;
+    server.stop();
+    if (!completed)
+        std::cerr << "LiveTest metadata-revocation fixture did not complete two clean local sessions\n";
+    return completed ? 0 : 2;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -725,14 +1061,21 @@ int main(int argc, char** argv) {
                                                                              ? DtcSourceMode::LiveTest
                                                                              : DtcSourceMode::Replay);
     }
+    if (argc == 2 && std::string(argv[1]) == "--serve-live507-revocation-fixture")
+        return serve_live507_revocation_fixture();
     if (argc != 1) {
-        std::cerr << "Usage: connector_host_dtc_server_test [--serve-fixture|--serve-live507-fixture ID live|replay]\n";
+        std::cerr << "Usage: connector_host_dtc_server_test [--serve-fixture|--serve-live507-fixture ID live|replay|"
+                     "--serve-live507-revocation-fixture]\n";
         return 2;
     }
     replay_roundtrip();
     live_test_metadata_and_auth();
+    live_test_late_refdata_after_logon();
     revoke_and_reconnect();
+    definition_revocation();
+    partial_output_revocation();
     rejects();
+    float32_wire_representability();
     bounds();
     throwing_source();
     std::cout << "DTC loopback E2E: negotiation, definitions, UTF-8, authority, signed depth, replay, revocation, "

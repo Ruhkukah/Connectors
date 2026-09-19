@@ -115,7 +115,7 @@ static async Task CheckSession(string executable, uint symbolId, string mode)
     var definitionRequest = new List<byte>();
     Field(definitionRequest, 1, 41);
     TextField(definitionRequest, 2, "ALRS-12.26");
-    TextField(definitionRequest, 3, "FORTS");
+    TextField(definitionRequest, 3, "MOEX_SPECTRA");
     await stream.WriteAsync(Frame(506, definitionRequest.ToArray()), timeout.Token);
     (ushort Type, byte[] Payload) definitionFrame = default;
     for (var attempt = 0; attempt < 16; attempt++)
@@ -126,7 +126,7 @@ static async Task CheckSession(string executable, uint symbolId, string mode)
     }
     Require(definitionFrame.Type == 507, $"expected507, received DTC message {definitionFrame.Type}");
     var definition = SecurityDefinitionResponse.Parser.ParseFrom(definitionFrame.Payload);
-    Require(definition.RequestID == 41 && definition.Symbol == "ALRS-12.26" && definition.Exchange == "FORTS",
+    Require(definition.RequestID == 41 && definition.Symbol == "ALRS-12.26" && definition.Exchange == "MOEX_SPECTRA",
         "507 instrument identity changed");
     Require((int)definition.SecurityType == 1,
         $"official generated schema decoded SecurityType={(int)definition.SecurityType}, expected FUTURE=1");
@@ -139,7 +139,7 @@ static async Task CheckSession(string executable, uint symbolId, string mode)
     Field(depthRequest, 1, 1);
     Field(depthRequest, 2, symbolId);
     TextField(depthRequest, 3, "ALRS-12.26");
-    TextField(depthRequest, 4, "FORTS");
+    TextField(depthRequest, 4, "MOEX_SPECTRA");
     Field(depthRequest, 5, 20);
     await stream.WriteAsync(Frame(102, depthRequest.ToArray()), timeout.Token);
     for (var level = 0; level < 2; level++)

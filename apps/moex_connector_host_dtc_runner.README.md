@@ -20,8 +20,11 @@ when the committed REFDATA join supplies them:
 moex_connector_host_dtc_runner plaza2 qualify \
   --runtime-root PATH --scheme-dir PATH --config-dir PATH \
   --env-settings-var NAME --isin-id N --session-id N \
-  [--dtc-board BOARD] [--dtc-currency CODE]
+  [--dtc-underlying-board ASTS_SECBOARD] [--dtc-currency CODE]
 ```
+
+`--dtc-board` remains a legacy alias for `--dtc-underlying-board`; neither
+option sets the DTC `Exchange` field.
 
 The remaining ConnectorHost TEST options are the same as `moexctl --help`.
 The DTC listener binds only `127.0.0.1` and defaults to port `11200`. Use
@@ -57,25 +60,74 @@ Safety contract:
 - The ConnectorHost is TEST-only and strict readonly. It does not create
   publisher or `p2mqreply` handles, and it never calls order authorization,
   order submission, account, or order surfaces. The startup receipt reports
-  the source Git SHA, binary SHA-256, TEST/live source mode, loopback endpoint,
-  target identity, authority, and no-order/no-account flags.
+  source/build/binary identities, runtime/scheme identity, TEST/live source
+  mode, loopback endpoint, target identity and provenance, declared
+  application capabilities, fully written LOGON_RESPONSE fields,
+  auth-required status, and no-order/no-account flags. A completed local
+  socket write does not claim the peer consumed the response.
+- Polling stays on the single ConnectorHost owner thread. During warmup the
+  runner takes one committed target view after `host.poll()` for readiness and
+  the startup receipt, then polls DTC. In steady state the runner no longer
+  takes an unused target view; a subscribed DTC poll materializes the committed
+  view it needs for snapshot/revocation checks. Publisher/reply fencing reads
+  only those two handle states instead of rebuilding the broad diagnostic
+  snapshot on every loop. This is a source-call-count reduction, not a latency
+  or throughput benchmark.
 - DTC 507 uses live target description, raw `lot_volume` contract size, and
   raw `step_price_curr` currency value per increment from committed REFDATA.
   The locked schema defines `step_price_curr` as the value of the minimum
-  increment in currency; no value is derived when it is absent. The target
-  futures instrument joins `fut_vcb` by `base_contract_code`; only one
-  committed row with a non-empty `base_contract_id`, `curr` (schema: quotation
-  currency), and `board_md` (schema: ASTS `SECBOARD` identifier) resolves the
-  join. The board string is preserved exactly; it is not converted to a
-  numeric value, renamed to `FORTS`, or otherwise guessed. The ConnectorHost
-  provider contract places that raw board value in the DTC 507 board field;
-  this runner does not claim a separate ASTS-SECBOARD-to-DTC-exchange mapping.
+  increment in currency; for RUB contracts the value is the same as
+  `step_price`. The target futures instrument joins `fut_vcb` by
+  `base_contract_code`; only one committed row with a non-empty
+  `base_contract_id`, `curr` (quotation currency), and `board_md` (ASTS
+  `SECBOARD` underlying-board identifier) resolves the join. The raw board
+  remains separately named `underlying_board`; it is never copied into the
+  standard DTC `Exchange` field.
+- The gateway's explicit DTC `Exchange` identifier is `MOEX_SPECTRA`. It is a
+  stable identifier defined by this gateway/client contract for the supported
+  SPECTRA derivatives venue; it is not claimed to be an official MOEX code or
+  a value sourced from `board_md`. Kairos must use this identifier in DTC 506
+  and 102 requests. The canonical immutable definition contains both this
+  identifier and the distinct raw underlying board, together with the
+  `fut_vcb` source stream/table, LifeNum, replRev, base-contract key, and a
+  definition version independent of AGGR book-price updates. The active
+  `session` row and both futures-table source rows are separately retained
+  with stream/table/replRev/LifeNum provenance.
+- `SecurityDefinitionResponse` mapping is deliberately limited:
+
+  | DTC field | LiveTest mapping | Meaning / unit / missing-value policy | Source provenance |
+  |---|---|---|---|
+  | `RequestID` (1) | Echo 506 request | Request correlation; no source value | Request-scoped; excluded from definition identity |
+  | `Symbol` (2) | Current futures `isin` | Exact code; required | Current instrument provenance and REFDATA generation |
+  | `Exchange` (3) | Gateway constant `MOEX_SPECTRA` | Explicit gateway venue label; never `board_md` | Connector/client contract; not a MOEX source field |
+  | `SecurityType` (4) | `FUTURE` | Only a current outright future; spread/multileg/unknown classes fail closed | Committed instrument classification and session membership provenance |
+  | `Description` (5) | Current merged instrument `name` | UTF-8 text; required | `definition_source_provenance` identifies the operative committed row; both futures table provenances are retained |
+  | `MinPriceIncrement` (6) | Current instrument `min_step` | Price points per minimum increment; positive finite float32 required | Committed futures instrument/session rows, REFDATA LifeNum |
+  | `CurrencyValuePerIncrement` (8) | Current instrument `step_price_curr` | RUB value of minimum increment; positive finite float32 required | Committed futures terms plus matching-generation `fut_vcb` join |
+  | `IsFinalMessage` (9) | `1` | Complete one-instrument response | Connector protocol behavior; independent of DTC `SymbolID` |
+  | `HasMarketDepthData` (23) | Read-only source depth capability | Boolean | Application capability, distinct from current metadata readiness |
+  | `Currency` (28) | `fut_vcb.curr` | Quotation currency; only the supported `RUB` path is currently mapped | Committed `FORTS_REFDATA_REPL.fut_vcb` stream/table, replRev and LifeNum |
+  | `ContractSize` (29) | Current instrument `lot_volume` | Positive whole underlying-asset unit count, exactly representable as float32 | Committed futures instrument/session rows, REFDATA LifeNum |
+  | `SecurityIdentifier` (33) | Current `isin_id` | Positive MOEX source identity; distinct from DTC `SymbolID` | Committed target instrument/session provenance |
+
+  `fut_vcb.board_md` is retained as raw ASTS SECBOARD provenance in the
+  internal canonical definition and startup receipt; DTC 507 has no
+  underlying-board field. LiveTest omits optional price/display conversions
+  and unproven economics. Replay-only constant fields are compatibility
+  fixtures, not LiveTest mappings.
+
+  All other optional 507 tags are omitted in LiveTest. The locked MOEX schema
+  defines `lot_volume` as the number of underlying-asset units in the
+  instrument, but the pinned DTC schema gives `ContractSize` no unit/comment;
+  mapping the former to the latter is an explicit gateway interpretation that
+  still needs consumer/vendor semantic confirmation. Do not extend that
+  assumption to other classes or economics.
 - Phase5 currently accepts only the exact `RUB` `fut_vcb.curr` path for the
   monetary meaning needed by DTC 507. Other quotation codes, including
   `USD`/`USR`, remain visible as raw source metadata but fail closed until the
   denomination relationship to `step_price_curr` is locked by primary
   evidence; they are not labeled as proven monetary-unit economics.
-- `--dtc-board` and `--dtc-currency` are operator bindings only. A resolved
+- `--dtc-underlying-board` (or legacy `--dtc-board`) and `--dtc-currency` are operator bindings only. A resolved
   `fut_vcb` row overrides them and the startup receipt labels the fields
   `refdata_fut_vcb`; a mismatch fences metadata. If the join is missing or
   ambiguous, the receipt says so and live TEST 506 returns DTC 509. The
@@ -88,6 +140,11 @@ Safety contract:
   authority before any further depth. The source supplies exchange event
   provenance; the runner does not invent ingress/emit timestamps or clock
   semantics.
+- DTC 145 quantity is encoded as Float32. Source integer quantities must
+  round-trip exactly through that wire type; a lossy value such as
+  `16,777,217` is rejected before depth publication rather than silently
+  rounded. This is a conversion-safety rule, not a claim about the venue's
+  maximum supported quantity.
 - DTC trading, account, position, order, and order-entry requests are rejected
   and disconnected. This Phase5 boundary is intentionally separate from any
   future execution runner.

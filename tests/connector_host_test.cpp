@@ -289,7 +289,7 @@ struct DtcHostWireHarness {
         DtcBytes payload;
         dtc_integer(payload, 1, 41);
         dtc_text(payload, 2, snapshot.symbol);
-        dtc_text(payload, 3, snapshot.board);
+        dtc_text(payload, 3, std::string(dtc::kDtcMoexSpectraExchange));
         send(dtc_packet(506, std::move(payload)));
         pump();
     }
@@ -633,6 +633,25 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_FAKE_MISSING_ORDER", "1", 1);
         ::setenv("MOEX_FAKE_CLIENT_CODE", "BRK1C01", 1);
         ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "20003", 1);
+        for (const auto [outer_read_only, transport_read_only, accepted] :
+             {std::tuple{false, false, true}, std::tuple{true, true, true}, std::tuple{true, false, false},
+              std::tuple{false, true, false}}) {
+            auto config = config_for(fixture);
+            config.read_only_market_data = outer_read_only;
+            config.transport.host.read_only_market_data = transport_read_only;
+            bool constructed = false;
+            try {
+                ConnectorHost host(std::move(config));
+                constructed = true;
+                const auto plan = host.plan();
+                test::require(outer_read_only ? plan.failure == PreSendFailure::ConflictingMode
+                                              : plan.failure == PreSendFailure::SessionNotTradable,
+                              "consistent read-only mode is reflected by the public planning API");
+            } catch (const std::invalid_argument&) {
+            }
+            test::require(constructed == accepted,
+                          "outer/nested read-only mode matrix rejects only contradictory direct configs");
+        }
         {
             const std::vector<std::string> readonly_owned{"plaza2",
                                                           "qualify",
@@ -652,7 +671,9 @@ int main(int argc, char** argv) {
             std::vector<std::string_view> readonly_args(readonly_owned.begin(), readonly_owned.end());
             const auto readonly = parse_operator_arguments(readonly_args).config;
             test::require(readonly.read_only_market_data && readonly.order.broker_code.empty() &&
-                              readonly.order.client_code.empty() && readonly.transport.observation_client_code.empty(),
+                              readonly.order.client_code.empty() &&
+                              readonly.transport.observation_client_code.empty() &&
+                              readonly.transport.host.read_only_market_data,
                           "readonly operator mode skips broker/client order identity inputs");
         }
         if (argc == 3) {
@@ -727,7 +748,7 @@ int main(int argc, char** argv) {
         }
         {
             auto config = config_for(fixture);
-            config.target_board = "RFUD";
+            config.target_underlying_board = "RFUD";
             config.transport.host.transport_recovery_enabled = false;
             Plaza2TestSessionHost host(config.transport.host);
             const auto status_current = [&] {
@@ -762,7 +783,7 @@ int main(int argc, char** argv) {
             ::setenv("MOEX_FAKE_STATUS_BEFORE_REFDATA", "1", 1);
             ::setenv("MOEX_FAKE_STATUS_REFRESH_STALL", "1", 1);
             auto config = config_for(fixture);
-            config.target_board = "RFUD";
+            config.target_underlying_board = "RFUD";
             auto now = std::chrono::system_clock::time_point{std::chrono::seconds{1700000100}};
             config.market_data_now = [&] { return now; };
             const auto before = status_opens();
@@ -806,7 +827,7 @@ int main(int argc, char** argv) {
         // boundary without copying qualification/account state.
         {
             auto config = config_for(fixture);
-            config.target_board = "RFUD";
+            config.target_underlying_board = "RFUD";
             ConnectorHost host(config);
             warm(host);
             moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host);
@@ -821,8 +842,15 @@ int main(int argc, char** argv) {
                               first.session_ready_witness_kind == cg::SessionReadyWitnessKind::OnlineSynchronousEvent,
                           "live host exposes the committed online witness through DTC");
             test::require(first.isin_id == 1001, "DTC source target ISIN");
-            test::require(first.board == "RFUD", "DTC source target board");
+            test::require(first.underlying_board == "RFUD", "DTC source preserves raw ASTS SECBOARD metadata");
             test::require(first.symbol == "RTS-6.26", "DTC source target symbol");
+            test::require(first.session_provenance.present &&
+                              first.session_provenance.stream_code ==
+                                  moex::plaza2::generated::StreamCode::kFortsRefdataRepl &&
+                              first.session_provenance.table_code ==
+                                  moex::plaza2::generated::TableCode::kFortsRefdataReplSession &&
+                              first.session_provenance.lifenum > 0 && first.session_provenance.repl_rev > 0,
+                          "DTC source carries committed provenance for the active REFDATA session row");
             test::require(first.levels.size() == 2, "DTC source target level count");
             test::require(first.two_sided, "DTC source target has two sides");
             test::require(first.source_repl_id != 0 && first.source_row_id == first.source_repl_id &&
@@ -867,10 +895,11 @@ int main(int argc, char** argv) {
                 wire.request_definition(authoritative);
                 auto definition = DtcProtoRead(wire.first(507).payload);
                 test::require(definition.numbers[1] == 41 && definition.strings[2] == authoritative.symbol &&
-                                  definition.strings[3] == authoritative.board && definition.numbers[23] == 1 &&
+                                  definition.strings[3] == dtc::kDtcMoexSpectraExchange &&
+                                  definition.numbers[23] == 1 &&
                                   definition.numbers[33] == static_cast<std::uint64_t>(authoritative.isin_id) &&
                                   definition.reals[6] == std::stof(authoritative.min_step),
-                              "actual ConnectorHost source capability and 506/507 wire agree");
+                              "actual ConnectorHost maps gateway Exchange separately from raw board_md");
             }
             test::require(!host.stop(), "target-scoped DTC source host stop");
         }
@@ -879,9 +908,10 @@ int main(int argc, char** argv) {
         // create publisher or p2mqreply handles or reach an order API.
         {
             auto config = config_for(fixture);
-            config.target_board = "RFUD";
+            config.target_underlying_board = "RFUD";
             config.target_currency = "RUB";
             config.read_only_market_data = true;
+            config.transport.host.read_only_market_data = true;
             // Read-only startup must not require an exchange/order credential
             // when the rendered CGate settings use only the router-authenticated
             // connection and software key. Keep the order profile empty too:
@@ -896,37 +926,74 @@ int main(int argc, char** argv) {
             config.order.price.clear();
             config.order.broker_code.clear();
             config.order.client_code.clear();
+            std::filesystem::create_directories(config.order.journal_root);
+            {
+                std::ofstream checkpoint(config.order.journal_root / "persistent_session.json");
+                checkpoint << "intentionally malformed active-order checkpoint\n";
+                std::ofstream required(config.order.journal_root / "persistent_session.json.required");
+                required << "fixture marker\n";
+            }
             ConnectorHost host(config);
+            test::require(!std::filesystem::exists(config.order.journal_root / "persistent_session.json.lock"),
+                          "read-only construction does not lock or load an order checkpoint");
             test::require(!host.start(), "readonly ConnectorHost TEST start");
             dtc::ConnectorHostDtcMarketDataSource source(host);
             for (unsigned i = 0; i < 12 && !source.snapshot().valid; ++i)
                 test::require(!host.poll(), "readonly ConnectorHost TEST poll");
             const auto data = source.snapshot();
             const auto snapshot = host.snapshot();
-            test::require(data.valid && data.target_authoritative && data.board == "RFUD" && data.currency == "RUB",
+            test::require(data.valid && data.target_authoritative && data.underlying_board == "RFUD" &&
+                              data.currency == "RUB",
                           "readonly ConnectorHost keeps authoritative target market data");
             test::require(!snapshot.publisher_handle_open && !snapshot.reply_handle_open &&
                               snapshot.transport_health.publisher == 0 && snapshot.transport_health.reply == 0 &&
                               snapshot.publisher_calls.msgnew == 0 && snapshot.publisher_calls.post == 0,
                           "readonly ConnectorHost opens no publisher/reply surface and makes no calls");
+            test::require(!host.has_publisher_or_reply_handles(),
+                          "narrow read-only publisher/reply guard agrees without materializing diagnostics");
             const auto plan = host.plan();
             test::require(!plan.ok && plan.failure == PreSendFailure::ConflictingMode,
                           "readonly ConnectorHost rejects order planning");
             test::require(host.authorize("{}", "").code != cg::Plaza2ErrorCode::None,
                           "readonly ConnectorHost rejects authorization");
+            ConnectorHostOrderRequest direct_order{.price = "103000", .base_contract_code = "RTS"};
+            test::require(host.plan_order(direct_order).failure == PreSendFailure::ConflictingMode,
+                          "readonly ConnectorHost rejects direct plan_order callers");
+            test::require(host.begin_order(direct_order, "{}", "").code != cg::Plaza2ErrorCode::None &&
+                              host.begin_order("{}", "").code != cg::Plaza2ErrorCode::None,
+                          "readonly ConnectorHost rejects both begin_order entrypoints");
             test::require(host.submit().message.find("read-only") != std::string::npos,
                           "readonly ConnectorHost rejects submission");
+            const auto submit_order = host.submit_order();
+            const auto poll_order = host.poll_order();
+            const auto cancel_order = host.cancel_current_order();
+            const auto cancel_path = config.order.journal_root / "recovered-cancel.json";
+            const auto prepare_recovered = host.prepare_recovered_cancel(cancel_path);
+            const auto cancel_recovered = host.cancel_recovered_order(cancel_path, "");
+            test::require(submit_order.message.find("read-only") != std::string::npos &&
+                              poll_order.message.find("read-only") != std::string::npos &&
+                              cancel_order.message.find("read-only") != std::string::npos &&
+                              prepare_recovered.error.find("read-only") != std::string::npos &&
+                              cancel_recovered.message.find("read-only") != std::string::npos,
+                          "readonly mode rejects submit, poll, cancel and recovery entrypoints");
+            test::require(host.reconcile_recovered_order().outcome == RecoveredOrderOutcome::GenerationNotFresh &&
+                              host.finish_order_epoch().code != cg::Plaza2ErrorCode::None && !host.reconcile().ok &&
+                              !std::filesystem::exists(cancel_path),
+                          "readonly mode rejects epoch/recovery restore paths without creating artifacts");
             const auto after = host.snapshot();
             test::require(after.publisher_calls.msgnew == 0 && after.publisher_calls.post == 0,
                           "readonly order attempts do not reach publisher calls");
             test::require(!host.stop(), "readonly ConnectorHost TEST stop");
+            std::filesystem::remove(config.order.journal_root / "persistent_session.json");
+            std::filesystem::remove(config.order.journal_root / "persistent_session.json.required");
         }
         {
             ::setenv("MOEX_FAKE_AGGR_ONE_SIDED", "1", 1);
             auto config = config_for(fixture);
-            config.target_board = "RFUD";
+            config.target_underlying_board = "RFUD";
             ConnectorHost host(config);
-            test::require(!host.start(), "one-sided DTC source start");
+            const auto start_error = host.start();
+            test::require(!start_error, ("one-sided DTC source start: " + start_error.message).c_str());
             for (unsigned i = 0; i < 10; ++i)
                 test::require(!host.poll(), "one-sided DTC source poll");
             moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host);
@@ -940,7 +1007,7 @@ int main(int argc, char** argv) {
         {
             ::setenv("MOEX_FAKE_AGGR_EMPTY", "1", 1);
             auto config = config_for(fixture);
-            config.target_board = "RFUD";
+            config.target_underlying_board = "RFUD";
             ConnectorHost host(config);
             test::require(!host.start(), "empty DTC source start");
             for (unsigned i = 0; i < 10; ++i)
@@ -955,7 +1022,7 @@ int main(int argc, char** argv) {
         }
         {
             auto config = config_for(fixture);
-            config.target_board = "RFUD";
+            config.target_underlying_board = "RFUD";
             ConnectorHost host(config);
             warm(host);
             moex::connector_host::dtc::ConnectorHostDtcMarketDataSource source(host);

@@ -8,4 +8,8 @@
 - Official `SecurityDefinitionResponse.SecurityType = 4`.
 - Official `SecurityDefinitionResponse.IsFinalMessage = 9`.
 
-The adjacent `.proto` is a minimal generated-test fixture containing those exact official enum/message field declarations, rather than a fork of the full changing upstream file. Its generated C# protobuf parser decodes bytes produced by the C++ DTC server. Review/update this pinned schema hash deliberately when taking a later upstream protocol snapshot.
+The adjacent `.proto` is a minimal generated-test fixture containing those exact
+official enum/message field declarations, rather than a fork of the full changing
+upstream file. Its generated C# protobuf parser decodes bytes produced by the C++
+DTC server. Review/update this pinned schema hash deliberately when taking a later
+upstream protocol snapshot.

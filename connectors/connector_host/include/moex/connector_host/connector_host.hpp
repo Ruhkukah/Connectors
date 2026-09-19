@@ -20,18 +20,16 @@ struct Plaza2HostConfig {
     HostPurpose purpose{HostPurpose::Qualify};
     plaza2_trade::Plaza2TestTradeTransportConfig transport;
     plaza2_trade::OrderLifecycleConfig order;
-    // Optional authoritative board label supplied by the ConnectorHost
-    // integration. An empty value is never inferred from a user tick size or
-    // endpoint; the future DTC security-definition response will be the
-    // source of truth.
-    std::string target_board;
-    // Board/currency are not inferred from an endpoint, symbol, or tick size.
-    // The runner may provide them only as explicit operator bindings when the
-    // current Connector/REFDATA surface does not carry the field. Currency is
-    // not claimed to be REFDATA-proven by this field alone.
+    // Optional explicit binding for the raw ASTS SECBOARD value carried by
+    // FORTS_REFDATA_REPL.fut_vcb.board_md. This is underlying-board metadata,
+    // not the DTC Exchange/venue identifier.
+    std::string target_underlying_board;
+    // Currency is not inferred from an endpoint, symbol, or tick size. This
+    // optional operator binding is never claimed as REFDATA-proven by itself.
     std::string target_currency;
     // A read-only market-data host never creates publisher/reply handles and
-    // rejects all order authorization APIs. It remains TEST-only.
+    // rejects all order authorization APIs. It remains TEST-only. This flag
+    // must equal transport.host.read_only_market_data in direct configs.
     bool read_only_market_data{false};
     // Wall-clock seam for current-session display checks; production defaults
     // to system_clock::now. Does not participate in order authorization.
@@ -175,7 +173,9 @@ struct ConnectorHostMarketDataSnapshot {
     std::int64_t target_isin_id{0};
     std::int32_t target_session_id{0};
     std::string symbol;
-    std::string board;
+    // Raw FORTS_REFDATA_REPL.fut_vcb.board_md (ASTS SECBOARD identifier).
+    // It is distinct from the gateway-defined DTC Exchange identifier.
+    std::string underlying_board;
     std::string min_step;
     std::string description;
     // When the committed fut_vcb join is resolved, these are its raw source
@@ -192,6 +192,15 @@ struct ConnectorHostMarketDataSnapshot {
     // true only for a supported monetary/tick denomination path (Phase5
     // currently exact RUB), not for an arbitrary quotation code.
     bool refdata_currency_proven{false};
+    bool target_is_future{false};
+    bool target_is_spread{false};
+    bool target_is_multileg{false};
+    std::string future_vcb_base_contract_code;
+    std::int32_t future_vcb_base_contract_id{0};
+    plaza2::private_state::SourceRowProvenance definition_source_provenance;
+    plaza2::private_state::SourceRowProvenance future_instruments_provenance;
+    plaza2::private_state::SourceRowProvenance future_sess_contents_provenance;
+    plaza2::private_state::SourceRowProvenance session_provenance;
     plaza2::private_state::SourceRowProvenance future_vcb_provenance;
     std::string invalid_reason;
     std::uint64_t source_snapshot_version{0};
@@ -241,6 +250,7 @@ class ConnectorHost final {
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] ConnectorHostSnapshot snapshot() const;
+    [[nodiscard]] bool has_publisher_or_reply_handles() const noexcept;
     [[nodiscard]] ConnectorHostMarketDataSnapshot market_data_snapshot() const;
     [[nodiscard]] plaza2_trade::DeepPassiveProposal first_order_price_proposal() const;
     [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot(bool private_identity = false) const;

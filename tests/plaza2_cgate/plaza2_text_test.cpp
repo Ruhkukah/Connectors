@@ -4,6 +4,7 @@
 #undef main
 
 #include <cstdlib>
+#include <fstream>
 
 namespace {
 void require_text(bool condition, const char* message) {
@@ -43,6 +44,8 @@ int main(int argc, char** argv) {
         require_text(!valid_utf8(bad), "invalid UTF-8 accepted");
         require_text(valid_utf8(json_escape(bad)), "invalid bytes leaked into JSON");
         require_text(json_escape(bad).find("\\ufffd") != std::string::npos, "invalid bytes not escaped");
+        require_text(json_quote_utf8(bad).starts_with('"') && json_quote_utf8(bad).ends_with('"'),
+                     "shared JSON string serializer omitted quotes");
     }
     require_text(valid_utf8("\xf0\x9f\x98\x80") && valid_utf8("\xf4\x8f\xbf\xbf"),
                  "valid supplementary UTF-8 rejected");
@@ -57,6 +60,11 @@ int main(int argc, char** argv) {
     report.attempts.push_back(attempt);
     report.error = "bad\xed\xa0\x80";
     write_report_json(argv[1], report);
+    const auto malformed_receipt_value = std::string("\xd0\x90") + R"( "quoted" \)" + std::string("\0\x01\x1f\xff", 4);
+    std::ofstream runner_receipt(std::string(argv[1]) + ".runner.json", std::ios::binary);
+    runner_receipt << "{\"metadata_507_ready\":false,\"symbol\":" << json_quote_utf8(malformed_receipt_value)
+                   << ",\"invalid_utf8_raw_hex\":{\"symbol\":\"ff\"}}";
+    require_text(static_cast<bool>(runner_receipt), "runner JSON fixture write failed");
     // Independent Python codec oracle checks all 256 byte mappings.
     for (unsigned int byte = 0; byte < 256; ++byte) {
         const char raw_byte = static_cast<char>(byte);

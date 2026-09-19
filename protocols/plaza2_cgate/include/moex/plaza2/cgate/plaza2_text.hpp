@@ -104,4 +104,10 @@ namespace moex::plaza2::cgate::text {
     return out;
 }
 
+// Produce one JSON string token. Malformed UTF-8 is replaced byte-by-byte
+// with U+FFFD so receipts stay valid UTF-8 even while reporting bad metadata.
+[[nodiscard]] inline std::string json_quote_utf8(std::string_view value) {
+    return '"' + json_escape_utf8(value) + '"';
+}
+
 } // namespace moex::plaza2::cgate::text

@@ -22,30 +22,6 @@ using Bytes = std::vector<std::uint8_t>;
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t kMaxLocalCredentialBytes = 256;
 
-// This DTC endpoint currently exposes futures books only. Keep the instrument
-// kind to wire-enum mapping explicit and independent of the client SymbolID.
-enum class SupportedInstrumentKind : std::uint8_t { Unsupported, Future };
-enum class DtcSecurityType : std::uint32_t { Future = 1 };
-
-std::optional<DtcSecurityType> dtc_security_type(SupportedInstrumentKind kind) noexcept {
-    switch (kind) {
-    case SupportedInstrumentKind::Unsupported:
-        return std::nullopt;
-    case SupportedInstrumentKind::Future:
-        return DtcSecurityType::Future;
-    }
-    return std::nullopt;
-}
-
-std::optional<SupportedInstrumentKind> supported_instrument_kind(const DtcMarketDataSnapshot& snapshot,
-                                                                 DtcSourceMode source_mode) noexcept {
-    if (source_mode == DtcSourceMode::Replay)
-        return SupportedInstrumentKind::Future; // replay definition fixtures in this endpoint are futures
-    if (snapshot.refdata_vcb_join_current && snapshot.future_vcb_provenance_present)
-        return SupportedInstrumentKind::Future;
-    return std::nullopt;
-}
-
 // Minimal wire subset of https://www.sierrachart.com/DTC_Files/DTCProtocol.proto
 // (DTC v8). Fields 8-20 of message 145 are the pinned Kairos extension, not
 // official DTC fields. No protobuf library or generated files are required.
@@ -194,6 +170,16 @@ bool positive_float(std::string_view text, float& value) noexcept {
         return false;
     }
 }
+bool exact_dtc_quantity(std::int64_t quantity, float& wire_quantity) noexcept {
+    if (quantity <= 0)
+        return false;
+    wire_quantity = static_cast<float>(quantity);
+    constexpr double int64_upper_exclusive = 9223372036854775808.0; // 2^63, exactly representable as double.
+    if (!std::isfinite(wire_quantity) || wire_quantity <= 0 ||
+        static_cast<double>(wire_quantity) >= int64_upper_exclusive)
+        return false;
+    return static_cast<std::int64_t>(wire_quantity) == quantity;
+}
 } // namespace
 
 struct DtcReadOnlyServer::Impl {
@@ -204,27 +190,29 @@ struct DtcReadOnlyServer::Impl {
     std::uint16_t bound_port{};
     Bytes output;
     std::size_t sent{};
-    bool negotiated{}, logged_on{}, closing{}, definition{}, subscribed{}, definitions_advertised{};
+    bool negotiated{}, logged_on{}, closing{}, definition{}, subscribed{}, definitions_capability_advertised{};
     std::uint32_t symbol_id{};
     std::size_t depth_limit{};
     std::uint64_t batch{}, version{}, epoch{}, authority_epoch{};
-    std::string symbol, board, tick, error;
+    std::string symbol, exchange, underlying_board, tick, error;
     std::int64_t isin{};
     unsigned witness{};
+    std::optional<DtcSecurityDefinitionSnapshot> accepted_definition;
+    DtcWireLogonCapabilities last_wire_logon_capabilities;
+    DtcWireLogonCapabilities pending_wire_logon_capabilities;
+    std::size_t pending_logon_response_end{};
+    bool pending_logon_response{};
+    std::size_t pending_definition_response_end{};
+    bool pending_definition_response{};
+    std::uint64_t completed_definition_responses{};
     Clock::time_point last_read{}, last_write{}, last_heartbeat{};
     std::chrono::seconds heartbeat{10};
-
-    struct DefinitionMetadata {
-        std::string currency;
-        std::string description;
-        float contract_size{};
-        float currency_value_per_increment{};
-    };
 
     Impl(DtcMarketDataSource& s, DtcReadOnlyServerConfig c)
         : source(s), config(std::move(c)), decoder(config.max_frame_bytes) {
         if (config.max_frame_bytes < 16 || config.max_frame_bytes > UINT16_MAX || config.max_queued_bytes < 64 ||
-            config.max_queued_bytes > 1024 * 1024 || config.max_depth_levels == 0 || config.max_depth_levels > 20 ||
+            config.max_queued_bytes > 1024 * 1024 || config.max_write_bytes_per_poll == 0 ||
+            config.max_write_bytes_per_poll > 4096 || config.max_depth_levels == 0 || config.max_depth_levels > 20 ||
             config.idle_timeout.count() <= 0 || config.write_timeout.count() <= 0)
             throw std::invalid_argument("invalid DTC server bounds");
         if (config.require_local_auth && (config.local_username.empty() || config.local_password.empty() ||
@@ -240,7 +228,13 @@ struct DtcReadOnlyServer::Impl {
         output.clear();
         sent = 0;
         negotiated = logged_on = closing = definition = subscribed = false;
-        definitions_advertised = false;
+        definitions_capability_advertised = false;
+        pending_wire_logon_capabilities = {};
+        pending_logon_response_end = 0;
+        pending_logon_response = false;
+        pending_definition_response_end = 0;
+        pending_definition_response = false;
+        accepted_definition.reset();
         symbol_id = config.symbol_id;
         batch = version = epoch = authority_epoch = 0;
     }
@@ -254,6 +248,10 @@ struct DtcReadOnlyServer::Impl {
         if (output.empty())
             last_write = Clock::now();
         output.insert(output.end(), bytes.begin(), bytes.end());
+        if (type == 507) {
+            pending_definition_response_end = output.size();
+            pending_definition_response = true;
+        }
         return true;
     }
     void reject(const std::string& reason) {
@@ -266,6 +264,11 @@ struct DtcReadOnlyServer::Impl {
         // Do not leave stale queued market data ahead of a fencing response.
         output.clear();
         sent = 0;
+        pending_wire_logon_capabilities = {};
+        pending_logon_response_end = 0;
+        pending_logon_response = false;
+        pending_definition_response_end = 0;
+        pending_definition_response = false;
         Bytes p;
         str(p, 1, reason);
         integer(p, 2, 1);
@@ -276,58 +279,20 @@ struct DtcReadOnlyServer::Impl {
         // source_consistent is the online synchronization proof, deliberately
         // false for corroborated late joins. Display permission is separate.
         return s.market_data_display_allowed && s.transport_active && s.aggr_online && s.snapshot_complete &&
-               s.book_snapshot_current && s.refdata_metadata_current && source_metadata_usable(s);
+               s.book_snapshot_current && definition_validation(s).available();
     }
     std::string source_error(std::string_view detail) const {
         return "source_mode=" + std::string(dtc_source_mode_name(config.source_mode)) + ": " + std::string(detail);
     }
-    bool source_metadata_usable(const DtcMarketDataSnapshot& s) const noexcept {
-        if (config.source_mode == DtcSourceMode::Replay)
-            return true;
-        return s.refdata_vcb_join_current && !s.refdata_vcb_join_ambiguous && s.future_vcb_provenance_present &&
-               s.refdata_board_proven && s.refdata_currency_proven;
-    }
-    bool metadata(const DtcMarketDataSnapshot& s, float& increment, DefinitionMetadata& terms) const {
-        if (!s.refdata_metadata_current || s.isin_id <= 0 || s.symbol.empty() || s.board.empty() ||
-            s.symbol.size() > 128 || s.board.size() > 128 || !utf8(s.symbol) || !utf8(s.board) ||
-            !positive_float(s.min_step, increment))
-            return false;
-        if (config.source_mode == DtcSourceMode::Replay) {
-            // Replay fixtures retain their explicit economics for compatibility.
-            // They are never used by the live TEST path.
-            if (config.currency.empty() || config.currency.size() > 16 || !utf8(config.currency) ||
-                config.description.empty() || config.description.size() > 512 || !utf8(config.description) ||
-                !std::isfinite(config.contract_size) || config.contract_size <= 0 ||
-                !std::isfinite(config.currency_value_per_increment) || config.currency_value_per_increment <= 0)
-                return false;
-            terms = {.currency = config.currency,
-                     .description = config.description,
-                     .contract_size = config.contract_size,
-                     .currency_value_per_increment = config.currency_value_per_increment};
-            return true;
-        }
-        // Live TEST definitions use only the current ConnectorHost snapshot.
-        // Missing source terms fail closed; no value is derived from min_step,
-        // lot size, or a remembered replay fixture.
-        if (!source_metadata_usable(s))
-            return false;
-        if (s.description.empty() || s.description.size() > 512 || !utf8(s.description) || s.currency.empty() ||
-            s.currency.size() > 16 || !utf8(s.currency))
-            return false;
-        if (!positive_float(s.contract_size, terms.contract_size) ||
-            !positive_float(s.currency_value_per_increment, terms.currency_value_per_increment))
-            return false;
-        terms.currency = s.currency;
-        terms.description = s.description;
-        return true;
-    }
-    bool security_definitions_available(const DtcMarketDataSnapshot& s, float& increment) const {
-        DefinitionMetadata terms;
-        return source.capabilities().security_definitions && metadata(s, increment, terms);
-    }
-    bool security_definitions_available(const DtcMarketDataSnapshot& s) const {
-        float increment{};
-        return security_definitions_available(s, increment);
+    DtcSecurityDefinitionValidation definition_validation(const DtcMarketDataSnapshot& s) const {
+        if (!source.capabilities().security_definitions)
+            return {.definition = std::nullopt, .reason = "source does not support DTC security definitions"};
+        const DtcReplayDefinitionTerms replay_terms{.currency = config.currency,
+                                                    .description = config.description,
+                                                    .contract_size = config.contract_size,
+                                                    .currency_value_per_increment =
+                                                        config.currency_value_per_increment};
+        return validate_dtc_security_definition(s, config.source_mode, replay_terms);
     }
     void status(const DtcMarketDataSnapshot& s) {
         Bytes p;
@@ -365,7 +330,8 @@ struct DtcReadOnlyServer::Impl {
             reject("source authority unavailable; fresh session required");
             return;
         }
-        if (s.symbol != symbol || s.board != board || s.min_step != tick || s.isin_id != isin) {
+        if (s.symbol != symbol || s.underlying_board != underlying_board || s.min_step != tick || s.isin_id != isin ||
+            !accepted_definition || definition_validation(s).definition != accepted_definition) {
             reject("source metadata changed; fresh definition required");
             return;
         }
@@ -415,7 +381,12 @@ struct DtcReadOnlyServer::Impl {
             Bytes p;
             integer(p, 1, symbol_id);
             real(p, 2, price);
-            real(p, 3, static_cast<float>(r.volume));
+            float wire_quantity{};
+            if (!exact_dtc_quantity(r.volume, wire_quantity)) {
+                reject("DTC depth quantity is not exactly representable as float32");
+                return;
+            }
+            real(p, 3, wire_quantity);
             integer(p, 5, ++counts[side]);
             integer(p, 6, side);
             integer(p, 7, i + 1 == rows.size() ? 1 : i == 0 ? 3 : 2);
@@ -520,14 +491,31 @@ struct DtcReadOnlyServer::Impl {
             str(reply, 6, config.source_mode == DtcSourceMode::LiveTest ? "MOEX live TEST DTC" : "MOEX replay DTC");
             for (auto field : {7U, 8U, 9U, 10U, 13U, 17U, 19U, 20U})
                 integer(reply, field, 0);
-            // Advertise exactly what a 506 request can satisfy for this
-            // source and this explicitly configured source-mode endpoint.
-            definitions_advertised = security_definitions_available(s);
-            integer(reply, 12, definitions_advertised);
+            // LOGON advertises implemented application capability, not
+            // current metadata readiness. Each 506 is gated by fresh source
+            // validation so a cold connection can become usable later.
+            definitions_capability_advertised = source.capabilities().security_definitions;
+            integer(reply, 12, definitions_capability_advertised);
             integer(reply, 14, 1);
             integer(reply, 15, source.capabilities().market_depth);
             if (queue(2, reply)) {
                 logged_on = true;
+                pending_wire_logon_capabilities = {
+                    .response_fully_written_to_socket = false,
+                    .market_depth_updates_best_bid_and_ask = 0,
+                    .trading_is_supported = 0,
+                    .oco_orders_supported = 0,
+                    .order_cancel_replace_supported = 0,
+                    .security_definitions_supported = definitions_capability_advertised ? 1U : 0U,
+                    .historical_price_data_supported = 0,
+                    .resubscribe_when_market_data_feed_available = 1,
+                    .market_depth_is_supported = source.capabilities().market_depth ? 1U : 0U,
+                    .one_historical_price_data_request_per_connection = 0,
+                    .bracket_orders_supported = 0,
+                    .multiple_positions_per_symbol_and_trade_account = 0,
+                    .market_data_supported = 0};
+                pending_logon_response_end = output.size();
+                pending_logon_response = true;
                 status(s);
             }
             return;
@@ -540,29 +528,22 @@ struct DtcReadOnlyServer::Impl {
         }
         if (f.message_type == 506) {
             auto s = source.snapshot();
-            float increment{};
-            DefinitionMetadata terms;
-            // LiveTest futures are derived from the committed fut_vcb join;
-            // replay fixtures for this endpoint have the explicit futures
-            // contract. Unsupported/unknown kinds have no wire enum mapping.
-            const auto kind = supported_instrument_kind(s, config.source_mode);
-            const auto security_type = kind ? dtc_security_type(*kind) : std::nullopt;
+            const auto validated = definition_validation(s);
             Bytes reply;
             integer(reply, 1, p.number(1));
-            if (!security_type || !definitions_advertised || !security_definitions_available(s, increment) ||
-                !metadata(s, increment, terms) || p.text(2) != s.symbol || p.text(3) != s.board) {
+            if (!validated.definition || !definitions_capability_advertised ||
+                p.text(2) != validated.definition->symbol || p.text(3) != validated.definition->exchange) {
                 str(reply, 2, "unknown instrument or metadata unavailable");
                 queue(509, reply);
                 return;
             }
-            // ConnectorHost's board is the raw committed provider value. The
-            // runner does not translate it into a guessed exchange code.
-            str(reply, 2, s.symbol);
-            str(reply, 3, s.board);
-            integer(reply, 4, static_cast<std::uint32_t>(*security_type));
-            str(reply, 5, terms.description);
-            real(reply, 6, increment);
-            real(reply, 8, terms.currency_value_per_increment);
+            const auto& resolved = *validated.definition;
+            str(reply, 2, resolved.symbol);
+            str(reply, 3, resolved.exchange);
+            integer(reply, 4, static_cast<std::uint32_t>(resolved.security_type));
+            str(reply, 5, resolved.description);
+            real(reply, 6, resolved.min_price_increment);
+            real(reply, 8, resolved.currency_value_per_increment);
             // A 507 is the complete final response for this single-instrument
             // server, in both replay and live TEST modes.
             integer(reply, 9, 1);
@@ -578,15 +559,17 @@ struct DtcReadOnlyServer::Impl {
             integer(reply, 23, source.capabilities().market_depth);
             if (config.source_mode == DtcSourceMode::Replay)
                 real(reply, 24, 1);
-            str(reply, 28, terms.currency);
-            real(reply, 29, terms.contract_size);
-            integer(reply, 33, static_cast<std::uint64_t>(s.isin_id));
+            str(reply, 28, resolved.currency);
+            real(reply, 29, resolved.contract_size);
+            integer(reply, 33, static_cast<std::uint64_t>(resolved.security_identifier));
             if (queue(507, reply)) {
                 definition = true;
-                symbol = s.symbol;
-                board = s.board;
+                accepted_definition = resolved;
+                symbol = resolved.symbol;
+                exchange = resolved.exchange;
+                underlying_board = resolved.underlying_board;
                 tick = s.min_step;
-                isin = s.isin_id;
+                isin = resolved.security_identifier;
             }
             return;
         }
@@ -605,7 +588,7 @@ struct DtcReadOnlyServer::Impl {
             }
             auto s = source.snapshot();
             if (!definition || !source.capabilities().market_depth || !id || id > UINT32_MAX ||
-                (action != 1 && action != 3) || p.text(3) != symbol || p.text(4) != board ||
+                (action != 1 && action != 3) || p.text(3) != symbol || p.text(4) != exchange ||
                 levels > config.max_depth_levels || (config.symbol_id && id != config.symbol_id) ||
                 (subscribed && id != symbol_id)) {
                 Bytes reply;
@@ -680,7 +663,9 @@ struct DtcReadOnlyServer::Impl {
                 return;
             if (logged_on && !closing && subscribed) {
                 auto s = source.snapshot();
-                if (!usable(s) || s.symbol != symbol || s.board != board || s.min_step != tick || s.isin_id != isin ||
+                if (!usable(s) || s.symbol != symbol || s.underlying_board != underlying_board || s.min_step != tick ||
+                    s.isin_id != isin || !accepted_definition ||
+                    definition_validation(s).definition != accepted_definition ||
                     s.market_data_authority_epoch != authority_epoch ||
                     witness_number(s.session_ready_witness_kind) != witness) {
                     // Discard unsent stale batches. If a frame was partially
@@ -690,6 +675,11 @@ struct DtcReadOnlyServer::Impl {
                         return;
                     }
                     output.clear();
+                    pending_wire_logon_capabilities = {};
+                    pending_logon_response_end = 0;
+                    pending_logon_response = false;
+                    pending_definition_response_end = 0;
+                    pending_definition_response = false;
                     if (!authority(s))
                         return;
                     Bytes unavailable;
@@ -717,11 +707,23 @@ struct DtcReadOnlyServer::Impl {
 #ifdef MSG_NOSIGNAL
             flags = MSG_NOSIGNAL;
 #endif
-            const auto n =
-                ::send(client, output.data() + sent, std::min<std::size_t>(4096, output.size() - sent), flags);
+            const auto n = ::send(client, output.data() + sent,
+                                  std::min(config.max_write_bytes_per_poll, output.size() - sent), flags);
             if (n > 0) {
                 sent += static_cast<std::size_t>(n);
                 last_write = now;
+                if (pending_logon_response && sent >= pending_logon_response_end) {
+                    pending_wire_logon_capabilities.response_fully_written_to_socket = true;
+                    last_wire_logon_capabilities = pending_wire_logon_capabilities;
+                    pending_wire_logon_capabilities = {};
+                    pending_logon_response_end = 0;
+                    pending_logon_response = false;
+                }
+                if (pending_definition_response && sent >= pending_definition_response_end) {
+                    ++completed_definition_responses;
+                    pending_definition_response_end = 0;
+                    pending_definition_response = false;
+                }
             } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
                 disconnect();
                 return;
@@ -798,5 +800,11 @@ std::size_t DtcReadOnlyServer::queued_bytes() const noexcept {
 }
 const std::string& DtcReadOnlyServer::last_error() const noexcept {
     return impl_->error;
+}
+const DtcWireLogonCapabilities& DtcReadOnlyServer::last_wire_logon_capabilities() const noexcept {
+    return impl_->last_wire_logon_capabilities;
+}
+std::uint64_t DtcReadOnlyServer::security_definition_responses_fully_written() const noexcept {
+    return impl_->completed_definition_responses;
 }
 } // namespace moex::connector_host::dtc
