@@ -1,0 +1,1176 @@
+{
+  "schema": "moex.cgate.questionnaire-review.v1",
+  "status": "DRAFT_NOT_FOR_SUBMISSION",
+  "as_of": "2026-09-19",
+  "form_source": "/Users/pavel/Downloads/Анкета_для_сертификации_ПО.doc",
+  "form_structure": {
+    "answer_count": 77,
+    "field_groups": [
+      "1a-t",
+      "2a-d",
+      "3a-d",
+      "4"
+    ],
+    "printed_stream_checkbox_count": 33,
+    "note": "The form prints FORTS_REFDATA_REPL twice. The duplicate checkbox is preserved, but it is one configured stream, not two listeners."
+  },
+  "source_identity": {
+    "pr": "https://github.com/Ruhkukah/Connectors/pull/66",
+    "source_head_at_review_start": "ffa6552c70bf6b16568ba4f7943c3660019519d2",
+    "ci_run": "35445864502",
+    "ci_head_sha": "ffa6552c70bf6b16568ba4f7943c3660019519d2",
+    "ci_checks": {
+      "connector-validation": "SUCCESS",
+      "component-sanitizers": "SUCCESS"
+    },
+    "ci_url": "https://github.com/Ruhkukah/Connectors/actions/runs/35445864502",
+    "qualification_binary_sha256": null,
+    "binary_note": "CI validated source/tests; optional listener-only binary upload was skipped. No deployable Linux binary hash is claimed.",
+    "historical_receipt_source_prefix": "49d73326",
+    "historical_receipt_note": "The historical questionnaire/interoperability receipt is from another source snapshot; do not relabel it for this head."
+  },
+  "scope": {
+    "certificate_target": "Connector / MoexConnector; legal product name and final release identity require user confirmation.",
+    "current_demonstration": "Read-only DTC market-data demo. Kairos is external UI, not certificate target; order-entry/live qualification unproven.",
+    "trading_scope": "AddOrder/DelOrder exist only in armed TEST path; disabled in read-only runner and not live-qualified.",
+    "full_order_log": "Separate deferred phase; not part of the current read-only demonstration.",
+    "personal_business_and_consent_answers": "Remain USER_INPUT; do not infer or preselect."
+  },
+  "evidence_catalog": {
+    "user_input": {
+      "source_files": [],
+      "automated_test": "NOT_APPLICABLE_USER_OWNED_INFORMATION",
+      "live_evidence": "NOT_RUN; user answer required"
+    },
+    "profile": {
+      "source_files": [
+        "apps/moex_connector_host_dtc_runner.cpp",
+        "connectors/connector_host/src/operator_config.cpp",
+        "connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp"
+      ],
+      "automated_test": "connector_host_test (profile, runtime listener audit/recovery); plaza2_trade_transport_scenarios_test (topology)",
+      "live_evidence": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    "runtime": {
+      "source_files": [
+        "protocols/plaza2_cgate/src/plaza2_runtime.cpp",
+        "connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp"
+      ],
+      "automated_test": "plaza2_scheme_drift_test; connector_host_test",
+      "live_evidence": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    "scheme": {
+      "source_files": [
+        "protocols/plaza2_cgate/src/plaza2_runtime.cpp",
+        "connectors/connector_host/src/operator_config.cpp",
+        "connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp",
+        "spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json"
+      ],
+      "automated_test": "connector_host_test effective-profile guard and fake listener audit; runtime scheme-lock checks; plaza2_scheme_drift_test",
+      "live_evidence": "NOT_RUN_ON_CURRENT_CANDIDATE; no negotiated listener OPEN receipt"
+    },
+    "table": {
+      "source_files": [
+        "spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json",
+        "protocols/plaza2_cgate/src/plaza2_private_state.cpp",
+        "protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp"
+      ],
+      "automated_test": "runtime scheme-lock checks; connector_host_test and AGGR fixture tests",
+      "live_evidence": "NOT_RUN_ON_CURRENT_CANDIDATE; exact delivered table inventory pending OPEN"
+    },
+    "state": {
+      "source_files": [
+        "protocols/plaza2_cgate/src/plaza2_private_state.cpp",
+        "connectors/connector_host/src/connector_host.cpp"
+      ],
+      "automated_test": "connector_host_test; private-state and recovery tests",
+      "live_evidence": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    "dtc_read_only": {
+      "source_files": [
+        "connectors/connector_host/src/dtc_read_only_server.cpp",
+        "connectors/connector_host/src/dtc_market_data.cpp",
+        "apps/moex_connector_host_dtc_runner.cpp"
+      ],
+      "automated_test": "connector_host_dtc_protocol_test; connector_host_dtc_server_test; connector_host_test",
+      "live_evidence": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    "command_lifecycle": {
+      "source_files": [
+        "connectors/plaza2_trade/src/plaza2_test_trade_transport.cpp",
+        "protocols/plaza2_cgate/src/plaza2_runtime.cpp",
+        "connectors/plaza2_trade/src/plaza2_order_lifecycle.cpp"
+      ],
+      "automated_test": "plaza2_test_trade_transport_tests; plaza2_order_lifecycle_scenarios_test; connector_host_test",
+      "live_evidence": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    "aggr": {
+      "source_files": [
+        "protocols/plaza2_cgate/src/plaza2_aggr20_md.cpp",
+        "protocols/plaza2_cgate/src/plaza2_aggr20_authority_probe.cpp"
+      ],
+      "automated_test": "AGGR20 offline/fixture tests; connector_host_test",
+      "live_evidence": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    "ci_snapshot": {
+      "source_files": [
+        "cert/AGGR_CERT_MATRIX_9_9.md"
+      ],
+      "automated_test": "GitHub Actions run 35445864502: connector-validation SUCCESS; component-sanitizers SUCCESS at the exact recorded head",
+      "live_evidence": "CI is not T1 live evidence"
+    },
+    "not_in_scope": {
+      "source_files": [],
+      "automated_test": "NOT_APPLICABLE_NO_IMPLEMENTED_PRODUCT_SURFACE",
+      "live_evidence": "NOT_RUN"
+    }
+  },
+  "scheme_policy": {
+    "rule": "Explicit ;scheme= means client scheme; bare URLs use server scheme. READ_ONLY_DTC_PROFILE=4 listeners; TRADING_CONNECTOR_PROFILE=8+pub/reply.",
+    "official_manual": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/Game/docs/cgate_en.pdf",
+    "read_only_dtc_profile": {
+      "name": "READ_ONLY_DTC_PROFILE",
+      "listener_count": 4,
+      "publisher_configured": false,
+      "p2mqreply_configured": false,
+      "trade_replay_from_pos_anchor": false,
+      "streams": [
+        {
+          "service": "FORTS_AGGR20_REPL",
+          "scheme_alias": "Aggr",
+          "policy": "CLIENT_EXPLICIT"
+        },
+        {
+          "service": "FORTS_REFDATA_REPL",
+          "scheme_alias": "REFDATA",
+          "policy": "CLIENT_EXPLICIT"
+        },
+        {
+          "service": "FORTS_SESSIONSTATE_REPL",
+          "scheme_alias": null,
+          "policy": "SERVER_DEFAULT"
+        },
+        {
+          "service": "FORTS_INSTRUMENTSTATE_REPL",
+          "scheme_alias": null,
+          "policy": "SERVER_DEFAULT"
+        }
+      ],
+      "initial_open_settings": "empty for all four listeners; do not infer negotiated mode without a current-candidate OPEN receipt"
+    },
+    "trading_connector_profile": {
+      "name": "TRADING_CONNECTOR_PROFILE",
+      "listener_count": 8,
+      "publisher_configured": true,
+      "p2mqreply_configured": true,
+      "trade_replay_from_pos_anchor": true,
+      "streams": [
+        {
+          "service": "FORTS_TRADE_REPL",
+          "scheme_alias": "Trade",
+          "policy": "CLIENT_EXPLICIT"
+        },
+        {
+          "service": "FORTS_USERORDERBOOK_REPL",
+          "scheme_alias": "OrdBook",
+          "policy": "CLIENT_EXPLICIT"
+        },
+        {
+          "service": "FORTS_POS_REPL",
+          "scheme_alias": "POS",
+          "policy": "CLIENT_EXPLICIT"
+        },
+        {
+          "service": "FORTS_PART_REPL",
+          "scheme_alias": "PART",
+          "policy": "CLIENT_EXPLICIT"
+        },
+        {
+          "service": "FORTS_REFDATA_REPL",
+          "scheme_alias": "REFDATA",
+          "policy": "CLIENT_EXPLICIT"
+        },
+        {
+          "service": "FORTS_SESSIONSTATE_REPL",
+          "scheme_alias": null,
+          "policy": "SERVER_DEFAULT"
+        },
+        {
+          "service": "FORTS_INSTRUMENTSTATE_REPL",
+          "scheme_alias": null,
+          "policy": "SERVER_DEFAULT"
+        },
+        {
+          "service": "FORTS_AGGR20_REPL",
+          "scheme_alias": "Aggr",
+          "policy": "CLIENT_EXPLICIT"
+        }
+      ],
+      "initial_open_settings": "empty for initial listeners; do not infer negotiated mode. TRADE may reopen from a POS replstate anchor."
+    },
+    "offline_policy_tests": {
+      "effective_profile_guard": "connector_host_test verifies 2/2 read-only and 6/2 trading scheme policies, plus four actual read-only listener creations.",
+      "server_scheme_addition": "plaza2_scheme_drift_test: compatible field addition to SESSIONSTATE session_state is a warning, not fatal.",
+      "server_scheme_required_drift": "plaza2_scheme_drift_test: missing or type-changed SESSIONSTATE public_state is fatal.",
+      "current_candidate_t1_open_receipts": "NOT_RUN"
+    },
+    "ordbook_alias_review": {
+      "configured_alias": "OrdBook",
+      "pinned_scheme_lock": "spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json",
+      "lock_sha256": "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746",
+      "finding": "Pinned OrdBook: orders/multileg_orders have 17/19 fields; USERORDERBOOK has 39/40. Equivalence is unproven; OrderBook is absent.",
+      "disposition": "TRADING_CONNECTOR_PROFILE only; validate exact OPEN. READ_ONLY_DTC_PROFILE has no USERORDERBOOK listener and is unaffected."
+    }
+  },
+  "stream_inventory": [
+    {
+      "service": "FORTS_AGGR20_REPL",
+      "questionnaire_checkbox": "2a.stream.05",
+      "printed_name": "FORTS_AGGRXX_REPL",
+      "scheme_alias": "Aggr",
+      "scheme_policy": "CLIENT_EXPLICIT",
+      "supported_current_scheme_tables": [
+        "orders_aggr",
+        "sys_events"
+      ],
+      "requested_tables": "Whole stream; no table-level filter.",
+      "consumed_tables": [
+        "orders_aggr",
+        "sys_events"
+      ],
+      "open_receipt": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    {
+      "service": "FORTS_REFDATA_REPL",
+      "questionnaire_checkbox": "2a.stream.14",
+      "printed_name": "FORTS_REFDATA_REPL",
+      "duplicate_questionnaire_checkbox": "2a.stream.33",
+      "scheme_alias": "REFDATA",
+      "scheme_policy": "CLIENT_EXPLICIT",
+      "supported_current_scheme_tables": [
+        "brokers_base_contracts_params",
+        "clearing_members",
+        "dealer",
+        "discrete_auction",
+        "discrete_auction_base_contract",
+        "fut_bond_isin",
+        "fut_bond_nkd",
+        "fut_bond_nominal",
+        "fut_bond_registry",
+        "fut_exec_orders",
+        "fut_instruments",
+        "fut_margin_type",
+        "fut_sess_contents",
+        "fut_settlement_account",
+        "fut_vcb",
+        "instr2matching_map",
+        "investor",
+        "multileg_dict",
+        "opt_exp_orders",
+        "opt_sess_contents",
+        "opt_vcb",
+        "rates",
+        "sess_option_series",
+        "session",
+        "sma_master",
+        "sma_pre_trade_check",
+        "sys_events",
+        "sys_messages",
+        "trade_periods",
+        "user"
+      ],
+      "requested_tables": "Whole stream; no table-level filter.",
+      "consumed_tables": [
+        "session",
+        "fut_instruments",
+        "fut_vcb",
+        "fut_sess_contents",
+        "opt_sess_contents",
+        "multileg_dict",
+        "instr2matching_map",
+        "sys_messages"
+      ],
+      "open_receipt": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    {
+      "service": "FORTS_SESSIONSTATE_REPL",
+      "questionnaire_checkbox": "OTHER_STREAMS",
+      "printed_name": "Другие потоки",
+      "scheme_alias": null,
+      "scheme_policy": "SERVER_DEFAULT",
+      "supported_current_scheme_tables": [
+        "session_state",
+        "sys_events"
+      ],
+      "requested_tables": "Whole stream; no table-level filter.",
+      "consumed_tables": [
+        "session_state"
+      ],
+      "open_receipt": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    {
+      "service": "FORTS_INSTRUMENTSTATE_REPL",
+      "questionnaire_checkbox": "OTHER_STREAMS",
+      "printed_name": "Другие потоки",
+      "scheme_alias": null,
+      "scheme_policy": "SERVER_DEFAULT",
+      "supported_current_scheme_tables": [
+        "instrument_state",
+        "sys_events"
+      ],
+      "requested_tables": "Whole stream; no table-level filter.",
+      "consumed_tables": [
+        "instrument_state"
+      ],
+      "open_receipt": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    {
+      "service": "FORTS_TRADE_REPL",
+      "questionnaire_checkbox": "2a.stream.01",
+      "printed_name": "FORTS_TRADE_REPL",
+      "scheme_alias": "Trade",
+      "scheme_policy": "CLIENT_EXPLICIT",
+      "supported_current_scheme_tables": [
+        "heartbeat",
+        "multileg_orders_log",
+        "orders_log",
+        "sys_events",
+        "user_deal",
+        "user_multileg_deal"
+      ],
+      "requested_tables": "Whole stream; no table-level filter.",
+      "consumed_tables": [
+        "heartbeat",
+        "multileg_orders_log",
+        "orders_log",
+        "sys_events",
+        "user_deal",
+        "user_multileg_deal"
+      ],
+      "open_receipt": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    {
+      "service": "FORTS_USERORDERBOOK_REPL",
+      "questionnaire_checkbox": "2a.stream.22",
+      "printed_name": "FORTS_USERORDERBOOK_REPL",
+      "scheme_alias": "OrdBook",
+      "scheme_policy": "CLIENT_EXPLICIT",
+      "supported_current_scheme_tables": [
+        "info",
+        "info_currentday",
+        "multileg_orders",
+        "multileg_orders_currentday",
+        "orders",
+        "orders_currentday"
+      ],
+      "requested_tables": "Whole stream; no table-level filter.",
+      "consumed_tables": [
+        "info",
+        "info_currentday",
+        "multileg_orders",
+        "multileg_orders_currentday",
+        "orders",
+        "orders_currentday"
+      ],
+      "open_receipt": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    {
+      "service": "FORTS_POS_REPL",
+      "questionnaire_checkbox": "2a.stream.08",
+      "printed_name": "FORTS_POS_REPL",
+      "scheme_alias": "POS",
+      "scheme_policy": "CLIENT_EXPLICIT",
+      "supported_current_scheme_tables": [
+        "info",
+        "position",
+        "position_sa",
+        "sys_events"
+      ],
+      "requested_tables": "Whole stream; no table-level filter.",
+      "consumed_tables": [
+        "info",
+        "position"
+      ],
+      "open_receipt": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    },
+    {
+      "service": "FORTS_PART_REPL",
+      "questionnaire_checkbox": "2a.stream.11",
+      "printed_name": "FORTS_PART_REPL",
+      "scheme_alias": "PART",
+      "scheme_policy": "CLIENT_EXPLICIT",
+      "supported_current_scheme_tables": [
+        "part",
+        "part_sa",
+        "sys_events"
+      ],
+      "requested_tables": "Whole stream; no table-level filter.",
+      "consumed_tables": [
+        "part",
+        "sys_events"
+      ],
+      "open_receipt": "NOT_RUN_ON_CURRENT_CANDIDATE"
+    }
+  ],
+  "historical_compatibility_only": {
+    "tables": [
+      "FORTS_REFDATA_REPL.fut_intercl_info",
+      "FORTS_REFDATA_REPL.opt_intercl_info"
+    ],
+    "current_9_9_source": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/docs/p2gate_en.html",
+    "repository_lock_note": "9.9 docs mark tables removed. Runtime descriptors persist for compatibility, not current requests, consumption, or OPEN evidence.",
+    "actual_open_receipt": "NOT_RUN_ON_CURRENT_CANDIDATE"
+  },
+  "answers": [
+    {
+      "id": "1a",
+      "question": "Название ВПТС",
+      "answer": "Proposed name: MoexConnector; the user must confirm the legal/product name.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input",
+        "ci_snapshot"
+      ]
+    },
+    {
+      "id": "1b",
+      "question": "Текущая версия",
+      "answer": "No release version assigned. Review baseline source head and exact CI run are recorded above; no deployable Linux binary hash is claimed.",
+      "status": "user-input",
+      "evidence_refs": [
+        "ci_snapshot"
+      ]
+    },
+    {
+      "id": "1c",
+      "question": "Разработчик",
+      "answer": "Developer person/company is user-owned legal information; leave unresolved.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input"
+      ]
+    },
+    {
+      "id": "1d",
+      "question": "Получатель сертификата",
+      "answer": "Certificate holder is user-owned legal information; leave unresolved.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input"
+      ]
+    },
+    {
+      "id": "1e",
+      "question": "Год создания",
+      "answer": "User to confirm; do not infer from repository history.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input"
+      ]
+    },
+    {
+      "id": "1f",
+      "question": "Описание функционала",
+      "answer": "CGate receives SPECTRA data. Demo: read-only DTC/AGGR. AddOrder/DelOrder are separate, unqualified TEST path; FullOrderLog deferred.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "runtime",
+        "command_lifecycle",
+        "ci_snapshot"
+      ]
+    },
+    {
+      "id": "1g",
+      "question": "Предусмотрен ли GUI",
+      "answer": "Kairos is an external demonstration client/UI, not the certificate target. This read-only demonstration does not prove an order-entry UI.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile"
+      ]
+    },
+    {
+      "id": "1h",
+      "question": "Клиентские подключения к ВПТС",
+      "answer": "READ_ONLY_DTC_PROFILE: one loopback DTC client, separate from CGate. TRADING_CONNECTOR_PROFILE customer counts need user input.",
+      "status": "implemented",
+      "evidence_refs": [
+        "dtc_read_only",
+        "user_input"
+      ]
+    },
+    {
+      "id": "1i",
+      "question": "Работа с RFS",
+      "answer": "No for the present SPECTRA derivatives scope; no RFS stream is configured.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "1j",
+      "question": "Аутентификация/авторизация",
+      "answer": "TEST credentials are deployment inputs. DTC/local logon is not venue authorization. Deployment/account policy needs user decision.",
+      "status": "user-input",
+      "evidence_refs": [
+        "profile",
+        "dtc_read_only",
+        "user_input"
+      ]
+    },
+    {
+      "id": "1k",
+      "question": "Вхождение заявителя в группу лиц с биржевыми площадками",
+      "answer": "User/legal answer required; leave unresolved.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input"
+      ]
+    },
+    {
+      "id": "1l",
+      "question": "Использование на организованных торгах",
+      "answer": "User to confirm intended use and distinguish TEST qualification from any production use; no production-use claim is made.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input",
+        "ci_snapshot"
+      ]
+    },
+    {
+      "id": "1m",
+      "question": "Клиенты Московской Биржи, планирующие использовать ВПТС",
+      "answer": "User to identify actual organizations, if any; do not infer from software clients or repository users.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input"
+      ]
+    },
+    {
+      "id": "1n",
+      "question": "Цель использования рыночных данных",
+      "answer": "User to select own trading, internal analytics/back-office, or redistribution. No redistribution answer is inferred.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input"
+      ]
+    },
+    {
+      "id": "1o",
+      "question": "Язык взаимодействия с Plaza-2",
+      "answer": "C++20 is the direct CGate/native interaction layer. Rust/C# downstream consumers do not change the direct Plaza-2 language.",
+      "status": "implemented",
+      "evidence_refs": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "1p",
+      "question": "Распространение",
+      "answer": "Private/public noncommercial/public commercial is a user/legal decision; leave all choices unresolved.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input"
+      ]
+    },
+    {
+      "id": "1q",
+      "question": "Поддерживаемые рынки MOEX",
+      "answer": "Proposed certification scope: SPECTRA derivatives. Do not check ASTS or RFS based on unrelated source artifacts.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "1r",
+      "question": "Режимы: утренняя/дневная/вечерняя",
+      "answer": "Session coverage is a user/product decision. Complete session-transition and live evidence are not established.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input",
+        "ci_snapshot"
+      ]
+    },
+    {
+      "id": "1s",
+      "question": "Контактные телефоны",
+      "answer": "User to supply privately; do not commit contact details to public Git.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input"
+      ]
+    },
+    {
+      "id": "1t",
+      "question": "Согласие на использование данных для консультаций",
+      "answer": "User decision; do not preselect Yes or No.",
+      "status": "user-input",
+      "evidence_refs": [
+        "user_input"
+      ]
+    },
+    {
+      "id": "2a.i",
+      "question": "Имя соединения и URL",
+      "answer": "READ_ONLY_DTC_PROFILE: 1 p2tcp/4 listeners + DTC loopback. TRADING_CONNECTOR_PROFILE: 1 p2tcp/8 listeners + pub/reply. Sanitize.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile"
+      ]
+    },
+    {
+      "id": "2a.ii",
+      "question": "Максимальное количество соединений",
+      "answer": "READ_ONLY_DTC_PROFILE: 1 router/4 listeners + DTC client. TRADING_CONNECTOR_PROFILE: 1 router/8 listeners + pub/reply.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "dtc_read_only"
+      ]
+    },
+    {
+      "id": "2a.iii",
+      "question": "Тип соединения TCP/LRPC",
+      "answer": "Both profiles (READ_ONLY_DTC_PROFILE, TRADING_CONNECTOR_PROFILE) use TCP (p2tcp); no LRPC claim. DTC uses separate loopback TCP.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile"
+      ]
+    },
+    {
+      "id": "2a.iv",
+      "question": "Предназначение соединения",
+      "answer": "READ_ONLY_DTC_PROFILE receives four read streams; TRADING_CONNECTOR_PROFILE adds private/account, publisher/reply and TEST order paths.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "command_lifecycle"
+      ]
+    },
+    {
+      "id": "2a.stream.01",
+      "question": "FORTS_TRADE_REPL checkbox",
+      "answer": "Selected only in TRADING_CONNECTOR_PROFILE for own-order/trade reconciliation; not public tape.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "state"
+      ]
+    },
+    {
+      "id": "2a.stream.02",
+      "question": "FORTS_COMMON_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.03",
+      "question": "FORTS_VM_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.04",
+      "question": "FORTS_ORDLOG_REPL checkbox",
+      "answer": "Not selected; public FullOrderLog is a separate deferred qualification phase.",
+      "status": "planned",
+      "evidence_refs": [
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.05",
+      "question": "FORTS_AGGRXX_REPL checkbox",
+      "answer": "Selected in both profiles as FORTS_AGGR20_REPL (scheme alias Aggr).",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "aggr"
+      ]
+    },
+    {
+      "id": "2a.stream.06",
+      "question": "FORTS_VOLAT_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.07",
+      "question": "FORTS_DEALS_REPL checkbox",
+      "answer": "Not selected in either profile; READ_ONLY_DTC_PROFILE uses AGGR20, not this separate public trade stream.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.08",
+      "question": "FORTS_POS_REPL checkbox",
+      "answer": "Selected only in TRADING_CONNECTOR_PROFILE; not part of READ_ONLY_DTC_PROFILE.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "state"
+      ]
+    },
+    {
+      "id": "2a.stream.09",
+      "question": "FORTS_RISKINFOBLACK_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.10",
+      "question": "FORTS_FEE_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.11",
+      "question": "FORTS_PART_REPL checkbox",
+      "answer": "Selected only in TRADING_CONNECTOR_PROFILE.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "state"
+      ]
+    },
+    {
+      "id": "2a.stream.12",
+      "question": "FORTS_RISKINFOBACH_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.13",
+      "question": "FORTS_FEERATE_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.14",
+      "question": "FORTS_REFDATA_REPL checkbox (first printed entry)",
+      "answer": "Selected in both READ_ONLY_DTC_PROFILE and TRADING_CONNECTOR_PROFILE; explicit client scheme alias REFDATA.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "scheme",
+        "table"
+      ]
+    },
+    {
+      "id": "2a.stream.15",
+      "question": "FORTS_INFO_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.16",
+      "question": "FORTS_BROKER_FEE_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.17",
+      "question": "FORTS_MISCINFO_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.18",
+      "question": "FORTS_TNPENALTY_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.19",
+      "question": "FORTS_BROKER_FEE_PARAMS_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.20",
+      "question": "FORTS_MM_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.21",
+      "question": "MOEX_RATES_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.22",
+      "question": "FORTS_USERORDERBOOK_REPL checkbox",
+      "answer": "TRADING_CONNECTOR_PROFILE only. OrdBook/USERORDERBOOK layout equivalence is unproven; qualification is pending.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "scheme",
+        "state"
+      ]
+    },
+    {
+      "id": "2a.stream.23",
+      "question": "FORTS_CLR_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.24",
+      "question": "FORTS_FORECASTIM_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.25",
+      "question": "FORTS_ORDBOOK_REPL checkbox",
+      "answer": "Not selected. This is not the configured FORTS_USERORDERBOOK_REPL service; do not conflate names.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "scheme"
+      ]
+    },
+    {
+      "id": "2a.stream.26",
+      "question": "RTS_INDEX_REPL checkbox",
+      "answer": "Not selected in either ConnectorHost profile.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "profile",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.27",
+      "question": "ASTS (MCX) stock streams checkbox",
+      "answer": "Not selected; ASTS is outside the stated SPECTRA derivatives scope.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.28",
+      "question": "ASTS (MCX) FX streams checkbox",
+      "answer": "Not selected; ASTS is outside the stated SPECTRA derivatives scope.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.29",
+      "question": "RFS_INFO_REPL checkbox",
+      "answer": "Not selected; RFS is outside scope.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.30",
+      "question": "RFS_FINESLEVEL_REPL checkbox",
+      "answer": "Not selected; RFS is outside scope.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.31",
+      "question": "RFS_PENALTY_REPL checkbox",
+      "answer": "Not selected; RFS is outside scope.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.32",
+      "question": "RFS_USERMARKETDATA_REPL checkbox",
+      "answer": "Not selected; RFS is outside scope.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "2a.stream.33",
+      "question": "FORTS_REFDATA_REPL checkbox (second printed entry)",
+      "answer": "Preserved as printed; same REFDATA stream selected by both profiles as entry 14, not a second listener or separate table request.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "table"
+      ]
+    },
+    {
+      "id": "2b.I",
+      "question": "Number of CGate-calling threads",
+      "answer": "One owner thread/processes CGate objects for the configured session; downstream DTC/client workers do not call CGate.",
+      "status": "implemented",
+      "evidence_refs": [
+        "runtime",
+        "profile"
+      ]
+    },
+    {
+      "id": "2b.II",
+      "question": "Threads and purposes",
+      "answer": "READ_ONLY_DTC_PROFILE never publishes. Commands exist only in armed TRADING_CONNECTOR_PROFILE TEST mode.",
+      "status": "implemented",
+      "evidence_refs": [
+        "runtime",
+        "profile",
+        "dtc_read_only"
+      ]
+    },
+    {
+      "id": "2b.III",
+      "question": "conn_process cadence",
+      "answer": "Do not infer cadence from sleeps. Calls/sec, max gap, and idle/active/recovery callback budget: NOT_RUN.",
+      "status": "planned",
+      "evidence_refs": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "2b.IV",
+      "question": "CGate objects used from multiple threads",
+      "answer": "No in the single-owner design; retain thread-owner assertions and do not share native CGate objects across workers.",
+      "status": "implemented",
+      "evidence_refs": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "2c.I.1",
+      "question": "Replication stream names and initialization URLs",
+      "answer": "Inventories: READ_ONLY_DTC_PROFILE and TRADING_CONNECTOR_PROFILE. Status streams are ‘Другие потоки’; sanitize URLs.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "scheme",
+        "table"
+      ]
+    },
+    {
+      "id": "2c.I.2",
+      "question": "Open/subscription mode per stream",
+      "answer": "Both profiles pass empty initial open-settings; negotiated mode awaits current-candidate OPEN. POS-anchored TRADE reopen is trading-only.",
+      "status": "implemented",
+      "evidence_refs": [
+        "profile",
+        "runtime"
+      ]
+    },
+    {
+      "id": "2c.I.3",
+      "question": "Are stream data preserved between process runs",
+      "answer": "Projected state is in-memory and rebuilt by snapshot after restart; archives/journals are not resumable stream replicas.",
+      "status": "implemented",
+      "evidence_refs": [
+        "state",
+        "runtime"
+      ]
+    },
+    {
+      "id": "2c.II",
+      "question": "Handled CGate messages",
+      "answer": "Callbacks: OPEN/CLOSE, transaction begin/commit, data, ONLINE, LIFENUM, CLEARDELETED, REPLSTATE, TIMEOUT; retain native evidence.",
+      "status": "implemented",
+      "evidence_refs": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "2c.III",
+      "question": "Message interpretation method",
+      "answer": "Runtime scheme validates layouts; mapped values feed projection. Raw decoding is diagnostic; not all rows use packed structs.",
+      "status": "implemented",
+      "evidence_refs": [
+        "runtime",
+        "state"
+      ]
+    },
+    {
+      "id": "2d.I",
+      "question": "Commands sent to the trading system",
+      "answer": "AddOrder/DelOrder exist only in armed TRADING_CONNECTOR_PROFILE TEST mode. READ_ONLY_DTC_PROFILE has no order surface.",
+      "status": "implemented",
+      "evidence_refs": [
+        "command_lifecycle",
+        "dtc_read_only"
+      ]
+    },
+    {
+      "id": "2d.II",
+      "question": "Supported reply messages",
+      "answer": "AddOrder/DelOrder replies 179/177 differ from system replies 99/100. System replies are not ordinary success. T1 replies: NOT_RUN.",
+      "status": "implemented",
+      "evidence_refs": [
+        "command_lifecycle"
+      ]
+    },
+    {
+      "id": "2d.III",
+      "question": "Message allocation and destruction",
+      "answer": "TRADING_CONNECTOR_PROFILE owns publisher calls; READ_ONLY_DTC_PROFILE creates no publisher.",
+      "status": "implemented",
+      "evidence_refs": [
+        "command_lifecycle",
+        "dtc_read_only"
+      ]
+    },
+    {
+      "id": "3a.I",
+      "question": "Trading-stream heartbeats",
+      "answer": "TRADING_CONNECTOR_PROFILE consumes TRADE heartbeats; READ_ONLY_DTC_PROFILE has no TRADE listener.",
+      "status": "implemented",
+      "evidence_refs": [
+        "state",
+        "table"
+      ]
+    },
+    {
+      "id": "3a.II",
+      "question": "sys_events support",
+      "answer": "TRADING_CONNECTOR_PROFILE: AGGR20/TRADE/PART. READ_ONLY_DTC_PROFILE: AGGR20 authority only; status events are not product tables.",
+      "status": "implemented",
+      "evidence_refs": [
+        "state",
+        "aggr",
+        "table"
+      ]
+    },
+    {
+      "id": "3a.III",
+      "question": "Index values",
+      "answer": "No index stream is configured or claimed.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "3a.IV",
+      "question": "Market information",
+      "answer": "READ_ONLY_DTC_PROFILE: AGGR20 aggregated book. COMMONS: no. Full order log: deferred; do not select options just because listed.",
+      "status": "implemented",
+      "evidence_refs": [
+        "aggr",
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "3b.I",
+      "question": "Calendar-spread trading",
+      "answer": "No calendar-spread trading capability is claimed; decoding multi-leg records alone is not spread order support.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "3c.I",
+      "question": "Mass-operation parameters",
+      "answer": "No mass-order operation is exposed in the current AddOrder/DelOrder scope.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope"
+      ]
+    },
+    {
+      "id": "3d.I",
+      "question": "Venue client-management commands/modes",
+      "answer": "No venue-side client-management command is exposed. This is distinct from downstream DTC authentication/authorization.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope",
+        "dtc_read_only"
+      ]
+    },
+    {
+      "id": "4",
+      "question": "Cancel on disconnect / CODHeartbeat",
+      "answer": "No qualified venue COD/CODHeartbeat function is claimed. Local socket disconnect cleanup or later manual Cancel is not COD.",
+      "status": "not-in-scope",
+      "evidence_refs": [
+        "not_in_scope",
+        "command_lifecycle"
+      ]
+    }
+  ]
+}

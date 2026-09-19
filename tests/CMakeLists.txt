@@ -295,6 +295,13 @@ add_test(
         "${MOEX_SOURCE_ROOT}/tests/fixtures/profiles/twime_external_nonloopback_fixture.yaml"
         "${MOEX_TEST_OUTPUT_DIR}/twime-external-runner-redaction"
         "MOEX_TWIME_TEST_CREDENTIALS")
+set_tests_properties(
+    twime_cert_runner_session_establish
+    twime_cert_runner_client_sequence_heartbeat
+    twime_cert_runner_terminate_requires_inbound
+    twime_cert_runner_message_counter_reset
+    twime_cert_runner_redacts_credentials_in_output
+    PROPERTIES ENVIRONMENT "MOEX_TWIME_CERT_RUNNER_BINARY=${MOEX_APPS_BUILD_DIR}/moex_twime_cert_runner")
 add_test(
     NAME twime_cert_runner_requires_test_session_arm_for_external_endpoint
     COMMAND "${MOEX_APPS_BUILD_DIR}/moex_cert_runner"
@@ -483,6 +490,20 @@ add_executable(connector_host_dtc_server_test
 target_link_libraries(connector_host_dtc_server_test PRIVATE moex_connector_host)
 add_test(NAME connector_host_dtc_server_test COMMAND connector_host_dtc_server_test)
 set_tests_properties(connector_host_dtc_server_test PROPERTIES LABELS "dtc;read-only;sanitizer")
+if(DOTNET_EXECUTABLE)
+    add_test(
+        NAME connector_host_dtc507_generated_schema_test
+        COMMAND "${DOTNET_EXECUTABLE}" run
+            --project "${MOEX_SOURCE_ROOT}/tests/fixtures/dtc507/Dtc507WireRegression.csproj"
+            --framework net10.0
+            -- "$<TARGET_FILE:connector_host_dtc_server_test>")
+    set_tests_properties(connector_host_dtc507_generated_schema_test PROPERTIES
+        RUN_SERIAL TRUE
+        TIMEOUT 90
+        LABELS "dtc;read-only;protocol"
+        ENVIRONMENT
+            "DOTNET_CLI_HOME=${MOEX_TEST_OUTPUT_DIR}/dotnet-home;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;NUGET_PACKAGES=$ENV{HOME}/.nuget/packages")
+endif()
 add_test(NAME moexctl_test COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/assert_moexctl.py"
     "$<TARGET_FILE:moexctl>" "$<TARGET_FILE:connector_host_test>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
 set_tests_properties(moexctl_test PROPERTIES LABELS "plaza2;sanitizer")
@@ -1119,6 +1140,19 @@ add_test(NAME plaza2_text_roundtrip_test
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/plaza2_cgate/plaza2_text_roundtrip_test.py"
         "$<TARGET_FILE:plaza2_text_test>")
 set_tests_properties(plaza2_text_roundtrip_test PROPERTIES LABELS "unit;plaza2;sanitizer")
+
+add_executable(moex_connector_host_dtc_runner_receipt_test
+    ${MOEX_SOURCE_ROOT}/tests/dtc_runner_receipt_test.cpp)
+target_link_libraries(moex_connector_host_dtc_runner_receipt_test PRIVATE moex_connector_host)
+target_compile_definitions(moex_connector_host_dtc_runner_receipt_test PRIVATE
+    MOEX_SOURCE_GIT_SHA="${MOEX_SOURCE_GIT_SHA}"
+    MOEX_BUILD_CONFIGURATION="$<CONFIG>"
+    MOEX_CXX_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}"
+    MOEX_CXX_COMPILER_VERSION="${CMAKE_CXX_COMPILER_VERSION}")
+add_test(NAME moex_connector_host_dtc_runner_receipt_test
+    COMMAND "${Python3_EXECUTABLE}" "${MOEX_SOURCE_ROOT}/tests/dtc_runner_receipt_test.py"
+        "$<TARGET_FILE:moex_connector_host_dtc_runner_receipt_test>")
+set_tests_properties(moex_connector_host_dtc_runner_receipt_test PROPERTIES LABELS "unit;dtc;read-only;sanitizer")
 
 add_executable(plaza2_deep_passive_test ${MOEX_SOURCE_ROOT}/tests/plaza2_trade/plaza2_deep_passive_test.cpp)
 target_link_libraries(plaza2_deep_passive_test PRIVATE moex_plaza2_trade_order_lifecycle)

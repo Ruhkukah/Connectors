@@ -167,8 +167,9 @@ struct Plaza2TestSessionHostConfig {
     std::string connection_settings;
     std::string connection_open_settings;
     std::vector<Plaza2TestTradeStreamConfig> private_streams;
-    // Current-day/session status service streams are supplementary to the
-    // exact five private replication streams above.
+    // The two current-day/session status streams are required alongside the
+    // REFDATA-only read-side profile, and supplementary to the five trading
+    // private replication streams above.
     std::vector<Plaza2TestTradeStreamConfig> status_streams;
     Plaza2TestTradeStreamConfig aggr20_stream;
     // Optional exact AGGR20 sys_events session identity. Zero accepts a
@@ -180,6 +181,11 @@ struct Plaza2TestSessionHostConfig {
     std::string publisher_name{"PUB"};
     std::string p2mqreply_settings;
     std::string p2mqreply_open_settings;
+    // ConnectorHost's live DTC runner uses the same CGate owner and
+    // read-side replication, but deliberately does not create a publisher or
+    // reply listener. This is a transport capability boundary, not a send
+    // mode or an execution authorization.
+    bool read_only_market_data{false};
     // When enabled, FORTS_TRADE_REPL is opened after the negotiated POS.info
     // anchor is available, using that exact trades_rev/lifenum anchor.
     bool trade_replay_from_pos_anchor{false};

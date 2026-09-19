@@ -24,6 +24,7 @@ using moex::plaza2::fake::ValueKind;
 using moex::plaza2::generated::FieldCode;
 using moex::plaza2::generated::StreamCode;
 using moex::plaza2::generated::TableCode;
+using moex::plaza2::private_state::FutureVcbJoinStatus;
 using moex::plaza2::private_state::InstrumentSnapshot;
 using moex::plaza2::private_state::Plaza2PrivateStateProjector;
 using moex::plaza2::private_state::SourceRowProvenance;
@@ -97,8 +98,17 @@ struct InitialScenario {
                     text_field(FieldCode::kFortsRefdataReplFutInstrumentsIsin, "TARGET-OLD"),
                     text_field(FieldCode::kFortsRefdataReplFutInstrumentsShortIsin, "TGT6"),
                     text_field(FieldCode::kFortsRefdataReplFutInstrumentsName, "Target old"),
+                    text_field(FieldCode::kFortsRefdataReplFutInstrumentsBaseContractCode, "TGT"),
                     text_field(FieldCode::kFortsRefdataReplFutInstrumentsMinStep, "250"),
                     signed_field(FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId, 4),
+                });
+        add_row(StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutVcb, 25,
+                {
+                    signed_field(FieldCode::kFortsRefdataReplFutVcbReplId, 2501),
+                    text_field(FieldCode::kFortsRefdataReplFutVcbBaseContractCode, "TGT"),
+                    text_field(FieldCode::kFortsRefdataReplFutVcbCurr, "RUB"),
+                    signed_field(FieldCode::kFortsRefdataReplFutVcbBaseContractId, 777),
+                    text_field(FieldCode::kFortsRefdataReplFutVcbBoardMd, "RFUD"),
                 });
         add_row(StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutSessContents, 20,
                 {
@@ -109,6 +119,7 @@ struct InitialScenario {
                     text_field(FieldCode::kFortsRefdataReplFutSessContentsIsin, "TARGET-OLD"),
                     text_field(FieldCode::kFortsRefdataReplFutSessContentsShortIsin, "TGT6"),
                     text_field(FieldCode::kFortsRefdataReplFutSessContentsName, "Target old"),
+                    text_field(FieldCode::kFortsRefdataReplFutSessContentsBaseContractCode, "TGT"),
                     text_field(FieldCode::kFortsRefdataReplFutSessContentsMinStep, "250"),
                     signed_field(FieldCode::kFortsRefdataReplFutSessContentsTradeModeId, 4),
                 });
@@ -491,6 +502,21 @@ int main() {
         const auto* initial_target = find_instrument(initial_instruments, 1001);
         require(initial_target != nullptr && initial_target->isin == "TARGET-OLD",
                 "initial target instrument should be committed");
+        require(projector.future_vcb().size() == 1, "one committed fut_vcb row should be retained");
+        require(initial_target->base_contract_id == 777 &&
+                    initial_target->future_vcb_join_status == FutureVcbJoinStatus::Resolved &&
+                    initial_target->future_vcb_currency == "RUB" && initial_target->future_vcb_board_md == "RFUD" &&
+                    initial_target->future_vcb_provenance.present &&
+                    initial_target->future_vcb_provenance.repl_rev == 25 &&
+                    initial_target->future_vcb_provenance.lifenum == 7,
+                "fut_vcb currency/board/id join and provenance should be authoritative");
+        auto reset_probe = projector.clone();
+        auto reset_state = result.state;
+        set_lifenum(reset_probe, reset_state, StreamCode::kFortsRefdataRepl, 8);
+        require(reset_probe.future_vcb().empty(), "REFDATA LifeNum reset must remove old fut_vcb rows");
+        const auto* reset_target = find_instrument(reset_probe.instruments(), 1001);
+        require(reset_target == nullptr || reset_target->future_vcb_join_status == FutureVcbJoinStatus::Missing,
+                "REFDATA LifeNum reset must not carry a prior fut_vcb join");
 
         const auto fut_instruments = require_provenance(
             projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutInstruments, 1001),
@@ -511,6 +537,51 @@ int main() {
             projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutInstruments, 1001);
         const auto old_session_contents_provenance =
             projector.instrument_source_provenance(TableCode::kFortsRefdataReplFutSessContents, 1001);
+
+        // The join is transactional: an uncommitted VCB replacement cannot
+        // change the visible target metadata. A committed second candidate is
+        // ambiguous and must remove the derived identity rather than choose a
+        // row by arrival order.
+        begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
+        stage_row(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutVcb, 60,
+                  {signed_field(FieldCode::kFortsRefdataReplFutVcbReplId, 2501),
+                   text_field(FieldCode::kFortsRefdataReplFutVcbBaseContractCode, "TGT"),
+                   text_field(FieldCode::kFortsRefdataReplFutVcbCurr, "USD"),
+                   signed_field(FieldCode::kFortsRefdataReplFutVcbBaseContractId, 778),
+                   text_field(FieldCode::kFortsRefdataReplFutVcbBoardMd, "RFUT")});
+        require(find_instrument(projector.instruments(), 1001)->future_vcb_currency == "RUB",
+                "uncommitted fut_vcb replacement must remain invisible");
+        commit_transaction(projector, state, StreamCode::kFortsRefdataRepl, 1);
+        auto committed_target = find_instrument(projector.instruments(), 1001);
+        require(committed_target->base_contract_id == 778 && committed_target->future_vcb_currency == "USD" &&
+                    committed_target->future_vcb_board_md == "RFUT" &&
+                    committed_target->future_vcb_provenance.repl_rev == 60,
+                "committed fut_vcb replacement should update the joined source atomically");
+
+        begin_transaction(projector, state, StreamCode::kFortsRefdataRepl);
+        stage_row(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutVcb, 61,
+                  {signed_field(FieldCode::kFortsRefdataReplFutVcbReplId, 2502),
+                   text_field(FieldCode::kFortsRefdataReplFutVcbBaseContractCode, "TGT"),
+                   text_field(FieldCode::kFortsRefdataReplFutVcbCurr, "EUR"),
+                   signed_field(FieldCode::kFortsRefdataReplFutVcbBaseContractId, 779),
+                   text_field(FieldCode::kFortsRefdataReplFutVcbBoardMd, "RFUT")});
+        commit_transaction(projector, state, StreamCode::kFortsRefdataRepl, 1);
+        committed_target = find_instrument(projector.instruments(), 1001);
+        require(committed_target->future_vcb_join_status == FutureVcbJoinStatus::Ambiguous &&
+                    committed_target->base_contract_id == 0 && committed_target->future_vcb_currency.empty() &&
+                    committed_target->future_vcb_board_md.empty(),
+                "ambiguous fut_vcb join must fail closed without choosing economics");
+        clear_table(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutVcb, 61);
+        committed_target = find_instrument(projector.instruments(), 1001);
+        require(committed_target->future_vcb_join_status == FutureVcbJoinStatus::Resolved &&
+                    committed_target->base_contract_id == 779 && committed_target->future_vcb_currency == "EUR" &&
+                    committed_target->future_vcb_provenance.repl_rev == 61,
+                "ClearDeleted must retain the newer fut_vcb candidate and provenance");
+        clear_table(projector, state, StreamCode::kFortsRefdataRepl, TableCode::kFortsRefdataReplFutVcb, 62);
+        committed_target = find_instrument(projector.instruments(), 1001);
+        require(committed_target->future_vcb_join_status == FutureVcbJoinStatus::Missing &&
+                    committed_target->base_contract_id == 0 && committed_target->future_vcb_currency.empty(),
+                "ClearDeleted must remove the final fut_vcb join and derived metadata");
 
         // A status-only update is a separate stream/table and must not alter
         // either REFDATA source revision.

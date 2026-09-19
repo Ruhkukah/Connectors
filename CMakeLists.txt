@@ -6,12 +6,74 @@ project(
     DESCRIPTION "Standalone C++20/Linux-first MOEX connector suite"
     LANGUAGES CXX)
 
-execute_process(
-    COMMAND git rev-parse HEAD
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    OUTPUT_VARIABLE MOEX_SOURCE_GIT_SHA
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET)
+# Archive/VPS builds have no .git directory. Operators provide the source
+# revision through a separate override cache entry. The resolved SHA is a
+# normal configure variable so a checkout re-discovers the current HEAD on
+# every configure rather than retaining a prior auto-discovered cache value.
+unset(MOEX_SOURCE_GIT_SHA CACHE)
+set(MOEX_SOURCE_GIT_SHA_OVERRIDE "" CACHE STRING
+    "Explicit validated 40-hex source revision for archive/VPS build receipts")
+if(MOEX_SOURCE_GIT_SHA_OVERRIDE STREQUAL "")
+    set(MOEX_GIT_REVISION_FILES)
+    execute_process(
+        COMMAND git rev-parse --git-path HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE MOEX_GIT_HEAD_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE MOEX_GIT_HEAD_RESULT)
+    if(MOEX_GIT_HEAD_RESULT EQUAL 0 AND NOT MOEX_GIT_HEAD_PATH STREQUAL "")
+        cmake_path(ABSOLUTE_PATH MOEX_GIT_HEAD_PATH
+            BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE MOEX_GIT_HEAD_PATH_ABSOLUTE)
+        list(APPEND MOEX_GIT_REVISION_FILES "${MOEX_GIT_HEAD_PATH_ABSOLUTE}")
+        execute_process(
+            COMMAND git symbolic-ref -q HEAD
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE MOEX_GIT_HEAD_REF
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+            RESULT_VARIABLE MOEX_GIT_HEAD_REF_RESULT)
+        if(MOEX_GIT_HEAD_REF_RESULT EQUAL 0 AND NOT MOEX_GIT_HEAD_REF STREQUAL "")
+            execute_process(
+                COMMAND git rev-parse --git-path "${MOEX_GIT_HEAD_REF}"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                OUTPUT_VARIABLE MOEX_GIT_REF_PATH
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+                RESULT_VARIABLE MOEX_GIT_REF_RESULT)
+            if(MOEX_GIT_REF_RESULT EQUAL 0 AND NOT MOEX_GIT_REF_PATH STREQUAL "")
+                cmake_path(ABSOLUTE_PATH MOEX_GIT_REF_PATH
+                    BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    OUTPUT_VARIABLE MOEX_GIT_REF_PATH_ABSOLUTE)
+                list(APPEND MOEX_GIT_REVISION_FILES "${MOEX_GIT_REF_PATH_ABSOLUTE}")
+            endif()
+        endif()
+        if(MOEX_GIT_REVISION_FILES)
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${MOEX_GIT_REVISION_FILES})
+        endif()
+    endif()
+endif()
+set(MOEX_SOURCE_GIT_SHA "")
+if(NOT MOEX_SOURCE_GIT_SHA_OVERRIDE STREQUAL "")
+    set(MOEX_SOURCE_GIT_SHA "${MOEX_SOURCE_GIT_SHA_OVERRIDE}")
+else()
+    execute_process(
+        COMMAND git rev-parse HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE MOEX_SOURCE_GIT_SHA_DISCOVERED
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(MOEX_SOURCE_GIT_SHA_DISCOVERED)
+        set(MOEX_SOURCE_GIT_SHA "${MOEX_SOURCE_GIT_SHA_DISCOVERED}")
+    endif()
+endif()
+if(MOEX_SOURCE_GIT_SHA)
+    string(LENGTH "${MOEX_SOURCE_GIT_SHA}" MOEX_SOURCE_GIT_SHA_LENGTH)
+    if(NOT MOEX_SOURCE_GIT_SHA_LENGTH EQUAL 40 OR NOT MOEX_SOURCE_GIT_SHA MATCHES "^[0-9a-fA-F]+$")
+        message(FATAL_ERROR "MOEX_SOURCE_GIT_SHA must be exactly 40 hexadecimal characters")
+    endif()
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

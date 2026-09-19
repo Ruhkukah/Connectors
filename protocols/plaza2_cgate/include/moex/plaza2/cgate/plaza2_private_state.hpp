@@ -137,6 +137,27 @@ struct InstrumentLegSnapshot {
     std::int8_t leg_order_no{0};
 };
 
+enum class FutureVcbJoinStatus : std::uint8_t {
+    Missing = 0,
+    Resolved = 1,
+    Ambiguous = 2,
+};
+
+// Committed FORTS_REFDATA_REPL.fut_vcb row.  curr is the schema's c3
+// "Quotation currency" and board_md is the schema's c4 "SECBOARD trading
+// board ID from ASTS gateway".  Keep both raw strings; no board/economics
+// conversion belongs in the private-state projector.
+struct FutureVcbSnapshot {
+    std::int64_t repl_id{0};
+    std::int32_t base_contract_id{0};
+    std::string base_contract_code;
+    std::string currency;
+    std::string board_md;
+    SourceRowProvenance source;
+
+    bool operator==(const FutureVcbSnapshot&) const = default;
+};
+
 struct InstrumentSnapshot {
     std::int32_t isin_id{0};
     std::int32_t sess_id{0};
@@ -145,6 +166,16 @@ struct InstrumentSnapshot {
     std::string short_isin;
     std::string name;
     std::string base_contract_code;
+    // Derived only by an unambiguous committed fut_vcb join on
+    // base_contract_code. Zero means the join did not prove an ID.
+    std::int32_t base_contract_id{0};
+    FutureVcbJoinStatus future_vcb_join_status{FutureVcbJoinStatus::Missing};
+    std::string future_vcb_currency;
+    std::string future_vcb_board_md;
+    SourceRowProvenance future_vcb_provenance;
+    // Provenance of the last committed full instrument-term row copied into
+    // this merged view (fut_instruments or fut_sess_contents).
+    SourceRowProvenance definition_source_provenance;
     std::int32_t fut_isin_id{0};
     std::int32_t option_series_id{0};
     std::int32_t inst_term{0};
@@ -165,6 +196,11 @@ struct InstrumentSnapshot {
     bool is_spread{false};
     std::string min_step;
     std::string step_price;
+    // The locked reviewed schema defines step_price_curr as the value of the
+    // minimum increment in currency (and equal to step_price for ruble
+    // contracts). It is retained only when the authoritative REFDATA row
+    // supplies step_price_curr; callers must not derive it.
+    std::string step_price_curr;
     std::string settlement_price;
     std::string strike;
     std::int64_t last_trade_date{0};
@@ -330,6 +366,7 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::span<const StreamHealthSnapshot> stream_health() const;
     [[nodiscard]] std::span<const TradingSessionSnapshot> sessions() const;
     [[nodiscard]] std::span<const InstrumentSnapshot> instruments() const;
+    [[nodiscard]] std::span<const FutureVcbSnapshot> future_vcb() const;
     [[nodiscard]] std::optional<FutureSessionTerms> find_future_session_terms(std::int32_t isin_id) const;
     // Current-session indexed view. Empty for other sessions, missing/deleted rows or
     // another LifeNum. Committed source validity is distinct from live transport health.

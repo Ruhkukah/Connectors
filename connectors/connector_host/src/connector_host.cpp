@@ -1,5 +1,6 @@
 #include "moex/connector_host/connector_host.hpp"
 #include "moex/connector_host/late_join_display.hpp"
+#include "moex/plaza2/cgate/plaza2_text.hpp"
 
 #include <algorithm>
 #include <array>
@@ -153,6 +154,13 @@ template <class Integer> std::optional<Integer> checkpoint_integer_field(std::st
 bool valid_current_min_step(std::string_view value) {
     const auto parsed = ps::parse_session_decimal(value);
     return parsed.has_value() && parsed->units > 0;
+}
+
+// The locked evidence proves the RUB path for the DTC monetary/tick meaning.
+// Other fut_vcb quotation codes are retained as raw source metadata but do not
+// prove the denomination relationship required by the live 507 contract.
+bool supported_live_currency_economics(std::string_view currency) noexcept {
+    return currency == "RUB";
 }
 
 struct PersistentSessionCheckpoint {
@@ -341,6 +349,12 @@ std::optional<std::uint64_t> checked_u64_mul(std::uint64_t left, std::uint64_t r
         return std::nullopt;
     return left * right;
 }
+
+Plaza2HostConfig normalize_host_config(Plaza2HostConfig config) {
+    if (config.read_only_market_data != config.transport.host.read_only_market_data)
+        throw std::invalid_argument("outer and transport read_only_market_data modes must match");
+    return config;
+}
 } // namespace
 
 std::string_view host_state_name(ConnectorHostState state) noexcept {
@@ -373,7 +387,10 @@ struct ConnectorHost::Impl {
         std::random_device random;
         process_identity = cg::plaza2_sha256_hex(std::to_string(random()) + ":" + std::to_string(random()) + ":" +
                                                  std::to_string(random()) + ":" + std::to_string(random()));
-        load_checkpoint();
+        // The market-data-only host must not inspect, lock, or restore an
+        // application order epoch from the configured order journal.
+        if (!config.read_only_market_data)
+            load_checkpoint();
         transport.configure_recovered_reservations(next_recovered_user_id,
                                                    [this](std::uint32_t next, std::string& error) {
                                                        next_recovered_user_id = next;
@@ -695,9 +712,12 @@ struct ConnectorHost::Impl {
         out.connection_app_name = host.connection_app_name();
         out.transport_health = host.runtime_health();
         const auto& health = out.transport_health;
+        const bool transport_active = config.read_only_market_data ? health.valid && health.connection == 3 &&
+                                                                         health.aggr == 3 && health.private_active
+                                                                   : health.all_active();
         const bool live = host.started() && !host.recovering() && state != ConnectorHostState::Failed &&
                           state != ConnectorHostState::Recovering && state != ConnectorHostState::Stopping &&
-                          state != ConnectorHostState::Stopped && health.all_active();
+                          state != ConnectorHostState::Stopped && transport_active;
         out.publisher_handle_open = host.publisher_open();
         out.reply_handle_open = host.p2mqreply_open();
         out.publisher_ready = live && out.publisher_handle_open && health.publisher == 3;
@@ -716,18 +736,25 @@ struct ConnectorHost::Impl {
                          out.aggr_session_data_ready && out.aggr_target_authoritative;
         out.publisher_calls = host.publisher_call_counts();
         out.streams.assign(data.stream_health().begin(), data.stream_health().end());
-        constexpr std::array required{StreamCode::kFortsTradeRepl,
-                                      StreamCode::kFortsUserorderbookRepl,
-                                      StreamCode::kFortsPosRepl,
-                                      StreamCode::kFortsPartRepl,
-                                      StreamCode::kFortsRefdataRepl,
-                                      StreamCode::kFortsSessionstateRepl,
-                                      StreamCode::kFortsInstrumentstateRepl};
-        out.private_snapshot_state_ready = std::all_of(required.begin(), required.end(), [&](auto code) {
+        const auto snapshot_current = [&](auto code) {
             return std::count_if(out.streams.begin(), out.streams.end(), [&](const auto& row) {
                        return row.stream_code == code && row.online && row.snapshot_complete;
                    }) == 1;
-        });
+        };
+        if (config.read_only_market_data) {
+            constexpr std::array required{StreamCode::kFortsRefdataRepl, StreamCode::kFortsSessionstateRepl,
+                                          StreamCode::kFortsInstrumentstateRepl};
+            out.private_snapshot_state_ready = std::all_of(required.begin(), required.end(), snapshot_current);
+        } else {
+            constexpr std::array required{StreamCode::kFortsTradeRepl,
+                                          StreamCode::kFortsUserorderbookRepl,
+                                          StreamCode::kFortsPosRepl,
+                                          StreamCode::kFortsPartRepl,
+                                          StreamCode::kFortsRefdataRepl,
+                                          StreamCode::kFortsSessionstateRepl,
+                                          StreamCode::kFortsInstrumentstateRepl};
+            out.private_snapshot_state_ready = std::all_of(required.begin(), required.end(), snapshot_current);
+        }
         out.private_streams_ready = live && health.private_active && out.private_snapshot_state_ready;
         for (const auto& row : out.streams) {
             if (row.stream_code == StreamCode::kFortsUserorderbookRepl)
@@ -1005,7 +1032,8 @@ struct ConnectorHost::Impl {
     }
 };
 
-ConnectorHost::ConnectorHost(Plaza2HostConfig config) : impl_(std::make_unique<Impl>(std::move(config))) {}
+ConnectorHost::ConnectorHost(Plaza2HostConfig config)
+    : impl_(std::make_unique<Impl>(normalize_host_config(std::move(config)))) {}
 ConnectorHost::~ConnectorHost() {
     (void)stop();
 }
@@ -1022,9 +1050,12 @@ cg::Plaza2Error ConnectorHost::start() {
     if (c.transport.host.runtime.environment != cg::Plaza2Environment::Test ||
         c.order.environment != cg::Plaza2Environment::Test || c.transport.target_isin_id != c.order.isin_id ||
         c.order.isin_id <= 0 || c.transport.target_session_id <= 0 || c.transport.authorized_intent ||
-        !c.transport.host.trade_replay_from_pos_anchor ||
-        c.transport.observation_client_code != c.order.broker_code + c.order.client_code ||
-        c.order.broker_code.empty() || c.order.client_code.empty()) {
+        (c.read_only_market_data && c.purpose != HostPurpose::Qualify) ||
+        (c.read_only_market_data ? c.transport.host.trade_replay_from_pos_anchor
+                                 : !c.transport.host.trade_replay_from_pos_anchor) ||
+        (!c.read_only_market_data &&
+         (c.transport.observation_client_code != c.order.broker_code + c.order.client_code ||
+          c.order.broker_code.empty() || c.order.client_code.empty()))) {
         p.state = ConnectorHostState::Failed;
         p.error = "invalid TEST host target/account/anchor configuration";
         return invalid(p.error);
@@ -1159,6 +1190,11 @@ ConnectorHostSnapshot ConnectorHost::snapshot() const {
     return impl_->snapshot();
 }
 
+bool ConnectorHost::has_publisher_or_reply_handles() const noexcept {
+    const auto& host = impl_->transport.host();
+    return host.publisher_open() || host.p2mqreply_open();
+}
+
 ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
     ConnectorHostMarketDataSnapshot out;
     const auto& host = impl_->transport.host();
@@ -1169,18 +1205,59 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
     out.market_data_authority_epoch = authority.market_data_authority_epoch;
     out.stream_epoch = authority.stream_epoch;
     out.target_isin_id = config.transport.target_isin_id != 0 ? config.transport.target_isin_id : config.order.isin_id;
-    out.board = config.target_board;
+    out.target_session_id = config.transport.target_session_id;
+    out.underlying_board = config.target_underlying_board;
+    // These are explicit operator bindings until an unambiguous committed
+    // fut_vcb join supplies the source values below.
+    out.currency = config.target_currency;
     out.transport_active = host.started() && health.aggr == 3 && authority.transport_active;
     out.snapshot_complete = authority.snapshot_complete;
     out.session_data_ready = authority.session_data_ready;
     out.aggr_online = authority.aggr_online;
 
     bool target_instrument_refdata_current = false;
+    bool operator_binding_conflict = false;
     for (const auto& instrument : host.private_state().instruments()) {
         if (instrument.isin_id != out.target_isin_id)
             continue;
         out.symbol = instrument.isin;
         out.min_step = instrument.min_step;
+        out.description = instrument.name;
+        out.target_is_future = instrument.kind == ps::InstrumentKind::kFuture;
+        out.target_is_spread = instrument.is_spread;
+        out.target_is_multileg = (instrument.signs & 0x100) != 0 || instrument.trade_mode_id == 14;
+        out.future_vcb_base_contract_code = instrument.base_contract_code;
+        out.future_vcb_base_contract_id = instrument.base_contract_id;
+        out.definition_source_provenance = instrument.definition_source_provenance;
+        out.future_instruments_provenance =
+            host.private_state()
+                .instrument_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplFutInstruments,
+                                              out.target_isin_id)
+                .value_or(ps::SourceRowProvenance{});
+        out.future_sess_contents_provenance =
+            host.private_state()
+                .instrument_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplFutSessContents,
+                                              out.target_isin_id)
+                .value_or(ps::SourceRowProvenance{});
+        if (instrument.lot_volume > 0)
+            out.contract_size = std::to_string(instrument.lot_volume);
+        out.currency_value_per_increment = instrument.step_price_curr;
+        out.refdata_vcb_join_current = instrument.future_vcb_join_status == ps::FutureVcbJoinStatus::Resolved;
+        out.refdata_vcb_join_ambiguous = instrument.future_vcb_join_status == ps::FutureVcbJoinStatus::Ambiguous;
+        if (out.refdata_vcb_join_current) {
+            out.underlying_board = instrument.future_vcb_board_md;
+            out.currency = instrument.future_vcb_currency;
+            out.future_vcb_provenance = instrument.future_vcb_provenance;
+            if (!config.target_underlying_board.empty() && config.target_underlying_board != out.underlying_board)
+                operator_binding_conflict = true;
+            if (!config.target_currency.empty() && config.target_currency != out.currency)
+                operator_binding_conflict = true;
+            out.refdata_board_proven = !out.underlying_board.empty() && out.underlying_board.size() <= 128 &&
+                                       cg::text::valid_utf8(out.underlying_board);
+            out.refdata_currency_proven = !out.currency.empty() && out.currency.size() <= 16 &&
+                                          cg::text::valid_utf8(out.currency) &&
+                                          supported_live_currency_economics(out.currency);
+        }
         target_instrument_refdata_current =
             instrument.kind == ps::InstrumentKind::kFuture && instrument.current_session_member &&
             instrument.sess_id == config.transport.target_session_id && instrument.trade_mode_id != 0 &&
@@ -1224,6 +1301,9 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
     }
 
     const auto& data = host.private_state();
+    out.session_provenance = data.session_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplSession,
+                                                            config.transport.target_session_id)
+                                 .value_or(ps::SourceRowProvenance{});
     const bool healthy = host.started() && !host.recovering() && impl_->state != ConnectorHostState::Failed &&
                          host.last_callback_error().empty() && data.connector_health().callback_error_count == 0 &&
                          health.valid && health.connection == 3;
@@ -1247,7 +1327,8 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
                                 .time_since_epoch())
                             .count(),
          .healthy = healthy});
-    out.refdata_metadata_current = !out.board.empty() && target_instrument_refdata_current;
+    out.refdata_metadata_current =
+        !out.underlying_board.empty() && target_instrument_refdata_current && !operator_binding_conflict;
     out.session_tradable = identity_current && session_status == std::optional<std::int32_t>{1};
     out.instrument_tradable = identity_current && instrument_status == std::optional<std::int32_t>{1};
     apply_market_data_display_authority(out, authority, healthy, identity_current, config.transport.target_session_id,
@@ -1319,6 +1400,9 @@ PreSendPlan ConnectorHost::plan() const {
 
 PreSendPlan ConnectorHost::plan_order(const ConnectorHostOrderRequest& request) const {
     const auto& p = *impl_;
+    if (p.config.read_only_market_data)
+        return {.failure = PreSendFailure::ConflictingMode,
+                .message = "read-only market-data ConnectorHost has no order surface"};
     if (p.checkpoint_blocked || p.restart_recovery_only || p.first_order_fill_incident || p.recovered_epoch_active ||
         p.persistent != nullptr) {
         return {.failure = PreSendFailure::JournalFailure,
@@ -1341,9 +1425,9 @@ PreSendPlan ConnectorHost::plan_order(const ConnectorHostOrderRequest& request) 
 
 cg::Plaza2Error ConnectorHost::authorize(std::string_view canonical, std::string_view sha) {
     auto& p = *impl_;
-    if (p.config.purpose != HostPurpose::OrderTest || p.submitted || p.persistent != nullptr ||
-        p.recovered_epoch_active || p.restart_recovery_only || p.first_order_fill_incident || p.checkpoint_blocked ||
-        !p.authorized_sha.empty())
+    if (p.config.read_only_market_data || p.config.purpose != HostPurpose::OrderTest || p.submitted ||
+        p.persistent != nullptr || p.recovered_epoch_active || p.restart_recovery_only || p.first_order_fill_incident ||
+        p.checkpoint_blocked || !p.authorized_sha.empty())
         return invalid("authorization is unavailable for this host");
     const auto candidate = plan();
     if (!candidate.ok) {
@@ -1355,6 +1439,8 @@ cg::Plaza2Error ConnectorHost::authorize(std::string_view canonical, std::string
 
 OrderLifecycleResult ConnectorHost::submit() {
     auto& p = *impl_;
+    if (p.config.read_only_market_data)
+        return {.message = "read-only market-data ConnectorHost has no order surface"};
     if (p.config.purpose != HostPurpose::OrderTest || p.authorized_sha.empty() || p.submitted ||
         p.persistent != nullptr || p.recovered_epoch_active || p.restart_recovery_only || p.first_order_fill_incident ||
         p.checkpoint_blocked)
@@ -1381,9 +1467,9 @@ OrderLifecycleResult ConnectorHost::submit() {
 cg::Plaza2Error ConnectorHost::begin_order(const ConnectorHostOrderRequest& request, std::string_view canonical_plan,
                                            std::string_view sha256) {
     auto& p = *impl_;
-    if (p.config.purpose != HostPurpose::OrderTest || p.submitted || p.persistent != nullptr ||
-        p.recovered_epoch_active || p.restart_recovery_only || p.first_order_fill_incident || p.checkpoint_blocked ||
-        !p.authorized_sha.empty()) {
+    if (p.config.read_only_market_data || p.config.purpose != HostPurpose::OrderTest || p.submitted ||
+        p.persistent != nullptr || p.recovered_epoch_active || p.restart_recovery_only || p.first_order_fill_incident ||
+        p.checkpoint_blocked || !p.authorized_sha.empty()) {
         return invalid("a persistent order epoch is already active or unavailable for this host");
     }
     if (p.state != ConnectorHostState::Started && p.state != ConnectorHostState::Ready) {
@@ -1458,6 +1544,8 @@ cg::Plaza2Error ConnectorHost::begin_order(std::string_view canonical_plan, std:
 
 OrderLifecycleResult ConnectorHost::submit_order() {
     auto& p = *impl_;
+    if (p.config.read_only_market_data)
+        return {.message = "read-only market-data ConnectorHost has no order surface"};
     if (p.persistent == nullptr || p.recovered_epoch_active || p.restart_recovery_only || p.first_order_fill_incident ||
         p.checkpoint_blocked)
         return {.message = "begin_order with an exact authorization is required"};
@@ -1480,6 +1568,8 @@ OrderLifecycleResult ConnectorHost::submit_order() {
 
 OrderLifecycleResult ConnectorHost::poll_order() {
     auto& p = *impl_;
+    if (p.config.read_only_market_data)
+        return {.message = "read-only market-data ConnectorHost has no order surface"};
     if (p.persistent == nullptr)
         return {.message = "begin_order with an exact authorization is required"};
     auto result = p.persistent->poll_order();
@@ -1509,6 +1599,8 @@ OrderLifecycleResult ConnectorHost::poll_order() {
 
 OrderLifecycleResult ConnectorHost::cancel_current_order() {
     auto& p = *impl_;
+    if (p.config.read_only_market_data)
+        return {.message = "read-only market-data ConnectorHost has no order surface"};
     if (p.persistent == nullptr)
         return {.message = "begin_order with an exact authorization is required"};
     if (p.restart_recovery_only)
@@ -1520,6 +1612,8 @@ OrderLifecycleResult ConnectorHost::cancel_current_order() {
 
 RecoveredOrderReconciliation ConnectorHost::reconcile_recovered_order() {
     auto& p = *impl_;
+    if (p.config.read_only_market_data)
+        return {.outcome = RecoveredOrderOutcome::GenerationNotFresh};
     if (!p.persistent || !p.persistent->active() || !p.persistent->submission_attempted() || p.checkpoint_blocked)
         return {.outcome = RecoveredOrderOutcome::GenerationNotFresh};
     if (poll())
@@ -1532,6 +1626,9 @@ RecoveredOrderReconciliation ConnectorHost::reconcile_recovered_order() {
 
 RecoveredCancelPlan ConnectorHost::prepare_recovered_cancel(const std::filesystem::path& artifact) {
     auto& p = *impl_;
+    if (p.config.read_only_market_data)
+        return {.reconciliation = {.outcome = RecoveredOrderOutcome::GenerationNotFresh},
+                .error = "read-only market-data ConnectorHost has no order surface"};
     const auto reconciliation = reconcile_recovered_order();
     if (reconciliation.outcome != RecoveredOrderOutcome::ExactlyOneWorkingMatch)
         return {.reconciliation = reconciliation,
@@ -1551,6 +1648,8 @@ RecoveredCancelPlan ConnectorHost::prepare_recovered_cancel(const std::filesyste
 OrderLifecycleResult ConnectorHost::cancel_recovered_order(const std::filesystem::path& artifact,
                                                            std::string_view sha) {
     auto& p = *impl_;
+    if (p.config.read_only_market_data)
+        return {.message = "read-only market-data ConnectorHost has no order surface"};
     const auto reconciliation = reconcile_recovered_order();
     if (reconciliation.outcome == RecoveredOrderOutcome::TerminalAlready && p.persistent) {
         auto terminal = p.persistent->last_result();
@@ -1571,6 +1670,8 @@ OrderLifecycleResult ConnectorHost::cancel_recovered_order(const std::filesystem
 
 cg::Plaza2Error ConnectorHost::finish_order_epoch() {
     auto& p = *impl_;
+    if (p.config.read_only_market_data)
+        return invalid("read-only market-data ConnectorHost has no order surface");
     if (p.persistent == nullptr)
         return invalid("no active persistent order epoch");
     if (const auto finish = p.persistent->finish_order_epoch())
@@ -1606,6 +1707,8 @@ cg::Plaza2Error ConnectorHost::finish_order_epoch() {
 }
 
 RestartReconciliationResult ConnectorHost::reconcile() {
+    if (impl_->config.read_only_market_data)
+        return {.ok = false, .message = "read-only market-data ConnectorHost has no order surface"};
     if (impl_->restart_recovery_only) {
         const auto current = reconcile_recovered_order();
         RestartReconciliationResult result;

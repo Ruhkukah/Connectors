@@ -21,3 +21,7 @@ with tempfile.TemporaryDirectory(prefix="moex-text-") as directory:
     assert [event["message"] for event in events] == ["Сессия", "session_data_ready", "broken\ufffd"]
     assert document["error"] == "bad\ufffd\ufffd\ufffd"
     assert json.loads(json.dumps(document, ensure_ascii=False).encode("utf-8")) == document
+    runner_receipt = json.loads(Path(str(path) + ".runner.json").read_bytes().decode("utf-8", errors="strict"))
+    assert runner_receipt["metadata_507_ready"] is False
+    assert runner_receipt["symbol"] == "А \"quoted\" \\\x00\x01\x1f\ufffd"
+    assert runner_receipt["invalid_utf8_raw_hex"] == {"symbol": "ff"}

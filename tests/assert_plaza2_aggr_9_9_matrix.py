@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -63,6 +64,7 @@ ALLOWED_OFFLINE = {"PASS_OFFLINE", "DEFERRED_FULL_ORDLOG_PHASE"}
 ALLOWED_T1 = {
     "PASS_T1",
     "NOT_RUN_T1_SESSION_CLOSED",
+    "NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED",
     "MOEX_COORDINATED",
     "N/A_CLIENT_SCHEME",
     "N/A_PRODUCT_SCOPE",
@@ -149,16 +151,126 @@ def main() -> int:
             f"{identifier} must remain an AGGR-required behavior",
         )
         require(
-            official[identifier]["T1 result"] == "NOT_RUN_T1_SESSION_CLOSED",
+            official[identifier]["T1 result"] == "NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED",
             f"{identifier} must remain pending until a safe client fault attempt",
         )
     for identifier in ("R04", "R05"):
         require(
-            official[identifier]["Classification"] == "N/A_CLIENT_SCHEME"
-            and official[identifier]["T1 result"] == "N/A_CLIENT_SCHEME",
-            f"{identifier} must be explicitly N/A_CLIENT_SCHEME for the client-scheme profile",
+            official[identifier]["Classification"] == "AGGR_REQUIRED"
+            and official[identifier]["T1 result"] == "NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED",
+            f"{identifier} applies to the server-scheme status listeners and remains pending for T1",
         )
-    require(official["C08"]["T1 result"] == "NOT_RUN_T1_SESSION_CLOSED", "C08 local-router test must remain a pending T1 gate")
+        require(
+            "plaza2_scheme_drift_test" in official[identifier]["Code/test evidence"],
+            f"{identifier} must cite the focused server-scheme status fixture",
+        )
+    for identifier in ("R03", "R04", "R05"):
+        require(official[identifier]["Classification"] == "AGGR_REQUIRED",
+                f"{identifier} must remain applicable to its configured listener subset")
+    require(
+        official["C08"]["T1 result"] == "NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED",
+        "C08 local-router test must remain a pending T1 gate",
+    )
+
+    questionnaire_path = root / "docs/review/moex_cgate_questionnaire_register_9_9_20260919.json"
+    questionnaire = json.loads(questionnaire_path.read_text(encoding="utf-8"))
+    answers = questionnaire["answers"]
+    answer_ids = [row["id"] for row in answers]
+    require(len(answers) == 77 and len(set(answer_ids)) == 77,
+            "questionnaire register must preserve all 77 unique answer fields")
+    stream_answers = [row for row in answers if row["id"].startswith("2a.stream.")]
+    require(len(stream_answers) == 33, "questionnaire register must preserve all 33 printed stream checkboxes")
+    require(
+        questionnaire["source_identity"]["source_head_at_review_start"] ==
+            "ffa6552c70bf6b16568ba4f7943c3660019519d2"
+        and questionnaire["source_identity"]["ci_head_sha"] ==
+            questionnaire["source_identity"]["source_head_at_review_start"]
+        and all(value == "SUCCESS" for value in questionnaire["source_identity"]["ci_checks"].values()),
+        "questionnaire must bind its CI claim to the exact reviewed source head",
+    )
+    require(questionnaire["source_identity"]["qualification_binary_sha256"] is None,
+            "questionnaire must not invent a deployable Linux binary identity")
+    evidence_refs = {ref for row in answers for ref in row["evidence_refs"]}
+    require(evidence_refs <= set(questionnaire["evidence_catalog"]), "questionnaire answer has unresolved evidence reference")
+    profiles = questionnaire["scheme_policy"]
+    read_only_profile = profiles["read_only_dtc_profile"]
+    trading_profile = profiles["trading_connector_profile"]
+    four = read_only_profile["streams"]
+    eight = trading_profile["streams"]
+    require(read_only_profile["name"] == "READ_ONLY_DTC_PROFILE" and
+            trading_profile["name"] == "TRADING_CONNECTOR_PROFILE",
+            "questionnaire must use the canonical names for the two ConnectorHost profiles")
+    require({row["service"] for row in four} == {
+                "FORTS_REFDATA_REPL", "FORTS_SESSIONSTATE_REPL", "FORTS_INSTRUMENTSTATE_REPL", "FORTS_AGGR20_REPL"
+            } and read_only_profile["listener_count"] == 4 and
+            not read_only_profile["publisher_configured"] and not read_only_profile["p2mqreply_configured"] and
+            not read_only_profile["trade_replay_from_pos_anchor"],
+            "READ_ONLY_DTC_PROFILE must describe exactly four read listeners and no trading surface")
+    require(len(four) == 4 and
+            sum(row["policy"] == "CLIENT_EXPLICIT" for row in four) == 2 and
+            sum(row["policy"] == "SERVER_DEFAULT" for row in four) == 2,
+            "READ_ONLY_DTC_PROFILE scheme policy must derive as two client/two server listeners")
+    require({row["service"] for row in eight} == {
+                "FORTS_TRADE_REPL", "FORTS_USERORDERBOOK_REPL", "FORTS_POS_REPL", "FORTS_PART_REPL",
+                "FORTS_REFDATA_REPL", "FORTS_SESSIONSTATE_REPL", "FORTS_INSTRUMENTSTATE_REPL", "FORTS_AGGR20_REPL"
+            } and len(eight) == 8 and trading_profile["listener_count"] == 8 and
+            trading_profile["publisher_configured"] and trading_profile["p2mqreply_configured"] and
+            trading_profile["trade_replay_from_pos_anchor"] and
+            sum(row["policy"] == "CLIENT_EXPLICIT" for row in eight) == 6 and
+            sum(row["policy"] == "SERVER_DEFAULT" for row in eight) == 2,
+            "TRADING_CONNECTOR_PROFILE must retain its eight listeners, publisher/reply and 6/2 scheme policy")
+    require("apps/plaza2_day_observer" not in " ".join(questionnaire["evidence_catalog"]["profile"]["source_files"])
+            and "apps/plaza2_day_observer_profile.hpp" not in
+            " ".join(questionnaire["evidence_catalog"]["scheme"]["source_files"]),
+            "day observer must not be cited as the DTC runner topology source")
+    answer_by_id = {row["id"]: row["answer"] for row in answers}
+    require("READ_ONLY_DTC_PROFILE" in answer_by_id["1h"] and
+            all("READ_ONLY_DTC_PROFILE" in answer_by_id[identifier] and
+                "TRADING_CONNECTOR_PROFILE" in answer_by_id[identifier]
+                for identifier in ("2a.i", "2a.ii", "2a.iii", "2a.iv")),
+            "1h and 2a connection answers must identify their applicable profile")
+    require("TRADING_CONNECTOR_PROFILE" in answer_by_id["2a.stream.22"] and
+            "READ_ONLY_DTC_PROFILE" not in answer_by_id["2a.stream.22"] and
+            "TRADING_CONNECTOR_PROFILE" in profiles["ordbook_alias_review"]["disposition"] and
+            "READ_ONLY_DTC_PROFILE" in profiles["ordbook_alias_review"]["disposition"],
+            "OrdBook alias warning must apply only to trading and explicitly exclude read-only")
+
+    signature_path = root / "spec-lock/test/plaza2/runtime_scheme/SPECTRA9.9.0/runtime_scheme_signature.json"
+    signature = json.loads(signature_path.read_text(encoding="utf-8"))
+    signature_tables: dict[str, set[str]] = {}
+    for table in signature["tables"]:
+        signature_tables.setdefault(table["stream_name"], set()).add(table["table_name"])
+    legacy_names = {"fut_intercl_info", "opt_intercl_info"}
+    refdata = next(row for row in questionnaire["stream_inventory"] if row["service"] == "FORTS_REFDATA_REPL")
+    require(legacy_names <= signature_tables["FORTS_REFDATA_REPL"],
+            "historical scheme lock descriptors must remain present as provenance")
+    require(not legacy_names.intersection(refdata["supported_current_scheme_tables"]),
+            "removed 9.9 tables must not appear in the current supported inventory")
+    require(legacy_names <= set(questionnaire["historical_compatibility_only"]["tables"][i].split(".")[-1]
+                                for i in range(len(questionnaire["historical_compatibility_only"]["tables"]))),
+            "removed table names must be kept in the separate historical field")
+    alias_counts = {
+        (row["stream_name"], row["table_name"]): row["runtime_field_count"]
+        for row in signature["tables"]
+    }
+    require(alias_counts[("OrdBook", "orders")] == 17 and
+            alias_counts[("FORTS_USERORDERBOOK_REPL", "orders")] == 39 and
+            alias_counts[("OrdBook", "multileg_orders")] == 19 and
+            alias_counts[("FORTS_USERORDERBOOK_REPL", "multileg_orders")] == 40,
+            "questionnaire must preserve the unresolved pinned OrdBook/USERORDERBOOK layout difference")
+    require("not establish" in profiles["ordbook_alias_review"]["finding"].lower()
+            or "differ" in profiles["ordbook_alias_review"]["finding"].lower()
+            or "unproven" in profiles["ordbook_alias_review"]["finding"].lower(),
+            "questionnaire must not claim OrdBook layout equivalence")
+
+    rendered = subprocess.run(
+        [sys.executable, str(root / "scripts/render_moex_cgate_questionnaire.py"), str(root), "--check"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    require(rendered.returncode == 0,
+            "human-readable questionnaire attachment is stale or missing: " + rendered.stderr.strip())
 
     manifest = json.loads((root / "cert/aggr_plaza2_certification_manifest_9_9.json").read_text(encoding="utf-8"))
     authority = manifest["official_sources"]["certification_authority"]

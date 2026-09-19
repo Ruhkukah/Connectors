@@ -545,7 +545,7 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
 }
 
 [[nodiscard]] bool is_required_private_state_table(std::string_view stream_name, std::string_view table_name) {
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 22> kRequiredTables = {{
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 24> kRequiredTables = {{
         {"FORTS_REFDATA_REPL", "session"},
         {"FORTS_REFDATA_REPL", "fut_instruments"},
         {"FORTS_REFDATA_REPL", "sys_messages"},
@@ -568,6 +568,8 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
         {"FORTS_POS_REPL", "info"},
         {"FORTS_PART_REPL", "part"},
         {"FORTS_PART_REPL", "sys_events"},
+        {"FORTS_SESSIONSTATE_REPL", "session_state"},
+        {"FORTS_INSTRUMENTSTATE_REPL", "instrument_state"},
     }};
     return table_is_in_list(stream_name, table_name, kRequiredTables);
 }

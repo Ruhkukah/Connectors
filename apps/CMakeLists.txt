@@ -51,13 +51,24 @@ function(moex_add_app target_name source_file link_library)
     target_link_libraries(${target_name} PRIVATE ${link_library})
     target_compile_features(${target_name} PRIVATE cxx_std_20)
     if(MOEX_SOURCE_GIT_SHA)
-        target_compile_definitions(${target_name} PRIVATE MOEX_SOURCE_GIT_SHA="${MOEX_SOURCE_GIT_SHA}")
+        target_compile_definitions(${target_name} PRIVATE
+            MOEX_SOURCE_GIT_SHA="${MOEX_SOURCE_GIT_SHA}"
+            MOEX_BUILD_CONFIGURATION="$<CONFIG>"
+            MOEX_CXX_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}"
+            MOEX_CXX_COMPILER_VERSION="${CMAKE_CXX_COMPILER_VERSION}")
     endif()
     set_target_properties(${target_name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${MOEX_APPS_BUILD_DIR}")
 endfunction()
 
+if(NOT MOEX_SOURCE_GIT_SHA)
+    message(FATAL_ERROR
+        "moex_connector_host_dtc_runner requires -DMOEX_SOURCE_GIT_SHA_OVERRIDE=<40-hex-source-revision> "
+        "for archive/VPS provenance")
+endif()
+
 moex_add_app(moex_twime_cert_runner twime_cert_runner.cpp moex_twime_trade)
 moex_add_app(moexctl moexctl.cpp moex_connector_host)
+moex_add_app(moex_connector_host_dtc_runner moex_connector_host_dtc_runner.cpp moex_connector_host)
 moex_add_app(moex_plaza2_test_runner plaza2_test_runner.cpp moex_plaza2_cgate_live_session)
 moex_add_app(moex_plaza2_test_connectivity_qualifier plaza2_test_connectivity_qualifier.cpp
     moex_plaza2_cgate_connectivity_qualifier)

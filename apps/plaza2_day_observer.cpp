@@ -1,4 +1,5 @@
 #include "plaza2_day_observer_journal.hpp"
+#include "plaza2_day_observer_profile.hpp"
 
 #include <charconv>
 #include <csignal>
@@ -194,13 +195,9 @@ int run(int argc, char** argv) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
     Plaza2Env env;
     check(env.open(settings));
-    const std::array streams = {StreamCode::kFortsAggrRepl, StreamCode::kFortsRefdataRepl,
-                                StreamCode::kFortsSessionstateRepl, StreamCode::kFortsInstrumentstateRepl};
-    const auto scheme = std::filesystem::absolute(settings.scheme_dir / "forts_scheme.ini").string();
-    const std::array urls = {"p2repl://FORTS_AGGR20_REPL;scheme=|FILE|" + scheme + "|Aggr",
-                             "p2repl://FORTS_REFDATA_REPL;scheme=|FILE|" + scheme + "|REFDATA",
-                             std::string("p2repl://FORTS_SESSIONSTATE_REPL"),
-                             std::string("p2repl://FORTS_INSTRUMENTSTATE_REPL")};
+    const auto listener_profile = make_day_observer_listener_profile(settings.scheme_dir / "forts_scheme.ini");
+    const auto& streams = listener_profile.streams;
+    const auto& urls = listener_profile.urls;
     std::uint64_t generation = 0;
     bool all_online = false, had_gap = false;
     while (!stopping && std::chrono::steady_clock::now() < deadline) {
