@@ -148,7 +148,7 @@ The profiles therefore intentionally have mixed receive-scheme policy:
 | Effective profile | Explicit client-scheme listeners | Bare/server-scheme listeners | Initial open arguments |
 | --- | --- | --- | --- |
 | Four-stream read-only day observer | `FORTS_AGGR20_REPL` (`Aggr`), `FORTS_REFDATA_REPL` (`REFDATA`) | `FORTS_SESSIONSTATE_REPL`, `FORTS_INSTRUMENTSTATE_REPL` | `mode=snapshot+online` |
-| Eight-stream ConnectorHost profile | `FORTS_TRADE_REPL` (`Trade`), `FORTS_USERORDERBOOK_REPL` (`OrdBook`), `FORTS_POS_REPL` (`POS`), `FORTS_PART_REPL` (`PART`), `FORTS_REFDATA_REPL` (`REFDATA`), `FORTS_AGGR20_REPL` (`Aggr`) | `FORTS_SESSIONSTATE_REPL`, `FORTS_INSTRUMENTSTATE_REPL` | The configured `open_settings` values are empty; do not infer the negotiated mode from the observer profile |
+| Eight-stream ConnectorHost profile | `Trade`, `OrdBook`, `POS`, `PART`, `REFDATA`, `Aggr` | `SESSIONSTATE`, `INSTRUMENTSTATE` | Configured `open_settings` is empty; negotiated mode is unknown |
 
 The eight-stream profile uses one CGate connection with eight replication
 listeners. This table describes configuration only; it is not a current-candidate
@@ -167,7 +167,7 @@ four-stream diagnostic does not depend on the `OrdBook` alias.
 - Classification: AGGR_REQUIRED
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED
-- Code/test evidence: `plaza2_scheme_drift_test` adds a compatible field to the consumed `FORTS_SESSIONSTATE_REPL.session_state` table and requires a nonfatal warning; profile guard derives that two listeners are server-scheme
+- Code/test evidence: `plaza2_scheme_drift_test` verifies that compatible SESSIONSTATE field additions warn without failing
 - Exact T1 evidence: none for the two server-scheme status listeners on the current candidate
 - Remaining action: capture both status-listener OPEN schemes and hashes; local-scheme fixture coverage is not a live negotiation receipt
 

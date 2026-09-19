@@ -228,7 +228,8 @@ def main() -> int:
             alias_counts[("FORTS_USERORDERBOOK_REPL", "multileg_orders")] == 40,
             "questionnaire must preserve the unresolved pinned OrdBook/USERORDERBOOK layout difference")
     require("not establish" in profiles["ordbook_alias_review"]["finding"].lower()
-            or "differ" in profiles["ordbook_alias_review"]["finding"].lower(),
+            or "differ" in profiles["ordbook_alias_review"]["finding"].lower()
+            or "unproven" in profiles["ordbook_alias_review"]["finding"].lower(),
             "questionnaire must not claim OrdBook layout equivalence")
 
     rendered = subprocess.run(
