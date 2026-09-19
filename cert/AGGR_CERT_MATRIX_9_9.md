@@ -323,7 +323,7 @@ that no T1 run was made and the current session status was not reconfirmed.
 - Offline result: PASS_OFFLINE
 - T1 result: NOT_RUN_T1_SESSION_STATUS_UNCONFIRMED
 - Code/test evidence: `plaza2_clock_evidence_passes` requires sync source/status, offset, monotonic ID and paired timestamps
-- Exact T1 evidence: none while the session is closed
+- Exact T1 evidence: none on this candidate; T1 session status was not reconfirmed in this refresh
 - Remaining action: record local wall, monotonic, exchange/server timestamps before the full-day run; any failure blocks PASS
 
 ### General — Exchange/NCC messages

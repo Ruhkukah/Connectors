@@ -336,8 +336,8 @@ void print_startup_receipt(const Options& options, const DtcReadOnlyServer& serv
               << ",\"binary_sha256\":" << json_quote(binary_identity)
               << ",\"runtime_compatibility\":" << json_quote(host_snapshot.runtime_compatibility)
               << ",\"runtime_scheme_sha256\":" << json_quote(host_snapshot.runtime_scheme_sha256)
-              << ",\"dtc_bind\":\"127.0.0.1\""
-              << ",\"dtc_port\":" << server.port() << ",\"dtc_symbol_id\":" << server.symbol_id()
+              << ",\"dtc_bind\":\"127.0.0.1\"" << ",\"dtc_port\":" << server.port()
+              << ",\"dtc_symbol_id\":" << server.symbol_id()
               << ",\"dtc_exchange\":" << json_quote(moex::connector_host::dtc::kDtcMoexSpectraExchange)
               << ",\"configured_underlying_board\":" << json_quote(options.underlying_board)
               << ",\"configured_currency\":" << json_quote(options.currency)
