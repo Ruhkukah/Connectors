@@ -43,6 +43,23 @@ std::string replace_field_in_table(std::string scheme_text, std::string_view tab
     return scheme_text;
 }
 
+std::string vendor_status_scheme_names(std::string scheme_text) {
+    for (const auto& [reviewed, vendor] : {
+             std::pair{"FORTS_SESSIONSTATE_REPL", "SESSIONSTATE"},
+             std::pair{"FORTS_INSTRUMENTSTATE_REPL", "INSTRUMENTSTATE"},
+         }) {
+        std::size_t pos = 0;
+        bool replaced = false;
+        while ((pos = scheme_text.find(reviewed, pos)) != std::string::npos) {
+            scheme_text.replace(pos, std::string_view(reviewed).size(), vendor);
+            pos += std::string_view(vendor).size();
+            replaced = true;
+        }
+        moex::plaza2::test::require(replaced, "expected reviewed status scheme name missing");
+    }
+    return scheme_text;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -72,6 +89,31 @@ int main(int argc, char** argv) {
                 "unchanged runtime fixture must be compatible");
         require(compatible_report.scheme_drift.compatibility == Plaza2Compatibility::Compatible,
                 "unchanged scheme must be compatible");
+
+        const auto vendor_status_text = vendor_status_scheme_names(baseline_scheme_text);
+        const auto vendor_status_fixture = materialize_runtime_fixture(
+            fixture_root / "vendor_status_names", fake_library, Plaza2Environment::Test, vendor_status_text);
+        Plaza2Settings vendor_status_settings;
+        vendor_status_settings.environment = Plaza2Environment::Test;
+        vendor_status_settings.runtime_root = vendor_status_fixture.root;
+        vendor_status_settings.expected_spectra_release = "SPECTRA93";
+        const auto vendor_status_report = Plaza2RuntimeProbe::probe(vendor_status_settings);
+        require(vendor_status_report.compatibility == Plaza2Compatibility::Compatible,
+                "vendor SESSIONSTATE/INSTRUMENTSTATE names must map to reviewed replication streams");
+        require(vendor_status_report.scheme_drift.fatal_drift_count == 0,
+                "vendor status aliases must not create missing-table fatal drift");
+
+        const auto vendor_status_missing_field = remove_field_from_table(
+            vendor_status_text, "[table:SESSIONSTATE:session_state]\n", "field=public_state,i4\n");
+        const auto vendor_status_bad_fixture = materialize_runtime_fixture(
+            fixture_root / "vendor_status_missing_field", fake_library, Plaza2Environment::Test,
+            vendor_status_missing_field);
+        Plaza2Settings vendor_status_bad_settings = vendor_status_settings;
+        vendor_status_bad_settings.runtime_root = vendor_status_bad_fixture.root;
+        const auto vendor_status_bad_report = Plaza2RuntimeProbe::probe(vendor_status_bad_settings);
+        require(vendor_status_bad_report.compatibility == Plaza2Compatibility::Incompatible &&
+                    vendor_status_bad_report.scheme_drift.fatal_drift_count > 0,
+                "vendor status alias must retain fatal required-field validation");
 
         const auto warning_scheme_text = remove_field_from_table(
             baseline_scheme_text, "[table:FORTS_REFDATA_REPL:clearing_members]\n", "field=code,c2\n");

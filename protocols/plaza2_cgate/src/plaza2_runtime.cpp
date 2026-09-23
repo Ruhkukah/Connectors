@@ -589,12 +589,14 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
 }
 
 [[nodiscard]] std::string normalized_runtime_stream_name(std::string_view scheme_name) {
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 5> kRuntimeSchemeAliases = {{
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 7> kRuntimeSchemeAliases = {{
         {"REFDATA", "FORTS_REFDATA_REPL"},
         {"Trade", "FORTS_TRADE_REPL"},
         {"OrderBook", "FORTS_USERORDERBOOK_REPL"},
         {"POS", "FORTS_POS_REPL"},
         {"PART", "FORTS_PART_REPL"},
+        {"SESSIONSTATE", "FORTS_SESSIONSTATE_REPL"},
+        {"INSTRUMENTSTATE", "FORTS_INSTRUMENTSTATE_REPL"},
     }};
     for (const auto& [runtime_name, reviewed_name] : kRuntimeSchemeAliases) {
         if (scheme_name == runtime_name) {
