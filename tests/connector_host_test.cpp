@@ -211,7 +211,11 @@ void verify_effective_listener_scheme_profiles() {
             uses_explicit_client_scheme(read_host.private_streams.front().settings) &&
             uses_explicit_client_scheme(read_host.aggr20_stream.settings) &&
             !uses_explicit_client_scheme(read_host.status_streams[0].settings) &&
-            !uses_explicit_client_scheme(read_host.status_streams[1].settings),
+            !uses_explicit_client_scheme(read_host.status_streams[1].settings) &&
+            read_host.private_streams.front().open_settings == "mode=snapshot+online" &&
+            read_host.status_streams[0].open_settings == "mode=snapshot+online" &&
+            read_host.status_streams[1].open_settings == "mode=snapshot+online" &&
+            read_host.aggr20_stream.open_settings == "mode=snapshot+online",
         "read-only DTC profile builds exactly REFDATA, two status streams and AGGR with 2/2 scheme policy");
     test::require(!read_host.trade_replay_from_pos_anchor && read_host.publisher_name.empty() &&
                       read_host.publisher_settings.empty() && read_host.publisher_open_settings.empty() &&

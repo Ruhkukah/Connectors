@@ -87,7 +87,8 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     const auto stream = [&](StreamCode code, std::string name, std::string alias) {
         return Plaza2TestTradeStreamConfig{.stream_code = code,
                                            .settings = "p2repl://" + name + ";scheme=|FILE|" + scheme +
-                                                       "/forts_scheme.ini|" + alias};
+                                                       "/forts_scheme.ini|" + alias,
+                                           .open_settings = "mode=snapshot+online"};
     };
     if (inputs.read_only_market_data) {
         host.private_streams = {stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", "REFDATA")};
@@ -99,8 +100,12 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
                                 stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", "REFDATA")};
     }
     host.status_streams = {
-        {.stream_code = StreamCode::kFortsSessionstateRepl, .settings = "p2repl://FORTS_SESSIONSTATE_REPL"},
-        {.stream_code = StreamCode::kFortsInstrumentstateRepl, .settings = "p2repl://FORTS_INSTRUMENTSTATE_REPL"}};
+        {.stream_code = StreamCode::kFortsSessionstateRepl,
+         .settings = "p2repl://FORTS_SESSIONSTATE_REPL",
+         .open_settings = "mode=snapshot+online"},
+        {.stream_code = StreamCode::kFortsInstrumentstateRepl,
+         .settings = "p2repl://FORTS_INSTRUMENTSTATE_REPL",
+         .open_settings = "mode=snapshot+online"}};
     host.aggr20_stream = stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL", "Aggr");
     if (!inputs.read_only_market_data) {
         host.publisher_settings = "p2mq://FORTS_SRV;category=FORTS_MSG;name=" + host.publisher_name +
