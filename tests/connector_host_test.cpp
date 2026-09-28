@@ -207,16 +207,16 @@ void verify_effective_listener_scheme_profiles() {
             read_host.status_streams[0].stream_code == moex::plaza2::generated::StreamCode::kFortsSessionstateRepl &&
             read_host.status_streams[1].stream_code == moex::plaza2::generated::StreamCode::kFortsInstrumentstateRepl &&
             read_host.aggr20_stream.stream_code == moex::plaza2::generated::StreamCode::kFortsAggrRepl &&
-            read_only_client_scheme_count == 2 &&
-            uses_explicit_client_scheme(read_host.private_streams.front().settings) &&
-            uses_explicit_client_scheme(read_host.aggr20_stream.settings) &&
+            read_only_client_scheme_count == 0 &&
+            !uses_explicit_client_scheme(read_host.private_streams.front().settings) &&
+            !uses_explicit_client_scheme(read_host.aggr20_stream.settings) &&
             !uses_explicit_client_scheme(read_host.status_streams[0].settings) &&
             !uses_explicit_client_scheme(read_host.status_streams[1].settings) &&
             read_host.private_streams.front().open_settings == "mode=snapshot+online" &&
             read_host.status_streams[0].open_settings == "mode=snapshot+online" &&
             read_host.status_streams[1].open_settings == "mode=snapshot+online" &&
             read_host.aggr20_stream.open_settings == "mode=snapshot+online",
-        "read-only DTC profile builds exactly REFDATA, two status streams and AGGR with 2/2 scheme policy");
+        "read-only DTC profile builds exactly four server-scheme listeners matching the proven live gate");
     test::require(!read_host.trade_replay_from_pos_anchor && read_host.publisher_name.empty() &&
                       read_host.publisher_settings.empty() && read_host.publisher_open_settings.empty() &&
                       read_host.p2mqreply_settings.empty() && read_host.p2mqreply_open_settings.empty() &&

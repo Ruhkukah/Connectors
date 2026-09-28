@@ -90,8 +90,16 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
                                                        "/forts_scheme.ini|" + alias,
                                            .open_settings = "mode=snapshot+online"};
     };
+    const auto server_stream = [&](StreamCode code, std::string name) {
+        return Plaza2TestTradeStreamConfig{
+            .stream_code = code, .settings = "p2repl://" + name, .open_settings = "mode=snapshot+online"};
+    };
     if (inputs.read_only_market_data) {
-        host.private_streams = {stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", "REFDATA")};
+        // The independently proven Card 07 gate uses the runtime-published
+        // server schemes for all read-only listeners.  Mixing explicit client
+        // schemes with server-scheme status listeners leaves the real T1
+        // listeners indefinitely OPENING, even though cg_lsn_open succeeds.
+        host.private_streams = {server_stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL")};
     } else {
         host.private_streams = {stream(StreamCode::kFortsTradeRepl, "FORTS_TRADE_REPL", "Trade"),
                                 stream(StreamCode::kFortsUserorderbookRepl, "FORTS_USERORDERBOOK_REPL", "OrdBook"),
@@ -99,14 +107,14 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
                                 stream(StreamCode::kFortsPartRepl, "FORTS_PART_REPL", "PART"),
                                 stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", "REFDATA")};
     }
-    host.status_streams = {
-        {.stream_code = StreamCode::kFortsSessionstateRepl,
-         .settings = "p2repl://FORTS_SESSIONSTATE_REPL",
-         .open_settings = "mode=snapshot+online"},
-        {.stream_code = StreamCode::kFortsInstrumentstateRepl,
-         .settings = "p2repl://FORTS_INSTRUMENTSTATE_REPL",
-         .open_settings = "mode=snapshot+online"}};
-    host.aggr20_stream = stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL", "Aggr");
+    host.status_streams = {{.stream_code = StreamCode::kFortsSessionstateRepl,
+                            .settings = "p2repl://FORTS_SESSIONSTATE_REPL",
+                            .open_settings = "mode=snapshot+online"},
+                           {.stream_code = StreamCode::kFortsInstrumentstateRepl,
+                            .settings = "p2repl://FORTS_INSTRUMENTSTATE_REPL",
+                            .open_settings = "mode=snapshot+online"}};
+    host.aggr20_stream = inputs.read_only_market_data ? server_stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL")
+                                                      : stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL", "Aggr");
     if (!inputs.read_only_market_data) {
         host.publisher_settings = "p2mq://FORTS_SRV;category=FORTS_MSG;name=" + host.publisher_name +
                                   ";timeout=5000;scheme=|FILE|" + scheme + "/forts_messages.ini|message";
