@@ -199,6 +199,17 @@ void test_mode_specific_listener_topology(const moex::plaza2::test::RuntimeFixtu
                     aggr_url_error.message.find("URLs must match their declared stream services") != std::string::npos,
                 "read-only AGGR identity rejects a URL that would open USERORDERBOOK");
 
+    for (const auto& url : {"p2repl://FORTS_TRADE_REPL", "p2repl://FORTS_DEALS_REPL;replstate=old",
+                            "p2repl://FORTS_USERORDERBOOK_REPL"}) {
+        auto invalid_deals = read_only_config();
+        invalid_deals.public_deals_target_isin_id = 1001;
+        invalid_deals.aggr20_target_session_id = 321;
+        invalid_deals.public_deals_stream = {
+            .stream_code = StreamCode::kFortsDealsRepl, .settings = url, .open_settings = "mode=snapshot+online"};
+        Plaza2TestSessionHost rejected_deals(std::move(invalid_deals));
+        expect_case(rejected_deals.start().code == cgate::Plaza2ErrorCode::InvalidConfiguration,
+                    "public deals rejects private services and retained-state URL overrides");
+    }
     auto missing_status = make_config(fixture).host;
     missing_status.read_only_market_data = true;
     missing_status.private_streams = {stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL")};

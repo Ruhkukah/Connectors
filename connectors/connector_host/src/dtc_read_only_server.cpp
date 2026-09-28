@@ -1,10 +1,12 @@
 #include "moex/connector_host/dtc_read_only_server.hpp"
+#include "moex/plaza2/cgate/plaza2_private_state.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <cerrno>
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <fcntl.h>
@@ -13,6 +15,7 @@
 #include <netinet/in.h>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -47,6 +50,12 @@ void real(Bytes& out, unsigned field, float n) {
     varint(out, field * 8 + 5);
     auto bits = std::bit_cast<std::uint32_t>(n);
     for (unsigned i = 0; i < 4; ++i)
+        out.push_back(static_cast<std::uint8_t>(bits >> (8 * i)));
+}
+void real64(Bytes& out, unsigned field, double n) {
+    varint(out, field * 8 + 1);
+    auto bits = std::bit_cast<std::uint64_t>(n);
+    for (unsigned i = 0; i < 8; ++i)
         out.push_back(static_cast<std::uint8_t>(bits >> (8 * i)));
 }
 Bytes frame(std::uint16_t type, const Bytes& payload) {
@@ -190,10 +199,14 @@ struct DtcReadOnlyServer::Impl {
     std::uint16_t bound_port{};
     Bytes output;
     std::size_t sent{};
-    bool negotiated{}, logged_on{}, closing{}, definition{}, subscribed{}, definitions_capability_advertised{};
+    bool negotiated{}, logged_on{}, closing{}, definition{}, depth_subscribed{}, trade_subscribed{};
+    bool definitions_capability_advertised{};
     std::uint32_t symbol_id{};
+    std::uint32_t trade_symbol_id{};
     std::size_t depth_limit{};
     std::uint64_t batch{}, version{}, epoch{}, authority_epoch{};
+    std::uint64_t trade_stream_epoch{}, trade_cursor{}, trade_delivery_sequence{};
+    std::vector<std::pair<std::size_t, std::size_t>> trade_output_ranges;
     std::string symbol, exchange, underlying_board, tick, error;
     std::int64_t isin{};
     unsigned witness{};
@@ -227,7 +240,7 @@ struct DtcReadOnlyServer::Impl {
         decoder.reset();
         output.clear();
         sent = 0;
-        negotiated = logged_on = closing = definition = subscribed = false;
+        negotiated = logged_on = closing = definition = depth_subscribed = trade_subscribed = false;
         definitions_capability_advertised = false;
         pending_wire_logon_capabilities = {};
         pending_logon_response_end = 0;
@@ -236,11 +249,15 @@ struct DtcReadOnlyServer::Impl {
         pending_definition_response = false;
         accepted_definition.reset();
         symbol_id = config.symbol_id;
+        trade_symbol_id = 0;
         batch = version = epoch = authority_epoch = 0;
+        trade_stream_epoch = trade_cursor = trade_delivery_sequence = 0;
+        trade_output_ranges.clear();
     }
     bool queue(std::uint16_t type, const Bytes& body) {
         auto bytes = frame(type, body);
-        if (bytes.size() > config.max_frame_bytes || bytes.size() > config.max_queued_bytes - output.size()) {
+        if (bytes.size() > config.max_frame_bytes || output.size() > config.max_queued_bytes ||
+            bytes.size() > config.max_queued_bytes - output.size()) {
             error = "DTC backpressure limit exceeded; fresh connection required";
             disconnect();
             return false;
@@ -254,6 +271,52 @@ struct DtcReadOnlyServer::Impl {
         }
         return true;
     }
+    bool remove_unsent_trade_frames(bool disconnect_if_partial) {
+        for (std::size_t i = trade_output_ranges.size(); i > 0; --i) {
+            const auto [begin, end] = trade_output_ranges[i - 1];
+            if (sent >= end) {
+                trade_output_ranges.erase(trade_output_ranges.begin() + static_cast<std::ptrdiff_t>(i - 1));
+                continue;
+            }
+            if (sent > begin) {
+                if (disconnect_if_partial) {
+                    error = "public trade frame was partially written during source reset";
+                    disconnect();
+                    return false;
+                }
+                continue; // An unsubscribe lets this one in-flight frame finish.
+            }
+            const auto length = end - begin;
+            output.erase(output.begin() + static_cast<std::ptrdiff_t>(begin),
+                         output.begin() + static_cast<std::ptrdiff_t>(end));
+            const auto adjust_end = [&](bool pending, std::size_t& marker) {
+                if (pending && marker >= end)
+                    marker -= length;
+            };
+            adjust_end(pending_logon_response, pending_logon_response_end);
+            adjust_end(pending_definition_response, pending_definition_response_end);
+            trade_output_ranges.erase(trade_output_ranges.begin() + static_cast<std::ptrdiff_t>(i - 1));
+        }
+        return true;
+    }
+    void market_data_reject(std::uint32_t id, std::string_view reason) {
+        Bytes p;
+        integer(p, 1, id);
+        str(p, 2, std::string(reason));
+        queue(103, p);
+    }
+    void retire_public_deals(std::string_view reason, bool disconnect_if_partial = true) {
+        const auto id = trade_symbol_id;
+        if (!remove_unsent_trade_frames(disconnect_if_partial))
+            return;
+        trade_subscribed = false;
+        trade_symbol_id = 0;
+        trade_stream_epoch = trade_cursor = 0;
+        if (!reason.empty() && client >= 0) {
+            error = std::string(reason);
+            market_data_reject(id ? id : symbol_id, reason);
+        }
+    }
     void reject(const std::string& reason) {
         error = reason;
         // A partially written frame cannot be replaced by a LOGOFF header.
@@ -264,6 +327,8 @@ struct DtcReadOnlyServer::Impl {
         // Do not leave stale queued market data ahead of a fencing response.
         output.clear();
         sent = 0;
+        trade_output_ranges.clear();
+        trade_subscribed = false;
         pending_wire_logon_capabilities = {};
         pending_logon_response_end = 0;
         pending_logon_response = false;
@@ -432,6 +497,150 @@ struct DtcReadOnlyServer::Impl {
         authority_epoch = s.market_data_authority_epoch;
         witness = witness_number(s.session_ready_witness_kind);
     }
+    void poll_public_deals() {
+        if (!source.capabilities().market_data) {
+            retire_public_deals("public trade publisher became unavailable");
+            return;
+        }
+
+        plaza2::cgate::Plaza2PublicDealsSnapshot deals;
+        try {
+            deals = source.public_deals(trade_cursor);
+        } catch (...) {
+            retire_public_deals("public trade source failed; redefine the subscription");
+            return;
+        }
+        if (!deals.online || !deals.valid || !deals.stream_epoch || !deals.lifenum) {
+            retire_public_deals("public trade source unavailable; redefine the subscription");
+            return;
+        }
+        if (deals.stream_epoch != trade_stream_epoch) {
+            retire_public_deals("public trade stream epoch changed; redefine the subscription");
+            return;
+        }
+        if ((deals.first_sequence && deals.first_sequence > deals.last_sequence) ||
+            deals.last_sequence < trade_cursor) {
+            retire_public_deals("public trade sequence state is inconsistent; redefine the subscription");
+            return;
+        }
+        if (trade_cursor != UINT64_MAX && deals.first_sequence > trade_cursor + 1) {
+            retire_public_deals("public trade ring overflow; events were lost; redefine the subscription");
+            return;
+        }
+
+        DtcMarketDataSnapshot current;
+        try {
+            current = source.snapshot();
+        } catch (...) {
+            retire_public_deals("current target metadata unavailable; redefine the subscription");
+            return;
+        }
+        const auto current_definition = definition_validation(current);
+        if (!definition || !accepted_definition || !current_definition.definition ||
+            current_definition.definition != accepted_definition || current.symbol != symbol ||
+            current.underlying_board != underlying_board || current.min_step != tick || current.isin_id != isin ||
+            current.session_id != accepted_definition->session_id ||
+            current.isin_id != accepted_definition->security_identifier) {
+            retire_public_deals("current target, session, or definition changed; redefine the subscription");
+            return;
+        }
+
+        std::uint64_t next_capture_sequence = trade_cursor;
+        std::uint64_t next_delivery_sequence = trade_delivery_sequence;
+        std::vector<Bytes> staged;
+        std::size_t staged_bytes = 0;
+        std::uint64_t prior_sequence = 0;
+        const auto bad_stream = [&](std::string_view reason) { retire_public_deals(reason); };
+        for (const auto& deal : deals.trades) {
+            if (!deal.sequence || deal.sequence <= prior_sequence || deal.stream_epoch != deals.stream_epoch ||
+                (deals.first_sequence && deal.sequence < deals.first_sequence) ||
+                (deals.last_sequence && deal.sequence > deals.last_sequence)) {
+                bad_stream("public trade ring contains invalid event identity; redefine the subscription");
+                return;
+            }
+            prior_sequence = deal.sequence;
+            if (deal.sequence <= trade_cursor)
+                continue; // Compatibility with small test sources that ignore after_sequence.
+            if (next_capture_sequence == UINT64_MAX || deal.sequence != next_capture_sequence + 1) {
+                bad_stream("public trade ring has a sequence gap; events were lost; redefine the subscription");
+                return;
+            }
+            constexpr std::int64_t kMaxExactlyRepresentableDoubleInteger = INT64_C(9007199254740992);
+            if (deal.deal_id <= 0 || !deal.repl_id || deal.repl_rev <= 0 || !deal.lifenum ||
+                deal.lifenum != deals.lifenum || deal.session_id != accepted_definition->session_id ||
+                deal.isin_id != accepted_definition->security_identifier || deal.isin_id != current.isin_id ||
+                deal.at_bid_or_ask < 0 || deal.at_bid_or_ask > 2 || deal.quantity <= 0 ||
+                deal.quantity > kMaxExactlyRepresentableDoubleInteger || deal.moment_ns == 0 ||
+                deal.moment_ns > static_cast<std::uint64_t>(INT64_MAX) || deal.price.size() > 64 ||
+                deal.received_at_unix_ns == 0 || deal.received_at_unix_ns > static_cast<std::uint64_t>(INT64_MAX)) {
+                bad_stream("public trade contains invalid price, quantity, side, or source clock");
+                return;
+            }
+            const auto parsed_price = plaza2::private_state::parse_session_decimal(deal.price);
+            if (!parsed_price || parsed_price->units <= 0 || parsed_price->units != deal.price_scaled) {
+                bad_stream("public trade price text does not match its scaled price");
+                return;
+            }
+            if (next_delivery_sequence == UINT64_MAX) {
+                bad_stream("DTC public trade delivery sequence overflow");
+                return;
+            }
+
+            Bytes payload;
+            integer(payload, 1, trade_symbol_id);
+            integer(payload, 2, static_cast<std::uint32_t>(deal.at_bid_or_ask));
+            real64(payload, 3,
+                   static_cast<double>(parsed_price->units) /
+                       static_cast<double>(plaza2::private_state::SessionDecimal::scale));
+            real64(payload, 4, static_cast<double>(deal.quantity));
+            real64(payload, 5, static_cast<double>(deal.moment_ns) / 1000000000.0);
+            integer(payload, 6, deal.stream_epoch);
+            integer(payload, 7, ++next_delivery_sequence);
+            str(payload, 8, std::to_string(deal.deal_id));
+            integer(payload, 9, deal.sequence);
+            integer(payload, 10, deal.moment_ns); // Signed int64, range checked above.
+            integer(payload, 11, 0);              // Engine ingress clock is not supplied by the native projector.
+            integer(payload, 12, 0);              // Engine emit clock is not supplied by the native projector.
+            integer(payload, 13, deal.repl_id);
+            integer(payload, 14, static_cast<std::uint64_t>(deal.repl_rev));
+            integer(payload, 15, deal.lifenum);
+            integer(payload, 16, static_cast<std::uint64_t>(static_cast<std::int64_t>(deal.session_id)));
+            integer(payload, 17, static_cast<std::uint64_t>(deal.isin_id));
+            integer(payload, 18, deal.received_at_unix_ns);
+            integer(payload, 19, deal.moment); // Decoded MOEX calendar-seconds counter, not literal P2TIME bytes.
+            integer(payload, 20, deal.moment_ns);
+            integer(payload, 21, deal.xstatus_buy);
+            integer(payload, 22, deal.xstatus_sell);
+            auto encoded = frame(static_cast<std::uint16_t>(DtcMessageType::MarketDataUpdateTrade), payload);
+            if (encoded.size() > config.max_frame_bytes || encoded.size() > config.max_queued_bytes ||
+                staged_bytes > config.max_queued_bytes - encoded.size()) {
+                bad_stream("public trade batch exceeds DTC queue bounds; redefine the subscription");
+                return;
+            }
+            staged_bytes += encoded.size();
+            staged.push_back(std::move(encoded));
+            next_capture_sequence = deal.sequence;
+        }
+        if (next_capture_sequence != deals.last_sequence) {
+            bad_stream("public trade ring omitted committed events; events were lost; redefine the subscription");
+            return;
+        }
+        if (staged.empty())
+            return;
+        if (output.size() > config.max_queued_bytes || staged_bytes > config.max_queued_bytes - output.size()) {
+            retire_public_deals("public trade output queue overflow; events were lost; redefine the subscription");
+            return;
+        }
+        if (output.empty())
+            last_write = Clock::now();
+        for (auto& encoded : staged) {
+            const auto begin = output.size();
+            output.insert(output.end(), encoded.begin(), encoded.end());
+            trade_output_ranges.emplace_back(begin, output.size());
+        }
+        trade_cursor = next_capture_sequence;
+        trade_delivery_sequence = next_delivery_sequence;
+    }
     void handle(const DtcFrame& f) {
         if (!negotiated) {
             // Official binary EncodingRequest: int32 version, int32 encoding,
@@ -489,7 +698,7 @@ struct DtcReadOnlyServer::Impl {
                 config.source_mode == DtcSourceMode::LiveTest ? "Read-only live TEST; trading disabled"
                                                               : "Read-only replay; trading disabled");
             str(reply, 6, config.source_mode == DtcSourceMode::LiveTest ? "MOEX live TEST DTC" : "MOEX replay DTC");
-            for (auto field : {7U, 8U, 9U, 10U, 13U, 17U, 19U, 20U})
+            for (auto field : {7U, 8U, 9U, 10U, 13U, 17U, 19U})
                 integer(reply, field, 0);
             // LOGON advertises implemented application capability, not
             // current metadata readiness. Each 506 is gated by fresh source
@@ -498,6 +707,7 @@ struct DtcReadOnlyServer::Impl {
             integer(reply, 12, definitions_capability_advertised);
             integer(reply, 14, 1);
             integer(reply, 15, source.capabilities().market_depth);
+            integer(reply, 20, source.capabilities().market_data);
             if (queue(2, reply)) {
                 logged_on = true;
                 pending_wire_logon_capabilities = {
@@ -513,7 +723,7 @@ struct DtcReadOnlyServer::Impl {
                     .one_historical_price_data_request_per_connection = 0,
                     .bracket_orders_supported = 0,
                     .multiple_positions_per_symbol_and_trade_account = 0,
-                    .market_data_supported = 0};
+                    .market_data_supported = source.capabilities().market_data ? 1U : 0U};
                 pending_logon_response_end = output.size();
                 pending_logon_response = true;
                 status(s);
@@ -562,6 +772,11 @@ struct DtcReadOnlyServer::Impl {
             str(reply, 28, resolved.currency);
             real(reply, 29, resolved.contract_size);
             integer(reply, 33, static_cast<std::uint64_t>(resolved.security_identifier));
+            // Coordinated Connector/Kairos extension, not an official DTC
+            // field. A trade-capable client binds every 107 to this session.
+            // Preserve the existing depth-only 507 wire contract unchanged.
+            if (source.capabilities().market_data)
+                integer(reply, 35, static_cast<std::uint64_t>(resolved.session_id));
             if (queue(507, reply)) {
                 definition = true;
                 accepted_definition = resolved;
@@ -574,23 +789,73 @@ struct DtcReadOnlyServer::Impl {
             return;
         }
         if (f.message_type == 101) {
-            Bytes reply;
-            integer(reply, 1, p.number(2));
-            str(reply, 2, "AGGR " + std::string(dtc_source_mode_name(config.source_mode)) + " is depth only");
-            queue(103, reply);
+            const auto id = p.number(2), action = p.number(1);
+            if (action == 2) {
+                if (!id || id > UINT32_MAX || (trade_subscribed && id != trade_symbol_id) ||
+                    (config.symbol_id && id != config.symbol_id)) {
+                    market_data_reject(id <= UINT32_MAX ? static_cast<std::uint32_t>(id) : 0,
+                                       "invalid public trade unsubscribe");
+                    return;
+                }
+                if (trade_subscribed)
+                    retire_public_deals({}, false);
+                return;
+            }
+            if (action != 1 || !id || id > UINT32_MAX || (config.symbol_id && id != config.symbol_id) ||
+                (trade_subscribed && id != trade_symbol_id)) {
+                market_data_reject(id <= UINT32_MAX ? static_cast<std::uint32_t>(id) : 0,
+                                   "invalid or unsupported public trade subscription");
+                return;
+            }
+            const auto current = source.snapshot();
+            const auto validated = definition_validation(current);
+            if (!definition || !accepted_definition || !validated.definition ||
+                validated.definition != accepted_definition || current.symbol != symbol ||
+                current.underlying_board != underlying_board || current.min_step != tick || current.isin_id != isin ||
+                p.text(3) != symbol || p.text(4) != exchange) {
+                market_data_reject(static_cast<std::uint32_t>(id), "target or current security definition mismatch");
+                return;
+            }
+            if (!source.capabilities().market_data) {
+                market_data_reject(static_cast<std::uint32_t>(id), "source does not publish public trades");
+                return;
+            }
+            // An identical duplicate SUBSCRIBE is idempotent. In particular,
+            // it must not move the forward-only cursor past unseen events.
+            if (trade_subscribed)
+                return;
+            plaza2::cgate::Plaza2PublicDealsSnapshot deals;
+            try {
+                deals = source.public_deals();
+            } catch (...) {
+                market_data_reject(static_cast<std::uint32_t>(id), "public trade source unavailable");
+                return;
+            }
+            if (!deals.online || !deals.valid || !deals.stream_epoch ||
+                (deals.first_sequence && deals.last_sequence && deals.first_sequence > deals.last_sequence)) {
+                market_data_reject(static_cast<std::uint32_t>(id),
+                                   "public trade source unavailable; retry subscription");
+                return;
+            }
+            // Subscribe from the observed tail. Retained rows are capture
+            // history and are never synthesized into DTC trade updates.
+            trade_symbol_id = static_cast<std::uint32_t>(id);
+            trade_stream_epoch = deals.stream_epoch;
+            trade_cursor = deals.last_sequence;
+            trade_subscribed = true;
             return;
         }
         if (f.message_type == 102) {
             const auto id = p.number(2), action = p.number(1), levels = p.number(5);
             if (action == 2 && id == symbol_id) {
-                subscribed = false;
+                depth_subscribed = false;
                 return;
             }
             auto s = source.snapshot();
             if (!definition || !source.capabilities().market_depth || !id || id > UINT32_MAX ||
                 (action != 1 && action != 3) || p.text(3) != symbol || p.text(4) != exchange ||
                 levels > config.max_depth_levels || (config.symbol_id && id != config.symbol_id) ||
-                (subscribed && id != symbol_id)) {
+                (depth_subscribed && id != symbol_id)) {
                 Bytes reply;
                 integer(reply, 1, id);
                 str(reply, 2, "invalid or unsupported depth subscription");
@@ -599,7 +864,7 @@ struct DtcReadOnlyServer::Impl {
             }
             symbol_id = static_cast<std::uint32_t>(id);
             depth_limit = levels ? static_cast<std::size_t>(levels) : config.max_depth_levels;
-            subscribed = action == 1;
+            depth_subscribed = action == 1;
             snapshot(s);
             return;
         }
@@ -661,7 +926,7 @@ struct DtcReadOnlyServer::Impl {
             }
             if (client < 0)
                 return;
-            if (logged_on && !closing && subscribed) {
+            if (logged_on && !closing && depth_subscribed) {
                 auto s = source.snapshot();
                 if (!usable(s) || s.symbol != symbol || s.underlying_board != underlying_board || s.min_step != tick ||
                     s.isin_id != isin || !accepted_definition ||
@@ -695,6 +960,8 @@ struct DtcReadOnlyServer::Impl {
                 } else if (s.source_snapshot_version != version || s.stream_epoch != epoch)
                     snapshot(s);
             }
+            if (client >= 0 && logged_on && !closing && trade_subscribed)
+                poll_public_deals();
             if (logged_on && !closing && now - last_heartbeat >= heartbeat) {
                 queue(3, {});
                 last_heartbeat = now;
@@ -712,6 +979,9 @@ struct DtcReadOnlyServer::Impl {
             if (n > 0) {
                 sent += static_cast<std::size_t>(n);
                 last_write = now;
+                trade_output_ranges.erase(std::remove_if(trade_output_ranges.begin(), trade_output_ranges.end(),
+                                                         [&](const auto& range) { return sent >= range.second; }),
+                                          trade_output_ranges.end());
                 if (pending_logon_response && sent >= pending_logon_response_end) {
                     pending_wire_logon_capabilities.response_fully_written_to_socket = true;
                     last_wire_logon_capabilities = pending_wire_logon_capabilities;
@@ -731,6 +1001,7 @@ struct DtcReadOnlyServer::Impl {
             if (sent == output.size()) {
                 output.clear();
                 sent = 0;
+                trade_output_ranges.clear();
             }
         }
         if (closing && output.empty())
@@ -794,6 +1065,9 @@ std::uint32_t DtcReadOnlyServer::symbol_id() const noexcept {
 }
 bool DtcReadOnlyServer::has_client() const noexcept {
     return impl_->client >= 0;
+}
+bool DtcReadOnlyServer::has_public_deals_subscription() const noexcept {
+    return impl_->trade_subscribed;
 }
 std::size_t DtcReadOnlyServer::queued_bytes() const noexcept {
     return impl_->output.size() - impl_->sent;

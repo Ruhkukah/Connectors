@@ -181,7 +181,7 @@ void DtcFrameDecoder::reset() noexcept {
 ConnectorHostDtcMarketDataSource::ConnectorHostDtcMarketDataSource(ConnectorHost& host) : host_(host) {}
 
 DtcReadOnlyCapabilities ConnectorHostDtcMarketDataSource::capabilities() const noexcept {
-    return {.market_data = false,
+    return {.market_data = host_.public_deals_enabled(),
             .market_depth = true,
             // ConnectorHost supplies target identity, board, tick, and (when
             // joined) fut_vcb currency metadata. Operator bindings remain
@@ -196,6 +196,11 @@ DtcReadOnlyCapabilities ConnectorHostDtcMarketDataSource::capabilities() const n
 
 DtcMarketDataSnapshot ConnectorHostDtcMarketDataSource::snapshot() const {
     return make_dtc_market_data_snapshot(host_.market_data_snapshot());
+}
+
+plaza2::cgate::Plaza2PublicDealsSnapshot
+ConnectorHostDtcMarketDataSource::public_deals(std::uint64_t after_sequence) const {
+    return host_.public_deals_snapshot(after_sequence);
 }
 
 DtcMarketDataSnapshot make_dtc_market_data_snapshot(const ConnectorHostMarketDataSnapshot& market_data) {

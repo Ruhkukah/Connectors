@@ -20,6 +20,7 @@ struct OperatorRequest {
 struct Plaza2HostConfigInputs {
     HostPurpose purpose{HostPurpose::Qualify};
     bool read_only_market_data{false};
+    bool public_deals{false};
     std::filesystem::path runtime_root;
     std::filesystem::path library_path;
     std::filesystem::path scheme_dir;

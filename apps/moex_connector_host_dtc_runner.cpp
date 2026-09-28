@@ -102,6 +102,7 @@ Optional operator bindings: --dtc-underlying-board ASTS_SECBOARD --dtc-currency 
 DTC:       --dtc-port N (default 11200, loopback only)
            --dtc-symbol-id N (default 1)
            --startup-wait-ms N (default 10000, maximum 60000)
+           --public-deals (add public DEALS listener and live trade updates)
 Auth:      --require-dtc-auth
            --dtc-username-env NAME --dtc-password-env NAME
            (defaults: MOEX_PLAZA_DTC_USERNAME / MOEX_PLAZA_DTC_PASSWORD)
@@ -236,8 +237,7 @@ std::string provenance_json(const moex::plaza2::private_state::SourceRowProvenan
            ",\"present\":" + (provenance.present ? "true" : "false") + "}";
 }
 
-std::string stream_health_json(
-    const std::vector<moex::plaza2::private_state::StreamHealthSnapshot>& streams) {
+std::string stream_health_json(const std::vector<moex::plaza2::private_state::StreamHealthSnapshot>& streams) {
     std::string result{"["};
     bool first = true;
     for (const auto& stream : streams) {
@@ -357,21 +357,17 @@ void print_startup_receipt(const Options& options, const DtcReadOnlyServer& serv
               << ",\"runtime_compatibility\":" << json_quote(host_snapshot.runtime_compatibility)
               << ",\"runtime_scheme_sha256\":" << json_quote(host_snapshot.runtime_scheme_sha256)
               << ",\"host_state\":" << static_cast<unsigned>(host_snapshot.state)
-              << ",\"transport_health\":{\"valid\":"
-              << (host_snapshot.transport_health.valid ? "true" : "false")
+              << ",\"transport_health\":{\"valid\":" << (host_snapshot.transport_health.valid ? "true" : "false")
               << ",\"connection_state\":" << host_snapshot.transport_health.connection
               << ",\"aggr_state\":" << host_snapshot.transport_health.aggr
-              << ",\"private_active\":"
-              << (host_snapshot.transport_health.private_active ? "true" : "false")
+              << ",\"public_deals_state\":" << host_snapshot.transport_health.public_deals
+              << ",\"private_active\":" << (host_snapshot.transport_health.private_active ? "true" : "false")
               << ",\"private_count\":" << host_snapshot.transport_health.private_count << "}"
-              << ",\"private_snapshot_state_ready\":"
-              << (host_snapshot.private_snapshot_state_ready ? "true" : "false")
-              << ",\"aggr_snapshot_state_ready\":"
-              << (host_snapshot.aggr_snapshot_state_ready ? "true" : "false")
+              << ",\"private_snapshot_state_ready\":" << (host_snapshot.private_snapshot_state_ready ? "true" : "false")
+              << ",\"aggr_snapshot_state_ready\":" << (host_snapshot.aggr_snapshot_state_ready ? "true" : "false")
               << ",\"private_streams_ready\":" << (host_snapshot.private_streams_ready ? "true" : "false")
-              << ",\"stream_health\":" << stream_health_json(host_snapshot.streams)
-              << ",\"dtc_bind\":\"127.0.0.1\"" << ",\"dtc_port\":" << server.port()
-              << ",\"dtc_symbol_id\":" << server.symbol_id()
+              << ",\"stream_health\":" << stream_health_json(host_snapshot.streams) << ",\"dtc_bind\":\"127.0.0.1\""
+              << ",\"dtc_port\":" << server.port() << ",\"dtc_symbol_id\":" << server.symbol_id()
               << ",\"dtc_exchange\":" << json_quote(moex::connector_host::dtc::kDtcMoexSpectraExchange)
               << ",\"configured_underlying_board\":" << json_quote(options.underlying_board)
               << ",\"configured_currency\":" << json_quote(options.currency)
@@ -421,6 +417,27 @@ void print_startup_receipt(const Options& options, const DtcReadOnlyServer& serv
 
 void print_help() {
     std::cout << runner_help << '\n' << moex::connector_host::operator_help();
+}
+
+// A bounded receipt summarises the actual native stream, independently of
+// whether a GUI happened to subscribe. It contains public market identities.
+void print_public_deals_receipt(const ConnectorHost& host) {
+    if (!host.public_deals_enabled())
+        return;
+    const auto deals = host.public_deals_snapshot();
+    std::cout << "{\"event\":\"public_deals_status\",\"source\":\"FORTS_DEALS_REPL.deal\""
+              << ",\"online\":" << (deals.online ? "true" : "false")
+              << ",\"valid\":" << (deals.valid ? "true" : "false") << ",\"stream_epoch\":" << deals.stream_epoch
+              << ",\"lifenum\":" << deals.lifenum << ",\"last_sequence\":" << deals.last_sequence
+              << ",\"first_retained_sequence\":" << deals.first_sequence
+              << ",\"retained_trades\":" << deals.trades.size() << ",\"error\":" << json_quote(deals.error);
+    if (!deals.trades.empty()) {
+        const auto& row = deals.trades.back();
+        std::cout << ",\"last_deal_id\":" << row.deal_id << ",\"sess_id\":" << row.session_id
+                  << ",\"isin_id\":" << row.isin_id << ",\"repl_id\":" << row.repl_id
+                  << ",\"repl_rev\":" << row.repl_rev << ",\"moment_ns_utc\":" << row.moment_ns;
+    }
+    std::cout << "}\n" << std::flush;
 }
 
 } // namespace
@@ -529,12 +546,15 @@ int main(int argc, char** argv) {
                 break;
             }
             if (authority_ready(sampled) &&
+                (!host.public_deals_enabled() ||
+                 host.public_deals_snapshot(std::numeric_limits<std::uint64_t>::max()).online) &&
                 moex::connector_host::dtc::validate_dtc_security_definition(sampled, DtcSourceMode::LiveTest)
                     .available())
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         print_startup_receipt(options, server, sampled, identity, source.capabilities(), startup_host_snapshot);
+        print_public_deals_receipt(host);
 
         while (result == 0 && !stop_requested.load(std::memory_order_relaxed)) {
             // Keep ConnectorHost and DTC polling on the same owner thread;
@@ -553,6 +573,7 @@ int main(int argc, char** argv) {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+        print_public_deals_receipt(host);
         server.stop();
         if (host_started) {
             if (const auto error = host.stop()) {

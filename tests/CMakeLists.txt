@@ -490,6 +490,11 @@ add_executable(connector_host_dtc_server_test
 target_link_libraries(connector_host_dtc_server_test PRIVATE moex_connector_host)
 add_test(NAME connector_host_dtc_server_test COMMAND connector_host_dtc_server_test)
 set_tests_properties(connector_host_dtc_server_test PROPERTIES LABELS "dtc;read-only;sanitizer")
+add_executable(connector_host_dtc_public_deals_test
+    ${MOEX_SOURCE_ROOT}/tests/connector_host_dtc_public_deals_test.cpp)
+target_link_libraries(connector_host_dtc_public_deals_test PRIVATE moex_connector_host)
+add_test(NAME connector_host_dtc_public_deals_test COMMAND connector_host_dtc_public_deals_test)
+set_tests_properties(connector_host_dtc_public_deals_test PROPERTIES LABELS "dtc;read-only;sanitizer")
 if(DOTNET_EXECUTABLE)
     add_test(
         NAME connector_host_dtc507_generated_schema_test
@@ -1030,6 +1035,13 @@ target_link_libraries(plaza2_ordlog_test PRIVATE moex_plaza2_cgate_runtime plaza
 add_dependencies(plaza2_ordlog_test plaza2_fake_cgate_runtime)
 add_test(NAME plaza2_ordlog_test COMMAND plaza2_ordlog_test "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
 set_tests_properties(plaza2_ordlog_test PROPERTIES LABELS "unit;plaza2;sanitizer")
+
+add_executable(plaza2_public_deals_test plaza2_cgate/plaza2_public_deals_test.cpp)
+target_link_libraries(plaza2_public_deals_test PRIVATE moex_plaza2_cgate_aggr20_md)
+target_compile_features(plaza2_public_deals_test PRIVATE cxx_std_20)
+set_property(TARGET plaza2_public_deals_test PROPERTY RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/tests")
+add_test(NAME plaza2_public_deals_test COMMAND plaza2_public_deals_test)
+set_tests_properties(plaza2_public_deals_test PROPERTIES LABELS "unit;plaza2;sanitizer")
 
 add_executable(plaza2_ordlog_benchmark plaza2_cgate/plaza2_ordlog_benchmark.cpp)
 target_link_libraries(plaza2_ordlog_benchmark PRIVATE moex_plaza2_cgate_runtime plaza2_runtime_test_support ${CMAKE_DL_LIBS})

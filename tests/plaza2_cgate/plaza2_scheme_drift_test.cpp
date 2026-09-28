@@ -105,9 +105,9 @@ int main(int argc, char** argv) {
 
         const auto vendor_status_missing_field = remove_field_from_table(
             vendor_status_text, "[table:SESSIONSTATE:session_state]\n", "field=public_state,i4\n");
-        const auto vendor_status_bad_fixture = materialize_runtime_fixture(
-            fixture_root / "vendor_status_missing_field", fake_library, Plaza2Environment::Test,
-            vendor_status_missing_field);
+        const auto vendor_status_bad_fixture =
+            materialize_runtime_fixture(fixture_root / "vendor_status_missing_field", fake_library,
+                                        Plaza2Environment::Test, vendor_status_missing_field);
         Plaza2Settings vendor_status_bad_settings = vendor_status_settings;
         vendor_status_bad_settings.runtime_root = vendor_status_bad_fixture.root;
         const auto vendor_status_bad_report = Plaza2RuntimeProbe::probe(vendor_status_bad_settings);
