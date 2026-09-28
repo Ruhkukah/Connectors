@@ -1033,6 +1033,7 @@ int main(int argc, char** argv) {
             const auto audit_path = fixture.root / "readonly-listener-audit.log";
             std::filesystem::remove(audit_path);
             ::setenv("MOEX_FAKE_CAPTURE_AUDIT", audit_path.c_str(), 1);
+            ::setenv("MOEX_FAKE_CONN_ASYNC_OPEN", "1", 1);
             std::filesystem::create_directories(config.order.journal_root);
             {
                 std::ofstream checkpoint(config.order.journal_root / "persistent_session.json");
@@ -1044,6 +1045,7 @@ int main(int argc, char** argv) {
             test::require(!std::filesystem::exists(config.order.journal_root / "persistent_session.json.lock"),
                           "read-only construction does not lock or load an order checkpoint");
             test::require(!host.start(), "readonly ConnectorHost TEST start");
+            ::unsetenv("MOEX_FAKE_CONN_ASYNC_OPEN");
             dtc::ConnectorHostDtcMarketDataSource source(host);
             for (unsigned i = 0; i < 12 && !source.snapshot().valid; ++i)
                 test::require(!host.poll(), "readonly ConnectorHost TEST poll");
@@ -1106,6 +1108,12 @@ int main(int argc, char** argv) {
                     return line.starts_with(std::string(call) + " ") && line.find(service) != std::string::npos;
                 });
             };
+            const auto first_process = std::find(audit_lines.begin(), audit_lines.end(), "cg_conn_process");
+            const auto first_listener = std::find_if(audit_lines.begin(), audit_lines.end(),
+                                                     [](const auto& line) { return line.starts_with("cg_lsn_new "); });
+            test::require(first_process != audit_lines.end() && first_listener != audit_lines.end() &&
+                              first_process < first_listener,
+                          "read-only host waits for asynchronous CGate connection ACTIVE before listeners");
             test::require(std::count_if(audit_lines.begin(), audit_lines.end(),
                                         [](const auto& line) { return line.starts_with("cg_lsn_new "); }) == 4,
                           "fake CGate runtime proves exactly four listener creations");

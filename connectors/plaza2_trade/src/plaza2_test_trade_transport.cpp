@@ -873,6 +873,36 @@ struct Plaza2TestSessionHost::Impl {
             return error;
         }
 
+        // CGate opens a connection asynchronously.  The production runtime can
+        // accept listener opens while the connection is still OPENING without
+        // ever advancing those listeners.  Wait for ACTIVE before creating any
+        // replication listener, matching the independently proven Card 07
+        // discovery sequence.
+        const auto connection_deadline = std::chrono::steady_clock::now() + config.listener_bootstrap_watchdog;
+        while (true) {
+            std::uint32_t connection_state = kCgStateClosed;
+            failure_origin = Plaza2FailureOrigin::ConnectionState;
+            if (const auto error = connection.state(connection_state); error) {
+                return error;
+            }
+            if (connection_state == kCgStateActive) {
+                break;
+            }
+            if (connection_state == kCgStateError || connection_state == kCgStateClosed) {
+                return invalid("TEST connection failed before replication listener bootstrap",
+                               Plaza2ErrorCode::AdapterState);
+            }
+            if (std::chrono::steady_clock::now() >= connection_deadline) {
+                return invalid("TEST connection did not reach ACTIVE before replication listener bootstrap",
+                               Plaza2ErrorCode::AdapterState);
+            }
+            std::uint32_t runtime_code = 0;
+            failure_origin = Plaza2FailureOrigin::ConnectionProcess;
+            if (const auto error = connection.process(config.process_timeout_ms, &runtime_code); error) {
+                return error;
+            }
+        }
+
         previously_opened_connection_identity = attempt_connection_identity;
 
         failure_origin = Plaza2FailureOrigin::Bootstrap;

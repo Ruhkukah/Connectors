@@ -1965,7 +1965,7 @@ std::uint32_t cg_conn_open(void* conn, const char*) {
         connection->state = kStateError;
         return kCgErrIncorrectState;
     }
-    connection->state = kStateActive;
+    connection->state = fake_flag("MOEX_FAKE_CONN_ASYNC_OPEN") ? kStateOpening : kStateActive;
     connection->script_emitted = false;
     connection->liveness_event_emitted = false;
     connection->userbook_periodic_clear_emitted = false;
@@ -1994,6 +1994,10 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrInvalidArgument;
     }
     auto* connection = static_cast<FakeConnection*>(conn);
+    if (connection->state == kStateOpening) {
+        connection->state = kStateActive;
+        return kCgErrTimeout;
+    }
     if (fake_flag("MOEX_FAKE_PROCESS_INVALID_ARGUMENT"))
         return kCgErrInvalidArgument;
     if (fake_flag("MOEX_FAKE_PROCESS_INTERNAL_ACTIVE"))
