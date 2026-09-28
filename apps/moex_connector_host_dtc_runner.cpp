@@ -236,6 +236,26 @@ std::string provenance_json(const moex::plaza2::private_state::SourceRowProvenan
            ",\"present\":" + (provenance.present ? "true" : "false") + "}";
 }
 
+std::string stream_health_json(
+    const std::vector<moex::plaza2::private_state::StreamHealthSnapshot>& streams) {
+    std::string result{"["};
+    bool first = true;
+    for (const auto& stream : streams) {
+        if (!first)
+            result.push_back(',');
+        first = false;
+        result += "{\"stream_code\":" + std::to_string(static_cast<std::uint32_t>(stream.stream_code)) +
+                  ",\"stream_name\":" + json_quote(stream.stream_name) +
+                  ",\"online\":" + (stream.online ? "true" : "false") +
+                  ",\"snapshot_complete\":" + (stream.snapshot_complete ? "true" : "false") +
+                  ",\"committed_row_count\":" + std::to_string(stream.committed_row_count) +
+                  ",\"last_commit_sequence\":" + std::to_string(stream.last_commit_sequence) +
+                  ",\"lifenum\":" + std::to_string(stream.last_trades_lifenum) + "}";
+    }
+    result.push_back(']');
+    return result;
+}
+
 std::string application_capabilities_json(const DtcReadOnlyCapabilities& capabilities) {
     return "{\"market_data\":" + std::string(capabilities.market_data ? "true" : "false") +
            ",\"market_depth\":" + (capabilities.market_depth ? "true" : "false") +
@@ -336,6 +356,20 @@ void print_startup_receipt(const Options& options, const DtcReadOnlyServer& serv
               << ",\"binary_sha256\":" << json_quote(binary_identity)
               << ",\"runtime_compatibility\":" << json_quote(host_snapshot.runtime_compatibility)
               << ",\"runtime_scheme_sha256\":" << json_quote(host_snapshot.runtime_scheme_sha256)
+              << ",\"host_state\":" << static_cast<unsigned>(host_snapshot.state)
+              << ",\"transport_health\":{\"valid\":"
+              << (host_snapshot.transport_health.valid ? "true" : "false")
+              << ",\"connection_state\":" << host_snapshot.transport_health.connection
+              << ",\"aggr_state\":" << host_snapshot.transport_health.aggr
+              << ",\"private_active\":"
+              << (host_snapshot.transport_health.private_active ? "true" : "false")
+              << ",\"private_count\":" << host_snapshot.transport_health.private_count << "}"
+              << ",\"private_snapshot_state_ready\":"
+              << (host_snapshot.private_snapshot_state_ready ? "true" : "false")
+              << ",\"aggr_snapshot_state_ready\":"
+              << (host_snapshot.aggr_snapshot_state_ready ? "true" : "false")
+              << ",\"private_streams_ready\":" << (host_snapshot.private_streams_ready ? "true" : "false")
+              << ",\"stream_health\":" << stream_health_json(host_snapshot.streams)
               << ",\"dtc_bind\":\"127.0.0.1\"" << ",\"dtc_port\":" << server.port()
               << ",\"dtc_symbol_id\":" << server.symbol_id()
               << ",\"dtc_exchange\":" << json_quote(moex::connector_host::dtc::kDtcMoexSpectraExchange)
