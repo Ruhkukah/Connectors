@@ -25,7 +25,7 @@ class Plaza2PrivateStateBridge final : public Plaza2ListenerEventHandler {
     // Local reset before a fresh status snapshot; no fabricated exchange event.
     [[nodiscard]] Plaza2Error reset_status_snapshot(generated::StreamCode stream_code);
 
-    [[nodiscard]] const fake::EngineState& state() const noexcept;
+    [[nodiscard]] const projection::EngineState& state() const noexcept;
     [[nodiscard]] const std::string& last_resync_reason() const noexcept;
     [[nodiscard]] const std::string& callback_error() const noexcept;
 
@@ -51,14 +51,25 @@ class Plaza2PrivateStateBridge final : public Plaza2ListenerEventHandler {
     [[nodiscard]] Plaza2Error ordering_error(std::string message);
     void recompute_online();
 
+    struct OwnedField {
+        projection::FieldValueSpec value;
+        std::string text;
+    };
+    struct Operation {
+        projection::EventSpec event;
+        std::vector<OwnedField> fields;
+    };
+    std::vector<bool> transaction_open_;
+    std::vector<std::vector<Operation>> operations_;
+
     private_state::Plaza2PrivateStateProjector& projector_;
-    fake::ScenarioSpec scenario_{};
-    fake::EngineState state_{};
+    projection::ScenarioSpec scenario_{};
+    projection::EngineState state_{};
     std::vector<std::uint64_t> pending_row_deltas_;
     std::vector<std::vector<PendingClearDeleted>> pending_clear_deleted_;
     std::vector<std::pair<generated::StreamCode, std::uint64_t>> stream_lifenums_;
     std::vector<std::string> text_storage_;
-    std::vector<fake::FieldValueSpec> field_storage_;
+    std::vector<projection::FieldValueSpec> field_storage_;
     std::string last_resync_reason_;
     std::string callback_error_;
 };

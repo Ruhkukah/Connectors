@@ -1,4 +1,5 @@
 #include "moex/plaza2_trade/plaza2_trade_codec.hpp"
+#include "moex/plaza2/cgate/plaza2_text.hpp"
 
 #include <algorithm>
 #include <array>
@@ -173,7 +174,7 @@ Plaza2TradeValidationResult validate_order_type(const std::optional<Plaza2TradeO
     if (!value) {
         return fail(Plaza2TradeValidationCode::MissingRequiredField, "type", "required field");
     }
-    if (*value != Plaza2TradeOrderType::Limit && *value != Plaza2TradeOrderType::Market) {
+    if (*value != Plaza2TradeOrderType::Limit && *value != Plaza2TradeOrderType::Ioc) {
         return fail(Plaza2TradeValidationCode::InvalidEnum, "type", "invalid order type enum");
     }
     return ok();
@@ -219,7 +220,7 @@ std::string read_string(std::span<const std::byte> bytes, std::size_t& offset, s
         value.push_back(ch);
     }
     offset += available;
-    return value;
+    return plaza2::cgate::text::windows1251_to_utf8(value);
 }
 
 Plaza2TradeValidationResult validate_add_order(const AddOrderRequest& request) {
@@ -351,16 +352,16 @@ Plaza2TradeValidationResult validate_move_order(const MoveOrderRequest& request)
     if (auto result = validate_integer("ext_id1", request.ext_id1, true); !result.ok()) {
         return result;
     }
-    if (auto result = validate_integer("order_id2", request.order_id2, true, std::int64_t{1}); !result.ok()) {
+    if (auto result = validate_integer("order_id2", request.order_id2, false, std::int64_t{0}); !result.ok()) {
         return result;
     }
-    if (auto result = validate_integer("amount2", request.amount2, true, std::int32_t{1}); !result.ok()) {
+    if (auto result = validate_integer("amount2", request.amount2, false, std::int32_t{0}); !result.ok()) {
         return result;
     }
-    if (auto result = validate_decimal("price2", request.price2, 17, true); !result.ok()) {
+    if (auto result = validate_decimal("price2", request.price2, 17, request.order_id2.value_or(0) > 0); !result.ok()) {
         return result;
     }
-    if (auto result = validate_integer("ext_id2", request.ext_id2, true); !result.ok()) {
+    if (auto result = validate_integer("ext_id2", request.ext_id2, false); !result.ok()) {
         return result;
     }
     if (auto result = validate_integer("is_check_limit", request.is_check_limit, false, std::int32_t{0});
@@ -656,7 +657,6 @@ Plaza2TradeEncodedCommand Plaza2TradeCodec::encode(const Plaza2TradeCommandReque
         .msgid = command_msgid(kind),
         .payload = {},
         .validation = validate(request),
-        .offline_only = true,
     };
     if (!encoded.validation.ok()) {
         return encoded;
@@ -785,10 +785,6 @@ Plaza2TradeDecodedReply Plaza2TradeCodec::decode_reply(std::int32_t msgid, std::
         reply.status = status_from_code(reply.code, false);
     }
     return reply;
-}
-
-bool is_sendable(const Plaza2TradeEncodedCommand& command) noexcept {
-    return !command.offline_only;
 }
 
 std::string bytes_to_hex(std::span<const std::byte> bytes) {

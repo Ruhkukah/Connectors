@@ -1,0 +1,254 @@
+#include "moex/connector_host/trading_host.hpp"
+
+#include <algorithm>
+#include <stdexcept>
+
+namespace moex::connector_host {
+namespace {
+namespace cg = plaza2::cgate;
+namespace tr = plaza2_trade;
+std::int64_t utc_seconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+std::string event_kind(cg::Plaza2ListenerEventKind kind) {
+    switch (kind) {
+    case cg::Plaza2ListenerEventKind::Open:
+        return "listener_open";
+    case cg::Plaza2ListenerEventKind::Close:
+        return "listener_close";
+    case cg::Plaza2ListenerEventKind::TransactionBegin:
+        return "transaction_begin";
+    case cg::Plaza2ListenerEventKind::TransactionCommit:
+        return "transaction_commit";
+    case cg::Plaza2ListenerEventKind::StreamData:
+        return "stream_row";
+    case cg::Plaza2ListenerEventKind::Online:
+        return "listener_online";
+    case cg::Plaza2ListenerEventKind::LifeNum:
+        return "lifenum";
+    case cg::Plaza2ListenerEventKind::ClearDeleted:
+        return "clear_deleted";
+    case cg::Plaza2ListenerEventKind::ReplState:
+        return "replstate";
+    case cg::Plaza2ListenerEventKind::Timeout:
+        return "reply_timeout";
+    }
+    return "listener_event";
+}
+} // namespace
+CgateTradingHost::CgateTradingHost(TradingHostConfig config)
+    : config_(std::move(config)), owner_(std::this_thread::get_id()), journal_(config_.journal_path),
+      session_(session_config()) {
+    if (config_.isin_ids.empty())
+        throw std::invalid_argument("at least one trading instrument is required");
+    auto orders = config_.orders;
+    const auto reservations = journal_.reservations();
+    orders.next_ext_id = std::max(orders.next_ext_id, reservations.next_ext_id);
+    orders.next_user_id = std::max(orders.next_user_id, reservations.next_user_id);
+    orders_ = std::make_unique<OrderManager>(
+        std::move(orders),
+        [this](const auto& command, auto id) {
+            journal_.flush_reservations();
+            return session_.post_command(command, id);
+        },
+        [this](auto isin) {
+            return !rebuilding_ && log_error_.empty() &&
+                   std::find(config_.isin_ids.begin(), config_.isin_ids.end(), isin) != config_.isin_ids.end() &&
+                   moex::connector_host::order_entry_ready(session_, isin);
+        },
+        [this](auto isin) -> std::optional<plaza2::private_state::FutureSessionTerms> {
+            const auto& data = session_.private_state();
+            const auto life = data.refdata_lifenum();
+            const auto sess = current_session_id(data);
+            return life && sess ? data.find_future_session_terms(isin, sess, *life) : std::nullopt;
+        },
+        [this](auto kind, auto fields) { journal_.append(kind, fields); });
+}
+CgateTradingHost::~CgateTradingHost() {
+    // Stop while callbacks can still use log_error_ and journal_. Member
+    // destruction would otherwise tear down log_error_ before session_.
+    try {
+        const auto error = session_.stop();
+        (void)error;
+    } catch (...) {
+        // Explicit stop() reports errors; destruction must remain noexcept.
+    }
+}
+void CgateTradingHost::assert_owner() const {
+    if (std::this_thread::get_id() != owner_)
+        throw std::logic_error("CGate objects must be used on the owning thread");
+}
+tr::CgateSessionConfig CgateTradingHost::session_config() {
+    auto result = config_.session;
+    result.event_log = [this](auto kind, auto fields) { log_event(kind, fields); };
+    result.listener_event_log = [this](const auto& event) { log_listener_event(event); };
+    return result;
+}
+void CgateTradingHost::log_event(std::string_view kind, std::string_view fields) noexcept {
+    try {
+        journal_.append(kind, fields);
+    } catch (const std::exception& error) {
+        log_error_ = error.what();
+    }
+}
+void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) noexcept {
+    try {
+        std::string fields =
+            "{\"stream\":" + std::to_string(static_cast<int>(event.stream_code)) +
+            ",\"table\":" + std::to_string(static_cast<int>(event.table_code)) +
+            ",\"name\":" + json_string(event.message_name) + ",\"message_id\":" + std::to_string(event.message_id) +
+            ",\"user_id\":" + std::to_string(event.user_id) + ",\"value\":" + std::to_string(event.unsigned_value) +
+            ",\"signed_value\":" + std::to_string(event.signed_value) +
+            ",\"table_index\":" + std::to_string(event.table_index) +
+            ",\"clear_deleted_flags\":" + std::to_string(event.clear_deleted_flags) +
+            ",\"text\":" + json_string(event.text_value) +
+            ",\"payload_hex\":" + json_string(tr::bytes_to_hex(event.raw_payload)) + ",\"fields\":[";
+        bool first = true;
+        for (const auto& field : event.fields) {
+            if (!first)
+                fields += ',';
+            first = false;
+            fields += "{\"id\":" + std::to_string(static_cast<int>(field.field_code)) +
+                      ",\"kind\":" + std::to_string(static_cast<int>(field.kind)) +
+                      ",\"signed\":" + std::to_string(field.signed_value) +
+                      ",\"unsigned\":" + std::to_string(field.unsigned_value) +
+                      ",\"timestamp_ns\":" + std::to_string(field.timestamp_ns) +
+                      ",\"text\":" + json_string(field.text_value) + "}";
+        }
+        fields += "]}";
+        journal_.append(event_kind(event.kind), fields);
+    } catch (const std::exception& error) {
+        log_error_ = error.what();
+    }
+}
+cg::Plaza2Error CgateTradingHost::start() {
+    assert_owner();
+    if (config_.session.mode != tr::Plaza2TestSessionHostMode::OfflineFake)
+        validate_cgate_logging(config_.session.runtime.env_open_settings, config_.session.runtime.config_dir);
+    journal_.append("startup", "{\"product\":\"MoexConnector\",\"version\":\"1.0.0\",\"instance_id\":" +
+                                   json_string(config_.session.publisher_name) + ",\"clock_offset_us\":" +
+                                   (config_.clock_offset_us ? std::to_string(*config_.clock_offset_us) : "null") +
+                                   ",\"clock_offset_source\":" +
+                                   json_string(config_.clock_offset_us ? "operator measurement" : "unavailable") + "}");
+    return session_.start();
+}
+cg::Plaza2Error CgateTradingHost::poll() {
+    assert_owner();
+    const auto error = session_.poll();
+    if (!log_error_.empty()) {
+        orders_->set_kill_switch(true);
+        return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_};
+    }
+    const auto now = OrderManager::Clock::now();
+    for (const auto& event : session_.take_reply_events()) {
+        if (event.timed_out) {
+            orders_->on_timeout(event.user_id, now);
+            continue;
+        }
+        plaza2_trade::Plaza2TradeValidationResult validation;
+        const auto reply =
+            plaza2_trade::Plaza2TradeCodec{}.decode_reply(event.message_id, event.raw_payload, validation);
+        if (validation.ok())
+            orders_->on_reply(event.user_id, reply, now);
+        else {
+            journal_.append("malformed_reply", "{\"user_id\":" + std::to_string(event.user_id) +
+                                                   ",\"error\":" + json_string(validation.message) + "}");
+            orders_->on_timeout(event.user_id, now);
+        }
+    }
+    const auto& data = session_.private_state();
+    if (data.connector_health().commit_count != commit_sequence_) {
+        commit_sequence_ = data.connector_health().commit_count;
+        orders_->observe_orders(data.own_orders(), rebuilding_);
+        orders_->observe_trades(data.own_trades());
+    }
+    bool trade_online{}, user_book_online{};
+    std::int64_t server_time{};
+    for (const auto& stream : data.stream_health())
+        if (stream.stream_name == "FORTS_TRADE_REPL") {
+            trade_online = stream.online && stream.snapshot_complete;
+            server_time = stream.last_server_time;
+        } else if (stream.stream_name == "FORTS_USERORDERBOOK_REPL")
+            user_book_online = stream.online && stream.snapshot_complete;
+    // This barrier runs only once. A delayed initial USERORDERBOOK snapshot
+    // must be included in exposure reconstruction before the first new Add;
+    // subsequent USERORDERBOOK updates/outages do not gate new orders.
+    if (rebuilding_ && trade_online && user_book_online) {
+        orders_->observe_orders(data.own_orders(), true);
+        rebuilding_ = false;
+    }
+    orders_->prove_absence(server_time, trade_online);
+    // Reserve identities durably once per owner-loop batch, then submit the
+    // queued commands. The event stream itself uses 250ms group commit.
+    journal_.flush_reservations();
+    orders_->poll(now, utc_seconds());
+    return error;
+}
+cg::Plaza2Error CgateTradingHost::stop() {
+    assert_owner();
+    journal_.append("shutdown");
+    journal_.flush();
+    return session_.stop();
+}
+std::string CgateTradingHost::place(OrderRequest request) {
+    assert_owner();
+    return orders_->place(std::move(request));
+}
+std::string CgateTradingHost::cancel(std::string_view key) {
+    assert_owner();
+    return orders_->cancel(key);
+}
+std::string CgateTradingHost::move(std::string_view key, std::string price, std::int32_t quantity) {
+    assert_owner();
+    return orders_->move(key, std::move(price), quantity);
+}
+std::string CgateTradingHost::cancel_all(std::int32_t isin) {
+    assert_owner();
+    return orders_->cancel_all(isin);
+}
+void CgateTradingHost::set_kill_switch(bool enabled) {
+    assert_owner();
+    orders_->set_kill_switch(enabled);
+}
+std::string CgateTradingHost::status() const {
+    assert_owner();
+    const auto& data = session_.private_state();
+    std::string result = "{\"version\":\"1.0.0\",\"queued\":" + std::to_string(orders_->queued()) +
+                         ",\"reconstructing\":" + (rebuilding_ ? "true" : "false") +
+                         ",\"sess_id\":" + std::to_string(current_session_id(data)) + ",\"instruments\":[";
+    bool first = true;
+    for (const auto isin : config_.isin_ids) {
+        if (!first)
+            result += ',';
+        first = false;
+        result += "{\"isin_id\":" + std::to_string(isin) + ",\"order_entry_ready\":" +
+                  (!rebuilding_ && log_error_.empty() && order_entry_ready(session_, isin) ? "true" : "false") + "}";
+    }
+    result += "],\"positions\":[";
+    first = true;
+    for (const auto& position : data.positions()) {
+        if (position.account_code != config_.orders.broker_code + config_.orders.client_code)
+            continue;
+        if (!first)
+            result += ',';
+        first = false;
+        result +=
+            "{\"isin_id\":" + std::to_string(position.isin_id) + ",\"xpos\":" + std::to_string(position.xpos) + "}";
+    }
+    result += "],\"orders\":[";
+    first = true;
+    for (const auto& [key, order] : orders_->orders()) {
+        if (!first)
+            result += ',';
+        first = false;
+        result += "{\"client_order_id\":" + json_string(key) + ",\"order_id\":" + std::to_string(order.order_id) +
+                  ",\"ext_id\":" + std::to_string(order.ext_id) + ",\"sess_id\":" + std::to_string(order.sess_id) +
+                  ",\"isin_id\":" + std::to_string(order.request.isin_id) +
+                  ",\"state\":" + json_string(order_state_name(order.state)) +
+                  ",\"remaining\":" + std::to_string(order.remaining) +
+                  ",\"executed\":" + std::to_string(order.executed) + "}";
+    }
+    return result + "]}";
+}
+} // namespace moex::connector_host

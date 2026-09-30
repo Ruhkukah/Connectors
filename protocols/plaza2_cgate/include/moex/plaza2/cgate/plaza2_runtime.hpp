@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -81,6 +82,7 @@ struct Plaza2VersionMarkers {
 };
 
 class Plaza2QualificationObserver;
+struct Plaza2ListenerEvent;
 
 struct Plaza2Settings {
     Plaza2Environment environment{Plaza2Environment::Test};
@@ -97,6 +99,7 @@ struct Plaza2Settings {
     std::string expected_scheme_sha256;
     // Optional qualification sink. Owner outlives Env; callbacks must not throw or call CGate.
     Plaza2QualificationObserver* qualification_observer{nullptr};
+    std::function<void(const Plaza2ListenerEvent&)> listener_event_log;
 };
 
 struct Plaza2RuntimeLayout {
@@ -189,6 +192,7 @@ struct Plaza2DecodedFieldValue {
     std::int64_t decimal_mantissa{0};
     std::int32_t decimal_scale{0};
     bool decimal_exact{false};
+    std::uint64_t timestamp_ns{0};
 };
 
 struct Plaza2ListenerEvent {
@@ -331,6 +335,7 @@ class Plaza2Listener {
     [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, generated::StreamCode stream_code,
                                      std::string_view settings, Plaza2ListenerEventHandler* handler);
     [[nodiscard]] Plaza2Error open(std::string_view settings);
+    void clear_callback_error() noexcept;
     [[nodiscard]] Plaza2Error close();
     [[nodiscard]] Plaza2Error destroy();
     [[nodiscard]] Plaza2Error state(std::uint32_t& out_state) const;

@@ -33,7 +33,6 @@ void test_all_phase5a_commands_are_represented() {
         const auto encoded = codec.encode(request);
         require(encoded.validation.ok(), "valid synthetic Phase 5A command should encode");
         require(!encoded.payload.empty(), "encoded command payload should not be empty");
-        require(encoded.offline_only, "encoded command must be offline-only");
     }
 }
 

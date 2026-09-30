@@ -1,7 +1,6 @@
 #include <unistd.h>
 #include "fake_cgate_abi.hpp"
 #include "moex/plaza2/cgate/plaza2_public_decode.hpp"
-#include "plaza2_public_wire.hpp"
 #include "../plaza2_trade/fixtures/cgate99_messages.hpp"
 #include "plaza2_generated_metadata.hpp"
 
@@ -126,7 +125,6 @@ struct FakeReply {
 };
 
 struct FakeListener {
-    unsigned capture_iteration{};
     std::uint32_t state{kStateClosed};
     std::string settings;
     FakeConnection* connection{nullptr};
@@ -153,6 +151,8 @@ struct FakeConnection {
     bool pos_anchor_drift_emitted{false};
     bool forced_trade_terminal_emitted{false};
     bool session_price_revision_emitted{false};
+    bool next_session_prepublished{false};
+    bool live_session_switched{false};
     bool first_order_bbo_shift_emitted{false};
     bool unrelated_aggr_update_emitted{false};
     bool trade_open_error_seen{false};
@@ -170,7 +170,6 @@ struct FakePublisherMessage {
     std::vector<std::byte> payload;
 };
 
-FakeListener* g_ordlog_listener = nullptr;
 bool g_env_open = false;
 bool g_cancel_after_cleanup = false;
 std::uint32_t g_persistent_order_epoch = 0;
@@ -276,9 +275,7 @@ std::size_t size_for_value_class(ValueClass value_class, std::string_view type_t
 }
 
 std::size_t publisher_payload_size(std::string_view message_name) {
-    // Sizes are the reviewed generated TEST command layouts used by the
-    // offline trade codec golden fixtures. The fake runtime only models these
-    // three command families; it never accepts a live broker payload.
+    // Sizes match the reviewed CGate command layouts used by the codec fixtures.
     if (message_name == "AddOrder") {
         return sizeof(official_cgate99::AddOrder);
     }
@@ -288,6 +285,8 @@ std::size_t publisher_payload_size(std::string_view message_name) {
     if (message_name == "DelUserOrders") {
         return sizeof(official_cgate99::DelUserOrders);
     }
+    if (message_name == "MoveOrder")
+        return sizeof(official_cgate99::MoveOrder);
     return 8;
 }
 
@@ -302,7 +301,9 @@ bool fake_flag(const char* name);
 std::vector<std::byte> make_trade_reply(std::string_view message_name) {
     const bool add = message_name == "AddOrder";
     const bool recovery = message_name == "DelUserOrders";
-    std::vector<std::byte> payload(4 + sizeof(official_cgate99::FORTS_MSG179::message) + (add ? 8 : 4));
+    const bool move = message_name == "MoveOrder";
+    std::vector<std::byte> payload(move ? sizeof(official_cgate99::FORTS_MSG176)
+                                        : 4 + sizeof(official_cgate99::FORTS_MSG179::message) + (add ? 8 : 4));
     const auto* code_text = std::getenv("MOEX_FAKE_PUB_REPLY_CODE");
     const auto command_rejected = (message_name == "DelOrder" && fake_flag("MOEX_FAKE_PUB_REPLY_REJECT_DEL")) ||
                                   (message_name == "DelUserOrders" && fake_flag("MOEX_FAKE_PUB_REPLY_REJECT_RECOVERY"));
@@ -314,6 +315,9 @@ std::vector<std::byte> make_trade_reply(std::string_view message_name) {
         const auto* id_text = std::getenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
         const auto order_id = id_text == nullptr ? std::int64_t{20003} : std::strtoll(id_text, nullptr, 10);
         write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message), order_id);
+    } else if (move) {
+        write_reply_scalar(payload, offsetof(official_cgate99::FORTS_MSG176, order_id1), std::int64_t{20004});
+        write_reply_scalar(payload, offsetof(official_cgate99::FORTS_MSG176, order_id2), std::int64_t{20005});
     } else {
         write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message),
                            static_cast<std::int32_t>(recovery ? 1 : 0));
@@ -339,7 +343,7 @@ CgTime make_cg_time(std::uint64_t unix_seconds) {
     value.hour = static_cast<std::uint8_t>(utc->tm_hour);
     value.minute = static_cast<std::uint8_t>(utc->tm_min);
     value.second = static_cast<std::uint8_t>(utc->tm_sec);
-    value.msec = 0;
+    value.msec = fake_flag("MOEX_FAKE_TIMESTAMP_MILLISECONDS") ? 321 : 0;
     return value;
 }
 
@@ -986,6 +990,35 @@ bool persistent_order_session() {
 
 std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     auto script = base_script_for_stream(stream_code);
+    if (stream_code == StreamCode::kFortsRefdataRepl) {
+        script.push_back({.table_code = TableCode::kFortsRefdataReplSysMessages,
+                          .rev = 24,
+                          .fields = {{.field_code = FieldCode::kFortsRefdataReplSysMessagesReplId,
+                                      .kind = FakeValueKind::SignedInteger,
+                                      .signed_value = 24},
+                                     {.field_code = FieldCode::kFortsRefdataReplSysMessagesReplRev,
+                                      .kind = FakeValueKind::SignedInteger,
+                                      .signed_value = 24},
+                                     {.field_code = FieldCode::kFortsRefdataReplSysMessagesReplAct,
+                                      .kind = FakeValueKind::SignedInteger,
+                                      .signed_value = 0},
+                                     {.field_code = FieldCode::kFortsRefdataReplSysMessagesMsgId,
+                                      .kind = FakeValueKind::SignedInteger,
+                                      .signed_value = 1},
+                                     {.field_code = FieldCode::kFortsRefdataReplSysMessagesLangCode,
+                                      .kind = FakeValueKind::Text,
+                                      .text = "EN"},
+                                     {.field_code = FieldCode::kFortsRefdataReplSysMessagesTypeId,
+                                      .kind = FakeValueKind::SignedInteger,
+                                      .signed_value = 1},
+                                     {.field_code = FieldCode::kFortsRefdataReplSysMessagesText,
+                                      .kind = FakeValueKind::Text,
+                                      .text = "Certification test service message"},
+                                     {.field_code = FieldCode::kFortsRefdataReplSysMessagesMessageBody,
+                                      .kind = FakeValueKind::Text,
+                                      .text = "TEST exchange service is online"}}});
+    }
+
     using enum FieldCode;
     using enum TableCode;
 
@@ -1367,6 +1400,60 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
             }
         }
     }
+    if (fake_flag("MOEX_FAKE_USERBOOK_ONLY_ORDER") && stream_code == StreamCode::kFortsUserorderbookRepl)
+        for (auto& row : script) {
+            if (row.table_code != kFortsUserorderbookReplOrdersCurrentday)
+                continue;
+            find_field(row, kFortsUserorderbookReplOrdersCurrentdayPublicOrderId)->signed_value = 10009;
+            find_field(row, kFortsUserorderbookReplOrdersCurrentdayPrivateOrderId)->signed_value = 20009;
+            if (auto* ext = find_field(row, kFortsUserorderbookReplOrdersCurrentdayExtId))
+                ext->signed_value = 89;
+            else
+                row.fields.push_back({.field_code = kFortsUserorderbookReplOrdersCurrentdayExtId,
+                                      .kind = FakeValueKind::SignedInteger,
+                                      .signed_value = 89});
+        }
+    if (fake_flag("MOEX_FAKE_USERBOOK_ONLY_ORDER") && stream_code == StreamCode::kFortsUserorderbookRepl) {
+        auto found = std::ranges::find_if(
+            script, [](const auto& row) { return row.table_code == kFortsUserorderbookReplOrdersCurrentday; });
+        if (found != script.end()) {
+            FakeMessageScript regular{.table_code = kFortsUserorderbookReplOrders, .rev = 107};
+            for (const auto& value : found->fields) {
+                const auto* source = FindFieldByCode(value.field_code);
+                for (const auto& target : moex::plaza2::generated::FieldsForTable(regular.table_code))
+                    if (source->field_name == target.field_name) {
+                        auto copy = value;
+                        copy.field_code = target.field_code;
+                        regular.fields.push_back(std::move(copy));
+                        break;
+                    }
+            }
+            regular.fields.push_back({.field_code = kFortsUserorderbookReplOrdersReplId,
+                                      .kind = FakeValueKind::SignedInteger,
+                                      .signed_value = 20009});
+            regular.fields.push_back({.field_code = kFortsUserorderbookReplOrdersReplRev,
+                                      .kind = FakeValueKind::SignedInteger,
+                                      .signed_value = regular.rev});
+            regular.fields.push_back({.field_code = kFortsUserorderbookReplOrdersReplAct,
+                                      .kind = FakeValueKind::SignedInteger,
+                                      .signed_value = 0});
+            script.push_back(std::move(regular));
+        }
+    }
+    if (const auto* value = std::getenv("MOEX_FAKE_SESSION_ID")) {
+        const auto day = std::strtoll(value, nullptr, 10);
+        constexpr std::array session_fields{
+            FieldCode::kFortsRefdataReplSessionSessId, FieldCode::kFortsRefdataReplFutSessContentsSessId,
+            FieldCode::kFortsSessionstateReplSessionStateSessId, FieldCode::kFortsAggrReplSysEventsSessId};
+        for (auto& message : script)
+            for (const auto field : session_fields)
+                if (auto* decoded = find_field(message, field))
+                    decoded->signed_value = day;
+    }
+    if (fake_flag("MOEX_FAKE_AGGR_WRONG_SESSION"))
+        for (auto& message : script)
+            if (auto* field = find_field(message, FieldCode::kFortsAggrReplSysEventsSessId))
+                --field->signed_value;
     return script;
 }
 
@@ -1414,10 +1501,18 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
                                                        std::vector<MessagePlan>* plans) {
     auto scheme = std::make_unique<OwnedScheme>();
     plans->clear();
-    plans->reserve(script.size());
+    auto schema_messages = script;
+    if (!script.empty()) {
+        const auto* first = FindTableByCode(script.front().table_code);
+        for (const auto& table : TablesForStream(static_cast<StreamCode>(first->stream_id)))
+            if (std::none_of(schema_messages.begin(), schema_messages.end(),
+                             [&](const auto& row) { return row.table_code == table.table_code; }))
+                schema_messages.push_back({.table_code = table.table_code});
+    }
+    plans->reserve(schema_messages.size());
 
-    for (std::size_t index = 0; index < script.size(); ++index) {
-        const auto& message_script = script[index];
+    for (std::size_t index = 0; index < schema_messages.size(); ++index) {
+        const auto& message_script = schema_messages[index];
         const auto* table = FindTableByCode(message_script.table_code);
         if (table == nullptr) {
             return {};
@@ -1435,8 +1530,8 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
         plan.message_name = message->name;
 
         std::size_t offset = 0;
-        for (const auto& scripted_field : message_script.fields) {
-            const auto* field = FindFieldByCode(scripted_field.field_code);
+        for (const auto& descriptor : FieldsForTable(message_script.table_code)) {
+            const auto* field = &descriptor;
             if (field == nullptr) {
                 return {};
             }
@@ -1445,7 +1540,16 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             owned_field->name = std::string(field->field_name);
             owned_field->type_token = std::string(field->type_token);
             owned_field->desc.id = static_cast<std::uint32_t>(field->field_code);
+            if (table->table_name == "orders_aggr" && field->field_name == "price") {
+                if (fake_flag("MOEX_FAKE_SCHEME_MISSING_PRICE"))
+                    owned_field->name = "removed_price";
+                if (fake_flag("MOEX_FAKE_SCHEME_RETYPE_PRICE"))
+                    owned_field->type_token = "i8";
+            }
             owned_field->desc.name = owned_field->name.data();
+            if (table->table_name == "orders_aggr" && field->field_name == "price" &&
+                fake_flag("MOEX_FAKE_SCHEME_RETYPE_PRICE"))
+                owned_field->type_token = "i8";
             owned_field->desc.type = owned_field->type_token.data();
             owned_field->desc.size = size_for_value_class(field->value_class, field->type_token);
             if (message_script.table_code == TableCode::kFortsDealsReplDeal && field->storage_size_bytes != 0)
@@ -1456,7 +1560,7 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             owned_field->desc.offset = offset;
 
             plan.fields.push_back({
-                .field_code = scripted_field.field_code,
+                .field_code = field->field_code,
                 .value_class = field->value_class,
                 .offset = offset,
                 .size = owned_field->desc.size,
@@ -1467,6 +1571,17 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             message->fields.push_back(std::move(owned_field));
         }
 
+        if (fake_flag("MOEX_FAKE_SCHEME_EXTRA_TABLE")) {
+            auto field = std::make_unique<OwnedField>();
+            field->name = "future_field";
+            field->type_token = "c8";
+            field->desc.name = field->name.data();
+            field->desc.type = field->type_token.data();
+            field->desc.size = 9;
+            field->desc.offset = offset;
+            offset += 9;
+            message->fields.push_back(std::move(field));
+        }
         for (std::size_t field_index = 0; field_index < message->fields.size(); ++field_index) {
             message->fields[field_index]->desc.next =
                 field_index + 1 < message->fields.size() ? &message->fields[field_index + 1]->desc : nullptr;
@@ -1481,6 +1596,15 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
         scheme->messages.push_back(std::move(message));
     }
 
+    if (fake_flag("MOEX_FAKE_SCHEME_EXTRA_TABLE")) {
+        auto extra = std::make_unique<OwnedMessage>();
+        extra->name = "future_server_table";
+        extra->desc.name = extra->name.data();
+        extra->desc.size = 1;
+        scheme->messages.insert(scheme->messages.begin(), std::move(extra));
+        for (auto& plan : *plans)
+            ++plan.msg_index;
+    }
     for (std::size_t index = 0; index < scheme->messages.size(); ++index) {
         scheme->messages[index]->desc.next =
             index + 1 < scheme->messages.size() ? &scheme->messages[index + 1]->desc : nullptr;
@@ -1488,44 +1612,6 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
 
     scheme->desc.num_messages = scheme->messages.size();
     scheme->desc.messages = scheme->messages.empty() ? nullptr : &scheme->messages.front()->desc;
-    return scheme;
-}
-
-// Exact public layouts deliberately bypass the old private fixture's synthetic field packing.
-std::unique_ptr<OwnedScheme> build_public_ordlog_scheme(std::span<const std::size_t> selection = {}) {
-    auto scheme = std::make_unique<OwnedScheme>();
-    const std::array<std::size_t, 4> source{0, 1, 2, 3};
-    if (selection.empty())
-        selection = source;
-    for (const auto index : selection) {
-        const auto& table = moex::plaza2::public_wire::kTables[index];
-        auto message = std::make_unique<OwnedMessage>();
-        message->name = table.name;
-        message->desc.name = message->name.data();
-        message->desc.size = table.size;
-        message->desc.align = 4;
-        for (const auto& field : table.fields) {
-            auto owned = std::make_unique<OwnedField>();
-            owned->name = field.name;
-            owned->type_token = field.type;
-            owned->desc.name = owned->name.data();
-            owned->desc.type = owned->type_token.data();
-            owned->desc.offset = field.offset;
-            owned->desc.size = field.size;
-            if (!message->fields.empty())
-                message->fields.back()->desc.next = &owned->desc;
-            message->fields.push_back(std::move(owned));
-        }
-        message->desc.num_fields = message->fields.size();
-        message->desc.fields = &message->fields.front()->desc;
-        if (!scheme->messages.empty())
-            scheme->messages.back()->desc.next = &message->desc;
-        scheme->messages.push_back(std::move(message));
-    }
-    scheme->desc.num_messages = scheme->messages.size();
-    scheme->desc.messages = &scheme->messages.front()->desc;
-    if (fake_flag("MOEX_FAKE_ORDLOG_BAD_SCHEME"))
-        ++scheme->messages.front()->desc.size;
     return scheme;
 }
 
@@ -1578,6 +1664,10 @@ void write_field_value(std::vector<std::byte>& buffer, const FieldPlan& plan, co
 std::vector<std::byte> encode_message_payload(const MessagePlan& plan, const FakeMessageScript& message) {
     std::vector<std::byte> buffer(plan.row_size);
     std::memset(buffer.data(), 0, buffer.size());
+    // Unscripted decimals still carry a valid vendor BCD zero value.
+    for (const auto& field : plan.fields)
+        if (field.type_token == "d16.5")
+            write_field_value(buffer, field, {.text = "0"});
 
     for (const auto& scripted_field : message.fields) {
         for (const auto& plan_field : plan.fields) {
@@ -1643,6 +1733,14 @@ std::uint32_t emit_reply_message(FakeListener& listener, const FakeReply& reply)
 
 std::uint32_t emit_script(FakeListener& listener) {
     const auto script = script_for_stream(listener.stream_code);
+    if (fake_flag("MOEX_FAKE_SCHEME_EXTRA_TABLE")) {
+        std::byte byte{};
+        CgMsgStreamData extra{
+            .type = kCgMsgStreamData, .data_size = 1, .data = &byte, .msg_index = 0, .msg_name = "future_server_table"};
+        if (auto error = listener.callback(listener.connection, &listener, &extra, listener.callback_data); error)
+            return error;
+    }
+
     if (script.empty()) {
         return kCgErrOk;
     }
@@ -1723,7 +1821,7 @@ std::uint32_t emit_script(FakeListener& listener) {
         if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk)
             return result;
     }
-    if (listener.stream_code == StreamCode::kFortsAggrRepl) {
+    if (listener.stream_code == StreamCode::kFortsAggrRepl && !fake_flag("MOEX_FAKE_AGGR_SNAPSHOT_READY_ONLY")) {
         // A current session_data_ready event is a separate transaction after
         // Online. The bridge must not promote the bootstrap sys_events row.
         if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk) {
@@ -1760,6 +1858,11 @@ std::uint32_t emit_script(FakeListener& listener) {
                      .unsigned_value = 1700000013},
                 },
         };
+        if (const auto* value = std::getenv("MOEX_FAKE_SESSION_ID"))
+            find_field(current_ready, FieldCode::kFortsAggrReplSysEventsSessId)->signed_value =
+                std::strtoll(value, nullptr, 10);
+        if (fake_flag("MOEX_FAKE_AGGR_WRONG_SESSION"))
+            --find_field(current_ready, FieldCode::kFortsAggrReplSysEventsSessId)->signed_value;
         if (const auto result = emit_stream_message(listener, current_ready); result != kCgErrOk) {
             return result;
         }
@@ -1777,128 +1880,11 @@ void detach_listener(FakeConnection* connection, FakeListener* listener) {
 
 } // namespace
 
-namespace {
-void capture_audit(const char* name, const char* detail = nullptr) {
-    if (fake_flag("MOEX_FAKE_CAPTURE_NO_AUDIT"))
-        return;
-    if (const char* path = std::getenv("MOEX_FAKE_CAPTURE_AUDIT")) {
-        std::ofstream out(path, std::ios::app);
-        out << name;
-        if (detail != nullptr && *detail != '\0')
-            out << ' ' << detail;
-        out << '\n';
-    }
-}
-unsigned capture_regular = 0, capture_multileg = 0;
-std::uint32_t capture_script(FakeListener& listener) {
-    const bool multi = listener.settings.find("snapshot.data=multileg_orders") != std::string::npos;
-    const auto index_of = [&](std::string_view name) {
-        for (std::size_t i = 0; i < listener.scheme->messages.size(); ++i)
-            if (listener.scheme->messages[i]->name == name)
-                return i;
-        return listener.scheme->messages.size();
-    };
-    const auto row = [&](std::size_t source, std::string_view name, std::int64_t id, std::int64_t rev, int action,
-                         std::int64_t rest, std::int64_t bound) {
-        const auto& table = moex::plaza2::public_wire::kTables[source];
-        std::vector<std::byte> bytes(table.size);
-        for (const auto& f : table.fields) {
-            std::int64_t value = 0;
-            if (f.type == "d16.5") {
-                const moex::plaza2::public_wire::Bcd16_5 price{5, 16, 0, 0, 0, 0, 0, 0, 12, 0, 0};
-                std::memcpy(bytes.data() + f.offset, price.data(), price.size());
-                continue;
-            }
-            if (f.name == "replID" || f.name == "public_order_id")
-                value = id;
-            if (f.name == "replRev")
-                value = rev;
-            if (f.name == "sess_id" || f.name == "trades_lifenum")
-                value = 7;
-            if (f.name == "isin_id")
-                value = 100;
-            if (f.name == "dir" || f.name == "publication_state" || f.name == "infoID")
-                value = 1;
-            if (f.name == "public_amount_rest")
-                value = rest;
-            if (f.name == "public_amount" || f.name == "public_init_amount")
-                value = 10;
-            if (f.name == "public_action")
-                value = action;
-            if (f.name == "trades_rev")
-                value = bound;
-            if (f.size <= 8)
-                std::memcpy(bytes.data() + f.offset, &value, f.size);
-        }
-        CgMsgStreamData message{.type = kCgMsgStreamData,
-                                .data_size = bytes.size(),
-                                .data = bytes.data(),
-                                .owner_id = 0,
-                                .msg_index = index_of(name),
-                                .msg_id = 77,
-                                .msg_name = nullptr,
-                                .rev = rev,
-                                .num_nulls = 0,
-                                .nulls = nullptr,
-                                .user_id = 0};
-        return listener.callback(listener.connection, &listener, &message, listener.callback_data);
-    };
-    CgDataLifeNum life{7, 0};
-    if (auto code = emit_simple_message(listener, kCgMsgP2replLifenum, &life, sizeof(life)))
-        return code;
-    if (auto code = emit_simple_message(listener, kCgMsgTnBegin))
-        return code;
-    const bool fresh = listener.capture_iteration > 1;
-    if (auto code = row(multi ? 5 : 4, multi ? "multileg_orders" : "orders", 1, 1, 2, fresh ? 6 : 10, 0))
-        return code;
-    if (auto code = row(6, "info", 1, 1, 0, 0, fresh ? 15 : 10))
-        return code;
-    if (fake_flag("MOEX_FAKE_CAPTURE_UNKNOWN"))
-        if (auto code = row(2, "future_table", 1, 1, 0, 0, 0))
-            return code;
-    if (auto code = emit_simple_message(listener, kCgMsgTnCommit))
-        return code;
-    if (auto code = emit_simple_message(listener, kCgMsgP2replOnline))
-        return code;
-    if (!fresh && !fake_flag("MOEX_FAKE_CAPTURE_QUIET")) {
-        if (auto code = emit_simple_message(listener, kCgMsgTnBegin))
-            return code;
-        const std::array<std::array<std::int64_t, 4>, 5> events{
-            {{1, 11, 2, 6}, {2, 12, 1, 10}, {2, 13, 2, 0}, {3, 14, 1, 10}, {3, 15, 0, 10}}};
-        for (const auto& e : events)
-            if (auto code = row(multi ? 1 : 0, multi ? "multileg_orders_log" : "orders_log", e[0], e[1], e[2], e[3], 0))
-                return code;
-        if (auto code = emit_simple_message(listener, kCgMsgTnCommit))
-            return code;
-    }
-    char token[] = "opaque-public-replstate";
-    if (auto code = emit_simple_message(listener, kCgMsgP2replReplState, token, sizeof(token)))
-        return code;
-    if (fake_flag("MOEX_FAKE_CAPTURE_CONTROLS")) {
-        std::array<std::byte, 3> unknown{std::byte{1}, std::byte{2}, std::byte{3}};
-        if (auto code = emit_simple_message(listener, 0x777, unknown.data(), unknown.size()))
-            return code;
-        auto clear = make_clear_deleted_payload(
-            static_cast<std::uint32_t>(index_of(multi ? "multileg_orders_log" : "orders_log")), 99, 0);
-        if (auto code = emit_simple_message(listener, kCgMsgP2replClearDeleted, clear.data(), clear.size()))
-            return code;
-        life.life_number = 8;
-        if (auto code = emit_simple_message(listener, kCgMsgP2replLifenum, &life, sizeof(life)))
-            return code;
-        if (auto code = emit_simple_message(listener, kCgMsgClose))
-            return code;
-        listener.state = kStateError;
-    }
-    return 0;
-}
-} // namespace
 extern "C" {
 const char* cg_err_getstr(std::uint32_t code) {
-    capture_audit("cg_err_getstr");
     return code ? "fake exact runtime error" : "OK";
 }
 std::uint32_t cg_env_getcomp_ver(const char*, int* major, int* minor, int* patch) {
-    capture_audit("cg_env_getcomp_ver");
     *major = 9;
     *minor = 9;
     *patch = 1853;
@@ -1906,53 +1892,13 @@ std::uint32_t cg_env_getcomp_ver(const char*, int* major, int* minor, int* patch
 }
 
 // Offline tests and D0 drive the actual dynamically loaded runtime callback bridge.
-std::uint32_t moex_fake_ordlog_emit(std::uint32_t type, std::size_t index, void* data, std::size_t size,
-                                    std::int64_t revision, std::uint8_t* nulls, std::size_t null_count) {
-    auto* listener = g_ordlog_listener;
-    if (!listener || listener->state != kStateActive)
-        return kCgErrIncorrectState;
-    std::uint32_t result = 0;
-    if (type == kCgMsgStreamData) {
-        CgMsgStreamData message{.type = type,
-                                .data_size = size,
-                                .data = data,
-                                .owner_id = 0,
-                                .msg_index = index,
-                                .msg_id = 0,
-                                .msg_name = nullptr,
-                                .rev = revision,
-                                .num_nulls = null_count,
-                                .nulls = nulls,
-                                .user_id = 0};
-        result = listener->callback(listener->connection, listener, &message, listener->callback_data);
-    } else {
-        result = emit_simple_message(*listener, type, data, size);
-    }
-    if (result)
-        listener->state = kStateError;
-    if (type == kCgMsgClose)
-        listener->state = kStateClosed;
-    return result;
-}
-
-void moex_fake_ordlog_error() {
-    if (g_ordlog_listener)
-        g_ordlog_listener->state = kStateError;
-}
-
-const char* moex_fake_ordlog_open_settings() {
-    return g_ordlog_listener ? g_ordlog_listener->open_settings.c_str() : "";
-}
-
 const char* moex_fake_cgate_runtime_v1() {
     return "moex_fake_cgate_runtime_v1";
 }
 
 std::uint32_t cg_env_open(const char* settings) {
-    capture_audit("cg_env_open");
     if (const auto result = configured_result("MOEX_FAKE_ENV_OPEN_RESULT"); result != kCgErrOk)
         return result;
-    capture_regular = capture_multileg = 0;
     if (settings == nullptr || *settings == '\0') {
         return kCgErrInvalidArgument;
     }
@@ -1962,7 +1908,6 @@ std::uint32_t cg_env_open(const char* settings) {
 }
 
 std::uint32_t cg_env_close() {
-    capture_audit("cg_env_close");
     if (!g_env_open) {
         return kCgErrIncorrectState;
     }
@@ -1971,7 +1916,6 @@ std::uint32_t cg_env_close() {
 }
 
 std::uint32_t cg_conn_new(const char* settings, void** connptr) {
-    capture_audit("cg_conn_new");
     if (const auto result = configured_result("MOEX_FAKE_CONNECTION_CREATE_RESULT"); result != kCgErrOk)
         return result;
     if (!g_env_open || settings == nullptr || connptr == nullptr) {
@@ -1987,7 +1931,6 @@ std::uint32_t cg_conn_new(const char* settings, void** connptr) {
 }
 
 std::uint32_t cg_conn_destroy(void* conn) {
-    capture_audit("cg_conn_destroy");
     if (conn == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2003,7 +1946,6 @@ std::uint32_t cg_conn_destroy(void* conn) {
 }
 
 std::uint32_t cg_conn_open(void* conn, const char*) {
-    capture_audit("cg_conn_open");
     if (const auto result = configured_result("MOEX_FAKE_CONNECTION_OPEN_RESULT"); result != kCgErrOk)
         return result;
     if (!g_env_open || conn == nullptr) {
@@ -2018,7 +1960,9 @@ std::uint32_t cg_conn_open(void* conn, const char*) {
         connection->state = kStateError;
         return kCgErrIncorrectState;
     }
-    connection->state = fake_flag("MOEX_FAKE_CONN_ASYNC_OPEN") ? kStateOpening : kStateActive;
+    connection->state = (fake_flag("MOEX_FAKE_CONN_ASYNC_OPEN") || fake_flag("MOEX_FAKE_CONN_HOLD_OPENING"))
+                            ? kStateOpening
+                            : kStateActive;
     connection->script_emitted = false;
     connection->liveness_event_emitted = false;
     connection->userbook_periodic_clear_emitted = false;
@@ -2028,7 +1972,6 @@ std::uint32_t cg_conn_open(void* conn, const char*) {
 }
 
 std::uint32_t cg_conn_close(void* conn) {
-    capture_audit("cg_conn_close");
     if (conn == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2038,7 +1981,6 @@ std::uint32_t cg_conn_close(void* conn) {
 }
 
 std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
-    capture_audit("cg_conn_process");
     if (fake_flag("MOEX_FAKE_PROCESS_TIMEOUT"))
         return kCgErrTimeout;
     if (const auto result = configured_result("MOEX_FAKE_PROCESS_RESULT"); result != kCgErrOk)
@@ -2047,6 +1989,10 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrInvalidArgument;
     }
     auto* connection = static_cast<FakeConnection*>(conn);
+    if (fake_flag("MOEX_FAKE_CONN_HOLD_OPENING") || fake_flag("MOEX_FAKE_CONN_TO_OPENING")) {
+        connection->state = kStateOpening;
+        return kCgErrTimeout;
+    }
     if (connection->state == kStateOpening) {
         connection->state = kStateActive;
         return kCgErrTimeout;
@@ -2065,7 +2011,8 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
     }
     if (fake_flag("MOEX_FAKE_DECODE_CORRUPTION")) {
         for (auto* listener : connection->listeners) {
-            if (listener->stream_code == StreamCode::kFortsAggrRepl && !listener->message_plans.empty()) {
+            if (listener->stream_code == StreamCode::kFortsAggrRepl && listener->state == kStateActive &&
+                !listener->message_plans.empty()) {
                 const auto& plan = listener->message_plans.front();
                 std::byte byte{};
                 CgMsgStreamData row{.type = kCgMsgStreamData,
@@ -2085,7 +2032,8 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
     }
     if (fake_flag("MOEX_FAKE_CALLBACK_CORRUPTION")) {
         for (auto* listener : connection->listeners) {
-            if (!listener->reply_listener && listener->stream_code == StreamCode::kFortsPosRepl) {
+            if (!listener->reply_listener && listener->stream_code == StreamCode::kFortsPosRepl &&
+                listener->state == kStateActive) {
                 const auto error = emit_simple_message(*listener, kCgMsgTnCommit);
                 listener->state = kStateError;
                 if (fake_flag("MOEX_FAKE_CALLBACK_PROCESS_INTERNAL")) {
@@ -2100,23 +2048,7 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         connection->state = kStateError;
         return kCgErrIncorrectState;
     }
-    if (fake_flag("MOEX_FAKE_CAPTURE_SCRIPT")) {
-        bool emitted = false;
-        for (auto* listener : connection->listeners)
-            if (listener->state == kStateActive && !listener->script_emitted) {
-                listener->script_emitted = true;
-                emitted = true;
-                if (auto code = capture_script(*listener)) {
-                    listener->state = kStateError;
-                    return code;
-                }
-            }
-        if (emitted)
-            return kCgErrOk;
-        // Let the capture harness exercise a very hot unchanged-state poll
-        // without the normal one-millisecond timeout sleep.
-        return fake_flag("MOEX_FAKE_CAPTURE_STATE_SPIN") ? kCgErrOk : kCgErrTimeout;
-    }
+
     if (connection->state != kStateActive) {
         return kCgErrIncorrectState;
     }
@@ -2409,6 +2341,73 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
             }
         }
     }
+    if (connection->script_emitted &&
+        ((fake_flag("MOEX_FAKE_PREPUBLISH_NEXT_SESSION") && !connection->next_session_prepublished) ||
+         (fake_flag("MOEX_FAKE_LIVE_SESSION_SWITCH") && !connection->live_session_switched))) {
+        const bool switching = fake_flag("MOEX_FAKE_LIVE_SESSION_SWITCH");
+        const auto emit_transaction = [&](FakeListener& listener, std::vector<FakeMessageScript> rows) {
+            if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk)
+                return result;
+            for (auto& row : rows) {
+                row.rev += 100;
+                for (auto& field : row.fields) {
+                    const auto* descriptor = FindFieldByCode(field.field_code);
+                    if (descriptor && descriptor->field_name == "replRev")
+                        field.signed_value = row.rev;
+                    if (descriptor && descriptor->field_name == "replID")
+                        field.signed_value += 100;
+                }
+                if (const auto result = emit_stream_message(listener, row); result != kCgErrOk)
+                    return result;
+            }
+            return emit_simple_message(listener, kCgMsgTnCommit);
+        };
+        for (auto* listener : connection->listeners) {
+            if (!listener || listener->reply_listener || listener->state != kStateActive)
+                continue;
+            auto rows = script_for_stream(listener->stream_code);
+            if (!switching && listener->stream_code == StreamCode::kFortsRefdataRepl) {
+                std::erase_if(rows, [](const auto& row) {
+                    return row.table_code != TableCode::kFortsRefdataReplSession &&
+                           row.table_code != TableCode::kFortsRefdataReplFutSessContents;
+                });
+                for (auto& row : rows)
+                    for (auto code :
+                         {FieldCode::kFortsRefdataReplSessionSessId, FieldCode::kFortsRefdataReplFutSessContentsSessId})
+                        if (auto* day = find_field(row, code))
+                            ++day->signed_value;
+            } else if (switching && listener->stream_code == StreamCode::kFortsSessionstateRepl) {
+                auto next = rows;
+                for (auto& row : rows)
+                    if (auto* status = find_field(row, FieldCode::kFortsSessionstateReplSessionStatePublicState))
+                        status->signed_value = 3;
+                for (auto& row : next) {
+                    ++find_field(row, FieldCode::kFortsSessionstateReplSessionStateSessId)->signed_value;
+                    find_field(row, FieldCode::kFortsSessionstateReplSessionStatePublicState)->signed_value = 1;
+                    ++row.rev;
+                }
+                rows.insert(rows.end(), next.begin(), next.end());
+            } else if (switching && listener->stream_code == StreamCode::kFortsInstrumentstateRepl) {
+                // Independent status publication after selection of the new membership.
+            } else if (switching && listener->stream_code == StreamCode::kFortsAggrRepl) {
+                std::erase_if(rows,
+                              [](const auto& row) { return row.table_code != TableCode::kFortsAggrReplSysEvents; });
+                for (auto& row : rows) {
+                    ++find_field(row, FieldCode::kFortsAggrReplSysEventsSessId)->signed_value;
+                    find_field(row, FieldCode::kFortsAggrReplSysEventsEventType)->signed_value = 1;
+                    find_field(row, FieldCode::kFortsAggrReplSysEventsEventId)->signed_value += 100;
+                }
+            } else
+                continue;
+            if (const auto result = emit_transaction(*listener, std::move(rows)); result != kCgErrOk)
+                return result;
+        }
+        if (switching)
+            connection->live_session_switched = true;
+        else
+            connection->next_session_prepublished = true;
+        return kCgErrOk;
+    }
     if (connection->script_emitted && connection->pending_replies.empty()) {
         const bool pending_new_listener =
             std::any_of(connection->listeners.begin(), connection->listeners.end(), [](const auto* listener) {
@@ -2436,6 +2435,8 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
             }
             return kCgErrOk;
         }
+        if (fake_flag("MOEX_FAKE_DELAY_USERORDERBOOK") && listener->stream_code == StreamCode::kFortsUserorderbookRepl)
+            return kCgErrOk;
         if (fake_flag("MOEX_FAKE_STATUS_REFRESH_STALL") && listener->open_attempt_count >= 2 &&
             (listener->stream_code == StreamCode::kFortsSessionstateRepl ||
              listener->stream_code == StreamCode::kFortsInstrumentstateRepl))
@@ -2521,7 +2522,6 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
 }
 
 std::uint32_t cg_conn_getstate(void* conn, std::uint32_t* state) {
-    capture_audit("cg_conn_getstate");
     if (fake_flag("MOEX_FAKE_CONN_GETSTATE_INTERNAL_ONCE")) {
         ::unsetenv("MOEX_FAKE_CONN_GETSTATE_INTERNAL_ONCE");
         return kCgErrInternal;
@@ -2531,12 +2531,14 @@ std::uint32_t cg_conn_getstate(void* conn, std::uint32_t* state) {
     if (conn == nullptr || state == nullptr) {
         return kCgErrInvalidArgument;
     }
-    *state = static_cast<FakeConnection*>(conn)->state;
+    auto* connection = static_cast<FakeConnection*>(conn);
+    if (fake_flag("MOEX_FAKE_CONN_DIRECT_CLOSED"))
+        connection->state = kStateClosed;
+    *state = connection->state;
     return kCgErrOk;
 }
 
 std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback callback, void* data, void** lsnptr) {
-    capture_audit("cg_lsn_new", settings);
     if (!g_env_open || conn == nullptr || settings == nullptr || callback == nullptr || lsnptr == nullptr) {
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
     }
@@ -2568,36 +2570,7 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
     }
 
     const auto script = script_for_stream(listener->stream_code);
-    // Deliberately permuted MODEL schemes: never claim these are negotiated vendor indices.
-    const bool composite = listener->settings.starts_with("p2ordbook://");
-    const bool multileg = listener->settings.find("snapshot.data=multileg_orders") != std::string::npos;
-    std::vector<std::size_t> selected =
-        multileg ? std::vector<std::size_t>{1, 6, 5} : std::vector<std::size_t>{0, 6, 4};
-    if (fake_flag("MOEX_FAKE_CAPTURE_SCRIPT"))
-        listener->capture_iteration = multileg ? ++capture_multileg : ++capture_regular;
-    if (multileg && fake_flag("MOEX_FAKE_CAPTURE_REJECT_MULTILEG")) {
-        std::printf("CGate error 131073: rejected candidate %s; connection %s\n", settings,
-                    connection->settings.c_str());
-        delete listener;
-        return kCgErrInvalidArgument;
-    }
-    if (composite && fake_flag("MOEX_FAKE_CAPTURE_UNKNOWN"))
-        selected.push_back(2);
-    if (fake_flag("MOEX_FAKE_COMPOSITE_REVERSE"))
-        std::reverse(selected.begin(), selected.end());
-    listener->scheme = composite ? build_public_ordlog_scheme(selected)
-                       : listener->stream_code == StreamCode::kFortsOrdlogRepl
-                           ? build_public_ordlog_scheme()
-                           : build_scheme_for_messages(script, &listener->message_plans);
-    if (composite && fake_flag("MOEX_FAKE_CAPTURE_UNKNOWN")) {
-        for (auto& message : listener->scheme->messages)
-            if (message->name == "heartbeat") {
-                message->name = "future_table";
-                message->desc.name = message->name.data();
-            }
-    }
-    if (listener->stream_code == StreamCode::kFortsOrdlogRepl)
-        g_ordlog_listener = listener;
+    listener->scheme = build_scheme_for_messages(script, &listener->message_plans);
     if (!listener->scheme) {
         delete listener;
         return kCgErrIncorrectState;
@@ -2613,13 +2586,10 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
 }
 
 std::uint32_t cg_lsn_destroy(void* listener) {
-    capture_audit("cg_lsn_destroy");
     if (listener == nullptr) {
         return kCgErrInvalidArgument;
     }
     auto* typed = static_cast<FakeListener*>(listener);
-    if (g_ordlog_listener == typed)
-        g_ordlog_listener = nullptr;
     detach_listener(typed->connection, typed);
     delete typed;
     return kCgErrOk;
@@ -2627,7 +2597,6 @@ std::uint32_t cg_lsn_destroy(void* listener) {
 
 std::uint32_t cg_lsn_open(void* listener, const char* settings) {
     auto* typed = static_cast<FakeListener*>(listener);
-    capture_audit("cg_lsn_open", typed == nullptr ? nullptr : typed->settings.c_str());
     if (const auto result = configured_result("MOEX_FAKE_LISTENER_OPEN_RESULT"); result != kCgErrOk)
         return result;
     if (listener == nullptr) {
@@ -2637,9 +2606,8 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
     if (typed->stream_code == StreamCode::kFortsSessionstateRepl ||
         typed->stream_code == StreamCode::kFortsInstrumentstateRepl)
         ++g_status_open_count;
-    if (typed->stream_code == StreamCode::kFortsAggrRepl || typed->stream_code == StreamCode::kFortsSessionstateRepl ||
-        typed->stream_code == StreamCode::kFortsInstrumentstateRepl)
-        typed->script_emitted = false;
+    // Every listener reopen must re-emit its own fresh snapshot, independently.
+    typed->script_emitted = false;
     ++typed->open_attempt_count;
     if (typed->open_attempt_count >= 2 &&
         (typed->stream_code == StreamCode::kFortsSessionstateRepl ||
@@ -2701,7 +2669,6 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
 }
 
 std::uint32_t cg_lsn_close(void* listener) {
-    capture_audit("cg_lsn_close");
     if (listener == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2711,7 +2678,6 @@ std::uint32_t cg_lsn_close(void* listener) {
 }
 
 std::uint32_t cg_lsn_getstate(void* listener, std::uint32_t* state) {
-    capture_audit("cg_lsn_getstate");
     if (fake_flag("MOEX_FAKE_LSN_GETSTATE_INTERNAL"))
         return kCgErrInternal;
     if (listener == nullptr || state == nullptr) {
@@ -2723,7 +2689,6 @@ std::uint32_t cg_lsn_getstate(void* listener, std::uint32_t* state) {
 }
 
 std::uint32_t cg_lsn_getscheme(void* listener, void** schemeptr) {
-    capture_audit("cg_lsn_getscheme");
     if (listener == nullptr || schemeptr == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2733,7 +2698,6 @@ std::uint32_t cg_lsn_getscheme(void* listener, void** schemeptr) {
 }
 
 std::uint32_t cg_pub_new(void* conn, const char* settings, void** pubptr) {
-    capture_audit("cg_pub_new", settings);
     if (conn == nullptr || settings == nullptr || pubptr == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2748,7 +2712,6 @@ std::uint32_t cg_pub_new(void* conn, const char* settings, void** pubptr) {
 }
 
 std::uint32_t cg_pub_open(void* publisher, const char* settings) {
-    capture_audit("cg_pub_open", settings);
     if (const auto result = configured_result("MOEX_FAKE_PUBLISHER_OPEN_RESULT"); result != kCgErrOk)
         return result;
     if (publisher == nullptr) {
@@ -2759,7 +2722,6 @@ std::uint32_t cg_pub_open(void* publisher, const char* settings) {
 }
 
 std::uint32_t cg_pub_close(void* publisher) {
-    capture_audit("cg_pub_close");
     if (publisher == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2768,7 +2730,6 @@ std::uint32_t cg_pub_close(void* publisher) {
 }
 
 std::uint32_t cg_pub_destroy(void* publisher) {
-    capture_audit("cg_pub_destroy");
     if (publisher == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2777,7 +2738,6 @@ std::uint32_t cg_pub_destroy(void* publisher) {
 }
 
 std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
-    capture_audit("cg_pub_getstate");
     if (fake_flag("MOEX_FAKE_PUB_GETSTATE_INTERNAL"))
         return kCgErrInternal;
     if (publisher == nullptr || state == nullptr) {
@@ -2788,7 +2748,6 @@ std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
 }
 
 std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void** msgptr) {
-    capture_audit("cg_pub_msgnew");
     ++g_pub_msgnew_calls;
     if (publisher == nullptr || id == nullptr || msgptr == nullptr) {
         return kCgErrInvalidArgument;
@@ -2811,7 +2770,6 @@ std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void
 }
 
 std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
-    capture_audit("cg_pub_post");
     ++g_pub_post_calls;
     if (fake_flag("MOEX_FAKE_EXIT_AFTER_POST"))
         ::_exit(73);
@@ -2826,6 +2784,7 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
             typed_message->msg_name == nullptr ? std::string_view{} : typed_message->msg_name;
         const bool add = message_name == "AddOrder";
         const bool recovery = message_name == "DelUserOrders";
+        const bool move = message_name == "MoveOrder";
         if ((recovery && fake_flag("MOEX_FAKE_CANCEL_AFTER_RECOVERY")) ||
             (message_name == "DelOrder" && fake_flag("MOEX_FAKE_CANCEL_AFTER_DEL"))) {
             g_cancel_after_cleanup = true;
@@ -2843,7 +2802,7 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
                     listener->script_emitted = false;
             }
         }
-        auto reply_message_id = add ? 179U : recovery ? 186U : 177U;
+        auto reply_message_id = add ? 179U : recovery ? 186U : move ? 176U : 177U;
         const auto* family = std::getenv("MOEX_FAKE_PUB_REPLY_FAMILY");
         if (family != nullptr) {
             if (std::string_view(family) == "add") {
@@ -2852,6 +2811,8 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
                 reply_message_id = 177U;
             } else if (std::string_view(family) == "recovery") {
                 reply_message_id = 186U;
+            } else if (std::string_view(family) == "move") {
+                reply_message_id = 176U;
             } else if (std::string_view(family) == "99") {
                 reply_message_id = 99;
             } else if (std::string_view(family) == "100") {
@@ -2879,6 +2840,7 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
             .message_id = reply_message_id,
             .message_name = add        ? "AddOrderReply"
                             : recovery ? "DelUserOrdersReply"
+                            : move     ? "MoveOrderReply"
                                        : "DelOrderReply",
             .user_id = typed_message->user_id,
             .payload = reply_payload,
@@ -2901,6 +2863,7 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
                 .message_id = reply_message_id,
                 .message_name = add        ? "AddOrderReply"
                                 : recovery ? "DelUserOrdersReply"
+                                : move     ? "MoveOrderReply"
                                            : "DelOrderReply",
                 .user_id = typed_message->user_id,
                 .payload = std::move(contradictory),
@@ -2914,7 +2877,6 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
 }
 
 std::uint32_t cg_pub_msgfree(void*, void* message) {
-    capture_audit("cg_pub_msgfree");
     if (message == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -2930,7 +2892,6 @@ std::uint32_t cg_pub_msgfree(void*, void* message) {
 }
 
 std::uint32_t cg_getstr(const char* type, const void* data, char* buffer, std::size_t* buffer_size) {
-    capture_audit("cg_getstr");
     if (data == nullptr || buffer_size == nullptr) {
         return kCgErrInvalidArgument;
     }

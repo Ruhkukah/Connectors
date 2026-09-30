@@ -139,8 +139,6 @@ unsigned witness_number(plaza2::cgate::SessionReadyWitnessKind a) {
     switch (a) {
     case Kind::OnlineSynchronousEvent:
         return 1;
-    case Kind::PersistedOnlineWitness:
-        return 2;
     case Kind::LateJoinCorroboratedSnapshot:
         return 3;
     default:

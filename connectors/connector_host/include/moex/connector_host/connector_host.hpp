@@ -9,17 +9,45 @@
 #include <string>
 #include <vector>
 
+// Values retained by the existing read-only DTC wire protocol. They describe
+// how the committed event was received and do not grant trading permission.
+namespace moex::plaza2::cgate {
+enum class SessionReadyWitnessKind : std::uint8_t {
+    None = 0,
+    OnlineSynchronousEvent = 1,
+    LateJoinCorroboratedSnapshot = 3,
+};
+[[nodiscard]] constexpr std::string_view session_ready_witness_kind_name(SessionReadyWitnessKind kind) noexcept {
+    switch (kind) {
+    case SessionReadyWitnessKind::OnlineSynchronousEvent:
+        return "OnlineSynchronousEvent";
+    case SessionReadyWitnessKind::LateJoinCorroboratedSnapshot:
+        return "LateJoinCorroboratedSnapshot";
+    default:
+        return "None";
+    }
+}
+} // namespace moex::plaza2::cgate
 namespace moex::connector_host {
 
 enum class ConnectorHostState { Created, Started, Ready, Stopping, Stopped, Failed, Recovering };
-enum class HostPurpose { Qualify, OrderTest };
+enum class HostPurpose { Qualify, Trade };
+struct HostTransportConfig {
+    plaza2_trade::Plaza2TestSessionHostConfig host;
+    std::int64_t target_isin_id{};
+    std::int32_t target_session_id{};
+};
+struct HostAccountConfig {
+    std::string broker_code, client_code;
+    std::int32_t isin_id{};
+};
 
-// Explicit native configuration, not the older topology-only profile format.
-// Session/target IDs are operator inputs; the host checks authoritative membership.
+// Instruments are configured; the trading day follows committed exchange state.
 struct Plaza2HostConfig {
     HostPurpose purpose{HostPurpose::Qualify};
-    plaza2_trade::Plaza2TestTradeTransportConfig transport;
-    plaza2_trade::OrderLifecycleConfig order;
+    HostTransportConfig transport;
+    HostAccountConfig order;
+    std::vector<std::int64_t> isin_ids;
     // Optional explicit binding for the raw ASTS SECBOARD value carried by
     // FORTS_REFDATA_REPL.fut_vcb.board_md. This is underlying-board metadata,
     // not the DTC Exchange/venue identifier.
@@ -28,22 +56,11 @@ struct Plaza2HostConfig {
     // optional operator binding is never claimed as REFDATA-proven by itself.
     std::string target_currency;
     // A read-only market-data host never creates publisher/reply handles and
-    // rejects all order authorization APIs. It remains TEST-only. This flag
-    // must equal transport.host.read_only_market_data in direct configs.
+    // exposes no order API. This flag must equal transport.host.read_only_market_data.
     bool read_only_market_data{false};
     // Wall-clock seam for current-session display checks; production defaults
     // to system_clock::now. Does not participate in order authorization.
     std::function<std::chrono::system_clock::time_point()> market_data_now;
-};
-
-// Application-selected terms for one serial TEST epoch.  Collision-prone
-// identifiers and the run identity remain host-managed.
-struct ConnectorHostOrderRequest {
-    plaza2_trade::Plaza2TradeSide side{plaza2_trade::Plaza2TradeSide::Buy};
-    std::string price;
-    std::string base_contract_code;
-    std::string comment;
-    std::int32_t quantity{1};
 };
 
 struct ConnectorHostSnapshot {
@@ -51,78 +68,19 @@ struct ConnectorHostSnapshot {
     plaza2_trade::Plaza2RecoveryStatus recovery;
     plaza2::cgate::Plaza2Environment environment{plaza2::cgate::Plaza2Environment::Test};
     plaza2_trade::Plaza2TestSessionHostMode mode{plaza2_trade::Plaza2TestSessionHostMode::LiveTestPreSend};
-    std::string runtime_compatibility;
-    std::string runtime_scheme_sha256;
-    std::string connection_app_name;
-    bool publisher_handle_open{false};
-    bool reply_handle_open{false};
-    bool private_snapshot_state_ready{false};
-    bool aggr_snapshot_state_ready{false};
-    bool aggr_transport_active{false};
-    bool aggr_session_data_ready{false};
-    bool aggr_target_authoritative{false};
-    std::uint64_t aggr_stream_epoch{0};
-    std::uint64_t aggr_source_snapshot_version{0};
-    std::uint64_t aggr_source_snapshot_hash{0};
-    bool aggr_ready{false};
+    std::string runtime_compatibility, runtime_scheme_sha256, connection_app_name;
+    bool publisher_handle_open{}, reply_handle_open{};
+    bool private_snapshot_state_ready{}, aggr_snapshot_state_ready{}, aggr_ready{};
     plaza2_trade::Plaza2TransportHealth transport_health;
-    bool publisher_ready{false};
-    bool reply_ready{false};
-    bool private_streams_ready{false};
-    bool observation_ready{false};
+    bool publisher_ready{}, reply_ready{}, private_streams_ready{}, observation_ready{};
     std::vector<plaza2::private_state::StreamHealthSnapshot> streams;
-    std::uint64_t refdata_lifenum{0};
-    std::int64_t target_isin_id{0};
-    std::int32_t session_id{0};
-    std::string target;
-    std::string min_step;
-    std::optional<std::int32_t> session_status;
-    std::optional<std::int32_t> instrument_status;
-    std::string bid;
-    std::string ask;
-    std::int64_t bbo_age_ms{-1};
-    bool target_refdata_provenance_ready{false};
-    bool target_aggr20_uncrossed{false};
-    plaza2::private_state::SourceRowProvenance fut_instruments_provenance;
-    plaza2::private_state::SourceRowProvenance fut_sess_contents_provenance;
-    plaza2::private_state::SourceRowProvenance session_provenance;
-    plaza2_trade::PositionEvidenceClass position_evidence_class{plaza2_trade::PositionEvidenceClass::Unresolved};
-    bool zero_starting_position_proven{false};
-    std::int64_t pos_trades_rev{0};
-    std::int64_t pos_trades_lifenum{0};
-    std::optional<plaza2_trade::Plaza2TradeReplayAnchor> trade_anchor;
-    bool trade_replay_complete{false};
-    std::size_t active_own_order_count{0};
-    bool uob_periodic_consistent{false};
-    bool participant_limit_row_present{false};
-    bool participant_identity_exact{false};
-    bool exchange_money_limit_check_enabled{false};
-    bool limits_set{false};
-    bool order_epoch_active{false};
-    bool order_authorized{false};
-    bool order_submission_attempted{false};
-    bool session_terms_present{false};
-    bool session_terms_current{false};
-    bool session_price_bounds_valid{false};
-    bool order_price_within_exchange_bounds{false};
-    bool order_price_tick_aligned{false};
-    bool new_order_allowed{false};
-    std::optional<plaza2_trade::OrderLifecycleState> lifecycle_state;
-    std::optional<plaza2_trade::OrderReplyObservation> add_reply;
-    std::optional<plaza2_trade::OrderReplyObservation> cancel_reply;
-    std::int64_t order_id{0};
-    std::int64_t original_quantity{0};
-    std::int64_t remaining_quantity{0};
-    std::int64_t executed_quantity{0};
-    // No terminal claim before a lifecycle completes.
-    bool market_safe{false};
-    bool evidence_consistent{true};
+    std::int64_t target_isin_id{};
+    std::int32_t session_id{};
+    std::string target, min_step, bid, ask;
+    std::optional<std::int32_t> session_status, instrument_status;
+    bool new_order_allowed{};
     plaza2::cgate::Plaza2PublisherCallCounts publisher_calls;
     std::string last_error;
-    plaza2::cgate::Plaza2Error causal_error;
-    std::uint64_t causal_error_time_ns{};
-    std::string causal_operation, causal_callback_error;
-    plaza2_trade::Plaza2TransportHealth causal_health;
 };
 
 // Explicitly sampled qualification data; never copied by the normal polling path.
@@ -188,9 +146,7 @@ struct ConnectorHostMarketDataSnapshot {
     bool refdata_vcb_join_current{false};
     bool refdata_vcb_join_ambiguous{false};
     bool refdata_board_proven{false};
-    // This is deliberately narrower than raw fut_vcb.curr presence: it is
-    // true only for a supported monetary/tick denomination path (Phase5
-    // currently exact RUB), not for an arbitrary quotation code.
+    // True only for the supported RUB monetary and tick denomination path.
     bool refdata_currency_proven{false};
     bool target_is_future{false};
     bool target_is_spread{false};
@@ -204,7 +160,7 @@ struct ConnectorHostMarketDataSnapshot {
     plaza2::private_state::SourceRowProvenance future_vcb_provenance;
     std::string invalid_reason;
     std::uint64_t source_snapshot_version{0};
-    std::uint64_t source_snapshot_hash{0};
+    std::uint64_t source_snapshot_hash{0}; // Reserved legacy DTC wire field; always zero.
     std::uint64_t source_repl_id{0};
     std::int64_t source_repl_rev{0};
     // AGGR20 target's committed maximum replRev, explicitly used as the
@@ -222,8 +178,7 @@ struct ConnectorHostMarketDataSnapshot {
     std::optional<plaza2::cgate::Plaza2Aggr20SysEventSnapshot> session_ready_witness;
     plaza2::cgate::SessionReadyWitnessKind session_ready_witness_kind{plaza2::cgate::SessionReadyWitnessKind::None};
     bool market_data_display_allowed{false};
-    // Data consistency and trading state are intentionally separate. A
-    // closed/clearing session may retain a valid frozen synchronized book.
+    // Market-data consistency is independent of order-entry permissions.
     bool source_consistent{false};
     bool market_data_live{false};
     bool session_tradable{false};
@@ -235,6 +190,10 @@ struct ConnectorHostMarketDataSnapshot {
     std::vector<ConnectorHostMarketDataLevel> levels;
 };
 
+[[nodiscard]] std::int32_t current_session_id(const plaza2::private_state::Plaza2PrivateStateProjector& data,
+                                              std::int64_t now_seconds = 0);
+[[nodiscard]] bool order_entry_ready(const plaza2_trade::Plaza2TestSessionHost& host, std::int64_t isin_id,
+                                     std::int32_t session_id = 0);
 [[nodiscard]] std::string_view host_state_name(ConnectorHostState state) noexcept;
 [[nodiscard]] std::string render_snapshot(const ConnectorHostSnapshot& snapshot, bool json,
                                           const ConnectorHostQualificationSnapshot* qualification = nullptr);
@@ -255,33 +214,9 @@ class ConnectorHost final {
     [[nodiscard]] bool public_deals_enabled() const noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;
-    [[nodiscard]] plaza2_trade::DeepPassiveProposal first_order_price_proposal() const;
     [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot(bool private_identity = false) const;
-    [[nodiscard]] plaza2_trade::PreSendPlan plan() const;
-    [[nodiscard]] plaza2_trade::PreSendPlan plan_order(const ConnectorHostOrderRequest& request) const;
-    // Exact canonical bytes AND SHA are mandatory. The host constructs the
-    // intent and lets the existing transport validate/bind it.
-    [[nodiscard]] plaza2::cgate::Plaza2Error authorize(std::string_view canonical_plan, std::string_view sha256);
-    [[nodiscard]] plaza2_trade::OrderLifecycleResult submit();
-    // Persistent application-order surface. The host remains started across
-    // serial order epochs; only the per-order lifecycle state is closed and
-    // reset after a safe terminal disposition.
-    [[nodiscard]] plaza2::cgate::Plaza2Error begin_order(const ConnectorHostOrderRequest& request,
-                                                         std::string_view canonical_plan, std::string_view sha256);
-    // Compatibility convenience for callers that intentionally reuse the
-    // current configured application terms; new application code should use
-    // the explicit request overload above.
-    [[nodiscard]] plaza2::cgate::Plaza2Error begin_order(std::string_view canonical_plan, std::string_view sha256);
-    [[nodiscard]] plaza2_trade::OrderLifecycleResult submit_order();
-    [[nodiscard]] plaza2_trade::OrderLifecycleResult poll_order();
-    [[nodiscard]] plaza2_trade::OrderLifecycleResult cancel_current_order();
-    [[nodiscard]] plaza2_trade::RecoveredOrderReconciliation reconcile_recovered_order();
-    [[nodiscard]] plaza2_trade::RecoveredCancelPlan prepare_recovered_cancel(const std::filesystem::path& artifact);
-    [[nodiscard]] plaza2_trade::OrderLifecycleResult cancel_recovered_order(const std::filesystem::path& artifact,
-                                                                            std::string_view authorized_sha256);
-
-    [[nodiscard]] plaza2::cgate::Plaza2Error finish_order_epoch();
-    [[nodiscard]] plaza2_trade::RestartReconciliationResult reconcile();
+    [[nodiscard]] ConnectorHostMarketDataSnapshot market_data_snapshot(std::int64_t isin_id) const;
+    [[nodiscard]] bool order_entry_ready(std::int64_t isin_id) const;
 
   private:
     struct Impl;

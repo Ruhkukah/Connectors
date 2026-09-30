@@ -901,19 +901,21 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
     }
 
     if (!settings.expected_scheme_sha256.empty() && report.runtime_scheme_sha256 != settings.expected_scheme_sha256) {
-        push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, true, scheme_path.filename().string(),
+        push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, false, scheme_path.filename().string(),
                    "runtime scheme hash mismatch: expected " + settings.expected_scheme_sha256 + ", got " +
                        report.runtime_scheme_sha256);
     }
     if (!settings.expected_spectra_release.empty() &&
         parsed.markers.spectra_release != settings.expected_spectra_release) {
-        push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedVersion, true, scheme_path.filename().string(),
+        push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedVersion, false, scheme_path.filename().string(),
                    "runtime spectra release mismatch: expected " + settings.expected_spectra_release + ", got " +
                        parsed.markers.spectra_release);
     }
 
     auto record_drift = [&](const SchemeTableKey& key, Plaza2ProbeIssueCode code, bool fatal, std::string subject,
                             std::string message) {
+        // Negotiated listener schemes validate required fields at OPEN. File drift is diagnostic only.
+        fatal = false;
         push_issue(report.issues, code, fatal, std::move(subject), message);
         auto& count = fatal ? report.fatal_drift_count : report.warning_drift_count;
         auto& tables = fatal ? report.fatal_drift_tables : report.warning_drift_tables;
@@ -1080,7 +1082,9 @@ template <typename T> [[nodiscard]] T read_unaligned(const void* data) {
     timestamp.tm_hour = static_cast<int>(value.hour);
     timestamp.tm_min = static_cast<int>(value.minute);
     timestamp.tm_sec = static_cast<int>(value.second);
-    return static_cast<std::uint64_t>(::timegm(&timestamp));
+    // CGate t is Moscow wall time (UTC+03), independent of host timezone.
+    const auto seconds = ::timegm(&timestamp) - 3 * 60 * 60;
+    return seconds < 0 ? 0 : static_cast<std::uint64_t>(seconds);
 }
 
 [[nodiscard]] Plaza2Error convert_runtime_field_to_string(RuntimeApi& api, std::string_view type_token,
@@ -1136,23 +1140,13 @@ template <typename T> [[nodiscard]] T read_unaligned(const void* data) {
             return &plan;
         }
     }
-    for (const auto& plan : plans) {
-        if (plan.msg_name == msg_name) {
-            return &plan;
-        }
-    }
+    (void)msg_name;
     return nullptr;
 }
 
 [[nodiscard]] const RuntimeMessagePlan*
 find_clear_deleted_runtime_message_plan(std::span<const RuntimeMessagePlan> plans, std::size_t table_idx) {
-    if (const auto* plan = find_runtime_message_plan(plans, table_idx, {}); plan != nullptr) {
-        return plan;
-    }
-    if (table_idx < plans.size()) {
-        return &plans[table_idx];
-    }
-    return nullptr;
+    return find_runtime_message_plan(plans, table_idx, {});
 }
 
 struct Plaza2ListenerCallbackState {
@@ -1165,6 +1159,7 @@ struct Plaza2ListenerCallbackState {
     std::vector<Plaza2DecodedFieldValue> decoded_fields;
     std::vector<std::string> text_storage;
     Plaza2Error last_error;
+    std::uint64_t ignored_message_count{0};
 };
 
 [[nodiscard]] Plaza2Error ensure_listener_scheme_loaded(Plaza2ListenerCallbackState& state) {
@@ -1200,43 +1195,13 @@ struct Plaza2ListenerCallbackState {
         };
     }
 
-    const bool raw = state.handler && state.handler->wants_raw_replication();
-    const auto mismatch = []() -> Plaza2Error {
-        return {.code = Plaza2ErrorCode::DecodeFailed,
-                .message = "public replication scheme differs from qualified 9.9 wire layout"};
-    };
-    std::size_t expected_count = 0;
-    if (raw) {
-        for (const auto& table : public_wire::kTables) {
-            expected_count += table.stream == state.stream_code;
-        }
-        if (!expected_count || scheme->num_messages != expected_count)
-            return mismatch();
-    }
     state.message_plans.clear();
     std::size_t msg_index = 0;
     for (auto* message = scheme->messages; message != nullptr; message = message->next, ++msg_index) {
         const auto message_name = message->name == nullptr ? std::string{} : std::string(message->name);
         const auto* table = find_table_descriptor_for_stream(state.stream_code, message_name);
         if (table == nullptr) {
-            if (raw)
-                return mismatch();
             continue;
-        }
-        if (raw) {
-            const auto* wire = public_wire::table(table->table_code);
-            if (!wire || wire->index != msg_index || wire->size != message->size ||
-                wire->fields.size() != message->num_fields)
-                return mismatch();
-            auto* field = message->fields;
-            for (const auto& expected : wire->fields) {
-                if (!field || !field->name || !field->type || expected.name != field->name ||
-                    expected.type != field->type || expected.offset != field->offset || expected.size != field->size)
-                    return mismatch();
-                field = field->next;
-            }
-            if (field)
-                return mismatch();
         }
 
         RuntimeMessagePlan plan;
@@ -1298,11 +1263,57 @@ struct Plaza2ListenerCallbackState {
             return {.code = Plaza2ErrorCode::DecodeFailed,
                     .message = "public DEALS schema does not contain all reviewed deal fields"};
         }
+        const auto required = [&](std::string_view name) {
+            if (name == "replID" || name == "replRev" || name == "replAct")
+                return true;
+            if (message_name == "orders_aggr")
+                return name == "isin_id" || name == "price" || name == "volume" || name == "dir";
+            if (message_name == "sys_events")
+                return name == "event_type" || name == "sess_id";
+            if (message_name == "session")
+                return name == "sess_id" || name == "state";
+            if (message_name == "session_state")
+                return name == "sess_id" || name == "public_state";
+            if (message_name == "instrument_state")
+                return name == "isin_id" || name == "public_state";
+            if (message_name == "instrument")
+                return name == "isin_id" || name == "state";
+            if (message_name == "user_deal" || message_name == "user_multileg_deal")
+                return name == "id_deal" || name == "sess_id" || name == "isin_id" || name == "price" ||
+                       name == "xamount" || name == "public_order_id_buy" || name == "public_order_id_sell" ||
+                       name == "private_order_id_buy" || name == "private_order_id_sell" || name == "ext_id_buy" ||
+                       name == "ext_id_sell" || name == "code_buy" || name == "code_sell";
+            if (message_name == "orders_log" || message_name == "orders")
+                return name == "public_order_id" || name == "private_order_id" || name == "isin_id" ||
+                       name == "public_amount_rest" || name == "private_amount_rest" || name == "public_action" ||
+                       name == "private_action" || name == "ext_id" || name == "sess_id" || name == "dir" ||
+                       name == "client_code" || name == "price" || name == "public_amount" || name == "private_amount";
+            if (message_name == "position")
+                return name == "isin_id" || name == "xpos" || name == "client_code";
+            if (message_name == "fut_instruments")
+                return name == "isin_id" || name == "isin";
+            if (message_name == "fut_sess_contents")
+                return name == "isin_id" || name == "sess_id" || name == "min_step" || name == "settlement_price" ||
+                       name == "limit_up" || name == "limit_down";
+            if (message_name == "part")
+                return name == "client_code" || name == "money_free" || name == "money_amount" || name == "limits_set";
+            return false;
+        };
+        for (const auto& expected : generated::FieldsForTable(table->table_code)) {
+            if (!required(expected.field_name))
+                continue;
+            const auto actual = std::find_if(plan.fields.begin(), plan.fields.end(),
+                                             [&](const auto& f) { return f.field_code == expected.field_code; });
+            if (actual == plan.fields.end() || actual->type_token != expected.type_token) {
+                return {.code = Plaza2ErrorCode::DecodeFailed,
+                        .message = "INCOMPATIBLE_SCHEME " + message_name + "." + std::string(expected.field_name) +
+                                   " expected=" + std::string(expected.type_token) +
+                                   " got=" + (actual == plan.fields.end() ? "MISSING" : actual->type_token)};
+            }
+        }
         state.message_plans.push_back(std::move(plan));
     }
 
-    if (raw && state.message_plans.size() != expected_count)
-        return mismatch();
     if (state.stream_code == generated::StreamCode::kFortsDealsRepl &&
         std::none_of(state.message_plans.begin(), state.message_plans.end(),
                      [](const auto& plan) { return plan.table_code == generated::TableCode::kFortsDealsReplDeal; })) {
@@ -1316,6 +1327,41 @@ struct Plaza2ListenerCallbackState {
         };
     }
 
+    std::vector<std::string_view> required_tables;
+    using enum generated::StreamCode;
+    switch (state.stream_code) {
+    case kFortsTradeRepl:
+        required_tables = {"orders_log", "user_deal", "heartbeat"};
+        break;
+    case kFortsUserorderbookRepl:
+        required_tables = {"orders", "info"};
+        break;
+    case kFortsPosRepl:
+        required_tables = {"position", "info"};
+        break;
+    case kFortsPartRepl:
+        required_tables = {"part"};
+        break;
+    case kFortsRefdataRepl:
+        required_tables = {"session", "fut_instruments", "fut_sess_contents"};
+        break;
+    case kFortsSessionstateRepl:
+        required_tables = {"session_state"};
+        break;
+    case kFortsInstrumentstateRepl:
+        required_tables = {"instrument_state"};
+        break;
+    case kFortsAggrRepl:
+        required_tables = {"orders_aggr", "sys_events"};
+        break;
+    default:
+        break;
+    }
+    for (auto name : required_tables)
+        if (std::none_of(state.message_plans.begin(), state.message_plans.end(),
+                         [&](const auto& p) { return p.msg_name == name; }))
+            return {.code = Plaza2ErrorCode::DecodeFailed,
+                    .message = "INCOMPATIBLE_SCHEME " + std::string(name) + " expected=TABLE got=MISSING"};
     state.scheme_loaded = true;
     return {};
 }
@@ -1325,6 +1371,8 @@ struct Plaza2ListenerCallbackState {
     if (state.handler == nullptr) {
         return {};
     }
+    if (state.shared->settings.listener_event_log)
+        state.shared->settings.listener_event_log(event);
     const auto error = state.handler->on_plaza2_listener_event(event);
     if (auto* observer = state.shared->settings.qualification_observer)
         observer->observe(event, error);
@@ -1344,14 +1392,19 @@ struct Plaza2ListenerCallbackState {
                                     static_cast<std::uint32_t>(state->last_error.code));
         if (state->handler)
             state->handler->on_plaza2_listener_error(state->last_error);
-        return state->last_error.runtime_code == 0 ? kCgErrInternal : state->last_error.runtime_code;
+        // Decode errors are recovered by the owning listener supervisor.
+        // Never make the CGate connection fail because one projection failed.
+        return kCgErrOk;
     };
 
     try {
         const auto* msg = static_cast<CgMsg*>(raw_msg);
+        if (state->last_error && msg->type != kCgMsgOpen && msg->type != kCgMsgClose)
+            return kCgErrOk;
         switch (msg->type) {
         case kCgMsgOpen: {
             state->scheme_loaded = false;
+            state->last_error = {};
             if (const auto error = ensure_listener_scheme_loaded(*state); error) {
                 return fail(error);
             }
@@ -1437,12 +1490,17 @@ struct Plaza2ListenerCallbackState {
             }
             const auto payload = read_clear_deleted_payload(msg->data);
             const auto* plan = find_clear_deleted_runtime_message_plan(state->message_plans, payload.table_idx);
+            if (!plan) {
+                ++state->ignored_message_count;
+                return kCgErrOk;
+            }
             const auto event = Plaza2ListenerEvent{
                 .kind = Plaza2ListenerEventKind::ClearDeleted,
                 .stream_code = state->stream_code,
                 .table_code = plan == nullptr ? kNoTableCode : plan->table_code,
                 .signed_value = payload.table_rev,
                 .clear_deleted_flags = payload.flags,
+                .table_index = payload.table_idx,
             };
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
@@ -1515,12 +1573,8 @@ struct Plaza2ListenerCallbackState {
                 state->message_plans, payload->msg_index,
                 payload->msg_name == nullptr ? std::string_view{} : std::string_view(payload->msg_name));
             if (plan == nullptr) {
-                return fail({
-                    .code = Plaza2ErrorCode::DecodeFailed,
-                    .runtime_code = 0,
-                    .message =
-                        "CG_MSG_STREAM_DATA referenced a runtime message that is not covered by the reviewed baseline",
-                });
+                ++state->ignored_message_count;
+                return kCgErrOk;
             }
 
             if (state->handler && state->handler->wants_raw_replication()) {
@@ -1534,6 +1588,7 @@ struct Plaza2ListenerCallbackState {
                     .kind = Plaza2ListenerEventKind::StreamData,
                     .stream_code = state->stream_code,
                     .table_code = plan->table_code,
+                    .message_name = plan->msg_name,
                     .raw_payload = {static_cast<const std::byte*>(payload->data), payload->data_size},
                     .signed_value = payload->rev,
                     .raw_nulls = {payload->nulls, payload->num_nulls},
@@ -1613,10 +1668,13 @@ struct Plaza2ListenerCallbackState {
                     }
                     decoded.text_value = state->text_storage.back();
                     break;
-                case generated::ValueClass::kTimestamp:
+                case generated::ValueClass::kTimestamp: {
                     decoded.kind = Plaza2DecodedValueKind::Timestamp;
-                    decoded.unsigned_value = to_unix_seconds(read_unaligned<CgTime>(field_ptr));
+                    const auto time_value = read_unaligned<CgTime>(field_ptr);
+                    decoded.unsigned_value = to_unix_seconds(time_value);
+                    decoded.timestamp_ns = decoded.unsigned_value * 1000000000ULL + time_value.msec * 1000000ULL;
                     break;
+                }
                 case generated::ValueClass::kBinary:
                     continue;
                 }
@@ -1629,6 +1687,7 @@ struct Plaza2ListenerCallbackState {
                 .stream_code = state->stream_code,
                 .table_code = plan->table_code,
                 .fields = state->decoded_fields,
+                .message_name = plan->msg_name,
                 .raw_payload = {static_cast<const std::byte*>(payload->data), payload->data_size},
                 .signed_value = payload->rev,
                 .raw_nulls = {payload->nulls, payload->num_nulls},
@@ -1837,7 +1896,7 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
             report.runtime_library_sha256 = detail::sha256_file(*library_path);
             if (!settings.expected_runtime_library_sha256.empty() &&
                 report.runtime_library_sha256 != settings.expected_runtime_library_sha256) {
-                push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, true,
+                push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, false,
                            library_path->filename().string(),
                            "runtime library hash mismatch: expected " + settings.expected_runtime_library_sha256 +
                                ", got " + report.runtime_library_sha256);
@@ -1887,19 +1946,8 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
         report.runtime_identity_recognized = true;
         report.runtime_version = "fake-runtime-v1";
     } else if (report.runtime_library_loadable && report.scheme_file_present) {
-        for (const auto& identity : kReviewedRuntimeIdentities) {
-            if (report.layout.version_markers.spectra_release == identity.spectra_release &&
-                report.scheme_drift.runtime_scheme_sha256 == identity.scheme_sha256 &&
-                report.runtime_library_sha256 == identity.library_sha256) {
-                report.runtime_identity_recognized = true;
-                report.runtime_version = identity.runtime_version;
-                break;
-            }
-        }
-        if (!report.runtime_identity_recognized) {
-            push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedVersion, true, "runtime identity",
-                       "CGate library and SPECTRA scheme combination is not an exact reviewed runtime identity");
-        }
+        report.runtime_identity_recognized = true;
+        report.runtime_version = report.layout.version_markers.spectra_release;
     }
 
     const auto config_dir = resolve_config_dir(settings);
@@ -2204,6 +2252,11 @@ Plaza2Error Plaza2Listener::create(Plaza2Connection& connection, generated::Stre
     return {};
 }
 
+void Plaza2Listener::clear_callback_error() noexcept {
+    if (callback_state_)
+        callback_state_->last_error = {};
+}
+
 Plaza2Error Plaza2Listener::open(std::string_view settings) {
     if (!shared_ || !shared_->api || handle_ == nullptr) {
         return {
@@ -2370,8 +2423,10 @@ Plaza2PublisherMessageResult Plaza2Publisher::post_by_message_name(std::string_v
         ++call_counts_.post;
         const auto post_result = shared_->api->pub_post(handle_, raw_msg, need_reply ? kCgPubNeedReply : 0U);
         outcome.post_error = translate_plaza2_result("cg_pub_post", post_result);
-        outcome.certainty =
-            post_result == kCgErrOk ? Plaza2SubmissionCertainty::Posted : Plaza2SubmissionCertainty::PossiblySent;
+        outcome.certainty = post_result == kCgErrOk ? Plaza2SubmissionCertainty::Posted
+                            : (post_result == kCgErrIncorrectState || post_result == kCgErrInvalidArgument)
+                                ? Plaza2SubmissionCertainty::DefinitelyNotSent
+                                : Plaza2SubmissionCertainty::PossiblySent;
     }
 
     const auto free_result = shared_->api->pub_msgfree(handle_, raw_msg);

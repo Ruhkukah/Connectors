@@ -1,3 +1,4 @@
+#include "moex/plaza2/cgate/plaza2_fake_engine.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
 
 #include <cstdint>

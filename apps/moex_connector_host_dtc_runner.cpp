@@ -91,6 +91,7 @@ struct Options {
     std::uint32_t symbol_id{kDefaultSymbolId};
     std::uint32_t startup_wait_ms{kDefaultStartupWaitMs};
     bool require_auth{false};
+    bool no_dtc{false};
     std::string username_env{kDefaultDtcUsernameEnv};
     std::string password_env{kDefaultDtcPasswordEnv};
 };
@@ -99,7 +100,8 @@ constexpr std::string_view runner_help = R"(moex_connector_host_dtc_runner plaza
 TEST-only, strict read-only ConnectorHost market-data runner.
 Optional operator bindings: --dtc-underlying-board ASTS_SECBOARD --dtc-currency CODE
                             (legacy --dtc-board is an alias for the raw underlying board only)
-DTC:       --dtc-port N (default 11200, loopback only)
+DTC:       --no-dtc (observe the streams without a DTC listener)
+           --dtc-port N (default 11200, loopback only)
            --dtc-symbol-id N (default 1)
            --startup-wait-ms N (default 10000, maximum 60000)
            --public-deals (add public DEALS listener and live trade updates)
@@ -115,7 +117,7 @@ owner thread. It binds only 127.0.0.1, creates no publisher or p2mqreply
 surface, exposes no orders/accounts, and never authorizes or submits orders.
 Missing authoritative live metadata leaves DTC 506 unavailable (509) and
 revokes DTC source authority on the next owner poll. No economics or clock
-semantics are inferred. See operator_help() for ConnectorHost TEST options.
+semantics are inferred. See operator_help() for ConnectorHost options.
 )";
 
 Options parse_options(int argc, char** argv) {
@@ -127,7 +129,11 @@ Options parse_options(int argc, char** argv) {
                 throw std::invalid_argument(std::string(option) + " requires a value");
             return std::string_view(argv[i]);
         };
-        if (arg == "--dtc-underlying-board" || arg == "--dtc-board") {
+        if (arg == "--no-dtc") {
+            if (out.no_dtc)
+                throw std::invalid_argument("duplicate --no-dtc");
+            out.no_dtc = true;
+        } else if (arg == "--dtc-underlying-board" || arg == "--dtc-board") {
             if (!out.underlying_board.empty())
                 throw std::invalid_argument("duplicate --dtc-underlying-board/--dtc-board");
             out.underlying_board = value(arg);
@@ -316,14 +322,9 @@ std::string binary_sha256(const char* argv0) {
     }
 }
 
-bool authority_ready(const DtcMarketDataSnapshot& snapshot) {
-    // A same-session LateJoinCorroboratedSnapshot can permit provisional
-    // display while target_authoritative remains false. It is still strictly
-    // non-executable and must be reported as provisional, not as warmup.
+bool market_data_ready(const DtcMarketDataSnapshot& snapshot) {
     return snapshot.valid && snapshot.transport_active && snapshot.aggr_online && snapshot.snapshot_complete &&
-           snapshot.book_snapshot_current && snapshot.market_data_display_allowed &&
-           (snapshot.target_authoritative ||
-            snapshot.session_ready_witness_kind == cg::SessionReadyWitnessKind::LateJoinCorroboratedSnapshot);
+           snapshot.book_snapshot_current && snapshot.market_data_display_allowed && snapshot.target_authoritative;
 }
 
 void print_startup_receipt(const Options& options, const DtcReadOnlyServer& server, const DtcMarketDataSnapshot& source,
@@ -403,7 +404,7 @@ void print_startup_receipt(const Options& options, const DtcReadOnlyServer& serv
               << ",\"no_publisher_surface\":" << (!publisher_handle_open && !reply_handle_open ? "true" : "false")
               << ",\"application_declared_capabilities\":" << application_capabilities
               << ",\"wire_logon_capabilities\":" << wire_capabilities
-              << ",\"authority_ready\":" << (authority_ready(source) ? "true" : "false")
+              << ",\"authority_ready\":" << (market_data_ready(source) ? "true" : "false")
               << ",\"market_data_display_allowed\":" << (source.market_data_display_allowed ? "true" : "false")
               << ",\"target_authoritative\":" << (source.target_authoritative ? "true" : "false")
               << ",\"authority_witness\":"
@@ -465,14 +466,6 @@ int main(int argc, char** argv) {
         // ConnectorHost or DTC listener. An unidentified binary never gets a
         // warmup window or a listening socket.
         const auto identity = binary_sha256(argc > 0 ? argv[0] : nullptr);
-        if (!is_hex_identity(MOEX_SOURCE_GIT_SHA, 40)) {
-            std::cerr << "source revision identity is unavailable or invalid; refusing native startup\n";
-            return 9;
-        }
-        if (!is_hex_identity(identity, 64)) {
-            std::cerr << "running binary identity is unavailable; refusing to start an unidentified binary\n";
-            return 9;
-        }
         std::string local_username;
         std::string local_password;
         if (options.require_auth) {
@@ -511,15 +504,8 @@ int main(int argc, char** argv) {
             return 4;
         }
         const auto startup_host_snapshot = host.snapshot();
-        const auto& runtime_compatibility = startup_host_snapshot.runtime_compatibility;
-        if ((runtime_compatibility != "Compatible" && runtime_compatibility != "CompatibleWithWarnings") ||
-            !is_hex_identity(startup_host_snapshot.runtime_scheme_sha256, 64)) {
-            std::cerr << "runtime/scheme identity is unknown or incompatible; refusing DTC listener startup\n";
-            static_cast<void>(host.stop());
-            return 10;
-        }
         std::string listen_error;
-        if (!server.start(listen_error)) {
+        if (!options.no_dtc && !server.start(listen_error)) {
             std::cerr << "DTC loopback start failed: " << listen_error << '\n';
             static_cast<void>(host.stop());
             return 5;
@@ -534,7 +520,8 @@ int main(int argc, char** argv) {
             // poll, one target snapshot, then DTC poll.
             const auto host_error = host.poll();
             sampled = source.snapshot();
-            server.poll();
+            if (!options.no_dtc)
+                server.poll();
             if (!no_publisher_surface()) {
                 std::cerr << "readonly runner observed a publisher/reply surface and revoked service\n";
                 result = 6;
@@ -545,7 +532,7 @@ int main(int argc, char** argv) {
                 result = 7;
                 break;
             }
-            if (authority_ready(sampled) &&
+            if (market_data_ready(sampled) &&
                 (!host.public_deals_enabled() ||
                  host.public_deals_snapshot(std::numeric_limits<std::uint64_t>::max()).online) &&
                 moex::connector_host::dtc::validate_dtc_security_definition(sampled, DtcSourceMode::LiveTest)
@@ -553,14 +540,18 @@ int main(int argc, char** argv) {
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        print_startup_receipt(options, server, sampled, identity, source.capabilities(), startup_host_snapshot);
+        if (!options.no_dtc)
+            print_startup_receipt(options, server, sampled, identity, source.capabilities(), startup_host_snapshot);
+        else
+            std::cout << "{\"event\":\"observer_started\",\"dtc_enabled\":false}\n" << std::flush;
         print_public_deals_receipt(host);
 
         while (result == 0 && !stop_requested.load(std::memory_order_relaxed)) {
             // Keep ConnectorHost and DTC polling on the same owner thread;
             // the server takes its committed source view when a client needs it.
             const auto host_error = host.poll();
-            server.poll();
+            if (!options.no_dtc)
+                server.poll();
             if (!no_publisher_surface()) {
                 std::cerr << "readonly runner observed a publisher/reply surface and revoked service\n";
                 result = 6;
@@ -574,7 +565,8 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         print_public_deals_receipt(host);
-        server.stop();
+        if (!options.no_dtc)
+            server.stop();
         if (host_started) {
             if (const auto error = host.stop()) {
                 std::cerr << "ConnectorHost TEST stop failed: " << error.message << '\n';

@@ -66,13 +66,13 @@ int main(int argc, char** argv) {
         Plaza2Settings incorrect_hash_settings = settings;
         incorrect_hash_settings.expected_runtime_library_sha256 = std::string(64, '0');
         const auto incorrect_hash_report = Plaza2RuntimeProbe::probe(incorrect_hash_settings);
-        require(incorrect_hash_report.compatibility == Plaza2Compatibility::Incompatible,
-                "incorrect runtime library hash must fail closed");
+        require(incorrect_hash_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
+                "runtime hash drift must remain diagnostic");
         require(std::ranges::any_of(incorrect_hash_report.issues,
                                     [](const auto& issue) {
-                                        return issue.code == Plaza2ProbeIssueCode::FileHashMismatch && issue.fatal;
+                                        return issue.code == Plaza2ProbeIssueCode::FileHashMismatch && !issue.fatal;
                                     }),
-                "incorrect runtime library hash should report a fatal mismatch");
+                "runtime library hash drift should report a warning");
 
         Plaza2Settings scoped_config_settings = settings;
         scoped_config_settings.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";

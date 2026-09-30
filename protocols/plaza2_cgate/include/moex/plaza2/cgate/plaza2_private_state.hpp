@@ -1,6 +1,6 @@
 #pragma once
 
-#include "moex/plaza2/cgate/plaza2_fake_engine.hpp"
+#include "moex/plaza2/cgate/plaza2_projection_types.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -41,7 +41,7 @@ struct ResumeMarkersSnapshot {
 };
 
 struct StreamHealthSnapshot {
-    generated::StreamCode stream_code{fake::kNoStreamCode};
+    generated::StreamCode stream_code{projection::kNoStreamCode};
     std::string stream_name;
     bool online{false};
     bool snapshot_complete{false};
@@ -66,8 +66,8 @@ struct StreamHealthSnapshot {
 // meaningful only within lifenum; callers must retain both values when
 // recording a readiness or execution-safety receipt.
 struct SourceRowProvenance {
-    generated::StreamCode stream_code{fake::kNoStreamCode};
-    generated::TableCode table_code{fake::kNoTableCode};
+    generated::StreamCode stream_code{projection::kNoStreamCode};
+    generated::TableCode table_code{projection::kNoTableCode};
     std::int64_t repl_rev{0};
     std::uint64_t lifenum{0};
     bool present{false};
@@ -347,7 +347,7 @@ struct OwnTradeSnapshot {
     std::uint64_t moment_ns{0};
 };
 
-class Plaza2PrivateStateProjector final : public fake::CommitListener {
+class Plaza2PrivateStateProjector final : public projection::CommitListener {
   public:
     Plaza2PrivateStateProjector();
     ~Plaza2PrivateStateProjector() override;
@@ -365,6 +365,7 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] const ResumeMarkersSnapshot& resume_markers() const;
     [[nodiscard]] std::span<const StreamHealthSnapshot> stream_health() const;
     [[nodiscard]] std::span<const TradingSessionSnapshot> sessions() const;
+    [[nodiscard]] std::int32_t current_session_id(std::int64_t now_seconds = 0) const;
     [[nodiscard]] std::span<const InstrumentSnapshot> instruments() const;
     [[nodiscard]] std::span<const FutureVcbSnapshot> future_vcb() const;
     [[nodiscard]] std::optional<FutureSessionTerms> find_future_session_terms(std::int32_t isin_id) const;
@@ -392,18 +393,20 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::optional<std::uint64_t> refdata_lifenum() const;
     // Local committed freshness generation, not an exchange session identifier.
     [[nodiscard]] std::uint64_t status_binding_generation() const;
+    void reset_stream_snapshot(generated::StreamCode stream_code);
     void reset_status_snapshot(generated::StreamCode stream_code);
 
     // A regular-table-scoped USERORDERBOOK refresh makes the periodic snapshot
     // inconsistent while preserving listener ONLINE/currentness.
     void invalidate_periodic_snapshot(generated::StreamCode stream_code, generated::TableCode table_code);
 
-    void on_event(const fake::ScenarioSpec& scenario, const fake::EventSpec& event,
-                  const fake::EngineState& state) override;
-    void on_stream_row(const fake::ScenarioSpec& scenario, const fake::EventSpec& event, const fake::RowSpec& row,
-                       std::span<const fake::FieldValueSpec> fields, const fake::EngineState& state) override;
-    void on_transaction_commit(const fake::ScenarioSpec& scenario, const fake::EventSpec& commit_event,
-                               const fake::EngineState& state) override;
+    void on_event(const projection::ScenarioSpec& scenario, const projection::EventSpec& event,
+                  const projection::EngineState& state) override;
+    void on_stream_row(const projection::ScenarioSpec& scenario, const projection::EventSpec& event,
+                       const projection::RowSpec& row, std::span<const projection::FieldValueSpec> fields,
+                       const projection::EngineState& state) override;
+    void on_transaction_commit(const projection::ScenarioSpec& scenario, const projection::EventSpec& commit_event,
+                               const projection::EngineState& state) override;
 
   private:
     struct Impl;

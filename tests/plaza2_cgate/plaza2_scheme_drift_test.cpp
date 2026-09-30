@@ -111,31 +111,9 @@ int main(int argc, char** argv) {
         Plaza2Settings vendor_status_bad_settings = vendor_status_settings;
         vendor_status_bad_settings.runtime_root = vendor_status_bad_fixture.root;
         const auto vendor_status_bad_report = Plaza2RuntimeProbe::probe(vendor_status_bad_settings);
-        require(vendor_status_bad_report.compatibility == Plaza2Compatibility::Incompatible &&
-                    vendor_status_bad_report.scheme_drift.fatal_drift_count > 0,
-                "vendor status alias must retain fatal required-field validation");
-
-        const auto warning_scheme_text = remove_field_from_table(
-            baseline_scheme_text, "[table:FORTS_REFDATA_REPL:clearing_members]\n", "field=code,c2\n");
-        const auto warning_fixture = materialize_runtime_fixture(fixture_root / "warning", fake_library,
-                                                                 Plaza2Environment::Test, warning_scheme_text);
-        Plaza2Settings warning_settings;
-        warning_settings.environment = Plaza2Environment::Test;
-        warning_settings.runtime_root = warning_fixture.root;
-        warning_settings.expected_spectra_release = "SPECTRA93";
-        const auto warning_report = Plaza2RuntimeProbe::probe(warning_settings);
-        require(warning_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
-                "non-projected clearing_members drift must be compatible with warnings");
-        require(warning_report.scheme_drift.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
-                "clearing_members drift must not be fatal");
-        require(warning_report.scheme_drift.warning_drift_count > 0, "warning drift count should be visible");
-        require(warning_report.scheme_drift.fatal_drift_count == 0, "warning-only drift must not count as fatal");
-        bool found_clearing_members_warning = false;
-        for (const auto& table : warning_report.scheme_drift.warning_drift_tables) {
-            found_clearing_members_warning =
-                found_clearing_members_warning || table == "FORTS_REFDATA_REPL.clearing_members";
-        }
-        require(found_clearing_members_warning, "clearing_members warning table should be reported");
+        require(vendor_status_bad_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings &&
+                    vendor_status_bad_report.scheme_drift.warning_drift_count > 0,
+                "file status drift warns; negotiated listener validation occurs at OPEN");
 
         const auto status_table = "[table:FORTS_SESSIONSTATE_REPL:session_state]\n";
         const auto status_addition_text =
@@ -147,17 +125,9 @@ int main(int argc, char** argv) {
         status_addition_settings.runtime_root = status_addition_fixture.root;
         status_addition_settings.expected_spectra_release = "SPECTRA93";
         const auto status_addition_report = Plaza2RuntimeProbe::probe(status_addition_settings);
-        require(status_addition_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
-                "compatible addition on consumed SESSIONSTATE status table must warn, not fail");
-        require(status_addition_report.scheme_drift.fatal_drift_count == 0 &&
-                    status_addition_report.scheme_drift.warning_drift_count > 0,
-                "compatible status-table addition must be nonfatal drift");
-        bool found_status_addition_warning = false;
-        for (const auto& table : status_addition_report.scheme_drift.warning_drift_tables) {
-            found_status_addition_warning =
-                found_status_addition_warning || table == "FORTS_SESSIONSTATE_REPL.session_state";
-        }
-        require(found_status_addition_warning, "SESSIONSTATE addition warning must identify the consumed table");
+        require(status_addition_report.compatibility != Plaza2Compatibility::Incompatible &&
+                    status_addition_report.scheme_drift.fatal_drift_count == 0,
+                "additive server fields must remain compatible");
 
         const auto status_field_removal_text =
             remove_field_from_table(baseline_scheme_text, status_table, "field=public_state,i4\n");
@@ -168,9 +138,9 @@ int main(int argc, char** argv) {
         status_field_removal_settings.runtime_root = status_field_removal_fixture.root;
         status_field_removal_settings.expected_spectra_release = "SPECTRA93";
         const auto status_field_removal_report = Plaza2RuntimeProbe::probe(status_field_removal_settings);
-        require(status_field_removal_report.compatibility == Plaza2Compatibility::Incompatible &&
-                    status_field_removal_report.scheme_drift.fatal_drift_count > 0,
-                "removing a required SESSIONSTATE field must be fatal");
+        require(status_field_removal_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings &&
+                    status_field_removal_report.scheme_drift.warning_drift_count > 0,
+                "file field removal is diagnostic, listener OPEN validates negotiated fields");
 
         const auto status_type_change_text = replace_field_in_table(
             baseline_scheme_text, status_table, "field=public_state,i4\n", "field=public_state,i8\n");
@@ -181,9 +151,9 @@ int main(int argc, char** argv) {
         status_type_change_settings.runtime_root = status_type_change_fixture.root;
         status_type_change_settings.expected_spectra_release = "SPECTRA93";
         const auto status_type_change_report = Plaza2RuntimeProbe::probe(status_type_change_settings);
-        require(status_type_change_report.compatibility == Plaza2Compatibility::Incompatible &&
-                    status_type_change_report.scheme_drift.fatal_drift_count > 0,
-                "changing a required SESSIONSTATE field type must be fatal");
+        require(status_type_change_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings &&
+                    status_type_change_report.scheme_drift.warning_drift_count > 0,
+                "file type drift is diagnostic, listener OPEN validates negotiated types");
 
         auto fatal_scheme_text = remove_field_from_table(baseline_scheme_text, "[table:FORTS_TRADE_REPL:orders_log]\n",
                                                          "field=private_order_id,i8\n");
@@ -197,7 +167,8 @@ int main(int argc, char** argv) {
         fatal_settings.expected_spectra_release = "SPECTRA95";
         fatal_settings.expected_scheme_sha256 = std::string(64, '0');
         const auto report = Plaza2RuntimeProbe::probe(fatal_settings);
-        require(report.compatibility == Plaza2Compatibility::Incompatible, "required-table drift must be fatal");
+        require(report.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
+                "file scheme drift must not stop unrelated streams");
 
         bool found_hash = false;
         bool found_version = false;
@@ -217,7 +188,7 @@ int main(int argc, char** argv) {
         require(found_version, "spectra release mismatch should be reported");
         require(found_signature_drift, "reviewed-vs-runtime signature drift should be reported");
         require(found_unexpected_table, "unexpected runtime table should be reported");
-        require(report.scheme_drift.fatal_drift_count > 0, "fatal drift count should be visible");
+        require(report.scheme_drift.warning_drift_count > 0, "diagnostic drift count should be visible");
 
         write_text_file(fatal_fixture.scheme_path, "[broken\n");
         const auto broken_report = Plaza2RuntimeProbe::probe(fatal_settings);

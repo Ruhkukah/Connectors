@@ -26,7 +26,7 @@ enum class Plaza2TradeSide : std::int32_t {
 
 enum class Plaza2TradeOrderType : std::int32_t {
     Limit = 1,
-    Market = 2,
+    Ioc = 2,
 };
 
 struct AddOrderRequest {

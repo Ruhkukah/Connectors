@@ -2,6 +2,7 @@
 #include "moex/plaza2/cgate/plaza2_certification_evidence.hpp"
 
 #include "plaza2_runtime_test_support.hpp"
+#include "fake_cgate_abi.hpp"
 
 #include <array>
 #include <cstddef>
@@ -44,16 +45,6 @@ struct ReplyCapture final : moex::plaza2::cgate::Plaza2ListenerEventHandler {
 
     std::vector<Captured> events;
 };
-
-std::string read_text(const std::filesystem::path& path) {
-    std::ifstream input(path);
-    if (!input) {
-        throw std::runtime_error("failed to open reviewed ABI lock: " + path.string());
-    }
-    std::ostringstream text;
-    text << input.rdbuf();
-    return text.str();
-}
 
 } // namespace
 
@@ -232,13 +223,11 @@ int main(int argc, char** argv) {
         require(!listener.create(connection, "p2repl://FORTS_TRADE_REPL;scheme=|FILE|scheme/forts_scheme.ini|TRADES"),
                 "listener create should succeed");
 
-        const auto abi_lock = read_text(std::filesystem::path(MOEX_SOURCE_ROOT) / "spec-lock" / "test" / "plaza2" /
-                                        "cgate99" / "abi_x86_64.json");
-        require(abi_lock.find("\"CG_STATE_CLOSED\": 0") != std::string::npos &&
-                    abi_lock.find("\"CG_STATE_ERROR\": 1") != std::string::npos &&
-                    abi_lock.find("\"CG_STATE_OPENING\": 2") != std::string::npos &&
-                    abi_lock.find("\"CG_STATE_ACTIVE\": 3") != std::string::npos,
-                "reviewed CGate 9.9 ABI state lock should retain the expected raw values");
+        // CGate 6.102.0 (Spectra 9.9), LP64 layout from the vendor SDK.
+        require(sizeof(CgMsg) == 32 && sizeof(CgMsgData) == 80 && sizeof(CgTime) == 10 &&
+                    offsetof(CgMsgData, msg_index) == 32 && offsetof(CgMsgData, user_id) == 56 &&
+                    offsetof(CgTime, msec) == 8,
+                "native CGate message ABI layout must match the retained vendor contract");
 
         std::uint32_t listener_state = 99;
         require(!listener.state(listener_state) && listener_state == 0,
