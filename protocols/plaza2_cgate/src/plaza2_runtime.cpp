@@ -589,12 +589,14 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
 }
 
 [[nodiscard]] std::string normalized_runtime_stream_name(std::string_view scheme_name) {
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 5> kRuntimeSchemeAliases = {{
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 7> kRuntimeSchemeAliases = {{
         {"REFDATA", "FORTS_REFDATA_REPL"},
         {"Trade", "FORTS_TRADE_REPL"},
         {"OrderBook", "FORTS_USERORDERBOOK_REPL"},
         {"POS", "FORTS_POS_REPL"},
         {"PART", "FORTS_PART_REPL"},
+        {"SESSIONSTATE", "FORTS_SESSIONSTATE_REPL"},
+        {"INSTRUMENTSTATE", "FORTS_INSTRUMENTSTATE_REPL"},
     }};
     for (const auto& [runtime_name, reviewed_name] : kRuntimeSchemeAliases) {
         if (scheme_name == runtime_name) {
@@ -1260,6 +1262,19 @@ struct Plaza2ListenerCallbackState {
                 continue;
             }
 
+            // Public trades are emitted as economic events. Validate their
+            // named field widths/types before interpreting any native bytes.
+            const auto expected_public_size = descriptor->type_token == "d16.5" ? sizeof(public_wire::Bcd16_5)
+                                              : descriptor->type_token == "t"   ? sizeof(CgTime)
+                                                                                : descriptor->storage_size_bytes;
+            if (table->table_code == generated::TableCode::kFortsDealsReplDeal &&
+                (!field->type || descriptor->type_token != field->type || expected_public_size != field->size ||
+                 field->offset > message->size || field->size > message->size - field->offset)) {
+                return {.code = Plaza2ErrorCode::DecodeFailed,
+                        .message =
+                            "public DEALS schema field type, size or offset mismatch: " + std::string(field_name)};
+            }
+
             plan.fields.push_back({
                 .name = std::string(field_name),
                 .field_code = descriptor->field_code,
@@ -1273,11 +1288,26 @@ struct Plaza2ListenerCallbackState {
             ++ordinal;
         }
 
+        if (table->table_code == generated::TableCode::kFortsDealsReplDeal &&
+            std::any_of(generated::FieldsForTable(table->table_code).begin(),
+                        generated::FieldsForTable(table->table_code).end(), [&](const auto& expected) {
+                            return std::count_if(plan.fields.begin(), plan.fields.end(), [&](const auto& item) {
+                                       return item.field_code == expected.field_code;
+                                   }) != 1;
+                        })) {
+            return {.code = Plaza2ErrorCode::DecodeFailed,
+                    .message = "public DEALS schema does not contain all reviewed deal fields"};
+        }
         state.message_plans.push_back(std::move(plan));
     }
 
     if (raw && state.message_plans.size() != expected_count)
         return mismatch();
+    if (state.stream_code == generated::StreamCode::kFortsDealsRepl &&
+        std::none_of(state.message_plans.begin(), state.message_plans.end(),
+                     [](const auto& plan) { return plan.table_code == generated::TableCode::kFortsDealsReplDeal; })) {
+        return {.code = Plaza2ErrorCode::DecodeFailed, .message = "public DEALS schema is missing deal table"};
+    }
     if (state.message_plans.empty()) {
         return {
             .code = Plaza2ErrorCode::DecodeFailed,

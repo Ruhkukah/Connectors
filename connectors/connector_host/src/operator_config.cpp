@@ -46,12 +46,16 @@ Order quantity is exactly 1, LIMIT; zero position required, at most 4 ticks/5000
     qualify/status reject the send arm. Canonical plan input is byte-exact (no reformatting).
     --read-only-market-data is an internal ConnectorHost runner mode: it skips
     order/account identity inputs and never creates publisher/reply handles.
+    --public-deals adds anonymous FORTS_DEALS_REPL system trades to that mode.
 )";
 }
 
 Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) {
     namespace cg = plaza2::cgate;
     using plaza2::generated::StreamCode;
+
+    if (inputs.public_deals && !inputs.read_only_market_data)
+        throw std::invalid_argument("--public-deals requires --read-only-market-data");
 
     if (inputs.runtime_root.empty() || inputs.scheme_dir.empty() || inputs.config_dir.empty() ||
         inputs.env_open_settings.empty() ||
@@ -87,10 +91,19 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     const auto stream = [&](StreamCode code, std::string name, std::string alias) {
         return Plaza2TestTradeStreamConfig{.stream_code = code,
                                            .settings = "p2repl://" + name + ";scheme=|FILE|" + scheme +
-                                                       "/forts_scheme.ini|" + alias};
+                                                       "/forts_scheme.ini|" + alias,
+                                           .open_settings = "mode=snapshot+online"};
+    };
+    const auto server_stream = [&](StreamCode code, std::string name) {
+        return Plaza2TestTradeStreamConfig{
+            .stream_code = code, .settings = "p2repl://" + name, .open_settings = "mode=snapshot+online"};
     };
     if (inputs.read_only_market_data) {
-        host.private_streams = {stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", "REFDATA")};
+        // The independently proven Card 07 gate uses the runtime-published
+        // server schemes for all read-only listeners.  Mixing explicit client
+        // schemes with server-scheme status listeners leaves the real T1
+        // listeners indefinitely OPENING, even though cg_lsn_open succeeds.
+        host.private_streams = {server_stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL")};
     } else {
         host.private_streams = {stream(StreamCode::kFortsTradeRepl, "FORTS_TRADE_REPL", "Trade"),
                                 stream(StreamCode::kFortsUserorderbookRepl, "FORTS_USERORDERBOOK_REPL", "OrdBook"),
@@ -98,10 +111,16 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
                                 stream(StreamCode::kFortsPartRepl, "FORTS_PART_REPL", "PART"),
                                 stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", "REFDATA")};
     }
-    host.status_streams = {
-        {.stream_code = StreamCode::kFortsSessionstateRepl, .settings = "p2repl://FORTS_SESSIONSTATE_REPL"},
-        {.stream_code = StreamCode::kFortsInstrumentstateRepl, .settings = "p2repl://FORTS_INSTRUMENTSTATE_REPL"}};
-    host.aggr20_stream = stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL", "Aggr");
+    host.status_streams = {{.stream_code = StreamCode::kFortsSessionstateRepl,
+                            .settings = "p2repl://FORTS_SESSIONSTATE_REPL",
+                            .open_settings = "mode=snapshot+online"},
+                           {.stream_code = StreamCode::kFortsInstrumentstateRepl,
+                            .settings = "p2repl://FORTS_INSTRUMENTSTATE_REPL",
+                            .open_settings = "mode=snapshot+online"}};
+    host.aggr20_stream = inputs.read_only_market_data ? server_stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL")
+                                                      : stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL", "Aggr");
+    if (inputs.public_deals)
+        host.public_deals_stream = server_stream(StreamCode::kFortsDealsRepl, "FORTS_DEALS_REPL");
     if (!inputs.read_only_market_data) {
         host.publisher_settings = "p2mq://FORTS_SRV;category=FORTS_MSG;name=" + host.publisher_name +
                                   ";timeout=5000;scheme=|FILE|" + scheme + "/forts_messages.ini|message";
@@ -168,7 +187,8 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
                                                 "--armed-test-session",
                                                 "--armed-test-plaza2",
                                                 "--armed-test-order-send",
-                                                "--read-only-market-data"};
+                                                "--read-only-market-data",
+                                                "--public-deals"};
     const std::set<std::string_view> value_names{"--runtime-root",
                                                  "--scheme-dir",
                                                  "--config-dir",
@@ -224,6 +244,7 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
     Plaza2HostConfigInputs inputs;
     inputs.purpose = order ? HostPurpose::OrderTest : HostPurpose::Qualify;
     inputs.read_only_market_data = flags.contains("--read-only-market-data");
+    inputs.public_deals = flags.contains("--public-deals");
     inputs.runtime_root = required("--runtime-root");
     inputs.scheme_dir = required("--scheme-dir");
     inputs.config_dir = required("--config-dir");

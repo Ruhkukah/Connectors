@@ -207,18 +207,39 @@ void verify_effective_listener_scheme_profiles() {
             read_host.status_streams[0].stream_code == moex::plaza2::generated::StreamCode::kFortsSessionstateRepl &&
             read_host.status_streams[1].stream_code == moex::plaza2::generated::StreamCode::kFortsInstrumentstateRepl &&
             read_host.aggr20_stream.stream_code == moex::plaza2::generated::StreamCode::kFortsAggrRepl &&
-            read_only_client_scheme_count == 2 &&
-            uses_explicit_client_scheme(read_host.private_streams.front().settings) &&
-            uses_explicit_client_scheme(read_host.aggr20_stream.settings) &&
+            read_only_client_scheme_count == 0 &&
+            !uses_explicit_client_scheme(read_host.private_streams.front().settings) &&
+            !uses_explicit_client_scheme(read_host.aggr20_stream.settings) &&
             !uses_explicit_client_scheme(read_host.status_streams[0].settings) &&
-            !uses_explicit_client_scheme(read_host.status_streams[1].settings),
-        "read-only DTC profile builds exactly REFDATA, two status streams and AGGR with 2/2 scheme policy");
+            !uses_explicit_client_scheme(read_host.status_streams[1].settings) &&
+            read_host.private_streams.front().open_settings == "mode=snapshot+online" &&
+            read_host.status_streams[0].open_settings == "mode=snapshot+online" &&
+            read_host.status_streams[1].open_settings == "mode=snapshot+online" &&
+            read_host.aggr20_stream.open_settings == "mode=snapshot+online",
+        "read-only DTC profile builds exactly four server-scheme listeners matching the proven live gate");
     test::require(!read_host.trade_replay_from_pos_anchor && read_host.publisher_name.empty() &&
                       read_host.publisher_settings.empty() && read_host.publisher_open_settings.empty() &&
                       read_host.p2mqreply_settings.empty() && read_host.p2mqreply_open_settings.empty() &&
                       read_only.order.broker_code.empty() && read_only.order.client_code.empty() &&
                       read_only.transport.observation_client_code.empty(),
                   "read-only DTC config has no trading topology and needs no broker/client identity");
+    test::require(read_host.public_deals_stream.settings.empty(), "public trades remain opt-in");
+    inputs.public_deals = true;
+    const auto with_deals = build_plaza2_host_config(inputs);
+    test::require(with_deals.transport.host.public_deals_stream.settings == "p2repl://FORTS_DEALS_REPL" &&
+                      with_deals.transport.host.public_deals_stream.stream_code ==
+                          moex::plaza2::generated::StreamCode::kFortsDealsRepl &&
+                      with_deals.transport.host.public_deals_stream.open_settings == "mode=snapshot+online" &&
+                      with_deals.transport.host.publisher_settings.empty(),
+                  "public deals adds one anonymous server-scheme listener without private trade surfaces");
+    inputs.read_only_market_data = false;
+    bool rejected = false;
+    try {
+        static_cast<void>(build_plaza2_host_config(inputs));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    test::require(rejected, "public-deals switch cannot be used to extend a trading profile");
 }
 
 using DtcBytes = std::vector<std::uint8_t>;
@@ -779,6 +800,10 @@ int main(int argc, char** argv) {
                               readonly.transport.observation_client_code.empty() &&
                               readonly.transport.host.read_only_market_data,
                           "readonly operator mode skips broker/client order identity inputs");
+            readonly_args.push_back("--public-deals");
+            const auto trades = parse_operator_arguments(readonly_args).config;
+            test::require(trades.transport.host.public_deals_stream.settings == "p2repl://FORTS_DEALS_REPL",
+                          "CLI public-deals flag reaches the public listener config");
         }
         if (argc == 3) {
             ConnectorHost host(config_for(fixture));
@@ -1029,6 +1054,7 @@ int main(int argc, char** argv) {
             const auto audit_path = fixture.root / "readonly-listener-audit.log";
             std::filesystem::remove(audit_path);
             ::setenv("MOEX_FAKE_CAPTURE_AUDIT", audit_path.c_str(), 1);
+            ::setenv("MOEX_FAKE_CONN_ASYNC_OPEN", "1", 1);
             std::filesystem::create_directories(config.order.journal_root);
             {
                 std::ofstream checkpoint(config.order.journal_root / "persistent_session.json");
@@ -1040,6 +1066,7 @@ int main(int argc, char** argv) {
             test::require(!std::filesystem::exists(config.order.journal_root / "persistent_session.json.lock"),
                           "read-only construction does not lock or load an order checkpoint");
             test::require(!host.start(), "readonly ConnectorHost TEST start");
+            ::unsetenv("MOEX_FAKE_CONN_ASYNC_OPEN");
             dtc::ConnectorHostDtcMarketDataSource source(host);
             for (unsigned i = 0; i < 12 && !source.snapshot().valid; ++i)
                 test::require(!host.poll(), "readonly ConnectorHost TEST poll");
@@ -1102,6 +1129,12 @@ int main(int argc, char** argv) {
                     return line.starts_with(std::string(call) + " ") && line.find(service) != std::string::npos;
                 });
             };
+            const auto first_process = std::find(audit_lines.begin(), audit_lines.end(), "cg_conn_process");
+            const auto first_listener = std::find_if(audit_lines.begin(), audit_lines.end(),
+                                                     [](const auto& line) { return line.starts_with("cg_lsn_new "); });
+            test::require(first_process != audit_lines.end() && first_listener != audit_lines.end() &&
+                              first_process < first_listener,
+                          "read-only host waits for asynchronous CGate connection ACTIVE before listeners");
             test::require(std::count_if(audit_lines.begin(), audit_lines.end(),
                                         [](const auto& line) { return line.starts_with("cg_lsn_new "); }) == 4,
                           "fake CGate runtime proves exactly four listener creations");
@@ -1132,6 +1165,64 @@ int main(int argc, char** argv) {
             std::filesystem::remove(config.order.journal_root / "persistent_session.json");
             std::filesystem::remove(config.order.journal_root / "persistent_session.json.required");
         }
+        {
+            auto config = read_only_config_for(fixture);
+            config.transport.host.public_deals_stream = {.stream_code =
+                                                             moex::plaza2::generated::StreamCode::kFortsDealsRepl,
+                                                         .settings = "p2repl://FORTS_DEALS_REPL",
+                                                         .open_settings = "mode=snapshot+online"};
+            const auto audit_path = fixture.root / "public-deals-runtime-audit.log";
+            ::setenv("MOEX_FAKE_CAPTURE_AUDIT", audit_path.c_str(), 1);
+            ConnectorHost host(config);
+            test::require(!host.start(), "start five-listener public deals host");
+            dtc::ConnectorHostDtcMarketDataSource source(host);
+            for (unsigned i = 0; i < 20 && (!source.snapshot().valid || !host.public_deals_snapshot().online); ++i)
+                test::require(!host.poll(), "public deals host warmup through actual callback bridge");
+            const auto deals = host.public_deals_snapshot();
+            test::require(source.capabilities().market_data && source.snapshot().valid && deals.valid && deals.online &&
+                              deals.lifenum == 7 && deals.trades.size() == 2,
+                          "native DEALS callback emits only the two committed post-ONLINE trades");
+            test::require(deals.trades[0].deal_id == 9002 && deals.trades[1].deal_id == 9003 &&
+                              deals.trades[0].moment_ns == 1700000000123456790ULL &&
+                              deals.trades[0].price_scaled == 10250012500LL && deals.trades[0].quantity == 3 &&
+                              deals.trades[0].at_bid_or_ask == 0,
+                          "native deals preserve exact decimal, UTC nanoseconds, identity, and unknown side");
+            test::require(!host.has_publisher_or_reply_handles(), "public deals owns no publisher/reply");
+            test::require(!host.stop() && !host.public_deals_snapshot().valid &&
+                              host.public_deals_snapshot().trades.empty(),
+                          "stopping host retires public trades");
+            ::unsetenv("MOEX_FAKE_CAPTURE_AUDIT");
+            std::ifstream audit_input(audit_path);
+            const std::string audit((std::istreambuf_iterator<char>(audit_input)), {});
+            std::size_t listeners = 0, cursor = 0;
+            while ((cursor = audit.find("cg_lsn_new ", cursor)) != std::string::npos) {
+                ++listeners;
+                ++cursor;
+            }
+            test::require(listeners == 5 && audit.find("FORTS_DEALS_REPL") != std::string::npos &&
+                              audit.find("FORTS_TRADE_REPL") == std::string::npos &&
+                              audit.find("cg_pub_new") == std::string::npos &&
+                              audit.find("p2mqreply://") == std::string::npos,
+                          "runtime proves five read-only listeners and no private trades/publisher");
+        }
+        {
+            auto config = read_only_config_for(fixture);
+            config.transport.host.public_deals_stream = {.stream_code =
+                                                             moex::plaza2::generated::StreamCode::kFortsDealsRepl,
+                                                         .settings = "p2repl://FORTS_DEALS_REPL",
+                                                         .open_settings = "mode=snapshot+online"};
+            ::setenv("MOEX_FAKE_DEALS_BAD_SCHEME", "1", 1);
+            ConnectorHost host(config);
+            auto failure = host.start();
+            for (unsigned i = 0; i < 8 && !failure; ++i)
+                failure = host.poll();
+            ::unsetenv("MOEX_FAKE_DEALS_BAD_SCHEME");
+            test::require(failure.code == cg::Plaza2ErrorCode::DecodeFailed &&
+                              failure.message.find("public DEALS schema") != std::string::npos &&
+                              !host.public_deals_snapshot().valid && !host.has_publisher_or_reply_handles(),
+                          "native DEALS field-width mismatch fails closed with callback diagnostic");
+            test::require(!host.stop(), "close failed DEALS schema experiment");
+        }
         // These services may be unavailable without affecting the minimal
         // read-side contract because no listener is configured for them.
         for (const auto service :
@@ -1152,10 +1243,16 @@ int main(int argc, char** argv) {
         }
         // Loss of each configured read source must immediately fence DTC
         // authority and return only after a fresh listener generation.
-        for (const auto service :
-             {"FORTS_REFDATA_REPL", "FORTS_SESSIONSTATE_REPL", "FORTS_INSTRUMENTSTATE_REPL", "FORTS_AGGR20_REPL"}) {
+        for (const auto service : {"FORTS_REFDATA_REPL", "FORTS_SESSIONSTATE_REPL", "FORTS_INSTRUMENTSTATE_REPL",
+                                   "FORTS_AGGR20_REPL", "FORTS_DEALS_REPL"}) {
             auto now = std::chrono::steady_clock::now();
             auto config = read_only_config_for(fixture);
+            const bool public_deals = std::string_view(service) == "FORTS_DEALS_REPL";
+            if (public_deals)
+                config.transport.host.public_deals_stream = {.stream_code =
+                                                                 moex::plaza2::generated::StreamCode::kFortsDealsRepl,
+                                                             .settings = "p2repl://FORTS_DEALS_REPL",
+                                                             .open_settings = "mode=snapshot+online"};
             config.transport.host.recovery_now = [&now] { return now; };
             ConnectorHost host(config);
             test::require(!host.start(), std::string("read-only recovery host start: ") + service);
@@ -1163,6 +1260,7 @@ int main(int argc, char** argv) {
             for (unsigned i = 0; i < 12 && !source.snapshot().valid; ++i)
                 test::require(!host.poll(), std::string("read-only recovery bootstrap: ") + service);
             const auto before = host.snapshot();
+            const auto deals_before = host.public_deals_snapshot();
             test::require(source.snapshot().valid && before.private_streams_ready && before.aggr_ready,
                           std::string("read-only recovery starts from ready state: ") + service);
             if (std::string_view(service) == "FORTS_AGGR20_REPL")
@@ -1173,6 +1271,9 @@ int main(int argc, char** argv) {
             ::unsetenv("MOEX_FAKE_AGGR_ERROR_AFTER_READY");
             ::unsetenv("MOEX_FAKE_PRIVATE_ERROR_STREAM_AFTER_READY");
             const auto lost = host.snapshot();
+            if (public_deals)
+                test::require(!host.public_deals_snapshot().valid && host.public_deals_snapshot().trades.empty(),
+                              "DEALS transport loss retires all retained trade events");
             test::require(lost.state == ConnectorHostState::Recovering && !lost.private_streams_ready &&
                               !lost.aggr_ready && !source.snapshot().valid &&
                               !host.market_data_snapshot().market_data_display_allowed,
@@ -1181,6 +1282,10 @@ int main(int argc, char** argv) {
             for (unsigned i = 0; i < 24 && !source.snapshot().valid; ++i)
                 test::require(!host.poll(), std::string("read-only source recovery: ") + service);
             const auto recovered = host.snapshot();
+            if (public_deals)
+                test::require(host.public_deals_snapshot().online && host.public_deals_snapshot().valid &&
+                                  host.public_deals_snapshot().stream_epoch > deals_before.stream_epoch,
+                              "DEALS recovery needs a fresh ONLINE generation");
             test::require(source.snapshot().valid && recovered.state == ConnectorHostState::Started &&
                               recovered.recovery.generation == before.recovery.generation + 1 &&
                               recovered.private_streams_ready && recovered.private_snapshot_state_ready &&

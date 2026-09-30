@@ -252,6 +252,9 @@ class ConnectorHost final {
     [[nodiscard]] ConnectorHostSnapshot snapshot() const;
     [[nodiscard]] bool has_publisher_or_reply_handles() const noexcept;
     [[nodiscard]] ConnectorHostMarketDataSnapshot market_data_snapshot() const;
+    [[nodiscard]] bool public_deals_enabled() const noexcept;
+    [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
+    public_deals_snapshot(std::uint64_t after_sequence = 0) const;
     [[nodiscard]] plaza2_trade::DeepPassiveProposal first_order_price_proposal() const;
     [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot(bool private_identity = false) const;
     [[nodiscard]] plaza2_trade::PreSendPlan plan() const;

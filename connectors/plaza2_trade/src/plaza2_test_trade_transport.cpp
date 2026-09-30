@@ -633,6 +633,8 @@ struct Plaza2TestSessionHost::Impl {
     explicit Impl(Plaza2TestSessionHostConfig initial)
         : config(std::move(initial)), private_bridge(private_projector),
           aggr_bridge(aggr_projector, config.aggr20_target_session_id),
+          public_deals_bridge(config.public_deals_stream.settings.empty() ? 0 : config.public_deals_target_isin_id,
+                              config.public_deals_stream.settings.empty() ? 0 : config.aggr20_target_session_id),
           rate_gate(config.publisher_messages_per_second) {
         reply_bridge.apply_penalty = [this](std::uint32_t ms) { rate_gate.penalize(publisher_now_ms(), ms); };
     }
@@ -744,6 +746,14 @@ struct Plaza2TestSessionHost::Impl {
                 !config.p2mqreply_settings.empty() || !config.p2mqreply_open_settings.empty()) {
                 return invalid("read-only TEST session host must not configure a publisher or p2mqreply listener");
             }
+        }
+        if (!config.public_deals_stream.settings.empty() &&
+            (!config.read_only_market_data || config.public_deals_target_isin_id <= 0 ||
+             config.aggr20_target_session_id <= 0 ||
+             config.public_deals_stream.stream_code != StreamCode::kFortsDealsRepl ||
+             config.public_deals_stream.settings != "p2repl://FORTS_DEALS_REPL" ||
+             config.public_deals_stream.open_settings != "mode=snapshot+online")) {
+            return invalid("public deals requires a read-only current target and exact fresh server-scheme DEALS URL");
         }
         if (config.runtime.runtime_root.empty() || config.connection_settings.empty() ||
             (!config.read_only_market_data && config.publisher_settings.empty()) || config.private_streams.empty() ||
@@ -873,6 +883,36 @@ struct Plaza2TestSessionHost::Impl {
             return error;
         }
 
+        // CGate opens a connection asynchronously.  The production runtime can
+        // accept listener opens while the connection is still OPENING without
+        // ever advancing those listeners.  Wait for ACTIVE before creating any
+        // replication listener, matching the independently proven Card 07
+        // discovery sequence.
+        const auto connection_deadline = std::chrono::steady_clock::now() + config.listener_bootstrap_watchdog;
+        while (true) {
+            std::uint32_t connection_state = kCgStateClosed;
+            failure_origin = Plaza2FailureOrigin::ConnectionState;
+            if (const auto error = connection.state(connection_state); error) {
+                return error;
+            }
+            if (connection_state == kCgStateActive) {
+                break;
+            }
+            if (connection_state == kCgStateError || connection_state == kCgStateClosed) {
+                return invalid("TEST connection failed before replication listener bootstrap",
+                               Plaza2ErrorCode::AdapterState);
+            }
+            if (std::chrono::steady_clock::now() >= connection_deadline) {
+                return invalid("TEST connection did not reach ACTIVE before replication listener bootstrap",
+                               Plaza2ErrorCode::AdapterState);
+            }
+            std::uint32_t runtime_code = 0;
+            failure_origin = Plaza2FailureOrigin::ConnectionProcess;
+            if (const auto error = connection.process(config.process_timeout_ms, &runtime_code); error) {
+                return error;
+            }
+        }
+
         previously_opened_connection_identity = attempt_connection_identity;
 
         failure_origin = Plaza2FailureOrigin::Bootstrap;
@@ -895,6 +935,8 @@ struct Plaza2TestSessionHost::Impl {
         reply_bridge.clear();
         aggr_projector.reset();
         aggr_bridge.reset();
+        public_deals_bridge.reset();
+        public_deals_bootstrap_started.reset();
         deferred_trade_stream.reset();
         aggr_bridge.set_bootstrap_watchdog(config.listener_bootstrap_watchdog);
         trade_replay_anchor_is_ready = !config.trade_replay_from_pos_anchor;
@@ -936,6 +978,18 @@ struct Plaza2TestSessionHost::Impl {
         failure_origin = Plaza2FailureOrigin::ListenerOpen;
         if (const auto error = aggr_listener.open(config.aggr20_stream.open_settings); error) {
             return error;
+        }
+        if (!config.public_deals_stream.settings.empty()) {
+            failure_service = "FORTS_DEALS_REPL";
+            failure_origin = Plaza2FailureOrigin::ListenerCreate;
+            if (const auto error = public_deals_listener.create(
+                    connection, StreamCode::kFortsDealsRepl, config.public_deals_stream.settings, &public_deals_bridge);
+                error)
+                return error;
+            failure_origin = Plaza2FailureOrigin::ListenerOpen;
+            if (const auto error = public_deals_listener.open(config.public_deals_stream.open_settings); error)
+                return error;
+            public_deals_bootstrap_started = recovery_now();
         }
         if (!config.read_only_market_data && recovery.operation != Plaza2SessionOperation::Recovering) {
             if (const auto error = open_publisher_reply(); error)
@@ -1325,6 +1379,8 @@ struct Plaza2TestSessionHost::Impl {
             return reply_listener.last_callback_error();
         if (aggr_listener.last_callback_error())
             return aggr_listener.last_callback_error();
+        if (public_deals_listener.last_callback_error())
+            return public_deals_listener.last_callback_error();
         for (const auto& managed : private_listeners)
             if (managed.listener.last_callback_error())
                 return managed.listener.last_callback_error();
@@ -1396,6 +1452,15 @@ struct Plaza2TestSessionHost::Impl {
                 failure_health = sample_health();
             return aggr_error;
         }
+        if (public_deals_bootstrap_started) {
+            if (public_deals_bridge.online()) {
+                public_deals_bootstrap_started.reset();
+            } else if (recovery_now() - *public_deals_bootstrap_started >= config.listener_bootstrap_watchdog) {
+                failure_origin = Plaza2FailureOrigin::ListenerState;
+                failure_service = "FORTS_DEALS_REPL";
+                return invalid("public DEALS bootstrap watchdog expired before ONLINE", Plaza2ErrorCode::AdapterState);
+            }
+        }
         if (const auto readiness_error = update_trade_replay_readiness(); readiness_error) {
             if (!failure_health)
                 failure_health = sample_health();
@@ -1446,6 +1511,9 @@ struct Plaza2TestSessionHost::Impl {
             sample(reply_listener, out.reply, Plaza2FailureOrigin::ListenerState);
         }
         sample(aggr_listener, out.aggr, Plaza2FailureOrigin::ListenerState, config.aggr20_stream.stream_code);
+        if (!config.public_deals_stream.settings.empty())
+            sample(public_deals_listener, out.public_deals, Plaza2FailureOrigin::ListenerState,
+                   StreamCode::kFortsDealsRepl);
         out.private_active = !private_listeners.empty();
         for (const auto& item : private_listeners) {
             if (out.private_count == out.private_states.size()) {
@@ -1463,7 +1531,8 @@ struct Plaza2TestSessionHost::Impl {
 
     bool read_side_active(const Plaza2TransportHealth& health) const noexcept {
         return health.valid && health.connection == kCgStateActive && health.aggr == kCgStateActive &&
-               health.private_active;
+               health.private_active &&
+               (config.public_deals_stream.settings.empty() || health.public_deals == kCgStateActive);
     }
 
     void identify_transport_loss(const Plaza2TransportHealth& h) {
@@ -1488,6 +1557,11 @@ struct Plaza2TestSessionHost::Impl {
             failure_service = "FORTS_AGGR20_REPL";
             return;
         }
+        if (!config.public_deals_stream.settings.empty() && lost(h.public_deals)) {
+            failure_origin = Plaza2FailureOrigin::ListenerState;
+            failure_service = "FORTS_DEALS_REPL";
+            return;
+        }
         for (std::size_t i = 0; i < private_listeners.size() && i < h.private_count; ++i) {
             if (lost(h.private_states[i])) {
                 failure_origin = Plaza2FailureOrigin::ListenerState;
@@ -1507,6 +1581,8 @@ struct Plaza2TestSessionHost::Impl {
             return true;
         if (config.read_only_market_data && lost(h.aggr))
             return true;
+        if (!config.public_deals_stream.settings.empty() && lost(h.public_deals))
+            return true;
         for (std::size_t i = 0; i < private_listeners.size() && i < h.private_count; ++i) {
             const auto& managed = private_listeners[i];
             const auto* health = stream_health(managed.stream_code);
@@ -1523,6 +1599,9 @@ struct Plaza2TestSessionHost::Impl {
             !aggr_bridge.snapshot_complete())
             return false;
         if (config.trade_replay_from_pos_anchor && !trade_replay_anchor_is_ready)
+            return false;
+        if (!config.public_deals_stream.settings.empty() &&
+            (h.public_deals != kCgStateActive || !public_deals_bridge.online() || !public_deals_bridge.valid()))
             return false;
         for (const auto& managed : private_listeners) {
             const auto* health = stream_health(managed.stream_code);
@@ -1723,7 +1802,7 @@ struct Plaza2TestSessionHost::Impl {
     Plaza2Error stop() {
         const auto has_resources = started || env.is_open() || connection.is_created() || publisher.is_created() ||
                                    reply_listener.is_created() || aggr_listener.is_created() ||
-                                   !private_listeners.empty();
+                                   public_deals_listener.is_created() || !private_listeners.empty();
         if (!has_resources) {
             return {};
         }
@@ -1734,6 +1813,10 @@ struct Plaza2TestSessionHost::Impl {
         static_cast<void>(reply_listener.close());
         static_cast<void>(reply_listener.destroy());
         reply_listener_is_open = false;
+        static_cast<void>(public_deals_listener.close());
+        static_cast<void>(public_deals_listener.destroy());
+        public_deals_bridge.reset();
+        public_deals_bootstrap_started.reset();
         static_cast<void>(aggr_listener.close());
         static_cast<void>(aggr_listener.destroy());
         aggr_bridge.reset();
@@ -1779,12 +1862,15 @@ struct Plaza2TestSessionHost::Impl {
     cgate::Plaza2PublisherRateGate rate_gate;
     cgate::Plaza2Listener reply_listener;
     cgate::Plaza2Listener aggr_listener;
+    cgate::Plaza2Listener public_deals_listener;
+    std::optional<std::chrono::steady_clock::time_point> public_deals_bootstrap_started;
     std::vector<ManagedPrivateListener> private_listeners;
     std::optional<std::uint64_t> status_refresh_generation;
     private_state::Plaza2PrivateStateProjector private_projector;
     cgate::Plaza2Aggr20BookProjector aggr_projector;
     PrivateProjectorBridge private_bridge;
     cgate::Plaza2Aggr20ListenerBridge aggr_bridge;
+    cgate::Plaza2PublicDealsBridge public_deals_bridge;
     ReplyBridge reply_bridge;
     std::optional<Plaza2TestTradeStreamConfig> deferred_trade_stream;
     std::optional<std::size_t> trade_listener_index;
@@ -1886,6 +1972,17 @@ const private_state::Plaza2PrivateStateProjector& Plaza2TestSessionHost::private
 }
 const cgate::Plaza2Aggr20BookProjector& Plaza2TestSessionHost::aggr20_projector() const noexcept {
     return impl_->aggr_projector;
+}
+cgate::Plaza2PublicDealsSnapshot Plaza2TestSessionHost::public_deals_snapshot(std::uint64_t after_sequence) const {
+    auto result = impl_->public_deals_bridge.snapshot(after_sequence);
+    if (impl_->config.public_deals_stream.settings.empty() || !impl_->started ||
+        impl_->recovery.operation == Plaza2SessionOperation::Recovering ||
+        impl_->recovery.operation == Plaza2SessionOperation::Failed || impl_->listener_callback_error()) {
+        result.online = false;
+        result.valid = false;
+        result.trades.clear();
+    }
+    return result;
 }
 bool Plaza2TestSessionHost::p2mqreply_open() const noexcept {
     return impl_->reply_listener_is_open;
@@ -2027,6 +2124,7 @@ struct Plaza2TestTradeTransport::Impl {
     static Plaza2TestSessionHostConfig host_config_with_target(const Plaza2TestTradeTransportConfig& value) {
         auto result = value.host;
         result.aggr20_target_session_id = value.target_session_id;
+        result.public_deals_target_isin_id = value.target_isin_id;
         return result;
     }
 

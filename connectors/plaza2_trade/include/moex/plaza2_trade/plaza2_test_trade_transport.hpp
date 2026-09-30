@@ -5,6 +5,7 @@
 #include "moex/plaza2_trade/plaza2_deep_passive.hpp"
 
 #include "moex/plaza2/cgate/plaza2_aggr20_md.hpp"
+#include "moex/plaza2/cgate/plaza2_public_deals.hpp"
 #include "moex/plaza2/cgate/plaza2_credential_provider.hpp"
 #include "moex/plaza2/cgate/plaza2_manual_operator_gate.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
@@ -172,6 +173,10 @@ struct Plaza2TestSessionHostConfig {
     // private replication streams above.
     std::vector<Plaza2TestTradeStreamConfig> status_streams;
     Plaza2TestTradeStreamConfig aggr20_stream;
+    // Optional public anonymous trades, independent of private TRADE replay.
+    // An empty URL preserves the existing four-listener read-only profile.
+    Plaza2TestTradeStreamConfig public_deals_stream;
+    std::int64_t public_deals_target_isin_id{0};
     // Optional exact AGGR20 sys_events session identity. Zero accepts a
     // non-zero current session id and is suitable only before refdata
     // negotiation has supplied the target session.
@@ -210,7 +215,7 @@ struct Plaza2TestSessionHostConfig {
 };
 
 struct Plaza2TransportHealth {
-    std::uint32_t connection{0}, publisher{0}, reply{0}, aggr{0};
+    std::uint32_t connection{0}, publisher{0}, reply{0}, aggr{0}, public_deals{0};
     std::array<std::uint32_t, 8> private_states{};
     std::array<plaza2::generated::StreamCode, 8> private_streams{};
     std::size_t private_count{0};
@@ -291,6 +296,8 @@ class Plaza2TestSessionHost final {
     [[nodiscard]] const plaza2::cgate::Plaza2RuntimeProbeReport& probe_report() const noexcept;
     [[nodiscard]] const plaza2::private_state::Plaza2PrivateStateProjector& private_state() const noexcept;
     [[nodiscard]] const plaza2::cgate::Plaza2Aggr20BookProjector& aggr20_projector() const noexcept;
+    [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
+    public_deals_snapshot(std::uint64_t after_sequence = 0) const;
     [[nodiscard]] bool aggr_online() const noexcept;
     [[nodiscard]] bool aggr_snapshot_complete() const noexcept;
     [[nodiscard]] bool aggr_session_data_ready() const noexcept;

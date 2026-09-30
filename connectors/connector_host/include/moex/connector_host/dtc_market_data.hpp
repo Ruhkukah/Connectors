@@ -1,6 +1,7 @@
 #pragma once
 
 #include "moex/connector_host/connector_host.hpp"
+#include "moex/plaza2/cgate/plaza2_public_deals.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -259,6 +260,13 @@ class DtcMarketDataSource {
     virtual ~DtcMarketDataSource() = default;
     [[nodiscard]] virtual DtcMarketDataSnapshot snapshot() const = 0;
     [[nodiscard]] virtual DtcReadOnlyCapabilities capabilities() const noexcept = 0;
+    // Public trades are a distinct committed event stream. Sources which do
+    // not publish that stream remain depth-only by default.
+    [[nodiscard]] virtual plaza2::cgate::Plaza2PublicDealsSnapshot
+    public_deals(std::uint64_t after_sequence = 0) const {
+        (void)after_sequence;
+        return {};
+    }
 };
 
 // Adapter from the single-threaded ConnectorHost owner to the provider-
@@ -270,6 +278,8 @@ class ConnectorHostDtcMarketDataSource final : public DtcMarketDataSource {
 
     [[nodiscard]] DtcMarketDataSnapshot snapshot() const override;
     [[nodiscard]] DtcReadOnlyCapabilities capabilities() const noexcept override;
+    [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
+    public_deals(std::uint64_t after_sequence = 0) const override;
 
   private:
     ConnectorHost& host_;

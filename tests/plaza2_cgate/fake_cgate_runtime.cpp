@@ -349,6 +349,36 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
     using enum TableCode;
 
     switch (stream_code) {
+    case kFortsDealsRepl:
+        return {
+            {.table_code = kFortsDealsReplDeal,
+             .rev = 91,
+             .fields = {
+                 {.field_code = FieldCode::kFortsDealsReplDealReplId, .kind = SignedInteger, .signed_value = 91},
+                 {.field_code = FieldCode::kFortsDealsReplDealReplRev, .kind = SignedInteger, .signed_value = 91},
+                 {.field_code = FieldCode::kFortsDealsReplDealReplAct, .kind = SignedInteger, .signed_value = 0},
+                 {.field_code = FieldCode::kFortsDealsReplDealSessId, .kind = SignedInteger, .signed_value = 321},
+                 {.field_code = FieldCode::kFortsDealsReplDealIsinId, .kind = SignedInteger, .signed_value = 1001},
+                 {.field_code = FieldCode::kFortsDealsReplDealIdDeal, .kind = SignedInteger, .signed_value = 9001},
+                 {.field_code = FieldCode::kFortsDealsReplDealXpos, .kind = SignedInteger, .signed_value = 123},
+                 {.field_code = FieldCode::kFortsDealsReplDealXamount, .kind = SignedInteger, .signed_value = 3},
+                 {.field_code = FieldCode::kFortsDealsReplDealPublicOrderIdBuy,
+                  .kind = SignedInteger,
+                  .signed_value = 42},
+                 {.field_code = FieldCode::kFortsDealsReplDealPublicOrderIdSell,
+                  .kind = SignedInteger,
+                  .signed_value = 43},
+                 {.field_code = FieldCode::kFortsDealsReplDealPrice, .kind = Text, .text = "102500.12500"},
+                 {.field_code = FieldCode::kFortsDealsReplDealMoment, .kind = Timestamp, .unsigned_value = 1700000000},
+                 {.field_code = FieldCode::kFortsDealsReplDealMomentNs,
+                  .kind = UnsignedInteger,
+                  .unsigned_value = 1700000000123456789ULL},
+                 {.field_code = FieldCode::kFortsDealsReplDealNosystem, .kind = SignedInteger, .signed_value = 0},
+                 {.field_code = FieldCode::kFortsDealsReplDealXstatusBuy, .kind = SignedInteger, .signed_value = 0},
+                 {.field_code = FieldCode::kFortsDealsReplDealXstatusSell, .kind = SignedInteger, .signed_value = 0},
+                 {.field_code = FieldCode::kFortsDealsReplDealXstatus2Buy, .kind = SignedInteger, .signed_value = 0},
+                 {.field_code = FieldCode::kFortsDealsReplDealXstatus2Sell, .kind = SignedInteger, .signed_value = 0},
+             }}};
     case kFortsAggrRepl:
         return {
             {
@@ -1418,6 +1448,11 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             owned_field->desc.name = owned_field->name.data();
             owned_field->desc.type = owned_field->type_token.data();
             owned_field->desc.size = size_for_value_class(field->value_class, field->type_token);
+            if (message_script.table_code == TableCode::kFortsDealsReplDeal && field->storage_size_bytes != 0)
+                owned_field->desc.size = field->storage_size_bytes;
+            if (message_script.table_code == TableCode::kFortsDealsReplDeal &&
+                field->field_code == FieldCode::kFortsDealsReplDealMomentNs && fake_flag("MOEX_FAKE_DEALS_BAD_SCHEME"))
+                ++owned_field->desc.size;
             owned_field->desc.offset = offset;
 
             plan.fields.push_back({
@@ -1669,6 +1704,24 @@ std::uint32_t emit_script(FakeListener& listener) {
     }
     if (const auto result = emit_simple_message(listener, kCgMsgP2replOnline); result != kCgErrOk) {
         return result;
+    }
+    if (listener.stream_code == StreamCode::kFortsDealsRepl) {
+        // The snapshot trade above is historical. Only these later committed
+        // rows may become live ticks at the DTC boundary.
+        if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk)
+            return result;
+        for (std::int64_t i = 1; i <= 2; ++i) {
+            auto row = script.front();
+            row.rev += i;
+            find_field(row, FieldCode::kFortsDealsReplDealReplId)->signed_value += i;
+            find_field(row, FieldCode::kFortsDealsReplDealReplRev)->signed_value += i;
+            find_field(row, FieldCode::kFortsDealsReplDealIdDeal)->signed_value += i;
+            find_field(row, FieldCode::kFortsDealsReplDealMomentNs)->unsigned_value += i;
+            if (const auto result = emit_stream_message(listener, row); result != kCgErrOk)
+                return result;
+        }
+        if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk)
+            return result;
     }
     if (listener.stream_code == StreamCode::kFortsAggrRepl) {
         // A current session_data_ready event is a separate transaction after
@@ -1965,7 +2018,7 @@ std::uint32_t cg_conn_open(void* conn, const char*) {
         connection->state = kStateError;
         return kCgErrIncorrectState;
     }
-    connection->state = kStateActive;
+    connection->state = fake_flag("MOEX_FAKE_CONN_ASYNC_OPEN") ? kStateOpening : kStateActive;
     connection->script_emitted = false;
     connection->liveness_event_emitted = false;
     connection->userbook_periodic_clear_emitted = false;
@@ -1994,6 +2047,10 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
         return kCgErrInvalidArgument;
     }
     auto* connection = static_cast<FakeConnection*>(conn);
+    if (connection->state == kStateOpening) {
+        connection->state = kStateActive;
+        return kCgErrTimeout;
+    }
     if (fake_flag("MOEX_FAKE_PROCESS_INVALID_ARGUMENT"))
         return kCgErrInvalidArgument;
     if (fake_flag("MOEX_FAKE_PROCESS_INTERNAL_ACTIVE"))

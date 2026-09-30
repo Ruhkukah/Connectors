@@ -68,8 +68,9 @@ struct DtcReadOnlyServerConfig {
 // POSIX TCP, one bounded client, always binds 127.0.0.1. No worker threads:
 // start(), poll(), stop(), and the source all belong to the same owner thread.
 // poll() never blocks and calls snapshot() only on that owner. Source snapshot()
-// itself must be bounded/nonblocking. It emits complete replacement snapshots,
-// not invented deltas or trades. Call poll regularly (e.g. every 1-10ms).
+// itself must be bounded/nonblocking. It emits complete replacement depth
+// snapshots and committed public-trade events. Call poll regularly (e.g. every
+// 1-10ms).
 // Unknown requests (including ALL trading/account operations) get LOGOFF with
 // DoNotReconnect and are disconnected. No execution dependency is present.
 class DtcReadOnlyServer final {
@@ -85,6 +86,7 @@ class DtcReadOnlyServer final {
     [[nodiscard]] std::uint16_t port() const noexcept;
     [[nodiscard]] std::uint32_t symbol_id() const noexcept;
     [[nodiscard]] bool has_client() const noexcept;
+    [[nodiscard]] bool has_public_deals_subscription() const noexcept;
     [[nodiscard]] std::size_t queued_bytes() const noexcept;
     [[nodiscard]] const std::string& last_error() const noexcept;
     [[nodiscard]] const DtcWireLogonCapabilities& last_wire_logon_capabilities() const noexcept;

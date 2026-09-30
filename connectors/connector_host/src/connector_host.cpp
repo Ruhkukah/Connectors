@@ -1195,6 +1195,22 @@ bool ConnectorHost::has_publisher_or_reply_handles() const noexcept {
     return host.publisher_open() || host.p2mqreply_open();
 }
 
+bool ConnectorHost::public_deals_enabled() const noexcept {
+    return !impl_->config.transport.host.public_deals_stream.settings.empty();
+}
+
+cg::Plaza2PublicDealsSnapshot ConnectorHost::public_deals_snapshot(std::uint64_t after_sequence) const {
+    auto result = impl_->transport.host().public_deals_snapshot(after_sequence);
+    const auto state = impl_->state;
+    if (state == ConnectorHostState::Failed || state == ConnectorHostState::Stopped ||
+        state == ConnectorHostState::Stopping || state == ConnectorHostState::Recovering) {
+        result.valid = false;
+        result.online = false;
+        result.trades.clear();
+    }
+    return result;
+}
+
 ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
     ConnectorHostMarketDataSnapshot out;
     const auto& host = impl_->transport.host();
