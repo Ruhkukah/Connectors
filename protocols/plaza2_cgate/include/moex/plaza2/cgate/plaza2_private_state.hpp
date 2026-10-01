@@ -354,6 +354,17 @@ struct PrivateRowChanges {
     std::vector<OwnTradeSnapshot> trades;
 };
 
+// Read-only capacity metrics for the indexed private projection. No account
+// data is exposed; sampling visits table indexes, never their source rows.
+struct PrivateStorageCapacity {
+    std::size_t order_buckets{}, order_identity_buckets{}, order_view_buckets{};
+    std::size_t trade_buckets{}, trade_view_buckets{};
+    std::size_t source_table_buckets{}, source_row_buckets{};
+    std::size_t order_snapshot_capacity{}, trade_snapshot_capacity{};
+
+    friend bool operator==(const PrivateStorageCapacity&, const PrivateStorageCapacity&) = default;
+};
+
 class Plaza2PrivateStateProjector final : public projection::CommitListener {
   public:
     Plaza2PrivateStateProjector();
@@ -394,6 +405,7 @@ class Plaza2PrivateStateProjector final : public projection::CommitListener {
     // Committed upserts since the previous take, across all listener commits.
     // Technical record deletion/reload does not manufacture terminal orders.
     [[nodiscard]] PrivateRowChanges take_row_changes();
+    [[nodiscard]] PrivateStorageCapacity storage_capacity() const noexcept;
 
     // Typed REFDATA provenance queries for the rows used to qualify a futures
     // target.  The optional is empty when the requested row is not currently

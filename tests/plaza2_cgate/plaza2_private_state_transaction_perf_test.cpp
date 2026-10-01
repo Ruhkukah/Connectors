@@ -103,8 +103,13 @@ int main() {
         std::sort(sorted_updates.begin(), sorted_updates.end());
         std::cout << "150k book single-row update median/p95: " << sorted_updates[10] << "/" << sorted_updates[18]
                   << " us\n";
+        const auto capacity_before_insert = projector.storage_capacity();
+        const auto* view_before_insert = projector.own_orders().data();
         const auto before_insert = std::chrono::steady_clock::now();
+        std::array<std::chrono::steady_clock::time_point, 6> insertion_times;
+        insertion_times[0] = before_insert;
         event(Plaza2ListenerEventKind::TransactionBegin, kFortsTradeRepl);
+        insertion_times[1] = std::chrono::steady_clock::now();
         fields[0].signed_value = fields[1].signed_value = 150001;
         fields[5].signed_value = 0;
         require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
@@ -113,9 +118,13 @@ int main() {
                                                   .fields = fields,
                                                   .signed_value = 150021}),
                 "new order after 150k snapshot");
+        insertion_times[2] = std::chrono::steady_clock::now();
         event(Plaza2ListenerEventKind::TransactionCommit, kFortsTradeRepl);
+        insertion_times[3] = std::chrono::steady_clock::now();
         const auto inserted_orders = projector.own_orders();
+        insertion_times[4] = std::chrono::steady_clock::now();
         const auto inserted_changes = projector.take_row_changes();
+        insertion_times[5] = std::chrono::steady_clock::now();
         require(inserted_orders.size() == 150001 && inserted_orders.back().public_order_id == 150001 &&
                     inserted_changes.orders.size() == 1 && inserted_changes.orders[0].public_order_id == 150001,
                 "new order was not appended to the committed indexed view and delta");
@@ -123,6 +132,28 @@ int main() {
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - before_insert)
                 .count();
         std::cout << "150k book new-order commit and delta: " << insert_us << " us\n";
+        std::cout << "new-order begin/row/commit/view/delta phases: ";
+        for (std::size_t index = 1; index < insertion_times.size(); ++index) {
+            if (index > 1)
+                std::cout << '/';
+            std::cout << std::chrono::duration_cast<std::chrono::microseconds>(insertion_times[index] -
+                                                                               insertion_times[index - 1])
+                             .count();
+        }
+        std::cout << " us\n";
+        const auto capacity_after_insert = projector.storage_capacity();
+        const auto print_capacity = [](const auto& capacity) {
+            std::cout << capacity.order_buckets << '/' << capacity.order_identity_buckets << '/'
+                      << capacity.order_view_buckets << '/' << capacity.source_row_buckets << '/'
+                      << capacity.order_snapshot_capacity;
+        };
+        std::cout << "order/identity/view/revision buckets and snapshot capacity before/after insertion: ";
+        print_capacity(capacity_before_insert);
+        std::cout << " -> ";
+        print_capacity(capacity_after_insert);
+        std::cout << '\n';
+        require(capacity_before_insert == capacity_after_insert && inserted_orders.data() == view_before_insert,
+                "first online insertion rehashed an index or reallocated the committed view");
         event(Plaza2ListenerEventKind::TransactionBegin, kFortsTradeRepl);
         require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
                                                   .stream_code = kFortsTradeRepl,

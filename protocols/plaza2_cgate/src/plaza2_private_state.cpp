@@ -1017,7 +1017,26 @@ struct Plaza2PrivateStateProjector::Impl {
             });
     }
 
+    void reserve_revision_growth(std::initializer_list<TableCode> tables) {
+        auto& revisions = active_source_revisions();
+        for (const auto table : tables) {
+            const auto found = revisions.find(table);
+            if (found != revisions.end())
+                found->second.reserve((found->second.size() + 1) * 2);
+        }
+    }
+
     void rebuild_orders() {
+        // Reserve every large index at the bulk boundary. Online insertions
+        // must not depend on the standard library's bucket growth thresholds.
+        orders_by_key.reserve((orders_by_key.size() + 1) * 2);
+        orders_by_key.refresh_index();
+        orders_by_key.identities.reserve((orders_by_key.identities.size() + 1) * 2);
+        reserve_revision_growth({TableCode::kFortsTradeReplOrdersLog, TableCode::kFortsTradeReplMultilegOrdersLog,
+                                 TableCode::kFortsUserorderbookReplOrders,
+                                 TableCode::kFortsUserorderbookReplMultilegOrders,
+                                 TableCode::kFortsUserorderbookReplOrdersCurrentday,
+                                 TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday});
         order_snapshots = sorted_values<OwnOrderSnapshot>(
             orders_by_key,
             [](const OwnOrderSnapshot& lhs, const OwnOrderSnapshot& rhs) {
@@ -1049,7 +1068,7 @@ struct Plaza2PrivateStateProjector::Impl {
             },
             (orders_by_key.size() + 1) * 2);
         order_view_index.clear();
-        orders_by_key.refresh_index();
+        order_view_index.reserve((order_snapshots.size() + 1) * 2);
         for (std::size_t index = 0; index < order_snapshots.size(); ++index) {
             const auto& row = order_snapshots[index];
             const OrderKey key{.surface = row.from_trade_repl ? OrderSurface::kTrade : OrderSurface::kUserOrderbook,
@@ -1064,6 +1083,8 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void rebuild_trades() {
+        trades_by_key.reserve((trades_by_key.size() + 1) * 2);
+        reserve_revision_growth({TableCode::kFortsTradeReplUserDeal, TableCode::kFortsTradeReplUserMultilegDeal});
         trade_snapshots = sorted_values<OwnTradeSnapshot>(
             trades_by_key,
             [](const OwnTradeSnapshot& lhs, const OwnTradeSnapshot& rhs) {
@@ -1074,6 +1095,7 @@ struct Plaza2PrivateStateProjector::Impl {
             },
             (trades_by_key.size() + 1) * 2);
         trade_view_index.clear();
+        trade_view_index.reserve((trade_snapshots.size() + 1) * 2);
         for (std::size_t index = 0; index < trade_snapshots.size(); ++index) {
             const auto& row = trade_snapshots[index];
             trade_view_index[{row.multileg, row.id_deal}] = index;
@@ -2680,6 +2702,20 @@ PrivateRowChanges Plaza2PrivateStateProjector::take_row_changes() {
     auto changes = std::move(impl_->row_changes);
     impl_->row_changes = {};
     return changes;
+}
+
+PrivateStorageCapacity Plaza2PrivateStateProjector::storage_capacity() const noexcept {
+    PrivateStorageCapacity capacity{.order_buckets = impl_->orders_by_key.bucket_count(),
+                                    .order_identity_buckets = impl_->orders_by_key.identities.bucket_count(),
+                                    .order_view_buckets = impl_->order_view_index.bucket_count(),
+                                    .trade_buckets = impl_->trades_by_key.bucket_count(),
+                                    .trade_view_buckets = impl_->trade_view_index.bucket_count(),
+                                    .source_table_buckets = impl_->source_revisions.bucket_count(),
+                                    .order_snapshot_capacity = impl_->order_snapshots.capacity(),
+                                    .trade_snapshot_capacity = impl_->trade_snapshots.capacity()};
+    for (const auto& [table, rows] : impl_->source_revisions)
+        capacity.source_row_buckets += rows.bucket_count();
+    return capacity;
 }
 
 std::optional<SourceRowProvenance>
