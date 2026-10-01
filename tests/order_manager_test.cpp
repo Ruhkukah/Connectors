@@ -47,8 +47,8 @@ struct Fixture {
             [this](const auto& command, auto id) {
                 sent.push_back({command.command_kind, id, ms});
                 return cg::Plaza2PublisherMessageResult{
-                    .validation_error = validation_error,
                     .certainty = certainty,
+                    .validation_error = validation_error,
                     .post_invoked = certainty != cg::Plaza2SubmissionCertainty::DefinitelyNotSent};
             },
             [this](auto) { return ready; }, [this](auto isin) { return terms(isin); },

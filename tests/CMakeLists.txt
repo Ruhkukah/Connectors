@@ -96,3 +96,5 @@ endif()
 moex_runtime_test(plaza2_session_recovery_test plaza2_cgate/plaza2_session_recovery_test.cpp moex_plaza2_trade_session)
 moex_test(plaza2_private_state_transaction_perf_test plaza2_cgate/plaza2_private_state_transaction_perf_test.cpp
     moex_plaza2_cgate_bridge)
+target_compile_definitions(plaza2_private_state_transaction_perf_test PRIVATE
+    MOEX_RELEASE_PERFORMANCE_ACCEPTANCE=$<CONFIG:Release>)

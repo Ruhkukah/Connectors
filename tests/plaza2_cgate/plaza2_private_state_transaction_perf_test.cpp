@@ -112,7 +112,9 @@ int main() {
         event(Plaza2ListenerEventKind::Online, kFortsPosRepl);
         require(projector.positions().empty() && projector.own_orders().size() == 1, "POS clear crossed streams");
         std::cout << "150000 TRADE rows including commit: " << elapsed << " ms\n";
-#if defined(__linux__) && defined(NDEBUG)
+// Optimized sanitizer builds also define NDEBUG. Their instrumentation overhead
+// is diagnostic; the Linux Release job enforces the unchanged capacity limit.
+#if defined(__linux__) && MOEX_RELEASE_PERFORMANCE_ACCEPTANCE
         require(elapsed < 1000, "150k TRADE snapshot exceeds Linux Release 1 second acceptance");
 #endif
         return 0;
