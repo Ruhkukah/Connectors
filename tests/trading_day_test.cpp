@@ -309,6 +309,41 @@ int main(int argc, char** argv) {
             transaction(control, gen::StreamCode::kFortsTradeRepl,
                         {order(65001, 322, wire<official_cgate99::AddOrder>(evening).ext_id, 1, 65004)});
             poll(restarted);
+            // Lose an Add reply and reject recovery cancels through the native reply listener.
+            test::require(
+                restarted.place({.client_order_id = "lost-reply", .isin_id = 1001, .price = "103000", .quantity = 1})
+                    .empty(),
+                "uncertain Add refused");
+            poll(restarted);
+            const auto uncertain = control.commands().back();
+            const auto uncertain_ext = wire<official_cgate99::AddOrder>(uncertain).ext_id;
+            now += 61s;
+            utc += 61;
+            poll(restarted, 1);
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                const auto recovery = control.commands().back();
+                const auto recovery_wire = wire<official_cgate99::DelUserOrders>(recovery);
+                test::require(recovery.name == "DelUserOrders" && recovery_wire.ext_id == uncertain_ext &&
+                                  recovery_wire.buy_sell == 3,
+                              "native unknown-order recovery malformed");
+                reply(control, recovery, 186, official_cgate99::FORTS_MSG186{.code = 1});
+                poll(restarted, 1);
+                test::require(logical_order(restarted, "lost-reply").find("\"state\":\"Unknown\"") != std::string::npos,
+                              "failed recovery manufactured a working order");
+                if (attempt != 2) {
+                    now += 2s;
+                    utc += 2;
+                    poll(restarted, 1);
+                }
+            }
+            test::require(logical_order(restarted, "lost-reply").find("\"operator_action_required\":true") !=
+                              std::string::npos,
+                          "native recovery exhaustion hid required operator action");
+            const auto bounded = control.commands().size();
+            now += 130s;
+            utc += 130;
+            poll(restarted, 10);
+            test::require(control.commands().size() == bounded, "native failed recovery loop resumed indefinitely");
             test::require(!restarted.stop(), "restarted shutdown failed");
         }
         std::filesystem::copy_file(config.journal_path, argv[2], std::filesystem::copy_options::overwrite_existing);

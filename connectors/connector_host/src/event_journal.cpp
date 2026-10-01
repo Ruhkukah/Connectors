@@ -139,7 +139,7 @@ EventJournal::EventJournal(const std::filesystem::path& path, const std::filesys
         state_lock_fd_ = ::open((state_path_.string() + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
         if (state_lock_fd_ < 0 || ::flock(state_lock_fd_, LOCK_EX | LOCK_NB) != 0)
             throw std::runtime_error("identity state already owned or unavailable");
-        struct stat info{};
+        struct stat info {};
         if (::fstat(fd_, &info) != 0)
             throw std::runtime_error("cannot stat interaction log");
         device_ = static_cast<std::uint64_t>(info.st_dev);

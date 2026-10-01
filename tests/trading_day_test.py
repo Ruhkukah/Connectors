@@ -20,3 +20,6 @@ with tempfile.TemporaryDirectory(prefix="moex-native-day-") as directory:
     assert any(event["event"] == "reply" and event["data"].get("order_id1") == 62003 for event in histories["moved"])
     assert any(event["event"] == "order" and event["data"].get("order_id") == 64001 for event in histories["carry"])
     assert any(event["event"] == "order" and event["data"].get("state") == "Cancelled" for event in histories["recovered:322:64001"])
+    assert sum(event["event"] == "command" and event["data"]["name"] == "DelUserOrders" for event in histories["lost-reply"]) == 3
+    assert any(event["event"] == "order" and event["data"].get("state") == "Unknown" and
+               event["data"].get("operator_action_required") for event in histories["lost-reply"])
