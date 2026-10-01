@@ -388,7 +388,7 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
     }
     changed(found->first);
 }
-void OrderManager::retry_cancel(Command command, Clock::time_point now) {
+void OrderManager::retry_cancel(Command command, Clock::time_point now, bool business_rejection) {
     auto found = orders_.find(command.key);
     if (command.bulk_generation && command.encoded.isin_id) {
         const auto bulk = bulk_cancellations_.find(*command.encoded.isin_id);
@@ -397,8 +397,9 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now) {
     }
     if (found != orders_.end() && bulk_cancellations_.contains(found->second.request.isin_id))
         return; // The mass request superseded this outstanding individual cancel.
-    ++command.failures;
-    if (command.failures >= config_.max_cancel_attempts) {
+    if (business_rejection)
+        ++command.business_failures;
+    if (command.business_failures >= config_.max_cancel_attempts) {
         if (found == orders_.end()) {
             operator_action_required_ = true;
             if (command.bulk_generation && command.encoded.isin_id)
@@ -407,15 +408,16 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now) {
         if (found != orders_.end()) {
             found->second.operator_action_required = true;
             found->second.state = OrderState::Unknown;
-            found->second.last_error = "UNRESOLVED: cancellation attempts exhausted; operator action required";
+            found->second.last_error =
+                "UNRESOLVED: cancellation business-rejection limit reached; operator action required";
             changed(found->first);
         }
-        emit("unresolved", "{\"client_order_id\":" + json_string(command.key) + ",\"attempts\":" +
-                               std::to_string(command.failures) + ",\"operator_action_required\":true}");
+        emit("unresolved", "{\"client_order_id\":" + json_string(command.key) + ",\"business_rejections\":" +
+                               std::to_string(command.business_failures) + ",\"operator_action_required\":true}");
         return;
     }
     auto delay = config_.cancel_retry_base;
-    for (std::uint32_t i = 1; i < command.failures && delay < config_.cancel_retry_max; ++i)
+    for (std::uint32_t i = 1; i < command.business_failures && delay < config_.cancel_retry_max; ++i)
         delay = delay >= config_.cancel_retry_max / 2 ? config_.cancel_retry_max : delay * 2;
     command.user_id = reserve_user_id();
     command.acknowledged = false;
@@ -511,6 +513,7 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
             emit("command_result", result_fields);
             break;
         }
+        const auto sent_kind = command.encoded.command_kind;
         auto sent = std::move(command);
         queue.erase(selected);
         if (found != orders_.end() && found->second.sent_utc_seconds == 0)
@@ -519,8 +522,10 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
         pending_.emplace(sent.user_id, std::move(sent));
         // Commit submission bookkeeping before a user-supplied log callback.
         emit("command_result", result_fields);
-        if (result.certainty == cg::Plaza2SubmissionCertainty::PossiblySent) {
-            // Reconcile immediately, without resending the command.
+        if (result.certainty == cg::Plaza2SubmissionCertainty::PossiblySent &&
+            (sent_kind == Kind::AddOrder || sent_kind == Kind::MoveOrder)) {
+            // Add or replacement identity is uncertain. A DelOrder still
+            // targets its known ID and awaits replication/confirmation retry.
             if (found != orders_.end()) {
                 found->second.state = OrderState::Unknown;
                 found->second.cancel_requested = true;
@@ -593,7 +598,7 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             }
         } else {
             // A flood penalty says the exchange did not process this command.
-            // It does not spend the bounded business/confirmation retry budget.
+            // It does not spend the bounded business-rejection retry budget.
             command.user_id = reserve_user_id();
             command.acknowledged = false;
             command.not_before = now + std::chrono::milliseconds(std::max(1, reply.penalty_remain.value_or(0)));
@@ -617,11 +622,16 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
                         if (order.request.isin_id == *command.encoded.isin_id && order.cancel_requested &&
                             order.order_id == 0)
                             order.absence_reply = true;
+                // Acceptance still needs a subsequent committed TRADE view.
+                // Keep the timer so a lost confirmation cannot strand the group.
+                command.acknowledged = true;
+                command.deadline = now + config_.reply_timeout;
+                pending_.emplace(id, std::move(command));
                 return;
             }
         }
         if (reply.code != 0 || reply.msgid == 100)
-            retry_cancel(std::move(command), now);
+            retry_cancel(std::move(command), now, reply.msgid != 100 && reply.code != 0);
         return;
     }
     auto& order = found->second;
@@ -640,7 +650,7 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
         } else if (command.encoded.command_kind == Kind::MoveOrder)
             order.state = settled_state(order);
         else
-            retry_cancel(std::move(command), now);
+            retry_cancel(std::move(command), now, true);
         changed(found->first);
         return;
     }
@@ -817,7 +827,13 @@ void OrderManager::observe_trade_commit(std::uint64_t sequence) {
         if (!bulk.awaiting_reply && sequence > bulk.after_commit_sequence)
             reconciled.push_back(isin);
     for (const auto isin : reconciled) {
+        const auto generation = bulk_cancellations_.at(isin).generation;
         bulk_cancellations_.erase(isin);
+        const auto reconciled_command = [&](const Command& command) {
+            return command.bulk_generation == generation && command.encoded.isin_id == isin;
+        };
+        std::erase_if(pending_, [&](const auto& entry) { return reconciled_command(entry.second); });
+        std::erase_if(cancels_, reconciled_command);
         for (auto& [key, order] : orders_)
             if (order.request.isin_id == isin && order.cancel_requested && !terminal(order.state))
                 enqueue_cancel(order);

@@ -64,6 +64,7 @@ struct OrderManagerConfig {
     std::uint32_t max_commands_per_second{30};
     std::chrono::milliseconds reply_timeout{60000};
     std::chrono::seconds absence_margin{60};
+    // Only definitive business rejections spend this budget.
     std::uint32_t max_cancel_attempts{3};
     std::chrono::milliseconds cancel_retry_base{1000}, cancel_retry_max{30000};
     RiskLimits risk;
@@ -116,7 +117,7 @@ class OrderManager {
         std::uint32_t user_id{};
         std::int64_t target_order_id{};
         bool acknowledged{};
-        std::uint32_t failures{};
+        std::uint32_t business_failures{};
         std::uint64_t bulk_generation{};
     };
     struct BulkCancellation {
@@ -131,7 +132,7 @@ class OrderManager {
     void recovery_cancel(ManagedOrder& order);
     void enqueue_cancel(ManagedOrder& order);
     void complete_timeout(Command command, Clock::time_point now);
-    void retry_cancel(Command command, Clock::time_point now);
+    void retry_cancel(Command command, Clock::time_point now, bool business_rejection = false);
     void replay_deferred_trades();
     void emit(std::string_view kind, std::string_view fields) noexcept;
     void changed(const std::string& key);

@@ -490,6 +490,110 @@ void cancel_all_and_move_failures() {
     invalid.poll(other, 2000);
     require(other.orders().at("invalid").cancel_requested, "uncertain cancel did not retain risk-reduction intent");
 }
+void uncertain_cancels_preserve_identity_and_budget() {
+    Fixture f;
+    f.config.reply_timeout = std::chrono::milliseconds(100);
+    auto manager = f.manager();
+    require(manager.place(request("known-cancel")).empty(), "known cancellation Add refused");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 1001}, OrderManager::Clock::time_point{});
+    require(manager.cancel("known-cancel").empty(), "known cancellation refused");
+    f.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
+    f.poll(manager, 0);
+    require(manager.orders().at("known-cancel").state != OrderState::Unknown &&
+                manager.orders().at("known-cancel").order_id == 1001 && f.sent.size() == 2,
+            "PossiblySent DelOrder erased known identity or created an ext_id mass cancel");
+    f.certainty = cg::Plaza2SubmissionCertainty::Posted;
+    for (std::int64_t cycle = 0; cycle < 5; ++cycle) {
+        const auto posted_at = cycle * 1100;
+        const auto id = f.sent.back().id;
+        if (cycle % 2 == 0)
+            manager.on_reply(id, {.msgid = 177},
+                             OrderManager::Clock::time_point{} + std::chrono::milliseconds(posted_at));
+        else
+            manager.on_reply(id, {.msgid = 179, .order_id = 9999},
+                             OrderManager::Clock::time_point{} + std::chrono::milliseconds(posted_at));
+        const auto before = f.sent.size();
+        f.poll(manager, posted_at + 100);
+        require(!manager.operator_action_required() &&
+                    manager.orders().at("known-cancel").state != OrderState::Unknown &&
+                    manager.orders().at("known-cancel").order_id == 1001,
+                "lost cancellation reply/confirmation exhausted the business budget or lost identity");
+        f.poll(manager, posted_at + 1099);
+        require(f.sent.size() == before, "uncertain cancellation retry ignored pacing");
+        f.poll(manager, posted_at + 1100);
+        require(f.sent.size() == before + 1 && f.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder &&
+                    f.sent.back().id != id,
+                "uncertain known-ID cancellation stopped retrying");
+    }
+    // The five unknown outcomes leave all genuine business-rejection attempts available.
+    for (std::uint32_t failure = 0; failure < 3; ++failure) {
+        const auto before = f.sent.size();
+        const auto now = f.ms;
+        manager.on_reply(f.sent.back().id, {.msgid = 177, .code = 17},
+                         OrderManager::Clock::time_point{} + std::chrono::milliseconds(now));
+        require(manager.operator_action_required() == (failure == 2),
+                "unknown cancellation outcomes spent the business failure budget");
+        f.poll(manager, now + (failure == 0 ? 1000 : 2000));
+        require(f.sent.size() == before + (failure == 2 ? 0 : 1), "business rejection retry bound changed");
+    }
+
+    Fixture bulk;
+    bulk.config.reply_timeout = std::chrono::milliseconds(100);
+    auto group = bulk.manager();
+    ManagedOrder seed{.request = request("bulk-timeout-seed"), .ext_id = 1};
+    auto live = row(seed, 2001, 3, 1);
+    live.trade_repl_commit_sequence = 1;
+    observe(group, live, true);
+    require(group.cancel_all(42).empty(), "uncertain bulk request refused");
+    bulk.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
+    bulk.poll(group, 0);
+    bulk.certainty = cg::Plaza2SubmissionCertainty::Posted;
+    for (std::int64_t cycle = 0; cycle < 5; ++cycle) {
+        const auto posted_at = cycle * 1100;
+        group.on_timeout(bulk.sent.back().id,
+                         OrderManager::Clock::time_point{} + std::chrono::milliseconds(posted_at + 100));
+        live.trade_repl_commit_sequence = static_cast<std::uint64_t>(cycle + 2);
+        observe(group, live);
+        bulk.poll(group, posted_at + 1100);
+        require(
+            !group.operator_action_required() && bulk.sent.size() == static_cast<std::size_t>(cycle + 2) &&
+                std::all_of(bulk.sent.begin(), bulk.sent.end(),
+                            [](const auto& sent) { return sent.kind == tr::Plaza2TradeCommandKind::DelUserOrders; }),
+            "bulk timeout exhausted business retries or dropped the reconciliation gate");
+    }
+    // A system100 is still an unknown result, including a nonzero system code.
+    const auto before = bulk.sent.size();
+    const auto now = bulk.ms;
+    group.on_reply(bulk.sent.back().id, {.msgid = 100, .code = 1},
+                   OrderManager::Clock::time_point{} + std::chrono::milliseconds(now));
+    bulk.poll(group, now + 1000);
+    require(!group.operator_action_required() && bulk.sent.size() == before + 1 &&
+                bulk.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
+            "system100 spent the bulk business retry budget");
+    for (int confirmation = 0; confirmation < 4; ++confirmation) {
+        const auto accepted_at = bulk.ms;
+        const auto sent_before_confirmation = bulk.sent.size();
+        group.on_reply(bulk.sent.back().id, {.msgid = 186, .num_orders = 1},
+                       OrderManager::Clock::time_point{} + std::chrono::milliseconds(accepted_at), 6);
+        bulk.poll(group, accepted_at + 100);
+        bulk.poll(group, accepted_at + 1099);
+        require(bulk.sent.size() == sent_before_confirmation, "accepted bulk confirmation retry ignored pacing");
+        bulk.poll(group, accepted_at + 1100);
+        require(!group.operator_action_required() && bulk.sent.size() == sent_before_confirmation + 1 &&
+                    bulk.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
+                "accepted bulk without a TRADE commit stopped retrying or lost its group gate");
+    }
+    live.public_amount_rest = 0;
+    live.public_action = 0;
+    live.trade_repl_commit_sequence = 7;
+    observe(group, live);
+    const auto after = bulk.sent.size();
+    bulk.poll(group, bulk.ms + 10000);
+    require(group.orders().at("recovered:100:2001").state == OrderState::Cancelled && bulk.sent.size() == after,
+            "authoritative bulk terminal row did not stop retries");
+}
+
 void cancel_during_move() {
     Fixture f;
     auto manager = f.manager();
@@ -715,7 +819,8 @@ void recovery_bounds_and_wire() {
         while (count < bulk.sent.size()) {
             const auto sent = bulk.sent[count++];
             require(wire<official_cgate99::DelUserOrders>(sent).buy_sell == 3, "cancel-all direction bytes invalid");
-            other.on_reply(sent.id, {.msgid = 100}, OrderManager::Clock::time_point{} + std::chrono::milliseconds(ms));
+            other.on_reply(sent.id, {.msgid = 186, .code = 17},
+                           OrderManager::Clock::time_point{} + std::chrono::milliseconds(ms));
         }
     }
     require(bulk.sent.size() == 3 && other.operator_action_required(), "failed cancel-all retries forever");
@@ -940,6 +1045,7 @@ int main() {
         mass_cancel_priority_and_reconciliation();
         mass_cancel_supersedes_delayed_flood_replies();
         cancel_all_and_move_failures();
+        uncertain_cancels_preserve_identity_and_budget();
         cancel_during_move();
         replication_during_move();
         confirmed_add_without_reply();
