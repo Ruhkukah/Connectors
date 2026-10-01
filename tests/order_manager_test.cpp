@@ -1033,6 +1033,279 @@ void aggregate_risk() {
     require(!manager.place(request("over", 1)).empty(), "recovered own order outside configured ISIN did not count");
     require(manager.cancel_all(42).empty(), "aggregate cap blocked emergency cancellation");
 }
+void terminal_pruning_and_relist() {
+    Fixture f;
+    auto manager = f.manager();
+    require(manager.place(request("carry")).empty(), "carried Add refused");
+    f.poll(manager, 0);
+    const auto old_reply = f.sent.front().id;
+    manager.on_reply(old_reply, {.msgid = 179, .order_id = 9001}, OrderManager::Clock::time_point{});
+    require(manager.cancel("carry").empty(), "carried cancellation refused");
+    f.poll(manager, 1);
+    const auto old_cancel = f.sent.back().id;
+    require(manager.place(request("old-live")).empty(), "old-session live Add refused");
+    f.poll(manager, 2);
+    manager.on_reply(f.sent.back().id, {.msgid = 179, .order_id = 9301}, OrderManager::Clock::time_point{});
+    require(manager.place(request("old-unknown")).empty(), "old-session uncertain Add refused");
+    f.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
+    f.poll(manager, 3);
+    f.certainty = cg::Plaza2SubmissionCertainty::Posted;
+    auto old = row(manager.orders().at("carry"), 9001, 0, 0);
+    observe(manager, old);
+    // A different own row advances the session between delete and relist commits.
+    auto current = old;
+    current.public_order_id = current.private_order_id = 9201;
+    current.ext_id = 200;
+    current.sess_id = 101;
+    current.public_amount_rest = 1;
+    current.public_action = 1;
+    observe(manager, current);
+    require(!manager.orders().contains("carry"), "old-session terminal order was never pruned");
+    require(manager.orders().at("old-live").state == OrderState::Working &&
+                manager.orders().at("old-unknown").state == OrderState::Unknown,
+            "session pruning removed a carried live or unresolved order");
+    f.session = 101;
+    require(!manager.place(request("carry")).empty(), "pruning freed a previously used client identity");
+    manager.on_reply(old_reply, {.msgid = 179, .order_id = 9999}, OrderManager::Clock::time_point{});
+    manager.on_reply(old_cancel, {.msgid = 177}, OrderManager::Clock::time_point{});
+    auto relist = old;
+    relist.public_order_id = relist.private_order_id = 9101;
+    relist.id_ord1 = 9001;
+    relist.sess_id = 101;
+    relist.public_amount_rest = 3;
+    relist.public_action = 1;
+    auto foreign = relist;
+    foreign.client_code = "ABCD999";
+    observe(manager, foreign);
+    require(!manager.orders().contains("carry"), "foreign relist revived a pruned logical order");
+    observe(manager, relist);
+    require(manager.orders().at("carry").order_id == 9101 && manager.orders().at("carry").sess_id == 101 &&
+                manager.orders().at("carry").state == OrderState::PendingCancel &&
+                !manager.orders().contains("recovered:101:9101"),
+            "split-commit id_ord1 relist lost its pruned logical identity");
+    observe(manager, old);
+    require(manager.orders().at("carry").order_id == 9101 && manager.orders().at("carry").remaining == 3,
+            "late old-session deletion hijacked the revived order");
+}
+void cached_risk_move_races() {
+    const auto working = [](Fixture& f, OrderManager& manager) {
+        require(manager.place(request("first", 3)).empty(), "risk-race Add refused");
+        f.poll(manager, 0);
+        manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 1001}, OrderManager::Clock::time_point{});
+    };
+    Fixture queued;
+    queued.config.risk.max_notional_scaled = 60'000'000;
+    auto cancelled = queued.manager();
+    working(queued, cancelled);
+    require(cancelled.move("first", "120", 3).empty(), "queued risk-race Move refused");
+    require(!cancelled.place(request("blocked", 3)).empty(), "queued Move did not reserve replacement exposure");
+    require(cancelled.cancel("first").empty(), "queued Move cancellation refused");
+    require(cancelled.place(request("fits-after-unsent", 3)).empty(),
+            "discarded unsent Move did not release its reservation");
+
+    Fixture flood;
+    flood.config.risk.max_notional_scaled = 60'000'000;
+    auto superseded = flood.manager();
+    working(flood, superseded);
+    require(superseded.move("first", "120", 3).empty(), "sent risk-race Move refused");
+    flood.poll(superseded, 1);
+    const auto move_id = flood.sent.back().id;
+    require(superseded.cancel_all(42).empty(), "risk-race mass cancellation refused");
+    require(!superseded.place(request("still-blocked", 3)).empty(),
+            "mass cancel released a possibly accepted in-flight replacement");
+    superseded.on_reply(move_id, {.msgid = 99, .penalty_remain = 1000},
+                        OrderManager::Clock::time_point{} + std::chrono::milliseconds(2));
+    require(superseded.place(request("fits-after-flood", 3)).empty(),
+            "superseded Move99 did not release rejected replacement exposure");
+
+    Fixture rejected;
+    rejected.config.risk.max_notional_scaled = 60'000'000;
+    auto settled = rejected.manager();
+    working(rejected, settled);
+    require(settled.move("first", "120", 3).empty(), "business-rejected Move refused locally");
+    rejected.poll(settled, 1);
+    settled.on_reply(rejected.sent.back().id, {.msgid = 176, .code = 17},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(2));
+    require(settled.place(request("fits-after-reject", 3)).empty(), "rejected Move retained excess reservation");
+
+    Fixture ambiguous;
+    ambiguous.config.risk.max_notional_scaled = 75'000'000;
+    auto unknown = ambiguous.manager();
+    working(ambiguous, unknown);
+    require(unknown.move("first", "110", 5).empty(), "ambiguous risk-race Move refused");
+    ambiguous.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
+    ambiguous.poll(unknown, 1);
+    const auto uncertain_move = ambiguous.sent.at(1).id;
+    require(!unknown.place(request("over-unknown", 3)).empty() && unknown.place(request("fits-unknown", 2)).empty(),
+            "unknown replacement lost its conservative exposure reservation");
+    unknown.on_timeout(uncertain_move, OrderManager::Clock::time_point{} + std::chrono::milliseconds(61001));
+    observe(unknown, row(unknown.orders().at("first"), 1001, 0, 0));
+    require(unknown.orders().at("first").state == OrderState::Unknown &&
+                !unknown.place(request("after-old-delete", 1)).empty(),
+            "old-ID deletion released an uncertain timed-out replacement reservation");
+    unknown.on_reply(uncertain_move, {.msgid = 176, .order_id1 = 6001},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(61002));
+    require(unknown.orders().at("first").order_id == 6001,
+            "timed-out replacement lost the correlation needed for authoritative176");
+    observe(unknown, row(unknown.orders().at("first"), 6001, 0, 0));
+    require(unknown.place(request("after-replacement-terminal", 3)).empty(),
+            "authoritative replacement termination did not release reserved risk");
+
+    Fixture relisted;
+    relisted.config.risk.max_notional_scaled = 60'000'000;
+    auto next_day = relisted.manager();
+    working(relisted, next_day);
+    require(next_day.move("first", "120", 5).empty(), "day-boundary replacement refused");
+    relisted.poll(next_day, 1);
+    const auto old_move = relisted.sent.back().id;
+    next_day.on_timeout(old_move, OrderManager::Clock::time_point{} + std::chrono::milliseconds(61001));
+    auto linked = row(next_day.orders().at("first"), 7001, 3, 1, 101);
+    linked.id_ord1 = 1001;
+    observe(next_day, linked);
+    next_day.on_reply(old_move, {.msgid = 176, .order_id1 = 6001},
+                      OrderManager::Clock::time_point{} + std::chrono::milliseconds(61002));
+    require(next_day.orders().at("first").order_id == 7001 && next_day.orders().at("first").sess_id == 101 &&
+                next_day.orders().at("first").request.quantity == 3 &&
+                next_day.orders().at("first").request.price == "100" &&
+                next_day.orders().at("first").state == OrderState::PendingCancel,
+            "late old-session176 rolled back a proven next-session relist");
+    relisted.session = 101;
+    require(next_day.place(request("fits-after-relist", 3)).empty(),
+            "proven next-session relist retained old replacement exposure");
+    next_day.on_timeout(old_move, OrderManager::Clock::time_point{} + std::chrono::milliseconds(62000));
+    require(relisted.log.back().starts_with("late_timeout"), "proven relist retained an old Move indefinitely");
+
+    Fixture overflow;
+    overflow.config.risk.max_notional_scaled = INT64_MAX;
+    auto excessive = overflow.manager();
+    ManagedOrder seed{.request = request("huge", 1)};
+    auto huge = row(seed, 8001, INT64_MAX, 1);
+    huge.ext_id = 8001;
+    observe(excessive, huge);
+    auto another = huge;
+    another.public_order_id = another.private_order_id = 8002;
+    another.ext_id = 8002;
+    observe(excessive, another);
+    require(!excessive.place(request("over-cap", 1)).empty(), "large reconstructed exposure overflowed the cap");
+    huge.public_amount_rest = 0;
+    huge.public_action = 0;
+    observe(excessive, huge);
+    require(!excessive.place(request("still-over-cap", 1)).empty(),
+            "subtracting one oversized order prematurely freed aggregate budget");
+    another.public_amount_rest = 0;
+    another.public_action = 0;
+    observe(excessive, another);
+    require(excessive.place(request("budget-restored", 1)).empty(),
+            "two-word exposure total did not release terminated oversized orders");
+
+    Fixture invalid;
+    auto invalid_price = invalid.manager();
+    auto malformed = row(seed, 8101, 1, 1);
+    malformed.ext_id = 8101;
+    malformed.price = "invalid";
+    observe(invalid_price, malformed);
+    require(!invalid_price.place(request("price-unavailable", 1)).empty(),
+            "invalid recovered price did not block risk");
+    malformed.public_amount_rest = 0;
+    malformed.public_action = 0;
+    observe(invalid_price, malformed);
+    require(invalid_price.place(request("price-cleared", 1)).empty(),
+            "terminated invalid price poisoned the risk cache");
+}
+void carried_fill_dedup_across_sessions() {
+    for (const bool relist : {false, true}) {
+        Fixture f;
+        auto manager = f.manager();
+        require(manager.place(request("filled-carry")).empty(), "filled carry Add refused");
+        f.poll(manager, 0);
+        manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 9401}, OrderManager::Clock::time_point{});
+        fill(manager, 9401, 8401, 1);
+        std::int64_t previous = 9401;
+        for (std::int32_t session = 101; session <= 102; ++session) {
+            auto next = row(manager.orders().at("filled-carry"), 9401 + session - 100, 2, 1, session);
+            if (relist)
+                next.id_ord1 = previous;
+            else
+                next.ext_id = session;
+            observe(manager, next);
+            previous = next.public_order_id;
+        }
+        fill(manager, 9401, 8401, 1);
+        require(manager.orders().at("filled-carry").executed == 1,
+                "session pruning discarded fill dedup for a retained carried order");
+    }
+}
+void late_first_seen_carry_counts_for_risk() {
+    Fixture f;
+    f.config.risk.max_notional_scaled = 40'000'000;
+    auto manager = f.manager();
+    ManagedOrder seed{.request = request("new-session", 1)};
+    for (std::int32_t session = 101; session <= 102; ++session) {
+        auto newer = row(seed, 9500 + session, 1, 1, session);
+        newer.ext_id = session;
+        observe(manager, newer);
+    }
+    auto carry = row(seed, 9501, 3, 1, 100);
+    carry.ext_id = 501;
+    carry.public_amount = 3;
+    observe(manager, carry);
+    f.session = 102;
+    require(manager.orders().contains("recovered:100:9501") && !manager.place(request("over-late-carry", 1)).empty(),
+            "late first-seen authoritative carried exposure was ignored because of session age");
+}
+void unknown_flood_reply_still_paces_publisher() {
+    Fixture f;
+    auto manager = f.manager();
+    require(manager.place(request("after-unknown-flood")).empty(), "unknown flood fixture Add refused");
+    manager.on_reply(9999, {.msgid = 99, .penalty_remain = 2000}, OrderManager::Clock::time_point{});
+    f.poll(manager, 1999);
+    require(f.sent.empty(), "valid99 for expired/pruned correlation did not pace the shared publisher");
+    f.poll(manager, 2000);
+    require(f.sent.size() == 1 && !manager.operator_action_required(),
+            "unknown99 spent a business retry or delayed past its penalty");
+}
+void manager_scale() {
+    for (const std::size_t count : {1000U, 150000U}) {
+        OrderManagerConfig config;
+        config.broker_code = "ABCD";
+        config.client_code = "001";
+        config.risk.max_open_orders = 200000;
+        config.risk.max_notional_scaled = INT64_MAX;
+        Fixture terms;
+        OrderManager manager(
+            config,
+            [](const auto&, auto) {
+                return cg::Plaza2PublisherMessageResult{.certainty = cg::Plaza2SubmissionCertainty::PossiblySent};
+            },
+            [](auto) { return true; }, [&](auto isin) { return terms.terms(isin); });
+        std::vector<ps::OwnOrderSnapshot> snapshot;
+        snapshot.reserve(count);
+        ManagedOrder seed{.request = request("scale", 1)};
+        for (std::size_t i = 0; i < count; ++i) {
+            auto current = row(seed, static_cast<std::int64_t>(i + 1), 1, 1);
+            current.ext_id = static_cast<std::int32_t>(i + 1);
+            snapshot.push_back(std::move(current));
+        }
+        manager.observe_orders(snapshot, true);
+        require(manager.place(request("scale-unknown", 1)).empty(), "scale unresolved Add refused");
+        manager.poll(OrderManager::Clock::time_point{}, 1700000000);
+        const auto start = OrderManager::Clock::now();
+        for (int poll = 0; poll < 1000; ++poll)
+            manager.prove_absence(1800000000, true);
+        require(manager.orders().at("scale-unknown").state == OrderState::Unknown,
+                "absence poll guessed an unconfirmed uncertain Add away");
+        const auto proof_end = OrderManager::Clock::now();
+        for (int add = 0; add < 128; ++add)
+            require(manager.place(request("scale-add-" + std::to_string(add), 1)).empty(),
+                    "scale workload rejected a valid under-cap Add");
+        const auto elapsed = OrderManager::Clock::now() - start;
+        const auto proof_us = std::chrono::duration_cast<std::chrono::microseconds>(proof_end - start).count();
+        const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+        std::cout << "manager scale " << count << ": 1000 absence polls=" << proof_us
+                  << "us, plus 128 accepted Adds total=" << total_ms << "ms\n";
+        require(elapsed < std::chrono::milliseconds(500), "manager polling/admission still scales with all orders");
+    }
+}
 } // namespace
 int main() {
     try {
@@ -1057,6 +1330,12 @@ int main() {
         deferred_fill_identity();
         eligible_commands_and_logging();
         aggregate_risk();
+        terminal_pruning_and_relist();
+        cached_risk_move_races();
+        carried_fill_dedup_across_sessions();
+        late_first_seen_carry_counts_for_risk();
+        unknown_flood_reply_still_paces_publisher();
+        manager_scale();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
         return 1;

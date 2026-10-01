@@ -4,6 +4,7 @@
 #include "fake_cgate_control.hpp"
 #include "host_stop_guard.hpp"
 #include "private_delta_host_regression.hpp"
+#include "late_move_host_regression.hpp"
 
 #include <cstdlib>
 #include <dlfcn.h>
@@ -219,6 +220,7 @@ int main(int argc, char** argv) {
             test::require(fake.commands().size() == posts, "shutdown bypassed durability guard to send commands");
         }
         moex::connector_host::private_delta_host_regression(config, fake, root);
+        moex::connector_host::late_move_host_regression(config, fake, root);
         fake.clear(moex::plaza2::test::fake::Option::AggrWrongSession);
         fake.clear(moex::plaza2::test::fake::Option::UserbookOnlyOrder);
         fake.clear(moex::plaza2::test::fake::Option::PubReplyOrderId);

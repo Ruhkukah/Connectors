@@ -83,8 +83,31 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
         }
     }
     std::vector<CgateSession::ReplyEvent> events;
+    bool external_owner{};
     std::function<void(std::uint32_t)> penalty;
     std::function<void(std::string_view, std::string_view)> log;
+    Plaza2Error flood_reply(std::span<const std::byte> payload) {
+        Plaza2TradeValidationResult validation;
+        const auto decoded = Plaza2TradeCodec{}.decode_reply(99, payload, validation);
+        if (!validation.ok() || !decoded.penalty_remain || *decoded.penalty_remain < 0)
+            return {.code = Plaza2ErrorCode::DecodeFailed, .message = "malformed flood reply"};
+        if (penalty)
+            penalty(*decoded.penalty_remain);
+        return {};
+    }
+    static Plaza2TradeCommandKind kind_hint(std::uint32_t msgid) {
+        switch (msgid) {
+        case 176:
+            return Plaza2TradeCommandKind::MoveOrder;
+        case 177:
+            return Plaza2TradeCommandKind::DelOrder;
+        case 186:
+            return Plaza2TradeCommandKind::DelUserOrders;
+        default:
+            // 179 is Add; 99/100 require the owner's retained user_id context.
+            return Plaza2TradeCommandKind::AddOrder;
+        }
+    }
     Plaza2Error on_plaza2_listener_event(const cg::Plaza2ListenerEvent& event) override {
         if (event.kind != cg::Plaza2ListenerEventKind::StreamData && event.kind != cg::Plaza2ListenerEventKind::Timeout)
             return {};
@@ -92,6 +115,18 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
         if (found == pending.end()) {
             if (log)
                 log("unknown_reply", "{\"user_id\":" + std::to_string(event.user_id) + "}");
+            if (external_owner && event.kind == cg::Plaza2ListenerEventKind::StreamData) {
+                // The owner may retain an uncertain Move after this bounded
+                // tracking map expires. Forward evidence without recreating
+                // a Session submission or assuming it is a new command.
+                if (event.message_id == 99)
+                    if (const auto error = flood_reply(event.raw_payload); error)
+                        return error;
+                events.push_back({.user_id = event.user_id,
+                                  .message_id = event.message_id,
+                                  .command_kind = kind_hint(event.message_id),
+                                  .raw_payload = {event.raw_payload.begin(), event.raw_payload.end()}});
+            }
             return {};
         }
         events.push_back({.user_id = event.user_id,
@@ -102,12 +137,8 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
         const auto kind = found->second.kind;
         if (event.message_id == 99) {
             pending.erase(found);
-            Plaza2TradeValidationResult validation;
-            auto decoded = Plaza2TradeCodec{}.decode_reply(99, event.raw_payload, validation);
-            if (!validation.ok() || !decoded.penalty_remain || *decoded.penalty_remain < 0)
-                return {.code = Plaza2ErrorCode::DecodeFailed, .message = "malformed flood reply"};
-            if (penalty)
-                penalty(*decoded.penalty_remain);
+            if (const auto error = flood_reply(event.raw_payload); error)
+                return error;
         }
         const auto expected = kind == Plaza2TradeCommandKind::AddOrder    ? 179
                               : kind == Plaza2TradeCommandKind::DelOrder  ? 177
@@ -172,6 +203,7 @@ struct CgateSession::Impl {
                 rate.penalize(now_ms(), ms);
         };
         replies.log = config.event_log;
+        replies.external_owner = config.publisher_rate_owner == PublisherRateOwner::External;
     }
     auto now() const {
         return config.recovery_now ? config.recovery_now() : std::chrono::steady_clock::now();

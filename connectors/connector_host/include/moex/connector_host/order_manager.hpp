@@ -124,6 +124,24 @@ class OrderManager {
         std::uint64_t generation{}, after_commit_sequence{};
         bool awaiting_reply{true};
     };
+    struct Exposure {
+        std::uint64_t notional{};
+        bool active{}, invalid_price{}, unknown{}, operator_action{};
+        std::int32_t terminal_session{};
+    };
+    struct MoveReservation {
+        std::uint64_t price_units{};
+        std::int32_t quantity{};
+    };
+    // Only the most recent terminal exchange ID is needed for a next-session
+    // id_ord1 link. Historical commands and full order objects are not retained.
+    struct TerminalLink {
+        std::string key, price;
+        std::int32_t isin_id{}, sess_id{}, ext_id{}, quantity{};
+        plaza2_trade::Plaza2TradeSide side{};
+        std::int64_t executed{}, sent_utc_seconds{};
+        bool cancel_requested{}, execution_baseline_known{};
+    };
     [[nodiscard]] std::string check_risk(const OrderRequest& request, std::size_t extra_orders,
                                          std::string_view exclude_key = {}) const;
     [[nodiscard]] Command encode(plaza2_trade::Plaza2TradeCommandRequest request, std::string key);
@@ -136,6 +154,11 @@ class OrderManager {
     void replay_deferred_trades();
     void emit(std::string_view kind, std::string_view fields) noexcept;
     void changed(const std::string& key);
+    void refresh_exposure(const std::string& key);
+    void erase_exposure(const std::string& key);
+    [[nodiscard]] Exposure exposure(const std::string& key, const ManagedOrder& order) const;
+    void advance_session(std::int32_t session);
+    void prune_terminal();
     OrderManagerConfig config_;
     Send send_;
     Ready ready_;
@@ -143,6 +166,16 @@ class OrderManager {
     Log log_;
     plaza2::cgate::Plaza2PublisherRateGate rate_;
     std::map<std::string, ManagedOrder> orders_;
+    std::unordered_map<std::string, Exposure> exposures_;
+    std::unordered_map<std::string, MoveReservation> move_reservations_;
+    std::set<std::string> unknown_orders_, operator_orders_, used_client_ids_;
+    std::map<std::int32_t, std::set<std::string>> terminal_orders_;
+    std::unordered_map<std::int64_t, TerminalLink> terminal_links_;
+    std::size_t active_orders_{}, invalid_prices_{};
+    // Each order contributes at most cap+1; a two-word sum supports subtraction
+    // even when reconstructed exposure is well above the configured cap.
+    std::uint64_t notional_low_{}, notional_high_{};
+    std::int32_t current_session_{}, previous_session_{};
     std::unordered_map<std::int64_t, std::string> order_index_;
     std::unordered_map<std::int32_t, std::string> ext_index_;
     std::set<std::tuple<std::int32_t, std::int64_t, bool>> deals_;

@@ -2,7 +2,9 @@
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
 #include "plaza2_trade_test_support.hpp"
+#include "fixtures/cgate99_messages.hpp"
 #include <cstdlib>
+#include <cstring>
 #include <dlfcn.h>
 #include <iostream>
 using namespace moex::plaza2_trade;
@@ -267,6 +269,57 @@ int main(int argc, char** argv) {
         require(limited.post_command(command, 202).certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent,
                 "standalone rate protection missing");
         require(!limited.stop(), "standalone stop");
+        for (const auto owner : {PublisherRateOwner::Session, PublisherRateOwner::External}) {
+            test::fake::Scenario scenario;
+            scenario.suppress_auto_replies = true;
+            fake.configure(scenario);
+            auto late_config = config;
+            late_config.publisher_rate_owner = owner;
+            late_config.reply_timeout_ms = 10;
+            CgateSession late(late_config);
+            require(!late.start(), "late reply tracking session start");
+            for (int i = 0; i < 10; ++i) {
+                now += std::chrono::seconds(1);
+                require(!late.poll(), "late reply tracking warmup");
+            }
+            auto move = test_support::make_move_order();
+            move.isin_id = 1001;
+            move.regime = 3;
+            move.order_id2 = 0;
+            move.amount2 = 0;
+            move.price1 = "103000";
+            const auto encoded = Plaza2TradeCodec{}.encode(move);
+            require(encoded.validation.ok(), "late Move fixture codec validation");
+            require(late.post_command(encoded, 401).certainty == cgate::Plaza2SubmissionCertainty::Posted,
+                    "late Move fixture post");
+            now += std::chrono::milliseconds(20);
+            require(!late.poll(), "late Move tracking expiry");
+            require(late.take_reply_events().empty(), "tracking expiry manufactured a native timeout");
+            official_cgate99::FORTS_MSG176 reply{};
+            reply.order_id1 = 64001;
+            std::vector<std::byte> payload(sizeof(reply));
+            std::memcpy(payload.data(), &reply, payload.size());
+            fake.enqueue({.kind = test::fake::EventKind::Reply, .message_id = 176, .user_id = 401, .payload = payload});
+            require(!late.poll(), "expired correlation late176 pump");
+            const auto replies = late.take_reply_events();
+            if (owner == PublisherRateOwner::External) {
+                require(replies.size() == 1 && replies.front().user_id == 401 && replies.front().message_id == 176 &&
+                            replies.front().command_kind == Plaza2TradeCommandKind::MoveOrder &&
+                            replies.front().raw_payload == payload,
+                        "external owner lost176 after session correlation expired");
+                fake.enqueue({.kind = test::fake::EventKind::Reply,
+                              .message_id = 99,
+                              .user_id = 499,
+                              .payload = {std::byte{1}, std::byte{2}, std::byte{3}}});
+                require(!late.poll(), "unknown malformed99 pump");
+                const auto malformed = late.take_reply_events();
+                require(malformed.empty() && late.runtime_health().reply == 1,
+                        "unknown malformed99 bypassed existing flood validation");
+            } else
+                require(replies.empty(), "standalone session forwarded an unknown late reply");
+            require(!late.stop(), "late reply tracking session stop");
+        }
+        fake.configure({});
         config.publisher_rate_owner = PublisherRateOwner::External;
         CgateSession external(config);
         require(!external.start(), "external rate session start");

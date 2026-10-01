@@ -23,6 +23,16 @@ std::string order_json(const std::string& key, const ManagedOrder& order) {
            ",\"operator_action_required\":" + (order.operator_action_required ? "true" : "false") +
            ",\"price\":" + json_string(order.request.price) + ",\"error\":" + json_string(order.last_error) + "}";
 }
+std::uint64_t absolute_units(std::int64_t units) {
+    return units < 0 ? std::uint64_t(-(units + 1)) + 1 : std::uint64_t(units);
+}
+std::uint64_t capped_notional(std::uint64_t units, std::int64_t quantity, std::uint64_t cap) {
+    if (quantity <= 0)
+        return 0;
+    if (units > cap / static_cast<std::uint64_t>(quantity))
+        return cap + 1;
+    return units * static_cast<std::uint64_t>(quantity);
+}
 OrderState settled_state(const ManagedOrder& order) {
     if (order.remaining <= 0)
         return order.executed >= order.request.quantity ? OrderState::Filled : OrderState::Cancelled;
@@ -76,7 +86,117 @@ void OrderManager::emit(std::string_view kind, std::string_view fields) noexcept
         config_.risk.kill_switch = true;
     }
 }
+OrderManager::Exposure OrderManager::exposure(const std::string& key, const ManagedOrder& order) const {
+    Exposure result;
+    result.unknown = order.state == OrderState::Unknown;
+    result.operator_action = order.operator_action_required;
+    if (terminal(order.state)) {
+        result.terminal_session = order.sess_id;
+        return result;
+    }
+    result.active = true;
+    const auto price = plaza2::private_state::parse_session_decimal(order.request.price);
+    result.invalid_price = !price;
+    auto units = price ? absolute_units(price->units) : 0;
+    auto remaining = result.unknown ? std::max(order.remaining, std::int64_t(order.request.quantity) - order.executed)
+                                    : order.remaining;
+    if (const auto move = move_reservations_.find(key); move != move_reservations_.end()) {
+        units = std::max(units, move->second.price_units);
+        remaining = std::max(remaining, std::int64_t(move->second.quantity) - order.executed);
+    }
+    result.notional = capped_notional(units, remaining, config_.risk.max_notional_scaled);
+    return result;
+}
+void OrderManager::erase_exposure(const std::string& key) {
+    const auto cached = exposures_.find(key);
+    if (cached == exposures_.end())
+        return;
+    const auto& old = cached->second;
+    active_orders_ -= old.active;
+    invalid_prices_ -= old.invalid_price;
+    if (notional_low_ < old.notional)
+        --notional_high_;
+    notional_low_ -= old.notional;
+    unknown_orders_.erase(key);
+    operator_orders_.erase(key);
+    if (const auto terminal = terminal_orders_.find(old.terminal_session); terminal != terminal_orders_.end()) {
+        terminal->second.erase(key);
+        if (terminal->second.empty())
+            terminal_orders_.erase(terminal);
+    }
+    exposures_.erase(cached);
+}
+void OrderManager::refresh_exposure(const std::string& key) {
+    erase_exposure(key);
+    const auto& order = orders_.at(key);
+    if (terminal(order.state))
+        move_reservations_.erase(key);
+    const auto next = exposure(key, order);
+    exposures_.emplace(key, next);
+    active_orders_ += next.active;
+    invalid_prices_ += next.invalid_price;
+    const auto old_low = notional_low_;
+    notional_low_ += next.notional;
+    notional_high_ += notional_low_ < old_low;
+    if (next.unknown)
+        unknown_orders_.insert(key);
+    if (next.operator_action)
+        operator_orders_.insert(key);
+    if (next.terminal_session > 0)
+        terminal_orders_[next.terminal_session].insert(key);
+}
+void OrderManager::advance_session(std::int32_t session) {
+    if (session <= current_session_)
+        return;
+    previous_session_ = current_session_;
+    current_session_ = session;
+    // Retain one observed prior session for delayed split-transaction relists.
+    std::erase_if(terminal_links_, [&](const auto& entry) { return entry.second.sess_id < previous_session_; });
+    prune_terminal();
+    std::erase_if(deferred_orders_, [&](const auto& row) { return row.first.first < previous_session_; });
+    std::erase_if(deferred_trades_, [&](const auto& row) { return row.first.first < previous_session_; });
+}
+void OrderManager::prune_terminal() {
+    bool pruned{};
+    while (!terminal_orders_.empty() && terminal_orders_.begin()->first < current_session_) {
+        const auto key = *terminal_orders_.begin()->second.begin();
+        const auto& order = orders_.at(key);
+        if (order.order_id > 0 && order.sess_id >= previous_session_)
+            terminal_links_[order.order_id] = {.key = key,
+                                               .price = order.request.price,
+                                               .isin_id = order.request.isin_id,
+                                               .sess_id = order.sess_id,
+                                               .ext_id = order.ext_id,
+                                               .quantity = order.request.quantity,
+                                               .side = order.request.side,
+                                               .executed = order.executed,
+                                               .sent_utc_seconds = order.sent_utc_seconds,
+                                               .cancel_requested = order.cancel_requested,
+                                               .execution_baseline_known = order.execution_baseline_known};
+        for (const auto id : order.order_ids) {
+            if (const auto index = order_index_.find(id); index != order_index_.end() && index->second == key)
+                order_index_.erase(index);
+            filled_by_id_.erase(id);
+        }
+        if (const auto index = ext_index_.find(order.ext_id); index != ext_index_.end() && index->second == key)
+            ext_index_.erase(index);
+        move_reservations_.erase(key);
+        erase_exposure(key);
+        orders_.erase(key);
+        pruned = true;
+    }
+    if (pruned) {
+        // Scan each command queue once, rather than once per pruned order.
+        const auto orphan = [&](const Command& command) {
+            return !command.key.empty() && !orders_.contains(command.key);
+        };
+        std::erase_if(adds_, orphan);
+        std::erase_if(cancels_, orphan);
+        std::erase_if(pending_, [&](const auto& entry) { return orphan(entry.second); });
+    }
+}
 void OrderManager::changed(const std::string& key) {
+    refresh_exposure(key);
     emit("order", order_json(key, orders_.at(key)));
 }
 bool OrderManager::has_outstanding_command(std::string_view key, Kind kind) const {
@@ -87,9 +207,7 @@ bool OrderManager::has_outstanding_command(std::string_view key, Kind kind) cons
            std::any_of(pending_.begin(), pending_.end(), [&](const auto& item) { return same(item.second); });
 }
 bool OrderManager::operator_action_required() const noexcept {
-    return operator_action_required_ || std::any_of(orders_.begin(), orders_.end(), [](const auto& item) {
-               return item.second.operator_action_required;
-           });
+    return operator_action_required_ || !operator_orders_.empty();
 }
 
 std::string OrderManager::check_risk(const OrderRequest& request, std::size_t extra,
@@ -100,9 +218,7 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
         return "order entry not ready";
     if (request.quantity <= 0 || request.quantity > config_.risk.max_quantity)
         return "quantity exceeds configured limit";
-    const auto active = static_cast<std::size_t>(
-        std::count_if(orders_.begin(), orders_.end(), [](const auto& value) { return !terminal(value.second.state); }));
-    if (active + extra > config_.risk.max_open_orders)
+    if (extra > config_.risk.max_open_orders || active_orders_ > config_.risk.max_open_orders - extra)
         return "open-order limit exceeded";
     const auto price = plaza2::private_state::parse_session_decimal(request.price);
     const auto terms = terms_(request.isin_id);
@@ -113,48 +229,35 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
         return "price outside exchange limits";
     if (price->units % terms->min_step->units != 0)
         return "price is not tick aligned";
-    const auto absolute = price->units < 0 ? std::uint64_t(-(price->units + 1)) + 1 : std::uint64_t(price->units);
-    auto budget = static_cast<std::uint64_t>(config_.risk.max_notional_scaled);
-    const auto charge = [&](std::uint64_t units, std::int64_t quantity) {
-        if (quantity <= 0)
-            return true;
-        if (units > budget / static_cast<std::uint64_t>(quantity))
-            return false;
-        budget -= units * static_cast<std::uint64_t>(quantity);
-        return true;
-    };
-    auto proposed_remaining = std::int64_t(request.quantity);
-    if (const auto current = orders_.find(std::string(exclude_key)); current != orders_.end())
-        proposed_remaining = std::max<std::int64_t>(0, proposed_remaining - current->second.executed);
-    if (!charge(absolute, proposed_remaining))
-        return "aggregate outstanding-order notional exceeds configured limit";
-    for (const auto& [key, order] : orders_) {
-        if (key == exclude_key || terminal(order.state))
-            continue;
-        const auto live_price = plaza2::private_state::parse_session_decimal(order.request.price);
-        if (!live_price)
-            return "outstanding-order price unavailable";
-        auto units =
-            live_price->units < 0 ? std::uint64_t(-(live_price->units + 1)) + 1 : std::uint64_t(live_price->units);
-        auto remaining = order.state == OrderState::Unknown
-                             ? std::max(order.remaining, std::int64_t(order.request.quantity) - order.executed)
-                             : order.remaining;
-        const auto reserve_replacement = [&](const Command& command) {
-            if (command.key != key || command.encoded.command_kind != Kind::MoveOrder)
-                return;
-            const auto replacement = plaza2::private_state::parse_session_decimal(command.replacement_price);
-            if (replacement)
-                units = std::max(units, replacement->units < 0 ? std::uint64_t(-(replacement->units + 1)) + 1
-                                                               : std::uint64_t(replacement->units));
-            remaining = std::max(remaining, std::int64_t(command.replacement_quantity) - order.executed);
-        };
-        for (const auto& command : adds_)
-            reserve_replacement(command);
-        for (const auto& [id, command] : pending_)
-            reserve_replacement(command);
-        if (!charge(units, remaining))
-            return "aggregate outstanding-order notional exceeds configured limit";
+    auto low = notional_low_, high = notional_high_;
+    auto invalid = invalid_prices_;
+    if (const auto excluded = exposures_.find(std::string(exclude_key)); excluded != exposures_.end()) {
+        invalid -= excluded->second.invalid_price;
+        if (low < excluded->second.notional)
+            --high;
+        low -= excluded->second.notional;
     }
+    if (invalid)
+        return "outstanding-order price unavailable";
+    auto units = absolute_units(price->units);
+    auto proposed_remaining = std::int64_t(request.quantity);
+    if (const auto current = orders_.find(std::string(exclude_key)); current != orders_.end()) {
+        const auto& order = current->second;
+        proposed_remaining = std::max<std::int64_t>(0, proposed_remaining - order.executed);
+        const auto old_price = plaza2::private_state::parse_session_decimal(order.request.price);
+        if (!old_price)
+            return "outstanding-order price unavailable";
+        units = std::max(units, absolute_units(old_price->units));
+        proposed_remaining = std::max(proposed_remaining, order.remaining);
+        if (const auto move = move_reservations_.find(current->first); move != move_reservations_.end()) {
+            units = std::max(units, move->second.price_units);
+            proposed_remaining = std::max(proposed_remaining, std::int64_t(move->second.quantity) - order.executed);
+        }
+    }
+    const auto cap = static_cast<std::uint64_t>(config_.risk.max_notional_scaled);
+    const auto proposed = capped_notional(units, proposed_remaining, cap);
+    if (high || low > cap || proposed > cap - low)
+        return "aggregate outstanding-order notional exceeds configured limit";
     return {};
 }
 std::uint32_t OrderManager::reserve_user_id() {
@@ -177,7 +280,7 @@ OrderManager::Command OrderManager::encode(tr::Plaza2TradeCommandRequest request
     return result;
 }
 std::string OrderManager::place(OrderRequest request) {
-    if (request.client_order_id.empty() || orders_.contains(request.client_order_id))
+    if (request.client_order_id.empty() || used_client_ids_.contains(request.client_order_id))
         return "client order id empty or already used";
     if (auto error = check_risk(request, 1); !error.empty())
         return error;
@@ -202,6 +305,8 @@ std::string OrderManager::place(OrderRequest request) {
         order.remaining = order.request.quantity;
         const auto key = order.request.client_order_id;
         orders_.emplace(key, std::move(order));
+        used_client_ids_.insert(key);
+        advance_session(orders_.at(key).sess_id);
         ext_index_[ext] = key;
         adds_.push_back(std::move(command));
         changed(key);
@@ -230,7 +335,8 @@ void OrderManager::enqueue_cancel(ManagedOrder& order) {
     request.order_id = order.order_id;
     request.isin_id = order.request.isin_id;
     cancels_.push_back(encode(request, key));
-    order.state = OrderState::PendingCancel;
+    if (order.state != OrderState::Unknown)
+        order.state = OrderState::PendingCancel;
     changed(key);
 }
 void OrderManager::recovery_cancel(ManagedOrder& order) {
@@ -267,8 +373,10 @@ std::string OrderManager::cancel(std::string_view client_id) {
     const auto unsent_move = [&](const Command& cmd) {
         return cmd.key == client_id && cmd.encoded.command_kind == Kind::MoveOrder;
     };
-    std::erase_if(adds_, unsent_move);
-    std::erase_if(cancels_, unsent_move);
+    const auto removed_moves = std::erase_if(adds_, unsent_move) + std::erase_if(cancels_, unsent_move);
+    if (removed_moves)
+        move_reservations_.erase(found->first);
+    refresh_exposure(found->first);
     // An Add still in the queue has never been sent and is safe to discard.
     const auto queued = std::find_if(adds_.begin(), adds_.end(), [&](const auto& cmd) {
         return cmd.key == client_id && cmd.encoded.command_kind == Kind::AddOrder;
@@ -314,6 +422,8 @@ std::string OrderManager::move(std::string_view client_id, std::string price, st
     auto command = encode(request, found->first);
     command.replacement_price = std::move(price);
     command.replacement_quantity = quantity;
+    move_reservations_[found->first] = {
+        absolute_units(plaza2::private_state::parse_session_decimal(command.replacement_price)->units), quantity};
     adds_.push_back(std::move(command));
     order.state = OrderState::PendingReplace;
     changed(found->first);
@@ -340,6 +450,9 @@ std::string OrderManager::cancel_all(std::int32_t isin) {
         const auto order = orders_.find(queued.key);
         return order != orders_.end() && order->second.request.isin_id == isin;
     };
+    for (const auto& queued : adds_)
+        if (affected(queued) && queued.encoded.command_kind == Kind::MoveOrder)
+            move_reservations_.erase(queued.key);
     for (auto& [key, order] : orders_) {
         if (order.request.isin_id != isin || terminal(order.state))
             continue;
@@ -382,6 +495,12 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
     if (command.encoded.command_kind == Kind::AddOrder || command.encoded.command_kind == Kind::MoveOrder) {
         order.state = OrderState::Unknown;
         order.cancel_requested = true;
+        if (command.encoded.command_kind == Kind::MoveOrder) {
+            // Never resend an uncertain replacement. Retain its correlation
+            // for a late definitive reply and reserve its possible new order.
+            command.deadline = Clock::time_point::max();
+            pending_.emplace(command.user_id, std::move(command));
+        }
         recovery_cancel(order);
     } else {
         retry_cancel(std::move(command), now);
@@ -468,6 +587,8 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
                 if (!ready_(proposed.isin_id))
                     break; // Preserve queued work through an outage/clearing.
                 found->second.last_error = error;
+                if (command.encoded.command_kind == Kind::MoveOrder)
+                    move_reservations_.erase(found->first);
                 found->second.state = command.encoded.command_kind == Kind::AddOrder ? OrderState::Rejected
                                                                                      : settled_state(found->second);
                 changed(found->first);
@@ -503,6 +624,8 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
             // Definitive local validation failures cannot become an ambiguous Add.
             if (add_or_move && result.validation_error.code == cg::Plaza2ErrorCode::InvalidConfiguration) {
                 if (found != orders_.end()) {
+                    if (command.encoded.command_kind == Kind::MoveOrder)
+                        move_reservations_.erase(found->first);
                     found->second.state = command.encoded.command_kind == Kind::AddOrder ? OrderState::Rejected
                                                                                          : settled_state(found->second);
                     found->second.last_error = result.validation_error.message;
@@ -558,6 +681,8 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
                       ",\"iceberg_order_id\":" + std::to_string(reply.iceberg_order_id.value_or(0)) +
                       ",\"penalty_remain\":" + std::to_string(reply.penalty_remain.value_or(0)) +
                       ",\"queue_size\":" + std::to_string(reply.queue_size.value_or(0)) + "}");
+    if (reply.msgid == 99)
+        rate_.penalize(milliseconds(now), static_cast<std::uint32_t>(std::max(0, reply.penalty_remain.value_or(0))));
     if (pending == pending_.end()) {
         emit("unknown_reply", "{\"user_id\":" + std::to_string(id) + "}");
         return;
@@ -582,13 +707,20 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
         superseded_bulk = bulk == bulk_cancellations_.end() || bulk->second.generation != command.bulk_generation;
     }
     if (reply.msgid == 99) {
-        rate_.penalize(milliseconds(now), static_cast<std::uint32_t>(std::max(0, reply.penalty_remain.value_or(0))));
         if (superseded_bulk)
             return; // Keep the global penalty even when a newer mass request owns reconciliation.
         if (found != orders_.end() && command.encoded.command_kind != Kind::AddOrder &&
             (terminal(found->second.state) || bulk_cancellations_.contains(found->second.request.isin_id) ||
-             (command.encoded.command_kind == Kind::MoveOrder && found->second.cancel_requested)))
+             (command.encoded.command_kind == Kind::MoveOrder && found->second.cancel_requested))) {
+            if (command.encoded.command_kind == Kind::MoveOrder) {
+                move_reservations_.erase(found->first);
+                if (found->second.state == OrderState::Unknown)
+                    found->second.state =
+                        found->second.remaining > 0 ? OrderState::PendingCancel : settled_state(found->second);
+                changed(found->first);
+            }
             return; // A later cancellation superseded this rejected exchange command.
+        }
         // A flood reply rejects the Add conclusively, so callers may submit a
         // new client id. Cancels retain their place in the risk-reduction queue.
         if (command.encoded.command_kind == Kind::AddOrder) {
@@ -647,9 +779,10 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
         if (command.encoded.command_kind == Kind::AddOrder) {
             if (order.order_id == 0)
                 order.state = OrderState::Rejected;
-        } else if (command.encoded.command_kind == Kind::MoveOrder)
+        } else if (command.encoded.command_kind == Kind::MoveOrder) {
+            move_reservations_.erase(found->first);
             order.state = settled_state(order);
-        else
+        } else
             retry_cancel(std::move(command), now, true);
         changed(found->first);
         return;
@@ -668,6 +801,7 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
         if (order.cancel_requested && !terminal(order.state))
             enqueue_cancel(order);
     } else if (command.encoded.command_kind == Kind::MoveOrder && reply.order_id1.value_or(0) > 0) {
+        move_reservations_.erase(found->first);
         order.order_id = *reply.order_id1;
         order.confirmed_by_replication = false;
         order.order_ids.insert(order.order_id);
@@ -710,13 +844,17 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
 
 void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, bool rebuilding) {
     std::vector<const plaza2::private_state::OwnOrderSnapshot*> ordered;
+    auto observed_session = current_session_;
+    const auto has_link = [&](const auto& row) {
+        return row.id_ord1 > 0 && (order_index_.contains(row.id_ord1) || terminal_links_.contains(row.id_ord1));
+    };
     // Follow the documented relist link first, then settle the old-ID deletion
     // in the same committed transaction without publishing a false terminal state.
     for (const auto& row : rows)
-        if (row.id_ord1 > 0 && order_index_.contains(row.id_ord1))
+        if (has_link(row))
             ordered.push_back(&row);
     for (const auto& row : rows)
-        if (!(row.id_ord1 > 0 && order_index_.contains(row.id_ord1)))
+        if (!has_link(row))
             ordered.push_back(&row);
     for (const auto* source : ordered) {
         const auto& row = *source;
@@ -727,6 +865,9 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
         if (id <= 0)
             continue;
         const auto remaining = row.from_trade_repl ? row.public_amount_rest : row.private_amount_rest;
+        if (const auto old = terminal_links_.find(id);
+            old != terminal_links_.end() && row.sess_id <= old->second.sess_id)
+            continue;
         std::string key;
         if (const auto index = order_index_.find(id); index != order_index_.end())
             key = index->second;
@@ -735,6 +876,34 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             if (row.sess_id > linked.sess_id && row.isin_id == linked.request.isin_id &&
                 row.dir == static_cast<std::int8_t>(linked.request.side))
                 key = linked.request.client_order_id;
+        }
+        if (key.empty() && row.id_ord1 > 0) {
+            const auto archived = terminal_links_.find(row.id_ord1);
+            if (archived != terminal_links_.end()) {
+                const auto& link = archived->second;
+                if (row.sess_id > link.sess_id && row.isin_id == link.isin_id &&
+                    row.dir == static_cast<std::int8_t>(link.side)) {
+                    key = link.key;
+                    ManagedOrder restored;
+                    restored.request = {.client_order_id = key,
+                                        .isin_id = link.isin_id,
+                                        .side = link.side,
+                                        .price = link.price,
+                                        .quantity = link.quantity};
+                    restored.ext_id = link.ext_id;
+                    restored.sess_id = link.sess_id;
+                    restored.executed = link.executed;
+                    restored.sent_utc_seconds = link.sent_utc_seconds;
+                    restored.cancel_requested = link.cancel_requested;
+                    restored.execution_baseline_known = link.execution_baseline_known;
+                    restored.order_ids.insert(row.id_ord1);
+                    orders_.emplace(key, std::move(restored));
+                    order_index_[row.id_ord1] = key;
+                    if (link.ext_id != 0)
+                        ext_index_.try_emplace(link.ext_id, key);
+                    terminal_links_.erase(archived);
+                }
+            }
         }
         if (key.empty() && row.ext_id != 0 && ext_index_.contains(row.ext_id)) {
             auto& candidate = orders_.at(ext_index_.at(row.ext_id));
@@ -756,17 +925,18 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
                 continue;
             key = "recovered:" + std::to_string(row.sess_id) + ":" + std::to_string(id);
             ManagedOrder recovered;
-            recovered.request = {
-                .client_order_id = key,
-                .isin_id = row.isin_id,
-                .side = row.dir == 2 ? tr::Plaza2TradeSide::Sell : tr::Plaza2TradeSide::Buy,
-                .price = row.price,
-                .comment = row.comment,
-                .quantity = static_cast<std::int32_t>(std::max({row.public_amount, row.private_amount, remaining}))};
+            recovered.request = {.client_order_id = key,
+                                 .isin_id = row.isin_id,
+                                 .side = row.dir == 2 ? tr::Plaza2TradeSide::Sell : tr::Plaza2TradeSide::Buy,
+                                 .price = row.price,
+                                 .comment = row.comment,
+                                 .quantity = static_cast<std::int32_t>(std::min<std::int64_t>(
+                                     INT32_MAX, std::max({row.public_amount, row.private_amount, remaining})))};
             recovered.ext_id = row.ext_id;
             recovered.sess_id = row.sess_id;
             recovered.execution_baseline_known = false;
             orders_.emplace(key, std::move(recovered));
+            used_client_ids_.insert(key);
             // Do not replace another logical order's ext_id reservation.
             if (row.ext_id != 0)
                 ext_index_.try_emplace(row.ext_id, key);
@@ -777,6 +947,18 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             continue;
         if (row.sess_id == order.sess_id && order.order_id != id && order.order_ids.contains(id))
             continue;
+        observed_session = std::max(observed_session, row.sess_id);
+        const bool relisted = row.id_ord1 > 0 && row.sess_id > order.sess_id && order.order_ids.contains(row.id_ord1);
+        if (relisted) {
+            // A documented next-session identity supersedes any old-session
+            // replacement. Its late reply must never roll this identity back.
+            const auto old_move = [&](const Command& command) {
+                return command.key == key && command.encoded.command_kind == Kind::MoveOrder;
+            };
+            std::erase_if(adds_, old_move);
+            std::erase_if(pending_, [&](const auto& entry) { return old_move(entry.second); });
+            move_reservations_.erase(key);
+        }
         if (row.from_trade_repl)
             std::erase_if(pending_, [&](const auto& item) {
                 return item.second.key == key && item.second.encoded.command_kind == Kind::AddOrder;
@@ -784,6 +966,8 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
         const auto before = order_json(key, order);
         const auto action = row.from_trade_repl ? row.public_action : row.private_action;
         const bool replacing_current_id = order.order_id == id && has_outstanding_command(key, Kind::MoveOrder);
+        const bool unresolved_replacement =
+            order.order_id == id && order.state == OrderState::Unknown && move_reservations_.contains(key);
         const bool posted_move = std::any_of(pending_.begin(), pending_.end(), [&](const auto& item) {
             return item.second.key == key && item.second.encoded.command_kind == Kind::MoveOrder;
         });
@@ -796,7 +980,9 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
         order_index_[id] = key;
         config_.next_ext_id = std::max(config_.next_ext_id, row.ext_id == INT32_MAX ? INT32_MAX : row.ext_id + 1);
         order.remaining = std::max<std::int64_t>(0, remaining);
-        if (replacing_current_id && (remaining > 0 || posted_move))
+        if (unresolved_replacement)
+            order.state = OrderState::Unknown; // Old-ID deletion does not prove the replacement absent.
+        else if (replacing_current_id && (remaining > 0 || posted_move))
             order.state = OrderState::PendingReplace;
         else if (remaining <= 0)
             order.state = action == 2 ? OrderState::Filled : OrderState::Cancelled;
@@ -810,6 +996,8 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             order.operator_action_required = false;
         if (before != order_json(key, order))
             changed(key);
+        else
+            refresh_exposure(key);
         if (order.cancel_requested && !terminal(order.state))
             enqueue_cancel(order);
     }
@@ -819,6 +1007,8 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
         if (row.from_trade_repl)
             sequence = std::max(sequence, row.trade_repl_commit_sequence);
     observe_trade_commit(sequence);
+    advance_session(observed_session);
+    prune_terminal();
 }
 void OrderManager::observe_trade_commit(std::uint64_t sequence) {
     trade_commit_sequence_ = std::max(trade_commit_sequence_, sequence);
@@ -891,14 +1081,18 @@ void OrderManager::observe_trades(std::span<const plaza2::private_state::OwnTrad
 void OrderManager::prove_absence(std::int64_t server_time, bool online) {
     if (!online)
         return;
-    for (auto& [key, order] : orders_)
-        if (order.state == OrderState::Unknown && order.order_id == 0 && order.absence_reply &&
-            order.sent_utc_seconds > 0 && server_time > order.sent_utc_seconds + config_.absence_margin.count()) {
+    for (auto it = unknown_orders_.begin(); it != unknown_orders_.end();) {
+        const auto key = *it++;
+        auto& order = orders_.at(key);
+        if (order.order_id == 0 && order.absence_reply && order.sent_utc_seconds > 0 &&
+            server_time > order.sent_utc_seconds + config_.absence_margin.count()) {
             order.state = OrderState::Cancelled;
             order.remaining = 0;
             order.last_error = "NotFound after TRADE watermark and DelUserOrders num_orders=0";
             order.operator_action_required = false;
             changed(key);
         }
+    }
+    prune_terminal();
 }
 } // namespace moex::connector_host
