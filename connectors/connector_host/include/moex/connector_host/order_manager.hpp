@@ -123,7 +123,7 @@ class OrderManager {
     void recovery_cancel(ManagedOrder& order);
     void enqueue_cancel(ManagedOrder& order);
     void complete_timeout(Command command, Clock::time_point now);
-    void retry_cancel(Command command, Clock::time_point now, std::chrono::milliseconds penalty = {});
+    void retry_cancel(Command command, Clock::time_point now);
     void replay_deferred_trades();
     void emit(std::string_view kind, std::string_view fields) noexcept;
     void changed(const std::string& key);

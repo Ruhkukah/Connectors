@@ -368,7 +368,7 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
     }
     changed(found->first);
 }
-void OrderManager::retry_cancel(Command command, Clock::time_point now, std::chrono::milliseconds penalty) {
+void OrderManager::retry_cancel(Command command, Clock::time_point now) {
     ++command.failures;
     auto found = orders_.find(command.key);
     if (command.failures >= config_.max_cancel_attempts) {
@@ -389,7 +389,7 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now, std::chr
         delay = delay >= config_.cancel_retry_max / 2 ? config_.cancel_retry_max : delay * 2;
     command.user_id = reserve_user_id();
     command.acknowledged = false;
-    command.not_before = now + std::max(delay, penalty);
+    command.not_before = now + delay;
     cancels_.push_back(std::move(command));
 }
 void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
@@ -549,13 +549,15 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
                 found->second.state = OrderState::Rejected;
                 changed(found->first);
             }
-        } else if (command.encoded.command_kind == Kind::MoveOrder) {
+        } else {
+            // A flood penalty says the exchange did not process this command.
+            // It does not spend the bounded business/confirmation retry budget.
             command.user_id = reserve_user_id();
+            command.acknowledged = false;
             command.not_before = now + std::chrono::milliseconds(std::max(1, reply.penalty_remain.value_or(0)));
-            adds_.push_back(std::move(command));
-        } else
-            retry_cancel(std::move(command), now,
-                         std::chrono::milliseconds(std::max(1, reply.penalty_remain.value_or(0))));
+            auto& queue = command.encoded.command_kind == Kind::MoveOrder ? adds_ : cancels_;
+            queue.push_back(std::move(command));
+        }
         return;
     }
     if (found == orders_.end()) {

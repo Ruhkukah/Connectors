@@ -156,9 +156,9 @@ void cancels() {
                              [](const auto& sent) { return sent.kind == tr::Plaza2TradeCommandKind::DelOrder; });
     };
     const auto before_retry = cancel_count();
-    f.poll(manager, 4000);
-    require(cancel_count() == before_retry, "cancel ignored its exponential retry delay");
-    f.poll(manager, 4001);
+    f.poll(manager, 3000);
+    require(cancel_count() == before_retry, "cancel ignored its first business-failure retry delay");
+    f.poll(manager, 3001);
     require(cancel_count() == before_retry + 1, "failed cancel did not retry");
     observe(manager, row(manager.orders().at("working"), 1001, 0, 0));
     require(manager.orders().at("working").state == OrderState::Cancelled,
@@ -446,6 +446,80 @@ void cancelled_order_during_move() {
     require(other.orders().at("cancelled-with-move").state == OrderState::Cancelled,
             "rejected Move resurrected an authoritatively cancelled order");
 }
+void flood_does_not_exhaust_cancel_budget() {
+    for (const bool recovery : {false, true}) {
+        Fixture f;
+        auto manager = f.manager();
+        if (recovery)
+            f.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
+        require(manager.place(request("flood-cancel")).empty(), "flood fixture Add refused");
+        f.poll(manager, 0);
+        if (!recovery) {
+            manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 1001}, OrderManager::Clock::time_point{});
+            require(manager.cancel("flood-cancel").empty(), "flood fixture cancel refused");
+        }
+        f.certainty = cg::Plaza2SubmissionCertainty::Posted;
+        f.poll(manager, 0);
+        const auto expected =
+            recovery ? tr::Plaza2TradeCommandKind::DelUserOrders : tr::Plaza2TradeCommandKind::DelOrder;
+        for (std::int64_t attempt = 0; attempt < 5; ++attempt) {
+            require(f.sent.back().kind == expected, "flood retry changed cancellation kind");
+            const auto sent = f.sent.back();
+            const auto now = attempt * 2000;
+            manager.on_reply(sent.id, {.msgid = 99, .penalty_remain = 2000},
+                             OrderManager::Clock::time_point{} + std::chrono::milliseconds(now));
+            require(!manager.operator_action_required(), "99 exhausted the business cancel retry budget");
+            const auto count = f.sent.size();
+            f.poll(manager, now + 1999);
+            require(f.sent.size() == count, "flood cancellation ignored penalty_remain");
+            f.poll(manager, now + 2000);
+            require(f.sent.size() == count + 1 && f.sent.back().id != sent.id,
+                    "flood cancellation did not retry with a fresh correlation ID");
+        }
+        // Floods must not consume any of the three genuine failure attempts.
+        for (std::uint32_t rejected = 0; rejected < 3; ++rejected) {
+            const auto now = f.ms;
+            const auto before = f.sent.size();
+            manager.on_reply(f.sent.back().id, {.msgid = recovery ? 186 : 177, .code = 17},
+                             OrderManager::Clock::time_point{} + std::chrono::milliseconds(now));
+            require(manager.operator_action_required() == (rejected == 2),
+                    "floods consumed part of the business failure budget");
+            f.poll(manager, now + (rejected == 0 ? 1000 : 2000));
+            require(f.sent.size() == before + (rejected == 2 ? 0 : 1), "business retry bound changed after flood");
+        }
+    }
+
+    Fixture f;
+    auto manager = f.manager();
+    require(manager.place(request("moving-flood")).empty() && manager.place(request("priority-cancel")).empty(),
+            "Move flood fixture Adds refused");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.at(0).id, {.msgid = 179, .order_id = 1001}, OrderManager::Clock::time_point{});
+    manager.on_reply(f.sent.at(1).id, {.msgid = 179, .order_id = 1101}, OrderManager::Clock::time_point{});
+    require(manager.move("moving-flood", "101", 2).empty(), "Move flood request refused");
+    f.poll(manager, 1000);
+    const auto move = f.sent.back();
+    manager.on_reply(move.id, {.msgid = 99, .penalty_remain = 2000},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(1000));
+    require(manager.orders().at("moving-flood").state == OrderState::PendingReplace &&
+                !manager.operator_action_required(),
+            "Move flood changed pending state");
+    require(manager.cancel("priority-cancel").empty(), "priority cancellation refused");
+    // A real cancellation must overtake the delayed Move when the flood penalty ends.
+    f.poll(manager, 2999);
+    require(f.sent.size() == 3, "Move flood penalty ignored");
+    f.poll(manager, 3000);
+    require(f.sent.at(3).kind == tr::Plaza2TradeCommandKind::DelOrder &&
+                f.sent.at(4).kind == tr::Plaza2TradeCommandKind::MoveOrder && f.sent.at(4).id != move.id,
+            "Move flood entered the cancellation queue or lost its replacement");
+    require(wire<official_cgate99::MoveOrder>(f.sent.at(4)).regime == 3 && f.sent.at(4).payload == move.payload,
+            "Move flood retry altered exchange payload");
+    manager.on_reply(f.sent.at(4).id, {.msgid = 176, .order_id1 = 1002},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(3000));
+    require(manager.orders().at("moving-flood").order_id == 1002 && manager.orders().at("moving-flood").remaining == 2,
+            "Move flood retry did not correlate reply176");
+}
+
 void recovery_bounds_and_wire() {
     Fixture f;
     f.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
@@ -722,6 +796,7 @@ int main() {
         replication_during_move();
         confirmed_add_without_reply();
         cancelled_order_during_move();
+        flood_does_not_exhaust_cancel_budget();
         recovery_bounds_and_wire();
         ext_identity_and_relist();
         move_fill_accounting();
