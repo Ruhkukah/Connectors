@@ -550,6 +550,7 @@ struct StagedState {
     // Order commit sentinels deduplicate touches; trade keys are uniqued once.
     std::vector<OrderKey> order_keys;
     std::vector<TradeKey> trade_keys;
+    bool private_history_retired{false};
     bool rebuild_order_view{}, rebuild_trade_view{};
     std::optional<std::vector<StreamHealthSnapshot>> stream_health;
     std::optional<SourceRevisionRows> source_revisions;
@@ -723,13 +724,12 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void invalidate_closed_stream(StreamCode stream_code) {
-        if (stream_code == projection::kNoStreamCode)
-            row_changes = {};
-        else if (stream_code == StreamCode::kFortsTradeRepl) {
-            std::erase_if(row_changes.orders, [](const auto& row) { return row.from_trade_repl; });
-            row_changes.trades.clear();
-        } else if (stream_code == StreamCode::kFortsUserorderbookRepl)
-            std::erase_if(row_changes.orders, [](const auto& row) { return !row.from_trade_repl; });
+        discard_stream_row_changes(stream_code, true);
+        if (stream_code == projection::kNoStreamCode) {
+            const auto resync_required = row_changes.resync_required;
+            const auto history_lost = row_changes.history_lost;
+            row_changes = {.resync_required = resync_required, .history_lost = history_lost};
+        }
         const auto invalidate = [](StreamHealthSnapshot& health) {
             health.online = false;
             health.snapshot_complete = false;
@@ -1161,7 +1161,7 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void prune_row_changes() {
-        std::erase_if(row_changes.orders, [&](const auto& row) {
+        const auto erased_orders = std::erase_if(row_changes.orders, [&](const auto& row) {
             const OrderKey key{.surface = row.from_trade_repl ? OrderSurface::kTrade : OrderSurface::kUserOrderbook,
                                .multileg = row.multileg,
                                .public_order_id = row.public_order_id,
@@ -1178,8 +1178,45 @@ struct Plaza2PrivateStateProjector::Impl {
                 return !orders_by_key.identities.contains(OrderMap::identity(key, 'e', row.ext_id));
             return !orders_by_key.contains(key);
         });
-        std::erase_if(row_changes.trades,
-                      [&](const auto& row) { return !trades_by_key.contains({row.multileg, row.id_deal}); });
+        const auto erased_trades = std::erase_if(
+            row_changes.trades, [&](const auto& row) { return !trades_by_key.contains({row.multileg, row.id_deal}); });
+        if (erased_orders || erased_trades)
+            require_history_resync();
+    }
+
+    void require_history_resync() {
+        row_changes = {.resync_required = true, .history_lost = true};
+    }
+
+    void discard_stream_row_changes(StreamCode stream_code, bool invalidated = false) {
+        if (stream_code != projection::kNoStreamCode && stream_code != StreamCode::kFortsTradeRepl &&
+            stream_code != StreamCode::kFortsUserorderbookRepl)
+            return;
+        const auto discarded_orders =
+            std::any_of(row_changes.orders.begin(), row_changes.orders.end(), [&](const auto& row) {
+                return stream_code == projection::kNoStreamCode ||
+                       (stream_code == StreamCode::kFortsTradeRepl ? row.from_trade_repl : !row.from_trade_repl);
+            });
+        const bool discarded_trades = stream_code != StreamCode::kFortsUserorderbookRepl && !row_changes.trades.empty();
+        if ((invalidated && row_changes.resync_required) || discarded_orders || discarded_trades)
+            require_history_resync();
+    }
+
+    void retire_private_history() {
+        if (staged.active)
+            staged.private_history_retired = true;
+        else
+            row_changes.history_lost |= row_changes.resync_required;
+    }
+
+    bool prepare_row_changes(std::size_t additional_rows) {
+        if (row_changes.resync_required)
+            return false;
+        const auto pending = row_changes.orders.size() + row_changes.trades.size();
+        if (additional_rows <= kPrivateRowChangeCapacity - pending)
+            return true;
+        row_changes = {.resync_required = true, .history_lost = staged.private_history_retired};
+        return false;
     }
 
     bool source_row_is_stale(TableCode table_code, std::string_view key, std::int64_t clear_revision) const {
@@ -1338,6 +1375,7 @@ struct Plaza2PrivateStateProjector::Impl {
                     ++it;
                     continue;
                 }
+                retire_private_history();
                 if (trade_source) {
                     it->second.from_trade_repl = false;
                     it->second.trade_repl_commit_sequence = 0;
@@ -1370,6 +1408,7 @@ struct Plaza2PrivateStateProjector::Impl {
             for (auto it = trades.begin(); it != trades.end();) {
                 const auto key = revision_key(it->second);
                 if (source_row_is_stale(table_code, key, clear_revision)) {
+                    retire_private_history();
                     erase_source_row(table_code, key);
                     it = trades.erase(it);
                 } else {
@@ -1584,15 +1623,20 @@ struct Plaza2PrivateStateProjector::Impl {
     void clear_stream_owned_state(StreamCode stream_code) {
         switch (stream_code) {
         case StreamCode::kFortsTradeRepl:
-            std::erase_if(row_changes.orders, [](const auto& row) { return row.from_trade_repl; });
-            row_changes.trades.clear();
+            if (!trades_by_key.empty() || std::any_of(orders_by_key.begin(), orders_by_key.end(),
+                                                      [](const auto& row) { return row.second.from_trade_repl; }))
+                retire_private_history();
+            discard_stream_row_changes(stream_code);
             clear_trade_source(orders_by_key);
             trades_by_key.clear();
             rebuild_orders();
             rebuild_trades();
             break;
         case StreamCode::kFortsUserorderbookRepl:
-            std::erase_if(row_changes.orders, [](const auto& row) { return !row.from_trade_repl; });
+            if (std::any_of(orders_by_key.begin(), orders_by_key.end(),
+                            [](const auto& row) { return row.second.from_user_book || row.second.from_current_day; }))
+                retire_private_history();
+            discard_stream_row_changes(stream_code);
             clear_user_book_source(orders_by_key);
             rebuild_orders();
             break;
@@ -1660,17 +1704,28 @@ struct Plaza2PrivateStateProjector::Impl {
 
     void stage_clear_stream_owned_state(StreamCode stream_code) {
         switch (stream_code) {
-        case StreamCode::kFortsTradeRepl:
+        case StreamCode::kFortsTradeRepl: {
             staged.rebuild_order_view = staged.rebuild_trade_view = true;
-            clear_trade_source(ensure_stage_copy(staged.orders, orders_by_key, native_commit_phase));
-            ensure_stage_copy(staged.trades, trades_by_key, native_commit_phase).clear();
+            auto& orders = ensure_stage_copy(staged.orders, orders_by_key, native_commit_phase);
+            auto& trades = ensure_stage_copy(staged.trades, trades_by_key, native_commit_phase);
+            if (!trades.empty() ||
+                std::any_of(orders.begin(), orders.end(), [](const auto& row) { return row.second.from_trade_repl; }))
+                retire_private_history();
+            clear_trade_source(orders);
+            trades.clear();
             staged.touched_streams.insert(StreamCode::kFortsTradeRepl);
             break;
-        case StreamCode::kFortsUserorderbookRepl:
+        }
+        case StreamCode::kFortsUserorderbookRepl: {
             staged.rebuild_order_view = true;
-            clear_user_book_source(ensure_stage_copy(staged.orders, orders_by_key, native_commit_phase));
+            auto& orders = ensure_stage_copy(staged.orders, orders_by_key, native_commit_phase);
+            if (std::any_of(orders.begin(), orders.end(),
+                            [](const auto& row) { return row.second.from_user_book || row.second.from_current_day; }))
+                retire_private_history();
+            clear_user_book_source(orders);
             staged.touched_streams.insert(StreamCode::kFortsUserorderbookRepl);
             break;
+        }
         case StreamCode::kFortsPosRepl:
             ensure_stage_copy(staged.positions, positions_by_key, native_commit_phase).clear();
             staged.touched_streams.insert(StreamCode::kFortsPosRepl);
@@ -2519,8 +2574,10 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         if (staged.orders.has_value()) {
             orders_by_key = std::move(*staged.orders);
-            if (row_changes.orders.empty() && !staged.order_keys.empty())
-                row_changes.orders.reserve(growth_capacity(staged.order_keys.size()));
+            const auto publish_changes = prepare_row_changes(staged.order_keys.size());
+            if (publish_changes && row_changes.orders.empty() && !staged.order_keys.empty())
+                row_changes.orders.reserve(
+                    std::min(kPrivateRowChangeCapacity, growth_capacity(staged.order_keys.size())));
             for (const auto& key : staged.order_keys) {
                 const auto found = orders_by_key.find(key);
                 if (found == orders_by_key.end())
@@ -2537,7 +2594,8 @@ struct Plaza2PrivateStateProjector::Impl {
                 if (order.user_orderbook_commit_sequence == std::numeric_limits<std::uint64_t>::max()) {
                     order.user_orderbook_commit_sequence = state.commit_count;
                 }
-                row_changes.orders.push_back(order);
+                if (publish_changes)
+                    row_changes.orders.push_back(order);
                 if (native_commit_phase && !staged.rebuild_order_view && !order_snapshots.empty()) {
                     const auto [slot, inserted] = order_view_index.try_emplace(key, order_snapshots.size());
                     if (inserted)
@@ -2557,14 +2615,17 @@ struct Plaza2PrivateStateProjector::Impl {
             });
             staged.trade_keys.erase(std::unique(staged.trade_keys.begin(), staged.trade_keys.end()),
                                     staged.trade_keys.end());
-            if (row_changes.trades.empty() && !staged.trade_keys.empty())
-                row_changes.trades.reserve(growth_capacity(staged.trade_keys.size()));
+            const auto publish_changes = prepare_row_changes(staged.trade_keys.size());
+            if (publish_changes && row_changes.trades.empty() && !staged.trade_keys.empty())
+                row_changes.trades.reserve(
+                    std::min(kPrivateRowChangeCapacity, growth_capacity(staged.trade_keys.size())));
             for (const auto& key : staged.trade_keys) {
                 const auto found = trades_by_key.find(key);
                 if (found == trades_by_key.end())
                     continue;
                 const auto& trade = found->second;
-                row_changes.trades.push_back(trade);
+                if (publish_changes)
+                    row_changes.trades.push_back(trade);
                 if (native_commit_phase && !staged.rebuild_trade_view && !trade_snapshots.empty()) {
                     const auto [slot, inserted] = trade_view_index.try_emplace(key, trade_snapshots.size());
                     if (inserted)
@@ -2596,6 +2657,7 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         if (staged.status_bindings_invalidated)
             ++status_binding_generation;
+        row_changes.history_lost |= row_changes.resync_required && staged.private_history_retired;
         staged = {};
         native_commit_phase = false;
     }

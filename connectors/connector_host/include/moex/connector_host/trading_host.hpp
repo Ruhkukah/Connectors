@@ -45,5 +45,6 @@ class CgateTradingHost {
     bool stopped_{};
     plaza2::cgate::Plaza2Error stop_error_;
     std::string log_error_;
+    std::string private_state_error_;
 };
 } // namespace moex::connector_host

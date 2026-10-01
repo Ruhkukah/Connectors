@@ -351,9 +351,19 @@ struct OwnTradeSnapshot {
     std::uint64_t moment_ns{0};
 };
 
+inline constexpr std::size_t kPrivateRowChangeCapacity = 8192;
+
 struct PrivateRowChanges {
     std::vector<OwnOrderSnapshot> orders;
     std::vector<OwnTradeSnapshot> trades;
+    // Overflow discards the incomplete delta batch and stays sticky until
+    // take. Reconcile the full committed order/trade snapshots before using
+    // later deltas. No partial vectors are returned with this flag.
+    bool resync_required{false};
+    // Unconsumed upserts were retired, or a resync-pending source was purged
+    // or invalidated. Current snapshots cannot repair the missing history.
+    // Trading consumers must fail closed and recover authoritative history.
+    bool history_lost{false};
 };
 
 // Read-only capacity metrics for the indexed private projection. No account
@@ -404,7 +414,10 @@ class Plaza2PrivateStateProjector final : public projection::CommitListener {
     // exchange identities append. Callers must not rely on sorted order.
     [[nodiscard]] std::span<const OwnOrderSnapshot> own_orders() const;
     [[nodiscard]] std::span<const OwnTradeSnapshot> own_trades() const;
-    // Committed upserts since the previous take, across all listener commits.
+    // Committed upserts since the previous take, across all listener commits,
+    // bounded by kPrivateRowChangeCapacity total rows. Always inspect the
+    // resync/history flags before consuming vectors. Taking acknowledges the
+    // batch; reconcile synchronously on the owner thread before later polls.
     // Technical record deletion/reload does not manufacture terminal orders.
     [[nodiscard]] PrivateRowChanges take_row_changes();
     [[nodiscard]] PrivateStorageCapacity storage_capacity() const noexcept;

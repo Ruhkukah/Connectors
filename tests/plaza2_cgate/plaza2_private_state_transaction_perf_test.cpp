@@ -140,6 +140,132 @@ void duplicate_native_trade_changes() {
     require(projector.own_trades().size() == 3 && updated.trades.size() == 1 && updated.trades[0].id_deal == 1 &&
                 updated.trades[0].amount == 8,
             "online duplicate trade touches changed identity or emitted intermediate rows");
+
+    std::array order_fields{Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogPublicOrderId,
+                                                    .kind = Plaza2DecodedValueKind::SignedInteger,
+                                                    .signed_value = 88},
+                            Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogPrivateOrderId,
+                                                    .kind = Plaza2DecodedValueKind::SignedInteger,
+                                                    .signed_value = 88},
+                            Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogPublicAmountRest,
+                                                    .kind = Plaza2DecodedValueKind::SignedInteger}};
+    const auto order_row = [&](std::int64_t remaining) {
+        order_fields[2].signed_value = remaining;
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                                  .stream_code = kFortsTradeRepl,
+                                                  .table_code = kFortsTradeReplOrdersLog,
+                                                  .fields = order_fields,
+                                                  .signed_value = ++revision}),
+                "bounded delta order row");
+    };
+    event(Plaza2ListenerEventKind::TransactionBegin);
+    order_row(5);
+    event(Plaza2ListenerEventKind::TransactionCommit);
+    require(projector.take_row_changes().orders.size() == 1, "bounded delta initial working order");
+    const auto fill_queue = [&](std::int64_t first_id) {
+        for (std::size_t index = 0; index < private_state::kPrivateRowChangeCapacity; ++index) {
+            event(Plaza2ListenerEventKind::TransactionBegin);
+            row(first_id + static_cast<std::int64_t>(index), 1);
+            event(Plaza2ListenerEventKind::TransactionCommit);
+        }
+    };
+    fill_queue(100);
+    const auto boundary = projector.take_row_changes();
+    require(boundary.trades.size() == private_state::kPrivateRowChangeCapacity && boundary.orders.empty() &&
+                !boundary.resync_required && !boundary.history_lost,
+            "delta at the exact combined capacity is incomplete or spuriously requests resync");
+    fill_queue(20000);
+    event(Plaza2ListenerEventKind::TransactionBegin);
+    order_row(0);
+    row(30000, 3);
+    event(Plaza2ListenerEventKind::TransactionCommit);
+    event(Plaza2ListenerEventKind::TransactionBegin);
+    row(30001, 4);
+    event(Plaza2ListenerEventKind::TransactionCommit);
+    {
+        auto pending_purge = projector.clone();
+        auto state = projection::EngineState{
+            .open = true, .transaction_open = true, .commit_count = projector.connector_health().commit_count};
+        pending_purge.on_event(
+            {}, {.kind = projection::EventKind::kTransactionBegin, .stream_code = kFortsTradeRepl, .numeric_value = 1},
+            state);
+        pending_purge.on_event({},
+                               {.kind = projection::EventKind::kClearDeleted,
+                                .stream_code = kFortsTradeRepl,
+                                .table_code = kFortsTradeReplUserDeal,
+                                .signed_value = std::numeric_limits<std::int64_t>::max()},
+                               state);
+        const auto before_commit = pending_purge.clone().take_row_changes();
+        require(before_commit.resync_required && !before_commit.history_lost &&
+                    pending_purge.own_trades().size() == projector.own_trades().size(),
+                "uncommitted private purge exposed a history gap or changed the committed snapshot");
+        state.transaction_open = false;
+        ++state.commit_count;
+        pending_purge.on_transaction_commit(
+            {}, {.kind = projection::EventKind::kTransactionCommit, .stream_code = kFortsTradeRepl}, state);
+        const auto committed_purge = pending_purge.take_row_changes();
+        require(committed_purge.resync_required && committed_purge.history_lost && pending_purge.own_trades().empty(),
+                "committed private purge did not publish the staged history loss");
+    }
+    const auto overflow = projector.take_row_changes();
+    require(overflow.resync_required && !overflow.history_lost && overflow.orders.empty() && overflow.trades.empty(),
+            "overflow must stay sticky across commits and return no partial cancellation or fill batch");
+    const auto latest_fill = std::find_if(projector.own_trades().begin(), projector.own_trades().end(),
+                                          [](const auto& trade) { return trade.id_deal == 30001; });
+    require(projector.own_orders().size() == 1 && projector.own_orders()[0].public_amount_rest == 0 &&
+                projector.own_trades().size() == 2 * private_state::kPrivateRowChangeCapacity + 5 &&
+                latest_fill != projector.own_trades().end() && latest_fill->amount == 4,
+            "overflow lost committed cancellation or individual fill records needed for snapshot resync");
+    fill_queue(40000);
+    event(Plaza2ListenerEventKind::TransactionBegin);
+    row(50000, 6);
+    event(Plaza2ListenerEventKind::TransactionCommit);
+    require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                              .stream_code = kFortsTradeRepl,
+                                              .table_code = kFortsTradeReplUserDeal,
+                                              .signed_value = std::numeric_limits<std::int64_t>::max()}),
+            "retire private history after overflow");
+    event(Plaza2ListenerEventKind::Online);
+    auto closed = projector.clone();
+    closed.on_event({}, {.kind = projection::EventKind::kClose}, {});
+    const auto closed_changes = closed.take_row_changes();
+    require(closed_changes.resync_required && closed_changes.history_lost,
+            "global listener invalidation silently acknowledged lost private history");
+    const auto lost = projector.take_row_changes();
+    require(lost.resync_required && lost.history_lost && lost.orders.empty() && lost.trades.empty() &&
+                projector.own_trades().empty(),
+            "retired fills must fail closed rather than claim current snapshots repair an overflow");
+    event(Plaza2ListenerEventKind::TransactionBegin);
+    row(60000, 1);
+    event(Plaza2ListenerEventKind::TransactionCommit);
+    const auto resumed = projector.take_row_changes();
+    require(!resumed.resync_required && !resumed.history_lost && resumed.trades.size() == 1 &&
+                resumed.trades[0].id_deal == 60000,
+            "acknowledging snapshot recovery did not restore bounded delta delivery");
+    const auto purge_trades = [&] {
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                                  .stream_code = kFortsTradeRepl,
+                                                  .table_code = kFortsTradeReplUserDeal,
+                                                  .signed_value = std::numeric_limits<std::int64_t>::max()}),
+                "under-cap private trade purge");
+        event(Plaza2ListenerEventKind::Online);
+    };
+    purge_trades();
+    const auto drained_purge = projector.take_row_changes();
+    require(!drained_purge.resync_required && !drained_purge.history_lost,
+            "ordinary purge after consumed history spuriously requires recovery");
+    event(Plaza2ListenerEventKind::TransactionBegin);
+    row(60001, 2);
+    event(Plaza2ListenerEventKind::TransactionCommit);
+    auto trade_close = projector.clone();
+    trade_close.on_event({}, {.kind = projection::EventKind::kClose, .stream_code = kFortsTradeRepl}, {});
+    const auto close_gap = trade_close.take_row_changes();
+    require(close_gap.resync_required && close_gap.history_lost && close_gap.trades.empty(),
+            "listener close silently discarded an under-cap committed fill");
+    purge_trades();
+    const auto purge_gap = projector.take_row_changes();
+    require(purge_gap.resync_required && purge_gap.history_lost && purge_gap.trades.empty(),
+            "technical purge silently discarded an under-cap committed fill");
 }
 
 int main() {
@@ -211,7 +337,13 @@ int main() {
         event(Plaza2ListenerEventKind::TransactionCommit, kFortsPosRepl);
         require(projector.positions().size() == 1 && projector.positions()[0].xpos == 3,
                 "POS transaction not independently committed");
-        require(projector.take_row_changes().orders.size() == 150000, "initial committed upserts missing from delta");
+        const auto initial_changes = projector.take_row_changes();
+        require(initial_changes.orders.size() + initial_changes.trades.size() <=
+                    private_state::kPrivateRowChangeCapacity,
+                "undrained private delta exceeds its bounded row capacity");
+        require(initial_changes.resync_required && !initial_changes.history_lost && initial_changes.orders.empty() &&
+                    initial_changes.trades.empty(),
+                "large committed bootstrap must request full snapshot resync without partial deltas");
         std::array<std::int64_t, 20> update_us{};
         for (std::size_t index = 0; index < update_us.size(); ++index) {
             const auto before = std::chrono::steady_clock::now();
@@ -489,14 +621,16 @@ int main() {
         event(Plaza2ListenerEventKind::TransactionBegin, kFortsTradeRepl);
         event(Plaza2ListenerEventKind::TransactionCommit, kFortsTradeRepl);
         const auto retained = projector.take_row_changes();
-        require(projector.own_orders().size() == 1 && retained.orders.size() == 1 &&
-                    retained.orders[0].public_order_id == 9002,
-                "ext_id reuse retained a purged previous-day delta");
+        require(projector.own_orders().size() == 1 && projector.own_orders()[0].public_order_id == 9002 &&
+                    retained.resync_required && retained.history_lost && retained.orders.empty(),
+                "purged unconsumed previous-day evidence must report a gap rather than return partial deltas");
         event(Plaza2ListenerEventKind::TransactionBegin, kFortsTradeRepl);
         relist_row();
         event(Plaza2ListenerEventKind::TransactionCommit, kFortsTradeRepl);
         event(Plaza2ListenerEventKind::Close, kFortsTradeRepl);
-        require(projector.take_row_changes().orders.empty(), "listener invalidation left stale row changes");
+        const auto closed_changes = projector.take_row_changes();
+        require(closed_changes.orders.empty() && closed_changes.resync_required && closed_changes.history_lost,
+                "listener invalidation silently discarded unconsumed order evidence");
         clone_pending_native_transaction();
         duplicate_native_trade_changes();
         std::cout << "150000 TRADE rows including commit: " << elapsed << " ms\n";
