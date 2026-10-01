@@ -115,9 +115,20 @@ void CgateTradingHost::log_event(std::string_view kind, std::string_view fields)
 }
 void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) noexcept {
     try {
-        if (event.kind == cg::Plaza2ListenerEventKind::StreamData &&
-            event.stream_code == plaza2::generated::StreamCode::kFortsAggrRepl && event.message_name == "orders_aggr")
-            return;
+        if (event.stream_code == plaza2::generated::StreamCode::kFortsAggrRepl) {
+            // Book traffic and its transaction/replay boundaries are not order
+            // interaction evidence. Keep lifecycle changes and the rare session
+            // announcements required by the certification interaction log.
+            const bool lifecycle = event.kind == cg::Plaza2ListenerEventKind::Open ||
+                                   event.kind == cg::Plaza2ListenerEventKind::Close ||
+                                   event.kind == cg::Plaza2ListenerEventKind::Online ||
+                                   event.kind == cg::Plaza2ListenerEventKind::LifeNum ||
+                                   event.kind == cg::Plaza2ListenerEventKind::ClearDeleted;
+            const bool announcement = event.kind == cg::Plaza2ListenerEventKind::StreamData &&
+                                      event.table_code == plaza2::generated::TableCode::kFortsAggrReplSysEvents;
+            if (!lifecycle && !announcement)
+                return;
+        }
         std::string fields =
             "{\"stream\":" + std::to_string(static_cast<int>(event.stream_code)) +
             ",\"table\":" + std::to_string(static_cast<int>(event.table_code)) +
@@ -216,6 +227,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
     // queued commands. The event stream itself uses 250ms group commit.
     try {
         journal_.flush_reservations();
+        journal_.flush_if_due();
     } catch (const std::exception& storage_error) {
         log_error_ = storage_error.what();
         orders_->set_kill_switch(true);

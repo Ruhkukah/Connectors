@@ -10,6 +10,13 @@ with tempfile.TemporaryDirectory(prefix="moex-native-day-") as directory:
     rows = [json.loads(line) for line in journal.read_text().splitlines()]
     assert all("utc" in row and "+03:00" in row["msk"] for row in rows)
     assert not any(row["event"] == "stream_row" and row["data"]["name"] == "orders_aggr" for row in rows)
+    aggr_events = [row for row in rows if row["data"].get("stream") == 0x20C18715]
+    assert not any(row["event"] in {"transaction_begin", "transaction_commit", "replstate"} for row in aggr_events), \
+        "AGGR transaction traffic still dominates the interaction journal"
+    assert all(row["data"]["name"] == "sys_events" for row in aggr_events if row["event"] == "stream_row")
+    assert any(row["event"] == "stream_row" and row["data"]["name"] == "sys_events" for row in aggr_events), \
+        "exchange session announcements were dropped with the book traffic"
+    assert len(aggr_events) < 100, "AGGR journal volume is not bounded to lifecycle and announcements"
     commands = [row["data"] for row in rows if row["event"] == "command"]
     assert {row["name"] for row in commands} >= {"AddOrder", "DelOrder", "MoveOrder", "DelUserOrders"}
     assert all("payload_hex" in row and "fields" in row for row in commands)

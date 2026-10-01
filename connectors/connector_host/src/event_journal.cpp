@@ -209,25 +209,37 @@ void EventJournal::append(std::string_view kind, std::string_view fields) {
     const auto wall = std::chrono::system_clock::now();
     const auto line = "{\"utc\":" + json_string(stamp(wall, 0)) + ",\"msk\":" + json_string(stamp(wall, 3)) +
                       ",\"event\":" + json_string(kind) + ",\"data\":" + std::string(fields) + "}\n";
-    std::size_t offset{};
-    while (offset < line.size()) {
-        const auto count = ::write(fd_, line.data() + offset, line.size() - offset);
-        if (count < 0 && errno == EINTR)
-            continue;
-        if (count <= 0)
-            throw std::runtime_error("interaction log write failed");
-        offset += static_cast<std::size_t>(count);
-    }
-    offset_ += line.size();
+    buffered_ += line;
     const auto before = reservations_;
     update_reservations(reservations_, fields);
     reservations_dirty_ |=
         before.next_ext_id != reservations_.next_ext_id || before.next_user_id != reservations_.next_user_id;
     dirty_ = true;
-    if (std::chrono::steady_clock::now() - last_sync_ >= std::chrono::milliseconds(250))
-        flush();
+    // Bound burst memory while batching writes. Durability and the identity
+    // checkpoint remain tied to flush(), including the mandatory pre-send flush.
+    if (buffered_.size() >= 64 * 1024)
+        write_buffer();
+    flush_if_due();
+}
+void EventJournal::write_buffer() {
+    std::size_t written{};
+    while (written < buffered_.size()) {
+        const auto count = ::write(fd_, buffered_.data() + written, buffered_.size() - written);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0) {
+            // A later best-effort flush must resume at the unwritten suffix.
+            offset_ += written;
+            buffered_.erase(0, written);
+            throw std::runtime_error("interaction log write failed");
+        }
+        written += static_cast<std::size_t>(count);
+    }
+    offset_ += written;
+    buffered_.clear();
 }
 void EventJournal::flush() {
+    write_buffer();
     if (dirty_ && ::fsync(fd_) != 0)
         throw std::runtime_error("interaction log fsync failed");
     if (dirty_) {
@@ -241,6 +253,10 @@ void EventJournal::flush() {
 }
 void EventJournal::flush_reservations() {
     if (reservations_dirty_)
+        flush();
+}
+void EventJournal::flush_if_due() {
+    if (dirty_ && std::chrono::steady_clock::now() - last_sync_ >= std::chrono::milliseconds(250))
         flush();
 }
 } // namespace moex::connector_host

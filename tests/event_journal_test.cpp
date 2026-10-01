@@ -1,10 +1,12 @@
 #include "moex/connector_host/event_journal.hpp"
 #include "command_input.hpp"
+#include "journal_write_failure.hpp"
 
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 #include <unistd.h>
 
@@ -17,7 +19,36 @@ int main() {
     const auto root = std::filesystem::temp_directory_path() / ("moex-journal-" + std::to_string(getpid()));
     try {
         std::filesystem::create_directories(root);
+        moex::connector_host::test::journal_write_failure_regression(root);
         const auto path = root / "events.ndjson";
+        {
+            const auto buffered_path = root / "buffered.ndjson";
+            EventJournal buffered(buffered_path);
+            buffered.append("reply", "{\"order_id\":77}");
+            buffered.append("reply", "{\"order_id\":78}");
+            require(std::filesystem::file_size(buffered_path) == 0,
+                    "ordinary journal appends bypassed the write buffer");
+            buffered.append("reservation", "{\"next_ext_id\":52,\"next_user_id\":92}");
+            require(buffered.reservations().next_ext_id == 52 && buffered.reservations().next_user_id == 92,
+                    "buffered reservations did not advance in memory");
+            buffered.flush_reservations();
+            require(std::filesystem::file_size(buffered_path) > 0,
+                    "pre-send reservation flush did not persist buffered records");
+            std::ifstream records(buffered_path);
+            std::string record;
+            int lines{};
+            while (std::getline(records, record))
+                ++lines;
+            require(lines == 3, "buffered flush dropped or duplicated records");
+            const auto durable_size = std::filesystem::file_size(buffered_path);
+            buffered.append("idle");
+            require(std::filesystem::file_size(buffered_path) == durable_size,
+                    "ordinary event was written before the flush interval");
+            std::this_thread::sleep_for(std::chrono::milliseconds(270));
+            buffered.flush_if_due();
+            require(std::filesystem::file_size(buffered_path) > durable_size,
+                    "idle owner flush left a buffered event unwritten");
+        }
         {
             EventJournal journal(path);
             journal.append("reservation", "{\"next_ext_id\":17,\"next_user_id\":40}");
