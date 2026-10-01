@@ -2,8 +2,47 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
+#include <new>
 #include <stdexcept>
+#ifdef __linux__
+namespace {
+bool trace_allocations;
+struct AllocationTime {
+    std::size_t bytes;
+    std::int64_t us;
+};
+std::array<AllocationTime, 128> allocation_times;
+std::size_t allocation_count;
+} // namespace
+void* operator new(std::size_t bytes) {
+    const auto start = trace_allocations ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    auto* memory = std::malloc(bytes ? bytes : 1);
+    if (!memory)
+        throw std::bad_alloc();
+    if (trace_allocations && allocation_count < allocation_times.size())
+        allocation_times[allocation_count++] = {
+            bytes,
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count()};
+    return memory;
+}
+void* operator new[](std::size_t bytes) {
+    return ::operator new(bytes);
+}
+void operator delete(void* memory) noexcept {
+    std::free(memory);
+}
+void operator delete[](void* memory) noexcept {
+    std::free(memory);
+}
+void operator delete(void* memory, std::size_t) noexcept {
+    std::free(memory);
+}
+void operator delete[](void* memory, std::size_t) noexcept {
+    std::free(memory);
+}
+#endif
 using namespace moex::plaza2;
 using namespace moex::plaza2::cgate;
 using enum generated::StreamCode;
@@ -105,6 +144,9 @@ int main() {
                   << " us\n";
         const auto capacity_before_insert = projector.storage_capacity();
         const auto* view_before_insert = projector.own_orders().data();
+#ifdef __linux__
+        trace_allocations = true;
+#endif
         const auto before_insert = std::chrono::steady_clock::now();
         std::array<std::chrono::steady_clock::time_point, 6> insertion_times;
         insertion_times[0] = before_insert;
@@ -131,6 +173,13 @@ int main() {
         const auto insert_us =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - before_insert)
                 .count();
+#ifdef __linux__
+        trace_allocations = false;
+        std::cout << "Insertion allocations bytes/us:";
+        for (std::size_t index = 0; index < allocation_count; ++index)
+            std::cout << ' ' << allocation_times[index].bytes << '/' << allocation_times[index].us;
+        std::cout << '\n';
+#endif
         std::cout << "150k book new-order commit and delta: " << insert_us << " us\n";
         std::cout << "new-order begin/row/commit/view/delta phases: ";
         for (std::size_t index = 1; index < insertion_times.size(); ++index) {
