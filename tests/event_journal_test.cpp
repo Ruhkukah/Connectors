@@ -136,6 +136,18 @@ int main() {
         }
         validate_cgate_logging("ini=" + ini.string());
         validate_cgate_logging("ini=config/cgate.ini", root);
+        // CGate manual section 2.4 defines debug as the default minimum
+        // severity; section 2.4.1 scopes P2 options to its referenced sink.
+        for (const auto contents :
+             {"[cgate]\nlog=p2:p2syslog\nminloglevel=debug\n[p2syslog]\n"
+              "logfileperday=2\nlogfilenametype=1\nlogfiledepth=168\nlogtoconsole=0\nlogasync=1\n",
+              "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n[application]\n"
+              "log=std\nloglevel=error\nminloglevel=critical\nenabled=0\nlogging=off\n"}) {
+            std::ofstream(ini) << contents;
+            validate_cgate_logging("ini=" + ini.string());
+        }
+        std::ofstream(ini) << "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n";
+        validate_cgate_logging("ini=" + ini.string() + ";minloglevel=debug");
         require(json_string(std::string(1, '\xff')) == "\"\\ufffd\"", "invalid UTF8 corrupted JSON");
         for (const auto option : {";log=", ";log=std", ";minloglevel=error"}) {
             bool refused{};
@@ -158,7 +170,9 @@ int main() {
         }
         require(refused, "logging-disabled ini accepted");
         for (const auto contents :
-             {"[cgate]\nlog=p2:p2syslog\n;[p2syslog]\n", "[cgate]\n# log=p2:p2syslog\n[p2syslog]\n"}) {
+             {"[cgate]\nlog=p2:p2syslog\n;[p2syslog]\n", "[cgate]\n# log=p2:p2syslog\n[p2syslog]\n",
+              "[cgate]\nlog=p2:p2syslog\nminloglevel=error\n[p2syslog]\n",
+              "[cgate]\nlog=p2:p2syslog\n[p2syslog]\nlogfile=nul\n"}) {
             std::ofstream(ini) << contents;
             bool invalid{};
             try {

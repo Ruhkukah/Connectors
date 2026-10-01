@@ -20,10 +20,19 @@ inline void validate_cgate_logging(std::string_view settings, const std::filesys
         std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
         return value;
     };
-    const auto check = [](const std::string& key, const std::string& value) {
-        if ((key == "log" && value != "p2:p2syslog") || key == "minloglevel" || key == "loglevel" ||
+    const auto check_cgate = [](const std::string& key, const std::string& value) {
+        // The vendor CGate manual defines debug as the default minimum.
+        // Trace includes that diagnostic output; higher thresholds suppress it.
+        if ((key == "log" && value != "p2:p2syslog") ||
+            (key == "minloglevel" && value != "debug" && value != "trace") ||
             ((key == "logging" || key == "enabled") && (value == "0" || value == "false" || value == "off")))
             throw std::invalid_argument("CGate default logging must remain enabled; remove logging/severity overrides");
+    };
+    const auto check_sink = [](const std::string& key, const std::string& value) {
+        // Section 2.4.1 documents logfile=nul as disabling the P2 log file.
+        if ((key == "logfile" && value == "nul") ||
+            ((key == "logging" || key == "enabled") && (value == "0" || value == "false" || value == "off")))
+            throw std::invalid_argument("CGate P2 logging sink must remain enabled");
     };
     std::string text(settings), ini;
     std::replace(text.begin(), text.end(), ';', '\n');
@@ -35,7 +44,7 @@ inline void validate_cgate_logging(std::string_view settings, const std::filesys
             continue;
         const auto key = lower(trim(line.substr(0, equal)));
         const auto value = trim(line.substr(equal + 1));
-        check(key, lower(value));
+        check_cgate(key, lower(value));
         if (key == "ini")
             ini = value;
     }
@@ -69,7 +78,10 @@ inline void validate_cgate_logging(std::string_view settings, const std::filesys
         if (equal == std::string::npos)
             continue;
         const auto key = lower(trim(line.substr(0, equal))), value = lower(trim(line.substr(equal + 1)));
-        check(key, value);
+        if (section == "cgate")
+            check_cgate(key, value);
+        else if (section == "p2syslog")
+            check_sink(key, value);
         log |= section == "cgate" && key == "log" && value == "p2:p2syslog";
     }
     if (!log || !sink)
