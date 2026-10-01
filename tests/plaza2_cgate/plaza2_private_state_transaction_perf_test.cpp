@@ -56,6 +56,14 @@ void clone_pending_native_transaction() {
         state.open = true;
         state.streams.push_back({.stream_code = kFortsTradeRepl});
         begin(original, state);
+        row(original, state, 77, 7);
+        original.on_event({},
+                          {.kind = EventKind::kClearDeleted,
+                           .stream_code = kFortsTradeRepl,
+                           .table_code = kFortsTradeReplOrdersLog,
+                           .signed_value = std::numeric_limits<std::int64_t>::max()},
+                          state);
+        row(original, state, 77, 4);
         row(original, state, 77, 3);
         clone = original.clone();
         cloned_state = state;
@@ -67,20 +75,71 @@ void clone_pending_native_transaction() {
         require(original.own_orders().size() == 1 && original.own_orders()[0].public_order_id == 78,
                 "reset source retained cloned transaction state");
     }
-    // The source and its transaction pool have now been destroyed. The clone
-    // must publish its pending transaction and reuse its own pool afterward.
+    // The source and its pending storage have now been destroyed. The clone
+    // owns the recreated key and publishes its latest row exactly once.
     commit(clone, cloned_state);
     const auto initial = clone.take_row_changes();
     require(clone.own_orders().size() == 1 && initial.orders.size() == 1 && initial.orders[0].public_order_id == 77 &&
                 initial.orders[0].public_amount_rest == 3,
-            "clone lost its pending native rows when source pool was destroyed");
+            "clone lost or duplicated its pending native row after source destruction");
     begin(clone, cloned_state);
     row(clone, cloned_state, 77, 2);
     commit(clone, cloned_state);
     const auto updated = clone.take_row_changes();
     require(clone.own_orders().size() == 1 && updated.orders.size() == 1 && updated.orders[0].public_order_id == 77 &&
                 updated.orders[0].public_amount_rest == 2 && updated.orders[0].trade_repl_commit_sequence == 2,
-            "cloned transaction pool was not retained across commits");
+            "cloned transaction storage was not independent across commits");
+}
+
+void duplicate_native_trade_changes() {
+    private_state::Plaza2PrivateStateProjector projector;
+    Plaza2PrivateStateBridge bridge(projector);
+    const std::array streams{kFortsTradeRepl};
+    require(!bridge.reset(streams) && !bridge.begin_run(), "duplicate trades begin run");
+    const auto event = [&](Plaza2ListenerEventKind kind) {
+        require(!bridge.on_plaza2_listener_event({.kind = kind, .stream_code = kFortsTradeRepl}),
+                "duplicate trades transaction event");
+    };
+    std::array fields{Plaza2DecodedFieldValue{.field_code = kFortsTradeReplUserDealIdDeal,
+                                              .kind = Plaza2DecodedValueKind::SignedInteger},
+                      Plaza2DecodedFieldValue{.field_code = kFortsTradeReplUserDealXamount,
+                                              .kind = Plaza2DecodedValueKind::SignedInteger}};
+    std::int64_t revision{};
+    const auto row = [&](std::int64_t id, std::int64_t amount) {
+        fields[0].signed_value = id;
+        fields[1].signed_value = amount;
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                                  .stream_code = kFortsTradeRepl,
+                                                  .table_code = kFortsTradeReplUserDeal,
+                                                  .fields = fields,
+                                                  .signed_value = ++revision}),
+                "duplicate trade row");
+    };
+    event(Plaza2ListenerEventKind::TransactionBegin);
+    row(3, 1);
+    row(1, 2);
+    row(3, 3);
+    row(2, 4);
+    row(1, 5);
+    require(projector.take_row_changes().trades.empty(), "pending duplicate trades became visible");
+    event(Plaza2ListenerEventKind::TransactionCommit);
+    const auto initial = projector.take_row_changes();
+    require(projector.own_trades().size() == 3 && initial.trades.size() == 3,
+            "duplicate trade keys did not publish one final row per identity");
+    const auto amount = [&](std::int64_t id) {
+        const auto found = std::find_if(initial.trades.begin(), initial.trades.end(),
+                                        [id](const auto& trade) { return trade.id_deal == id; });
+        return found == initial.trades.end() ? 0 : found->amount;
+    };
+    require(amount(1) == 5 && amount(2) == 4 && amount(3) == 3, "duplicate trade delta lost latest amounts");
+    event(Plaza2ListenerEventKind::TransactionBegin);
+    row(1, 7);
+    row(1, 8);
+    event(Plaza2ListenerEventKind::TransactionCommit);
+    const auto updated = projector.take_row_changes();
+    require(projector.own_trades().size() == 3 && updated.trades.size() == 1 && updated.trades[0].id_deal == 1 &&
+                updated.trades[0].amount == 8,
+            "online duplicate trade touches changed identity or emitted intermediate rows");
 }
 
 int main() {
@@ -137,6 +196,8 @@ int main() {
         const auto elapsed =
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
         require(projector.own_orders().size() == 150000, "order index lost rows");
+        require(projector.storage_capacity().order_snapshot_capacity <= 200000,
+                "150k order snapshot retains excessive reserve capacity");
         const auto initial_orders = projector.own_orders();
         require(
             initial_orders.front().public_order_id == 1 && initial_orders.front().private_order_id == 1 &&
@@ -437,6 +498,7 @@ int main() {
         event(Plaza2ListenerEventKind::Close, kFortsTradeRepl);
         require(projector.take_row_changes().orders.empty(), "listener invalidation left stale row changes");
         clone_pending_native_transaction();
+        duplicate_native_trade_changes();
         std::cout << "150000 TRADE rows including commit: " << elapsed << " ms\n";
 // Optimized sanitizer builds also define NDEBUG. Their instrumentation overhead
 // is diagnostic; the Linux Release job enforces the unchanged capacity limit.

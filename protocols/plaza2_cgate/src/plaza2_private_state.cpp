@@ -7,7 +7,6 @@
 #include <functional>
 #include <initializer_list>
 #include <limits>
-#include <memory_resource>
 #include <optional>
 #include <span>
 #include <string>
@@ -365,8 +364,23 @@ std::vector<Snapshot> sorted_values(const Map& map, Comparator comparator, std::
     return out;
 }
 
+std::size_t growth_capacity(std::size_t size) {
+    return size + size / 4 + 1;
+}
+
+template <typename Map> void reserve_growth(Map& map) {
+    const auto capacity = growth_capacity(map.size());
+    if (static_cast<double>(map.bucket_count()) * map.max_load_factor() < capacity)
+        map.reserve(capacity);
+}
+
 bool order_has_any_source(const OwnOrderSnapshot& order) {
     return order.from_trade_repl || order.from_user_book || order.from_current_day;
+}
+
+bool order_change_pending(const OwnOrderSnapshot& order) {
+    return order.trade_repl_commit_sequence == std::numeric_limits<std::uint64_t>::max() ||
+           order.user_orderbook_commit_sequence == std::numeric_limits<std::uint64_t>::max();
 }
 
 void append_identifier_alias(std::vector<std::int64_t>& aliases, std::int64_t value) {
@@ -430,12 +444,16 @@ OwnOrderSnapshot& find_or_create_order(OrderMap& orders, const OrderKey& incomin
     auto& order = found->second;
 
     if (include_primary_aliases) {
+        // Legacy synthetic projections coalesce client ext_id references and
+        // expose primary IDs in alias lists as part of their existing contract.
         append_identifier_alias(order.public_order_id_aliases, order.public_order_id);
         append_identifier_alias(order.private_order_id_aliases, order.private_order_id);
         append_identifier_alias(order.public_order_id_aliases, incoming.public_order_id);
         append_identifier_alias(order.private_order_id_aliases, incoming.private_order_id);
     } else {
-        // Native canonical IDs are already stored and indexed as scalars.
+        // Native exchange rows keep separate IDs when Move reuses ext_id;
+        // canonical IDs are already stored and indexed as scalars, so only
+        // actual alternate exchange IDs belong in their alias lists.
         // Allocating alias vectors for those same IDs fragments the allocator
         // when a large bootstrap delta is copied and then released.
         if (order.public_order_id && order.public_order_id != incoming.public_order_id)
@@ -515,8 +533,6 @@ void append_or_replace_leg(std::vector<InstrumentLegSnapshot>& legs, InstrumentL
 }
 
 struct StagedState {
-    StagedState(std::pmr::memory_resource* resource = std::pmr::get_default_resource())
-        : order_keys(resource), trade_keys(resource) {}
     bool status_bindings_invalidated{false};
     bool active{false};
     std::optional<SessionMap> sessions;
@@ -529,8 +545,11 @@ struct StagedState {
     std::optional<PositionMap> positions;
     std::optional<OrderMap> orders;
     std::optional<TradeMap> trades;
-    std::pmr::unordered_set<OrderKey, OrderKeyHash> order_keys;
-    std::pmr::unordered_set<TradeKey, TradeKeyHash> trade_keys;
+    // Contiguous transient keys avoid retaining a bootstrap-sized node pool,
+    // or returning thousands of small nodes to the allocator at each commit.
+    // Order commit sentinels deduplicate touches; trade keys are uniqued once.
+    std::vector<OrderKey> order_keys;
+    std::vector<TradeKey> trade_keys;
     bool rebuild_order_view{}, rebuild_trade_view{};
     std::optional<std::vector<StreamHealthSnapshot>> stream_health;
     std::optional<SourceRevisionRows> source_revisions;
@@ -600,43 +619,20 @@ struct Plaza2PrivateStateProjector::Impl {
     std::unordered_map<TradeKey, std::size_t, TradeKeyHash> trade_view_index;
     PrivateRowChanges row_changes;
 
-    // Recycle transient key nodes on the owner thread. Freeing a large
-    // bootstrap set into the general heap delayed later order insertions.
-    // The pool outlives staged containers, and clones receive a fresh pool.
-    std::pmr::unsynchronized_pool_resource transaction_key_storage;
-    StagedState staged{&transaction_key_storage};
+    StagedState staged;
     bool native_commit_phase{false};
     std::uint64_t status_binding_generation{0};
 
-    Impl() = default;
-    Impl(const Impl& other)
-        : connector_health(other.connector_health), resume_markers(other.resume_markers),
-          stream_health(other.stream_health), sessions_by_id(other.sessions_by_id),
-          instruments_by_isin(other.instruments_by_isin), future_sessions(other.future_sessions),
-          future_vcb_by_row(other.future_vcb_by_row), matching_by_base_contract(other.matching_by_base_contract),
-          system_messages_by_id(other.system_messages_by_id), limits_by_key(other.limits_by_key),
-          unknown_limits(other.unknown_limits), positions_by_key(other.positions_by_key),
-          orders_by_key(other.orders_by_key), trades_by_key(other.trades_by_key),
-          source_revisions(other.source_revisions), lifenums_by_stream(other.lifenums_by_stream),
-          session_snapshots(other.session_snapshots), instrument_snapshots(other.instrument_snapshots),
-          future_vcb_snapshots(other.future_vcb_snapshots), matching_snapshots(other.matching_snapshots),
-          system_message_snapshots(other.system_message_snapshots), limit_snapshots(other.limit_snapshots),
-          position_snapshots(other.position_snapshots), order_snapshots(other.order_snapshots),
-          trade_snapshots(other.trade_snapshots), order_view_index(other.order_view_index),
-          trade_view_index(other.trade_view_index), row_changes(other.row_changes),
-          native_commit_phase(other.native_commit_phase), status_binding_generation(other.status_binding_generation) {
-        // PMR copy assignment keeps the destination allocator. The copied
-        // pending transaction therefore owns nodes in this instance's pool.
-        staged = other.staged;
+    void rebind_limit_index() {
+        // A default copy owns its maps and pending transaction. Only these
+        // cached pointers need rebinding while the source is still alive.
         const auto& limits = native_commit_phase && staged.limits ? *staged.limits : limits_by_key;
-        for (const auto& [code, source_lookup] : other.limit_index) {
-            auto lookup = source_lookup;
+        for (auto& [code, lookup] : limit_index) {
             if (lookup.exact) {
                 const auto& row = *lookup.exact;
                 const auto found = limits.find(LimitKey{row.participant_kind, row.account_code, row.repl_id});
                 lookup.exact = found == limits.end() ? nullptr : &found->second;
             }
-            limit_index.emplace(code, lookup);
         }
     }
 
@@ -1072,16 +1068,16 @@ struct Plaza2PrivateStateProjector::Impl {
         for (const auto table : tables) {
             const auto found = revisions.find(table);
             if (found != revisions.end())
-                found->second.reserve((found->second.size() + 1) * 2);
+                reserve_growth(found->second);
         }
     }
 
     void rebuild_orders() {
         // Reserve every large index at the bulk boundary. Online insertions
         // must not depend on the standard library's bucket growth thresholds.
-        orders_by_key.reserve((orders_by_key.size() + 1) * 2);
+        reserve_growth(orders_by_key);
         orders_by_key.refresh_index();
-        orders_by_key.identities.reserve((orders_by_key.identities.size() + 1) * 2);
+        reserve_growth(orders_by_key.identities);
         reserve_revision_growth({TableCode::kFortsTradeReplOrdersLog, TableCode::kFortsTradeReplMultilegOrdersLog,
                                  TableCode::kFortsUserorderbookReplOrders,
                                  TableCode::kFortsUserorderbookReplMultilegOrders,
@@ -1116,9 +1112,9 @@ struct Plaza2PrivateStateProjector::Impl {
                 }
                 return lhs.from_current_day > rhs.from_current_day;
             },
-            (orders_by_key.size() + 1) * 2);
+            growth_capacity(orders_by_key.size()));
         order_view_index.clear();
-        order_view_index.reserve((order_snapshots.size() + 1) * 2);
+        order_view_index.reserve(growth_capacity(order_snapshots.size()));
         for (std::size_t index = 0; index < order_snapshots.size(); ++index) {
             const auto& row = order_snapshots[index];
             const OrderKey key{.surface = row.from_trade_repl ? OrderSurface::kTrade : OrderSurface::kUserOrderbook,
@@ -1133,7 +1129,7 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void rebuild_trades() {
-        trades_by_key.reserve((trades_by_key.size() + 1) * 2);
+        reserve_growth(trades_by_key);
         reserve_revision_growth({TableCode::kFortsTradeReplUserDeal, TableCode::kFortsTradeReplUserMultilegDeal});
         trade_snapshots = sorted_values<OwnTradeSnapshot>(
             trades_by_key,
@@ -1143,9 +1139,9 @@ struct Plaza2PrivateStateProjector::Impl {
                 }
                 return lhs.id_deal < rhs.id_deal;
             },
-            (trades_by_key.size() + 1) * 2);
+            growth_capacity(trades_by_key.size()));
         trade_view_index.clear();
-        trade_view_index.reserve((trade_snapshots.size() + 1) * 2);
+        trade_view_index.reserve(growth_capacity(trade_snapshots.size()));
         for (std::size_t index = 0; index < trade_snapshots.size(); ++index) {
             const auto& row = trade_snapshots[index];
             trade_view_index[{row.multileg, row.id_deal}] = index;
@@ -1776,6 +1772,11 @@ struct Plaza2PrivateStateProjector::Impl {
         return ensure_stage_copy(staged.trades, trades_by_key, native_commit_phase);
     }
 
+    void record_order_change(const OwnOrderSnapshot& order, OrderKey key) {
+        if (!order_change_pending(order))
+            staged.order_keys.push_back(std::move(key));
+    }
+
     void apply_trade_order_row(const RowReader& row, bool multileg) {
         auto& orders = ensure_staged_orders(StreamCode::kFortsTradeRepl);
         OrderKey key{
@@ -1797,7 +1798,7 @@ struct Plaza2PrivateStateProjector::Impl {
         // distinct positive order ID before reply 176 supplies the logical link.
         auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase && previous_id == 0,
                                            !native_commit_phase);
-        staged.order_keys.insert(std::move(resolved));
+        record_order_change(order, std::move(resolved));
         order.sess_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogSessId
                                          : FieldCode::kFortsTradeReplOrdersLogSessId);
         order.isin_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogIsinId
@@ -1952,7 +1953,7 @@ struct Plaza2PrivateStateProjector::Impl {
         };
         OrderKey resolved;
         auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase, !native_commit_phase);
-        staged.order_keys.insert(std::move(resolved));
+        record_order_change(order, std::move(resolved));
 
         order.sess_id = row.i32(sess_field);
         order.isin_id = row.i32(isin_field);
@@ -1990,7 +1991,7 @@ struct Plaza2PrivateStateProjector::Impl {
                                         : FieldCode::kFortsTradeReplUserDealIdDeal),
         };
         auto& trade = trades[key];
-        staged.trade_keys.insert(key);
+        staged.trade_keys.push_back(key);
         trade.multileg = multileg;
         trade.id_deal = key.id_deal;
         trade.sess_id = row.i32(multileg ? FieldCode::kFortsTradeReplUserMultilegDealSessId
@@ -2518,11 +2519,18 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         if (staged.orders.has_value()) {
             orders_by_key = std::move(*staged.orders);
+            if (row_changes.orders.empty() && !staged.order_keys.empty())
+                row_changes.orders.reserve(growth_capacity(staged.order_keys.size()));
             for (const auto& key : staged.order_keys) {
                 const auto found = orders_by_key.find(key);
                 if (found == orders_by_key.end())
                     continue;
                 auto& order = found->second;
+                // ClearDeleted may remove and recreate the same key inside
+                // a transaction. Publish the final row once, then clear its
+                // pending markers so a repeated recorded key is skipped.
+                if (!order_change_pending(order))
+                    continue;
                 if (order.trade_repl_commit_sequence == std::numeric_limits<std::uint64_t>::max()) {
                     order.trade_repl_commit_sequence = state.commit_count;
                 }
@@ -2544,6 +2552,13 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         if (staged.trades.has_value()) {
             trades_by_key = std::move(*staged.trades);
+            std::sort(staged.trade_keys.begin(), staged.trade_keys.end(), [](const TradeKey& lhs, const TradeKey& rhs) {
+                return lhs.multileg != rhs.multileg ? lhs.multileg < rhs.multileg : lhs.id_deal < rhs.id_deal;
+            });
+            staged.trade_keys.erase(std::unique(staged.trade_keys.begin(), staged.trade_keys.end()),
+                                    staged.trade_keys.end());
+            if (row_changes.trades.empty() && !staged.trade_keys.empty())
+                row_changes.trades.reserve(growth_capacity(staged.trade_keys.size()));
             for (const auto& key : staged.trade_keys) {
                 const auto found = trades_by_key.find(key);
                 if (found == trades_by_key.end())
@@ -2653,6 +2668,7 @@ Plaza2PrivateStateProjector& Plaza2PrivateStateProjector::operator=(Plaza2Privat
 Plaza2PrivateStateProjector Plaza2PrivateStateProjector::clone() const {
     Plaza2PrivateStateProjector copy;
     copy.impl_ = std::make_unique<Impl>(*impl_);
+    copy.impl_->rebind_limit_index();
     return copy;
 }
 
