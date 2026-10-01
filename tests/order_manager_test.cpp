@@ -311,6 +311,152 @@ void cancel_races_and_identity() {
     require(other.orders().at("renamed").order_id == 501 && !terminal(other.orders().at("renamed").state),
             "old-id removal cancelled a renamed working order");
 }
+void mass_cancel_priority_and_reconciliation() {
+    Fixture f;
+    f.config.max_commands_per_second = 30;
+    f.config.risk.max_open_orders = 200;
+    auto manager = f.manager();
+    std::vector<ps::OwnOrderSnapshot> initial;
+    for (std::int32_t index = 1; index <= 100; ++index) {
+        ManagedOrder seed{.request = request("seed" + std::to_string(index)), .ext_id = index};
+        auto value = row(seed, 1000 + index, 3, 1);
+        value.trade_repl_commit_sequence = 1;
+        initial.push_back(value);
+    }
+    manager.observe_orders(initial, true);
+    require(manager.cancel("recovered:100:1001").empty(), "preexisting cancellation refused");
+    require(manager.place(request("unsent-after-mass")).empty(), "unsent mass fixture Add refused");
+    require(manager.cancel_all(42).empty(), "priority mass cancel refused");
+    f.poll(manager, 0);
+    require(f.sent.size() == 1 && f.sent.front().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
+            "mass cancel was delayed behind individual cancellations");
+    const auto mass = f.sent.front();
+    const auto payload = wire<official_cgate99::DelUserOrders>(mass);
+    require(payload.buy_sell == 3 && payload.ext_id == 0 && payload.isin_id == 42,
+            "priority mass cancel filters changed");
+    require(manager.orders().at("unsent-after-mass").state == OrderState::Cancelled,
+            "mass cancel left an unsent Add queued");
+    f.poll(manager, 1000);
+    require(f.sent.size() == 1, "individual cancellation ran before reply186");
+    // A commit before186 is not the post-reply reconciliation point.
+    auto survivor = initial.front();
+    survivor.trade_repl_commit_sequence = 2;
+    observe(manager, survivor);
+    manager.on_reply(mass.id, {.msgid = 186, .num_orders = 99},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(1000));
+    f.poll(manager, 1000);
+    require(f.sent.size() == 1, "individual cancellation ran before a newer TRADE commit");
+    std::vector<ps::OwnOrderSnapshot> terminal(initial.begin() + 1, initial.end());
+    for (auto& value : terminal) {
+        value.public_amount_rest = 0;
+        value.public_action = 0;
+        value.trade_repl_commit_sequence = 3;
+    }
+    survivor.trade_repl_commit_sequence = 3;
+    terminal.push_back(survivor);
+    manager.observe_orders(terminal);
+    f.poll(manager, 1001);
+    require(f.sent.size() == 2 && f.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder &&
+                wire<official_cgate99::DelOrder>(f.sent.back()).order_id == 1001,
+            "post186 TRADE reconciliation did not target only the surviving order");
+
+    Fixture empty_commit;
+    auto empty = empty_commit.manager();
+    auto working = initial.front();
+    working.trade_repl_commit_sequence = 5;
+    observe(empty, working, true);
+    require(empty.cancel_all(42).empty(), "empty-commit mass cancel refused");
+    empty_commit.poll(empty, 0);
+    empty.on_reply(empty_commit.sent.front().id, {.msgid = 186, .num_orders = 1}, OrderManager::Clock::time_point{}, 7);
+    empty.observe_trade_commit(7);
+    empty_commit.poll(empty, 1000);
+    require(empty_commit.sent.size() == 1, "reply186 reused a commit already present in the same owner poll");
+    empty.observe_trade_commit(8);
+    empty_commit.poll(empty, 1001);
+    require(empty_commit.sent.size() == 2 && empty_commit.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder,
+            "empty TRADE commit did not release a surviving per-ID fallback");
+}
+
+void mass_cancel_supersedes_delayed_flood_replies() {
+    Fixture f;
+    auto manager = f.manager();
+    require(manager.place(request("sent-cancel")).empty() && manager.place(request("sent-move")).empty(),
+            "delayed flood fixture Adds refused");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.at(0).id, {.msgid = 179, .order_id = 1001}, OrderManager::Clock::time_point{});
+    manager.on_reply(f.sent.at(1).id, {.msgid = 179, .order_id = 1002}, OrderManager::Clock::time_point{});
+    require(manager.cancel("sent-cancel").empty(), "delayed flood cancellation refused");
+    require(manager.move("sent-move", "101", 2).empty(), "delayed flood Move refused");
+    f.poll(manager, 0);
+    const auto individual = f.sent.at(2), move = f.sent.at(3);
+    require(individual.kind == tr::Plaza2TradeCommandKind::DelOrder &&
+                move.kind == tr::Plaza2TradeCommandKind::MoveOrder,
+            "delayed flood commands not in flight");
+    require(manager.cancel_all(42).empty(), "delayed flood mass cancel refused");
+    f.poll(manager, 0);
+    const auto mass = f.sent.at(4);
+    require(mass.kind == tr::Plaza2TradeCommandKind::DelUserOrders, "delayed flood mass request not sent first");
+    manager.on_reply(individual.id, {.msgid = 99, .penalty_remain = 2000}, OrderManager::Clock::time_point{});
+    manager.on_reply(move.id, {.msgid = 99, .penalty_remain = 3000}, OrderManager::Clock::time_point{});
+    require(manager.queued() == 0, "superseded in-flight99 requeued an individual cancel or Move");
+    f.poll(manager, 1000);
+    require(f.sent.size() == 5, "superseded commands ran before mass reconciliation");
+    manager.on_reply(mass.id, {.msgid = 186, .num_orders = 1},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(1000), 7);
+    auto terminal_order = row(manager.orders().at("sent-cancel"), 1001, 0, 0);
+    auto survivor = row(manager.orders().at("sent-move"), 1002, 3, 1);
+    terminal_order.trade_repl_commit_sequence = survivor.trade_repl_commit_sequence = 8;
+    const std::array reconciled{terminal_order, survivor};
+    manager.observe_orders(reconciled);
+    f.poll(manager, 2999);
+    require(f.sent.size() == 5, "discarded command99 did not apply the global flood penalty");
+    f.poll(manager, 3000);
+    require(f.sent.size() == 6 && f.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder &&
+                wire<official_cgate99::DelOrder>(f.sent.back()).order_id == 1002,
+            "mass fallback resurrected a discarded Move or retried a terminal order");
+    require(std::count_if(f.sent.begin(), f.sent.end(),
+                          [](const auto& sent) { return sent.kind == tr::Plaza2TradeCommandKind::MoveOrder; }) == 1,
+            "cancel_requested Move was resubmitted after a delayed99");
+
+    Fixture explicit_cancel;
+    auto single = explicit_cancel.manager();
+    require(single.place(request("explicit-cancel")).empty(), "explicit cancellation Add refused");
+    explicit_cancel.poll(single, 0);
+    single.on_reply(explicit_cancel.sent.front().id, {.msgid = 179, .order_id = 1001},
+                    OrderManager::Clock::time_point{});
+    require(single.move("explicit-cancel", "101", 2).empty(), "explicit cancellation Move refused");
+    explicit_cancel.poll(single, 0);
+    const auto rejected_move = explicit_cancel.sent.back();
+    require(single.cancel("explicit-cancel").empty(), "explicit cancellation refused");
+    explicit_cancel.poll(single, 0);
+    single.on_reply(rejected_move.id, {.msgid = 99, .penalty_remain = 2000}, OrderManager::Clock::time_point{});
+    explicit_cancel.poll(single, 2000);
+    require(explicit_cancel.sent.size() == 3 && single.queued() == 0 &&
+                single.orders().at("explicit-cancel").cancel_requested,
+            "delayed99 revived a Move superseded by an explicit individual cancellation");
+
+    Fixture replacement;
+    auto replaced = replacement.manager();
+    ManagedOrder seed{.request = request("replacement-seed"), .ext_id = 1};
+    auto live = row(seed, 2001, 3, 1);
+    live.trade_repl_commit_sequence = 1;
+    observe(replaced, live, true);
+    require(replaced.cancel_all(42).empty(), "first mass request refused");
+    replacement.poll(replaced, 0);
+    const auto old_mass = replacement.sent.back();
+    require(replaced.cancel_all(42).empty(), "replacement mass request refused");
+    replacement.poll(replaced, 0);
+    const auto new_mass = replacement.sent.back();
+    replaced.on_reply(old_mass.id, {.msgid = 99, .penalty_remain = 2000}, OrderManager::Clock::time_point{});
+    replaced.on_reply(new_mass.id, {.msgid = 186, .num_orders = 1}, OrderManager::Clock::time_point{}, 1);
+    replaced.observe_trade_commit(2);
+    replacement.poll(replaced, 1999);
+    require(replacement.sent.size() == 2, "superseded mass99 lost its global flood penalty");
+    replacement.poll(replaced, 2000);
+    require(replacement.sent.size() == 3 && replacement.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder,
+            "superseded mass99 was requeued or lost the current group's fallback");
+}
+
 void cancel_all_and_move_failures() {
     Fixture f;
     auto manager = f.manager();
@@ -791,6 +937,8 @@ int main() {
         day_and_restart();
         risk();
         cancel_races_and_identity();
+        mass_cancel_priority_and_reconciliation();
+        mass_cancel_supersedes_delayed_flood_replies();
         cancel_all_and_move_failures();
         cancel_during_move();
         replication_during_move();

@@ -168,6 +168,17 @@ cg::Plaza2Error CgateTradingHost::poll() {
         return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_};
     }
     const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
+    const auto& data = session_.private_state();
+    bool trade_online{}, user_book_online{};
+    std::int64_t server_time{};
+    std::uint64_t trade_commit_sequence{};
+    for (const auto& stream : data.stream_health())
+        if (stream.stream_name == "FORTS_TRADE_REPL") {
+            trade_online = stream.online && stream.snapshot_complete;
+            server_time = stream.last_server_time;
+            trade_commit_sequence = stream.last_commit_sequence;
+        } else if (stream.stream_name == "FORTS_USERORDERBOOK_REPL")
+            user_book_online = stream.online && stream.snapshot_complete;
     for (const auto& event : session_.take_reply_events()) {
         if (event.timed_out) {
             orders_->on_timeout(event.user_id, now);
@@ -177,22 +188,13 @@ cg::Plaza2Error CgateTradingHost::poll() {
         const auto reply =
             plaza2_trade::Plaza2TradeCodec{}.decode_reply(event.message_id, event.raw_payload, validation);
         if (validation.ok())
-            orders_->on_reply(event.user_id, reply, now);
+            orders_->on_reply(event.user_id, reply, now, trade_commit_sequence);
         else {
             log_event("malformed_reply", "{\"user_id\":" + std::to_string(event.user_id) +
                                              ",\"error\":" + json_string(validation.message) + "}");
             orders_->on_timeout(event.user_id, now);
         }
     }
-    const auto& data = session_.private_state();
-    bool trade_online{}, user_book_online{};
-    std::int64_t server_time{};
-    for (const auto& stream : data.stream_health())
-        if (stream.stream_name == "FORTS_TRADE_REPL") {
-            trade_online = stream.online && stream.snapshot_complete;
-            server_time = stream.last_server_time;
-        } else if (stream.stream_name == "FORTS_USERORDERBOOK_REPL")
-            user_book_online = stream.online && stream.snapshot_complete;
     // This barrier runs only once. A delayed initial USERORDERBOOK snapshot
     // must be included in exposure reconstruction before the first new Add;
     // subsequent USERORDERBOOK updates/outages do not gate new orders.
@@ -206,6 +208,9 @@ cg::Plaza2Error CgateTradingHost::poll() {
         orders_->observe_orders(changes.orders);
         orders_->observe_trades(changes.trades);
     }
+    // Empty TRADE commits also establish the post-186 reconciliation boundary.
+    // Apply their rows first so individual fallbacks see only surviving orders.
+    orders_->observe_trade_commit(trade_commit_sequence);
     orders_->prove_absence(server_time, trade_online);
     // Reserve identities durably once per owner-loop batch, then submit the
     // queued commands. The event stream itself uses 250ms group commit.

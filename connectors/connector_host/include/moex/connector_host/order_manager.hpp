@@ -89,11 +89,14 @@ class OrderManager {
     [[nodiscard]] std::string cancel_all(std::int32_t isin_id);
     void set_kill_switch(bool enabled);
     void poll(Clock::time_point now, std::int64_t utc_seconds);
-    void on_reply(std::uint32_t user_id, const plaza2_trade::Plaza2TradeDecodedReply& reply, Clock::time_point now);
+    void on_reply(std::uint32_t user_id, const plaza2_trade::Plaza2TradeDecodedReply& reply, Clock::time_point now,
+                  std::uint64_t trade_commit_sequence = 0);
     void on_timeout(std::uint32_t user_id, Clock::time_point now);
     // USERORDERBOOK is used only while rebuilding, never as a live Add gate.
     void observe_orders(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, bool rebuilding = false);
     void observe_trades(std::span<const plaza2::private_state::OwnTradeSnapshot> rows);
+    // Call after applying TRADE deltas, including commits with no changed orders.
+    void observe_trade_commit(std::uint64_t sequence);
     void prove_absence(std::int64_t trade_server_time, bool trade_online);
     [[nodiscard]] const std::map<std::string, ManagedOrder>& orders() const noexcept {
         return orders_;
@@ -114,6 +117,11 @@ class OrderManager {
         std::int64_t target_order_id{};
         bool acknowledged{};
         std::uint32_t failures{};
+        std::uint64_t bulk_generation{};
+    };
+    struct BulkCancellation {
+        std::uint64_t generation{}, after_commit_sequence{};
+        bool awaiting_reply{true};
     };
     [[nodiscard]] std::string check_risk(const OrderRequest& request, std::size_t extra_orders,
                                          std::string_view exclude_key = {}) const;
@@ -140,6 +148,8 @@ class OrderManager {
     std::unordered_map<std::int64_t, std::int64_t> filled_by_id_;
     std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnOrderSnapshot> deferred_orders_;
     std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnTradeSnapshot> deferred_trades_;
+    std::map<std::int32_t, BulkCancellation> bulk_cancellations_;
+    std::uint64_t next_bulk_generation_{1}, trade_commit_sequence_{};
     std::deque<Command> cancels_, adds_;
     std::unordered_map<std::uint32_t, Command> pending_;
     Clock::time_point now_{};
