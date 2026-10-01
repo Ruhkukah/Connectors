@@ -1,6 +1,7 @@
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/connector_host/trading_host.hpp"
 #include "plaza2_runtime_test_support.hpp"
+#include "fake_cgate_control.hpp"
 
 #include <cstdlib>
 #include <fstream>
@@ -17,12 +18,13 @@ int main(int argc, char** argv) {
         const auto fixture =
             test::materialize_runtime_fixture(root, argv[1], cg::Plaza2Environment::Test,
                                               test::build_vendor_like_runtime_scheme("SPECTRA9.9.0", "9.9", "T1"));
+        moex::plaza2::test::fake::Control fake(fixture.library_path);
         ::setenv("MOEX_PLAZA2_TEST_CREDENTIALS", "fake-test-only", 1);
         ::setenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "00000000", 1);
-        ::setenv("MOEX_FAKE_CLIENT_CODE", "BRK1C01", 1);
-        ::setenv("MOEX_FAKE_AGGR_WRONG_SESSION", "1", 1);
-        ::setenv("MOEX_FAKE_DELAY_USERORDERBOOK", "1", 1);
-        ::setenv("MOEX_FAKE_USERBOOK_ONLY_ORDER", "1", 1);
+        fake.set(moex::plaza2::test::fake::Option::ClientCode, "BRK1C01");
+        fake.set(moex::plaza2::test::fake::Option::AggrWrongSession, "1");
+        fake.set(moex::plaza2::test::fake::Option::DelayUserorderbook, "1");
+        fake.set(moex::plaza2::test::fake::Option::UserbookOnlyOrder, "1");
         Plaza2HostConfigInputs input;
         input.runtime_root = fixture.root;
         input.library_path = fixture.library_path;
@@ -37,7 +39,7 @@ int main(int argc, char** argv) {
         input.allow_orders = true;
         TradingHostConfig config;
         config.session = build_plaza2_host_config(input).transport.host;
-        config.session.mode = moex::plaza2_trade::Plaza2TestSessionHostMode::OfflineFake;
+        config.session.mode = moex::plaza2_trade::CgateSessionMode::OfflineFake;
         config.session.process_timeout_ms = 0;
         config.orders.broker_code = input.broker_code;
         config.orders.client_code = input.client_code;
@@ -52,7 +54,7 @@ int main(int argc, char** argv) {
                 !host.place({.client_order_id = "premature", .isin_id = 1001, .price = "103000", .quantity = 2})
                      .empty(),
                 "new Add bypassed delayed startup exposure reconstruction");
-            ::unsetenv("MOEX_FAKE_DELAY_USERORDERBOOK");
+            fake.clear(moex::plaza2::test::fake::Option::DelayUserorderbook);
             for (int i = 0; i < 15; ++i)
                 test::require(!host.poll(), "delayed USERORDERBOOK completion");
             test::require(host.status().find("recovered:321:20009") != std::string::npos,
@@ -60,7 +62,7 @@ int main(int argc, char** argv) {
             test::require(
                 host.place({.client_order_id = "first", .isin_id = 1001, .price = "103000", .quantity = 2}).empty(),
                 "production owner did not allow quantity2 while AGGR invalid");
-            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "61001", 1);
+            fake.set(moex::plaza2::test::fake::Option::PubReplyOrderId, "61001");
             for (int i = 0; i < 3; ++i)
                 test::require(!host.poll(), "production Add dispatch/reply");
             test::require(host.status().find("61001") != std::string::npos,
@@ -68,7 +70,7 @@ int main(int argc, char** argv) {
             test::require(
                 host.place({.client_order_id = "second", .isin_id = 1001, .price = "103000", .quantity = 3}).empty(),
                 "production owner refused concurrent order");
-            ::setenv("MOEX_FAKE_PUB_REPLY_ORDER_ID", "61002", 1);
+            fake.set(moex::plaza2::test::fake::Option::PubReplyOrderId, "61002");
             for (int i = 0; i < 3; ++i)
                 test::require(!host.poll(), "second concurrent Add dispatch/reply");
             test::require(host.status().find("61002") != std::string::npos, "second reply correlation lost");
@@ -106,9 +108,9 @@ int main(int argc, char** argv) {
         }
         test::require(command && reply && market && sys_message,
                       "interaction log omitted command/reply/market/exchange message");
-        ::unsetenv("MOEX_FAKE_AGGR_WRONG_SESSION");
-        ::unsetenv("MOEX_FAKE_USERBOOK_ONLY_ORDER");
-        ::unsetenv("MOEX_FAKE_PUB_REPLY_ORDER_ID");
+        fake.clear(moex::plaza2::test::fake::Option::AggrWrongSession);
+        fake.clear(moex::plaza2::test::fake::Option::UserbookOnlyOrder);
+        fake.clear(moex::plaza2::test::fake::Option::PubReplyOrderId);
         test::remove_tree(root);
         return 0;
     } catch (const std::exception& error) {

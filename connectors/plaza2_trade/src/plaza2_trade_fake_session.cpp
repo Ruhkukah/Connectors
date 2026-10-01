@@ -1,6 +1,6 @@
 #include "moex/plaza2_trade/plaza2_trade_fake_session.hpp"
 
-#include "plaza2_generated_metadata.hpp"
+#include "moex/plaza2/cgate/plaza2_metadata.hpp"
 
 #include <algorithm>
 #include <charconv>

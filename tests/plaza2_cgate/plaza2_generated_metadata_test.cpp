@@ -1,6 +1,8 @@
-#include "plaza2_generated_metadata.hpp"
+#include "moex/plaza2/cgate/plaza2_metadata.hpp"
 #include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
+#include "fixtures/server_schema.hpp"
 
+#include <algorithm>
 #include <iostream>
 
 static_assert(moex::plaza2::cgate::kPlaza2D16_5DecimalPrecision == 16);
@@ -12,7 +14,7 @@ int main() {
 
     if (TypeDescriptors().empty() || StreamDescriptors().empty() || TableDescriptors().empty() ||
         FieldDescriptors().empty()) {
-        std::cerr << "generated metadata arrays must not be empty\n";
+        std::cerr << "metadata arrays must not be empty\n";
         return 1;
     }
 
@@ -60,13 +62,32 @@ int main() {
     const auto* aggr_price = FindFieldByCode(FieldCode::kFortsAggrReplOrdersAggrPrice);
     if (aggr_price == nullptr || aggr_price->type_token != "d16.5" || aggr_price->decimal_digits != 16 ||
         aggr_price->decimal_scale != 5 || aggr_price->value_class != ValueClass::kDecimal) {
-        std::cerr << "AGGR orders_aggr.price must remain generated d16.5\n";
+        std::cerr << "AGGR orders_aggr.price must remain d16.5\n";
         return 1;
     }
 
     const auto trade_tables = TablesForStream(StreamCode::kFortsTradeRepl);
     if (trade_tables.size() != trade_stream->table_count) {
         std::cerr << "stream table span does not match descriptor count\n";
+        return 1;
+    }
+
+    std::size_t native_fields = 0;
+    for (const auto& table : TableDescriptors()) {
+        const auto native = moex::plaza2::test::server_schema_fields(table.table_code);
+        native_fields += native.size();
+        for (const auto& consumed : FieldsForTable(table.table_code)) {
+            if (std::none_of(native.begin(), native.end(), [&](const auto& field) {
+                    return field.field_code == consumed.field_code && field.field_name == consumed.field_name &&
+                           field.type_token == consumed.type_token;
+                })) {
+                std::cerr << "product field does not match full native server schema\n";
+                return 1;
+            }
+        }
+    }
+    if (native_fields <= FieldDescriptors().size()) {
+        std::cerr << "native offset fixture must retain unconsumed server fields\n";
         return 1;
     }
 

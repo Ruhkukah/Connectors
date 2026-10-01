@@ -11,7 +11,9 @@ struct TradingHostConfig {
     OrderManagerConfig orders;
     std::vector<std::int32_t> isin_ids;
     std::filesystem::path journal_path;
+    std::filesystem::path identity_state_path;
     std::optional<std::int64_t> clock_offset_us;
+    std::function<std::int64_t()> utc_now;
 };
 class CgateTradingHost {
   public:
@@ -37,7 +39,6 @@ class CgateTradingHost {
     EventJournal journal_;
     plaza2_trade::CgateSession session_;
     std::unique_ptr<OrderManager> orders_;
-    std::uint64_t commit_sequence_{UINT64_MAX};
     bool rebuilding_{true};
     std::string log_error_;
 };

@@ -134,8 +134,8 @@ struct Proto {
         return it->second.s;
     }
 };
-unsigned witness_number(plaza2::cgate::SessionReadyWitnessKind a) {
-    using Kind = plaza2::cgate::SessionReadyWitnessKind;
+unsigned witness_number(SessionReadyWitnessKind a) {
+    using Kind = SessionReadyWitnessKind;
     switch (a) {
     case Kind::OnlineSynchronousEvent:
         return 1;
@@ -366,8 +366,8 @@ struct DtcReadOnlyServer::Impl {
         // authority disclosure. Consumers must not infer order authorization.
         p.clear();
         str(p, 3,
-            std::string("source_mode=") + std::string(dtc_source_mode_name(config.source_mode)) + ";authority=" +
-                std::string(plaza2::cgate::session_ready_witness_kind_name(s.session_ready_witness_kind)) +
+            std::string("source_mode=") + std::string(dtc_source_mode_name(config.source_mode)) +
+                ";authority=" + std::string(session_ready_witness_kind_name(s.session_ready_witness_kind)) +
                 ";transport_active=" + (s.transport_active ? "true" : "false") +
                 ";snapshot_current=" + (usable(s) ? "true" : "false") +
                 ";order_entry_allowed=false;accounts=false;positions=false;orders=false");
@@ -376,7 +376,7 @@ struct DtcReadOnlyServer::Impl {
     bool authority(const DtcMarketDataSnapshot& s) {
         Bytes p;
         auto boolean = [](bool value) { return value ? "true" : "false"; };
-        const auto name = plaza2::cgate::session_ready_witness_kind_name(s.session_ready_witness_kind);
+        const auto name = session_ready_witness_kind_name(s.session_ready_witness_kind);
         str(p, 1,
             std::string("moex.source_authority.v1 {\"symbol_id\":") + std::to_string(symbol_id) +
                 ",\"source_mode\":\"" + std::string(dtc_source_mode_name(config.source_mode)) +

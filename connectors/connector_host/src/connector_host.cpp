@@ -41,7 +41,7 @@ std::int32_t current_session_id(const ps::Plaza2PrivateStateProjector& data, std
     return data.current_session_id(now_seconds);
 }
 
-bool order_entry_ready(const Plaza2TestSessionHost& host, std::int64_t isin_id, std::int32_t session_id) {
+bool order_entry_ready(const CgateSession& host, std::int64_t isin_id, std::int32_t session_id) {
     const auto health = host.runtime_health();
     if (!host.started() || !health.valid || health.connection != 3 || health.publisher != 3 || health.reply != 3)
         return false;
@@ -88,7 +88,7 @@ std::string_view host_state_name(ConnectorHostState state) noexcept {
 struct ConnectorHost::Impl {
     explicit Impl(Plaza2HostConfig c) : config(std::move(c)), host(config.transport.host) {}
     Plaza2HostConfig config;
-    Plaza2TestSessionHost host;
+    CgateSession host;
     ConnectorHostState state{ConnectorHostState::Created};
     std::string error;
 };
@@ -145,7 +145,7 @@ ConnectorHostSnapshot ConnectorHost::snapshot() const {
     out.target_isin_id = impl_->config.transport.target_isin_id;
     out.session_id = current_session_id(host.private_state());
     out.runtime_compatibility = cg::plaza2_compatibility_name(host.probe_report().compatibility);
-    out.runtime_scheme_sha256 = host.probe_report().scheme_drift.runtime_scheme_sha256;
+    out.runtime_scheme_sha256 = host.probe_report().runtime_scheme_sha256;
     out.connection_app_name = host.connection_app_name();
     out.transport_health = host.runtime_health();
     out.publisher_handle_open = host.publisher_open();
@@ -307,12 +307,8 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
     out.market_data_display_allowed = out.target_authoritative;
     out.market_data_live = out.source_consistent;
     out.valid = out.market_data_display_allowed;
-    if (out.source_consistent && status.ready_event) {
-        out.session_ready_witness = status.ready_event;
-        out.session_ready_witness_kind = status.ready_event->seen_during_snapshot
-                                             ? cg::SessionReadyWitnessKind::LateJoinCorroboratedSnapshot
-                                             : cg::SessionReadyWitnessKind::OnlineSynchronousEvent;
-    }
+    if (out.source_consistent && status.ready_event)
+        out.session_ready_event = status.ready_event;
     // DTC order entry is outside this certificate and remains disabled.
     out.order_entry_allowed = false;
     if (out.valid)
@@ -336,47 +332,7 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
     return out;
 }
 
-ConnectorHostQualificationSnapshot ConnectorHost::qualification_snapshot(bool private_identity) const {
-    const auto& host = impl_->host;
-    const auto instruments = host.private_state().instruments();
-    const auto positions = host.private_state().positions();
-    ConnectorHostQualificationSnapshot out{.book = host.aggr20_projector().snapshot(),
-                                           .instruments = {instruments.begin(), instruments.end()},
-                                           .positions = {positions.begin(), positions.end()},
-                                           .connection_app_name = host.connection_app_name(),
-                                           .rate = host.publisher_rate_metrics(),
-                                           .aggr_online = host.aggr_online(),
-                                           .aggr_snapshot_complete = host.aggr_snapshot_complete()};
-    const auto system_messages = host.private_state().system_messages();
-    out.system_messages.assign(system_messages.begin(), system_messages.end());
-    for (const auto& row : host.private_state().own_orders()) {
-        if (row.identity_conflict || ((row.from_user_book || row.from_current_day) &&
-                                      (row.public_amount_rest > 0 || row.private_amount_rest > 0)))
-            out.active_orders.push_back(row);
-    }
-    const auto& data = host.private_state();
-    out.visible_limit_rows = data.limit_row_count();
-    out.unknown_limit_rows = data.unknown_limit_row_count();
-    const auto broker = data.find_limit_by_code(impl_->config.order.broker_code);
-    const auto client = data.find_limit_by_code(impl_->config.order.broker_code + impl_->config.order.client_code);
-    out.matching_broker_limit_rows = broker.match_count;
-    out.matching_client_limit_rows = client.match_count;
-    out.client_code_is_brokerage_account = impl_->config.order.client_code == "000";
-    if (broker.exact)
-        out.broker_limit = *broker.exact;
-    if (client.exact)
-        out.client_limit = *client.exact;
-    for (const auto& row : data.limits())
-        out.limit_diagnostics.push_back(
-            {row.repl_id, row.participant_kind, row.account_code.size(),
-             row.account_code == impl_->config.order.broker_code,
-             row.account_code == impl_->config.order.broker_code + impl_->config.order.client_code, row.limits_set,
-             row.is_auto_update_limit, row.money_free, row.money_blocked, row.money_amount,
-             private_identity ? row.account_code : std::string{}});
-    return out;
-}
-
-std::string render_snapshot(const ConnectorHostSnapshot& s, bool json, const ConnectorHostQualificationSnapshot*) {
+std::string render_snapshot(const ConnectorHostSnapshot& s, bool json) {
     std::ostringstream out;
     out << std::boolalpha;
     if (!json) {

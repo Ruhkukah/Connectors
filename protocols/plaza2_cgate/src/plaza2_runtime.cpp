@@ -1,7 +1,7 @@
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 
-#include "plaza2_generated_metadata.hpp"
+#include "moex/plaza2/cgate/plaza2_metadata.hpp"
 #include "moex/plaza2/cgate/plaza2_public_decode.hpp"
 
 #include <algorithm>
@@ -91,30 +91,6 @@ constexpr std::array<std::string_view, 14> kRequiredTradingSymbols = {
     "cg_pub_getstate", "cg_pub_msgnew", "cg_pub_post",    "cg_pub_msgfree",
 };
 
-struct ReviewedRuntimeIdentity {
-    std::string_view spectra_release;
-    std::string_view scheme_sha256;
-    std::string_view library_sha256;
-    std::string_view runtime_version;
-};
-
-// Exact, reviewed TEST runtime identities. SPECTRA93 remains supported as
-// historical provenance; SPECTRA9.9.0 is the current T1 qualification target.
-constexpr std::array<ReviewedRuntimeIdentity, 2> kReviewedRuntimeIdentities = {{
-    {
-        "SPECTRA93",
-        "cc3ab53b792eb1354b17615612abf173158e2f9dd78604bc47a121badf54b1c2",
-        "c1a1752026806a6c7364326ab29794d0b85c1f9db26ec3fdbb509190e5b0a4a2",
-        "6.93.1.5675",
-    },
-    {
-        "SPECTRA9.9.0",
-        "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746",
-        "f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f",
-        "6.102.0.6118",
-    },
-}};
-
 constexpr std::array<std::string_view, 4> kLibraryFilenameCandidates = {
 #if defined(__APPLE__)
     "libcgate.dylib",
@@ -166,11 +142,6 @@ struct RuntimeLibraryCloser {
         }
         delete api;
     }
-};
-
-struct RuntimeSchemeField {
-    std::string field_name;
-    std::string type_token;
 };
 
 struct CgValuePair {
@@ -301,53 +272,6 @@ struct CgDataLifeNum {
     std::uint32_t flags;
 };
 
-struct RuntimeSchemeTable {
-    std::string scheme_name;
-    std::string table_name;
-    std::vector<RuntimeSchemeField> fields;
-};
-
-struct ParsedRuntimeScheme {
-    Plaza2VersionMarkers markers;
-    std::vector<RuntimeSchemeTable> tables;
-};
-
-struct ReviewedSignatureEntry {
-    std::string example_name;
-    std::size_t count{0};
-};
-
-struct RuntimeSignatureEntry {
-    std::string example_name;
-    std::size_t count{0};
-};
-
-struct RuntimeTableEntry {
-    std::string example_name;
-    std::vector<RuntimeSchemeField> fields;
-};
-
-struct ReviewedTableEntry {
-    std::string example_name;
-    std::vector<generated::FieldDescriptor> fields;
-};
-
-struct SchemeTableKey {
-    std::string stream_name;
-    std::string table_name;
-
-    [[nodiscard]] std::string display_name() const {
-        return stream_name + "." + table_name;
-    }
-
-    friend bool operator<(const SchemeTableKey& lhs, const SchemeTableKey& rhs) noexcept {
-        if (lhs.stream_name != rhs.stream_name) {
-            return lhs.stream_name < rhs.stream_name;
-        }
-        return lhs.table_name < rhs.table_name;
-    }
-};
-
 [[nodiscard]] std::string trim_copy(std::string_view value) {
     std::size_t begin = 0;
     while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin])) != 0) {
@@ -374,13 +298,6 @@ struct SchemeTableKey {
         result.pop_back();
     }
     return result;
-}
-
-[[nodiscard]] std::string read_file_to_string(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    std::ostringstream buffer;
-    buffer << input.rdbuf();
-    return buffer.str();
 }
 
 [[nodiscard]] std::vector<std::string> read_file_lines(const std::filesystem::path& path) {
@@ -522,90 +439,6 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
     return {expected.begin(), expected.end()};
 }
 
-[[nodiscard]] std::string canonical_table_signature(std::span<const RuntimeSchemeField> fields) {
-    std::ostringstream out;
-    for (const auto& field : fields) {
-        out << field.field_name << ':' << field.type_token << ';';
-    }
-    return out.str();
-}
-
-[[nodiscard]] std::string canonical_table_signature(std::span<const generated::FieldDescriptor> fields) {
-    std::ostringstream out;
-    for (const auto& field : fields) {
-        out << field.field_name << ':' << field.type_token << ';';
-    }
-    return out.str();
-}
-
-[[nodiscard]] bool table_is_in_list(std::string_view stream_name, std::string_view table_name,
-                                    std::span<const std::pair<std::string_view, std::string_view>> tables) {
-    return std::any_of(tables.begin(), tables.end(),
-                       [&](const auto& table) { return table.first == stream_name && table.second == table_name; });
-}
-
-[[nodiscard]] bool is_required_private_state_table(std::string_view stream_name, std::string_view table_name) {
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 24> kRequiredTables = {{
-        {"FORTS_REFDATA_REPL", "session"},
-        {"FORTS_REFDATA_REPL", "fut_instruments"},
-        {"FORTS_REFDATA_REPL", "sys_messages"},
-        {"FORTS_REFDATA_REPL", "opt_sess_contents"},
-        {"FORTS_REFDATA_REPL", "multileg_dict"},
-        {"FORTS_REFDATA_REPL", "instr2matching_map"},
-        {"FORTS_TRADE_REPL", "orders_log"},
-        {"FORTS_TRADE_REPL", "multileg_orders_log"},
-        {"FORTS_TRADE_REPL", "user_deal"},
-        {"FORTS_TRADE_REPL", "user_multileg_deal"},
-        {"FORTS_TRADE_REPL", "heartbeat"},
-        {"FORTS_TRADE_REPL", "sys_events"},
-        {"FORTS_USERORDERBOOK_REPL", "orders"},
-        {"FORTS_USERORDERBOOK_REPL", "multileg_orders"},
-        {"FORTS_USERORDERBOOK_REPL", "orders_currentday"},
-        {"FORTS_USERORDERBOOK_REPL", "multileg_orders_currentday"},
-        {"FORTS_USERORDERBOOK_REPL", "info"},
-        {"FORTS_USERORDERBOOK_REPL", "info_currentday"},
-        {"FORTS_POS_REPL", "position"},
-        {"FORTS_POS_REPL", "info"},
-        {"FORTS_PART_REPL", "part"},
-        {"FORTS_PART_REPL", "sys_events"},
-        {"FORTS_SESSIONSTATE_REPL", "session_state"},
-        {"FORTS_INSTRUMENTSTATE_REPL", "instrument_state"},
-    }};
-    return table_is_in_list(stream_name, table_name, kRequiredTables);
-}
-
-[[nodiscard]] bool is_warning_only_private_state_table(std::string_view stream_name, std::string_view table_name) {
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 1> kWarningOnlyTables = {{
-        {"FORTS_REFDATA_REPL", "clearing_members"},
-    }};
-    return table_is_in_list(stream_name, table_name, kWarningOnlyTables);
-}
-
-[[nodiscard]] bool is_fatal_scheme_table_drift(const SchemeTableKey& key) {
-    if (is_warning_only_private_state_table(key.stream_name, key.table_name)) {
-        return false;
-    }
-    return is_required_private_state_table(key.stream_name, key.table_name);
-}
-
-[[nodiscard]] std::string normalized_runtime_stream_name(std::string_view scheme_name) {
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 7> kRuntimeSchemeAliases = {{
-        {"REFDATA", "FORTS_REFDATA_REPL"},
-        {"Trade", "FORTS_TRADE_REPL"},
-        {"OrderBook", "FORTS_USERORDERBOOK_REPL"},
-        {"POS", "FORTS_POS_REPL"},
-        {"PART", "FORTS_PART_REPL"},
-        {"SESSIONSTATE", "FORTS_SESSIONSTATE_REPL"},
-        {"INSTRUMENTSTATE", "FORTS_INSTRUMENTSTATE_REPL"},
-    }};
-    for (const auto& [runtime_name, reviewed_name] : kRuntimeSchemeAliases) {
-        if (scheme_name == runtime_name) {
-            return std::string(reviewed_name);
-        }
-    }
-    return std::string(scheme_name);
-}
-
 [[nodiscard]] std::optional<std::size_t> integer_type_size(std::string_view type_token) {
     if (type_token == "i1" || type_token == "u1") {
         return 1;
@@ -630,126 +463,6 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
     const auto runtime_integer_size = integer_type_size(runtime_type);
     return reviewed_integer_size.has_value() && runtime_integer_size.has_value() &&
            *reviewed_integer_size == *runtime_integer_size;
-}
-
-[[nodiscard]] bool is_reviewed_absent_field(std::string_view spectra_release, const SchemeTableKey& table,
-                                            std::string_view field_name) {
-    if (spectra_release != "SPECTRA9.9.0") {
-        return false;
-    }
-    static constexpr std::array<std::tuple<std::string_view, std::string_view, std::string_view>, 6>
-        kSpectra99RemovedFields = {{
-            {"FORTS_PART_REPL", "part", "vm_intercl"},
-            {"FORTS_PART_REPL", "part", "premium_intercl"},
-            {"FORTS_REFDATA_REPL", "fut_instruments", "step_price_interclr"},
-            {"FORTS_REFDATA_REPL", "session", "inter_cl_begin"},
-            {"FORTS_REFDATA_REPL", "session", "inter_cl_end"},
-            {"FORTS_REFDATA_REPL", "session", "inter_cl_state"},
-        }};
-    return std::ranges::any_of(kSpectra99RemovedFields, [&](const auto& field) {
-        return std::get<0>(field) == table.stream_name && std::get<1>(field) == table.table_name &&
-               std::get<2>(field) == field_name;
-    });
-}
-
-[[nodiscard]] bool parse_runtime_scheme(const std::filesystem::path& scheme_path, ParsedRuntimeScheme& out_scheme,
-                                        std::string& error_message) {
-    out_scheme = {};
-    RuntimeSchemeTable* current_table = nullptr;
-    std::string current_section;
-
-    for (const auto& raw_line : read_file_lines(scheme_path)) {
-        const auto line = trim_copy(raw_line);
-        if (line.empty()) {
-            continue;
-        }
-        if (line.rfind(';', 0) == 0) {
-            const auto comment = trim_copy(std::string_view(line).substr(1));
-            constexpr std::string_view kSpectraPrefix = "Spectra release:";
-            constexpr std::string_view kDdsPrefix = "DDS version:";
-            constexpr std::string_view kTargetPrefixA = "Target poligon:";
-            constexpr std::string_view kTargetPrefixB = "Target polygon:";
-            if (comment.rfind(kSpectraPrefix, 0) == 0) {
-                out_scheme.markers.spectra_release = trim_copy(std::string_view(comment).substr(kSpectraPrefix.size()));
-            } else if (comment.rfind(kDdsPrefix, 0) == 0) {
-                out_scheme.markers.dds_version = trim_copy(std::string_view(comment).substr(kDdsPrefix.size()));
-            } else if (comment.rfind(kTargetPrefixA, 0) == 0) {
-                out_scheme.markers.target_polygon = trim_copy(std::string_view(comment).substr(kTargetPrefixA.size()));
-            } else if (comment.rfind(kTargetPrefixB, 0) == 0) {
-                out_scheme.markers.target_polygon = trim_copy(std::string_view(comment).substr(kTargetPrefixB.size()));
-            }
-            continue;
-        }
-
-        if (line.front() == '[' && line.back() == ']') {
-            current_section = line.substr(1, line.size() - 2);
-            current_table = nullptr;
-            if (current_section.rfind("table:", 0) == 0) {
-                const auto rest = current_section.substr(6);
-                const auto separator = rest.find(':');
-                if (separator == std::string::npos) {
-                    error_message = "invalid table section: " + current_section;
-                    return false;
-                }
-                out_scheme.tables.push_back({
-                    .scheme_name = rest.substr(0, separator),
-                    .table_name = rest.substr(separator + 1),
-                    .fields = {},
-                });
-                current_table = &out_scheme.tables.back();
-            }
-            continue;
-        }
-
-        if (current_table == nullptr) {
-            continue;
-        }
-
-        if (line.rfind("field=", 0) != 0) {
-            continue;
-        }
-        const auto remainder = line.substr(6);
-        const auto comma = remainder.find(',');
-        if (comma == std::string::npos) {
-            error_message = "invalid field line: " + line;
-            return false;
-        }
-        const auto field_name = trim_copy(std::string_view(remainder).substr(0, comma));
-        const auto type_token = trim_copy(std::string_view(remainder).substr(comma + 1));
-        if (field_name.empty() || type_token.empty()) {
-            error_message = "invalid empty field token in line: " + line;
-            return false;
-        }
-        current_table->fields.push_back({field_name, type_token});
-    }
-
-    for (const auto& table : out_scheme.tables) {
-        if (table.table_name.empty() || table.fields.empty()) {
-            error_message = "runtime scheme contains empty table definition";
-            return false;
-        }
-    }
-    if (out_scheme.tables.empty()) {
-        error_message = "runtime scheme contains no table sections";
-        return false;
-    }
-    return true;
-}
-
-[[nodiscard]] Plaza2Compatibility combine_compatibility(Plaza2Compatibility lhs, Plaza2Compatibility rhs) noexcept {
-    if (lhs == Plaza2Compatibility::Incompatible || rhs == Plaza2Compatibility::Incompatible) {
-        return Plaza2Compatibility::Incompatible;
-    }
-    if (lhs == Plaza2Compatibility::Unknown || rhs == Plaza2Compatibility::Unknown) {
-        return Plaza2Compatibility::Unknown;
-    }
-    if (lhs == Plaza2Compatibility::CompatibleWithWarnings || rhs == Plaza2Compatibility::CompatibleWithWarnings) {
-        return Plaza2Compatibility::CompatibleWithWarnings;
-    }
-    if (lhs == Plaza2Compatibility::Compatible && rhs == Plaza2Compatibility::Compatible) {
-        return Plaza2Compatibility::Compatible;
-    }
-    return Plaza2Compatibility::Unknown;
 }
 
 void push_issue(std::vector<Plaza2ProbeIssue>& issues, Plaza2ProbeIssueCode code, bool fatal, std::string subject,
@@ -855,145 +568,6 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
 
 [[nodiscard]] CgResult noop_listener_callback(void*, void*, void*, void*) {
     return kCgErrOk;
-}
-
-[[nodiscard]] Plaza2SchemeDriftReport compare_runtime_scheme(const std::filesystem::path& scheme_path,
-                                                             const Plaza2Settings& settings) {
-    Plaza2SchemeDriftReport report;
-    report.reviewed_table_count = generated::TableDescriptors().size();
-    report.reviewed_field_count = generated::FieldDescriptors().size();
-    report.runtime_scheme_sha256 = detail::sha256_file(scheme_path);
-
-    ParsedRuntimeScheme parsed;
-    std::string parse_error;
-    if (!parse_runtime_scheme(scheme_path, parsed, parse_error)) {
-        push_issue(report.issues, Plaza2ProbeIssueCode::RuntimeSchemeParseFailed, true, scheme_path.filename().string(),
-                   "failed to parse runtime forts_scheme.ini: " + parse_error);
-        report.compatibility = Plaza2Compatibility::Incompatible;
-        return report;
-    }
-
-    report.runtime_table_count = parsed.tables.size();
-    std::size_t runtime_field_count = 0;
-    std::map<SchemeTableKey, RuntimeTableEntry> runtime_by_name;
-    for (const auto& table : parsed.tables) {
-        runtime_field_count += table.fields.size();
-        const SchemeTableKey key{.stream_name = normalized_runtime_stream_name(table.scheme_name),
-                                 .table_name = table.table_name};
-        auto& entry = runtime_by_name[key];
-        if (entry.example_name.empty()) {
-            entry.example_name = key.display_name();
-        }
-        entry.fields = table.fields;
-    }
-    report.runtime_field_count = runtime_field_count;
-
-    std::map<SchemeTableKey, ReviewedTableEntry> reviewed_by_name;
-    for (const auto& table : generated::TableDescriptors()) {
-        const auto fields = generated::FieldsForTable(table.table_code);
-        const SchemeTableKey key{.stream_name = std::string(table.stream_name),
-                                 .table_name = std::string(table.table_name)};
-        auto& entry = reviewed_by_name[key];
-        if (entry.example_name.empty()) {
-            entry.example_name = key.display_name();
-        }
-        entry.fields.assign(fields.begin(), fields.end());
-    }
-
-    if (!settings.expected_scheme_sha256.empty() && report.runtime_scheme_sha256 != settings.expected_scheme_sha256) {
-        push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, false, scheme_path.filename().string(),
-                   "runtime scheme hash mismatch: expected " + settings.expected_scheme_sha256 + ", got " +
-                       report.runtime_scheme_sha256);
-    }
-    if (!settings.expected_spectra_release.empty() &&
-        parsed.markers.spectra_release != settings.expected_spectra_release) {
-        push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedVersion, false, scheme_path.filename().string(),
-                   "runtime spectra release mismatch: expected " + settings.expected_spectra_release + ", got " +
-                       parsed.markers.spectra_release);
-    }
-
-    auto record_drift = [&](const SchemeTableKey& key, Plaza2ProbeIssueCode code, bool fatal, std::string subject,
-                            std::string message) {
-        // Negotiated listener schemes validate required fields at OPEN. File drift is diagnostic only.
-        fatal = false;
-        push_issue(report.issues, code, fatal, std::move(subject), message);
-        auto& count = fatal ? report.fatal_drift_count : report.warning_drift_count;
-        auto& tables = fatal ? report.fatal_drift_tables : report.warning_drift_tables;
-        auto& last_reason = fatal ? report.last_fatal_drift_reason : report.last_warning_drift_reason;
-        ++count;
-        const auto display_name = key.display_name();
-        if (std::find(tables.begin(), tables.end(), display_name) == tables.end()) {
-            tables.push_back(display_name);
-        }
-        last_reason = std::move(message);
-    };
-
-    std::set<SchemeTableKey> table_names;
-    for (const auto& [table_name, _] : reviewed_by_name) {
-        table_names.insert(table_name);
-    }
-    for (const auto& [table_name, _] : runtime_by_name) {
-        table_names.insert(table_name);
-    }
-
-    for (const auto& table_name : table_names) {
-        const auto reviewed_it = reviewed_by_name.find(table_name);
-        const auto runtime_it = runtime_by_name.find(table_name);
-        if (reviewed_it == reviewed_by_name.end()) {
-            record_drift(table_name, Plaza2ProbeIssueCode::RuntimeTableUnexpected,
-                         is_fatal_scheme_table_drift(table_name), table_name.display_name(),
-                         "runtime scheme exposes unexpected table not present in Phase 3B baseline: " +
-                             table_name.display_name());
-            continue;
-        }
-        if (runtime_it == runtime_by_name.end()) {
-            record_drift(table_name, Plaza2ProbeIssueCode::ReviewedTableMissing,
-                         is_fatal_scheme_table_drift(table_name), reviewed_it->second.example_name,
-                         "runtime scheme is missing reviewed table '" + table_name.display_name() + "'");
-            continue;
-        }
-
-        const auto runtime_signature = canonical_table_signature(runtime_it->second.fields);
-        const auto reviewed_signature = canonical_table_signature(reviewed_it->second.fields);
-        if (runtime_signature == reviewed_signature) {
-            continue;
-        }
-
-        if (is_required_private_state_table(table_name.stream_name, table_name.table_name)) {
-            std::map<std::string_view, std::string_view> runtime_fields;
-            for (const auto& field : runtime_it->second.fields) {
-                runtime_fields.emplace(field.field_name, field.type_token);
-            }
-            bool material_required_drift = false;
-            for (const auto& field : reviewed_it->second.fields) {
-                const auto runtime_field_it = runtime_fields.find(field.field_name);
-                if (runtime_field_it == runtime_fields.end() &&
-                    is_reviewed_absent_field(parsed.markers.spectra_release, table_name, field.field_name)) {
-                    continue;
-                }
-                if (runtime_field_it == runtime_fields.end() ||
-                    !compatible_runtime_field_type(field.type_token, runtime_field_it->second)) {
-                    material_required_drift = true;
-                    break;
-                }
-            }
-            if (material_required_drift) {
-                record_drift(table_name, Plaza2ProbeIssueCode::ReviewedTableSignatureMismatch, true,
-                             reviewed_it->second.example_name,
-                             "runtime scheme diverged materially from reviewed projected table signature for '" +
-                                 table_name.display_name() + "'");
-                continue;
-            }
-        }
-
-        record_drift(table_name, Plaza2ProbeIssueCode::ReviewedTableSignatureMismatch, false,
-                     reviewed_it->second.example_name,
-                     "runtime scheme differs from reviewed non-material table signature for '" +
-                         table_name.display_name() + "'");
-    }
-
-    report.compatibility = compatibility_from_issues(report.issues);
-    return report;
 }
 
 } // namespace
@@ -1189,9 +763,9 @@ struct Plaza2ListenerCallbackState {
     const auto* scheme = static_cast<CgSchemeDesc*>(raw_scheme);
     if (scheme == nullptr || scheme->messages == nullptr) {
         return {
-            .code = Plaza2ErrorCode::DecodeFailed,
+            .code = Plaza2ErrorCode::IncompatibleScheme,
             .runtime_code = 0,
-            .message = "CGate listener scheme is empty after CG_MSG_OPEN",
+            .message = "INCOMPATIBLE_SCHEME expected=REQUIRED_TABLES got=EMPTY after CG_MSG_OPEN",
         };
     }
 
@@ -1305,7 +879,7 @@ struct Plaza2ListenerCallbackState {
             const auto actual = std::find_if(plan.fields.begin(), plan.fields.end(),
                                              [&](const auto& f) { return f.field_code == expected.field_code; });
             if (actual == plan.fields.end() || actual->type_token != expected.type_token) {
-                return {.code = Plaza2ErrorCode::DecodeFailed,
+                return {.code = Plaza2ErrorCode::IncompatibleScheme,
                         .message = "INCOMPATIBLE_SCHEME " + message_name + "." + std::string(expected.field_name) +
                                    " expected=" + std::string(expected.type_token) +
                                    " got=" + (actual == plan.fields.end() ? "MISSING" : actual->type_token)};
@@ -1321,9 +895,9 @@ struct Plaza2ListenerCallbackState {
     }
     if (state.message_plans.empty()) {
         return {
-            .code = Plaza2ErrorCode::DecodeFailed,
+            .code = Plaza2ErrorCode::IncompatibleScheme,
             .runtime_code = 0,
-            .message = "listener scheme does not expose any reviewed tables for the configured stream",
+            .message = "INCOMPATIBLE_SCHEME expected=REQUIRED_TABLES got=MISSING",
         };
     }
 
@@ -1360,7 +934,7 @@ struct Plaza2ListenerCallbackState {
     for (auto name : required_tables)
         if (std::none_of(state.message_plans.begin(), state.message_plans.end(),
                          [&](const auto& p) { return p.msg_name == name; }))
-            return {.code = Plaza2ErrorCode::DecodeFailed,
+            return {.code = Plaza2ErrorCode::IncompatibleScheme,
                     .message = "INCOMPATIBLE_SCHEME " + std::string(name) + " expected=TABLE got=MISSING"};
     state.scheme_loaded = true;
     return {};
@@ -1374,8 +948,6 @@ struct Plaza2ListenerCallbackState {
     if (state.shared->settings.listener_event_log)
         state.shared->settings.listener_event_log(event);
     const auto error = state.handler->on_plaza2_listener_event(event);
-    if (auto* observer = state.shared->settings.qualification_observer)
-        observer->observe(event, error);
     return error;
 }
 
@@ -1387,9 +959,6 @@ struct Plaza2ListenerCallbackState {
 
     auto fail = [&](Plaza2Error error) -> CgResult {
         state->last_error = std::move(error);
-        if (auto* observer = state->shared->settings.qualification_observer)
-            observer->runtime_state(14, static_cast<std::uint32_t>(state->stream_code), state->last_error.runtime_code,
-                                    static_cast<std::uint32_t>(state->last_error.code));
         if (state->handler)
             state->handler->on_plaza2_listener_error(state->last_error);
         // Decode errors are recovered by the owning listener supervisor.
@@ -1693,63 +1262,6 @@ struct Plaza2ListenerCallbackState {
                 .raw_nulls = {payload->nulls, payload->num_nulls},
                 .table_index = payload->msg_index,
             };
-            if (auto* observer = state->shared->settings.qualification_observer;
-                observer && observer->wants_forensic_row(event)) {
-                if (payload->data_size > 65536 || payload->num_nulls > 4096 || plan->fields.size() > 128)
-                    return fail(
-                        {.code = Plaza2ErrorCode::DecodeFailed, .message = "target forensic row exceeds bounds"});
-                Plaza2ForensicRow raw;
-                raw.stream_code = state->stream_code;
-                raw.table_code = plan->table_code;
-                raw.table_index = plan->msg_index;
-                raw.message_size = payload->data_size;
-                raw.message_name = plan->msg_name;
-                const auto* bytes = static_cast<const std::byte*>(payload->data);
-                raw.payload.assign(bytes, bytes + payload->data_size);
-                if (payload->nulls)
-                    raw.nulls.assign(payload->nulls, payload->nulls + payload->num_nulls);
-                for (const auto& field : plan->fields) {
-                    const auto& name = field.name;
-                    if (name != "replID" && name != "replRev" && name != "replAct" && name != "isin_id" &&
-                        name != "sess_id" && name != "isin" && name != "short_isin" && name != "limit_up" &&
-                        name != "limit_down" && name != "settlement_price_open" && name != "settlement_price" &&
-                        name != "buy_deposit" && name != "sell_deposit" && name != "roundto" && name != "min_step" &&
-                        name != "step_price")
-                        continue;
-                    Plaza2ForensicField item{.name = name,
-                                             .type = field.type_token,
-                                             .offset = field.offset,
-                                             .size = field.size,
-                                             .ordinal = field.ordinal,
-                                             .is_null = payload->nulls && field.ordinal < payload->num_nulls &&
-                                                        payload->nulls[field.ordinal] != 0};
-                    if (!item.is_null) {
-                        // Independent name/negotiated-offset route: no generated FieldCode lookup.
-                        std::array<char, 256> buffer{};
-                        std::size_t size = buffer.size();
-                        item.conversion_result = state->shared->api->getstr(field.type_token.c_str(),
-                                                                            bytes + field.offset, buffer.data(), &size);
-                        if (item.conversion_result == kCgErrOk && size <= buffer.size())
-                            item.independent_value = copy_c_string(buffer.data(), size);
-                        else if (item.conversion_result == kCgErrOk)
-                            item.conversion_result = kCgErrBufferTooSmall;
-                        for (const auto& value : state->decoded_fields) {
-                            if (value.field_code != field.field_code)
-                                continue;
-                            item.generic_value = value.kind == Plaza2DecodedValueKind::SignedInteger
-                                                     ? std::to_string(value.signed_value)
-                                                 : value.kind == Plaza2DecodedValueKind::UnsignedInteger
-                                                     ? std::to_string(value.unsigned_value)
-                                                     : std::string(value.text_value);
-                            break;
-                        }
-                    }
-                    item.equal = item.is_null ||
-                                 (item.conversion_result == kCgErrOk && item.generic_value == item.independent_value);
-                    raw.fields.push_back(std::move(item));
-                }
-                observer->forensic_row(std::move(raw));
-            }
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
             }
@@ -1931,14 +1443,25 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
             push_issue(report.issues, Plaza2ProbeIssueCode::MissingSchemeFile, true, report.layout.scheme_path.string(),
                        "expected runtime scheme file is missing");
         } else {
-            auto parsed_scheme = ParsedRuntimeScheme{};
-            std::string parse_error;
-            if (parse_runtime_scheme(report.layout.scheme_path, parsed_scheme, parse_error)) {
-                report.layout.version_markers = parsed_scheme.markers;
+            report.runtime_scheme_sha256 = detail::sha256_file(report.layout.scheme_path);
+            if (!settings.expected_scheme_sha256.empty() &&
+                report.runtime_scheme_sha256 != settings.expected_scheme_sha256)
+                push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, false, "scheme",
+                           "runtime scheme hash differs from configured diagnostic identity");
+            for (const auto& raw : read_file_lines(report.layout.scheme_path)) {
+                const auto line = trim_copy(raw);
+                for (const auto& marker :
+                     {std::pair{"; Spectra release:", &report.layout.version_markers.spectra_release},
+                      std::pair{"; DDS version:", &report.layout.version_markers.dds_version},
+                      std::pair{"; Target polygon:", &report.layout.version_markers.target_polygon},
+                      std::pair{"; Target poligon:", &report.layout.version_markers.target_polygon}})
+                    if (line.starts_with(marker.first))
+                        *marker.second = trim_copy(std::string_view(line).substr(std::strlen(marker.first)));
             }
-            report.scheme_drift = compare_runtime_scheme(report.layout.scheme_path, settings);
-            report.issues.insert(report.issues.end(), report.scheme_drift.issues.begin(),
-                                 report.scheme_drift.issues.end());
+            if (!settings.expected_spectra_release.empty() &&
+                report.layout.version_markers.spectra_release != settings.expected_spectra_release)
+                push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedVersion, false, "scheme",
+                           "runtime release differs from configured diagnostic identity");
         }
     }
 
@@ -1982,7 +1505,6 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
     }
 
     report.compatibility = compatibility_from_issues(report.issues);
-    report.compatibility = combine_compatibility(report.compatibility, report.scheme_drift.compatibility);
     return report;
 }
 

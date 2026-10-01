@@ -1,5 +1,6 @@
-#include "moex/plaza2_trade/plaza2_test_trade_transport.hpp"
+#include "moex/plaza2_trade/cgate_session.hpp"
 #include "plaza2_runtime_test_support.hpp"
+#include "fake_cgate_control.hpp"
 #include "plaza2_trade_test_support.hpp"
 #include <cstdlib>
 #include <dlfcn.h>
@@ -7,12 +8,6 @@
 using namespace moex::plaza2_trade;
 using namespace moex::plaza2;
 using test::require;
-void flag(const char* key, bool on) {
-    if (on)
-        ::setenv(key, "1", 1);
-    else
-        ::unsetenv(key);
-}
 int main(int argc, char** argv) {
     try {
         require(argc == 2, "fake runtime path required");
@@ -20,6 +15,8 @@ int main(int argc, char** argv) {
         const auto fixture =
             test::materialize_runtime_fixture(root, argv[1], cgate::Plaza2Environment::Test,
                                               test::build_vendor_like_runtime_scheme("SPECTRA9.9.0", "9.9", "T1"));
+        moex::plaza2::test::fake::Control fake(fixture.library_path);
+        const auto flag = [&](moex::plaza2::test::fake::Option key, bool on) { fake.set(key, on ? "1" : ""); };
         void* dso = ::dlopen(fixture.library_path.c_str(), RTLD_NOW | RTLD_LOCAL);
         require(dso, "load fixture counters");
         auto reset = reinterpret_cast<void (*)()>(::dlsym(dso, "moex_fake_reset_publisher_counts"));
@@ -27,7 +24,7 @@ int main(int argc, char** argv) {
         auto envs = reinterpret_cast<std::uint64_t (*)()>(::dlsym(dso, "moex_fake_environment_open_count"));
         auto conns = reinterpret_cast<std::uint64_t (*)()>(::dlsym(dso, "moex_fake_connection_new_count"));
         auto now = std::chrono::steady_clock::time_point(std::chrono::seconds(100));
-        Plaza2TestSessionHostConfig config;
+        CgateSessionConfig config;
         config.runtime.runtime_root = fixture.root;
         config.runtime.env_open_settings = "ini=config/t1.ini;key=00000000";
         // Hash changes are logged and do not reject compatible runtimes.
@@ -54,7 +51,26 @@ int main(int argc, char** argv) {
         }
         config.aggr20_stream = {generated::StreamCode::kFortsAggrRepl, "p2repl://FORTS_AGGR20_REPL",
                                 "mode=snapshot+online"};
-        flag("MOEX_FAKE_CONN_HOLD_OPENING", true);
+        for (const bool read_only : {false, true}) {
+            auto live_config = config;
+            live_config.mode = CgateSessionMode::Live;
+            live_config.read_only_market_data = read_only;
+            if (read_only) {
+                live_config.allow_orders = false;
+                live_config.publisher_settings.clear();
+            }
+            test::write_text_file(fixture.config_dir / "t1.ini", "[cgate]\n# log=p2:p2syslog\n[p2syslog]\n");
+            CgateSession invalid_logging(live_config);
+            require(invalid_logging.start().code == cgate::Plaza2ErrorCode::InvalidConfiguration,
+                    "Live session accepted disabled native logging");
+            require(envs() == 0, "Live logging validation ran after opening native environment");
+            test::write_text_file(fixture.config_dir / "t1.ini", "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n");
+            CgateSession valid_logging(live_config);
+            require(!valid_logging.start(), "Live session rejected valid native logging");
+            require(!valid_logging.stop(), "Live logging session stop");
+            reset();
+        }
+        flag(moex::plaza2::test::fake::Option::ConnHoldOpening, true);
         CgateSession session(config);
         const auto wall_start = std::chrono::steady_clock::now();
         require(!session.start(), "nonblocking start");
@@ -67,7 +83,7 @@ int main(int argc, char** argv) {
         require(session.started() && session.recovery_status().operation != Plaza2SessionOperation::Failed,
                 "OPENING became Failed");
         require(opening_transitions == 1, "unchanged OPENING state produced duplicate state transitions");
-        flag("MOEX_FAKE_CONN_HOLD_OPENING", false);
+        flag(moex::plaza2::test::fake::Option::ConnHoldOpening, false);
         const auto pump = [&] {
             for (int i = 0; i < 10; ++i) {
                 now += std::chrono::seconds(1);
@@ -83,16 +99,18 @@ int main(int argc, char** argv) {
                 std::cerr << static_cast<int>(h.private_streams[i]) << ":" << h.private_states[i] << "\n";
         }
         require(session.runtime_health().private_active, "listeners did not become ONLINE after delayed ACTIVE");
-        auto command = Plaza2TradeCodec{}.encode(test_support::make_add_order());
+        auto request = test_support::make_add_order();
+        request.isin_id = 1001;
+        auto command = Plaza2TradeCodec{}.encode(request);
         require(session.post_command(command, 101).certainty == cgate::Plaza2SubmissionCertainty::Posted,
                 "order blocked after delayed ACTIVE");
-        flag("MOEX_FAKE_CONN_TO_OPENING", true);
+        flag(moex::plaza2::test::fake::Option::ConnToOpening, true);
         pump();
         for (int i = 0; i < 300; ++i) {
             now += std::chrono::seconds(1);
             require(!session.poll(), "5 minute outage failed");
         }
-        flag("MOEX_FAKE_CONN_TO_OPENING", false);
+        flag(moex::plaza2::test::fake::Option::ConnToOpening, false);
         pump();
         if (!session.runtime_health().private_active) {
             std::cerr << "resume callback: " << session.last_callback_error() << "\n";
@@ -100,23 +118,23 @@ int main(int argc, char** argv) {
                 std::cerr << health.stream_name << " " << health.online << " " << health.snapshot_complete << "\n";
         }
         require(session.runtime_health().private_active, "private streams did not resume after ACTIVE to OPENING");
-        flag("MOEX_FAKE_CONNECTION_ERROR", true);
+        flag(moex::plaza2::test::fake::Option::ConnectionError, true);
         require(!session.poll(), "asynchronous connection ERROR terminal");
-        flag("MOEX_FAKE_CONNECTION_ERROR", false);
+        flag(moex::plaza2::test::fake::Option::ConnectionError, false);
         pump();
         require(session.runtime_health().private_active, "asynchronous connection ERROR did not recover");
-        flag("MOEX_FAKE_CONN_DIRECT_CLOSED", true);
+        flag(moex::plaza2::test::fake::Option::ConnDirectClosed, true);
         require(!session.poll(), "direct connection CLOSED terminal");
         require(!session.runtime_health().private_active, "direct connection CLOSED retained old private ONLINE");
         require(session.post_command(command, 102).certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent,
                 "direct connection CLOSED allowed command");
-        flag("MOEX_FAKE_CONN_DIRECT_CLOSED", false);
+        flag(moex::plaza2::test::fake::Option::ConnDirectClosed, false);
         pump();
         require(session.runtime_health().private_active, "direct connection CLOSED did not rebuild snapshots");
         require(envs() == 1 && conns() == 1, "recovery recreated environment or connection");
-        flag("MOEX_FAKE_CALLBACK_CORRUPTION", true);
+        flag(moex::plaza2::test::fake::Option::CallbackCorruption, true);
         require(!session.poll(), "malformed private row terminal");
-        flag("MOEX_FAKE_CALLBACK_CORRUPTION", false);
+        flag(moex::plaza2::test::fake::Option::CallbackCorruption, false);
         pump();
         require(session.runtime_health().private_active, "private callback anomaly did not recover");
         // Idle liveness has no age or connection bootstrap deadline.
@@ -125,10 +143,23 @@ int main(int argc, char** argv) {
             require(!session.poll(), "idle poll failed");
         }
         require(session.runtime_health().private_active, "quiet private streams became stale");
+        // An always-readable runtime must yield to the owning command/kill path.
+        fake.configure({.continuous_input = true});
+        const auto calls = fake.process_count();
+        const auto busy_start = std::chrono::steady_clock::now();
+        require(!session.poll(), "continuous flow poll failed");
+        require(std::chrono::steady_clock::now() - busy_start < std::chrono::milliseconds(100),
+                "continuous flow starved owner loop");
+        require(fake.process_count() - calls <= 100, "continuous flow exceeded drain call budget");
+        auto cancel = Plaza2TradeCodec{}.encode(test_support::make_del_order());
+        require(session.post_command(cancel, 103).certainty == cgate::Plaza2SubmissionCertainty::Posted,
+                "continuous flow starved risk-reduction command");
+        fake.configure({});
+
         require(!session.stop(), "stop");
-        flag("MOEX_FAKE_SCHEME_EXTRA_TABLE", true);
-        flag("MOEX_FAKE_CGATE_CLEAR_DELETED_INSIDE_TRANSACTION", true);
-        flag("MOEX_FAKE_TIMESTAMP_MILLISECONDS", true);
+        flag(moex::plaza2::test::fake::Option::SchemeExtraTable, true);
+        flag(moex::plaza2::test::fake::Option::CgateClearDeletedInsideTransaction, true);
+        flag(moex::plaza2::test::fake::Option::TimestampMilliseconds, true);
         std::size_t unknown_clears = 0;
         bool precise_time = false, moscow_time = false;
         config.listener_event_log = [&](const cgate::Plaza2ListenerEvent& event) {
@@ -151,11 +182,12 @@ int main(int argc, char** argv) {
         require(precise_time, "CGate timestamp fractional milliseconds lost");
         require(moscow_time, "CGate Moscow wall time was not converted to UTC");
         require(!additions.stop(), "stop additions");
-        flag("MOEX_FAKE_CGATE_CLEAR_DELETED_INSIDE_TRANSACTION", false);
-        flag("MOEX_FAKE_TIMESTAMP_MILLISECONDS", false);
+        flag(moex::plaza2::test::fake::Option::CgateClearDeletedInsideTransaction, false);
+        flag(moex::plaza2::test::fake::Option::TimestampMilliseconds, false);
         config.listener_event_log = {};
-        flag("MOEX_FAKE_SCHEME_EXTRA_TABLE", false);
-        for (const char* mutation : {"MOEX_FAKE_SCHEME_MISSING_PRICE", "MOEX_FAKE_SCHEME_RETYPE_PRICE"}) {
+        flag(moex::plaza2::test::fake::Option::SchemeExtraTable, false);
+        for (auto mutation : {moex::plaza2::test::fake::Option::SchemeMissingPrice,
+                              moex::plaza2::test::fake::Option::SchemeRetypePrice}) {
             flag(mutation, true);
             CgateSession incompatible(config);
             require(!incompatible.start(), "bad stream schema should keep session up");
@@ -167,9 +199,125 @@ int main(int argc, char** argv) {
             require(incompatible.last_callback_error().find("INCOMPATIBLE_SCHEME orders_aggr.price") !=
                         std::string::npos,
                     "missing clear scheme diagnostic");
+            const auto initial_opens = fake.opens(generated::StreamCode::kFortsAggrRepl);
+            for (int i = 0; i < 600; ++i) {
+                now += std::chrono::seconds(1);
+                require(!incompatible.poll(), "latched scheme pump");
+            }
+            require(fake.opens(generated::StreamCode::kFortsAggrRepl) == initial_opens,
+                    "incompatible scheme reopened without new connection generation");
+            flag(moex::plaza2::test::fake::Option::ConnectionError, true);
+            require(!incompatible.poll(), "latched listener reconnect");
+            flag(moex::plaza2::test::fake::Option::ConnectionError, false);
+            for (int i = 0; i < 10; ++i) {
+                now += std::chrono::seconds(1);
+                require(!incompatible.poll(), "latched listener reconnect pump");
+            }
+            require(fake.opens(generated::StreamCode::kFortsAggrRepl) == initial_opens + 1,
+                    "connection restart did not recheck latched scheme exactly once");
             require(!incompatible.stop(), "stop incompatible");
             flag(mutation, false);
         }
+        test::fake::Scenario unrecognized_schema;
+        unrecognized_schema.unrecognized_schema_stream = generated::StreamCode::kFortsAggrRepl;
+        fake.configure(unrecognized_schema);
+        CgateSession missing_tables(config);
+        require(!missing_tables.start(), "unknown AGGR tables session start");
+        for (int i = 0; i < 6; ++i) {
+            now += std::chrono::seconds(1);
+            require(!missing_tables.poll(), "unknown AGGR tables bootstrap");
+        }
+        require(missing_tables.runtime_health().private_active, "unknown AGGR tables affected private streams");
+        const auto missing_table_opens = fake.opens(generated::StreamCode::kFortsAggrRepl);
+        for (int i = 0; i < 600; ++i) {
+            now += std::chrono::seconds(1);
+            require(!missing_tables.poll(), "unknown AGGR tables pump");
+        }
+        require(fake.opens(generated::StreamCode::kFortsAggrRepl) == missing_table_opens,
+                "unrecognized required tables reopened repeatedly");
+        require(!missing_tables.stop(), "unknown AGGR tables stop");
+        fake.configure({});
+        // A terminal create-time configuration error is never retried.
+        for (bool listener : {true, false}) {
+            test::fake::Scenario invalid_configuration;
+            (listener ? invalid_configuration.listener_create_result : invalid_configuration.publisher_create_result) =
+                131073;
+            fake.configure(invalid_configuration);
+            CgateSession invalid_session(config);
+            require(!invalid_session.start(), "configured create errors arise on poll");
+            require(static_cast<bool>(invalid_session.poll()), "create INVALIDARGUMENT retried as recoverable");
+            require(invalid_session.recovery_status().operation == Plaza2SessionOperation::Failed,
+                    "create INVALIDARGUMENT did not latch Failed");
+            for (int i = 0; i < 10; ++i) {
+                now += std::chrono::seconds(1);
+                require(static_cast<bool>(invalid_session.poll()), "terminal create error was cleared");
+            }
+            require(!invalid_session.stop(), "invalid session stop");
+            fake.configure({});
+        }
+        config.publisher_messages_per_second = 1;
+        CgateSession limited(config);
+        require(!limited.start(), "standalone rate session start");
+        for (int i = 0; i < 10; ++i) {
+            now += std::chrono::seconds(1);
+            require(!limited.poll(), "standalone rate warmup");
+        }
+        require(limited.post_command(command, 201).certainty == cgate::Plaza2SubmissionCertainty::Posted,
+                "standalone first post");
+        require(limited.post_command(command, 202).certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent,
+                "standalone rate protection missing");
+        require(!limited.stop(), "standalone stop");
+        config.publisher_rate_owner = PublisherRateOwner::External;
+        CgateSession external(config);
+        require(!external.start(), "external rate session start");
+        for (int i = 0; i < 10; ++i) {
+            now += std::chrono::seconds(1);
+            require(!external.poll(), "external rate warmup");
+        }
+        fake.set(test::fake::Option::PubReplyFamily, "99");
+        require(external.post_command(command, 301).certainty == cgate::Plaza2SubmissionCertainty::Posted,
+                "external first post");
+        require(external.post_command(command, 302).certainty == cgate::Plaza2SubmissionCertainty::Posted,
+                "duplicate transport limiter rejected queue-admitted command");
+        require(!external.poll(), "external flood reply pump");
+        require(external.take_reply_events().size() == 2, "99 replies were not forwarded to external rate owner");
+        require(external.publisher_rate_metrics().penalty_until_ms == 0,
+                "external rate owner received duplicate transport penalty");
+        fake.set(test::fake::Option::PubReplyMalformed);
+        require(external.post_command(command, 303).certainty == cgate::Plaza2SubmissionCertainty::Posted,
+                "transport blocked externally-owned 99 recovery queue");
+        require(!external.poll(), "malformed99 pump");
+        const auto malformed = external.take_reply_events();
+        require(malformed.size() == 1 && malformed.front().user_id == 303 && malformed.front().raw_payload.size() == 3,
+                "malformed99 lost terminal correlation event");
+        fake.clear(test::fake::Option::PubReplyMalformed);
+        fake.clear(test::fake::Option::PubReplyFamily);
+        for (int i = 0; i < 3; ++i) {
+            now += std::chrono::seconds(1);
+            require(!external.poll(), "malformed99 reply listener recovery");
+        }
+        require(external.post_command(command, 303).certainty == cgate::Plaza2SubmissionCertainty::Posted,
+                "malformed99 correlation leaked until timeout");
+        // Committed halted instrument blocks Add/Move while cancel remains available.
+        fake.enqueue(
+            {.kind = test::fake::EventKind::Begin, .stream_code = generated::StreamCode::kFortsInstrumentstateRepl});
+        fake.enqueue(
+            {.kind = test::fake::EventKind::Row,
+             .stream_code = generated::StreamCode::kFortsInstrumentstateRepl,
+             .table_code = generated::TableCode::kFortsInstrumentstateReplInstrumentState,
+             .revision = 100,
+             .fields = {{.field_code = generated::FieldCode::kFortsInstrumentstateReplInstrumentStateIsinId,
+                         .signed_value = 1001},
+                        {.field_code = generated::FieldCode::kFortsInstrumentstateReplInstrumentStatePublicState,
+                         .signed_value = 0}}});
+        fake.enqueue(
+            {.kind = test::fake::EventKind::Commit, .stream_code = generated::StreamCode::kFortsInstrumentstateRepl});
+        require(!external.poll(), "committed instrument halt pump");
+        require(external.post_command(command, 304).certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent,
+                "Add ignored committed instrument halt");
+        require(external.post_command(cancel, 305).certainty == cgate::Plaza2SubmissionCertainty::Posted,
+                "halted instrument blocked risk reduction");
+        require(!external.stop(), "external stop");
         ::dlclose(dso);
         test::remove_tree(root);
         std::cout << "CGate persistent session recovery PASS\n";

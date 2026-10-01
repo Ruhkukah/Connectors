@@ -1,6 +1,6 @@
 #pragma once
 
-#include "plaza2_generated_metadata.hpp"
+#include "moex/plaza2/cgate/plaza2_metadata.hpp"
 
 #include <cstddef>
 #include <cstdint>

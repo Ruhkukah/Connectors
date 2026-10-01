@@ -39,6 +39,8 @@ struct Plaza2TradeEncodedCommand {
     std::int32_t msgid{0};
     std::vector<std::byte> payload;
     Plaza2TradeValidationResult validation;
+    std::optional<std::int32_t> isin_id;
+    std::string fields_json{"{}"};
 };
 
 class Plaza2TradeCodec {

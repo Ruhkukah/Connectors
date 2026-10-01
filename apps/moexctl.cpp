@@ -1,5 +1,6 @@
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/connector_host/trading_host.hpp"
+#include "command_input.hpp"
 
 #include <array>
 #include <charconv>
@@ -89,18 +90,21 @@ int main(int argc, char** argv) {
     try {
         std::vector<std::string_view> arguments;
         std::filesystem::path log_path{"logs/moex_connector.ndjson"};
+        std::filesystem::path state_path;
         RiskLimits risk;
         std::uint32_t reply_timeout{60000};
         std::optional<std::int64_t> clock_offset;
         for (int i = 1; i < argc; ++i) {
             const std::string_view arg(argv[i]);
-            if (arg == "--log" || arg == "--max-quantity" || arg == "--max-notional" || arg == "--max-open-orders" ||
-                arg == "--reply-timeout-ms" || arg == "--clock-offset-us") {
+            if (arg == "--log" || arg == "--state" || arg == "--max-quantity" || arg == "--max-notional" ||
+                arg == "--max-open-orders" || arg == "--reply-timeout-ms" || arg == "--clock-offset-us") {
                 if (++i == argc)
                     throw std::invalid_argument("missing option value");
                 const std::string_view value(argv[i]);
                 if (arg == "--log")
                     log_path = value;
+                else if (arg == "--state")
+                    state_path = value;
                 else if (arg == "--max-quantity")
                     risk.max_quantity = integer<std::int32_t>(value);
                 else if (arg == "--max-open-orders")
@@ -121,7 +125,7 @@ int main(int argc, char** argv) {
         const auto request = parse_operator_arguments(arguments);
         if (request.help) {
             std::cout << operator_help()
-                      << "\nrun options: --log FILE --max-quantity N --max-notional N --max-open-orders N "
+                      << "\nrun options: --log FILE --state FILE --max-quantity N --max-notional N --max-open-orders N "
                          "--reply-timeout-ms N --clock-offset-us N\n"
                       << "run commands: place ID ISIN buy|sell QTY PRICE [day|ioc]; cancel ID; move ID QTY PRICE; "
                          "cancel-all ISIN; kill on|off; status; quit\n";
@@ -138,6 +142,7 @@ int main(int argc, char** argv) {
             config.orders.risk = risk;
             config.clock_offset_us = clock_offset;
             config.journal_path = log_path;
+            config.identity_state_path = state_path;
             for (const auto isin : request.config.isin_ids) {
                 if (isin <= 0 || isin > INT32_MAX)
                     throw std::invalid_argument("isin id outside CGate i4 range");
@@ -150,7 +155,7 @@ int main(int argc, char** argv) {
             }
             std::signal(SIGINT, stop);
             std::signal(SIGTERM, stop);
-            std::string pending;
+            CommandInput input;
             bool input_open = true;
             while (!stopping) {
                 if (const auto error = host.poll()) {
@@ -164,13 +169,12 @@ int main(int argc, char** argv) {
                     if (count <= 0)
                         input_open = false;
                     else {
-                        pending.append(data.data(), static_cast<std::size_t>(count));
-                        if (pending.size() > 65536)
-                            throw std::invalid_argument("command input too large");
-                        for (auto end = pending.find('\n'); end != std::string::npos; end = pending.find('\n')) {
-                            command(host, pending.substr(0, end));
-                            pending.erase(0, end + 1);
-                        }
+                        input.feed(
+                            std::string_view(data.data(), static_cast<std::size_t>(count)),
+                            [&](const std::string& line) { command(host, line); },
+                            [](std::string_view error) {
+                                std::cout << "{\"ok\":false,\"error\":" << json_string(error) << "}\n" << std::flush;
+                            });
                     }
                 }
             }
@@ -189,11 +193,7 @@ int main(int argc, char** argv) {
                 break;
         } while (std::chrono::steady_clock::now() < deadline);
         const auto snapshot = host.snapshot();
-        if (request.command == "qualify") {
-            const auto qualification = host.qualification_snapshot();
-            std::cout << render_snapshot(snapshot, request.json, &qualification);
-        } else
-            std::cout << render_snapshot(snapshot, request.json);
+        std::cout << render_snapshot(snapshot, request.json);
         if (host.stop())
             return 7;
         return snapshot.observation_ready ? 0 : 4;

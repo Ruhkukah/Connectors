@@ -71,6 +71,29 @@ void test_invalid_values_fail() {
             "overlong fixed-width string should fail");
 }
 
+void test_exchange_command_enums() {
+    const Plaza2TradeCodec codec;
+    for (const int value : {-1, 0, 4}) {
+        auto request = make_del_user_orders();
+        request.buy_sell = value;
+        require(codec.validate(request).code == Plaza2TradeValidationCode::InvalidEnum,
+                "DelUserOrders direction must be 1, 2 or 3");
+    }
+    for (const int value : {1, 2, 3}) {
+        auto request = make_del_user_orders();
+        request.buy_sell = value;
+        const auto encoded = codec.encode(request);
+        require(encoded.validation.ok() && encoded.isin_id == 123456, "valid DelUserOrders direction rejected");
+        require(encoded.fields_json.find("\"buy_sell\":" + std::to_string(value)) != std::string::npos,
+                "decoded command log omits direction");
+    }
+    auto move = make_move_order();
+    move.regime = 4;
+    require(codec.validate(move).code == Plaza2TradeValidationCode::InvalidEnum, "undefined Move regime accepted");
+    move.regime = 3;
+    require(codec.encode(move).validation.ok(), "matched-quantity preserving Move regime rejected");
+}
+
 } // namespace
 
 int main() {
@@ -78,6 +101,7 @@ int main() {
         test_all_phase5a_commands_are_represented();
         test_missing_required_field_fails();
         test_invalid_values_fail();
+        test_exchange_command_enums();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

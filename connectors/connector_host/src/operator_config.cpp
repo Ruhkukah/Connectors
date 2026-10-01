@@ -74,8 +74,7 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     auto& host = out.transport.host;
     host.read_only_market_data = inputs.read_only_market_data;
     host.allow_orders = inputs.allow_orders;
-    host.mode = inputs.allow_orders ? Plaza2TestSessionHostMode::LiveTestAuthorizedSend
-                                    : Plaza2TestSessionHostMode::LiveTestPreSend;
+    host.mode = CgateSessionMode::Live;
     host.runtime.environment = inputs.environment;
     host.runtime.runtime_root = std::filesystem::absolute(inputs.runtime_root).lexically_normal();
     host.runtime.library_path = inputs.library_path;
@@ -88,17 +87,16 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     host.runtime.expected_spectra_release = inputs.expected_spectra_release;
     host.runtime.expected_scheme_sha256 = inputs.expected_scheme_sha256;
     host.publisher_messages_per_second = inputs.publisher_messages_per_second;
-    host.endpoint_host = endpoint;
     host.publisher_name = inputs.read_only_market_data ? std::string{} : inputs.publisher_name;
     host.connection_settings =
         "p2tcp://" + endpoint + ":" + std::to_string(port) + ";app_name=" + inputs.publisher_name + ";timeout=2000";
     const auto scheme = host.runtime.scheme_dir.string();
     const auto stream = [&](StreamCode code, std::string name, std::string alias = {}) {
-        return Plaza2TestTradeStreamConfig{
-            .stream_code = code,
-            .settings =
-                "p2repl://" + name + (alias.empty() ? "" : ";scheme=|FILE|" + scheme + "/forts_scheme.ini|" + alias),
-            .open_settings = "mode=snapshot+online"};
+        return CgateStreamConfig{.stream_code = code,
+                                 .settings =
+                                     "p2repl://" + name +
+                                     (alias.empty() ? "" : ";scheme=|FILE|" + scheme + "/forts_scheme.ini|" + alias),
+                                 .open_settings = "mode=snapshot+online"};
     };
     if (inputs.read_only_market_data)
         host.private_streams = {stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL")};
@@ -181,7 +179,7 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
     inputs.library_path = get("--library-path");
     inputs.expected_spectra_release = get("--expected-release", "SPECTRA9.9.0");
     inputs.env_open_settings = environment(required("--env-settings-var"));
-    inputs.credentials_env_var = get("--credentials-env", "MOEX_PLAZA2_TEST_CREDENTIALS");
+    inputs.credentials_env_var = get("--credentials-env", "MOEX_PLAZA2_CREDENTIALS");
     inputs.software_key_env_var = get("--software-key-env", "MOEX_PLAZA2_CGATE_SOFTWARE_KEY");
     if (!inputs.read_only_market_data) {
         inputs.broker_code = environment(required("--broker-code-env"));

@@ -90,6 +90,16 @@ void Plaza2Aggr20ListenerBridge::set_session_id(std::int32_t id) noexcept {
     expected_session_id_ = id;
     refresh_ready();
 }
+void Plaza2Aggr20ListenerBridge::clear_sys_events(std::int64_t revision) noexcept {
+    const bool reset = revision == std::numeric_limits<std::int64_t>::max();
+    if (reset || (ready_event_ && ready_event_->source_repl_rev < revision))
+        ready_event_.reset();
+    if (reset || (last_sys_event_ && last_sys_event_->source_repl_rev < revision)) {
+        last_sys_event_.reset();
+        clearing_started_ = false;
+    }
+    refresh_ready();
+}
 bool Plaza2Aggr20ListenerBridge::accepts_session(std::int32_t id) const noexcept {
     return id > 0 && (expected_session_id_ == 0 || expected_session_id_ == id);
 }
@@ -125,6 +135,8 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
         invalidate(false, true);
         break;
     case Plaza2ListenerEventKind::LifeNum:
+        if (has_lifenum_ && last_lifenum_ == event.unsigned_value)
+            break;
         invalidate(false, transport_active_);
         has_lifenum_ = true;
         last_lifenum_ = event.unsigned_value;
@@ -135,6 +147,12 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
     case Plaza2ListenerEventKind::ClearDeleted:
         if (event.table_code == generated::TableCode::kFortsAggrReplOrdersAggr) {
             projector_.clear_deleted(event.signed_value);
+        }
+        if (event.table_code == generated::TableCode::kFortsAggrReplSysEvents) {
+            if (projector_.transaction_open())
+                pending_sys_events_.push_back({.clear = true, .revision = event.signed_value});
+            else
+                clear_sys_events(event.signed_value);
         }
         break;
     case Plaza2ListenerEventKind::TransactionBegin:
@@ -151,9 +169,25 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
         const auto chronology = [](const auto& value) {
             return std::tuple{value.source_repl_rev, value.event_id, value.source_repl_id};
         };
-        std::stable_sort(pending_sys_events_.begin(), pending_sys_events_.end(),
-                         [&](const auto& lhs, const auto& rhs) { return chronology(lhs) < chronology(rhs); });
-        for (const auto& value : pending_sys_events_) {
+        // Sort rows only within each replication revision epoch. ClearDeleted
+        // is an ordered barrier: MAX permits new revisions to start at one.
+        for (auto begin = pending_sys_events_.begin(); begin != pending_sys_events_.end();) {
+            if (begin->clear) {
+                ++begin;
+                continue;
+            }
+            const auto end = std::find_if(begin, pending_sys_events_.end(), [](const auto& op) { return op.clear; });
+            std::stable_sort(begin, end, [&](const auto& lhs, const auto& rhs) {
+                return chronology(lhs.event) < chronology(rhs.event);
+            });
+            begin = end;
+        }
+        for (const auto& operation : pending_sys_events_) {
+            if (operation.clear) {
+                clear_sys_events(operation.revision);
+                continue;
+            }
+            const auto& value = operation.event;
             if (last_sys_event_ && chronology(value) < chronology(*last_sys_event_))
                 continue;
             last_sys_event_ = value;
@@ -184,17 +218,22 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
         }
         if (event.table_code == generated::TableCode::kFortsAggrReplSysEvents) {
             pending_sys_events_.push_back(
-                {.source_repl_id = unsigned_field(event.fields, FieldCode::kFortsAggrReplSysEventsReplId).value_or(0),
-                 .source_repl_rev = signed_field(event.fields, FieldCode::kFortsAggrReplSysEventsReplRev).value_or(0),
-                 .source_repl_act = signed_field(event.fields, FieldCode::kFortsAggrReplSysEventsReplAct).value_or(0),
-                 .event_type = static_cast<std::int32_t>(
-                     signed_field(event.fields, FieldCode::kFortsAggrReplSysEventsEventType).value_or(0)),
-                 .event_id = signed_field(event.fields, FieldCode::kFortsAggrReplSysEventsEventId).value_or(0),
-                 .sess_id = static_cast<std::int32_t>(
-                     signed_field(event.fields, FieldCode::kFortsAggrReplSysEventsSessId).value_or(0)),
-                 .message = text_field(event.fields, FieldCode::kFortsAggrReplSysEventsMessage),
-                 .server_time = unsigned_field(event.fields, FieldCode::kFortsAggrReplSysEventsServerTime).value_or(0),
-                 .seen_during_snapshot = !snapshot_complete_});
+                {.event = {.source_repl_id =
+                               unsigned_field(event.fields, FieldCode::kFortsAggrReplSysEventsReplId).value_or(0),
+                           .source_repl_rev =
+                               signed_field(event.fields, FieldCode::kFortsAggrReplSysEventsReplRev).value_or(0),
+                           .source_repl_act =
+                               signed_field(event.fields, FieldCode::kFortsAggrReplSysEventsReplAct).value_or(0),
+                           .event_type = static_cast<std::int32_t>(
+                               signed_field(event.fields, FieldCode::kFortsAggrReplSysEventsEventType).value_or(0)),
+                           .event_id =
+                               signed_field(event.fields, FieldCode::kFortsAggrReplSysEventsEventId).value_or(0),
+                           .sess_id = static_cast<std::int32_t>(
+                               signed_field(event.fields, FieldCode::kFortsAggrReplSysEventsSessId).value_or(0)),
+                           .message = text_field(event.fields, FieldCode::kFortsAggrReplSysEventsMessage),
+                           .server_time =
+                               unsigned_field(event.fields, FieldCode::kFortsAggrReplSysEventsServerTime).value_or(0),
+                           .seen_during_snapshot = !snapshot_complete_}});
         }
         break;
     case Plaza2ListenerEventKind::Online:
@@ -331,8 +370,6 @@ Plaza2Error Plaza2Aggr20BookProjector::commit() {
     staged_.clear();
     transaction_open_ = false;
     dirty_ = true;
-    if (qualification_observer_)
-        qualification_observer_->committed(snapshot());
     return {};
 }
 void Plaza2Aggr20BookProjector::rollback() {

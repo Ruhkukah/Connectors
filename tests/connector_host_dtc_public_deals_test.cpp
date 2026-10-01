@@ -175,7 +175,8 @@ struct FakeSource final : DtcMarketDataSource {
         state.snapshot_complete = true;
         state.book_snapshot_current = true;
         state.market_data_display_allowed = true;
-        state.session_ready_witness_kind = moex::plaza2::cgate::SessionReadyWitnessKind::LateJoinCorroboratedSnapshot;
+        state.session_ready_witness_kind =
+            moex::connector_host::dtc::SessionReadyWitnessKind::LateJoinCorroboratedSnapshot;
         state.market_data_authority_epoch = 1;
         state.target_authoritative = false; // Synthetic provisional display, never exchange confirmation.
         state.target_is_future = true;

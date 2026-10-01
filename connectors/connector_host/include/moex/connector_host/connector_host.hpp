@@ -1,6 +1,6 @@
 #pragma once
 
-#include "moex/plaza2_trade/plaza2_test_trade_transport.hpp"
+#include "moex/plaza2_trade/cgate_session.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -9,31 +9,12 @@
 #include <string>
 #include <vector>
 
-// Values retained by the existing read-only DTC wire protocol. They describe
-// how the committed event was received and do not grant trading permission.
-namespace moex::plaza2::cgate {
-enum class SessionReadyWitnessKind : std::uint8_t {
-    None = 0,
-    OnlineSynchronousEvent = 1,
-    LateJoinCorroboratedSnapshot = 3,
-};
-[[nodiscard]] constexpr std::string_view session_ready_witness_kind_name(SessionReadyWitnessKind kind) noexcept {
-    switch (kind) {
-    case SessionReadyWitnessKind::OnlineSynchronousEvent:
-        return "OnlineSynchronousEvent";
-    case SessionReadyWitnessKind::LateJoinCorroboratedSnapshot:
-        return "LateJoinCorroboratedSnapshot";
-    default:
-        return "None";
-    }
-}
-} // namespace moex::plaza2::cgate
 namespace moex::connector_host {
 
 enum class ConnectorHostState { Created, Started, Ready, Stopping, Stopped, Failed, Recovering };
 enum class HostPurpose { Qualify, Trade };
 struct HostTransportConfig {
-    plaza2_trade::Plaza2TestSessionHostConfig host;
+    plaza2_trade::CgateSessionConfig host;
     std::int64_t target_isin_id{};
     std::int32_t target_session_id{};
 };
@@ -67,7 +48,7 @@ struct ConnectorHostSnapshot {
     ConnectorHostState state{ConnectorHostState::Created};
     plaza2_trade::Plaza2RecoveryStatus recovery;
     plaza2::cgate::Plaza2Environment environment{plaza2::cgate::Plaza2Environment::Test};
-    plaza2_trade::Plaza2TestSessionHostMode mode{plaza2_trade::Plaza2TestSessionHostMode::LiveTestPreSend};
+    plaza2_trade::CgateSessionMode mode{plaza2_trade::CgateSessionMode::Live};
     std::string runtime_compatibility, runtime_scheme_sha256, connection_app_name;
     bool publisher_handle_open{}, reply_handle_open{};
     bool private_snapshot_state_ready{}, aggr_snapshot_state_ready{}, aggr_ready{};
@@ -81,31 +62,6 @@ struct ConnectorHostSnapshot {
     bool new_order_allowed{};
     plaza2::cgate::Plaza2PublisherCallCounts publisher_calls;
     std::string last_error;
-};
-
-// Explicitly sampled qualification data; never copied by the normal polling path.
-struct ConnectorHostQualificationSnapshot {
-    plaza2::cgate::Plaza2Aggr20Snapshot book;
-    std::vector<plaza2::private_state::InstrumentSnapshot> instruments;
-    std::vector<plaza2::private_state::PositionSnapshot> positions;
-    std::vector<plaza2::private_state::OwnOrderSnapshot> active_orders;
-    std::vector<plaza2::private_state::SystemMessageSnapshot> system_messages;
-    std::string connection_app_name;
-    plaza2::cgate::Plaza2PublisherRateMetrics rate;
-    std::size_t visible_limit_rows{}, matching_client_limit_rows{}, matching_broker_limit_rows{}, unknown_limit_rows{};
-    bool client_code_is_brokerage_account{false};
-    std::optional<plaza2::private_state::LimitSnapshot> broker_limit, client_limit;
-    struct LimitDiagnostic {
-        std::int64_t repl_id;
-        plaza2::private_state::LimitParticipantKind kind;
-        std::size_t code_length;
-        bool equals_broker, equals_client, limits_set, auto_update;
-        std::string money_free, money_blocked, money_amount;
-        std::string private_account_code; // Explicit opt-in qualification artifact only.
-    };
-    std::vector<LimitDiagnostic> limit_diagnostics;
-    bool aggr_online{false};
-    bool aggr_snapshot_complete{false};
 };
 
 struct ConnectorHostMarketDataLevel {
@@ -175,8 +131,7 @@ struct ConnectorHostMarketDataSnapshot {
     bool target_authoritative{false};
     bool aggr_online{false};
     bool book_snapshot_current{false};
-    std::optional<plaza2::cgate::Plaza2Aggr20SysEventSnapshot> session_ready_witness;
-    plaza2::cgate::SessionReadyWitnessKind session_ready_witness_kind{plaza2::cgate::SessionReadyWitnessKind::None};
+    std::optional<plaza2::cgate::Plaza2Aggr20SysEventSnapshot> session_ready_event;
     bool market_data_display_allowed{false};
     // Market-data consistency is independent of order-entry permissions.
     bool source_consistent{false};
@@ -192,11 +147,10 @@ struct ConnectorHostMarketDataSnapshot {
 
 [[nodiscard]] std::int32_t current_session_id(const plaza2::private_state::Plaza2PrivateStateProjector& data,
                                               std::int64_t now_seconds = 0);
-[[nodiscard]] bool order_entry_ready(const plaza2_trade::Plaza2TestSessionHost& host, std::int64_t isin_id,
+[[nodiscard]] bool order_entry_ready(const plaza2_trade::CgateSession& host, std::int64_t isin_id,
                                      std::int32_t session_id = 0);
 [[nodiscard]] std::string_view host_state_name(ConnectorHostState state) noexcept;
-[[nodiscard]] std::string render_snapshot(const ConnectorHostSnapshot& snapshot, bool json,
-                                          const ConnectorHostQualificationSnapshot* qualification = nullptr);
+[[nodiscard]] std::string render_snapshot(const ConnectorHostSnapshot& snapshot, bool json);
 
 // Single-threaded owner. Callers receive values, never transport/projector pointers.
 class ConnectorHost final {
@@ -214,7 +168,6 @@ class ConnectorHost final {
     [[nodiscard]] bool public_deals_enabled() const noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;
-    [[nodiscard]] ConnectorHostQualificationSnapshot qualification_snapshot(bool private_identity = false) const;
     [[nodiscard]] ConnectorHostMarketDataSnapshot market_data_snapshot(std::int64_t isin_id) const;
     [[nodiscard]] bool order_entry_ready(std::int64_t isin_id) const;
 

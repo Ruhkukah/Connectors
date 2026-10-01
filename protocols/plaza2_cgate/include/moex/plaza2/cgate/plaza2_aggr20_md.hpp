@@ -77,12 +77,6 @@ struct Plaza2Aggr20InstrumentSnapshot {
     std::uint64_t exchange_moment_ns{0};
 };
 
-class Plaza2Aggr20QualificationObserver {
-  public:
-    virtual ~Plaza2Aggr20QualificationObserver() = default;
-    virtual void committed(const Plaza2Aggr20Snapshot&) noexcept = 0;
-};
-
 class Plaza2Aggr20BookProjector {
   public:
     using Clock = std::chrono::steady_clock;
@@ -90,9 +84,6 @@ class Plaza2Aggr20BookProjector {
 
     explicit Plaza2Aggr20BookProjector(NowFn now = {});
 
-    void set_qualification_observer(Plaza2Aggr20QualificationObserver* observer) noexcept {
-        qualification_observer_ = observer;
-    }
     void reset();
     void begin_transaction();
     [[nodiscard]] Plaza2Error on_row(std::span<const Plaza2DecodedFieldValue> fields);
@@ -121,7 +112,6 @@ class Plaza2Aggr20BookProjector {
     };
     void erase_row(std::uint64_t repl_id, std::unordered_set<std::int64_t>& affected);
     [[nodiscard]] Plaza2Aggr20InstrumentSnapshot make_snapshot(std::int64_t isin_id, const InstrumentBook& book) const;
-    Plaza2Aggr20QualificationObserver* qualification_observer_{nullptr};
     std::vector<Operation> staged_;
     std::unordered_map<std::uint64_t, Plaza2Aggr20Level> rows_;
     std::unordered_map<std::int64_t, InstrumentBook> books_;
@@ -210,9 +200,15 @@ class Plaza2Aggr20ListenerBridge final : public Plaza2ListenerEventHandler {
     std::optional<Plaza2Aggr20SysEventSnapshot> ready_event_;
     bool clearing_started_{false};
     void refresh_ready() noexcept;
+    void clear_sys_events(std::int64_t revision) noexcept;
     // sys_events is part of the source transaction. Every row is retained in
     // source order and applied after TN_COMMIT.
-    std::vector<Plaza2Aggr20SysEventSnapshot> pending_sys_events_;
+    struct SysOperation {
+        bool clear{};
+        std::int64_t revision{};
+        Plaza2Aggr20SysEventSnapshot event;
+    };
+    std::vector<SysOperation> pending_sys_events_;
 };
 
 } // namespace moex::plaza2::cgate

@@ -27,7 +27,7 @@ class ConnectorHost;
 
 namespace moex::plaza2_trade {
 
-struct Plaza2TestTradeStreamConfig {
+struct CgateStreamConfig {
     plaza2::generated::StreamCode stream_code{plaza2::cgate::kNoStreamCode};
     std::string settings;
     std::string open_settings;
@@ -42,27 +42,27 @@ struct Plaza2TradeReplayAnchor {
 
 enum class CgateSessionMode : std::uint8_t {
     OfflineFake = 0,
-    LiveTestPreSend = 1,
-    LiveTestAuthorizedSend = 2,
+    Live = 1,
 };
+
+enum class PublisherRateOwner : std::uint8_t { Session, External };
 
 // One owner keeps the CGate environment and connection alive while each
 // replication listener and publisher recovers independently.
 struct CgateSessionConfig {
     CgateSessionMode mode{CgateSessionMode::OfflineFake};
     plaza2::cgate::Plaza2Settings runtime{};
-    std::string endpoint_host;
     std::string connection_settings;
     std::string connection_open_settings;
-    std::vector<Plaza2TestTradeStreamConfig> private_streams;
+    std::vector<CgateStreamConfig> private_streams;
     // The two current-day/session status streams are required alongside the
     // REFDATA-only read-side profile, and supplementary to the five trading
     // private replication streams above.
-    std::vector<Plaza2TestTradeStreamConfig> status_streams;
-    Plaza2TestTradeStreamConfig aggr20_stream;
+    std::vector<CgateStreamConfig> status_streams;
+    CgateStreamConfig aggr20_stream;
     // Optional public anonymous trades, independent of private TRADE replay.
     // An empty URL preserves the existing four-listener read-only profile.
-    Plaza2TestTradeStreamConfig public_deals_stream;
+    CgateStreamConfig public_deals_stream;
     std::int64_t public_deals_target_isin_id{0};
     // Optional exact AGGR20 sys_events session identity. Zero accepts a
     // non-zero current session id and is suitable only before refdata
@@ -95,7 +95,7 @@ struct CgateSessionConfig {
 
     // Local conservative cap; configure from the provisioned login limit, not a claimed exchange default.
     std::uint32_t publisher_messages_per_second{30};
-    plaza2::cgate::Plaza2Aggr20QualificationObserver* qualification_book_observer{nullptr};
+    PublisherRateOwner publisher_rate_owner{PublisherRateOwner::Session};
     std::function<void(std::string_view, std::string_view)> event_log;
     std::function<void(const plaza2::cgate::Plaza2ListenerEvent&)> listener_event_log;
     std::function<std::uint64_t()> publisher_now_ms; // Empty uses steady_clock; injectable for offline boundary tests.
@@ -115,23 +115,6 @@ struct Plaza2TransportHealth {
 
 enum class Plaza2SessionOperation { Stopped, Starting, Running, Recovering, Failed };
 
-enum class Plaza2FailureOrigin {
-    Unknown,
-    ConnectionProcess,
-    ConnectionState,
-    ListenerState,
-    Publisher,
-    Callback,
-    Bootstrap,
-    EnvironmentOpen,
-    ConnectionCreate,
-    ConnectionOpen,
-    ListenerCreate,
-    ListenerOpen,
-    PublisherCreate,
-    PublisherOpen
-};
-
 enum class Plaza2RecoveryWaitState : std::uint8_t {
     None,
     WaitingForRouter,
@@ -148,17 +131,10 @@ struct Plaza2RecoveryStatus {
     std::uint64_t error_time_ns{0};
     std::uint64_t wait_start_time_ns{0};
     std::uint64_t wait_duration_ms{0};
-    std::uint64_t last_attempt_time_ns{0};
-    bool deadline_exhausted{false};
     bool alert_active{false};
-    bool order_epoch_unresolved{false};
     Plaza2RecoveryWaitState wait_state{Plaza2RecoveryWaitState::None};
     std::string involved_service;
     plaza2::cgate::Plaza2Error cause;
-    Plaza2FailureOrigin origin{Plaza2FailureOrigin::Unknown};
-    plaza2::cgate::Plaza2Error first_cause;
-    plaza2::cgate::Plaza2Error process_cause;
-    plaza2::cgate::Plaza2Error state_query_cause;
     Plaza2TransportHealth health;
 };
 
@@ -210,12 +186,10 @@ class CgateSession final {
     };
 
     [[nodiscard]] std::vector<ReplyEvent> take_reply_events();
+    [[nodiscard]] plaza2::private_state::PrivateRowChanges take_private_row_changes();
     [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult post_command(const Plaza2TradeEncodedCommand& command,
                                                                            std::uint32_t user_id);
     [[nodiscard]] const std::string& last_callback_error() const noexcept;
-
-    [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult
-    post(std::string_view message_name, std::span<const std::byte> payload, std::uint32_t user_id, bool need_reply);
 
   private:
     [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult post_validated(std::string_view message_name,
@@ -224,9 +198,5 @@ class CgateSession final {
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-
-using Plaza2TestSessionHost = CgateSession;
-using Plaza2TestSessionHostConfig = CgateSessionConfig;
-using Plaza2TestSessionHostMode = CgateSessionMode;
 
 } // namespace moex::plaza2_trade

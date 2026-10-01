@@ -72,6 +72,45 @@ int main() {
         sys(322, 1, 5);
         event(Plaza2ListenerEventKind::TransactionCommit);
         require(bridge.valid(), "new trading day resumes without process restart");
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 7}),
+                "new replication life succeeds");
+        require(!bridge.valid() && !bridge.online(), "new replication life invalidates the previous snapshot");
+        event(Plaza2ListenerEventKind::TransactionBegin);
+        sys(322, 1, 1);
+        event(Plaza2ListenerEventKind::TransactionCommit);
+        event(Plaza2ListenerEventKind::Online);
+        require(bridge.valid(), "revision one is valid in a new replication life");
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 7}),
+                "duplicate replication life succeeds");
+        require(bridge.valid(), "duplicate LifeNum must preserve the committed snapshot");
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                                  .table_code = T::kFortsAggrReplSysEvents,
+                                                  .signed_value = std::numeric_limits<std::int64_t>::max()}),
+                "sys_events MAX ClearDeleted succeeds without listener teardown");
+        require(!bridge.valid() && bridge.online(), "sys_events MAX drops ready evidence while keeping stream ONLINE");
+        event(Plaza2ListenerEventKind::TransactionBegin);
+        sys(322, 1, 1);
+        event(Plaza2ListenerEventKind::TransactionCommit);
+        require(bridge.valid(), "revision one ready event is accepted after sys_events MAX");
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                                  .table_code = T::kFortsAggrReplSysEvents,
+                                                  .signed_value = 1}),
+                "normal sys_events clear succeeds");
+        require(bridge.valid(), "normal sys_events clear preserves rows at its revision boundary");
+        event(Plaza2ListenerEventKind::TransactionBegin);
+        sys(322, 5, 2);
+        event(Plaza2ListenerEventKind::TransactionCommit);
+        require(!bridge.valid(), "revision two clearing event invalidates after sys_events MAX");
+        event(Plaza2ListenerEventKind::TransactionBegin);
+        sys(322, 1, 8);
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                                  .table_code = T::kFortsAggrReplSysEvents,
+                                                  .signed_value = std::numeric_limits<std::int64_t>::max()}),
+                "transaction-scoped sys_events MAX succeeds");
+        sys(322, 1, 1);
+        sys(322, 5, 2);
+        event(Plaza2ListenerEventKind::TransactionCommit);
+        require(!bridge.valid(), "MAX revision epoch is applied in source order within one transaction");
         event(Plaza2ListenerEventKind::LifeNum);
         require(!bridge.valid() && !bridge.online(), "LifeNum requires a fresh snapshot");
         return 0;

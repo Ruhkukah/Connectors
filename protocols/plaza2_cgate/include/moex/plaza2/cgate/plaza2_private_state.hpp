@@ -312,6 +312,8 @@ struct OwnOrderSnapshot {
     std::int64_t moment{0};
     std::uint64_t moment_ns{0};
     std::int32_t ext_id{0};
+    // Previous exchange order ID when the venue relists a multi-day order.
+    std::int64_t id_ord1{0};
     std::vector<std::int64_t> public_order_id_aliases;
     std::vector<std::int64_t> private_order_id_aliases;
     bool identity_conflict{false};
@@ -347,6 +349,11 @@ struct OwnTradeSnapshot {
     std::uint64_t moment_ns{0};
 };
 
+struct PrivateRowChanges {
+    std::vector<OwnOrderSnapshot> orders;
+    std::vector<OwnTradeSnapshot> trades;
+};
+
 class Plaza2PrivateStateProjector final : public projection::CommitListener {
   public:
     Plaza2PrivateStateProjector();
@@ -380,8 +387,13 @@ class Plaza2PrivateStateProjector final : public projection::CommitListener {
     [[nodiscard]] std::size_t limit_row_count() const noexcept;
     [[nodiscard]] std::size_t unknown_limit_row_count() const noexcept;
     [[nodiscard]] std::span<const PositionSnapshot> positions() const;
+    // Contiguous committed views. Online updates replace indexed slots; new
+    // exchange identities append. Callers must not rely on sorted order.
     [[nodiscard]] std::span<const OwnOrderSnapshot> own_orders() const;
     [[nodiscard]] std::span<const OwnTradeSnapshot> own_trades() const;
+    // Committed upserts since the previous take, across all listener commits.
+    // Technical record deletion/reload does not manufacture terminal orders.
+    [[nodiscard]] PrivateRowChanges take_row_changes();
 
     // Typed REFDATA provenance queries for the rows used to qualify a futures
     // target.  The optional is empty when the requested row is not currently

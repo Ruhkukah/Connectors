@@ -1,6 +1,7 @@
 #include "plaza2_runtime_test_support.hpp"
+#include "fixtures/server_schema.hpp"
 
-#include "plaza2_generated_metadata.hpp"
+#include "moex/plaza2/cgate/plaza2_metadata.hpp"
 
 #include <cstdlib>
 #include <cctype>
@@ -74,7 +75,7 @@ std::string build_vendor_like_runtime_scheme(std::string_view spectra_release, s
 
         for (const auto& table : TablesForStream(stream.stream_code)) {
             out << "[table:" << stream.stream_name << ':' << table.table_name << "]\n";
-            for (const auto& field : FieldsForTable(table.table_code)) {
+            for (const auto& field : server_schema_fields(table.table_code)) {
                 out << "field=" << field.field_name << ',' << field.type_token << '\n';
             }
             out << '\n';
@@ -103,7 +104,7 @@ RuntimeFixturePaths materialize_runtime_fixture(const std::filesystem::path& roo
     write_text_file(fixture.scheme_path, scheme_text);
 
     for (const auto name : moex::plaza2::cgate::Plaza2RuntimeProbe::expected_config_filenames(environment)) {
-        write_text_file(fixture.config_dir / name, "[placeholder]\n");
+        write_text_file(fixture.config_dir / name, "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n");
     }
 
     return fixture;

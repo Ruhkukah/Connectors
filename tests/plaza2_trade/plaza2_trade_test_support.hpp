@@ -105,7 +105,7 @@ inline IcebergMoveOrderRequest make_iceberg_move_order() {
 inline DelUserOrdersRequest make_del_user_orders() {
     DelUserOrdersRequest request;
     request.broker_code = "BRK1";
-    request.buy_sell = 0;
+    request.buy_sell = 3;
     request.non_system = 0;
     request.code = "C01";
     request.base_contract_code = "SYNTH";

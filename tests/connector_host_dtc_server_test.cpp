@@ -20,7 +20,7 @@
 
 namespace {
 using namespace moex::connector_host::dtc;
-using Kind = moex::plaza2::cgate::SessionReadyWitnessKind;
+using Kind = moex::connector_host::dtc::SessionReadyWitnessKind;
 using Bytes = std::vector<std::uint8_t>;
 void check(bool ok, const char* text) {
     if (!ok) {

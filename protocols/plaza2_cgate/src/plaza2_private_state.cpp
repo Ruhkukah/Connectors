@@ -354,9 +354,9 @@ std::size_t find_stream_index(std::span<const StreamHealthSnapshot> streams, Str
 }
 
 template <typename Snapshot, typename Map, typename Comparator>
-std::vector<Snapshot> sorted_values(const Map& map, Comparator comparator) {
+std::vector<Snapshot> sorted_values(const Map& map, Comparator comparator, std::size_t capacity = 0) {
     std::vector<Snapshot> out;
-    out.reserve(map.size());
+    out.reserve(std::max(map.size(), capacity));
     for (const auto& [_, value] : map) {
         out.push_back(value);
     }
@@ -406,7 +406,8 @@ bool order_identity_matches(const OwnOrderSnapshot& order, const OrderKey& incom
            order.client_code == incoming.client_code;
 }
 
-OwnOrderSnapshot& find_or_create_order(OrderMap& orders, const OrderKey& incoming) {
+OwnOrderSnapshot& find_or_create_order(OrderMap& orders, const OrderKey& incoming, OrderKey* resolved_key = nullptr,
+                                       bool follow_aliases = true, bool follow_client_reference = true) {
     orders.refresh_index();
     auto found = orders.find(incoming);
     const auto lookup = [&](char kind, std::int64_t id) {
@@ -416,9 +417,12 @@ OwnOrderSnapshot& find_or_create_order(OrderMap& orders, const OrderKey& incomin
         if (alias != orders.identities.end())
             found = orders.find(alias->second);
     };
-    lookup('p', incoming.public_order_id);
-    lookup('v', incoming.private_order_id);
-    lookup('e', incoming.ext_id);
+    if (follow_aliases) {
+        lookup('p', incoming.public_order_id);
+        lookup('v', incoming.private_order_id);
+        if (follow_client_reference)
+            lookup('e', incoming.ext_id);
+    }
     if (found == orders.end())
         found = orders.emplace(incoming, OwnOrderSnapshot{}).first;
     auto& order = found->second;
@@ -452,6 +456,8 @@ OwnOrderSnapshot& find_or_create_order(OrderMap& orders, const OrderKey& incomin
     order.multileg = incoming.multileg;
     orders.index(found->first, order);
     orders.indexed_count = orders.size();
+    if (resolved_key)
+        *resolved_key = found->first;
     return order;
 }
 
@@ -509,6 +515,9 @@ struct StagedState {
     std::optional<PositionMap> positions;
     std::optional<OrderMap> orders;
     std::optional<TradeMap> trades;
+    std::unordered_set<OrderKey, OrderKeyHash> order_keys;
+    std::unordered_set<TradeKey, TradeKeyHash> trade_keys;
+    bool rebuild_order_view{}, rebuild_trade_view{};
     std::optional<std::vector<StreamHealthSnapshot>> stream_health;
     std::optional<SourceRevisionRows> source_revisions;
     std::unordered_set<StreamCode, EnumClassHash> touched_streams;
@@ -573,6 +582,9 @@ struct Plaza2PrivateStateProjector::Impl {
     std::vector<PositionSnapshot> position_snapshots;
     std::vector<OwnOrderSnapshot> order_snapshots;
     std::vector<OwnTradeSnapshot> trade_snapshots;
+    std::unordered_map<OrderKey, std::size_t, OrderKeyHash> order_view_index;
+    std::unordered_map<TradeKey, std::size_t, TradeKeyHash> trade_view_index;
+    PrivateRowChanges row_changes;
 
     StagedState staged;
     bool native_commit_phase{false};
@@ -613,6 +625,9 @@ struct Plaza2PrivateStateProjector::Impl {
         position_snapshots.clear();
         order_snapshots.clear();
         trade_snapshots.clear();
+        order_view_index.clear();
+        trade_view_index.clear();
+        row_changes = {};
         staged = {};
     }
 
@@ -662,6 +677,13 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void invalidate_closed_stream(StreamCode stream_code) {
+        if (stream_code == projection::kNoStreamCode)
+            row_changes = {};
+        else if (stream_code == StreamCode::kFortsTradeRepl) {
+            std::erase_if(row_changes.orders, [](const auto& row) { return row.from_trade_repl; });
+            row_changes.trades.clear();
+        } else if (stream_code == StreamCode::kFortsUserorderbookRepl)
+            std::erase_if(row_changes.orders, [](const auto& row) { return !row.from_trade_repl; });
         const auto invalidate = [](StreamHealthSnapshot& health) {
             health.online = false;
             health.snapshot_complete = false;
@@ -996,44 +1018,66 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void rebuild_orders() {
-        order_snapshots = sorted_values<OwnOrderSnapshot>(orders_by_key,
-                                                          [](const OwnOrderSnapshot& lhs, const OwnOrderSnapshot& rhs) {
-                                                              if (lhs.multileg != rhs.multileg) {
-                                                                  return lhs.multileg < rhs.multileg;
-                                                              }
-                                                              if (lhs.public_order_id != rhs.public_order_id) {
-                                                                  return lhs.public_order_id < rhs.public_order_id;
-                                                              }
-                                                              if (lhs.private_order_id != rhs.private_order_id) {
-                                                                  return lhs.private_order_id < rhs.private_order_id;
-                                                              }
-                                                              if (lhs.client_code != rhs.client_code) {
-                                                                  return lhs.client_code < rhs.client_code;
-                                                              }
-                                                              if (lhs.ext_id != rhs.ext_id) {
-                                                                  return lhs.ext_id < rhs.ext_id;
-                                                              }
-                                                              // Same identifiers can legitimately occur on the two
-                                                              // independent MOEX TEST surfaces. Keep their order
-                                                              // deterministic without coalescing their evidence.
-                                                              if (lhs.from_trade_repl != rhs.from_trade_repl) {
-                                                                  return lhs.from_trade_repl > rhs.from_trade_repl;
-                                                              }
-                                                              if (lhs.from_user_book != rhs.from_user_book) {
-                                                                  return lhs.from_user_book > rhs.from_user_book;
-                                                              }
-                                                              return lhs.from_current_day > rhs.from_current_day;
-                                                          });
+        order_snapshots = sorted_values<OwnOrderSnapshot>(
+            orders_by_key,
+            [](const OwnOrderSnapshot& lhs, const OwnOrderSnapshot& rhs) {
+                if (lhs.multileg != rhs.multileg) {
+                    return lhs.multileg < rhs.multileg;
+                }
+                if (lhs.public_order_id != rhs.public_order_id) {
+                    return lhs.public_order_id < rhs.public_order_id;
+                }
+                if (lhs.private_order_id != rhs.private_order_id) {
+                    return lhs.private_order_id < rhs.private_order_id;
+                }
+                if (lhs.client_code != rhs.client_code) {
+                    return lhs.client_code < rhs.client_code;
+                }
+                if (lhs.ext_id != rhs.ext_id) {
+                    return lhs.ext_id < rhs.ext_id;
+                }
+                // Same identifiers can legitimately occur on the two
+                // independent MOEX TEST surfaces. Keep their order
+                // deterministic without coalescing their evidence.
+                if (lhs.from_trade_repl != rhs.from_trade_repl) {
+                    return lhs.from_trade_repl > rhs.from_trade_repl;
+                }
+                if (lhs.from_user_book != rhs.from_user_book) {
+                    return lhs.from_user_book > rhs.from_user_book;
+                }
+                return lhs.from_current_day > rhs.from_current_day;
+            },
+            (orders_by_key.size() + 1) * 2);
+        order_view_index.clear();
+        orders_by_key.refresh_index();
+        for (std::size_t index = 0; index < order_snapshots.size(); ++index) {
+            const auto& row = order_snapshots[index];
+            const OrderKey key{.surface = row.from_trade_repl ? OrderSurface::kTrade : OrderSurface::kUserOrderbook,
+                               .multileg = row.multileg,
+                               .public_order_id = row.public_order_id,
+                               .private_order_id = row.private_order_id,
+                               .ext_id = row.ext_id,
+                               .client_code = row.client_code};
+            const auto found = orders_by_key.identities.find(OrderMap::identity(key, 'p', row.public_order_id));
+            order_view_index[found == orders_by_key.identities.end() ? key : found->second] = index;
+        }
     }
 
     void rebuild_trades() {
-        trade_snapshots = sorted_values<OwnTradeSnapshot>(trades_by_key,
-                                                          [](const OwnTradeSnapshot& lhs, const OwnTradeSnapshot& rhs) {
-                                                              if (lhs.multileg != rhs.multileg) {
-                                                                  return lhs.multileg < rhs.multileg;
-                                                              }
-                                                              return lhs.id_deal < rhs.id_deal;
-                                                          });
+        trade_snapshots = sorted_values<OwnTradeSnapshot>(
+            trades_by_key,
+            [](const OwnTradeSnapshot& lhs, const OwnTradeSnapshot& rhs) {
+                if (lhs.multileg != rhs.multileg) {
+                    return lhs.multileg < rhs.multileg;
+                }
+                return lhs.id_deal < rhs.id_deal;
+            },
+            (trades_by_key.size() + 1) * 2);
+        trade_view_index.clear();
+        for (std::size_t index = 0; index < trade_snapshots.size(); ++index) {
+            const auto& row = trade_snapshots[index];
+            trade_view_index[{row.multileg, row.id_deal}] = index;
+        }
     }
 
     void rebuild_all_snapshots() {
@@ -1046,6 +1090,28 @@ struct Plaza2PrivateStateProjector::Impl {
         rebuild_positions();
         rebuild_orders();
         rebuild_trades();
+    }
+
+    void prune_row_changes() {
+        std::erase_if(row_changes.orders, [&](const auto& row) {
+            const OrderKey key{.surface = row.from_trade_repl ? OrderSurface::kTrade : OrderSurface::kUserOrderbook,
+                               .multileg = row.multileg,
+                               .public_order_id = row.public_order_id,
+                               .private_order_id = row.private_order_id,
+                               .ext_id = row.ext_id,
+                               .client_code = row.client_code};
+            // A reused ext_id must not keep a deleted previous-day row alive.
+            // Exchange identifiers take precedence over the client reference.
+            if (row.public_order_id)
+                return !orders_by_key.identities.contains(OrderMap::identity(key, 'p', row.public_order_id));
+            if (row.private_order_id)
+                return !orders_by_key.identities.contains(OrderMap::identity(key, 'v', row.private_order_id));
+            if (row.ext_id)
+                return !orders_by_key.identities.contains(OrderMap::identity(key, 'e', row.ext_id));
+            return !orders_by_key.contains(key);
+        });
+        std::erase_if(row_changes.trades,
+                      [&](const auto& row) { return !trades_by_key.contains({row.multileg, row.id_deal}); });
     }
 
     bool source_row_is_stale(TableCode table_code, std::string_view key, std::int64_t clear_revision) const {
@@ -1098,6 +1164,14 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void clear_table_owned_state(TableCode table_code, std::int64_t clear_revision) {
+        using enum TableCode;
+        if (table_code == kFortsTradeReplOrdersLog || table_code == kFortsTradeReplMultilegOrdersLog ||
+            table_code == kFortsUserorderbookReplOrders || table_code == kFortsUserorderbookReplMultilegOrders ||
+            table_code == kFortsUserorderbookReplOrdersCurrentday ||
+            table_code == kFortsUserorderbookReplMultilegOrdersCurrentday)
+            staged.rebuild_order_view = true;
+        if (table_code == kFortsTradeReplUserDeal || table_code == kFortsTradeReplUserMultilegDeal)
+            staged.rebuild_trade_view = true;
         static_cast<void>(active_source_revisions());
         auto& sessions =
             staged.active ? ensure_stage_copy(staged.sessions, sessions_by_id, native_commit_phase) : sessions_by_id;
@@ -1435,18 +1509,22 @@ struct Plaza2PrivateStateProjector::Impl {
         mark_touched();
         if (!staged.active) {
             rebuild_all_snapshots();
+            prune_row_changes();
         }
     }
 
     void clear_stream_owned_state(StreamCode stream_code) {
         switch (stream_code) {
         case StreamCode::kFortsTradeRepl:
+            std::erase_if(row_changes.orders, [](const auto& row) { return row.from_trade_repl; });
+            row_changes.trades.clear();
             clear_trade_source(orders_by_key);
             trades_by_key.clear();
             rebuild_orders();
             rebuild_trades();
             break;
         case StreamCode::kFortsUserorderbookRepl:
+            std::erase_if(row_changes.orders, [](const auto& row) { return !row.from_trade_repl; });
             clear_user_book_source(orders_by_key);
             rebuild_orders();
             break;
@@ -1515,11 +1593,13 @@ struct Plaza2PrivateStateProjector::Impl {
     void stage_clear_stream_owned_state(StreamCode stream_code) {
         switch (stream_code) {
         case StreamCode::kFortsTradeRepl:
+            staged.rebuild_order_view = staged.rebuild_trade_view = true;
             clear_trade_source(ensure_stage_copy(staged.orders, orders_by_key, native_commit_phase));
             ensure_stage_copy(staged.trades, trades_by_key, native_commit_phase).clear();
             staged.touched_streams.insert(StreamCode::kFortsTradeRepl);
             break;
         case StreamCode::kFortsUserorderbookRepl:
+            staged.rebuild_order_view = true;
             clear_user_book_source(ensure_stage_copy(staged.orders, orders_by_key, native_commit_phase));
             staged.touched_streams.insert(StreamCode::kFortsUserorderbookRepl);
             break;
@@ -1638,7 +1718,13 @@ struct Plaza2PrivateStateProjector::Impl {
             .client_code = row.text(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogClientCode
                                              : FieldCode::kFortsTradeReplOrdersLogClientCode),
         };
-        auto& order = find_or_create_order(orders, key);
+        const auto previous_id = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogIdOrd1
+                                                  : FieldCode::kFortsTradeReplOrdersLogIdOrd1);
+        OrderKey resolved;
+        // Native TRADE rows are exchange records. Move can reuse ext_id for a
+        // distinct positive order ID before reply 176 supplies the logical link.
+        auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase && previous_id == 0);
+        staged.order_keys.insert(std::move(resolved));
         order.sess_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogSessId
                                          : FieldCode::kFortsTradeReplOrdersLogSessId);
         order.isin_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogIsinId
@@ -1659,6 +1745,7 @@ struct Plaza2PrivateStateProjector::Impl {
                                                      : FieldCode::kFortsTradeReplOrdersLogPrivateAmountRest);
         order.id_deal = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogIdDeal
                                          : FieldCode::kFortsTradeReplOrdersLogIdDeal);
+        order.id_ord1 = previous_id;
         order.xstatus = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogXstatus
                                          : FieldCode::kFortsTradeReplOrdersLogXstatus);
         order.xstatus2 = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogXstatus2
@@ -1790,12 +1877,19 @@ struct Plaza2PrivateStateProjector::Impl {
             .ext_id = row.i32(ext_id_field),
             .client_code = row.text(client_code_field),
         };
-        auto& order = find_or_create_order(orders, key);
+        OrderKey resolved;
+        auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase);
+        staged.order_keys.insert(std::move(resolved));
 
         order.sess_id = row.i32(sess_field);
         order.isin_id = row.i32(isin_field);
         order.login_from = row.text(login_field);
         order.comment = row.text(comment_field);
+        order.id_ord1 =
+            row.i64(multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayIdOrd1
+                                            : FieldCode::kFortsUserorderbookReplMultilegOrdersIdOrd1)
+                             : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayIdOrd1
+                                            : FieldCode::kFortsUserorderbookReplOrdersIdOrd1));
         order.price = row.text(price_field);
         order.public_amount = row.i64(public_amount_field);
         order.public_amount_rest = row.i64(public_rest_field);
@@ -1823,6 +1917,7 @@ struct Plaza2PrivateStateProjector::Impl {
                                         : FieldCode::kFortsTradeReplUserDealIdDeal),
         };
         auto& trade = trades[key];
+        staged.trade_keys.insert(key);
         trade.multileg = multileg;
         trade.id_deal = key.id_deal;
         trade.sess_id = row.i32(multileg ? FieldCode::kFortsTradeReplUserMultilegDealSessId
@@ -2350,20 +2445,52 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         if (staged.orders.has_value()) {
             orders_by_key = std::move(*staged.orders);
-            for (auto& [_, order] : orders_by_key) {
+            for (const auto& key : staged.order_keys) {
+                const auto found = orders_by_key.find(key);
+                if (found == orders_by_key.end())
+                    continue;
+                auto& order = found->second;
                 if (order.trade_repl_commit_sequence == std::numeric_limits<std::uint64_t>::max()) {
                     order.trade_repl_commit_sequence = state.commit_count;
                 }
                 if (order.user_orderbook_commit_sequence == std::numeric_limits<std::uint64_t>::max()) {
                     order.user_orderbook_commit_sequence = state.commit_count;
                 }
+                row_changes.orders.push_back(order);
+                if (native_commit_phase && !staged.rebuild_order_view && !order_snapshots.empty()) {
+                    const auto [slot, inserted] = order_view_index.try_emplace(key, order_snapshots.size());
+                    if (inserted)
+                        order_snapshots.push_back(order);
+                    else
+                        order_snapshots[slot->second] = order;
+                }
             }
-            rebuild_orders();
+            if (!native_commit_phase || staged.rebuild_order_view ||
+                (order_snapshots.empty() && !orders_by_key.empty()))
+                rebuild_orders();
         }
         if (staged.trades.has_value()) {
             trades_by_key = std::move(*staged.trades);
-            rebuild_trades();
+            for (const auto& key : staged.trade_keys) {
+                const auto found = trades_by_key.find(key);
+                if (found == trades_by_key.end())
+                    continue;
+                const auto& trade = found->second;
+                row_changes.trades.push_back(trade);
+                if (native_commit_phase && !staged.rebuild_trade_view && !trade_snapshots.empty()) {
+                    const auto [slot, inserted] = trade_view_index.try_emplace(key, trade_snapshots.size());
+                    if (inserted)
+                        trade_snapshots.push_back(trade);
+                    else
+                        trade_snapshots[slot->second] = trade;
+                }
+            }
+            if (!native_commit_phase || staged.rebuild_trade_view ||
+                (trade_snapshots.empty() && !trades_by_key.empty()))
+                rebuild_trades();
         }
+        if (staged.rebuild_order_view || staged.rebuild_trade_view)
+            prune_row_changes();
         if (staged.stream_health.has_value()) {
             stream_health = std::move(*staged.stream_health);
         }
@@ -2547,6 +2674,12 @@ std::span<const OwnOrderSnapshot> Plaza2PrivateStateProjector::own_orders() cons
 
 std::span<const OwnTradeSnapshot> Plaza2PrivateStateProjector::own_trades() const {
     return impl_->trade_snapshots;
+}
+
+PrivateRowChanges Plaza2PrivateStateProjector::take_row_changes() {
+    auto changes = std::move(impl_->row_changes);
+    impl_->row_changes = {};
+    return changes;
 }
 
 std::optional<SourceRowProvenance>

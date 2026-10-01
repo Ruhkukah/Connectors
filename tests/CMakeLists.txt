@@ -34,7 +34,7 @@ function(moex_runtime_test name source)
     set_tests_properties(${name} PROPERTIES LABELS "integration;plaza2;sanitizer")
 endfunction()
 
-foreach(name IN ITEMS plaza2_runtime_probe_test plaza2_scheme_drift_test
+foreach(name IN ITEMS plaza2_runtime_probe_test
         plaza2_runtime_adapter_test plaza2_runtime_listener_test)
     moex_runtime_test(${name} plaza2_cgate/${name}.cpp)
 endforeach()
@@ -47,7 +47,6 @@ foreach(name IN ITEMS plaza2_private_state_projection_test plaza2_private_state_
         plaza2_private_state_invalidation_test plaza2_private_state_provenance_test)
     moex_test(${name} plaza2_cgate/${name}.cpp moex_plaza2_cgate_private_state moex_plaza2_cgate_fake_scenarios)
 endforeach()
-moex_test(plaza2_manual_operator_gate_test plaza2_cgate/plaza2_manual_operator_gate_test.cpp plaza2_runtime_test_support moex_plaza2_cgate_bridge)
 foreach(name IN ITEMS plaza2_aggr20_md_validation_test plaza2_aggr20_md_projection_test
         plaza2_aggr20_md_optimization_test)
     moex_runtime_test(${name} plaza2_cgate/${name}.cpp moex_plaza2_cgate_aggr20_md)
@@ -68,13 +67,6 @@ foreach(name IN ITEMS connector_host_dtc_protocol_test connector_host_dtc_server
     moex_test(${name} ${name}.cpp moex_connector_host)
     set_tests_properties(${name} PROPERTIES LABELS "dtc;read-only;sanitizer")
 endforeach()
-moex_test(plaza2_target_forensics_test plaza2_target_forensics_test.cpp moex_plaza2_cgate_runtime)
-moex_test(plaza2_private_identity_test plaza2_cgate/plaza2_private_identity_test.cpp moex_connector_host)
-add_executable(plaza2_qualification_stop_test plaza2_cgate/plaza2_qualification_stop_test.cpp)
-target_link_libraries(plaza2_qualification_stop_test PRIVATE Threads::Threads)
-add_test(NAME plaza2_qualification_stop COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/plaza2_qualification_stop_test.py" "$<TARGET_FILE:plaza2_qualification_stop_test>")
-set_tests_properties(plaza2_qualification_stop PROPERTIES LABELS "unit;plaza2;sanitizer" TIMEOUT 30)
 add_executable(plaza2_text_test plaza2_cgate/plaza2_text_test.cpp)
 target_link_libraries(plaza2_text_test PRIVATE moex_plaza2_cgate_aggr20_md)
 add_test(NAME plaza2_text_roundtrip_test COMMAND "${Python3_EXECUTABLE}"
@@ -92,6 +84,12 @@ endforeach()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/trading_host_test.cpp")
     moex_runtime_test(trading_host_test trading_host_test.cpp moex_connector_host)
 endif()
+moex_test_target(trading_day_test trading_day_test.cpp plaza2_runtime_test_support moex_connector_host)
+add_dependencies(trading_day_test plaza2_fake_cgate_runtime)
+add_test(NAME trading_day_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trading_day_test.py"
+    "$<TARGET_FILE:trading_day_test>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>"
+    "${MOEX_SOURCE_ROOT}/scripts/reconstruct_orders.py")
+set_tests_properties(trading_day_test PROPERTIES LABELS "integration;plaza2;sanitizer" TIMEOUT 60)
 
 moex_runtime_test(plaza2_session_recovery_test plaza2_cgate/plaza2_session_recovery_test.cpp moex_plaza2_trade_session)
 moex_test(plaza2_private_state_transaction_perf_test plaza2_cgate/plaza2_private_state_transaction_perf_test.cpp

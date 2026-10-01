@@ -254,8 +254,11 @@ DtcMarketDataSnapshot make_dtc_market_data_snapshot(const ConnectorHostMarketDat
     out.target_authoritative = market_data.target_authoritative;
     out.aggr_online = market_data.aggr_online;
     out.book_snapshot_current = market_data.book_snapshot_current;
-    out.session_ready_witness = market_data.session_ready_witness;
-    out.session_ready_witness_kind = market_data.session_ready_witness_kind;
+    out.session_ready_witness = market_data.session_ready_event;
+    if (market_data.session_ready_event)
+        out.session_ready_witness_kind = market_data.session_ready_event->seen_during_snapshot
+                                             ? SessionReadyWitnessKind::LateJoinCorroboratedSnapshot
+                                             : SessionReadyWitnessKind::OnlineSynchronousEvent;
     out.market_data_display_allowed = market_data.market_data_display_allowed;
     out.source_consistent = market_data.source_consistent;
     out.market_data_live = market_data.market_data_live;

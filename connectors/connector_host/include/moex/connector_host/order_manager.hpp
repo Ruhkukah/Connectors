@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 #include <unordered_map>
+#include <tuple>
 
 namespace moex::connector_host {
 
@@ -43,6 +44,8 @@ struct ManagedOrder {
     std::int32_t ext_id{}, sess_id{};
     std::int64_t order_id{}, remaining{}, executed{};
     bool cancel_requested{}, absence_reply{};
+    bool operator_action_required{}, confirmed_by_replication{};
+    bool execution_baseline_known{true};
     std::int64_t sent_utc_seconds{};
     std::set<std::int64_t> order_ids;
     std::string last_error;
@@ -61,6 +64,8 @@ struct OrderManagerConfig {
     std::uint32_t max_commands_per_second{30};
     std::chrono::milliseconds reply_timeout{60000};
     std::chrono::seconds absence_margin{60};
+    std::uint32_t max_cancel_attempts{3};
+    std::chrono::milliseconds cancel_retry_base{1000}, cancel_retry_max{30000};
     RiskLimits risk;
     std::int32_t next_ext_id{1};
     std::uint32_t next_user_id{1};
@@ -96,6 +101,7 @@ class OrderManager {
     [[nodiscard]] std::size_t queued() const noexcept {
         return cancels_.size() + adds_.size();
     }
+    [[nodiscard]] bool operator_action_required() const noexcept;
 
   private:
     struct Command {
@@ -107,15 +113,19 @@ class OrderManager {
         std::uint32_t user_id{};
         std::int64_t target_order_id{};
         bool acknowledged{};
+        std::uint32_t failures{};
     };
-    [[nodiscard]] std::string check_risk(const OrderRequest& request, std::size_t extra_orders) const;
+    [[nodiscard]] std::string check_risk(const OrderRequest& request, std::size_t extra_orders,
+                                         std::string_view exclude_key = {}) const;
     [[nodiscard]] Command encode(plaza2_trade::Plaza2TradeCommandRequest request, std::string key);
     [[nodiscard]] std::uint32_t reserve_user_id();
     [[nodiscard]] bool has_outstanding_command(std::string_view key, plaza2_trade::Plaza2TradeCommandKind kind) const;
     void recovery_cancel(ManagedOrder& order);
     void enqueue_cancel(ManagedOrder& order);
     void complete_timeout(Command command, Clock::time_point now);
-    void emit(std::string_view kind, std::string_view fields) const;
+    void retry_cancel(Command command, Clock::time_point now, std::chrono::milliseconds penalty = {});
+    void replay_deferred_trades();
+    void emit(std::string_view kind, std::string_view fields) noexcept;
     void changed(const std::string& key);
     OrderManagerConfig config_;
     Send send_;
@@ -126,10 +136,14 @@ class OrderManager {
     std::map<std::string, ManagedOrder> orders_;
     std::unordered_map<std::int64_t, std::string> order_index_;
     std::unordered_map<std::int32_t, std::string> ext_index_;
-    std::set<std::pair<std::int32_t, std::int64_t>> deals_;
+    std::set<std::tuple<std::int32_t, std::int64_t, bool>> deals_;
+    std::unordered_map<std::int64_t, std::int64_t> filled_by_id_;
+    std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnOrderSnapshot> deferred_orders_;
+    std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnTradeSnapshot> deferred_trades_;
     std::deque<Command> cancels_, adds_;
     std::unordered_map<std::uint32_t, Command> pending_;
     Clock::time_point now_{};
+    bool throttled_{}, logging_failed_{}, operator_action_required_{};
 };
 
 } // namespace moex::connector_host

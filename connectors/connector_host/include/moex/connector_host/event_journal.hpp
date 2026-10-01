@@ -16,7 +16,7 @@ struct JournalReservation {
 };
 class EventJournal {
   public:
-    explicit EventJournal(const std::filesystem::path& path);
+    explicit EventJournal(const std::filesystem::path& path, const std::filesystem::path& state_path = {});
     ~EventJournal();
     EventJournal(const EventJournal&) = delete;
     EventJournal& operator=(const EventJournal&) = delete;
@@ -26,9 +26,15 @@ class EventJournal {
     [[nodiscard]] JournalReservation reservations() const noexcept {
         return reservations_;
     }
+    [[nodiscard]] std::uint64_t recovery_read_bytes() const noexcept {
+        return recovery_read_bytes_;
+    }
 
   private:
     int fd_{-1};
+    int state_lock_fd_{-1};
+    std::filesystem::path state_path_;
+    std::uint64_t device_{}, inode_{}, offset_{}, recovery_read_bytes_{};
     std::chrono::steady_clock::time_point last_sync_{};
     JournalReservation reservations_;
     bool dirty_{}, reservations_dirty_{};

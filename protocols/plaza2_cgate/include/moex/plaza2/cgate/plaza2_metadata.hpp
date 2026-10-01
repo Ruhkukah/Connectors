@@ -1,6 +1,7 @@
 #pragma once
 
-// Hand-maintained CGate 9.9 contract for retained product streams.
+// CGate 9.9 fields consumed by the retained product streams.
+// Native negotiated descriptors determine offsets; additional server fields are accepted.
 
 #include <cstddef>
 #include <cstdint>
@@ -8,19 +9,6 @@
 #include <string_view>
 
 namespace moex::plaza2::generated {
-
-enum class ScopeBucket : std::uint8_t {
-    kPrivateCore = 0,
-    kPrivateAuxiliary = 1,
-    kPublicCommon = 2,
-    kPublicAggr = 3,
-};
-
-enum class StreamType : std::uint8_t {
-    kSnapshot = 0,
-    kReplication = 1,
-    kAuxiliaryReplication = 2,
-};
 
 enum class ValueClass : std::uint8_t {
     kSignedInteger = 0,
@@ -30,24 +18,6 @@ enum class ValueClass : std::uint8_t {
     kFloatingPoint = 4,
     kTimestamp = 5,
     kBinary = 6,
-};
-
-enum class WireType : std::uint8_t {
-    kA = 0,
-    kBinaryPayload = 1,
-    kCString = 2,
-    kDecimal = 3,
-    kFloat64 = 4,
-    kI1 = 5,
-    kI2 = 6,
-    kI4 = 7,
-    kI8 = 8,
-    kTimestamp = 9,
-    kU1 = 10,
-    kU2 = 11,
-    kU4 = 12,
-    kU8 = 13,
-    kSizedBinaryPayload = 14,
 };
 
 enum class StreamCode : std::uint32_t {
@@ -116,26 +86,15 @@ enum class FieldCode : std::uint32_t {
     kFortsTradeReplOrdersLogMomentNs = 0x82304B8Eu,
     kFortsTradeReplOrdersLogDir = 0x0489B15Bu,
     kFortsTradeReplOrdersLogPublicAction = 0x9D049AE4u,
-    kFortsTradeReplOrdersLogDealPrice = 0x66B86F80u,
     kFortsTradeReplOrdersLogClientCode = 0x84477BB1u,
     kFortsTradeReplOrdersLogLoginFrom = 0xC6C134B6u,
     kFortsTradeReplOrdersLogComment = 0x5FF4C251u,
     kFortsTradeReplOrdersLogExtId = 0x2692C5DDu,
-    kFortsTradeReplOrdersLogBrokerTo = 0x26BED223u,
-    kFortsTradeReplOrdersLogBrokerToRts = 0xE932C153u,
-    kFortsTradeReplOrdersLogBrokerFromRts = 0x2A5B76DEu,
-    kFortsTradeReplOrdersLogDateExp = 0x6808C990u,
     kFortsTradeReplOrdersLogIdOrd1 = 0xE003C3F0u,
-    kFortsTradeReplOrdersLogAspref = 0x930BA241u,
     kFortsTradeReplOrdersLogPrivateOrderId = 0xE9654BC0u,
     kFortsTradeReplOrdersLogPrivateAmount = 0xB5C7545Cu,
     kFortsTradeReplOrdersLogPrivateAmountRest = 0xB4385B6Bu,
-    kFortsTradeReplOrdersLogVarianceAmount = 0xD6C720FCu,
-    kFortsTradeReplOrdersLogDiscloseConstAmount = 0xE873B0C9u,
     kFortsTradeReplOrdersLogPrivateAction = 0x9B3918DAu,
-    kFortsTradeReplOrdersLogReason = 0xC3F48018u,
-    kFortsTradeReplOrdersLogMatchRef = 0x7C1225E7u,
-    kFortsTradeReplOrdersLogComplianceId = 0xFECEE1EDu,
     kFortsTradeReplMultilegOrdersLogReplId = 0xE5178344u,
     kFortsTradeReplMultilegOrdersLogReplRev = 0xE7630E26u,
     kFortsTradeReplMultilegOrdersLogReplAct = 0x7F1AC987u,
@@ -152,36 +111,21 @@ enum class FieldCode : std::uint32_t {
     kFortsTradeReplMultilegOrdersLogMomentNs = 0xD1518E06u,
     kFortsTradeReplMultilegOrdersLogDir = 0x20B016C3u,
     kFortsTradeReplMultilegOrdersLogPublicAction = 0xC29910FCu,
-    kFortsTradeReplMultilegOrdersLogDealPrice = 0xAB8D7AD8u,
-    kFortsTradeReplMultilegOrdersLogRatePrice = 0x9E48039Cu,
-    kFortsTradeReplMultilegOrdersLogSwapPrice = 0xBB6191E5u,
     kFortsTradeReplMultilegOrdersLogClientCode = 0xE1F57A39u,
     kFortsTradeReplMultilegOrdersLogLoginFrom = 0x5961716Eu,
     kFortsTradeReplMultilegOrdersLogComment = 0xA0A0B469u,
     kFortsTradeReplMultilegOrdersLogExtId = 0xDC102015u,
-    kFortsTradeReplMultilegOrdersLogBrokerTo = 0x31323EDBu,
-    kFortsTradeReplMultilegOrdersLogBrokerToRts = 0xD79B491Bu,
-    kFortsTradeReplMultilegOrdersLogBrokerFromRts = 0x33039C76u,
-    kFortsTradeReplMultilegOrdersLogDateExp = 0xAA327F18u,
     kFortsTradeReplMultilegOrdersLogIdOrd1 = 0x43C20598u,
-    kFortsTradeReplMultilegOrdersLogAspref = 0x407990A9u,
     kFortsTradeReplMultilegOrdersLogPrivateOrderId = 0x31282E78u,
     kFortsTradeReplMultilegOrdersLogPrivateAmount = 0x0FC4B3B4u,
     kFortsTradeReplMultilegOrdersLogPrivateAmountRest = 0x551F9A43u,
-    kFortsTradeReplMultilegOrdersLogVarianceAmount = 0x187BE474u,
-    kFortsTradeReplMultilegOrdersLogDiscloseConstAmount = 0xEF6BF641u,
     kFortsTradeReplMultilegOrdersLogPrivateAction = 0x5DE6A392u,
-    kFortsTradeReplMultilegOrdersLogReason = 0x3612B3E0u,
-    kFortsTradeReplMultilegOrdersLogMatchRef = 0x83C8986Fu,
-    kFortsTradeReplMultilegOrdersLogComplianceId = 0x6C098D95u,
     kFortsTradeReplUserDealReplId = 0xE4827496u,
     kFortsTradeReplUserDealReplRev = 0xD3C6C534u,
     kFortsTradeReplUserDealReplAct = 0x044B5779u,
     kFortsTradeReplUserDealSessId = 0x01D72400u,
     kFortsTradeReplUserDealIsinId = 0xE7C87D47u,
     kFortsTradeReplUserDealIdDeal = 0xF5BE3C5Eu,
-    kFortsTradeReplUserDealIdDealMultileg = 0xDD554D50u,
-    kFortsTradeReplUserDealIdRepo = 0x8B710884u,
     kFortsTradeReplUserDealXpos = 0x95C1DEECu,
     kFortsTradeReplUserDealXamount = 0xC7888CDAu,
     kFortsTradeReplUserDealPublicOrderIdBuy = 0x95B98E3Fu,
@@ -189,38 +133,22 @@ enum class FieldCode : std::uint32_t {
     kFortsTradeReplUserDealPrice = 0x864EFA3Bu,
     kFortsTradeReplUserDealMoment = 0x7EBB0E2Eu,
     kFortsTradeReplUserDealMomentNs = 0x0B9669CCu,
-    kFortsTradeReplUserDealNosystem = 0xD4C3F1E8u,
-    kFortsTradeReplUserDealXstatusBuy = 0x7E1A1E7Bu,
-    kFortsTradeReplUserDealXstatusSell = 0xBDE59495u,
-    kFortsTradeReplUserDealXstatus2Buy = 0x72AC0591u,
-    kFortsTradeReplUserDealXstatus2Sell = 0xD7A6D14Fu,
     kFortsTradeReplUserDealExtIdBuy = 0xEAF80908u,
     kFortsTradeReplUserDealExtIdSell = 0x904160D4u,
     kFortsTradeReplUserDealCodeBuy = 0x5247CC88u,
     kFortsTradeReplUserDealCodeSell = 0xB2D22354u,
     kFortsTradeReplUserDealCommentBuy = 0xA425FB98u,
     kFortsTradeReplUserDealCommentSell = 0x481ED764u,
-    kFortsTradeReplUserDealFeeBuy = 0xDBF98215u,
-    kFortsTradeReplUserDealFeeSell = 0xC472A62Bu,
     kFortsTradeReplUserDealLoginBuy = 0x23563420u,
     kFortsTradeReplUserDealLoginSell = 0x98A76D0Cu,
-    kFortsTradeReplUserDealCodeRtsBuy = 0x50018AC8u,
-    kFortsTradeReplUserDealCodeRtsSell = 0xC7658C94u,
     kFortsTradeReplUserDealPrivateOrderIdBuy = 0x76BD7A65u,
     kFortsTradeReplUserDealPrivateOrderIdSell = 0x6DD745BBu,
-    kFortsTradeReplUserDealReasonBuy = 0x51789771u,
-    kFortsTradeReplUserDealReasonSell = 0xB3B0D9AFu,
     kFortsTradeReplUserMultilegDealReplId = 0x07621AB6u,
     kFortsTradeReplUserMultilegDealReplRev = 0x9BB3EA14u,
     kFortsTradeReplUserMultilegDealReplAct = 0xCC3A0F59u,
     kFortsTradeReplUserMultilegDealSessId = 0x3D1F8160u,
     kFortsTradeReplUserMultilegDealIsinId = 0x086DDF27u,
-    kFortsTradeReplUserMultilegDealIsinIdRd = 0x287F76BEu,
-    kFortsTradeReplUserMultilegDealIsinIdRb = 0x2A7F79E4u,
-    kFortsTradeReplUserMultilegDealDuration = 0x42301AC6u,
     kFortsTradeReplUserMultilegDealIdDeal = 0x9001EA3Eu,
-    kFortsTradeReplUserMultilegDealIdDealRd = 0x90BA0315u,
-    kFortsTradeReplUserMultilegDealIdDealRb = 0x8AB9F9A3u,
     kFortsTradeReplUserMultilegDealPublicOrderIdBuy = 0x664C539Fu,
     kFortsTradeReplUserMultilegDealPublicOrderIdSell = 0x09D02F01u,
     kFortsTradeReplUserMultilegDealXamount = 0x5706DCFAu,
@@ -229,11 +157,6 @@ enum class FieldCode : std::uint32_t {
     kFortsTradeReplUserMultilegDealSwapPrice = 0x97A467C7u,
     kFortsTradeReplUserMultilegDealMoment = 0x34BD6DCEu,
     kFortsTradeReplUserMultilegDealMomentNs = 0xFE2AA72Cu,
-    kFortsTradeReplUserMultilegDealNosystem = 0x5BF06B88u,
-    kFortsTradeReplUserMultilegDealXstatusBuy = 0xAC4F595Bu,
-    kFortsTradeReplUserMultilegDealXstatusSell = 0x9E2C10F5u,
-    kFortsTradeReplUserMultilegDealXstatus2Buy = 0xB75D81F1u,
-    kFortsTradeReplUserMultilegDealXstatus2Sell = 0x9B0E012Fu,
     kFortsTradeReplUserMultilegDealExtIdBuy = 0x54060BA8u,
     kFortsTradeReplUserMultilegDealExtIdSell = 0x3A7CD1F4u,
     kFortsTradeReplUserMultilegDealCodeBuy = 0x9B42EDE8u,
@@ -242,12 +165,8 @@ enum class FieldCode : std::uint32_t {
     kFortsTradeReplUserMultilegDealCommentSell = 0xE4BE26C4u,
     kFortsTradeReplUserMultilegDealLoginBuy = 0xF546DE00u,
     kFortsTradeReplUserMultilegDealLoginSell = 0x38FDA66Cu,
-    kFortsTradeReplUserMultilegDealCodeRtsBuy = 0xD0ABD0E8u,
-    kFortsTradeReplUserMultilegDealCodeRtsSell = 0x30F8B634u,
     kFortsTradeReplUserMultilegDealPrivateOrderIdBuy = 0x8EA06145u,
     kFortsTradeReplUserMultilegDealPrivateOrderIdSell = 0x0C41FF1Bu,
-    kFortsTradeReplUserMultilegDealReasonBuy = 0x8515BA51u,
-    kFortsTradeReplUserMultilegDealReasonSell = 0xFD3B460Fu,
     kFortsTradeReplHeartbeatReplId = 0x6C53000Cu,
     kFortsTradeReplHeartbeatReplRev = 0x7D4A4D6Eu,
     kFortsTradeReplHeartbeatReplAct = 0x582BD1CFu,
@@ -288,27 +207,14 @@ enum class FieldCode : std::uint32_t {
     kFortsDealsReplMultilegDealPublicOrderIdSell = 0x2F842FF0u,
     kFortsDealsReplMultilegDealXamount = 0x9CBD6895u,
     kFortsDealsReplMultilegDealPrice = 0xC0323024u,
-    kFortsDealsReplMultilegDealRatePrice = 0x65817B7Bu,
-    kFortsDealsReplMultilegDealSwapPrice = 0x6728C3EEu,
-    kFortsDealsReplMultilegDealMoment = 0xCB40323Bu,
-    kFortsDealsReplMultilegDealMomentNs = 0x5EDC49CFu,
-    kFortsDealsReplMultilegDealNosystem = 0x018F6081u,
-    kFortsDealsReplMultilegDealXstatusBuy = 0xFB37E7DCu,
-    kFortsDealsReplMultilegDealXstatusSell = 0xE9C21790u,
-    kFortsDealsReplMultilegDealXstatus2Buy = 0x51017D2Cu,
-    kFortsDealsReplMultilegDealXstatus2Sell = 0xA36A8BE0u,
     kFortsDealsReplHeartbeatReplId = 0xDF548BD5u,
     kFortsDealsReplHeartbeatReplRev = 0xD7DCF005u,
     kFortsDealsReplHeartbeatReplAct = 0xA74DD064u,
-    kFortsDealsReplHeartbeatServerTime = 0xF68ECD5Au,
     kFortsDealsReplSysEventsReplId = 0x763081F2u,
     kFortsDealsReplSysEventsReplRev = 0xBFB5BC80u,
     kFortsDealsReplSysEventsReplAct = 0x0DD532DDu,
-    kFortsDealsReplSysEventsEventId = 0xEF1A8C92u,
     kFortsDealsReplSysEventsSessId = 0x554C7BE4u,
     kFortsDealsReplSysEventsEventType = 0xA54315A7u,
-    kFortsDealsReplSysEventsMessage = 0xE83012EDu,
-    kFortsDealsReplSysEventsServerTime = 0xE40E3163u,
     kFortsUserorderbookReplOrdersReplId = 0x5A79E681u,
     kFortsUserorderbookReplOrdersReplRev = 0x187241A1u,
     kFortsUserorderbookReplOrdersReplAct = 0xD7CDEE18u,
@@ -328,25 +234,11 @@ enum class FieldCode : std::uint32_t {
     kFortsUserorderbookReplOrdersComment = 0x025D1AA6u,
     kFortsUserorderbookReplOrdersExtId = 0xCD76AC2Cu,
     kFortsUserorderbookReplOrdersLoginFrom = 0x132ED793u,
-    kFortsUserorderbookReplOrdersBrokerTo = 0x68AF2158u,
-    kFortsUserorderbookReplOrdersBrokerToRts = 0xC1302F80u,
-    kFortsUserorderbookReplOrdersDateExp = 0xCF36C9BDu,
     kFortsUserorderbookReplOrdersIdOrd1 = 0x14F86853u,
-    kFortsUserorderbookReplOrdersBrokerFromRts = 0x7AC35D35u,
-    kFortsUserorderbookReplOrdersAspref = 0xB6A8F980u,
     kFortsUserorderbookReplOrdersPrivateOrderId = 0x8DA28A89u,
     kFortsUserorderbookReplOrdersPrivateAmount = 0xFCAE4ECDu,
     kFortsUserorderbookReplOrdersPrivateAmountRest = 0x167E9274u,
-    kFortsUserorderbookReplOrdersVarianceAmount = 0x47F5709Fu,
-    kFortsUserorderbookReplOrdersDiscloseConstAmount = 0xFC386B32u,
     kFortsUserorderbookReplOrdersPrivateAction = 0x2F639ED3u,
-    kFortsUserorderbookReplOrdersPrivateInitMoment = 0x9754B0BCu,
-    kFortsUserorderbookReplOrdersPrivateInitAmount = 0x357F00FCu,
-    kFortsUserorderbookReplOrdersReason = 0xDDDDF731u,
-    kFortsUserorderbookReplOrdersMatchRef = 0x171D402Cu,
-    kFortsUserorderbookReplOrdersPublicInitMoment = 0xDCDF4BB0u,
-    kFortsUserorderbookReplOrdersPublicInitAmount = 0x1D7DD568u,
-    kFortsUserorderbookReplOrdersComplianceId = 0x8404253Au,
     kFortsUserorderbookReplMultilegOrdersReplId = 0xD6683EE5u,
     kFortsUserorderbookReplMultilegOrdersReplRev = 0x1F099B35u,
     kFortsUserorderbookReplMultilegOrdersReplAct = 0x8BEFE3F4u,
@@ -366,31 +258,14 @@ enum class FieldCode : std::uint32_t {
     kFortsUserorderbookReplMultilegOrdersComment = 0x88F81CEAu,
     kFortsUserorderbookReplMultilegOrdersExtId = 0x5DB67CA8u,
     kFortsUserorderbookReplMultilegOrdersLoginFrom = 0x3550112Fu,
-    kFortsUserorderbookReplMultilegOrdersBrokerTo = 0x91F4E724u,
-    kFortsUserorderbookReplMultilegOrdersBrokerToRts = 0xDDEE037Cu,
-    kFortsUserorderbookReplMultilegOrdersDateExp = 0x973595B1u,
     kFortsUserorderbookReplMultilegOrdersIdOrd1 = 0xBBF3CCD7u,
-    kFortsUserorderbookReplMultilegOrdersBrokerFromRts = 0x71F87E19u,
-    kFortsUserorderbookReplMultilegOrdersAspref = 0x1941827Cu,
     kFortsUserorderbookReplMultilegOrdersPrivateOrderId = 0x2E826F5Du,
     kFortsUserorderbookReplMultilegOrdersPrivateAmount = 0xB8FFD4A1u,
     kFortsUserorderbookReplMultilegOrdersPrivateAmountRest = 0xFA6D39D8u,
-    kFortsUserorderbookReplMultilegOrdersVarianceAmount = 0xE5F5C85Bu,
-    kFortsUserorderbookReplMultilegOrdersDiscloseConstAmount = 0x949027E6u,
     kFortsUserorderbookReplMultilegOrdersPrivateAction = 0x78C6E417u,
-    kFortsUserorderbookReplMultilegOrdersPrivateInitMoment = 0x365F9548u,
-    kFortsUserorderbookReplMultilegOrdersPrivateInitAmount = 0x9E31F5B0u,
-    kFortsUserorderbookReplMultilegOrdersReason = 0x792863E5u,
-    kFortsUserorderbookReplMultilegOrdersMatchRef = 0xC45817C8u,
-    kFortsUserorderbookReplMultilegOrdersPublicInitMoment = 0x2FAEAC8Cu,
-    kFortsUserorderbookReplMultilegOrdersPublicInitAmount = 0xFC1E076Cu,
-    kFortsUserorderbookReplMultilegOrdersComplianceId = 0x4B9CCF96u,
-    kFortsUserorderbookReplMultilegOrdersRatePrice = 0x164BF9C9u,
-    kFortsUserorderbookReplMultilegOrdersSwapPrice = 0x1774E368u,
     kFortsUserorderbookReplInfoReplId = 0x69113BF6u,
     kFortsUserorderbookReplInfoReplRev = 0x22660B54u,
     kFortsUserorderbookReplInfoReplAct = 0x50703499u,
-    kFortsUserorderbookReplInfoInfoId = 0x517E844Fu,
     kFortsUserorderbookReplInfoMoment = 0xDE72BE0Eu,
     kFortsUserorderbookReplInfoPublicationState = 0xEFC8C1A6u,
     kFortsUserorderbookReplInfoTradesRev = 0xA10C70E3u,
@@ -414,25 +289,11 @@ enum class FieldCode : std::uint32_t {
     kFortsUserorderbookReplOrdersCurrentdayComment = 0x3F08CA28u,
     kFortsUserorderbookReplOrdersCurrentdayExtId = 0x3C0CD86Au,
     kFortsUserorderbookReplOrdersCurrentdayLoginFrom = 0xBC381729u,
-    kFortsUserorderbookReplOrdersCurrentdayBrokerTo = 0xF91F204Au,
-    kFortsUserorderbookReplOrdersCurrentdayBrokerToRts = 0x4781AECEu,
-    kFortsUserorderbookReplOrdersCurrentdayDateExp = 0xA9F3E35Bu,
     kFortsUserorderbookReplOrdersCurrentdayIdOrd1 = 0xDB219EBDu,
-    kFortsUserorderbookReplOrdersCurrentdayBrokerFromRts = 0xBEC3B473u,
-    kFortsUserorderbookReplOrdersCurrentdayAspref = 0x51A7CFA6u,
     kFortsUserorderbookReplOrdersCurrentdayPrivateOrderId = 0x10F9D1A7u,
     kFortsUserorderbookReplOrdersCurrentdayPrivateAmount = 0xE796BDCBu,
     kFortsUserorderbookReplOrdersCurrentdayPrivateAmountRest = 0x321E251Au,
-    kFortsUserorderbookReplOrdersCurrentdayVarianceAmount = 0x5800B201u,
-    kFortsUserorderbookReplOrdersCurrentdayDiscloseConstAmount = 0x49B7E6E8u,
     kFortsUserorderbookReplOrdersCurrentdayPrivateAction = 0x4C0E81A5u,
-    kFortsUserorderbookReplOrdersCurrentdayPrivateInitMoment = 0xACB11886u,
-    kFortsUserorderbookReplOrdersCurrentdayPrivateInitAmount = 0x7ED6F41Eu,
-    kFortsUserorderbookReplOrdersCurrentdayReason = 0x7CF56C6Bu,
-    kFortsUserorderbookReplOrdersCurrentdayMatchRef = 0x5DEB2592u,
-    kFortsUserorderbookReplOrdersCurrentdayPublicInitMoment = 0x10238B66u,
-    kFortsUserorderbookReplOrdersCurrentdayPublicInitAmount = 0x255AC3FEu,
-    kFortsUserorderbookReplOrdersCurrentdayComplianceId = 0xF5C9F1C4u,
     kFortsUserorderbookReplMultilegOrdersCurrentdayReplId = 0x9717D593u,
     kFortsUserorderbookReplMultilegOrdersCurrentdayReplRev = 0xAEC401CFu,
     kFortsUserorderbookReplMultilegOrdersCurrentdayReplAct = 0x3717062Au,
@@ -452,27 +313,11 @@ enum class FieldCode : std::uint32_t {
     kFortsUserorderbookReplMultilegOrdersCurrentdayComment = 0x8261C6F4u,
     kFortsUserorderbookReplMultilegOrdersCurrentdayExtId = 0xB667BECEu,
     kFortsUserorderbookReplMultilegOrdersCurrentdayLoginFrom = 0x5F743B7Du,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayBrokerTo = 0x0C8433CEu,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayBrokerToRts = 0x67ABAEF2u,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayDateExp = 0x17E0ABD7u,
     kFortsUserorderbookReplMultilegOrdersCurrentdayIdOrd1 = 0xF58407E9u,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayBrokerFromRts = 0xE5D668EFu,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayAspref = 0x7C19BBCAu,
     kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateOrderId = 0x5FBB5783u,
     kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateAmount = 0x25902A17u,
     kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateAmountRest = 0xE1D7DFC6u,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayVarianceAmount = 0x6395C0A5u,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayDiscloseConstAmount = 0x031BCCB4u,
     kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateAction = 0xA62D4361u,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateInitMoment = 0xF51D1CFAu,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateInitAmount = 0x8AEA316Au,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayReason = 0x15FD4317u,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayMatchRef = 0x6B5434C6u,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayPublicInitMoment = 0x7CB0B17Au,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayPublicInitAmount = 0x127DC5EAu,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayComplianceId = 0x8D4656E8u,
-    kFortsUserorderbookReplMultilegOrdersCurrentdayRatePrice = 0x31469673u,
-    kFortsUserorderbookReplMultilegOrdersCurrentdaySwapPrice = 0xCD106826u,
     kFortsUserorderbookReplInfoCurrentdayReplId = 0xC0CC37D6u,
     kFortsUserorderbookReplInfoCurrentdayReplRev = 0x5E5EC274u,
     kFortsUserorderbookReplInfoCurrentdayReplAct = 0x8C68EBB9u,
@@ -521,16 +366,6 @@ enum class FieldCode : std::uint32_t {
     kFortsPosReplPositionSaClientCode = 0x86D8167Du,
     kFortsPosReplPositionSaIsinId = 0xA66B2CADu,
     kFortsPosReplPositionSaXpos = 0x07F307FAu,
-    kFortsPosReplPositionSaXbuysQty = 0x43A1964Au,
-    kFortsPosReplPositionSaXsellsQty = 0x9732465Eu,
-    kFortsPosReplPositionSaXdayOpenQty = 0xED5C14E8u,
-    kFortsPosReplPositionSaXdayOpenBuysQty = 0xABB77006u,
-    kFortsPosReplPositionSaXdayOpenSellsQty = 0x1F0E95D2u,
-    kFortsPosReplPositionSaXopenQty = 0x449A2323u,
-    kFortsPosReplPositionSaWaprice = 0xED08D221u,
-    kFortsPosReplPositionSaNetVolumeRur = 0x3C45F6B8u,
-    kFortsPosReplPositionSaLastDealId = 0xFC47FEEDu,
-    kFortsPosReplPositionSaLastQuantity = 0xA64E2B98u,
     kFortsPosReplInfoReplId = 0x55F97258u,
     kFortsPosReplInfoReplRev = 0x0250DECAu,
     kFortsPosReplInfoReplAct = 0xDCA68723u,
@@ -559,22 +394,8 @@ enum class FieldCode : std::uint32_t {
     kFortsPartReplPartSaReplId = 0xA45E6C5Du,
     kFortsPartReplPartSaReplRev = 0xBF60930Du,
     kFortsPartReplPartSaReplAct = 0x6ED1410Cu,
-    kFortsPartReplPartSaSettlementAccount = 0x027A2F16u,
-    kFortsPartReplPartSaMoneyOld = 0x06A67CC9u,
     kFortsPartReplPartSaMoneyAmount = 0x14C0EFB8u,
     kFortsPartReplPartSaMoneyFree = 0x4C3CF2CAu,
-    kFortsPartReplPartSaMoneyBlocked = 0x4C7A69B4u,
-    kFortsPartReplPartSaMoneyPledgeAmount = 0xFCD91C42u,
-    kFortsPartReplPartSaActualAmountOfBaseCurrency = 0xBF1A589Eu,
-    kFortsPartReplPartSaVmReserve = 0x7458D88Bu,
-    kFortsPartReplPartSaVmIntercl = 0x6CCCB0D6u,
-    kFortsPartReplPartSaFee = 0x012FDBAFu,
-    kFortsPartReplPartSaBlockedTax = 0x82C077B5u,
-    kFortsPartReplPartSaPremiumIntercl = 0x75934238u,
-    kFortsPartReplPartSaNetOptionValue = 0xBE4CEAE2u,
-    kFortsPartReplPartSaMarginCallMoment = 0xB5D26EC5u,
-    kFortsPartReplPartSaMarginCallFix = 0x72E4AB70u,
-    kFortsPartReplPartSaMarginCallCurrent = 0x09CA6C42u,
     kFortsPartReplSysEventsReplId = 0x7E71F1ACu,
     kFortsPartReplSysEventsReplRev = 0x636276CEu,
     kFortsPartReplSysEventsReplAct = 0x3E43FB2Fu,
@@ -596,61 +417,26 @@ enum class FieldCode : std::uint32_t {
     kFortsRefdataReplFutSessContentsLimitUp = 0xD1A9DE0Du,
     kFortsRefdataReplFutSessContentsLimitDown = 0xA9FABC2Cu,
     kFortsRefdataReplFutSessContentsSettlementPriceOpen = 0x8453894Eu,
-    kFortsRefdataReplFutSessContentsBuyDeposit = 0x505AA721u,
-    kFortsRefdataReplFutSessContentsSellDeposit = 0xA976032Du,
     kFortsRefdataReplFutSessContentsRoundto = 0x8AE22F95u,
     kFortsRefdataReplFutSessContentsMinStep = 0xB4D33B47u,
     kFortsRefdataReplFutSessContentsLotVolume = 0xAF4230AEu,
     kFortsRefdataReplFutSessContentsStepPrice = 0xEF807F2Cu,
     kFortsRefdataReplFutSessContentsLastTradeDate = 0x0956CD32u,
     kFortsRefdataReplFutSessContentsIsSpread = 0x5BD0E1CAu,
-    kFortsRefdataReplFutSessContentsDExpStart = 0x7A26E4FFu,
-    kFortsRefdataReplFutSessContentsPercentRate = 0x34966F6Cu,
     kFortsRefdataReplFutSessContentsSettlementPrice = 0xAF69B3E5u,
     kFortsRefdataReplFutSessContentsSigns = 0x7C2AAB2Au,
-    kFortsRefdataReplFutSessContentsTicker = 0xED5E574Au,
     kFortsRefdataReplFutSessContentsState = 0xFDE80621u,
-    kFortsRefdataReplFutSessContentsMultilegType = 0xC26D9694u,
-    kFortsRefdataReplFutSessContentsLegsQty = 0x9AE21242u,
-    kFortsRefdataReplFutSessContentsStepPriceClr = 0xB9A6BF0Cu,
-    kFortsRefdataReplFutSessContentsStepPriceInterclr = 0x3AE98200u,
     kFortsRefdataReplFutSessContentsStepPriceCurr = 0xBF391551u,
-    kFortsRefdataReplFutSessContentsPctyieldCoeff = 0xE89B4F7Au,
-    kFortsRefdataReplFutSessContentsPctyieldTotal = 0xDED8E435u,
-    kFortsRefdataReplFutSessContentsDExpEnd = 0x800D05CAu,
-    kFortsRefdataReplFutSessContentsEnforceImsHalfNetting = 0x8AD95886u,
-    kFortsRefdataReplFutSessContentsTasBaseFutIsinId = 0x09C25C66u,
     kFortsRefdataReplFutSessContentsTradeModeId = 0xEAFC32D0u,
     kFortsRefdataReplFutSessContentsGroupMask = 0x72CB4528u,
     kFortsRefdataReplFutSessContentsTradePeriodAccess = 0xFFB9E6C9u,
-    kFortsRefdataReplFutSessContentsBuyDepositErc = 0xFA0CB9AAu,
-    kFortsRefdataReplFutSessContentsSellDepositErc = 0xFC4F3F46u,
-    kFortsRefdataReplFutSessContentsBuyDepositHrc = 0x71FC6B3Du,
-    kFortsRefdataReplFutSessContentsSellDepositHrc = 0xDB1C2AE1u,
-    kFortsRefdataReplFutSessContentsBuyDepositLrc = 0x2E845649u,
-    kFortsRefdataReplFutSessContentsSellDepositLrc = 0x1E943FD5u,
-    kFortsRefdataReplFutSessContentsBuyDepositMrc = 0x832607B2u,
-    kFortsRefdataReplFutSessContentsSellDepositMrc = 0x7560A85Eu,
-    kFortsRefdataReplFutSessContentsSettlementPriceClr = 0x1B34BA69u,
     kFortsRefdataReplFutVcbReplId = 0xAA41B90Au,
     kFortsRefdataReplFutVcbReplRev = 0x7BFEA5B8u,
     kFortsRefdataReplFutVcbReplAct = 0x0F22EA55u,
     kFortsRefdataReplFutVcbBaseContractCode = 0x451C301Au,
-    kFortsRefdataReplFutVcbName = 0x15E00B65u,
-    kFortsRefdataReplFutVcbExecType = 0x0A66786Cu,
     kFortsRefdataReplFutVcbCurr = 0x286FE7E2u,
-    kFortsRefdataReplFutVcbTradeScheme = 0x493AD9B6u,
-    kFortsRefdataReplFutVcbSection = 0x91A6FCE9u,
-    kFortsRefdataReplFutVcbRateId = 0x660375D4u,
     kFortsRefdataReplFutVcbBaseContractId = 0x1837336Eu,
-    kFortsRefdataReplFutVcbSeccode = 0xF96B84A6u,
-    kFortsRefdataReplFutVcbSigns = 0x41CF1B00u,
-    kFortsRefdataReplFutVcbNegativePrices = 0xB205D9B0u,
-    kFortsRefdataReplFutVcbOptionModel = 0xAB40BB09u,
-    kFortsRefdataReplFutVcbAssetClass = 0xC40AD519u,
     kFortsRefdataReplFutVcbBoardMd = 0xF39DEE9Au,
-    kFortsRefdataReplFutVcbSectionId = 0xC926EF8Fu,
-    kFortsRefdataReplFutVcbExpirationTime = 0x9D16DEF1u,
     kFortsRefdataReplFutInstrumentsReplId = 0x40D03DC1u,
     kFortsRefdataReplFutInstrumentsReplRev = 0x6FE268E1u,
     kFortsRefdataReplFutInstrumentsReplAct = 0x31BA1158u,
@@ -660,27 +446,15 @@ enum class FieldCode : std::uint32_t {
     kFortsRefdataReplFutInstrumentsName = 0xF483085Eu,
     kFortsRefdataReplFutInstrumentsInstTerm = 0x6AD0FA80u,
     kFortsRefdataReplFutInstrumentsBaseContractCode = 0x6C00CF29u,
-    kFortsRefdataReplFutInstrumentsSettlementPriceOpen = 0x999BDBE1u,
     kFortsRefdataReplFutInstrumentsRoundto = 0x7C7354EEu,
     kFortsRefdataReplFutInstrumentsMinStep = 0x613E0F12u,
     kFortsRefdataReplFutInstrumentsLotVolume = 0x9A5295F7u,
     kFortsRefdataReplFutInstrumentsStepPrice = 0x7E39B195u,
     kFortsRefdataReplFutInstrumentsLastTradeDate = 0xF2537869u,
     kFortsRefdataReplFutInstrumentsIsSpread = 0x078AA2CDu,
-    kFortsRefdataReplFutInstrumentsDExpStart = 0x842A0880u,
-    kFortsRefdataReplFutInstrumentsPercentRate = 0x00BA271Du,
     kFortsRefdataReplFutInstrumentsSettlementPrice = 0xB17F7830u,
     kFortsRefdataReplFutInstrumentsSigns = 0x5098D19Du,
-    kFortsRefdataReplFutInstrumentsMultilegType = 0x1FDF5093u,
-    kFortsRefdataReplFutInstrumentsLegsQty = 0x04BC0D3Fu,
-    kFortsRefdataReplFutInstrumentsStepPriceClr = 0x183D4CD9u,
-    kFortsRefdataReplFutInstrumentsStepPriceInterclr = 0xE11419FBu,
     kFortsRefdataReplFutInstrumentsStepPriceCurr = 0xD3C47C3Au,
-    kFortsRefdataReplFutInstrumentsPctyieldCoeff = 0xE998AAABu,
-    kFortsRefdataReplFutInstrumentsPctyieldTotal = 0xF019353Cu,
-    kFortsRefdataReplFutInstrumentsSeriesType = 0x34391D2Du,
-    kFortsRefdataReplFutInstrumentsEnforceImsHalfNetting = 0x53B7CF17u,
-    kFortsRefdataReplFutInstrumentsTasBaseFutIsinId = 0x6402B1C7u,
     kFortsRefdataReplFutInstrumentsTradeModeId = 0x943FB7B7u,
     kFortsRefdataReplFutInstrumentsGroupMask = 0x41CA41DDu,
     kFortsRefdataReplFutInstrumentsTradePeriodAccess = 0x30EDE806u,
@@ -705,34 +479,17 @@ enum class FieldCode : std::uint32_t {
     kFortsRefdataReplOptSessContentsName = 0x9FBD86D1u,
     kFortsRefdataReplOptSessContentsBaseContractCode = 0x8B5DD64Eu,
     kFortsRefdataReplOptSessContentsFutIsinId = 0x3329AF3Bu,
-    kFortsRefdataReplOptSessContentsSettlementPriceOpen = 0x0260B870u,
-    kFortsRefdataReplOptSessContentsBaseImCoveredSell = 0x93BAF924u,
-    kFortsRefdataReplOptSessContentsBaseImSell = 0x04298AB3u,
     kFortsRefdataReplOptSessContentsPut = 0xBEB9FD4Fu,
     kFortsRefdataReplOptSessContentsStrike = 0x6C9F70B0u,
     kFortsRefdataReplOptSessContentsRoundto = 0x62F05ADFu,
     kFortsRefdataReplOptSessContentsLastTradeDate = 0xAA4D4F3Cu,
     kFortsRefdataReplOptSessContentsSigns = 0xB12E600Cu,
     kFortsRefdataReplOptSessContentsSettlementPrice = 0x18EC37E7u,
-    kFortsRefdataReplOptSessContentsBaseImBuy = 0x4F49CD5Du,
     kFortsRefdataReplOptSessContentsOptionSeriesId = 0xE466189Bu,
     kFortsRefdataReplOptSessContentsState = 0x93537E3Fu,
     kFortsRefdataReplOptSessContentsTradeModeId = 0x36BAC17Au,
     kFortsRefdataReplOptSessContentsGroupMask = 0x722DB996u,
     kFortsRefdataReplOptSessContentsTradePeriodAccess = 0x6213252Fu,
-    kFortsRefdataReplOptSessContentsBaseImCoveredSellErc = 0x8998A83Bu,
-    kFortsRefdataReplOptSessContentsBaseImCoveredSellHrc = 0xA8346D28u,
-    kFortsRefdataReplOptSessContentsBaseImCoveredSellLrc = 0x64BDEB34u,
-    kFortsRefdataReplOptSessContentsBaseImCoveredSellMrc = 0xC02F4393u,
-    kFortsRefdataReplOptSessContentsBaseImSellErc = 0xEB73EA90u,
-    kFortsRefdataReplOptSessContentsBaseImBuyErc = 0xF5C3A0B6u,
-    kFortsRefdataReplOptSessContentsBaseImSellHrc = 0x7A5572F3u,
-    kFortsRefdataReplOptSessContentsBaseImBuyHrc = 0x9491BA91u,
-    kFortsRefdataReplOptSessContentsBaseImSellLrc = 0xFDCC59A7u,
-    kFortsRefdataReplOptSessContentsBaseImBuyLrc = 0xD8083C85u,
-    kFortsRefdataReplOptSessContentsBaseImSellMrc = 0x625A9C88u,
-    kFortsRefdataReplOptSessContentsBaseImBuyMrc = 0x6ED509CEu,
-    kFortsRefdataReplOptSessContentsSettlementPriceClr = 0x6D9C066Fu,
     kFortsRefdataReplMultilegDictReplId = 0xAF8ECC9Bu,
     kFortsRefdataReplMultilegDictReplRev = 0x69C348D7u,
     kFortsRefdataReplMultilegDictReplAct = 0xD3F2B312u,
@@ -780,76 +537,43 @@ enum class FieldCode : std::uint32_t {
 };
 
 struct TypeDescriptor {
-    std::uint32_t type_id;
     std::string_view type_token;
-    std::string_view cgate_type;
-    std::string_view sql_type;
-    std::string_view cpp_type;
-    std::string_view cpp_type_comment;
-    std::string_view description;
-    WireType wire_type;
     ValueClass value_class;
-    std::uint16_t storage_size_bytes;
-    std::uint16_t logical_length;
     std::uint16_t decimal_digits;
     std::uint16_t decimal_scale;
 };
 
 struct StreamDescriptor {
     StreamCode stream_code;
-    std::uint32_t stream_id;
-    std::string_view protocol_item_id;
     std::string_view stream_name;
-    std::string_view stream_anchor_name;
-    std::string_view title;
-    std::string_view scheme_filename;
-    std::string_view scheme_section;
-    StreamType stream_type;
-    ScopeBucket scope_bucket;
-    std::uint8_t login_subtype_mask;
-    bool matching_partitioned;
     std::uint32_t first_table_index;
     std::uint32_t table_count;
 };
 
 struct TableDescriptor {
     TableCode table_code;
-    std::uint32_t table_id;
     std::uint32_t stream_id;
-    std::string_view protocol_item_id;
     std::string_view stream_name;
     std::string_view table_name;
-    std::string_view title;
-    ScopeBucket scope_bucket;
     std::uint32_t first_field_index;
     std::uint32_t field_count;
 };
 
 struct FieldDescriptor {
     FieldCode field_code;
-    std::uint32_t field_id;
-    std::uint32_t stream_id;
-    std::uint32_t table_id;
-    std::uint32_t type_id;
-    std::string_view stream_name;
-    std::string_view table_name;
     std::string_view field_name;
     std::string_view type_token;
-    std::string_view cpp_type;
-    std::string_view cpp_type_comment;
     ValueClass value_class;
-    WireType wire_type;
     std::uint16_t storage_size_bytes;
-    std::uint16_t logical_length;
     std::uint16_t decimal_digits;
     std::uint16_t decimal_scale;
     bool service_field;
 };
 
-inline constexpr std::size_t kTypeCount = 23;
+inline constexpr std::size_t kTypeCount = 18;
 inline constexpr std::size_t kStreamCount = 9;
 inline constexpr std::size_t kTableCount = 34;
-inline constexpr std::size_t kFieldCount = 677;
+inline constexpr std::size_t kFieldCount = 464;
 
 std::span<const TypeDescriptor> TypeDescriptors();
 std::span<const StreamDescriptor> StreamDescriptors();
@@ -862,17 +586,5 @@ const TableDescriptor* FindTableByCode(TableCode table_code);
 const FieldDescriptor* FindFieldByCode(FieldCode field_code);
 std::span<const TableDescriptor> TablesForStream(StreamCode stream_code);
 std::span<const FieldDescriptor> FieldsForTable(TableCode table_code);
-
-constexpr bool IsInteger(ValueClass value_class) {
-    return value_class == ValueClass::kSignedInteger || value_class == ValueClass::kUnsignedInteger;
-}
-
-constexpr bool HasScale(ValueClass value_class) {
-    return value_class == ValueClass::kDecimal;
-}
-
-constexpr bool IsStringLike(ValueClass value_class) {
-    return value_class == ValueClass::kFixedString;
-}
 
 } // namespace moex::plaza2::generated

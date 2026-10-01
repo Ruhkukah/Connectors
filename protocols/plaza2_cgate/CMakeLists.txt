@@ -1,5 +1,5 @@
 add_library(moex_plaza2_cgate_metadata STATIC
-    generated/plaza2_generated_metadata.cpp)
+    src/plaza2_metadata.cpp)
 
 target_include_directories(moex_plaza2_cgate_metadata
     PUBLIC
@@ -80,7 +80,6 @@ target_compile_features(moex_plaza2_cgate_private_state PUBLIC cxx_std_20)
 
 add_library(moex_plaza2_cgate_bridge STATIC
     src/plaza2_credential_provider.cpp
-    src/plaza2_manual_operator_gate.cpp
     src/plaza2_private_state_bridge.cpp)
 
 target_link_libraries(moex_plaza2_cgate_bridge

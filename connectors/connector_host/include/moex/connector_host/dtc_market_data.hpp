@@ -12,6 +12,24 @@
 
 namespace moex::connector_host::dtc {
 
+// Values retained by the existing read-only DTC wire protocol. They describe
+// how the committed event was received and do not grant trading permission.
+enum class SessionReadyWitnessKind : std::uint8_t {
+    None = 0,
+    OnlineSynchronousEvent = 1,
+    LateJoinCorroboratedSnapshot = 3,
+};
+[[nodiscard]] constexpr std::string_view session_ready_witness_kind_name(SessionReadyWitnessKind kind) noexcept {
+    switch (kind) {
+    case SessionReadyWitnessKind::OnlineSynchronousEvent:
+        return "OnlineSynchronousEvent";
+    case SessionReadyWitnessKind::LateJoinCorroboratedSnapshot:
+        return "LateJoinCorroboratedSnapshot";
+    default:
+        return "None";
+    }
+}
+
 enum class DtcSourceMode : std::uint8_t {
     Replay = 0,
     LiveTest = 1,
@@ -168,7 +186,7 @@ struct DtcMarketDataSnapshot {
     bool aggr_online{false};
     bool book_snapshot_current{false};
     std::optional<plaza2::cgate::Plaza2Aggr20SysEventSnapshot> session_ready_witness;
-    plaza2::cgate::SessionReadyWitnessKind session_ready_witness_kind{plaza2::cgate::SessionReadyWitnessKind::None};
+    SessionReadyWitnessKind session_ready_witness_kind{SessionReadyWitnessKind::None};
     bool market_data_display_allowed{false};
     bool source_consistent{false};
     bool market_data_live{false};

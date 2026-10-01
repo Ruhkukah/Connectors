@@ -1,5 +1,6 @@
-#include "moex/plaza2_trade/plaza2_test_trade_transport.hpp"
+#include "moex/plaza2_trade/cgate_session.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state_bridge.hpp"
+#include "moex/plaza2/cgate/cgate_logging.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -93,7 +94,14 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
                 log("unknown_reply", "{\"user_id\":" + std::to_string(event.user_id) + "}");
             return {};
         }
+        events.push_back({.user_id = event.user_id,
+                          .message_id = event.message_id,
+                          .command_kind = found->second.kind,
+                          .timed_out = event.kind == cg::Plaza2ListenerEventKind::Timeout,
+                          .raw_payload = {event.raw_payload.begin(), event.raw_payload.end()}});
+        const auto kind = found->second.kind;
         if (event.message_id == 99) {
+            pending.erase(found);
             Plaza2TradeValidationResult validation;
             auto decoded = Plaza2TradeCodec{}.decode_reply(99, event.raw_payload, validation);
             if (!validation.ok() || !decoded.penalty_remain || *decoded.penalty_remain < 0)
@@ -101,17 +109,12 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
             if (penalty)
                 penalty(*decoded.penalty_remain);
         }
-        events.push_back({.user_id = event.user_id,
-                          .message_id = event.message_id,
-                          .command_kind = found->second.kind,
-                          .timed_out = event.kind == cg::Plaza2ListenerEventKind::Timeout,
-                          .raw_payload = {event.raw_payload.begin(), event.raw_payload.end()}});
-        const auto expected = found->second.kind == Plaza2TradeCommandKind::AddOrder    ? 179
-                              : found->second.kind == Plaza2TradeCommandKind::DelOrder  ? 177
-                              : found->second.kind == Plaza2TradeCommandKind::MoveOrder ? 176
-                                                                                        : 186;
-        if (event.kind == cg::Plaza2ListenerEventKind::Timeout || event.message_id == expected ||
-            event.message_id == 99 || event.message_id == 100)
+        const auto expected = kind == Plaza2TradeCommandKind::AddOrder    ? 179
+                              : kind == Plaza2TradeCommandKind::DelOrder  ? 177
+                              : kind == Plaza2TradeCommandKind::MoveOrder ? 176
+                                                                          : 186;
+        if (event.message_id != 99 && (event.kind == cg::Plaza2ListenerEventKind::Timeout ||
+                                       event.message_id == expected || event.message_id == 100))
             pending.erase(found);
         return {};
     }
@@ -134,11 +137,11 @@ std::string_view plaza2_recovery_wait_state_name(Plaza2RecoveryWaitState state) 
 }
 struct CgateSession::Impl {
     struct Listener {
-        Plaza2TestTradeStreamConfig config;
+        CgateStreamConfig config;
         cg::Plaza2Listener object;
         cg::Plaza2ListenerEventHandler* handler{};
         std::chrono::steady_clock::time_point retry{};
-        bool attempted{};
+        bool scheme_incompatible{};
         std::optional<std::uint32_t> observed_state;
     };
     CgateSessionConfig config;
@@ -158,16 +161,17 @@ struct CgateSession::Impl {
     std::chrono::steady_clock::time_point connection_retry{}, publisher_retry{};
     std::string app_name, last_error, credentials, software_key;
     bool initialized{}, streams_created{}, connection_was_active{};
-    std::optional<Plaza2TestTradeStreamConfig> deferred_trade;
+    std::optional<CgateStreamConfig> deferred_trade;
     std::optional<Plaza2TradeReplayAnchor> anchor;
-    std::uint32_t publisher_state{}, reply_state{};
     std::optional<std::uint32_t> observed_connection, observed_publisher;
     explicit Impl(CgateSessionConfig c)
         : config(std::move(c)), deals(config.public_deals_target_isin_id, config.aggr20_target_session_id),
           rate(config.publisher_messages_per_second) {
-        replies.penalty = [this](std::uint32_t ms) { rate.penalize(now_ms(), ms); };
+        replies.penalty = [this](std::uint32_t ms) {
+            if (config.publisher_rate_owner == PublisherRateOwner::Session)
+                rate.penalize(now_ms(), ms);
+        };
         replies.log = config.event_log;
-        book.set_qualification_observer(config.qualification_book_observer);
     }
     auto now() const {
         return config.recovery_now ? config.recovery_now() : std::chrono::steady_clock::now();
@@ -225,9 +229,13 @@ struct CgateSession::Impl {
             observe(listener.observed_state, Closed, "listener", listener.config.stream_code);
     }
     std::string render(std::string value) const {
-        replace(value, "${MOEX_PLAZA2_TEST_CREDENTIALS}", credentials);
-        replace(value, "${PLAZA2_TEST_CREDENTIALS}", credentials);
+        replace(value, "${MOEX_PLAZA2_CREDENTIALS}", credentials);
+        replace(value, "${PLAZA2_CREDENTIALS}", credentials);
         replace(value, "${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}", software_key);
+        if (!config.credentials.env_var.empty())
+            replace(value, "${" + config.credentials.env_var + "}", credentials);
+        if (!config.software_key.env_var.empty())
+            replace(value, "${" + config.software_key.env_var + "}", software_key);
         replace(value, "|FILE|scheme/forts_scheme.ini|", "|FILE|" + probe.layout.scheme_path.string() + "|");
         const auto start = value.find("ini=");
         if (start != std::string::npos) {
@@ -258,7 +266,8 @@ struct CgateSession::Impl {
     Plaza2Error start() {
         if (initialized)
             return invalid("CGate session is already started");
-        if (!rate.valid() || config.process_timeout_ms > 50 || config.recovery_retry_interval < std::chrono::seconds(1))
+        if ((config.publisher_rate_owner == PublisherRateOwner::Session && !rate.valid()) ||
+            config.process_timeout_ms > 50 || config.recovery_retry_interval < std::chrono::seconds(1))
             return invalid("CGate session requires rate 1..3000, idle timeout <=50ms and reopen delay >=1s");
         if (config.read_only_market_data &&
             (config.allow_orders || !config.publisher_settings.empty() || !config.p2mqreply_settings.empty()))
@@ -272,6 +281,8 @@ struct CgateSession::Impl {
         probe = cg::Plaza2RuntimeProbe::probe(config.runtime);
         if (probe.compatibility == cg::Plaza2Compatibility::Incompatible || !probe.runtime_library_loadable)
             return invalid("CGate runtime cannot be loaded");
+        if (!config.read_only_market_data && !probe.trading_capable)
+            return invalid("CGate runtime is missing required trading symbols");
         if (config.mode == CgateSessionMode::OfflineFake && !probe.fake_runtime_marker_present)
             return invalid("OfflineFake requires the test CGate runtime marker");
         auto c = secret(config.credentials), k = secret(config.software_key);
@@ -282,6 +293,12 @@ struct CgateSession::Impl {
         auto runtime = config.runtime;
         runtime.listener_event_log = config.listener_event_log;
         runtime.env_open_settings = render(runtime.env_open_settings);
+        if (config.mode == CgateSessionMode::Live)
+            try {
+                cg::validate_cgate_logging(runtime.env_open_settings, probe.layout.config_dir);
+            } catch (const std::exception& error) {
+                return invalid(error.what());
+            }
         if (auto error = env.open(runtime); error)
             return error;
         const auto settings = render(config.connection_settings);
@@ -294,7 +311,7 @@ struct CgateSession::Impl {
         recovery.operation = Plaza2SessionOperation::Starting;
         ++recovery.generation;
         log("runtime_identity", "{\"library_sha256\":\"" + probe.runtime_library_sha256 + "\",\"scheme_sha256\":\"" +
-                                    probe.scheme_drift.runtime_scheme_sha256 + "\"}");
+                                    probe.runtime_scheme_sha256 + "\"}");
         // OPEN is asynchronous; ACTIVE and listener creation belong to subsequent polls.
         if (auto error = open_connection(); error) {
             waiting(error, Plaza2RecoveryWaitState::WaitingForRouter, "connection");
@@ -302,7 +319,7 @@ struct CgateSession::Impl {
         }
         return {};
     }
-    Plaza2Error add_listener(Plaza2TestTradeStreamConfig c, cg::Plaza2ListenerEventHandler& handler) {
+    Plaza2Error add_listener(CgateStreamConfig c, cg::Plaza2ListenerEventHandler& handler) {
         Listener listener;
         listener.config = std::move(c);
         listener.handler = &handler;
@@ -346,16 +363,34 @@ struct CgateSession::Impl {
         if (!config.read_only_market_data) {
             if (auto error = publisher.create(connection, render(config.publisher_settings)); error)
                 return error;
-            Plaza2TestTradeStreamConfig reply{cg::kNoStreamCode,
-                                              config.p2mqreply_settings.empty()
-                                                  ? "p2mqreply://;ref=" + config.publisher_name
-                                                  : config.p2mqreply_settings,
-                                              config.p2mqreply_open_settings};
+            CgateStreamConfig reply{cg::kNoStreamCode,
+                                    config.p2mqreply_settings.empty() ? "p2mqreply://;ref=" + config.publisher_name
+                                                                      : config.p2mqreply_settings,
+                                    config.p2mqreply_open_settings};
             if (auto error = add_listener(std::move(reply), replies); error)
                 return error;
         }
         streams_created = true;
         return {};
+    }
+    bool trading_ready(std::int32_t isin_id) const {
+        for (auto code :
+             {StreamCode::kFortsRefdataRepl, StreamCode::kFortsSessionstateRepl, StreamCode::kFortsInstrumentstateRepl})
+            if (!stream_online(code))
+                return false;
+        const auto day = projection.current_session_id();
+        if (!day)
+            return false;
+        const auto sessions = projection.sessions();
+        if (std::none_of(sessions.begin(), sessions.end(), [day](const auto& row) {
+                return row.sess_id == day && row.has_current_status && row.current_status == 1;
+            }))
+            return false;
+        const auto instruments = projection.instruments();
+        return std::any_of(instruments.begin(), instruments.end(), [=](const auto& row) {
+            return row.isin_id == isin_id && row.sess_id == day && row.current_session_member &&
+                   row.has_current_status && row.current_status == 1;
+        });
     }
     bool stream_online(StreamCode code) const {
         const auto health = projection.stream_health();
@@ -402,19 +437,22 @@ struct CgateSession::Impl {
         close_listener(listener);
         listener.object.clear_callback_error();
         listener.retry = now() + config.recovery_retry_interval;
-        listener.attempted = false;
     }
     void supervise_listener(Listener& listener) {
         std::uint32_t state = Closed;
+        if (listener.scheme_incompatible)
+            return;
         const auto error = listener.object.state(state);
         if (!error)
             observe(listener.observed_state, state, "listener", listener.config.stream_code);
         else
             operation("listener", "getstate", error, listener.config.stream_code);
         if (error || state == Error || listener.object.last_callback_error()) {
-            if (listener.object.last_callback_error())
-                last_error = listener.object.last_callback_error().message;
-            else if (error)
+            if (listener.object.last_callback_error()) {
+                const auto& callback_error = listener.object.last_callback_error();
+                last_error = callback_error.message;
+                listener.scheme_incompatible = callback_error.code == Plaza2ErrorCode::IncompatibleScheme;
+            } else if (error)
                 last_error = error.message;
             log("listener_recovery",
                 "{\"stream_code\":" + std::to_string(static_cast<std::uint32_t>(listener.config.stream_code)) +
@@ -439,12 +477,9 @@ struct CgateSession::Impl {
                 last_error = e.message;
                 listener.retry = now() + config.recovery_retry_interval;
             } else {
-                listener.attempted = true;
                 ++recovery.attempts;
             }
         }
-        if (listener.config.stream_code == cg::kNoStreamCode)
-            reply_state = state;
     }
     Plaza2TransportHealth health() const {
         Plaza2TransportHealth out;
@@ -458,6 +493,8 @@ struct CgateSession::Impl {
         for (const auto& listener : listeners) {
             std::uint32_t state = Closed;
             static_cast<void>(listener.object.state(state));
+            if (listener.object.last_callback_error())
+                state = Error;
             const auto code = listener.config.stream_code;
             if (code == cg::kNoStreamCode)
                 out.reply = state;
@@ -483,6 +520,8 @@ struct CgateSession::Impl {
     Plaza2Error poll() {
         if (!initialized)
             return invalid("CGate session is not started");
+        if (recovery.operation == Plaza2SessionOperation::Failed)
+            return recovery.cause;
         replies.expire(now());
         std::uint32_t state = Closed;
         if (auto error = connection.state(state); error) {
@@ -492,8 +531,10 @@ struct CgateSession::Impl {
         }
         observe(observed_connection, state, "connection");
         if (state == Error) {
-            for (auto& l : listeners)
+            for (auto& l : listeners) {
+                l.scheme_incompatible = false;
                 invalidate(l);
+            }
             close_publisher();
             close_connection();
             connection_was_active = false;
@@ -504,8 +545,10 @@ struct CgateSession::Impl {
         }
         if (state == Closed) {
             if (connection_was_active) {
-                for (auto& l : listeners)
+                for (auto& l : listeners) {
+                    l.scheme_incompatible = false;
                     invalidate(l);
+                }
                 close_publisher();
                 connection_was_active = false;
                 connection_retry = now() + config.recovery_retry_interval;
@@ -522,8 +565,10 @@ struct CgateSession::Impl {
         }
         if (state == Opening) {
             if (connection_was_active) {
-                for (auto& l : listeners)
+                for (auto& l : listeners) {
+                    l.scheme_incompatible = false;
                     invalidate(l);
+                }
                 close_publisher();
                 connection_was_active = false;
             }
@@ -541,6 +586,13 @@ struct CgateSession::Impl {
                     listeners.clear();
                     static_cast<void>(publisher.destroy());
                     waiting(error, Plaza2RecoveryWaitState::WaitingForService, "listener create");
+                    if (error.runtime_code == 131073) {
+                        last_error = "invalid CGate listener/publisher configuration: " + error.message;
+                        error.message = last_error;
+                        recovery.operation = Plaza2SessionOperation::Failed;
+                        recovery.cause = error;
+                        return error;
+                    }
                     connection_retry = now() + config.recovery_retry_interval;
                     return {};
                 }
@@ -569,9 +621,12 @@ struct CgateSession::Impl {
                 }
             }
         }
-        // Drain all available events; only an empty queue allows an idle wait.
+        // Bound work so replies, command queues and operator actions run even under sustained input.
+        const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
         std::uint32_t result = 0;
-        for (;;) {
+        for (std::size_t processed = 0; processed < 100; ++processed) {
+            if (processed && std::chrono::steady_clock::now() >= drain_deadline)
+                break;
             auto error = connection.process(0, &result);
             if (error) {
                 operation("connection", "process", error);
@@ -579,8 +634,10 @@ struct CgateSession::Impl {
                 if (!connection.state(error_state))
                     observe(observed_connection, error_state, "connection");
                 waiting(error, Plaza2RecoveryWaitState::WaitingForRouter, "connection");
-                for (auto& l : listeners)
+                for (auto& l : listeners) {
+                    l.scheme_incompatible = false;
                     invalidate(l);
+                }
                 close_publisher();
                 close_connection();
                 connection_was_active = false;
@@ -596,8 +653,10 @@ struct CgateSession::Impl {
                         if (!connection.state(error_state))
                             observe(observed_connection, error_state, "connection");
                         waiting(error, Plaza2RecoveryWaitState::WaitingForRouter, "connection");
-                        for (auto& l : listeners)
+                        for (auto& l : listeners) {
+                            l.scheme_incompatible = false;
                             invalidate(l);
+                        }
                         close_publisher();
                         close_connection();
                         connection_was_active = false;
@@ -744,13 +803,11 @@ std::vector<CgateSession::ReplyEvent> CgateSession::take_reply_events() {
     impl_->replies.events.clear();
     return out;
 }
+moex::plaza2::private_state::PrivateRowChanges CgateSession::take_private_row_changes() {
+    return impl_->projection.take_row_changes();
+}
 const std::string& CgateSession::last_callback_error() const noexcept {
     return impl_->last_error;
-}
-cg::Plaza2PublisherMessageResult CgateSession::post(std::string_view, std::span<const std::byte>, std::uint32_t, bool) {
-    cg::Plaza2PublisherMessageResult out;
-    out.validation_error = invalid("use validated post_command");
-    return out;
 }
 cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEncodedCommand& command,
                                                             std::uint32_t user_id) {
@@ -768,15 +825,19 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
     bool required_private = true;
     if (command.command_kind == Plaza2TradeCommandKind::AddOrder ||
         command.command_kind == Plaza2TradeCommandKind::MoveOrder) {
-        for (auto code : {StreamCode::kFortsTradeRepl, StreamCode::kFortsPosRepl, StreamCode::kFortsPartRepl}) {
+        required_private = command.isin_id && impl_->trading_ready(*command.isin_id);
+        for (auto code : {StreamCode::kFortsTradeRepl, StreamCode::kFortsPosRepl, StreamCode::kFortsPartRepl,
+                          StreamCode::kFortsRefdataRepl, StreamCode::kFortsSessionstateRepl,
+                          StreamCode::kFortsInstrumentstateRepl}) {
             const auto found = std::find(h.private_streams.begin(), h.private_streams.begin() + h.private_count, code);
             required_private &= found != h.private_streams.begin() + h.private_count &&
                                 h.private_states[found - h.private_streams.begin()] == Active &&
                                 impl_->stream_online(code);
         }
     }
-    if (!impl_->config.allow_orders || impl_->config.read_only_market_data || !command.validation.ok() || !user_id ||
-        h.connection != Active || h.publisher != Active || h.reply != Active || !required_private) {
+    if (impl_->recovery.operation == Plaza2SessionOperation::Failed || !impl_->config.allow_orders ||
+        impl_->config.read_only_market_data || !command.validation.ok() || !user_id || h.connection != Active ||
+        h.publisher != Active || h.reply != Active || !required_private) {
         out.validation_error = invalid("order entry requires allow_orders, valid command and ONLINE private streams");
         return out;
     }
@@ -789,7 +850,7 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
 cg::Plaza2PublisherMessageResult CgateSession::post_validated(std::string_view name, std::span<const std::byte> payload,
                                                               std::uint32_t user_id, bool need_reply) {
     cg::Plaza2PublisherMessageResult out;
-    if (!impl_->rate.admit(impl_->now_ms())) {
+    if (impl_->config.publisher_rate_owner == PublisherRateOwner::Session && !impl_->rate.admit(impl_->now_ms())) {
         impl_->log("throttle", "{\"user_id\":" + std::to_string(user_id) + "}");
         out.validation_error = invalid("publisher rate limit reached");
         return out;

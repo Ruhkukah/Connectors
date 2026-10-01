@@ -340,6 +340,8 @@ Plaza2TradeValidationResult validate_move_order(const MoveOrderRequest& request)
     if (auto result = validate_integer("regime", request.regime, true, std::int32_t{0}); !result.ok()) {
         return result;
     }
+    if (*request.regime > 3)
+        return fail(Plaza2TradeValidationCode::InvalidEnum, "regime", "expected regime 0, 1, 2 or 3");
     if (auto result = validate_integer("order_id1", request.order_id1, true, std::int64_t{1}); !result.ok()) {
         return result;
     }
@@ -410,12 +412,16 @@ Plaza2TradeValidationResult validate_del_user_orders(const DelUserOrdersRequest&
     if (auto result = validate_fixed_string("broker_code", request.broker_code, 4, true); !result.ok()) {
         return result;
     }
-    if (auto result = validate_integer("buy_sell", request.buy_sell, true, std::int32_t{0}); !result.ok()) {
+    if (auto result = validate_integer("buy_sell", request.buy_sell, true); !result.ok()) {
         return result;
     }
+    if (*request.buy_sell < 1 || *request.buy_sell > 3)
+        return fail(Plaza2TradeValidationCode::InvalidEnum, "buy_sell", "expected Buy=1, Sell=2 or Both=3");
     if (auto result = validate_integer("non_system", request.non_system, true, std::int32_t{0}); !result.ok()) {
         return result;
     }
+    if (*request.non_system > 2)
+        return fail(Plaza2TradeValidationCode::InvalidEnum, "non_system", "expected Common=0, Negotiated=1 or All=2");
     if (auto result = validate_fixed_string("code", request.code, 3, true); !result.ok()) {
         return result;
     }
@@ -661,6 +667,67 @@ Plaza2TradeEncodedCommand Plaza2TradeCodec::encode(const Plaza2TradeCommandReque
     if (!encoded.validation.ok()) {
         return encoded;
     }
+    std::visit(
+        [&](const auto& value) {
+            if constexpr (requires { value.isin_id; })
+                encoded.isin_id = value.isin_id;
+            std::string fields{"{"};
+            const auto field = [&](std::string_view name, const auto& optional) {
+                if (!optional)
+                    return;
+                if (fields.size() > 1)
+                    fields += ',';
+                fields += plaza2::cgate::text::json_quote_utf8(name) + ":";
+                using T = std::decay_t<decltype(*optional)>;
+                if constexpr (std::is_same_v<T, std::string>)
+                    fields += plaza2::cgate::text::json_quote_utf8(*optional);
+                else if constexpr (std::is_enum_v<T>)
+                    fields += std::to_string(static_cast<std::underlying_type_t<T>>(*optional));
+                else
+                    fields += std::to_string(*optional);
+            };
+#define COMMAND_FIELD(name)                                                                                            \
+    if constexpr (requires { value.name; })                                                                            \
+    field(#name, value.name)
+            COMMAND_FIELD(broker_code);
+            COMMAND_FIELD(client_code);
+            COMMAND_FIELD(isin_id);
+            COMMAND_FIELD(dir);
+            COMMAND_FIELD(type);
+            COMMAND_FIELD(amount);
+            COMMAND_FIELD(price);
+            COMMAND_FIELD(comment);
+            COMMAND_FIELD(broker_to);
+            COMMAND_FIELD(ext_id);
+            COMMAND_FIELD(is_check_limit);
+            COMMAND_FIELD(date_exp);
+            COMMAND_FIELD(dont_check_money);
+            COMMAND_FIELD(match_ref);
+            COMMAND_FIELD(ncc_request);
+            COMMAND_FIELD(compliance_id);
+            COMMAND_FIELD(disclose_const_amount);
+            COMMAND_FIELD(iceberg_amount);
+            COMMAND_FIELD(variance_amount);
+            COMMAND_FIELD(order_id);
+            COMMAND_FIELD(regime);
+            COMMAND_FIELD(order_id1);
+            COMMAND_FIELD(amount1);
+            COMMAND_FIELD(price1);
+            COMMAND_FIELD(ext_id1);
+            COMMAND_FIELD(order_id2);
+            COMMAND_FIELD(amount2);
+            COMMAND_FIELD(price2);
+            COMMAND_FIELD(ext_id2);
+            COMMAND_FIELD(buy_sell);
+            COMMAND_FIELD(non_system);
+            COMMAND_FIELD(code);
+            COMMAND_FIELD(base_contract_code);
+            COMMAND_FIELD(instrument_mask);
+            COMMAND_FIELD(seq_number);
+#undef COMMAND_FIELD
+            encoded.fields_json = fields + "}";
+        },
+        request);
     encoded.payload = std::visit(
         [](const auto& value) {
             using T = std::decay_t<decltype(value)>;

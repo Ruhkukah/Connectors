@@ -349,71 +349,67 @@ void print_startup_receipt(const Options& options, const DtcReadOnlyServer& serv
         std::string(MOEX_BUILD_CONFIGURATION) + "/" + MOEX_CXX_COMPILER_ID + "/" + MOEX_CXX_COMPILER_VERSION;
     const bool publisher_handle_open = host_snapshot.publisher_handle_open;
     const bool reply_handle_open = host_snapshot.reply_handle_open;
-    std::cout << "{\"event\":\"connector_host_dtc_runner_startup\""
-              << ",\"source_mode\":\"live_test\",\"active_mode\":\"strict_read_only_market_data\""
-              << ",\"target_environment\":\"TEST\",\"host_purpose\":\"qualify\""
-              << ",\"source_git_sha\":" << json_quote(MOEX_SOURCE_GIT_SHA)
-              << ",\"build_identity\":" << json_quote(build_identity)
-              << ",\"binary_sha256\":" << json_quote(binary_identity)
-              << ",\"runtime_compatibility\":" << json_quote(host_snapshot.runtime_compatibility)
-              << ",\"runtime_scheme_sha256\":" << json_quote(host_snapshot.runtime_scheme_sha256)
-              << ",\"host_state\":" << static_cast<unsigned>(host_snapshot.state)
-              << ",\"transport_health\":{\"valid\":" << (host_snapshot.transport_health.valid ? "true" : "false")
-              << ",\"connection_state\":" << host_snapshot.transport_health.connection
-              << ",\"aggr_state\":" << host_snapshot.transport_health.aggr
-              << ",\"public_deals_state\":" << host_snapshot.transport_health.public_deals
-              << ",\"private_active\":" << (host_snapshot.transport_health.private_active ? "true" : "false")
-              << ",\"private_count\":" << host_snapshot.transport_health.private_count << "}"
-              << ",\"private_snapshot_state_ready\":" << (host_snapshot.private_snapshot_state_ready ? "true" : "false")
-              << ",\"aggr_snapshot_state_ready\":" << (host_snapshot.aggr_snapshot_state_ready ? "true" : "false")
-              << ",\"private_streams_ready\":" << (host_snapshot.private_streams_ready ? "true" : "false")
-              << ",\"stream_health\":" << stream_health_json(host_snapshot.streams) << ",\"dtc_bind\":\"127.0.0.1\""
-              << ",\"dtc_port\":" << server.port() << ",\"dtc_symbol_id\":" << server.symbol_id()
-              << ",\"dtc_exchange\":" << json_quote(moex::connector_host::dtc::kDtcMoexSpectraExchange)
-              << ",\"configured_underlying_board\":" << json_quote(options.underlying_board)
-              << ",\"configured_currency\":" << json_quote(options.currency)
-              << ",\"local_auth_required\":" << (options.require_auth ? "true" : "false")
-              << ",\"session_id\":" << source.session_id
-              << ",\"underlying_board\":" << json_quote(source.underlying_board)
-              << ",\"currency\":" << json_quote(source.currency)
-              << ",\"board_provenance\":" << json_quote(board_provenance)
-              << ",\"currency_provenance\":" << json_quote(currency_provenance)
-              << ",\"refdata_vcb_join\":" << json_quote(vcb_join)
-              << ",\"refdata_fut_vcb_source\":\"FORTS_REFDATA_REPL.fut_vcb\""
-              << ",\"future_vcb_provenance\":" << provenance_json(source.future_vcb_provenance)
-              << ",\"definition_source_provenance\":" << provenance_json(source.definition_source_provenance)
-              << ",\"future_instruments_provenance\":" << provenance_json(source.future_instruments_provenance)
-              << ",\"future_sess_contents_provenance\":" << provenance_json(source.future_sess_contents_provenance)
-              << ",\"session_provenance\":" << provenance_json(source.session_provenance)
-              << ",\"refdata_fut_vcb_provenance_present\":" << (source.future_vcb_provenance_present ? "true" : "false")
-              << ",\"future_vcb_repl_rev\":" << source.future_vcb_repl_rev
-              << ",\"future_vcb_lifenum\":" << source.future_vcb_lifenum
-              << ",\"future_vcb_base_contract_code\":" << json_quote(source.future_vcb_base_contract_code)
-              << ",\"future_vcb_base_contract_id\":" << source.future_vcb_base_contract_id
-              << ",\"symbol\":" << json_quote(source.symbol) << ",\"isin_id\":" << source.isin_id
-              << ",\"min_step\":" << json_quote(source.min_step)
-              << ",\"description\":" << json_quote(source.description)
-              << ",\"contract_size\":" << json_quote(source.contract_size)
-              << ",\"currency_value_per_increment\":" << json_quote(source.currency_value_per_increment)
-              << ",\"invalid_utf8_raw_hex\":" << invalid_utf8_raw_hex_json(source)
-              << ",\"read_only_market_data\":true,\"read_only\":true,\"order_entry_allowed\":false"
-              << ",\"accounts\":false,\"positions\":false,\"orders\":false,\"add_enabled\":false"
-              << ",\"cancel_enabled\":false"
-              << ",\"publisher_handle_open\":" << (publisher_handle_open ? "true" : "false")
-              << ",\"reply_handle_open\":" << (reply_handle_open ? "true" : "false")
-              << ",\"no_publisher_surface\":" << (!publisher_handle_open && !reply_handle_open ? "true" : "false")
-              << ",\"application_declared_capabilities\":" << application_capabilities
-              << ",\"wire_logon_capabilities\":" << wire_capabilities
-              << ",\"authority_ready\":" << (market_data_ready(source) ? "true" : "false")
-              << ",\"market_data_display_allowed\":" << (source.market_data_display_allowed ? "true" : "false")
-              << ",\"target_authoritative\":" << (source.target_authoritative ? "true" : "false")
-              << ",\"authority_witness\":"
-              << json_quote(cg::session_ready_witness_kind_name(source.session_ready_witness_kind))
-              << ",\"metadata_507_ready\":" << (definition.available() ? "true" : "false")
-              << ",\"metadata_507_reason\":" << json_quote(definition.reason)
-              << ",\"definition_version\":" << (definition.definition ? definition.definition->definition_version : 0)
-              << "}" << '\n'
-              << std::flush;
+    std::cout
+        << "{\"event\":\"connector_host_dtc_runner_startup\""
+        << ",\"source_mode\":\"live_test\",\"active_mode\":\"strict_read_only_market_data\""
+        << ",\"target_environment\":\"TEST\",\"host_purpose\":\"qualify\""
+        << ",\"source_git_sha\":" << json_quote(MOEX_SOURCE_GIT_SHA)
+        << ",\"build_identity\":" << json_quote(build_identity) << ",\"binary_sha256\":" << json_quote(binary_identity)
+        << ",\"runtime_compatibility\":" << json_quote(host_snapshot.runtime_compatibility)
+        << ",\"runtime_scheme_sha256\":" << json_quote(host_snapshot.runtime_scheme_sha256)
+        << ",\"host_state\":" << static_cast<unsigned>(host_snapshot.state)
+        << ",\"transport_health\":{\"valid\":" << (host_snapshot.transport_health.valid ? "true" : "false")
+        << ",\"connection_state\":" << host_snapshot.transport_health.connection
+        << ",\"aggr_state\":" << host_snapshot.transport_health.aggr
+        << ",\"public_deals_state\":" << host_snapshot.transport_health.public_deals
+        << ",\"private_active\":" << (host_snapshot.transport_health.private_active ? "true" : "false")
+        << ",\"private_count\":" << host_snapshot.transport_health.private_count << "}"
+        << ",\"private_snapshot_state_ready\":" << (host_snapshot.private_snapshot_state_ready ? "true" : "false")
+        << ",\"aggr_snapshot_state_ready\":" << (host_snapshot.aggr_snapshot_state_ready ? "true" : "false")
+        << ",\"private_streams_ready\":" << (host_snapshot.private_streams_ready ? "true" : "false")
+        << ",\"stream_health\":" << stream_health_json(host_snapshot.streams) << ",\"dtc_bind\":\"127.0.0.1\""
+        << ",\"dtc_port\":" << server.port() << ",\"dtc_symbol_id\":" << server.symbol_id()
+        << ",\"dtc_exchange\":" << json_quote(moex::connector_host::dtc::kDtcMoexSpectraExchange)
+        << ",\"configured_underlying_board\":" << json_quote(options.underlying_board)
+        << ",\"configured_currency\":" << json_quote(options.currency)
+        << ",\"local_auth_required\":" << (options.require_auth ? "true" : "false")
+        << ",\"session_id\":" << source.session_id << ",\"underlying_board\":" << json_quote(source.underlying_board)
+        << ",\"currency\":" << json_quote(source.currency) << ",\"board_provenance\":" << json_quote(board_provenance)
+        << ",\"currency_provenance\":" << json_quote(currency_provenance)
+        << ",\"refdata_vcb_join\":" << json_quote(vcb_join)
+        << ",\"refdata_fut_vcb_source\":\"FORTS_REFDATA_REPL.fut_vcb\""
+        << ",\"future_vcb_provenance\":" << provenance_json(source.future_vcb_provenance)
+        << ",\"definition_source_provenance\":" << provenance_json(source.definition_source_provenance)
+        << ",\"future_instruments_provenance\":" << provenance_json(source.future_instruments_provenance)
+        << ",\"future_sess_contents_provenance\":" << provenance_json(source.future_sess_contents_provenance)
+        << ",\"session_provenance\":" << provenance_json(source.session_provenance)
+        << ",\"refdata_fut_vcb_provenance_present\":" << (source.future_vcb_provenance_present ? "true" : "false")
+        << ",\"future_vcb_repl_rev\":" << source.future_vcb_repl_rev
+        << ",\"future_vcb_lifenum\":" << source.future_vcb_lifenum
+        << ",\"future_vcb_base_contract_code\":" << json_quote(source.future_vcb_base_contract_code)
+        << ",\"future_vcb_base_contract_id\":" << source.future_vcb_base_contract_id
+        << ",\"symbol\":" << json_quote(source.symbol) << ",\"isin_id\":" << source.isin_id
+        << ",\"min_step\":" << json_quote(source.min_step) << ",\"description\":" << json_quote(source.description)
+        << ",\"contract_size\":" << json_quote(source.contract_size)
+        << ",\"currency_value_per_increment\":" << json_quote(source.currency_value_per_increment)
+        << ",\"invalid_utf8_raw_hex\":" << invalid_utf8_raw_hex_json(source)
+        << ",\"read_only_market_data\":true,\"read_only\":true,\"order_entry_allowed\":false"
+        << ",\"accounts\":false,\"positions\":false,\"orders\":false,\"add_enabled\":false"
+        << ",\"cancel_enabled\":false"
+        << ",\"publisher_handle_open\":" << (publisher_handle_open ? "true" : "false")
+        << ",\"reply_handle_open\":" << (reply_handle_open ? "true" : "false")
+        << ",\"no_publisher_surface\":" << (!publisher_handle_open && !reply_handle_open ? "true" : "false")
+        << ",\"application_declared_capabilities\":" << application_capabilities
+        << ",\"wire_logon_capabilities\":" << wire_capabilities
+        << ",\"authority_ready\":" << (market_data_ready(source) ? "true" : "false")
+        << ",\"market_data_display_allowed\":" << (source.market_data_display_allowed ? "true" : "false")
+        << ",\"target_authoritative\":" << (source.target_authoritative ? "true" : "false") << ",\"authority_witness\":"
+        << json_quote(moex::connector_host::dtc::session_ready_witness_kind_name(source.session_ready_witness_kind))
+        << ",\"metadata_507_ready\":" << (definition.available() ? "true" : "false")
+        << ",\"metadata_507_reason\":" << json_quote(definition.reason)
+        << ",\"definition_version\":" << (definition.definition ? definition.definition->definition_version : 0) << "}"
+        << '\n'
+        << std::flush;
 }
 
 void print_help() {
@@ -528,7 +524,7 @@ int main(int argc, char** argv) {
                 break;
             }
             if (host_error) {
-                std::cerr << "ConnectorHost TEST poll failed: " << host_error.message << '\n';
+                std::cerr << "ConnectorHost poll failed: " << host_error.message << '\n';
                 result = 7;
                 break;
             }
@@ -558,7 +554,7 @@ int main(int argc, char** argv) {
                 break;
             }
             if (host_error) {
-                std::cerr << "ConnectorHost TEST poll failed: " << host_error.message << '\n';
+                std::cerr << "ConnectorHost poll failed: " << host_error.message << '\n';
                 result = 7;
                 break;
             }

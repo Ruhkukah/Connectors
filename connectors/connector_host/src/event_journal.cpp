@@ -1,10 +1,13 @@
 #include "moex/connector_host/event_journal.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
+#include "moex/plaza2/cgate/cgate_logging.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cerrno>
 #include <cstring>
+#include <cstdlib>
 #include <ctime>
 #include <fcntl.h>
 #include <fstream>
@@ -12,32 +15,11 @@
 #include <sstream>
 #include <stdexcept>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace moex::connector_host {
 namespace {
-std::string trim(std::string value) {
-    const auto first = value.find_first_not_of(" \t\r\n");
-    return first == std::string::npos ? "" : value.substr(first, value.find_last_not_of(" \t\r\n") - first + 1);
-}
-void check_logging(std::string_view text) {
-    std::istringstream lines{std::string(text)};
-    std::string line;
-    while (std::getline(lines, line)) {
-        line = trim(line);
-        if (line.empty() || line.front() == '#' || line.front() == ';')
-            continue;
-        const auto eq = line.find('=');
-        if (eq == std::string::npos)
-            continue;
-        auto key = trim(line.substr(0, eq)), value = trim(line.substr(eq + 1));
-        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) { return std::tolower(ch); });
-        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) { return std::tolower(ch); });
-        if ((key == "log" && value != "p2:p2syslog") || key == "minloglevel" || key == "loglevel" ||
-            ((key == "logging" || key == "enabled") && (value == "0" || value == "false" || value == "off")))
-            throw std::invalid_argument("CGate default logging must remain enabled; remove logging/severity overrides");
-    }
-}
 std::uint64_t reservation(std::string_view line, std::string_view field) {
     const auto key = std::string("\"") + std::string(field) + "\":";
     const auto found = line.find(key);
@@ -68,6 +50,67 @@ void update_reservations(JournalReservation& value, std::string_view text) {
     value.next_ext_id = std::max(value.next_ext_id, static_cast<std::int32_t>(ext));
     value.next_user_id = std::max(value.next_user_id, static_cast<std::uint32_t>(user));
 }
+std::uint64_t text_hash(std::string_view text) {
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char value : text)
+        hash = (hash ^ value) * 1099511628211ULL;
+    return hash;
+}
+std::string checkpoint_record(std::uint64_t device, std::uint64_t inode, std::uint64_t offset, std::uint64_t ext,
+                              std::uint64_t user, std::uint64_t boundary) {
+    return "MOEXJ2 " + std::to_string(device) + " " + std::to_string(inode) + " " + std::to_string(offset) + " " +
+           std::to_string(ext) + " " + std::to_string(user) + " " + std::to_string(boundary);
+}
+std::uint64_t boundary_hash(int fd, std::uint64_t offset) {
+    std::array<char, 256> bytes{};
+    const auto size = static_cast<std::size_t>(std::min<std::uint64_t>(offset, bytes.size()));
+    std::size_t read{};
+    while (read < size) {
+        const auto count = ::pread(fd, bytes.data() + read, size - read, static_cast<off_t>(offset - size + read));
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0)
+            throw std::runtime_error("cannot verify interaction log checkpoint");
+        read += static_cast<std::size_t>(count);
+    }
+    return text_hash(std::string_view(bytes.data(), size));
+}
+void write_checkpoint(const std::filesystem::path& path, std::string_view text) {
+    auto temporary = path.string() + ".tmp.XXXXXX";
+    int fd = ::mkstemp(temporary.data());
+    if (fd < 0)
+        throw std::runtime_error("cannot create identity checkpoint");
+    try {
+        std::size_t written{};
+        while (written < text.size()) {
+            const auto count = ::write(fd, text.data() + written, text.size() - written);
+            if (count < 0 && errno == EINTR)
+                continue;
+            if (count <= 0)
+                throw std::runtime_error("identity checkpoint write failed");
+            written += static_cast<std::size_t>(count);
+        }
+        if (::fsync(fd) != 0)
+            throw std::runtime_error("identity checkpoint fsync failed");
+        ::close(fd);
+        fd = -1;
+        if (::rename(temporary.c_str(), path.c_str()) != 0)
+            throw std::runtime_error("identity checkpoint rename failed");
+        const auto parent = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
+        const auto directory = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (directory < 0)
+            throw std::runtime_error("cannot open checkpoint directory");
+        const auto result = ::fsync(directory);
+        ::close(directory);
+        if (result != 0)
+            throw std::runtime_error("checkpoint directory fsync failed");
+    } catch (...) {
+        if (fd >= 0)
+            ::close(fd);
+        ::unlink(temporary.c_str());
+        throw;
+    }
+}
 } // namespace
 
 std::string json_string(std::string_view text) {
@@ -75,28 +118,11 @@ std::string json_string(std::string_view text) {
 }
 
 void validate_cgate_logging(std::string_view settings, const std::filesystem::path& config_dir) {
-    std::string overrides(settings);
-    std::replace(overrides.begin(), overrides.end(), ';', '\n');
-    check_logging(overrides);
-    const auto start = settings.find("ini=");
-    if (start == std::string_view::npos)
-        throw std::invalid_argument("CGate env settings require an ini with default logging");
-    const auto path = settings.substr(start + 4, settings.find(';', start) - (start + 4));
-    auto ini = std::filesystem::path(path);
-    if (!ini.is_absolute() && !config_dir.empty()) {
-        const auto nested = config_dir / ini;
-        ini = std::filesystem::exists(nested) ? nested : config_dir / ini.filename();
-    }
-    std::ifstream file{ini};
-    if (!file)
-        throw std::invalid_argument("cannot read CGate logging ini");
-    const std::string contents{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-    check_logging(contents);
-    if (contents.find("[p2syslog]") == std::string::npos)
-        throw std::invalid_argument("CGate ini must contain the default [p2syslog] section");
+    plaza2::cgate::validate_cgate_logging(settings, config_dir);
 }
 
-EventJournal::EventJournal(const std::filesystem::path& path) {
+EventJournal::EventJournal(const std::filesystem::path& path, const std::filesystem::path& state_path)
+    : state_path_(state_path.empty() ? std::filesystem::path(path.string() + ".state") : state_path) {
     if (!path.parent_path().empty())
         std::filesystem::create_directories(path.parent_path());
     fd_ = ::open(path.c_str(), O_CREAT | O_RDWR | O_APPEND | O_CLOEXEC, 0600);
@@ -108,10 +134,41 @@ EventJournal::EventJournal(const std::filesystem::path& path) {
         throw std::runtime_error("interaction log already owned");
     }
     try {
+        if (!state_path_.parent_path().empty())
+            std::filesystem::create_directories(state_path_.parent_path());
+        state_lock_fd_ = ::open((state_path_.string() + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+        if (state_lock_fd_ < 0 || ::flock(state_lock_fd_, LOCK_EX | LOCK_NB) != 0)
+            throw std::runtime_error("identity state already owned or unavailable");
+        struct stat info{};
+        if (::fstat(fd_, &info) != 0)
+            throw std::runtime_error("cannot stat interaction log");
+        device_ = static_cast<std::uint64_t>(info.st_dev);
+        inode_ = static_cast<std::uint64_t>(info.st_ino);
+        if (std::filesystem::exists(state_path_)) {
+            std::ifstream state(state_path_);
+            std::string magic, extra;
+            std::uint64_t device{}, inode{}, checkpoint{}, ext{}, user{}, hash{}, checksum{};
+            if (!(state >> magic >> device >> inode >> checkpoint >> ext >> user >> hash >> checksum) ||
+                magic != "MOEXJ2" || (state >> extra) || ext == 0 || ext > INT32_MAX || user == 0 ||
+                user > UINT32_MAX ||
+                checksum != text_hash(checkpoint_record(device, inode, checkpoint, ext, user, hash)))
+                throw std::runtime_error("identity checkpoint is invalid; reconcile before restarting");
+            reservations_ = {.next_ext_id = static_cast<std::int32_t>(ext),
+                             .next_user_id = static_cast<std::uint32_t>(user)};
+            // A new log filename retains the instance counters. Its own tail
+            // starts at zero; the stable state lock prevents concurrent owners.
+            if (device == device_ && inode == inode_) {
+                if (checkpoint > static_cast<std::uint64_t>(info.st_size) || boundary_hash(fd_, checkpoint) != hash)
+                    throw std::runtime_error("interaction log checkpoint mismatch; reconcile before restarting");
+                offset_ = checkpoint;
+            }
+        }
         std::ifstream file(path);
+        file.seekg(static_cast<std::streamoff>(offset_));
         std::string line;
-        std::uint64_t complete{};
+        std::uint64_t complete = offset_;
         while (std::getline(file, line)) {
+            recovery_read_bytes_ += line.size() + (file.eof() ? 0 : 1);
             // A partial final record cannot be a restart hint. Recover the
             // complete NDJSON prefix before adding another line.
             if (file.eof())
@@ -121,8 +178,14 @@ EventJournal::EventJournal(const std::filesystem::path& path) {
         }
         if (::ftruncate(fd_, static_cast<off_t>(complete)) != 0)
             throw std::runtime_error("cannot recover interaction log tail");
+        offset_ = complete;
+        dirty_ = true;
+        flush();
         last_sync_ = std::chrono::steady_clock::now();
     } catch (...) {
+        if (state_lock_fd_ >= 0)
+            ::close(state_lock_fd_);
+        state_lock_fd_ = -1;
         ::close(fd_);
         fd_ = -1;
         throw;
@@ -130,10 +193,14 @@ EventJournal::EventJournal(const std::filesystem::path& path) {
 }
 EventJournal::~EventJournal() {
     if (fd_ >= 0) {
-        if (dirty_)
-            ::fsync(fd_);
+        try {
+            flush();
+        } catch (...) {
+        }
         ::close(fd_);
     }
+    if (state_lock_fd_ >= 0)
+        ::close(state_lock_fd_);
 }
 void EventJournal::append(std::string_view kind, std::string_view fields) {
     if (fields.size() < 2 || fields.front() != '{' || fields.back() != '}' ||
@@ -151,6 +218,7 @@ void EventJournal::append(std::string_view kind, std::string_view fields) {
             throw std::runtime_error("interaction log write failed");
         offset += static_cast<std::size_t>(count);
     }
+    offset_ += line.size();
     const auto before = reservations_;
     update_reservations(reservations_, fields);
     reservations_dirty_ |=
@@ -162,6 +230,11 @@ void EventJournal::append(std::string_view kind, std::string_view fields) {
 void EventJournal::flush() {
     if (dirty_ && ::fsync(fd_) != 0)
         throw std::runtime_error("interaction log fsync failed");
+    if (dirty_) {
+        const auto record = checkpoint_record(device_, inode_, offset_, reservations_.next_ext_id,
+                                              reservations_.next_user_id, boundary_hash(fd_, offset_));
+        write_checkpoint(state_path_, record + " " + std::to_string(text_hash(record)) + "\n");
+    }
     dirty_ = false;
     reservations_dirty_ = false;
     last_sync_ = std::chrono::steady_clock::now();

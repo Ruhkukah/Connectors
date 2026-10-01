@@ -1,5 +1,9 @@
 #include "moex/connector_host/order_manager.hpp"
 
+#include "fixtures/cgate99_messages.hpp"
+
+#include <array>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 
@@ -16,9 +20,12 @@ struct Sent {
     tr::Plaza2TradeCommandKind kind;
     std::uint32_t id;
     std::int64_t ms;
+    std::vector<std::byte> payload;
 };
 struct Fixture {
     bool ready{true};
+    std::set<std::int32_t> unavailable_isins;
+    bool throw_result_log{};
     std::int32_t session{100};
     std::int64_t ms{};
     cg::Plaza2SubmissionCertainty certainty{cg::Plaza2SubmissionCertainty::Posted};
@@ -45,14 +52,19 @@ struct Fixture {
         return OrderManager(
             config,
             [this](const auto& command, auto id) {
-                sent.push_back({command.command_kind, id, ms});
+                sent.push_back({command.command_kind, id, ms, command.payload});
                 return cg::Plaza2PublisherMessageResult{
                     .certainty = certainty,
                     .validation_error = validation_error,
                     .post_invoked = certainty != cg::Plaza2SubmissionCertainty::DefinitelyNotSent};
             },
-            [this](auto) { return ready; }, [this](auto isin) { return terms(isin); },
-            [this](auto kind, auto fields) { log.push_back(std::string(kind) + std::string(fields)); });
+            [this](auto isin) { return ready && !unavailable_isins.contains(isin); },
+            [this](auto isin) { return terms(isin); },
+            [this](auto kind, auto fields) {
+                if (throw_result_log && kind == "command_result")
+                    throw std::runtime_error("journal failure");
+                log.push_back(std::string(kind) + std::string(fields));
+            });
     }
     void poll(OrderManager& manager, std::int64_t time) {
         ms = time;
@@ -81,6 +93,25 @@ ps::OwnOrderSnapshot row(const ManagedOrder& order, std::int64_t id, std::int64_
 }
 void observe(OrderManager& manager, const ps::OwnOrderSnapshot& order, bool restart = false) {
     manager.observe_orders(std::span(&order, 1), restart);
+}
+void fill(OrderManager& manager, std::int64_t order_id, std::int64_t deal_id, std::int64_t amount,
+          std::int32_t session = 100) {
+    ps::OwnTradeSnapshot trade;
+    trade.id_deal = deal_id;
+    trade.sess_id = session;
+    trade.isin_id = 42;
+    trade.code_buy = "ABCD001";
+    trade.public_order_id_buy = order_id;
+    trade.private_order_id_buy = order_id;
+    trade.amount = amount;
+    trade.price = "100";
+    manager.observe_trades(std::span(&trade, 1));
+}
+template <class Wire> Wire wire(const Sent& sent) {
+    require(sent.payload.size() == sizeof(Wire), "wire size mismatch");
+    Wire decoded{};
+    std::memcpy(&decoded, sent.payload.data(), sizeof(Wire));
+    return decoded;
 }
 void burst() {
     Fixture f;
@@ -120,11 +151,15 @@ void cancels() {
     const auto second_cancel = f.sent.at(before_penalty).id;
     manager.on_reply(second_cancel, {.msgid = 177, .code = 17, .message = "fill race"},
                      OrderManager::Clock::time_point{} + std::chrono::milliseconds(2001));
+    const auto cancel_count = [&] {
+        return std::count_if(f.sent.begin(), f.sent.end(),
+                             [](const auto& sent) { return sent.kind == tr::Plaza2TradeCommandKind::DelOrder; });
+    };
+    const auto before_retry = cancel_count();
     f.poll(manager, 4000);
-    require(f.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder ||
-                std::any_of(f.sent.begin() + static_cast<std::ptrdiff_t>(before_penalty + 1), f.sent.end(),
-                            [](auto v) { return v.kind == tr::Plaza2TradeCommandKind::DelOrder; }),
-            "failed cancel did not retry");
+    require(cancel_count() == before_retry, "cancel ignored its exponential retry delay");
+    f.poll(manager, 4001);
+    require(cancel_count() == before_retry + 1, "failed cancel did not retry");
     observe(manager, row(manager.orders().at("working"), 1001, 0, 0));
     require(manager.orders().at("working").state == OrderState::Cancelled,
             "exchange cancellation did not resolve failed cancel");
@@ -165,6 +200,7 @@ void day_and_restart() {
     for (const auto& [key, order] : manager.orders())
         rows.push_back(row(order, ++id, 3, 1));
     manager.observe_orders(rows);
+    fill(manager, 1001, 1, 1);
     observe(manager, row(manager.orders().at("a"), 1001, 2, 2));
     require(manager.orders().at("a").state == OrderState::PartFilled && manager.orders().at("a").executed == 1,
             "partial fill missing");
@@ -175,7 +211,9 @@ void day_and_restart() {
     observe(manager, row(manager.orders().at("b"), 1002, 0, 0));
     f.ready = true;
     f.session = 101;
-    observe(manager, row(manager.orders().at("c"), 2003, 3, 1, 101));
+    auto relisted = row(manager.orders().at("c"), 2003, 3, 1, 101);
+    relisted.id_ord1 = 1003;
+    observe(manager, relisted);
     require(manager.orders().at("c").order_id == 2003 && manager.orders().at("c").sess_id == 101,
             "multi-day order rename missed");
     require(manager.move("c", "101", 2).empty(), "single-order MoveOrder rejected by codec");
@@ -205,7 +243,9 @@ void day_and_restart() {
     auto restart = f.manager();
     restart.observe_orders(recovered, true);
     require(restart.orders().size() == 3, "restart lost working orders");
-    require(restart.orders().begin()->second.executed == 1, "restart lost partial fill");
+    require(restart.orders().begin()->second.remaining == 1 && restart.orders().begin()->second.executed == 0 &&
+                !restart.orders().begin()->second.execution_baseline_known,
+            "restart invented an unavailable historical fill baseline");
     require(restart.place(request("after_restart")).empty(), "restart remained recovery-only");
     require(restart.cancel(restart.orders().begin()->first).empty(), "recovered order cannot be cancelled");
     f.poll(restart, 3000);
@@ -289,6 +329,7 @@ void cancel_all_and_move_failures() {
     require(other.place(request("invalid")).empty(), "validation Add refused");
     invalid.poll(other, 0);
     other.on_reply(invalid.sent.front().id, {.msgid = 179, .order_id = 1001}, OrderManager::Clock::time_point{});
+    fill(other, 1001, 1, 1);
     observe(other, row(other.orders().at("invalid"), 1001, 2, 2));
     require(other.move("invalid", "101", 2).empty(), "validation Move refused");
     invalid.certainty = cg::Plaza2SubmissionCertainty::DefinitelyNotSent;
@@ -348,6 +389,7 @@ void replication_during_move() {
     // working, but another Move must wait until the outstanding reply resolves.
     observe(manager, row(manager.orders().at("replace"), 501, 2, 1));
     require(!manager.move("replace", "102", 1).empty(), "new-ID row released an unresolved Move reply");
+    require(manager.orders().at("replace").executed == 0, "early replacement row invented executions");
     manager.on_reply(move_id, {.msgid = 176, .order_id1 = 501},
                      OrderManager::Clock::time_point{} + std::chrono::milliseconds(1001));
     require(manager.orders().at("replace").order_id == 501 && manager.move("replace", "102", 1).empty(),
@@ -404,6 +446,268 @@ void cancelled_order_during_move() {
     require(other.orders().at("cancelled-with-move").state == OrderState::Cancelled,
             "rejected Move resurrected an authoritatively cancelled order");
 }
+void recovery_bounds_and_wire() {
+    Fixture f;
+    f.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
+    auto manager = f.manager();
+    require(manager.place(request("bounded")).empty(), "bounded Add refused");
+    f.poll(manager, 0);
+    const auto original_send = manager.orders().at("bounded").sent_utc_seconds;
+    f.certainty = cg::Plaza2SubmissionCertainty::Posted;
+    std::size_t handled{};
+    for (std::int64_t ms = 0; ms <= 130000; ms += 100) {
+        f.poll(manager, ms);
+        while (handled < f.sent.size()) {
+            const auto sent = f.sent[handled++];
+            if (sent.kind != tr::Plaza2TradeCommandKind::DelUserOrders)
+                continue;
+            const auto payload = wire<official_cgate99::DelUserOrders>(sent);
+            require(payload.buy_sell == 3 && payload.non_system == 0 && payload.instrument_mask == 1,
+                    "recovery cancel has invalid exchange filter bytes");
+            manager.on_reply(sent.id, {.msgid = 186, .code = 17, .message = "recovery rejected"},
+                             OrderManager::Clock::time_point{} + std::chrono::milliseconds(ms));
+            require(manager.orders().at("bounded").state == OrderState::Unknown,
+                    "failed recovery changed Unknown into Working");
+        }
+    }
+    std::vector<std::int64_t> sent_at;
+    for (const auto& sent : f.sent)
+        if (sent.kind == tr::Plaza2TradeCommandKind::DelUserOrders)
+            sent_at.push_back(sent.ms);
+    require(sent_at == std::vector<std::int64_t>({0, 1000, 3000}),
+            "recovery attempts lack bounded exponential backoff");
+    require(manager.orders().at("bounded").operator_action_required && manager.operator_action_required(),
+            "exhausted recovery lacks explicit operator status");
+    require(manager.orders().at("bounded").sent_utc_seconds == original_send,
+            "retry changed first-send absence anchor");
+    require(manager.cancel("bounded").empty(), "operator cannot explicitly retry exhausted recovery");
+    f.poll(manager, 131000);
+    require(f.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders &&
+                !manager.orders().at("bounded").operator_action_required,
+            "explicit operator retry remained disabled");
+
+    Fixture bulk;
+    auto other = bulk.manager();
+    require(other.cancel_all(42).empty(), "bulk cancellation refused");
+    std::size_t count{};
+    for (std::int64_t ms = 0; ms <= 10000; ms += 100) {
+        bulk.poll(other, ms);
+        while (count < bulk.sent.size()) {
+            const auto sent = bulk.sent[count++];
+            require(wire<official_cgate99::DelUserOrders>(sent).buy_sell == 3, "cancel-all direction bytes invalid");
+            other.on_reply(sent.id, {.msgid = 100}, OrderManager::Clock::time_point{} + std::chrono::milliseconds(ms));
+        }
+    }
+    require(bulk.sent.size() == 3 && other.operator_action_required(), "failed cancel-all retries forever");
+}
+void ext_identity_and_relist() {
+    Fixture f;
+    auto manager = f.manager();
+    require(manager.place(request("owned")).empty(), "identity Add refused");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 2001}, OrderManager::Clock::time_point{});
+    auto foreign = row(manager.orders().at("owned"), 7777, 3, 1);
+    foreign.client_code = "ABCD999";
+    observe(manager, foreign);
+    foreign.client_code = "ABCD001";
+    observe(manager, foreign);
+    require(manager.orders().at("owned").order_id == 2001, "ext_id collision renamed a known order");
+    require(manager.cancel("owned").empty(), "owned cancellation refused");
+    f.poll(manager, 1000);
+    require(wire<official_cgate99::DelOrder>(f.sent.back()).order_id == 2001,
+            "ext_id collision redirected a cancellation");
+
+    Fixture pending;
+    auto unknown = pending.manager();
+    require(unknown.place(request("pending")).empty(), "unresolved identity Add refused");
+    pending.poll(unknown, 0);
+    const auto own = unknown.orders().at("pending");
+    for (int variant = 0; variant < 3; ++variant) {
+        auto mismatch = row(own, 8000 + variant, 3, 1);
+        if (variant == 0)
+            mismatch.isin_id = 43;
+        if (variant == 1)
+            mismatch.sess_id = 99;
+        if (variant == 2)
+            mismatch.dir = 2;
+        observe(unknown, mismatch);
+    }
+    require(unknown.orders().at("pending").order_id == 0, "ext_id fallback ignored the order contract");
+    observe(unknown, row(own, 9001, 3, 1));
+    require(unknown.orders().at("pending").order_id == 9001, "valid own TRADE Add confirmation rejected");
+    auto old_delete = row(unknown.orders().at("pending"), 9001, 0, 0);
+    auto new_day = row(unknown.orders().at("pending"), 9101, 3, 1, 101);
+    new_day.ext_id = 0;
+    new_day.id_ord1 = 9001;
+    pending.session = 101;
+    const auto before = pending.log.size();
+    std::array batch{old_delete, new_day};
+    unknown.observe_orders(batch);
+    require(unknown.orders().at("pending").order_id == 9101 && unknown.orders().size() == 4,
+            "documented day linkage lost the logical order");
+    require(std::none_of(pending.log.begin() + static_cast<std::ptrdiff_t>(before), pending.log.end(),
+                         [](const auto& line) { return line.find("\"state\":\"Cancelled\"") != std::string::npos; }),
+            "transactional relist published an intermediate terminal state");
+}
+void move_fill_accounting() {
+    Fixture f;
+    auto manager = f.manager();
+    require(manager.place(request("fills")).empty(), "fill race Add refused");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 1001}, OrderManager::Clock::time_point{});
+    fill(manager, 1001, 1, 1);
+    observe(manager, row(manager.orders().at("fills"), 1001, 2, 2));
+    require(manager.move("fills", "101", 3).empty(), "fill race Move refused");
+    f.poll(manager, 1000);
+    const auto first_move = f.sent.back();
+    const auto first_wire = wire<official_cgate99::MoveOrder>(first_move);
+    require(first_wire.regime == 3 && first_wire.amount1 == 3, "Move wire can replenish racing fills");
+    fill(manager, 1001, 2, 1);
+    auto replacement = row(manager.orders().at("fills"), 501, 1, 1);
+    observe(manager, replacement);
+    require(manager.orders().at("fills").order_id == 1001 && manager.orders().at("fills").executed == 2,
+            "early replacement row changed ownership or fabricated executions");
+    manager.on_reply(first_move.id, {.msgid = 176, .order_id1 = 501},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(1001));
+    require(manager.orders().at("fills").remaining == 1 && manager.orders().at("fills").executed == 2,
+            "Move reply reset a racing fill or authoritative remaining quantity");
+    require(manager.move("fills", "102", 4).empty(), "second logical-total Move refused");
+    f.poll(manager, 2000);
+    const auto second = wire<official_cgate99::MoveOrder>(f.sent.back());
+    require(second.regime == 3 && second.amount1 == 2, "second Move counted fills from previous order IDs twice");
+    const auto executed = manager.orders().at("fills").executed;
+    fill(manager, 1001, 2, 1);
+    require(manager.orders().at("fills").executed == executed, "replayed user_deal counted twice");
+}
+
+void deferred_fill_identity() {
+    Fixture f;
+    auto manager = f.manager();
+    require(manager.place(request("buy")).empty(), "deferred buy Add refused");
+    auto sell_request = request("sell");
+    sell_request.side = tr::Plaza2TradeSide::Sell;
+    require(manager.place(sell_request).empty(), "deferred sell Add refused");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 1001}, OrderManager::Clock::time_point{});
+    ps::OwnTradeSnapshot self;
+    self.sess_id = 100;
+    self.isin_id = 42;
+    self.id_deal = 41;
+    self.code_buy = self.code_sell = "ABCD001";
+    self.public_order_id_buy = self.private_order_id_buy = 1001;
+    self.public_order_id_sell = self.private_order_id_sell = 1002;
+    self.amount = 1;
+    self.price = "100";
+    manager.observe_trades(std::span(&self, 1));
+    require(manager.orders().at("buy").executed == 1 && manager.orders().at("sell").executed == 0,
+            "unmapped self-trade side was attributed by ext_id");
+    manager.on_reply(f.sent.at(1).id, {.msgid = 179, .order_id = 1002}, OrderManager::Clock::time_point{});
+    manager.observe_trades(std::span(&self, 1));
+    require(manager.orders().at("buy").executed == 1 && manager.orders().at("sell").executed == 1,
+            "deferred self-trade side lost or double-counted after reply mapping");
+
+    require(manager.move("buy", "101", 5).empty(), "whole-fill Move refused");
+    f.poll(manager, 1000);
+    const auto move_id = f.sent.back().id;
+    fill(manager, 1001, 42, 2);
+    observe(manager, row(manager.orders().at("buy"), 1001, 0, 2));
+    require(manager.orders().at("buy").state == OrderState::PendingReplace,
+            "old-ID final fill discarded an outstanding Move");
+    fill(manager, 1003, 43, 1);
+    manager.on_reply(move_id, {.msgid = 176, .order_id1 = 1003}, OrderManager::Clock::time_point{});
+    require(manager.orders().at("buy").order_id == 1003 && manager.orders().at("buy").executed == 4 &&
+                manager.orders().at("buy").remaining == 1,
+            "replacement-only reply lost early fill or logical target quantity");
+    require(manager.cancel_all(42).empty(), "replacement mass cancel refused");
+    f.poll(manager, 2000);
+    std::array cancellations{row(manager.orders().at("buy"), 1003, 0, 0), row(manager.orders().at("sell"), 1002, 0, 0)};
+    cancellations[1].dir = 2;
+    manager.observe_orders(cancellations);
+    require(manager.orders().at("buy").state == OrderState::Cancelled &&
+                manager.orders().at("sell").state == OrderState::Cancelled,
+            "mass cancel did not settle replacement terminal replication");
+}
+
+void eligible_commands_and_logging() {
+    Fixture f;
+    auto manager = f.manager();
+    for (const auto key : {"delayed", "eligible"}) {
+        require(manager.place(request(key)).empty(), "eligible Add refused");
+        f.poll(manager, 0);
+        manager.on_reply(f.sent.back().id, {.msgid = 179, .order_id = key == std::string("delayed") ? 1001 : 1002},
+                         OrderManager::Clock::time_point{});
+    }
+    require(manager.cancel("delayed").empty(), "delayed cancel refused");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.back().id, {.msgid = 177, .code = 17}, OrderManager::Clock::time_point{});
+    require(manager.cancel("eligible").empty(), "eligible cancel refused");
+    require(manager.place(request("new")).empty(), "new eligible Add refused");
+    f.poll(manager, 1);
+    require(wire<official_cgate99::DelOrder>(f.sent.at(3)).order_id == 1002 &&
+                f.sent.at(4).kind == tr::Plaza2TradeCommandKind::AddOrder,
+            "backoff at queue head blocked an eligible cancel/Add");
+
+    Fixture instruments;
+    auto independent = instruments.manager();
+    require(independent.place(request("paused")).empty(), "pausing Add refused");
+    auto other_request = request("other-isin");
+    other_request.isin_id = 43;
+    require(independent.place(other_request).empty(), "other ISIN Add refused");
+    instruments.unavailable_isins.insert(42);
+    instruments.poll(independent, 0);
+    require(instruments.sent.size() == 1 && wire<official_cgate99::AddOrder>(instruments.sent.front()).isin_id == 43,
+            "paused instrument blocked an independent ready Add");
+    instruments.session = 101;
+    instruments.unavailable_isins.clear();
+    instruments.poll(independent, 1000);
+    observe(independent, row(independent.orders().at("paused"), 3001, 3, 1, 101));
+    require(independent.orders().at("paused").order_id == 3001 && independent.orders().at("paused").sess_id == 101,
+            "queued Add retained a stale session for ext_id reconciliation");
+
+    Fixture throttle;
+    throttle.config.max_commands_per_second = 1;
+    auto limited = throttle.manager();
+    require(limited.place(request("one")).empty() && limited.place(request("two")).empty(), "throttle Adds refused");
+    for (int ms = 0; ms < 1000; ++ms)
+        throttle.poll(limited, ms);
+    require(std::count_if(throttle.log.begin(), throttle.log.end(),
+                          [](const auto& line) {
+                              return line.starts_with("throttle") && line.find("\"active\":true") != std::string::npos;
+                          }) == 1,
+            "throttle logs repeat on every blocked poll");
+    throttle.poll(limited, 1000);
+    require(std::count_if(throttle.log.begin(), throttle.log.end(),
+                          [](const auto& line) {
+                              return line.starts_with("throttle") && line.find("\"active\":false") != std::string::npos;
+                          }) == 1,
+            "throttle exit transition missing");
+
+    Fixture logs;
+    logs.throw_result_log = true;
+    auto guarded = logs.manager();
+    require(guarded.place(request("logged")).empty(), "logging Add refused");
+    logs.poll(guarded, 0);
+    guarded.on_reply(logs.sent.front().id, {.msgid = 179, .order_id = 1003}, OrderManager::Clock::time_point{});
+    require(guarded.orders().at("logged").order_id == 1003, "post-send log exception lost pending correlation");
+    require(!guarded.place(request("after-log-failure")).empty(), "failed interaction logging permits new risk");
+}
+void aggregate_risk() {
+    Fixture f;
+    f.config.risk.max_notional_scaled = 50'000'000;
+    auto manager = f.manager();
+    require(manager.place(request("first", 3)).empty(), "first under-cap Add refused");
+    require(!manager.place(request("second", 3)).empty(), "individually valid orders exceeded aggregate cap");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 1001}, OrderManager::Clock::time_point{});
+    require(manager.move("first", "101", 3).empty(), "Move double-counted its current order in aggregate cap");
+    require(manager.place(request("fits", 1)).empty(), "conservative replacement reservation rejected a fitting Add");
+    auto outside = row(manager.orders().at("first"), 8001, 1, 1);
+    outside.ext_id = 500;
+    outside.isin_id = 43;
+    observe(manager, outside);
+    require(!manager.place(request("over", 1)).empty(), "recovered own order outside configured ISIN did not count");
+    require(manager.cancel_all(42).empty(), "aggregate cap blocked emergency cancellation");
+}
 } // namespace
 int main() {
     try {
@@ -418,6 +722,12 @@ int main() {
         replication_during_move();
         confirmed_add_without_reply();
         cancelled_order_during_move();
+        recovery_bounds_and_wire();
+        ext_identity_and_relist();
+        move_fill_accounting();
+        deferred_fill_identity();
+        eligible_commands_and_logging();
+        aggregate_risk();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
         return 1;

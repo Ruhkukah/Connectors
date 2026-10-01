@@ -8,41 +8,44 @@ Automated tests demonstrate implementation behavior. They do not certify a relea
 
 | Review issues | Result |
 |---|---|
-| CERT-1, CERT-3, CERT-4; PERF-3, PERF-4; RT-2 | Persistent session owner, indefinite connection recovery, independent listener transactions/reopens, compatible scheme additions, required-field checks and drained processing loop |
+| CERT-1, CERT-3, CERT-4; PERF-3, PERF-4; RT-2 | Persistent session owner, indefinite connection recovery, independent listener transactions/reopens, compatible scheme additions, required-field checks and bounded message processing |
 | CERT-2, CERT-5; RT-1, RT-3 | Private order readiness separated from AGGR; committed current-session snapshot validity; per-table ClearDeleted; deletion by replID without a price |
 | CERT-6, CERT-7; TRD-4, TRD-5, TRD-10 | Configurable TEST/PROD, router and instruments; current-session membership and terms; one-time startup exposure reconstruction; concurrent orders and order renumbering |
 | CERT-8; TRD-1, TRD-2, TRD-3, TRD-6, TRD-8, TRD-9 | Operator rate control and queued commands; repeatable risk-reducing cancellation; no ambiguous Add retry; order-ID/account trade attribution; harmless late replies; IOC type 2; definite-not-sent classification |
 | CERT-9; TRD-7; RT-5 | Continuous UTC/MSK journal, durable identifier reservations with group commit, default CGate logging validation; CGate `t` interpreted as Moscow time with milliseconds preserved and `moment_ns` preferred |
-| PERF-1, PERF-2 | Indexed private rows and operation staging; map-based AGGR books; large native snapshot regression tests |
+| PERF-1, PERF-2 | Indexed private rows, committed row deltas and incremental views; map-based AGGR books; native snapshot and online-update regressions |
 | DEALS-1 through DEALS-7 | Deferred as requested; public DEALS is optional and off by default |
 | RT-4 | Manual TRADE replay keys retained; actual 9.9 replay revision behavior still requires T1 verification |
 
 The official [certification procedure](https://www.moex.com/files/4xgv6e2x1paqr1zkn2fmq093cj), [technical requirements](https://www.moex.com/files/41w8g1tt63pd9tq9drmk4n3g4z) and [CGate manual](https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/prod/docs/p2gate_en.pdf) govern the live rehearsal. Archive-only features and historical process documents are available from the archive tag.
 
-Validation on October 1, 2026: all 36 tests passed in native macOS Release and all 36 passed with AppleClang ASan/UBSan. Formatting and whitespace checks passed. The production-only build contains no fake-runtime, TWIME or ABI dependencies. Darwin LeakSanitizer is unavailable; Ubuntu CI separately runs Release and ASan/UBSan/LSan. These are offline implementation checks. Linux/vendor-CGate capacity, TRADE replay-key behavior and the complete live day remain deployment verification.
+The October 1 follow-up adds regressions for valid mass cancellation, bounded recovery failures, participant/session/order ownership, Move fills racing reply 176, eligible command queues, bounded processing, scheme incompatibility latching, revision resets, online private-state updates and identifier checkpoints. `trading_day_test` runs the production owner with an explicitly controlled fake CGate library and verifies `scripts/reconstruct_orders.py` against its journal. This is simulated implementation evidence. Linux/vendor-CGate capacity, actual TRADE replay-key behavior, DTC startup during an already-running T1 session and the complete live day still require deployment verification.
+
+October 1 follow-up validation: all 32 tests passed in native macOS Release and all 32 passed under AppleClang ASan/UBSan. The two loopback socket tests required local bind permission. The production-only Release build passed with 19 compilation units and no fake/test/TWIME/ABI sources; formatting and whitespace checks passed. Darwin LeakSanitizer is unavailable. Ubuntu CI runs separate Release and ASan/UBSan/LSan jobs; its results are build/test evidence rather than vendor-CGate qualification.
 
 ## Checks and implementation
 
 | Check | Feature or automated check | Live verification |
 |---|---|---|
 | C1, C2 | Configurable `p2tcp://HOST:PORT`; one owner thread; `connector_host_test`, `trading_host_test` | Confirm URL/thread answers against CGate log |
-| C3 | Drain `cg_conn_process(...,0)` until TIMEOUT; idle blocking wait at most 50ms; `plaza2_session_recovery_test` | Five idle minutes without router loss |
+| C3 | Zero-timeout processing bounded to 100 calls or 5ms per owner turn; idle wait at most 50ms; continuous-flow regression in `plaza2_session_recovery_test` and command dispatch in `trading_day_test` | Five idle minutes without router loss; cancels/kill responsive under vendor traffic |
 | C4–C8 | Nonblocking start; indefinite OPENING; CLOSED/open and ERROR/close loops; same env/connection throughout recovery; `plaza2_session_recovery_test` | Router and upstream stop/start scenarios |
 | R1, R2 | Eight configured replication streams on the same owner; `connector_host_test` | Confirm subscription URLs in CGate log |
-| R3–R5 | Named fields bound at OPEN; additive tables/fields ignored; required-field incompatibilities keep the affected listener down; `plaza2_session_recovery_test` | MOEX scheme evolution scenarios |
+| R3–R5 | Named fields bound at OPEN; additions ignored; required-field incompatibility latches the listener down for its connection generation; reopen-count regression in `plaza2_session_recovery_test` | MOEX scheme evolution; explicit reconnect/operator correction after incompatibility |
 | R6 | Per-listener reopen after one-second pacing; POS-anchored TRADE open; `plaza2_session_recovery_test` | Check replay begins at the POS anchor; verify manual `rev.deal`/`rev.heart_beat` keys on 9.9 |
 | R7 | FullOrderLog excluded | Not applicable |
-| R8 | Per-table/revision ClearDeleted, LifeNum invalidation, per-stream transactions; AGGR/private state regression tests | MOEX revision reset scenarios |
+| R8 | Per-table ClearDeleted, including MAX sys_events revision-guard/readiness reset; LifeNum invalidation and committed private deltas; `plaza2_aggr20_md_validation_test`, `plaza2_private_state_transaction_perf_test` | MOEX revision reset scenarios |
 | S1, S2, S4 | One publisher and matching p2mqreply; codec/runtime layout checks; `plaza2_trade_command_encoding_test`, `trading_host_test` | Compare configured publisher/send scheme with CGate log |
-| S3 | `--max-commands-per-second`; queued commands with cancels first; 99 penalty; rolling one-second cap; `order_manager_test` | MOEX-selected rate and burst |
-| S5, S6 | Local 60-second default reply timeout; user_id correlation; unknown replies ignored; ambiguous Adds reconciled without resending; `order_manager_test` | Delayed/lost replies and 99/100 |
+| S3 | One manager rate gate in the trading host; first eligible cancel before Add/Move; 99 penalty and transition-only throttle logging; `order_manager_test`, `plaza2_session_recovery_test` | MOEX-selected rate and burst |
+| S5, S6 | Local 60-second timeout; correlation; malformed 99 consumed immediately; ambiguous Add not resent; failed cancels stop after three attempts with backoff and explicit operator action; fixed first-send absence watermark; `order_manager_test`, `plaza2_session_recovery_test` | Delayed/lost replies and 99/100; authoritative absence/terminal replication |
 | S7 | Publisher/reply recovery on their owning session; `plaza2_session_recovery_test` | Publisher outage |
-| GEN-1, LOG-1 | Append-only UTC/MSK NDJSON; default CGate logging validation; `event_journal_test`, `trading_host_test` | Collect application, CGate client and router logs |
+| GEN-1, LOG-1 | UTC/MSK NDJSON with structured commands, key reply fields, private state and exchange announcements; AGGR book rows excluded; atomic identifier checkpoint with tail-only recovery; active default logging validated for every Live mode; `event_journal_test`, `trading_day_test` | Collect application, CGate client and router logs; verify storage capacity/latency |
 | GEN-2a, GEN-2b | Concurrent orders; USERORDERBOOK startup reconstruction followed by live TRADE; cancels after recovery; `order_manager_test`, `trading_host_test` | Restart with two working orders and a partial fill |
 | GEN-2c–e | LifeNum/reload recovery; configurable router; manual reserve-server switching | MOEX-coordinated TCS restart/reload/reserve switch |
 | GEN-3 | Own trading only; broker-client administration not declared | Not applicable |
 | GEN-4 | Exchange stream/table/command names retained | Review terminology |
-| DAY-1 | Dynamic session and instrument membership, concurrent orders, partial fills, repeatable cancel and MoveOrder; `connector_host_test`, `order_manager_test` | Complete morning/day/evening test day and all declared commands |
+| DAY-1 | `trading_day_test`: compressed morning/day/clearing/evening, concurrent orders, racing fill/Move, cancel-all under kill, id_ord1 relist, journal restart with two working orders and native cancel; history reconstruction verified | Complete actual morning/day/evening MOEX test day and all declared commands |
+| PERF-1 | `plaza2_private_state_transaction_perf_test`: 150,000 decoded TRADE rows through the production bridge; existing-order update and first subsequent insertion, including commit, span access and delta consumption, each below 1ms in Release | Vendor binary decode on deployment hardware, sustained traffic and full-day storage load |
 | T-2.5, T-2.6 | Admin/emergency instructions below; stable `--instance-id` in connection and startup log | Confirm deployed identity and emergency access |
 | T-2.7 | UTC and MSK timestamps in microseconds; startup records measured clock offset or explicitly unavailable | Verify clock synchronization within one second on the deployment host |
 | T-2.8 | `sys_events` and `sys_messages` recorded in the interaction log; `trading_host_test` | Receive exchange/NCC announcements |
@@ -55,7 +58,7 @@ Validation on October 1, 2026: all 36 tests passed in native macOS Release and a
 - Connection: `p2tcp://<configured-router>;app_name=<stable-instance-id>;timeout=2000`. Specify the actual deployment address/instance in the submitted form.
 - Trading listeners: `p2repl://FORTS_TRADE_REPL`, `FORTS_USERORDERBOOK_REPL`, `FORTS_POS_REPL`, `FORTS_PART_REPL`, `FORTS_REFDATA_REPL`, `FORTS_AGGR20_REPL`, `FORTS_SESSIONSTATE_REPL`, `FORTS_INSTRUMENTSTATE_REPL`. Initial open settings are `mode=snapshot+online`. TRADE opens after POS.info with `lifenum` and the manual replay revision keys. Read-only DTC uses server schemes; the trading profile uses configured client aliases for TRADE/USERORDERBOOK/POS/PART/REFDATA/AGGR and server schemes for status streams.
 - Publisher: `p2mq://FORTS_SRV;category=FORTS_MSG;name=<instance>;timeout=60000;scheme=|FILE|<scheme-dir>/forts_messages.ini|message`. Reply listener: `p2mqreply://;ref=<instance>`.
-- Polling: drain continuously with zero-timeout calls; blocking wait at most 50ms when idle. No deliberate sleep between messages.
+- Polling: process up to 100 zero-timeout calls or 5ms, then service commands, kill/input and other owner work; wait at most 50ms when idle.
 - Interpretation: **Анализ схемы**. Required field names/types are checked at OPEN; compatible additions are ignored.
 - Message creation: **Сообщения создаются перед отправкой и уничтожаются после отправки**.
 - Commands/replies: AddOrder/179, DelOrder/177, DelUserOrders/186, MoveOrder/176; system messages 99 and 100; timeout processing. Type 1 is a day limit order, type 2 is IOC.
@@ -74,7 +77,8 @@ build/apps/moexctl plaza2 run \
   --router 127.0.0.1:4101 --instance-id moex_certification \
   --environment test --isin-id <current-ISIN> --allow-orders \
   --max-commands-per-second 5 --max-quantity 3 --max-open-orders 10 \
-  --max-notional <account-approved-cap> --log logs/moex_connector.ndjson
+  --max-notional <account-approved-cap> --log logs/moex_connector.ndjson \
+  --state logs/moex_certification.state
 ```
 
 Measure clock offset with the host's time service; pass `--clock-offset-us` with that measurement. A null/unavailable startup value is not clock qualification. Use `config/cgate.ini` as the default logging example; the environment ini path must be readable and must preserve the default sink/severity.
@@ -90,10 +94,10 @@ Measure clock offset with the host's time service; pass `--clock-offset-us` with
 
 ## Administration and emergency procedure
 
-Run one host instance per interaction-log file and use a stable instance ID. The log file is exclusively locked; a second owner cannot overwrite it. Set the router's access-server endpoint for the selected TEST/PROD environment and retain the vendor log defaults. Secrets belong in local environment/configuration files, not command arguments, Git or application output. The source archive tag is a recovery point for deferred features, not a supported trading release.
+Run one host per stable instance ID. The log and identity state are exclusively locked. The state defaults to `<log-directory>/<instance-id>.state`; keep the same `--state FILE` across log rotation or directory changes. A valid checkpoint skips the durable log prefix and recovers only its tail. Missing legacy state requires a one-time log scan; damaged state refuses restart. Preserve both files and reconcile before restoring a backup. Retain vendor logging defaults and keep secrets in local configuration. Historical evidence bundles and deferred source are preserved at the archive tag.
 
-The `run` command owns CGate for the entire day. Enter `place ID ISIN buy|sell QTY PRICE [day|ioc]`, `cancel ID`, `move ID QTY PRICE`, `cancel-all ISIN`, `kill on|off`, `status` or `quit` on its input. Quantity, quote-notional exposure, exchange price/tick bounds and the open-order limit are checked before sending. The quote-notional cap is not a margin estimate. Use the instrument's current exchange ID; expired/nonmember instruments refuse new orders.
+The `run` command owns CGate for the entire day. Enter `place ID ISIN buy|sell QTY PRICE [day|ioc]`, `cancel ID`, `move ID QTY PRICE`, `cancel-all ISIN`, `kill on|off`, `status` or `quit`. Move quantity is the logical order's total quantity including confirmed fills; regime 3 excludes fills racing the move. Executions come from deduplicated own user_deal rows, not quantity-minus-rest. Recovered orders with incomplete historical fills permit cancellation but refuse Move. Quantity, aggregate outstanding quote-notional, price/tick bounds and open-order count include all own recovered working orders. Quote notional is not margin or position exposure. Expired/nonmember instruments refuse new orders. An oversized input line reports an error and discards that line while later commands remain available.
 
 For an incident, enter `kill on` to stop new orders, then `cancel-all ISIN` for each configured instrument. The kill switch permits risk-reducing cancels. Confirm terminal order states from TRADE and positions from POS; a successful cancel reply alone is not final proof. If connectivity is down, the process keeps waiting and retains queued cancels. Use the broker/exchange emergency channel when venue state cannot be established. A process stop or socket disconnect is not exchange cancel-on-disconnect.
 
-SIGINT/SIGTERM and `quit` flush the application journal and close the gateway objects. Working exchange orders may remain after exit. After restart, recover their IDs from USERORDERBOOK and TRADE before acting. An ambiguous Add/Move is resolved through its exact ext_id and replication; never issue a replacement Add merely because the reply timed out. Unknown/late replies are logged without terminating the process. A logging/storage failure stops the trading driver; resolve storage and reconcile exchange state before restart.
+SIGINT/SIGTERM and `quit` flush the journal and close CGate. Working orders may remain. After restart, recover IDs from USERORDERBOOK and TRADE before acting. Unresolved Adds use ext_id only with exact participant, session, instrument and direction; established IDs change only through Move reply linkage or documented id_ord1 relisting. Never replace an Add merely because its reply timed out. After three failed cancel attempts, status exposes `operator_action_required` and the order remains Unknown; establish venue state and use the emergency channel before deliberately retrying. Unknown/late replies are logged. A storage failure stops the driver while retaining submission bookkeeping; repair storage and reconcile before restart.
