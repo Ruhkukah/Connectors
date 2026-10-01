@@ -13,6 +13,76 @@ void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+void clone_pending_native_transaction() {
+    using Projector = private_state::Plaza2PrivateStateProjector;
+    using namespace projection;
+    const auto begin = [](Projector& projector, EngineState& state) {
+        state.transaction_open = true;
+        projector.on_event(
+            {}, {.kind = EventKind::kTransactionBegin, .stream_code = kFortsTradeRepl, .numeric_value = 1}, state);
+    };
+    const auto row = [](Projector& projector, const EngineState& state, std::int64_t id, std::int64_t remaining) {
+        const std::array fields{FieldValueSpec{.field_code = kFortsTradeReplOrdersLogPublicOrderId,
+                                               .kind = ValueKind::kSignedInteger,
+                                               .signed_value = id},
+                                FieldValueSpec{.field_code = kFortsTradeReplOrdersLogPrivateOrderId,
+                                               .kind = ValueKind::kSignedInteger,
+                                               .signed_value = id},
+                                FieldValueSpec{.field_code = kFortsTradeReplOrdersLogPublicAmountRest,
+                                               .kind = ValueKind::kSignedInteger,
+                                               .signed_value = remaining}};
+        projector.on_stream_row({},
+                                {.kind = EventKind::kStreamData,
+                                 .stream_code = kFortsTradeRepl,
+                                 .table_code = kFortsTradeReplOrdersLog,
+                                 .signed_value = id},
+                                {.stream_code = kFortsTradeRepl,
+                                 .table_code = kFortsTradeReplOrdersLog,
+                                 .field_count = static_cast<std::uint32_t>(fields.size())},
+                                fields, state);
+    };
+    const auto commit = [](Projector& projector, EngineState& state) {
+        state.transaction_open = false;
+        ++state.commit_count;
+        const EventSpec event{.kind = EventKind::kTransactionCommit, .stream_code = kFortsTradeRepl};
+        projector.on_event({}, event, state);
+        projector.on_transaction_commit({}, event, state);
+    };
+    Projector clone;
+    EngineState cloned_state;
+    {
+        Projector original;
+        EngineState state;
+        state.open = true;
+        state.streams.push_back({.stream_code = kFortsTradeRepl});
+        begin(original, state);
+        row(original, state, 77, 3);
+        clone = original.clone();
+        cloned_state = state;
+        require(clone.own_orders().empty(), "cloning exposed an uncommitted native row");
+        original.reset();
+        begin(original, state);
+        row(original, state, 78, 5);
+        commit(original, state);
+        require(original.own_orders().size() == 1 && original.own_orders()[0].public_order_id == 78,
+                "reset source retained cloned transaction state");
+    }
+    // The source and its transaction pool have now been destroyed. The clone
+    // must publish its pending transaction and reuse its own pool afterward.
+    commit(clone, cloned_state);
+    const auto initial = clone.take_row_changes();
+    require(clone.own_orders().size() == 1 && initial.orders.size() == 1 && initial.orders[0].public_order_id == 77 &&
+                initial.orders[0].public_amount_rest == 3,
+            "clone lost its pending native rows when source pool was destroyed");
+    begin(clone, cloned_state);
+    row(clone, cloned_state, 77, 2);
+    commit(clone, cloned_state);
+    const auto updated = clone.take_row_changes();
+    require(clone.own_orders().size() == 1 && updated.orders.size() == 1 && updated.orders[0].public_order_id == 77 &&
+                updated.orders[0].public_amount_rest == 2 && updated.orders[0].trade_repl_commit_sequence == 2,
+            "cloned transaction pool was not retained across commits");
+}
+
 int main() {
     try {
         private_state::Plaza2PrivateStateProjector projector;
@@ -366,6 +436,7 @@ int main() {
         event(Plaza2ListenerEventKind::TransactionCommit, kFortsTradeRepl);
         event(Plaza2ListenerEventKind::Close, kFortsTradeRepl);
         require(projector.take_row_changes().orders.empty(), "listener invalidation left stale row changes");
+        clone_pending_native_transaction();
         std::cout << "150000 TRADE rows including commit: " << elapsed << " ms\n";
 // Optimized sanitizer builds also define NDEBUG. Their instrumentation overhead
 // is diagnostic; the Linux Release job enforces the unchanged capacity limit.

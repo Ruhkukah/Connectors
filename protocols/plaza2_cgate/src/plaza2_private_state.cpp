@@ -7,6 +7,7 @@
 #include <functional>
 #include <initializer_list>
 #include <limits>
+#include <memory_resource>
 #include <optional>
 #include <span>
 #include <string>
@@ -514,6 +515,8 @@ void append_or_replace_leg(std::vector<InstrumentLegSnapshot>& legs, InstrumentL
 }
 
 struct StagedState {
+    StagedState(std::pmr::memory_resource* resource = std::pmr::get_default_resource())
+        : order_keys(resource), trade_keys(resource) {}
     bool status_bindings_invalidated{false};
     bool active{false};
     std::optional<SessionMap> sessions;
@@ -526,8 +529,8 @@ struct StagedState {
     std::optional<PositionMap> positions;
     std::optional<OrderMap> orders;
     std::optional<TradeMap> trades;
-    std::unordered_set<OrderKey, OrderKeyHash> order_keys;
-    std::unordered_set<TradeKey, TradeKeyHash> trade_keys;
+    std::pmr::unordered_set<OrderKey, OrderKeyHash> order_keys;
+    std::pmr::unordered_set<TradeKey, TradeKeyHash> trade_keys;
     bool rebuild_order_view{}, rebuild_trade_view{};
     std::optional<std::vector<StreamHealthSnapshot>> stream_health;
     std::optional<SourceRevisionRows> source_revisions;
@@ -597,9 +600,45 @@ struct Plaza2PrivateStateProjector::Impl {
     std::unordered_map<TradeKey, std::size_t, TradeKeyHash> trade_view_index;
     PrivateRowChanges row_changes;
 
-    StagedState staged;
+    // Recycle transient key nodes on the owner thread. Freeing a large
+    // bootstrap set into the general heap delayed later order insertions.
+    // The pool outlives staged containers, and clones receive a fresh pool.
+    std::pmr::unsynchronized_pool_resource transaction_key_storage;
+    StagedState staged{&transaction_key_storage};
     bool native_commit_phase{false};
     std::uint64_t status_binding_generation{0};
+
+    Impl() = default;
+    Impl(const Impl& other)
+        : connector_health(other.connector_health), resume_markers(other.resume_markers),
+          stream_health(other.stream_health), sessions_by_id(other.sessions_by_id),
+          instruments_by_isin(other.instruments_by_isin), future_sessions(other.future_sessions),
+          future_vcb_by_row(other.future_vcb_by_row), matching_by_base_contract(other.matching_by_base_contract),
+          system_messages_by_id(other.system_messages_by_id), limits_by_key(other.limits_by_key),
+          unknown_limits(other.unknown_limits), positions_by_key(other.positions_by_key),
+          orders_by_key(other.orders_by_key), trades_by_key(other.trades_by_key),
+          source_revisions(other.source_revisions), lifenums_by_stream(other.lifenums_by_stream),
+          session_snapshots(other.session_snapshots), instrument_snapshots(other.instrument_snapshots),
+          future_vcb_snapshots(other.future_vcb_snapshots), matching_snapshots(other.matching_snapshots),
+          system_message_snapshots(other.system_message_snapshots), limit_snapshots(other.limit_snapshots),
+          position_snapshots(other.position_snapshots), order_snapshots(other.order_snapshots),
+          trade_snapshots(other.trade_snapshots), order_view_index(other.order_view_index),
+          trade_view_index(other.trade_view_index), row_changes(other.row_changes),
+          native_commit_phase(other.native_commit_phase), status_binding_generation(other.status_binding_generation) {
+        // PMR copy assignment keeps the destination allocator. The copied
+        // pending transaction therefore owns nodes in this instance's pool.
+        staged = other.staged;
+        const auto& limits = native_commit_phase && staged.limits ? *staged.limits : limits_by_key;
+        for (const auto& [code, source_lookup] : other.limit_index) {
+            auto lookup = source_lookup;
+            if (lookup.exact) {
+                const auto& row = *lookup.exact;
+                const auto found = limits.find(LimitKey{row.participant_kind, row.account_code, row.repl_id});
+                lookup.exact = found == limits.end() ? nullptr : &found->second;
+            }
+            limit_index.emplace(code, lookup);
+        }
+    }
 
     void invalidate_status_bindings() {
         if (staged.active)

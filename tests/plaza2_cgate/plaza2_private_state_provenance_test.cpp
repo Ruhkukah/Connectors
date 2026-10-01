@@ -464,12 +464,20 @@ int main() {
                     "identity exists independently of financial checking");
             require(limits.find_limit_by_code("WRNGC01").match_count == 0 && limits.unknown_limit_row_count() == 1,
                     "wrong and unknown accounts not substituted");
+            const auto cloned_limits = limits.clone();
+            const auto cloned_client = cloned_limits.find_limit_by_code("BRK1C01");
+            require(cloned_client.exact && cloned_client.exact != limits.find_limit_by_code("BRK1C01").exact &&
+                        cloned_client.exact->account_code == "BRK1C01" && !cloned_client.exact->limits_set,
+                    "cloned limit index borrowed a row from its source projector");
             begin_transaction(limits, state, stream);
             row(4, "BRK1C01", 1, 4);
             commit_transaction(limits, state, stream, 1);
             require(limits.find_limit_by_code("BRK1C01").match_count == 2 &&
                         limits.find_limit_by_code("BRK1C01").exact == nullptr,
                     "duplicate identity ambiguous");
+            require(cloned_limits.find_limit_by_code("BRK1C01").match_count == 1 &&
+                        !cloned_limits.find_limit_by_code("BRK1C01").exact->limits_set,
+                    "source limit mutation invalidated the cloned lookup");
             begin_transaction(limits, state, stream);
             row(4, "BRK1000", 1, 5);
             commit_transaction(limits, state, stream, 1);
