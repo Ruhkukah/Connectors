@@ -314,6 +314,8 @@ struct OwnOrderSnapshot {
     std::int32_t ext_id{0};
     // Previous exchange order ID when the venue relists a multi-day order.
     std::int64_t id_ord1{0};
+    // Native aliases contain alternate IDs; canonical IDs remain in the
+    // public_order_id/private_order_id scalar fields.
     std::vector<std::int64_t> public_order_id_aliases;
     std::vector<std::int64_t> private_order_id_aliases;
     bool identity_conflict{false};

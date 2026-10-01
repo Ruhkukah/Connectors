@@ -407,7 +407,8 @@ bool order_identity_matches(const OwnOrderSnapshot& order, const OrderKey& incom
 }
 
 OwnOrderSnapshot& find_or_create_order(OrderMap& orders, const OrderKey& incoming, OrderKey* resolved_key = nullptr,
-                                       bool follow_aliases = true, bool follow_client_reference = true) {
+                                       bool follow_aliases = true, bool follow_client_reference = true,
+                                       bool include_primary_aliases = true) {
     orders.refresh_index();
     auto found = orders.find(incoming);
     const auto lookup = [&](char kind, std::int64_t id) {
@@ -427,10 +428,20 @@ OwnOrderSnapshot& find_or_create_order(OrderMap& orders, const OrderKey& incomin
         found = orders.emplace(incoming, OwnOrderSnapshot{}).first;
     auto& order = found->second;
 
-    append_identifier_alias(order.public_order_id_aliases, order.public_order_id);
-    append_identifier_alias(order.private_order_id_aliases, order.private_order_id);
-    append_identifier_alias(order.public_order_id_aliases, incoming.public_order_id);
-    append_identifier_alias(order.private_order_id_aliases, incoming.private_order_id);
+    if (include_primary_aliases) {
+        append_identifier_alias(order.public_order_id_aliases, order.public_order_id);
+        append_identifier_alias(order.private_order_id_aliases, order.private_order_id);
+        append_identifier_alias(order.public_order_id_aliases, incoming.public_order_id);
+        append_identifier_alias(order.private_order_id_aliases, incoming.private_order_id);
+    } else {
+        // Native canonical IDs are already stored and indexed as scalars.
+        // Allocating alias vectors for those same IDs fragments the allocator
+        // when a large bootstrap delta is copied and then released.
+        if (order.public_order_id && order.public_order_id != incoming.public_order_id)
+            append_identifier_alias(order.public_order_id_aliases, incoming.public_order_id);
+        if (order.private_order_id && order.private_order_id != incoming.private_order_id)
+            append_identifier_alias(order.private_order_id_aliases, incoming.private_order_id);
+    }
 
     const bool same_client_ext = incoming.ext_id != 0 && order.ext_id == incoming.ext_id &&
                                  !incoming.client_code.empty() && order.client_code == incoming.client_code;
@@ -1745,7 +1756,8 @@ struct Plaza2PrivateStateProjector::Impl {
         OrderKey resolved;
         // Native TRADE rows are exchange records. Move can reuse ext_id for a
         // distinct positive order ID before reply 176 supplies the logical link.
-        auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase && previous_id == 0);
+        auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase && previous_id == 0,
+                                           !native_commit_phase);
         staged.order_keys.insert(std::move(resolved));
         order.sess_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogSessId
                                          : FieldCode::kFortsTradeReplOrdersLogSessId);
@@ -1900,7 +1912,7 @@ struct Plaza2PrivateStateProjector::Impl {
             .client_code = row.text(client_code_field),
         };
         OrderKey resolved;
-        auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase);
+        auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase, !native_commit_phase);
         staged.order_keys.insert(std::move(resolved));
 
         order.sess_id = row.i32(sess_field);

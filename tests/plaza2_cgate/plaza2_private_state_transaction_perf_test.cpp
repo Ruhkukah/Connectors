@@ -2,47 +2,8 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cstdlib>
 #include <iostream>
-#include <new>
 #include <stdexcept>
-#ifdef __linux__
-namespace {
-bool trace_allocations;
-struct AllocationTime {
-    std::size_t bytes;
-    std::int64_t us;
-};
-std::array<AllocationTime, 128> allocation_times;
-std::size_t allocation_count;
-} // namespace
-void* operator new(std::size_t bytes) {
-    const auto start = trace_allocations ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    auto* memory = std::malloc(bytes ? bytes : 1);
-    if (!memory)
-        throw std::bad_alloc();
-    if (trace_allocations && allocation_count < allocation_times.size())
-        allocation_times[allocation_count++] = {
-            bytes,
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count()};
-    return memory;
-}
-void* operator new[](std::size_t bytes) {
-    return ::operator new(bytes);
-}
-void operator delete(void* memory) noexcept {
-    std::free(memory);
-}
-void operator delete[](void* memory) noexcept {
-    std::free(memory);
-}
-void operator delete(void* memory, std::size_t) noexcept {
-    std::free(memory);
-}
-void operator delete[](void* memory, std::size_t) noexcept {
-    std::free(memory);
-}
-#endif
 using namespace moex::plaza2;
 using namespace moex::plaza2::cgate;
 using enum generated::StreamCode;
@@ -106,6 +67,15 @@ int main() {
         const auto elapsed =
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
         require(projector.own_orders().size() == 150000, "order index lost rows");
+        const auto initial_orders = projector.own_orders();
+        require(
+            initial_orders.front().public_order_id == 1 && initial_orders.front().private_order_id == 1 &&
+                initial_orders.back().public_order_id == 150000 && initial_orders.back().private_order_id == 150000 &&
+                std::all_of(initial_orders.begin(), initial_orders.end(),
+                            [](const auto& order) {
+                                return order.public_order_id_aliases.empty() && order.private_order_id_aliases.empty();
+                            }),
+            "native canonical IDs were lost or duplicated into heap-allocated aliases");
         require(projector.positions().empty(), "TRADE commit leaked open POS transaction");
         event(Plaza2ListenerEventKind::TransactionCommit, kFortsPosRepl);
         require(projector.positions().size() == 1 && projector.positions()[0].xpos == 3,
@@ -144,9 +114,6 @@ int main() {
                   << " us\n";
         const auto capacity_before_insert = projector.storage_capacity();
         const auto* view_before_insert = projector.own_orders().data();
-#ifdef __linux__
-        trace_allocations = true;
-#endif
         const auto before_insert = std::chrono::steady_clock::now();
         std::array<std::chrono::steady_clock::time_point, 6> insertion_times;
         insertion_times[0] = before_insert;
@@ -173,13 +140,6 @@ int main() {
         const auto insert_us =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - before_insert)
                 .count();
-#ifdef __linux__
-        trace_allocations = false;
-        std::cout << "Insertion allocations bytes/us:";
-        for (std::size_t index = 0; index < allocation_count; ++index)
-            std::cout << ' ' << allocation_times[index].bytes << '/' << allocation_times[index].us;
-        std::cout << '\n';
-#endif
         std::cout << "150k book new-order commit and delta: " << insert_us << " us\n";
         std::cout << "new-order begin/row/commit/view/delta phases: ";
         for (std::size_t index = 1; index < insertion_times.size(); ++index) {
@@ -316,6 +276,31 @@ int main() {
         require(terminal_move.orders.size() == 1 && terminal_move.orders[0].public_order_id == 5002 &&
                     terminal_move.orders[0].public_amount_rest == 0 && !terminal_move.orders[0].identity_conflict,
                 "Move successor terminal delta lost its new exchange identity");
+        // Canonical scalar IDs retain real alternate source identifiers. The
+        // next update resolves through the alternate public ID index.
+        event(Plaza2ListenerEventKind::TransactionBegin, kFortsTradeRepl);
+        relist[0].signed_value = 5101;
+        relist[1].signed_value = 5001;
+        relist[7].signed_value = 4;
+        relist_row();
+        event(Plaza2ListenerEventKind::TransactionCommit, kFortsTradeRepl);
+        const auto public_alias = projector.take_row_changes();
+        require(public_alias.orders.size() == 1 && public_alias.orders[0].public_order_id == 5001 &&
+                    public_alias.orders[0].private_order_id == 5001 &&
+                    public_alias.orders[0].public_order_id_aliases == std::vector<std::int64_t>{5101} &&
+                    public_alias.orders[0].private_order_id_aliases.empty(),
+                "real public alias was dropped or canonical ID duplicated");
+        event(Plaza2ListenerEventKind::TransactionBegin, kFortsTradeRepl);
+        relist[1].signed_value = 5102;
+        relist[7].signed_value = 5;
+        relist_row();
+        event(Plaza2ListenerEventKind::TransactionCommit, kFortsTradeRepl);
+        const auto both_aliases = projector.take_row_changes();
+        require(projector.own_orders().size() == 2 && both_aliases.orders.size() == 1 &&
+                    both_aliases.orders[0].public_order_id == 5001 && both_aliases.orders[0].private_order_id == 5001 &&
+                    both_aliases.orders[0].public_order_id_aliases == std::vector<std::int64_t>{5101} &&
+                    both_aliases.orders[0].private_order_id_aliases == std::vector<std::int64_t>{5102},
+                "alternate ID index stopped resolving the committed native order");
         require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
                                                   .stream_code = kFortsTradeRepl,
                                                   .table_code = kFortsTradeReplOrdersLog,
