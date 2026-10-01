@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <ostream>
 
 namespace moex::connector_host {
 namespace {
@@ -84,11 +85,11 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
         },
         [this](auto kind, auto fields) noexcept { log_event(kind, fields); });
 }
-CgateTradingHost::~CgateTradingHost() {
+CgateTradingHost::~CgateTradingHost() noexcept {
     // Stop while callbacks can still use log_error_ and journal_. Member
     // destruction would otherwise tear down log_error_ before session_.
     try {
-        const auto error = session_.stop();
+        const auto error = stop();
         (void)error;
     } catch (...) {
         // Explicit stop() reports errors; destruction must remain noexcept.
@@ -147,6 +148,9 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
 }
 cg::Plaza2Error CgateTradingHost::start() {
     assert_owner();
+    if (stopped_)
+        return {.code = cg::Plaza2ErrorCode::InvalidConfiguration,
+                .message = "trading host has stopped; create a fresh host to restart"};
     if (config_.session.mode != tr::CgateSessionMode::OfflineFake)
         validate_cgate_logging(config_.session.runtime.env_open_settings, config_.session.runtime.config_dir);
     journal_.append("startup", "{\"product\":\"MoexConnector\",\"version\":\"1.0.0\",\"instance_id\":" +
@@ -221,9 +225,28 @@ cg::Plaza2Error CgateTradingHost::poll() {
 }
 cg::Plaza2Error CgateTradingHost::stop() {
     assert_owner();
-    journal_.append("shutdown");
-    journal_.flush();
-    return session_.stop();
+    if (stopped_)
+        return stop_error_;
+    stopped_ = true;
+    orders_->set_kill_switch(true);
+    try {
+        journal_.append("shutdown");
+    } catch (const std::exception& error) {
+        log_error_ = error.what();
+    }
+    // Storage failures must never leave gateway handles open. Close first,
+    // then attempt to flush the shutdown and close records together.
+    const auto session_error = session_.stop();
+    try {
+        journal_.flush();
+    } catch (const std::exception& error) {
+        log_error_ = error.what();
+    }
+    stop_error_ = log_error_.empty()
+                      ? session_error
+                      : cg::Plaza2Error{.code = cg::Plaza2ErrorCode::RuntimeCallFailed,
+                                        .message = "journal storage failure during shutdown: " + log_error_};
+    return stop_error_;
 }
 std::string CgateTradingHost::place(OrderRequest request) {
     assert_owner();
@@ -244,6 +267,19 @@ std::string CgateTradingHost::cancel_all(std::int32_t isin) {
 void CgateTradingHost::set_kill_switch(bool enabled) {
     assert_owner();
     orders_->set_kill_switch(enabled);
+}
+void CgateTradingHost::report_outstanding_orders(std::ostream& output) const {
+    assert_owner();
+    output << "moexctl: trading driver is stopping. Working orders may remain on the exchange; "
+              "a disconnect does not cancel them. Confirm venue state through the broker/exchange emergency channel.\n";
+    for (const auto& [key, order] : orders_->orders()) {
+        if (terminal(order.state))
+            continue;
+        output << "outstanding order client_order_id=" << json_string(key) << " order_id=" << order.order_id
+               << " ext_id=" << order.ext_id << " isin_id=" << order.request.isin_id << " sess_id=" << order.sess_id
+               << " state=" << order_state_name(order.state) << " remaining=" << order.remaining << '\n';
+    }
+    output << std::flush;
 }
 std::string CgateTradingHost::status() const {
     assert_owner();

@@ -4,6 +4,7 @@
 #include "moex/connector_host/order_manager.hpp"
 
 #include <thread>
+#include <iosfwd>
 
 namespace moex::connector_host {
 struct TradingHostConfig {
@@ -18,7 +19,7 @@ struct TradingHostConfig {
 class CgateTradingHost {
   public:
     explicit CgateTradingHost(TradingHostConfig config);
-    ~CgateTradingHost();
+    ~CgateTradingHost() noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2Error start();
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
@@ -28,6 +29,7 @@ class CgateTradingHost {
     [[nodiscard]] std::string cancel_all(std::int32_t isin_id);
     void set_kill_switch(bool enabled);
     [[nodiscard]] std::string status() const;
+    void report_outstanding_orders(std::ostream& output) const;
 
   private:
     void assert_owner() const;
@@ -40,6 +42,8 @@ class CgateTradingHost {
     plaza2_trade::CgateSession session_;
     std::unique_ptr<OrderManager> orders_;
     bool rebuilding_{true};
+    bool stopped_{};
+    plaza2::cgate::Plaza2Error stop_error_;
     std::string log_error_;
 };
 } // namespace moex::connector_host

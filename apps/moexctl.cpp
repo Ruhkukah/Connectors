@@ -1,6 +1,7 @@
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/connector_host/trading_host.hpp"
 #include "command_input.hpp"
+#include "host_stop_guard.hpp"
 
 #include <array>
 #include <charconv>
@@ -149,6 +150,7 @@ int main(int argc, char** argv) {
                 config.isin_ids.push_back(static_cast<std::int32_t>(isin));
             }
             CgateTradingHost host(std::move(config));
+            HostStopGuard shutdown(host, [&] { host.report_outstanding_orders(std::cerr); });
             if (const auto error = host.start()) {
                 std::cerr << error.message << '\n';
                 return 3;
@@ -178,9 +180,14 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            return host.stop() ? 7 : 0;
+            if (const auto error = shutdown.stop()) {
+                std::cerr << error.message << '\n';
+                return 7;
+            }
+            return 0;
         }
         ConnectorHost host(request.config);
+        HostStopGuard shutdown(host);
         if (const auto error = host.start()) {
             std::cerr << error.message << '\n';
             return 3;
@@ -194,7 +201,7 @@ int main(int argc, char** argv) {
         } while (std::chrono::steady_clock::now() < deadline);
         const auto snapshot = host.snapshot();
         std::cout << render_snapshot(snapshot, request.json);
-        if (host.stop())
+        if (shutdown.stop())
             return 7;
         return snapshot.observation_ready ? 0 : 4;
     } catch (const std::exception& error) {
