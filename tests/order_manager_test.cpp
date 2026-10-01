@@ -200,6 +200,9 @@ void day_and_restart() {
     for (const auto& [key, order] : manager.orders())
         rows.push_back(row(order, ++id, 3, 1));
     manager.observe_orders(rows);
+    for (std::size_t i = 0; i < rows.size(); ++i)
+        manager.on_reply(f.sent.at(i).id, {.msgid = 179, .order_id = rows[i].public_order_id},
+                         OrderManager::Clock::time_point{});
     fill(manager, 1001, 1, 1);
     observe(manager, row(manager.orders().at("a"), 1001, 2, 2));
     require(manager.orders().at("a").state == OrderState::PartFilled && manager.orders().at("a").executed == 1,
@@ -652,10 +655,14 @@ void confirmed_add_without_reply() {
     f.poll(manager, 0);
     observe(manager, row(manager.orders().at("confirmed"), 1001, 3, 1));
     f.poll(manager, 62000);
-    require(manager.orders().at("confirmed").state == OrderState::Working && f.sent.size() == 1 &&
-                manager.queued() == 0,
-            "lost Add reply cancelled a TRADE-confirmed working order");
-    require(manager.move("confirmed", "101", 2).empty(), "TRADE-confirmed Add remained unresolved");
+    require(manager.orders().at("confirmed").state == OrderState::Unknown &&
+                manager.orders().at("confirmed").order_id == 0 &&
+                std::count_if(f.sent.begin(), f.sent.end(),
+                              [](const auto& sent) { return sent.kind == tr::Plaza2TradeCommandKind::AddOrder; }) ==
+                    1 &&
+                f.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
+            "lost179 guessed identity or blindly resent the Add instead of ext recovery");
+    require(!manager.move("confirmed", "101", 2).empty(), "ext-only identity permitted a Move");
 
     Fixture uncertain;
     uncertain.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
@@ -665,11 +672,20 @@ void confirmed_add_without_reply() {
     observe(other, row(other.orders().at("uncertain-confirmed"), 1002, 3, 1));
     uncertain.certainty = cg::Plaza2SubmissionCertainty::Posted;
     uncertain.poll(other, 1000);
-    require(other.orders().at("uncertain-confirmed").state == OrderState::PendingCancel &&
+    require(other.orders().at("uncertain-confirmed").state == OrderState::Unknown &&
+                other.orders().at("uncertain-confirmed").order_id == 0 &&
+                other.orders().at("uncertain-confirmed").cancel_requested &&
+                std::none_of(uncertain.sent.begin(), uncertain.sent.end(),
+                             [](auto command) { return command.kind == tr::Plaza2TradeCommandKind::DelOrder; }),
+            "ext-only row guessed a direct cancellation identity");
+    other.on_reply(uncertain.sent.front().id, {.msgid = 179, .order_id = 1002},
+                   OrderManager::Clock::time_point{} + std::chrono::milliseconds(1001));
+    uncertain.poll(other, 1002);
+    require(other.orders().at("uncertain-confirmed").order_id == 1002 &&
                 other.orders().at("uncertain-confirmed").cancel_requested &&
                 std::any_of(uncertain.sent.begin(), uncertain.sent.end(),
                             [](auto command) { return command.kind == tr::Plaza2TradeCommandKind::DelOrder; }),
-            "TRADE confirmation dropped an ambiguous Add's recovery cancel intent");
+            "official179 did not preserve the ambiguous Add's cancellation intent");
 }
 void cancelled_order_during_move() {
     Fixture f;
@@ -859,7 +875,7 @@ void ext_identity_and_relist() {
     }
     require(unknown.orders().at("pending").order_id == 0, "ext_id fallback ignored the order contract");
     observe(unknown, row(own, 9001, 3, 1));
-    require(unknown.orders().at("pending").order_id == 9001, "valid own TRADE Add confirmation rejected");
+    require(unknown.orders().at("pending").order_id == 0, "ext-only TRADE row established Add identity");
     auto old_delete = row(unknown.orders().at("pending"), 9001, 0, 0);
     auto new_day = row(unknown.orders().at("pending"), 9101, 3, 1, 101);
     new_day.ext_id = 0;
@@ -868,6 +884,7 @@ void ext_identity_and_relist() {
     const auto before = pending.log.size();
     std::array batch{old_delete, new_day};
     unknown.observe_orders(batch);
+    unknown.on_reply(pending.sent.front().id, {.msgid = 179, .order_id = 9001}, OrderManager::Clock::time_point{});
     require(unknown.orders().at("pending").order_id == 9101 && unknown.orders().size() == 4,
             "documented day linkage lost the logical order");
     require(std::none_of(pending.log.begin() + static_cast<std::ptrdiff_t>(before), pending.log.end(),
@@ -986,8 +1003,12 @@ void eligible_commands_and_logging() {
     instruments.unavailable_isins.clear();
     instruments.poll(independent, 1000);
     observe(independent, row(independent.orders().at("paused"), 3001, 3, 1, 101));
+    require(independent.orders().at("paused").order_id == 0 && independent.orders().at("paused").sess_id == 101,
+            "queued Add retained a stale submission session or accepted ext-only identity");
+    independent.on_reply(instruments.sent.back().id, {.msgid = 179, .order_id = 3001},
+                         OrderManager::Clock::time_point{} + std::chrono::milliseconds(1001));
     require(independent.orders().at("paused").order_id == 3001 && independent.orders().at("paused").sess_id == 101,
-            "queued Add retained a stale session for ext_id reconciliation");
+            "official179 lost the queued Add's current submission session");
 
     Fixture throttle;
     throttle.config.max_commands_per_second = 1;
@@ -1264,6 +1285,304 @@ void unknown_flood_reply_still_paces_publisher() {
     require(f.sent.size() == 1 && !manager.operator_action_required(),
             "unknown99 spent a business retry or delayed past its penalty");
 }
+void official_add_reply_owns_identity() {
+    Fixture f;
+    f.config.risk.max_notional_scaled = 50'000'000;
+    auto manager = f.manager();
+    require(manager.place(request("official")).empty(), "official Add refused");
+    f.poll(manager, 0);
+    const auto add = f.sent.front().id;
+    auto wrong = row(manager.orders().at("official"), 7777, 3, 1);
+    observe(manager, wrong);
+    fill(manager, 7777, 8701, 1);
+    require(manager.orders().at("official").order_id == 0 && manager.orders().at("official").executed == 0,
+            "pre179 ext collision took the Add identity or fills");
+    require(!manager.place(request("held-risk", 1)).empty(), "held own row exposure was omitted");
+    require(manager.cancel("official").empty(), "unresolved Add cancel refused");
+    f.poll(manager, 1);
+    require(f.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
+            "pre179 cancellation targeted a provisional foreign ID");
+    manager.on_reply(add, {.msgid = 179, .order_id = 63011},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(2));
+    f.poll(manager, 3);
+    require(manager.orders().at("official").order_id == 63011 && manager.orders().at("official").executed == 0 &&
+                wire<official_cgate99::DelOrder>(f.sent.back()).order_id == 63011,
+            "official179 did not win or cancellation retained foreign identity");
+    require(!manager.place(request("post179-risk", 1)).empty(),
+            "official179 transfer omitted one of the two owned active identities");
+    fill(manager, 7777, 8702, 1);
+    require(manager.orders().at("official").executed == 0 && manager.orders().at("recovered:100:7777").executed == 2,
+            "foreign own fills were lost or charged to the official Add");
+    wrong.public_amount_rest = 0;
+    wrong.public_action = 0;
+    observe(manager, wrong);
+    require(manager.place(request("held-risk-released", 1)).empty(), "terminated held exposure poisoned risk");
+}
+void late_add_reply_after_absence_is_still_authoritative() {
+    Fixture f;
+    f.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
+    f.config.risk.max_notional_scaled = 50'000'000;
+    auto manager = f.manager();
+    require(manager.place(request("late-absence")).empty(), "late absence Add refused");
+    f.poll(manager, 0);
+    const auto add_id = f.sent.front().id;
+    f.certainty = cg::Plaza2SubmissionCertainty::Posted;
+    f.poll(manager, 1000);
+    require(f.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders, "uncertain Add did not use ext recovery");
+    manager.on_reply(f.sent.back().id, {.msgid = 186, .num_orders = 0},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(1000));
+    manager.prove_absence(1700000062, true);
+    require(manager.orders().at("late-absence").state == OrderState::Cancelled,
+            "late absence fixture did not obtain an absence resolution");
+    ManagedOrder unrelated{.request = request("unrelated", 1)};
+    unrelated.request.isin_id = 43;
+    observe(manager, row(unrelated, 9921, 1, 1, 101));
+    observe(manager, row(unrelated, 9922, 1, 1, 102));
+    f.poll(manager, 70000);
+    manager.on_reply(add_id, {.msgid = 179, .order_id = 63027},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(70001));
+    require(manager.orders().at("late-absence").order_id == 63027 &&
+                manager.orders().at("late-absence").remaining == 3 &&
+                manager.orders().at("late-absence").cancel_requested,
+            "late179 acceptance was discarded by absence or session pruning");
+    require(!manager.place(request("late-acceptance-risk", 1)).empty(),
+            "late179 acceptance failed to restore known outstanding exposure");
+    f.poll(manager, 71000);
+    require(std::any_of(f.sent.begin(), f.sent.end(),
+                        [](const auto& sent) {
+                            return sent.kind == tr::Plaza2TradeCommandKind::DelOrder &&
+                                   wire<official_cgate99::DelOrder>(sent).order_id == 63027;
+                        }),
+            "late accepted identity was not directly cancelled");
+    require(std::count_if(f.sent.begin(), f.sent.end(),
+                          [](const auto& sent) { return sent.kind == tr::Plaza2TradeCommandKind::AddOrder; }) == 1,
+            "late179 recovery blindly resubmitted Add");
+}
+void rejected_add_preserves_owned_evidence() {
+    for (const bool flood : {false, true}) {
+        Fixture f;
+        f.config.risk.max_notional_scaled = 50'000'000;
+        auto manager = f.manager();
+        require(manager.place(request("rejected")).empty(), "rejected Add fixture refused");
+        f.poll(manager, 0);
+        auto collision = row(manager.orders().at("rejected"), 7788, 3, 1);
+        observe(manager, collision);
+        fill(manager, 7788, 8703, 1);
+        manager.on_reply(f.sent.front().id,
+                         flood ? tr::Plaza2TradeDecodedReply{.msgid = 99, .penalty_remain = 1}
+                               : tr::Plaza2TradeDecodedReply{.msgid = 179, .code = 5},
+                         OrderManager::Clock::time_point{});
+        require(manager.orders().at("rejected").state == OrderState::Rejected &&
+                    manager.orders().at("recovered:100:7788").executed == 1,
+                "definitive Add rejection discarded actual owned identity or fill");
+        require(!manager.place(request("rejection-risk", 3)).empty(),
+                "Add rejection removed colliding owned account exposure");
+        collision.public_amount_rest = 0;
+        collision.public_action = 0;
+        observe(manager, collision);
+        require(manager.place(request("after-rejection", 3)).empty(),
+                "terminated colliding identity retained a held risk charge");
+    }
+}
+void official_add_terminal_and_old_fill_evidence() {
+    Fixture held;
+    auto manager = held.manager();
+    require(manager.place(request("held-terminal")).empty(), "terminal Add fixture refused");
+    held.poll(manager, 0);
+    const auto actual = row(manager.orders().at("held-terminal"), 63021, 0, 0);
+    observe(manager, actual);
+    fill(manager, 63021, 8801, 1);
+    manager.on_reply(held.sent.front().id, {.msgid = 179, .order_id = 63021}, OrderManager::Clock::time_point{});
+    require(manager.orders().at("held-terminal").state == OrderState::Cancelled &&
+                manager.orders().at("held-terminal").remaining == 0 &&
+                manager.orders().at("held-terminal").executed == 1,
+            "official179 resurrected an already-terminal exact native identity");
+
+    Fixture historical;
+    auto retained = historical.manager();
+    require(retained.place(request("historical-fill")).empty(), "historical fill Add refused");
+    historical.poll(retained, 0);
+    auto old = row(retained.orders().at("historical-fill"), 63022, 2, 1);
+    observe(retained, old);
+    fill(retained, 63022, 8802, 1);
+    ManagedOrder unrelated{.request = request("unrelated", 1)};
+    unrelated.request.isin_id = 43;
+    observe(retained, row(unrelated, 9901, 1, 1, 101));
+    observe(retained, row(unrelated, 9902, 1, 1, 102));
+    retained.on_reply(historical.sent.front().id, {.msgid = 179, .order_id = 63022}, OrderManager::Clock::time_point{});
+    require(retained.orders().at("historical-fill").executed == 1 &&
+                retained.orders().at("historical-fill").remaining == 2,
+            "session pruning lost held actual-ID fill evidence before late179");
+    fill(retained, 63022, 8802, 1);
+    require(retained.orders().at("historical-fill").executed == 1, "held fill replay charged the same deal twice");
+
+    for (const bool terminal_only : {false, true}) {
+        Fixture f;
+        f.config.risk.max_notional_scaled = 50'000'000;
+        auto exact = f.manager();
+        require(exact.place(request("ext-zero")).empty(), "ext0 Add fixture refused");
+        f.poll(exact, 0);
+        auto recovered = row(exact.orders().at("ext-zero"), 63023, terminal_only ? 0 : 2, terminal_only ? 0 : 1);
+        recovered.ext_id = 0;
+        observe(exact, recovered);
+        fill(exact, 63023, 8803, 1);
+        if (!terminal_only) {
+            recovered.public_amount_rest = 0;
+            recovered.public_action = 0;
+            observe(exact, recovered);
+        }
+        observe(exact, row(unrelated, 9911, 1, 1, 101));
+        observe(exact, row(unrelated, 9912, 1, 1, 102));
+        require(!exact.orders().contains("recovered:100:63023"), "old terminal recovered object was not pruned");
+        exact.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 63023}, OrderManager::Clock::time_point{});
+        const auto final = std::find_if(f.log.rbegin(), f.log.rend(), [](const auto& line) {
+            return line.starts_with("order") && line.find("\"client_order_id\":\"ext-zero\"") != std::string::npos;
+        });
+        require(final != f.log.rend() && final->find("\"state\":\"Cancelled\"") != std::string::npos &&
+                    final->find("\"executed\":1") != std::string::npos &&
+                    (!exact.orders().contains("ext-zero") || exact.orders().at("ext-zero").remaining == 0),
+                "late179 lost pruned ext0 native terminal/fill evidence");
+        require(exact.place(request("after-terminal-evidence", 3)).empty(),
+                "late179 created phantom exposure for a terminal owned ID");
+        require(std::none_of(f.sent.begin(), f.sent.end(),
+                             [](const auto& send) { return send.kind == tr::Plaza2TradeCommandKind::DelOrder; }),
+                "late179 directly cancelled a known terminal native identity");
+    }
+}
+void official_add_merges_recovered_and_claims_other_ext() {
+    Fixture f;
+    f.config.risk.max_notional_scaled = 50'000'000;
+    auto manager = f.manager();
+    require(manager.place(request("merge")).empty(), "recovered merge Add refused");
+    f.poll(manager, 0);
+    auto actual = row(manager.orders().at("merge"), 63024, 2, 1);
+    actual.ext_id = 0;
+    observe(manager, actual);
+    fill(manager, 63024, 8804, 1);
+    require(manager.orders().at("recovered:100:63024").executed == 1,
+            "ext0 native identity did not reconstruct actual fills");
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 63024}, OrderManager::Clock::time_point{});
+    require(manager.orders().at("merge").executed == 1 && manager.orders().at("merge").remaining == 2 &&
+                !manager.orders().contains("recovered:100:63024"),
+            "official179 failed to merge recovered exact identity/fills");
+    fill(manager, 63024, 8804, 1);
+    require(manager.orders().at("merge").executed == 1 && manager.place(request("after-merge", 3)).empty(),
+            "recovered merge duplicated fill or risk charge");
+
+    Fixture concurrent;
+    auto two = concurrent.manager();
+    require(two.place(request("A")).empty() && two.place(request("B")).empty(), "concurrent Adds refused");
+    concurrent.poll(two, 0);
+    auto held_by_a = row(two.orders().at("A"), 63025, 2, 1);
+    observe(two, held_by_a);
+    fill(two, 63025, 8805, 1);
+    two.on_reply(concurrent.sent.at(1).id, {.msgid = 179, .order_id = 63025}, OrderManager::Clock::time_point{});
+    require(two.orders().at("B").order_id == 63025 && two.orders().at("B").executed == 1 &&
+                two.orders().at("A").order_id == 0,
+            "official179 could not claim identity held under another provisional ext_id");
+    held_by_a.public_amount_rest = 0;
+    held_by_a.public_action = 0;
+    observe(two, held_by_a);
+    require(two.orders().at("B").state == OrderState::Cancelled && two.orders().at("A").order_id == 0,
+            "other Add's provisional hold swallowed an officially-owned terminal update");
+    two.on_reply(concurrent.sent.front().id, {.msgid = 179, .order_id = 63026}, OrderManager::Clock::time_point{});
+    require(two.orders().at("A").order_id == 63026 && two.orders().at("A").executed == 0 &&
+                two.orders().at("B").executed == 1,
+            "resolving the other Add reassigned official identity or historical fills");
+}
+void official_add_follows_relist_without_ancestor_row() {
+    Fixture f;
+    f.config.risk.max_notional_scaled = 50'000'000;
+    auto manager = f.manager();
+    require(manager.place(request("missing-root")).empty(), "missing root Add refused");
+    f.poll(manager, 0);
+    fill(manager, 9001, 8901, 1);
+    auto child = row(manager.orders().at("missing-root"), 9101, 1, 1, 101);
+    child.ext_id = 0;
+    child.id_ord1 = 9001;
+    observe(manager, child);
+    fill(manager, 9101, 8902, 1, 101);
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 9001}, OrderManager::Clock::time_point{});
+    require(manager.orders().at("missing-root").order_id == 9101 &&
+                manager.orders().at("missing-root").sess_id == 101 &&
+                manager.orders().at("missing-root").executed == 2 &&
+                manager.orders().at("missing-root").remaining == 1 && !manager.orders().contains("recovered:101:9101"),
+            "official179 failed to follow explicit relist whose ancestor row was absent");
+    fill(manager, 9001, 8901, 1);
+    fill(manager, 9101, 8902, 1, 101);
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 9001}, OrderManager::Clock::time_point{});
+    require(manager.orders().at("missing-root").executed == 2 && manager.orders().at("missing-root").order_id == 9101 &&
+                manager.place(request("missing-root-risk", 4)).empty(),
+            "missing-root relist replay duplicated fills/risk or rolled identity back");
+
+    Fixture multiple;
+    multiple.config.risk.max_notional_scaled = 100'000'000;
+    auto pending = multiple.manager();
+    require(pending.place(request("older")).empty(), "older candidate Add refused");
+    multiple.poll(pending, 0);
+    const auto older = multiple.sent.front().id;
+    multiple.session = 101;
+    require(pending.place(request("later")).empty(), "later candidate Add refused");
+    multiple.poll(pending, 1000);
+    const auto later = multiple.sent.back().id;
+    fill(pending, 9201, 8903, 1, 101);
+    auto linked = row(pending.orders().at("later"), 9301, 1, 1, 103);
+    linked.ext_id = 0;
+    linked.id_ord1 = 9201;
+    observe(pending, linked);
+    fill(pending, 9301, 8904, 1, 103);
+    pending.on_reply(older, {.msgid = 179, .code = 5}, OrderManager::Clock::time_point{});
+    linked.public_amount_rest = 0;
+    linked.public_action = 0;
+    observe(pending, linked);
+    ManagedOrder unrelated{.request = request("unrelated", 1)};
+    unrelated.request.isin_id = 43;
+    observe(pending, row(unrelated, 9931, 1, 1, 104));
+    observe(pending, row(unrelated, 9932, 1, 1, 105));
+    require(!pending.orders().contains("recovered:103:9301"), "old terminal descendant was not pruned");
+    pending.on_reply(later, {.msgid = 179, .order_id = 9201}, OrderManager::Clock::time_point{});
+    const auto final = std::find_if(multiple.log.rbegin(), multiple.log.rend(), [](const auto& line) {
+        return line.starts_with("order") && line.find("\"client_order_id\":\"later\"") != std::string::npos;
+    });
+    require(final != multiple.log.rend() && final->find("\"state\":\"Cancelled\"") != std::string::npos &&
+                final->find("\"executed\":2") != std::string::npos,
+            "resolving one Add scope discarded missing-root evidence/fills needed by another Add");
+}
+void delayed_relisted_fill_survives_raw_candidate_pruning() {
+    Fixture f;
+    auto manager = f.manager();
+    require(manager.place(request("delayed-child-fill")).empty(), "delayed child Add refused");
+    f.poll(manager, 0);
+    auto child = row(manager.orders().at("delayed-child-fill"), 9102, 0, 0, 101);
+    child.ext_id = 0;
+    child.id_ord1 = 9002;
+    observe(manager, child);
+    ManagedOrder unrelated{.request = request("unrelated", 1)};
+    unrelated.request.isin_id = 43;
+    observe(manager, row(unrelated, 9941, 1, 1, 102));
+    observe(manager, row(unrelated, 9942, 1, 1, 103));
+    require(!manager.orders().contains("recovered:101:9102"), "terminal child was unexpectedly retained as an object");
+    fill(manager, 9102, 8905, 1, 101); // First deal arrives after terminal history was pruned.
+    observe(manager, row(unrelated, 9943, 1, 1, 104));
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 9002}, OrderManager::Clock::time_point{});
+    const auto final = std::find_if(f.log.rbegin(), f.log.rend(), [](const auto& line) {
+        return line.starts_with("order") &&
+               line.find("\"client_order_id\":\"delayed-child-fill\"") != std::string::npos;
+    });
+    require(final != f.log.rend() && final->find("\"state\":\"Cancelled\"") != std::string::npos &&
+                final->find("\"executed\":1") != std::string::npos,
+            "session pruning discarded delayed fill for retained raw id_ord1 candidate");
+    const auto credited = std::count_if(f.log.begin(), f.log.end(), [](const auto& line) {
+        return line.starts_with("trade") && line.find("\"deal_id\":8905") != std::string::npos;
+    });
+    fill(manager, 9102, 8905, 1, 101);
+    require(credited == 1 && std::count_if(f.log.begin(), f.log.end(),
+                                           [](const auto& line) {
+                                               return line.starts_with("trade") &&
+                                                      line.find("\"deal_id\":8905") != std::string::npos;
+                                           }) == 1,
+            "delayed terminal child fill replay charged the same deal twice");
+}
 void manager_scale() {
     for (const std::size_t count : {1000U, 150000U}) {
         OrderManagerConfig config;
@@ -1335,6 +1654,13 @@ int main() {
         carried_fill_dedup_across_sessions();
         late_first_seen_carry_counts_for_risk();
         unknown_flood_reply_still_paces_publisher();
+        official_add_reply_owns_identity();
+        late_add_reply_after_absence_is_still_authoritative();
+        rejected_add_preserves_owned_evidence();
+        official_add_terminal_and_old_fill_evidence();
+        official_add_merges_recovered_and_claims_other_ext();
+        official_add_follows_relist_without_ancestor_row();
+        delayed_relisted_fill_survives_raw_candidate_pruning();
         manager_scale();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

@@ -119,6 +119,7 @@ class OrderManager {
         bool acknowledged{};
         std::uint32_t business_failures{};
         std::uint64_t bulk_generation{};
+        std::int32_t submitted_session{};
     };
     struct BulkCancellation {
         std::uint64_t generation{}, after_commit_sequence{};
@@ -142,6 +143,11 @@ class OrderManager {
         std::int64_t executed{}, sent_utc_seconds{};
         bool cancel_requested{}, execution_baseline_known{};
     };
+    struct HeldAddRow {
+        plaza2::private_state::OwnOrderSnapshot row;
+        std::string key;
+        Exposure charge;
+    };
     [[nodiscard]] std::string check_risk(const OrderRequest& request, std::size_t extra_orders,
                                          std::string_view exclude_key = {}) const;
     [[nodiscard]] Command encode(plaza2_trade::Plaza2TradeCommandRequest request, std::string key);
@@ -159,6 +165,21 @@ class OrderManager {
     [[nodiscard]] Exposure exposure(const std::string& key, const ManagedOrder& order) const;
     void advance_session(std::int32_t session);
     void prune_terminal();
+    void add_charge(const Exposure& charge);
+    void subtract_charge(const Exposure& charge);
+    [[nodiscard]] bool hold_add_row(const plaza2::private_state::OwnOrderSnapshot& row);
+    void materialize_add_rows(const std::string& key, std::int64_t official_id = 0);
+    void remember_add_evidence(const plaza2::private_state::OwnOrderSnapshot& row);
+    [[nodiscard]] bool has_add_ancestor(std::int32_t session, std::int32_t isin, std::int8_t side) const;
+    using AddScope = std::tuple<std::int32_t, std::int32_t, std::int8_t>;
+    struct AddEvidence {
+        plaza2::private_state::OwnOrderSnapshot row;
+        AddScope submission;
+    };
+    [[nodiscard]] bool adopt_recovered_order(const std::string& key, std::int64_t official_id,
+                                             std::int32_t submitted_session);
+    [[nodiscard]] bool has_uncertain_submission(std::int32_t session, std::int32_t isin,
+                                                plaza2_trade::Plaza2TradeSide side) const;
     OrderManagerConfig config_;
     Send send_;
     Ready ready_;
@@ -171,6 +192,16 @@ class OrderManager {
     std::set<std::string> unknown_orders_, operator_orders_, used_client_ids_;
     std::map<std::int32_t, std::set<std::string>> terminal_orders_;
     std::unordered_map<std::int64_t, TerminalLink> terminal_links_;
+    std::unordered_map<std::string, std::uint32_t> unconfirmed_adds_;
+    std::map<AddScope, std::size_t> unconfirmed_add_scopes_;
+    std::unordered_map<std::string, AddScope> add_submitted_scopes_;
+    std::map<std::pair<std::int32_t, std::int8_t>, std::set<std::int32_t>> add_contract_sessions_;
+    std::map<std::pair<std::int32_t, std::int64_t>, AddEvidence> add_evidence_;
+    std::unordered_map<std::int64_t, std::pair<std::int32_t, std::int64_t>> add_evidence_index_;
+    std::unordered_map<std::int64_t, std::set<std::int64_t>> add_descendants_;
+    std::map<std::pair<std::int32_t, std::int64_t>, HeldAddRow> held_add_rows_;
+    std::unordered_map<std::string, std::set<std::pair<std::int32_t, std::int64_t>>> held_by_add_;
+    std::unordered_map<std::int64_t, std::pair<std::int32_t, std::int64_t>> held_add_index_;
     std::size_t active_orders_{}, invalid_prices_{};
     // Each order contributes at most cap+1; a two-word sum supports subtraction
     // even when reconstructed exposure is well above the configured cap.
@@ -188,6 +219,7 @@ class OrderManager {
     std::unordered_map<std::uint32_t, Command> pending_;
     Clock::time_point now_{};
     bool throttled_{}, logging_failed_{}, operator_action_required_{};
+    bool replaying_add_rows_{};
 };
 
 } // namespace moex::connector_host
