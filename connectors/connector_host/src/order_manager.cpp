@@ -1257,6 +1257,10 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
     changed(found->first);
 }
 
+    if (rebuilding)
+        for (auto& [key, order] : orders_)
+            if (!terminal(order.state))
+                order.execution_baseline_known = false;
 void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, bool rebuilding) {
     std::vector<const plaza2::private_state::OwnOrderSnapshot*> ordered;
     auto observed_session = current_session_;

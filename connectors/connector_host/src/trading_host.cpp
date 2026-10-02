@@ -60,11 +60,6 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     orders_ = std::make_unique<OrderManager>(
         std::move(orders),
         [this](const auto& command, auto id) {
-            if (!private_state_error_.empty())
-                return cg::Plaza2PublisherMessageResult{
-                    .certainty = cg::Plaza2SubmissionCertainty::DefinitelyNotSent,
-                    .validation_error = {.code = cg::Plaza2ErrorCode::RuntimeCallFailed,
-                                         .message = private_state_error_}};
             try {
                 if (!log_error_.empty())
                     throw std::runtime_error(log_error_);
@@ -78,7 +73,7 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
             return session_.post_command(command, id);
         },
         [this](auto isin) {
-            return !rebuilding_ && log_error_.empty() && private_state_error_.empty() &&
+            return !rebuilding_ && log_error_.empty() &&
                    std::find(config_.isin_ids.begin(), config_.isin_ids.end(), isin) != config_.isin_ids.end() &&
                    moex::connector_host::order_entry_ready(session_, isin);
         },
@@ -178,8 +173,6 @@ cg::Plaza2Error CgateTradingHost::start() {
 }
 cg::Plaza2Error CgateTradingHost::poll() {
     assert_owner();
-    if (!private_state_error_.empty())
-        return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = private_state_error_};
     const auto error = session_.poll();
     if (!log_error_.empty()) {
         orders_->set_kill_switch(true);
@@ -213,10 +206,14 @@ cg::Plaza2Error CgateTradingHost::poll() {
             orders_->on_timeout(event.user_id, now);
         }
     }
-    // This barrier runs only once. A delayed initial USERORDERBOOK snapshot
-    // must be included in exposure reconstruction before the first new Add;
-    // subsequent USERORDERBOOK updates/outages do not gate new orders.
+    // Use the startup snapshot barrier again after a lost delta batch or TRADE
+    // disconnect. Keep the existing logical orders and command correlations;
+    // the current committed snapshots reconcile their identities and exposure.
     const auto changes = session_.take_private_row_changes();
+    if (!rebuilding_ && (changes.resync_required || !trade_online)) {
+        rebuilding_ = true;
+        log_event("private_history_gap", "{\"recovering\":true}");
+    }
     if (rebuilding_) {
         // The bootstrap barrier reconciles full committed snapshots. Delta
         // accumulation while waiting for USERORDERBOOK serves no consumer.
@@ -226,19 +223,8 @@ cg::Plaza2Error CgateTradingHost::poll() {
             rebuilding_ = false;
         }
     } else {
-        if (changes.resync_required) {
-            if (changes.history_lost) {
-                private_state_error_ = "private-state delta history lost; authoritative reconciliation required";
-                orders_->set_kill_switch(true);
-                log_event("private_history_gap", "{\"operator_action_required\":true}");
-                return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = private_state_error_};
-            }
-            orders_->observe_orders(data.own_orders());
-            orders_->observe_trades(data.own_trades());
-        } else {
-            orders_->observe_orders(changes.orders);
-            orders_->observe_trades(changes.trades);
-        }
+        orders_->observe_orders(changes.orders);
+        orders_->observe_trades(changes.trades);
     }
     // Empty TRADE commits also establish the post-186 reconciliation boundary.
     // Apply their rows first so individual fallbacks see only surviving orders.
@@ -327,24 +313,19 @@ void CgateTradingHost::report_outstanding_orders(std::ostream& output) const {
 std::string CgateTradingHost::status() const {
     assert_owner();
     const auto& data = session_.private_state();
-    std::string result =
-        "{\"version\":\"1.0.0\",\"queued\":" + std::to_string(orders_->queued()) +
-        ",\"reconstructing\":" + (rebuilding_ ? "true" : "false") +
-        ",\"sess_id\":" + std::to_string(current_session_id(data)) + ",\"log_error\":" + json_string(log_error_) +
-        ",\"private_state_error\":" + json_string(private_state_error_) + ",\"operator_action_required\":" +
-        (!private_state_error_.empty() || orders_->operator_action_required() ? "true" : "false") +
-        ",\"instruments\":[";
+    std::string result = "{\"version\":\"1.0.0\",\"queued\":" + std::to_string(orders_->queued()) +
+                         ",\"reconstructing\":" + (rebuilding_ ? "true" : "false") +
+                         ",\"sess_id\":" + std::to_string(current_session_id(data)) +
+                         ",\"log_error\":" + json_string(log_error_) +
+                         ",\"operator_action_required\":" + (orders_->operator_action_required() ? "true" : "false") +
+                         ",\"instruments\":[";
     bool first = true;
     for (const auto isin : config_.isin_ids) {
         if (!first)
             result += ',';
         first = false;
-        result +=
-            "{\"isin_id\":" + std::to_string(isin) + ",\"order_entry_ready\":" +
-            (!rebuilding_ && log_error_.empty() && private_state_error_.empty() && order_entry_ready(session_, isin)
-                 ? "true"
-                 : "false") +
-            "}";
+        result += "{\"isin_id\":" + std::to_string(isin) + ",\"order_entry_ready\":" +
+                  (!rebuilding_ && log_error_.empty() && order_entry_ready(session_, isin) ? "true" : "false") + "}";
     }
     result += "],\"positions\":[";
     first = true;

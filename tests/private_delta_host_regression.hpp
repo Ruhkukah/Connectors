@@ -3,7 +3,11 @@
 #include "moex/connector_host/trading_host.hpp"
 #include "fake_cgate_control.hpp"
 #include "plaza2_runtime_test_support.hpp"
+#include "fixtures/cgate99_messages.hpp"
 
+#include <algorithm>
+#include <cstring>
+#include <fstream>
 #include <limits>
 
 namespace moex::connector_host {
@@ -110,8 +114,7 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
             position += marker.size();
         }
         require(recovered == count, "overflow reconciliation retained only part of the committed snapshot");
-        require(status.find("\"private_state_error\":\"\"") != std::string::npos &&
-                    status.find("\"order_entry_ready\":true") != std::string::npos,
+        require(status.find("\"order_entry_ready\":true") != std::string::npos,
                 "lossless overflow did not restore order entry");
         const auto before = control.commands().size();
         require(host.place(add("after-lossless-overflow", isin)).empty(),
@@ -122,63 +125,146 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
                 "Add after lossless overflow never reached the native publisher");
         require(!host.stop(), "overflow host stop failed");
     }
-    // Exercise both table reclamation and a listener close after a committed
-    // private fill, before the owner has observed that fill.
-    for (const bool close : {false, true}) {
-        control.configure(scenario);
-        auto gap = config;
-        gap.orders.max_commands_per_second = 1;
-        gap.journal_path = root / (close ? "private-close-gap.ndjson" : "private-clear-gap.ndjson");
-        gap.identity_state_path = root / (close ? "private-close-gap.state" : "private-clear-gap.state");
-        CgateTradingHost host(gap);
+    // A committed update and a stream close can share one owner poll. Recover
+    // using complete current snapshots while retaining the existing manager.
+    for (const bool close : {true, false}) {
+        auto recovery_scenario = scenario;
+        recovery_scenario.suppress_auto_replies = true;
+        control.configure(recovery_scenario);
+        auto recovery = config;
+        recovery.orders.max_commands_per_second = 1;
+        recovery.journal_path = root / (close ? "private-close-resync.ndjson" : "private-clear-resync.ndjson");
+        recovery.identity_state_path = root / (close ? "private-close-resync.state" : "private-clear-resync.state");
+        CgateTradingHost host(recovery);
         bootstrap(host);
-        require(host.place(add("rate-window-seed", isin)).empty(), "history-gap seed Add refused");
-        for (int i = 0; i < 3; ++i)
-            require(!host.poll(), "history-gap seed Add failed");
+        const auto poll = [&] {
+            const auto error = host.poll();
+            require(!error, "ordinary private-stream resync killed the existing driver: " + error.message);
+        };
+        const auto reply = [&](std::uint32_t id, std::int64_t order_id = 20003) {
+            official_cgate99::FORTS_MSG179 accepted{};
+            accepted.order_id = order_id;
+            std::vector<std::byte> payload(sizeof(accepted));
+            std::memcpy(payload.data(), &accepted, payload.size());
+            control.enqueue(
+                {.kind = fake::EventKind::Reply, .message_id = 179, .user_id = id, .payload = std::move(payload)});
+        };
+        const auto order = [&](std::int64_t revision, std::int64_t remaining) {
+            auto row = own_order(20003, isin, account);
+            row.revision = revision;
+            for (auto& field : row.fields) {
+                if (field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPublicAmount ||
+                    field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPrivateAmount)
+                    field.signed_value = 3;
+                if (field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPublicAmountRest ||
+                    field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPrivateAmountRest)
+                    field.signed_value = remaining;
+            }
+            control.enqueue(row);
+        };
+        auto seed = add("same-logical-order", isin);
+        seed.quantity = 3;
+        const auto seed_begin = control.commands().size();
+        require(host.place(seed).empty(), "resync seed Add refused");
+        poll();
+        const auto original_post = control.commands().back();
+        require(original_post.name == "AddOrder", "resync seed Add was not posted");
+        reply(original_post.user_id);
+        control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        order(20003, 3);
+        control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        poll();
         const auto before = control.commands().size();
-        require(host.place(add("queued-before-history-gap", isin)).empty(), "history-gap queued Add refused");
-        cg::Plaza2Error error;
-        // A scheduling pause may split a bounded poll just after the commit.
-        // Repeat a fresh small transaction if that fill was already drained.
-        for (int attempt = 0; attempt < 10 && !error; ++attempt) {
-            const auto deal_id = 900000 + attempt;
-            control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
-            control.enqueue(own_trade(deal_id, isin, account));
-            control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
-            control.enqueue({.kind = close ? fake::EventKind::Close : fake::EventKind::ClearDeleted,
-                             .stream_code = gen::StreamCode::kFortsTradeRepl,
-                             .table_code = gen::TableCode::kFortsTradeReplUserDeal,
-                             .revision = std::numeric_limits<std::int64_t>::max()});
-            if (!close)
-                control.enqueue({.kind = fake::EventKind::Online, .stream_code = gen::StreamCode::kFortsTradeRepl});
-            const auto calls = control.process_count();
-            const auto callbacks = close ? 4u : 5u;
-            for (int i = 0; i < 10 && !error && control.process_count() - calls < callbacks; ++i)
-                error = host.poll();
-            if (close && !error)
-                now += std::chrono::seconds(1);
-        }
-        require(error.code == cg::Plaza2ErrorCode::RuntimeCallFailed &&
-                    error.message.find("private-state delta history lost") != std::string::npos,
-                close ? "undrained committed fill was silently discarded on listener close"
-                      : "undrained committed fill was silently discarded by ClearDeleted");
-        require(control.commands().size() == before, "queued Add dispatched while private history was lost");
-        const auto status = host.status();
-        require(status.find("\"operator_action_required\":true") != std::string::npos &&
-                    status.find("\"order_entry_ready\":false") != std::string::npos,
-                "private history gap did not expose an operator reconciliation requirement");
-        now += std::chrono::seconds(5); // The limiter is now eligible; the history latch must still stop sends.
-        host.set_kill_switch(false);
-        require(!host.place(add("after-history-gap", isin)).empty(), "history gap accepted another new Add");
+        require(host.place(add("queued-during-resync", isin)).empty(), "resync queued Add refused");
+        if (close)
+            control.set(fake::Option::DelayUserorderbook);
+        control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        order(900000, 2);
+        control.enqueue(own_trade(900000, isin, account));
+        control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        control.enqueue({.kind = close ? fake::EventKind::Close : fake::EventKind::ClearDeleted,
+                         .stream_code = gen::StreamCode::kFortsTradeRepl,
+                         .table_code = gen::TableCode::kFortsTradeReplUserDeal,
+                         .revision = std::numeric_limits<std::int64_t>::max()});
+        if (close)
+            control.enqueue({.kind = fake::EventKind::Close, .stream_code = gen::StreamCode::kFortsUserorderbookRepl});
+        else
+            // CLEARDELETED outside a transaction is applied at ONLINE. Keep
+            // that boundary in the same owner batch as the undrained commit.
+            control.enqueue({.kind = fake::EventKind::Online, .stream_code = gen::StreamCode::kFortsTradeRepl});
         const auto calls = control.process_count();
-        for (int i = 0; i < 3; ++i) {
-            const auto later = host.poll();
-            require(later.code == cg::Plaza2ErrorCode::RuntimeCallFailed && later.message == error.message,
-                    "private history gap was cleared by a later owner poll");
+        for (int i = 0; i < 10 && control.process_count() - calls < 6; ++i)
+            poll();
+        require(control.commands().size() == before, "queued Add dispatched before private resync");
+        if (close) {
+            const auto waiting = host.status();
+            require(waiting.find("\"reconstructing\":true") != std::string::npos &&
+                        waiting.find("\"order_entry_ready\":false") != std::string::npos,
+                    "closed private streams did not wait for complete snapshot reconstruction");
+            now += std::chrono::seconds(5);
+            for (int i = 0; i < 10; ++i)
+                poll();
+            require(control.commands().size() == before && !host.place(add("before-current-snapshots", isin)).empty(),
+                    "delayed USERORDERBOOK snapshot did not preserve the recovery barrier");
         }
-        require(control.process_count() == calls && control.commands().size() == before,
-                "latched history gap resumed gateway processing or queued sends");
-        require(!host.stop(), "history-gap host stop failed");
+        // The reopened source publishes the same working identity and deal.
+        // Replaying this deal again must not increment its execution twice.
+        control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        order(900001, 2);
+        control.enqueue(own_trade(900000, isin, account));
+        control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        control.enqueue({.kind = fake::EventKind::Online, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        if (close)
+            control.clear(fake::Option::DelayUserorderbook);
+        now += std::chrono::seconds(5);
+        for (int i = 0; i < 30; ++i)
+            poll();
+        const auto status = host.status();
+        const auto logical = status.find("\"client_order_id\":\"same-logical-order\"");
+        require(logical != std::string::npos, "private resync lost the original logical order");
+        const auto original = status.substr(logical, status.find('}', logical) - logical + 1);
+        require(original.find("\"order_id\":20003") != std::string::npos &&
+                    original.find("\"remaining\":2") != std::string::npos &&
+                    original.find("\"executed\":1") != std::string::npos &&
+                    original.find("\"execution_baseline_known\":false") != std::string::npos &&
+                    status.find("\"recovered:321:20003\"") == std::string::npos,
+                "private resync changed the order identity or lost its partial fill");
+        require(host.move("same-logical-order", "103000", 3).find("baseline") != std::string::npos,
+                "resync inferred complete historical fills and allowed Move");
+        require(status.find("\"reconstructing\":false") != std::string::npos &&
+                    status.find("\"order_entry_ready\":true") != std::string::npos,
+                "complete private snapshots did not restore readiness in the same host");
+        const auto resumed = control.commands();
+        require(resumed.size() == before + 1 && resumed.back().name == "AddOrder",
+                "queued Add did not resume once after private snapshot reconstruction");
+        require(std::count_if(resumed.begin() + static_cast<std::ptrdiff_t>(seed_begin), resumed.end(),
+                              [&](const auto& command) {
+                                  return command.user_id == original_post.user_id && command.name == "AddOrder";
+                              }) == 1,
+                "private resync blindly resubmitted the original Add");
+        reply(resumed.back().user_id, 20004);
+        poll();
+        require(host.move("queued-during-resync", "103000", 1).find("baseline") != std::string::npos,
+                "late 179 restored a pending Add's incomplete resync fill baseline");
+        control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        control.enqueue(own_trade(900000, isin, account));
+        control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        poll();
+        const auto replay = host.status();
+        const auto replay_begin = replay.find("\"client_order_id\":\"same-logical-order\"");
+        require(replay.substr(replay_begin, replay.find('}', replay_begin) - replay_begin + 1).find("\"executed\":1") !=
+                    std::string::npos,
+                "private snapshot replay counted a fill twice");
+        require(host.place(add("after-private-resync", isin)).empty(), "recovered driver refused new commands");
+        require(host.cancel("same-logical-order").empty(), "private resync blocked cancellation");
+        now += std::chrono::seconds(5);
+        poll();
+        require(control.commands().back().name == "DelOrder", "recovered cancellation never reached publisher");
+        require(!host.stop(), "recovered private host stop failed");
+        std::ifstream journal(recovery.journal_path);
+        const std::string records{std::istreambuf_iterator<char>(journal), std::istreambuf_iterator<char>()};
+        require(records.find("\"event\":\"private_history_gap\"") != std::string::npos,
+                "private resync did not record its recovery gap");
     }
 }
 } // namespace moex::connector_host

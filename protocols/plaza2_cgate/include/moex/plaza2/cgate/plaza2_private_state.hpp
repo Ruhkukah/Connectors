@@ -357,13 +357,10 @@ struct PrivateRowChanges {
     std::vector<OwnOrderSnapshot> orders;
     std::vector<OwnTradeSnapshot> trades;
     // Overflow discards the incomplete delta batch and stays sticky until
-    // take. Reconcile the full committed order/trade snapshots before using
-    // later deltas. No partial vectors are returned with this flag.
+    // take. Source invalidation or removal of undrained rows also requests
+    // resync. Reconcile complete current USERORDERBOOK and TRADE snapshots
+    // before using later deltas. No partial vectors are returned with this flag.
     bool resync_required{false};
-    // Unconsumed upserts were retired, or a resync-pending source was purged
-    // or invalidated. Current snapshots cannot repair the missing history.
-    // Trading consumers must fail closed and recover authoritative history.
-    bool history_lost{false};
 };
 
 // Read-only capacity metrics for the indexed private projection. No account
