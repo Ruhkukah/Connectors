@@ -1,7 +1,7 @@
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/connector_host/trading_host.hpp"
 #include "command_input.hpp"
-#include "host_stop_guard.hpp"
+#include "scope_exit.hpp"
 
 #include <array>
 #include <charconv>
@@ -150,7 +150,8 @@ int main(int argc, char** argv) {
                 config.isin_ids.push_back(static_cast<std::int32_t>(isin));
             }
             CgateTradingHost host(std::move(config));
-            HostStopGuard shutdown(host, [&] { host.report_outstanding_orders(std::cerr); });
+            ScopeExit report([&] { host.report_outstanding_orders(std::cerr); });
+            ScopeExit shutdown([&] { (void)host.stop(); });
             if (const auto error = host.start()) {
                 std::cerr << error.message << '\n';
                 return 3;
@@ -180,14 +181,16 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            if (const auto error = shutdown.stop()) {
+            const auto error = host.stop();
+            shutdown.release();
+            if (error) {
                 std::cerr << error.message << '\n';
                 return 7;
             }
             return 0;
         }
         ConnectorHost host(request.config);
-        HostStopGuard shutdown(host);
+        ScopeExit shutdown([&] { (void)host.stop(); });
         if (const auto error = host.start()) {
             std::cerr << error.message << '\n';
             return 3;
@@ -201,7 +204,9 @@ int main(int argc, char** argv) {
         } while (std::chrono::steady_clock::now() < deadline);
         const auto snapshot = host.snapshot();
         std::cout << render_snapshot(snapshot, request.json);
-        if (shutdown.stop())
+        const auto error = host.stop();
+        shutdown.release();
+        if (error)
             return 7;
         return snapshot.observation_ready ? 0 : 4;
     } catch (const std::exception& error) {

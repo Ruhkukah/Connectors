@@ -2,7 +2,7 @@
 #include "moex/connector_host/trading_host.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
-#include "host_stop_guard.hpp"
+#include "scope_exit.hpp"
 #include "private_delta_host_regression.hpp"
 #include "late_move_host_regression.hpp"
 #include "add_reply_host_regression.hpp"
@@ -18,7 +18,7 @@ namespace cg = moex::plaza2::cgate;
 namespace test = moex::plaza2::test;
 using namespace moex::connector_host;
 namespace {
-void stop_guard_regression() {
+void scope_exit_regression() {
     struct Host {
         int& calls;
         cg::Plaza2Error stop() {
@@ -29,28 +29,40 @@ void stop_guard_regression() {
     int calls{};
     Host host{calls};
     const auto early_exit = [&] {
-        HostStopGuard guard(host);
+        ScopeExit guard([&] { (void)host.stop(); });
         return 3;
     };
     test::require(early_exit() == 3 && calls == 1, "early host exit did not stop exactly once");
     try {
-        HostStopGuard guard(host);
+        ScopeExit guard([&] { (void)host.stop(); });
         throw std::runtime_error("poll exception");
     } catch (const std::runtime_error&) {
     }
     test::require(calls == 2, "exception unwinding did not stop the host");
     {
-        HostStopGuard guard(host);
-        test::require(guard.stop().code == cg::Plaza2ErrorCode::RuntimeCallFailed && guard.stop(),
-                      "explicit stop discarded its error result");
+        ScopeExit guard([&] { (void)host.stop(); });
+        const auto error = host.stop();
+        guard.release();
+        test::require(error.code == cg::Plaza2ErrorCode::RuntimeCallFailed, "explicit stop discarded its error result");
     }
     test::require(calls == 3, "explicit stop and destruction called stop twice");
+    bool reported{};
+    try {
+        ScopeExit report([&] { reported = true; });
+        ScopeExit shutdown([&] {
+            ++calls;
+            throw std::runtime_error("stop exception");
+        });
+        throw std::runtime_error("poll exception");
+    } catch (const std::runtime_error&) {
+    }
+    test::require(calls == 4 && reported, "shutdown exception prevented outstanding-order reporting");
 }
 } // namespace
 int main(int argc, char** argv) {
     try {
         test::require(argc == 2, "fake runtime path required");
-        stop_guard_regression();
+        scope_exit_regression();
         const auto root = test::make_temp_directory("trading-host");
         const auto fixture =
             test::materialize_runtime_fixture(root, argv[1], cg::Plaza2Environment::Test,
@@ -167,7 +179,7 @@ int main(int argc, char** argv) {
             broken_storage.identity_state_path = root / "storage-failure.state";
             CgateTradingHost host(broken_storage);
             std::ostringstream diagnostics;
-            HostStopGuard guard(host, [&] { host.report_outstanding_orders(diagnostics); });
+            ScopeExit shutdown([&] { (void)host.stop(); });
             test::require(!host.start(), "storage-failure host start");
             for (int i = 0; i < 30; ++i)
                 test::require(!host.poll(), "storage-failure host bootstrap");
@@ -199,7 +211,9 @@ int main(int argc, char** argv) {
                           "journal checkpoint failure did not stop sends before dispatch");
             cg::Plaza2Error stop_error;
             try {
-                stop_error = guard.stop();
+                ScopeExit report([&] { host.report_outstanding_orders(diagnostics); });
+                stop_error = host.stop();
+                shutdown.release();
             } catch (...) {
                 throw std::runtime_error("storage failure escaped stop before CGate cleanup");
             }
