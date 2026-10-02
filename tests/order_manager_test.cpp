@@ -629,6 +629,9 @@ void mass_cancel_supersedes_delayed_flood_replies() {
     const auto mass = f.sent.at(4);
     require(mass.kind == tr::Plaza2TradeCommandKind::DelUserOrders, "delayed flood mass request not sent first");
     manager.on_reply(individual.id, {.msgid = 99, .penalty_remain = 2000}, OrderManager::Clock::time_point{});
+    require(std::find(f.log.begin(), f.log.end(), "unknown_reply{\"user_id\":" + std::to_string(individual.id) + "}") !=
+                f.log.end(),
+            "mass cancel retained the superseded individual cancel correlation");
     manager.on_reply(move.id, {.msgid = 99, .penalty_remain = 3000}, OrderManager::Clock::time_point{});
     require(manager.queued() == 0, "superseded in-flight99 requeued an individual cancel or Move");
     f.poll(manager, 1000);
@@ -680,6 +683,9 @@ void mass_cancel_supersedes_delayed_flood_replies() {
     replacement.poll(replaced, 0);
     const auto new_mass = replacement.sent.back();
     replaced.on_reply(old_mass.id, {.msgid = 99, .penalty_remain = 2000}, OrderManager::Clock::time_point{});
+    require(std::find(replacement.log.begin(), replacement.log.end(),
+                      "unknown_reply{\"user_id\":" + std::to_string(old_mass.id) + "}") != replacement.log.end(),
+            "replacement mass cancel retained the superseded native correlation");
     replaced.on_reply(new_mass.id, {.msgid = 186, .num_orders = 1}, OrderManager::Clock::time_point{}, 1);
     replaced.observe_trade_commit(2);
     replacement.poll(replaced, 1999);

@@ -119,13 +119,17 @@ class OrderManager {
         std::int64_t target_order_id{};
         bool acknowledged{};
         std::uint32_t business_failures{};
-        std::uint64_t bulk_generation{};
         std::int32_t submitted_session{};
     };
     struct BulkCancellation {
-        std::uint64_t generation{}, after_commit_sequence{};
+        std::uint64_t after_commit_sequence{};
         bool awaiting_reply{true};
     };
+    [[nodiscard]] static bool is_bulk_cancel(const Command& command) {
+        return command.key.empty() &&
+               command.encoded.command_kind == plaza2_trade::Plaza2TradeCommandKind::DelUserOrders &&
+               command.encoded.isin_id.has_value();
+    }
     struct Exposure {
         std::uint64_t notional{};
         bool active{}, invalid_price{}, unknown{}, operator_action{};
@@ -192,7 +196,7 @@ class OrderManager {
     std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnOrderSnapshot> deferred_orders_;
     std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnTradeSnapshot> deferred_trades_;
     std::map<std::int32_t, BulkCancellation> bulk_cancellations_;
-    std::uint64_t next_bulk_generation_{1}, trade_commit_sequence_{};
+    std::uint64_t trade_commit_sequence_{};
     std::deque<Command> cancels_, adds_;
     std::unordered_map<std::uint32_t, Command> pending_;
     Clock::time_point now_{};

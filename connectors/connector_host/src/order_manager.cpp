@@ -561,8 +561,6 @@ std::string OrderManager::move(std::string_view client_id, std::string price, st
 std::string OrderManager::cancel_all(std::int32_t isin) {
     if (isin <= 0)
         return "cancel-all requires an instrument id";
-    if (next_bulk_generation_ == UINT64_MAX)
-        return "mass cancellation generation exhausted";
     tr::DelUserOrdersRequest request;
     request.broker_code = config_.broker_code;
     request.code = config_.client_code;
@@ -572,8 +570,7 @@ std::string OrderManager::cancel_all(std::int32_t isin) {
     request.isin_id = isin;
     request.instrument_mask = 1;
     auto command = encode(request, "");
-    command.bulk_generation = next_bulk_generation_++;
-    bulk_cancellations_[isin] = {.generation = command.bulk_generation};
+    bulk_cancellations_[isin] = {};
     const auto affected = [&](const Command& queued) {
         const auto order = orders_.find(queued.key);
         return order != orders_.end() && order->second.request.isin_id == isin;
@@ -596,9 +593,13 @@ std::string OrderManager::cancel_all(std::int32_t isin) {
         changed(key);
     }
     std::erase_if(adds_, affected);
-    std::erase_if(cancels_, [&](const auto& queued) {
-        return affected(queued) || (queued.bulk_generation && queued.encoded.isin_id == isin);
-    });
+    const auto superseded_cancel = [&](const Command& queued) {
+        return (is_bulk_cancel(queued) && queued.encoded.isin_id == isin) ||
+               (affected(queued) &&
+                (queued.encoded.command_kind == Kind::DelOrder || queued.encoded.command_kind == Kind::DelUserOrders));
+    };
+    std::erase_if(cancels_, superseded_cancel);
+    std::erase_if(pending_, [&](const auto& entry) { return superseded_cancel(entry.second); });
     // One exchange-side mass cancellation starts immediately, ahead of all
     // other queued risk reduction. Individual fallbacks wait for reconciliation.
     cancels_.push_front(std::move(command));
@@ -647,18 +648,15 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
 }
 void OrderManager::retry_cancel(Command command, Clock::time_point now, bool business_rejection) {
     auto found = orders_.find(command.key);
-    if (command.bulk_generation && command.encoded.isin_id) {
-        const auto bulk = bulk_cancellations_.find(*command.encoded.isin_id);
-        if (bulk == bulk_cancellations_.end() || bulk->second.generation != command.bulk_generation)
-            return;
-    }
+    if (is_bulk_cancel(command) && !bulk_cancellations_.contains(*command.encoded.isin_id))
+        return;
     if (found != orders_.end() && bulk_cancellations_.contains(found->second.request.isin_id))
         return; // The mass request superseded this outstanding individual cancel.
     if (business_rejection)
         ++command.business_failures;
     if (command.business_failures >= config_.max_cancel_attempts) {
         if (found == orders_.end()) {
-            if (command.bulk_generation && command.encoded.isin_id) {
+            if (is_bulk_cancel(command)) {
                 const auto isin = *command.encoded.isin_id;
                 bulk_cancellations_.erase(isin);
                 // Exchange-wide rejection does not end risk reduction for known
@@ -852,14 +850,7 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
     auto command = std::move(pending->second);
     pending_.erase(pending);
     const auto found = orders_.find(command.key);
-    bool superseded_bulk{};
-    if (command.bulk_generation && command.encoded.isin_id) {
-        const auto bulk = bulk_cancellations_.find(*command.encoded.isin_id);
-        superseded_bulk = bulk == bulk_cancellations_.end() || bulk->second.generation != command.bulk_generation;
-    }
     if (reply.msgid == 99) {
-        if (superseded_bulk)
-            return; // Keep the global penalty even when a newer mass request owns reconciliation.
         if (found != orders_.end() && command.encoded.command_kind != Kind::AddOrder &&
             (terminal(found->second.state) || bulk_cancellations_.contains(found->second.request.isin_id) ||
              (command.encoded.command_kind == Kind::MoveOrder && found->second.cancel_requested))) {
@@ -894,13 +885,11 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
         }
         return;
     }
-    if (superseded_bulk)
-        return;
     if (found == orders_.end()) {
-        if (command.bulk_generation && command.encoded.isin_id) {
+        if (is_bulk_cancel(command)) {
             const auto bulk = bulk_cancellations_.find(*command.encoded.isin_id);
-            if (bulk == bulk_cancellations_.end() || bulk->second.generation != command.bulk_generation)
-                return; // A newer explicit mass request owns this instrument.
+            if (bulk == bulk_cancellations_.end())
+                return;
             if (reply.code == 0 && reply.msgid == 186) {
                 bulk->second.awaiting_reply = false;
                 bulk->second.after_commit_sequence = std::max(trade_commit_sequence_, trade_commit_sequence);
@@ -1211,13 +1200,7 @@ void OrderManager::observe_trade_commit(std::uint64_t sequence) {
         if (!bulk.awaiting_reply && sequence > bulk.after_commit_sequence)
             reconciled.push_back(isin);
     for (const auto isin : reconciled) {
-        const auto generation = bulk_cancellations_.at(isin).generation;
         bulk_cancellations_.erase(isin);
-        const auto reconciled_command = [&](const Command& command) {
-            return command.bulk_generation == generation && command.encoded.isin_id == isin;
-        };
-        std::erase_if(pending_, [&](const auto& entry) { return reconciled_command(entry.second); });
-        std::erase_if(cancels_, reconciled_command);
         for (auto& [key, order] : orders_)
             if (order.request.isin_id == isin && order.cancel_requested && !terminal(order.state))
                 enqueue_cancel(order, true);
