@@ -304,7 +304,6 @@ int main(int argc, char** argv) {
             const auto replies = late.take_reply_events();
             if (owner == PublisherRateOwner::External) {
                 require(replies.size() == 1 && replies.front().user_id == 401 && replies.front().message_id == 176 &&
-                            replies.front().command_kind == Plaza2TradeCommandKind::MoveOrder &&
                             replies.front().raw_payload == payload,
                         "external owner lost176 after session correlation expired");
                 fake.enqueue({.kind = test::fake::EventKind::Reply,

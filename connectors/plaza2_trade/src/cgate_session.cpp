@@ -95,19 +95,6 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
             penalty(*decoded.penalty_remain);
         return {};
     }
-    static Plaza2TradeCommandKind kind_hint(std::uint32_t msgid) {
-        switch (msgid) {
-        case 176:
-            return Plaza2TradeCommandKind::MoveOrder;
-        case 177:
-            return Plaza2TradeCommandKind::DelOrder;
-        case 186:
-            return Plaza2TradeCommandKind::DelUserOrders;
-        default:
-            // 179 is Add; 99/100 require the owner's retained user_id context.
-            return Plaza2TradeCommandKind::AddOrder;
-        }
-    }
     Plaza2Error on_plaza2_listener_event(const cg::Plaza2ListenerEvent& event) override {
         if (event.kind != cg::Plaza2ListenerEventKind::StreamData && event.kind != cg::Plaza2ListenerEventKind::Timeout)
             return {};
@@ -124,7 +111,6 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
                         return error;
                 events.push_back({.user_id = event.user_id,
                                   .message_id = event.message_id,
-                                  .command_kind = kind_hint(event.message_id),
                                   .raw_payload = {event.raw_payload.begin(), event.raw_payload.end()}});
             }
             return {};
