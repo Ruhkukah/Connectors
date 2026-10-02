@@ -153,8 +153,8 @@ class OrderManager {
     [[nodiscard]] Command encode(plaza2_trade::Plaza2TradeCommandRequest request, std::string key);
     [[nodiscard]] std::uint32_t reserve_user_id();
     [[nodiscard]] bool has_outstanding_command(std::string_view key, plaza2_trade::Plaza2TradeCommandKind kind) const;
-    void recovery_cancel(ManagedOrder& order);
-    void enqueue_cancel(ManagedOrder& order);
+    void recovery_cancel(ManagedOrder& order, bool explicit_retry = false);
+    void enqueue_cancel(ManagedOrder& order, bool explicit_retry = false);
     void complete_timeout(Command command, Clock::time_point now);
     void retry_cancel(Command command, Clock::time_point now, bool business_rejection = false);
     void replay_deferred_trades();
@@ -218,7 +218,7 @@ class OrderManager {
     std::deque<Command> cancels_, adds_;
     std::unordered_map<std::uint32_t, Command> pending_;
     Clock::time_point now_{};
-    bool throttled_{}, logging_failed_{}, operator_action_required_{};
+    bool throttled_{}, logging_failed_{};
     bool replaying_add_rows_{};
 };
 

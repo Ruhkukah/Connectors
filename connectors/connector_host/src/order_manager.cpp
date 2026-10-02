@@ -126,9 +126,11 @@ void OrderManager::erase_exposure(const std::string& key) {
 }
 void OrderManager::refresh_exposure(const std::string& key) {
     erase_exposure(key);
-    const auto& order = orders_.at(key);
-    if (terminal(order.state))
+    auto& order = orders_.at(key);
+    if (terminal(order.state)) {
+        order.operator_action_required = false;
         move_reservations_.erase(key);
+    }
     const auto next = exposure(key, order);
     exposures_.emplace(key, next);
     add_charge(next);
@@ -403,7 +405,7 @@ bool OrderManager::adopt_recovered_order(const std::string& key, std::int64_t of
     original.executed += transferred_fills;
     original.request.price = recovered.request.price;
     original.confirmed_by_replication = recovered.confirmed_by_replication;
-    original.operator_action_required = recovered.operator_action_required;
+    original.operator_action_required = original.operator_action_required || recovered.operator_action_required;
     original.cancel_requested = original.cancel_requested || recovered.cancel_requested;
     original.order_ids.insert(recovered.order_ids.begin(), recovered.order_ids.end());
     for (const auto id : recovered.order_ids)
@@ -555,7 +557,7 @@ bool OrderManager::has_outstanding_command(std::string_view key, Kind kind) cons
            std::any_of(pending_.begin(), pending_.end(), [&](const auto& item) { return same(item.second); });
 }
 bool OrderManager::operator_action_required() const noexcept {
-    return operator_action_required_ || !operator_orders_.empty();
+    return !operator_orders_.empty();
 }
 
 std::string OrderManager::check_risk(const OrderRequest& request, std::size_t extra,
@@ -663,11 +665,11 @@ std::string OrderManager::place(OrderRequest request) {
         return error.what();
     }
 }
-void OrderManager::enqueue_cancel(ManagedOrder& order) {
-    if (order.operator_action_required || bulk_cancellations_.contains(order.request.isin_id))
+void OrderManager::enqueue_cancel(ManagedOrder& order, bool explicit_retry) {
+    if ((order.operator_action_required && !explicit_retry) || bulk_cancellations_.contains(order.request.isin_id))
         return;
     if (order.order_id <= 0) {
-        recovery_cancel(order);
+        recovery_cancel(order, explicit_retry);
         return;
     }
     const auto& key = order.request.client_order_id;
@@ -687,8 +689,8 @@ void OrderManager::enqueue_cancel(ManagedOrder& order) {
         order.state = OrderState::PendingCancel;
     changed(key);
 }
-void OrderManager::recovery_cancel(ManagedOrder& order) {
-    if (order.operator_action_required || bulk_cancellations_.contains(order.request.isin_id))
+void OrderManager::recovery_cancel(ManagedOrder& order, bool explicit_retry) {
+    if ((order.operator_action_required && !explicit_retry) || bulk_cancellations_.contains(order.request.isin_id))
         return;
     const auto& key = order.request.client_order_id;
     const auto same = [&](const Command& cmd) {
@@ -715,8 +717,7 @@ std::string OrderManager::cancel(std::string_view client_id) {
     auto& order = found->second;
     if (terminal(order.state))
         return {};
-    // A new explicit operator request may retry an exhausted cancellation.
-    order.operator_action_required = false;
+    // A deliberate retry preserves the warning until native terminal proof.
     order.cancel_requested = true;
     const auto unsent_move = [&](const Command& cmd) {
         return cmd.key == client_id && cmd.encoded.command_kind == Kind::MoveOrder;
@@ -735,7 +736,7 @@ std::string OrderManager::cancel(std::string_view client_id) {
         order.state = OrderState::Cancelled;
         changed(found->first);
     } else
-        enqueue_cancel(order);
+        enqueue_cancel(order, true);
     return {};
 }
 std::string OrderManager::move(std::string_view client_id, std::string price, std::int32_t quantity) {
@@ -793,7 +794,6 @@ std::string OrderManager::cancel_all(std::int32_t isin) {
     auto command = encode(request, "");
     command.bulk_generation = next_bulk_generation_++;
     bulk_cancellations_[isin] = {.generation = command.bulk_generation};
-    operator_action_required_ = false;
     const auto affected = [&](const Command& queued) {
         const auto order = orders_.find(queued.key);
         return order != orders_.end() && order->second.request.isin_id == isin;
@@ -805,7 +805,6 @@ std::string OrderManager::cancel_all(std::int32_t isin) {
         if (order.request.isin_id != isin || terminal(order.state))
             continue;
         order.cancel_requested = true;
-        order.operator_action_required = false;
         const bool unsent_add = std::any_of(adds_.begin(), adds_.end(), [&](const auto& queued) {
             return queued.key == key && queued.encoded.command_kind == Kind::AddOrder;
         });
@@ -879,15 +878,17 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now, bool bus
         ++command.business_failures;
     if (command.business_failures >= config_.max_cancel_attempts) {
         if (found == orders_.end()) {
-            operator_action_required_ = true;
             if (command.bulk_generation && command.encoded.isin_id) {
                 const auto isin = *command.encoded.isin_id;
                 bulk_cancellations_.erase(isin);
                 // Exchange-wide rejection does not end risk reduction for known
                 // orders. Each individual fallback has its own business budget.
                 for (auto& [key, order] : orders_)
-                    if (order.request.isin_id == isin && order.cancel_requested && !terminal(order.state))
-                        enqueue_cancel(order);
+                    if (order.request.isin_id == isin && order.cancel_requested && !terminal(order.state)) {
+                        order.operator_action_required = true;
+                        changed(key);
+                        enqueue_cancel(order, true);
+                    }
             }
         }
         if (found != orders_.end()) {
@@ -897,8 +898,9 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now, bool bus
                 "UNRESOLVED: cancellation business-rejection limit reached; operator action required";
             changed(found->first);
         }
-        emit("unresolved", "{\"client_order_id\":" + json_string(command.key) + ",\"business_rejections\":" +
-                               std::to_string(command.business_failures) + ",\"operator_action_required\":true}");
+        emit("unresolved", "{\"client_order_id\":" + json_string(command.key) +
+                               ",\"business_rejections\":" + std::to_string(command.business_failures) +
+                               ",\"operator_action_required\":" + (operator_action_required() ? "true}" : "false}"));
         return;
     }
     auto delay = config_.cancel_retry_base;
@@ -1105,7 +1107,6 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             if (found != orders_.end()) {
                 found->second.state = OrderState::Rejected;
                 found->second.remaining = 0;
-                found->second.operator_action_required = false;
                 changed(found->first);
                 materialize_add_rows(found->first);
                 prune_terminal();
@@ -1153,7 +1154,6 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             order.state = OrderState::Rejected;
             order.remaining = 0;
             order.last_error = reply.message;
-            order.operator_action_required = false;
             changed(key);
             materialize_add_rows(key);
             prune_terminal();
@@ -1179,13 +1179,12 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             order_index_[order.order_id] = key;
             order.remaining = std::max<std::int64_t>(0, std::int64_t(order.request.quantity) - order.executed);
             order.confirmed_by_replication = false;
-            order.operator_action_required = false;
             order.state = order.executed ? OrderState::PartFilled : OrderState::Working;
             refresh_exposure(key);
         }
         materialize_add_rows(key, *reply.order_id);
         if (order.cancel_requested && !terminal(order.state))
-            enqueue_cancel(order);
+            enqueue_cancel(order, true);
         changed(key);
         prune_terminal();
         return;
@@ -1238,7 +1237,7 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
         else
             replay_deferred_trades();
         if (order.cancel_requested && !terminal(order.state))
-            enqueue_cancel(order);
+            enqueue_cancel(order, true);
     } else if (command.encoded.command_kind == Kind::DelUserOrders) {
         order.absence_reply = reply.num_orders && *reply.num_orders == 0;
     }
@@ -1257,11 +1256,11 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
     changed(found->first);
 }
 
+void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, bool rebuilding) {
     if (rebuilding)
         for (auto& [key, order] : orders_)
             if (!terminal(order.state))
                 order.execution_baseline_known = false;
-void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, bool rebuilding) {
     std::vector<const plaza2::private_state::OwnOrderSnapshot*> ordered;
     auto observed_session = current_session_;
     const auto has_link = [&](const auto& row) {
@@ -1388,8 +1387,6 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             return item.second.key == key && item.second.encoded.command_kind == Kind::MoveOrder;
         });
         order.sess_id = row.sess_id;
-        if (order.order_id != id)
-            order.operator_action_required = false;
         order.order_id = id;
         order.confirmed_by_replication = true;
         order.order_ids.insert(id);
@@ -1408,14 +1405,12 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             order.state = OrderState::PendingCancel;
         else
             order.state = order.executed > 0 ? OrderState::PartFilled : OrderState::Working;
-        if (terminal(order.state))
-            order.operator_action_required = false;
         if (before != order_json(key, order))
             changed(key);
         else
             refresh_exposure(key);
         if (order.cancel_requested && !terminal(order.state))
-            enqueue_cancel(order);
+            enqueue_cancel(order, relisted);
     }
     replay_deferred_trades();
     std::uint64_t sequence{};
@@ -1443,7 +1438,7 @@ void OrderManager::observe_trade_commit(std::uint64_t sequence) {
         std::erase_if(cancels_, reconciled_command);
         for (auto& [key, order] : orders_)
             if (order.request.isin_id == isin && order.cancel_requested && !terminal(order.state))
-                enqueue_cancel(order);
+                enqueue_cancel(order, true);
     }
 }
 void OrderManager::replay_deferred_trades() {
@@ -1506,7 +1501,6 @@ void OrderManager::prove_absence(std::int64_t server_time, bool online) {
             order.state = OrderState::Cancelled;
             order.remaining = 0;
             order.last_error = "NotFound after TRADE watermark and DelUserOrders num_orders=0";
-            order.operator_action_required = false;
             changed(key);
         }
     }

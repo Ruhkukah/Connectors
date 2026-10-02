@@ -380,6 +380,138 @@ void mass_cancel_priority_and_reconciliation() {
             "empty TRADE commit did not release a surviving per-ID fallback");
 }
 
+void operator_action_alerts_clear_only_at_terminal() {
+    Fixture f;
+    f.config.max_cancel_attempts = 1;
+    auto manager = f.manager();
+    require(manager.place(request("operator-order")).empty(), "operator fixture Add refused");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 1301}, OrderManager::Clock::time_point{});
+    require(manager.cancel("operator-order").empty(), "operator fixture cancellation refused");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.back().id, {.msgid = 177, .code = 17}, OrderManager::Clock::time_point{});
+    require(manager.orders().at("operator-order").operator_action_required, "operator fixture did not exhaust cancel");
+    require(manager.cancel_all(42).empty(), "operator mass retry refused");
+    require(manager.orders().at("operator-order").operator_action_required && manager.operator_action_required(),
+            "cancel_all cleared an unresolved order's operator alert before terminal proof");
+    f.poll(manager, 1000);
+    manager.on_reply(f.sent.back().id, {.msgid = 186, .num_orders = 1},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(1000));
+    require(manager.orders().at("operator-order").operator_action_required,
+            "accepted186 cleared operator alert before TRADE confirmation");
+    auto working = row(manager.orders().at("operator-order"), 1301, 3, 1);
+    working.trade_repl_commit_sequence = 1;
+    observe(manager, working);
+    f.poll(manager, 1001);
+    require(manager.orders().at("operator-order").operator_action_required &&
+                f.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder &&
+                wire<official_cgate99::DelOrder>(f.sent.back()).order_id == 1301,
+            "preserving an alert suppressed accepted-bulk survivor risk reduction");
+    manager.on_reply(f.sent.back().id, {.msgid = 177}, OrderManager::Clock::time_point{});
+    require(manager.orders().at("operator-order").operator_action_required,
+            "accepted individual cancellation cleared operator alert before terminal proof");
+    working.public_amount_rest = 0;
+    working.public_action = 0;
+    observe(manager, working);
+    require(!manager.orders().at("operator-order").operator_action_required && !manager.operator_action_required(),
+            "authoritative terminal order did not clear operator alert");
+
+    Fixture explicit_retry;
+    explicit_retry.config.max_cancel_attempts = 1;
+    auto single = explicit_retry.manager();
+    require(single.place(request("explicit-retry")).empty(), "explicit retry Add refused");
+    explicit_retry.poll(single, 0);
+    single.on_reply(explicit_retry.sent.front().id, {.msgid = 179, .order_id = 1302},
+                    OrderManager::Clock::time_point{});
+    require(single.cancel("explicit-retry").empty(), "first explicit cancel refused");
+    explicit_retry.poll(single, 0);
+    single.on_reply(explicit_retry.sent.back().id, {.msgid = 177, .code = 17}, OrderManager::Clock::time_point{});
+    require(single.cancel("explicit-retry").empty() && single.orders().at("explicit-retry").operator_action_required,
+            "new individual cancel request cleared its unresolved operator alert");
+    explicit_retry.poll(single, 1000);
+    require(explicit_retry.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder &&
+                wire<official_cgate99::DelOrder>(explicit_retry.sent.back()).order_id == 1302,
+            "preserved alert prevented a deliberately renewed bounded cancellation");
+    auto relisted = row(single.orders().at("explicit-retry"), 1312, 3, 1, 101);
+    relisted.id_ord1 = 1302;
+    relisted.ext_id = 0;
+    observe(single, relisted);
+    require(single.orders().at("explicit-retry").operator_action_required && single.operator_action_required(),
+            "native day relist cleared an unresolved cancellation alert");
+    explicit_retry.poll(single, 2000);
+    require(wire<official_cgate99::DelOrder>(explicit_retry.sent.back()).order_id == 1312,
+            "retained alert prevented risk reduction against authoritative relisted identity");
+    relisted.public_amount_rest = 0;
+    relisted.public_action = 0;
+    observe(single, relisted);
+    require(!single.operator_action_required(), "relisted terminal order retained an obsolete alert");
+
+    Fixture authority;
+    authority.config.max_cancel_attempts = 1;
+    authority.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
+    auto late = authority.manager();
+    require(late.place(request("alert-before179")).empty(), "alert authority Add refused");
+    authority.poll(late, 0);
+    const auto add = authority.sent.front().id;
+    require(authority.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
+            "ambiguous Add did not send ext recovery");
+    late.on_reply(authority.sent.back().id, {.msgid = 186, .code = 17}, OrderManager::Clock::time_point{});
+    require(late.orders().at("alert-before179").operator_action_required, "ext recovery did not set alert");
+    auto recovered_exact = row(late.orders().at("alert-before179"), 1401, 2, 1);
+    recovered_exact.ext_id = 0;
+    observe(late, recovered_exact);
+    fill(late, 1401, 8951, 1);
+    late.on_reply(add, {.msgid = 179, .order_id = 1401}, OrderManager::Clock::time_point{});
+    authority.certainty = cg::Plaza2SubmissionCertainty::Posted;
+    authority.poll(late, 1000);
+    require(late.orders().at("alert-before179").operator_action_required && late.operator_action_required() &&
+                late.orders().at("alert-before179").executed == 1 &&
+                wire<official_cgate99::DelOrder>(authority.sent.back()).order_id == 1401,
+            "official179/recovered adoption cleared cancellation alert or suppressed exact-ID recovery");
+    recovered_exact.public_amount_rest = 0;
+    recovered_exact.public_action = 0;
+    observe(late, recovered_exact);
+    require(!late.operator_action_required(), "official identity terminal proof retained ext recovery alert");
+
+    Fixture bulk;
+    bulk.config.max_cancel_attempts = 1;
+    auto all = bulk.manager();
+    ManagedOrder seed{.request = request("bulk-alert"), .ext_id = 1};
+    auto first = row(seed, 1303, 3, 1);
+    auto second = row(seed, 1304, 3, 1);
+    second.ext_id = 2;
+    auto unrelated = row(seed, 1305, 3, 1);
+    unrelated.isin_id = 43;
+    std::array initial{first, second, unrelated};
+    all.observe_orders(initial, true);
+    require(all.cancel_all(42).empty(), "bulk alert fixture refused");
+    bulk.poll(all, 0);
+    all.on_reply(bulk.sent.back().id, {.msgid = 186, .code = 17}, OrderManager::Clock::time_point{});
+    require(all.operator_action_required(), "bulk exhaustion did not expose an operator alert");
+    unrelated.public_amount_rest = 0;
+    unrelated.public_action = 0;
+    observe(all, unrelated);
+    require(all.operator_action_required(), "unrelated terminal order cleared the failed bulk's alert");
+    require(all.cancel_all(42).empty() && all.operator_action_required(),
+            "renewed bulk request cleared unresolved affected-order alerts");
+    bulk.poll(all, 1000);
+    all.on_reply(bulk.sent.back().id, {.msgid = 186, .num_orders = 2},
+                 OrderManager::Clock::time_point{} + std::chrono::milliseconds(1000));
+    require(all.operator_action_required(), "accepted retry cleared failed bulk alert before any terminal row");
+    first.public_amount_rest = 0;
+    first.public_action = 0;
+    first.trade_repl_commit_sequence = second.trade_repl_commit_sequence = 1;
+    std::array partial{first, second};
+    all.observe_orders(partial);
+    require(all.operator_action_required() && !all.orders().at("recovered:100:1303").operator_action_required &&
+                all.orders().at("recovered:100:1304").operator_action_required,
+            "first terminal row cleared alerts for bulk survivors");
+    second.public_amount_rest = 0;
+    second.public_action = 0;
+    observe(all, second);
+    require(!all.operator_action_required(), "all bulk targets terminal did not clear the bulk operator alert");
+}
+
 void rejected_mass_cancel_falls_back_to_each_known_id() {
     Fixture f;
     auto manager = f.manager();
@@ -428,9 +560,9 @@ void rejected_mass_cancel_falls_back_to_each_known_id() {
         const auto before = del_count();
         manager.on_reply(last_cancel(1101), {.msgid = 177, .code = 17},
                          OrderManager::Clock::time_point{} + std::chrono::milliseconds(now));
-        require(manager.orders().at("recovered:100:1101").operator_action_required == (failure == 2) &&
-                    !manager.orders().at("recovered:100:1102").operator_action_required,
-                "bulk business budget leaked into individual fallback budget");
+        require(manager.orders().at("recovered:100:1101").operator_action_required &&
+                    manager.orders().at("recovered:100:1102").operator_action_required,
+                "individual fallback cleared inherited bulk operator alerts before terminal proof");
         f.poll(manager, now + (failure == 0 ? 1000 : 2000));
         require(del_count() == before + (failure == 2 ? 0 : 1),
                 "individual fallback lost its own bounded business-rejection retries");
@@ -914,11 +1046,12 @@ void recovery_bounds_and_wire() {
             "exhausted recovery lacks explicit operator status");
     require(manager.orders().at("bounded").sent_utc_seconds == original_send,
             "retry changed first-send absence anchor");
+    const auto before_explicit = f.sent.size();
     require(manager.cancel("bounded").empty(), "operator cannot explicitly retry exhausted recovery");
     f.poll(manager, 131000);
-    require(f.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders &&
-                !manager.orders().at("bounded").operator_action_required,
-            "explicit operator retry remained disabled");
+    require(f.sent.size() == before_explicit + 1 && f.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders &&
+                manager.orders().at("bounded").operator_action_required,
+            "explicit retry was disabled or prematurely cleared unresolved alert");
 
     Fixture bulk;
     auto other = bulk.manager();
@@ -933,7 +1066,15 @@ void recovery_bounds_and_wire() {
                            OrderManager::Clock::time_point{} + std::chrono::milliseconds(ms));
         }
     }
-    require(bulk.sent.size() == 3 && other.operator_action_required(), "failed cancel-all retries forever");
+    require(bulk.sent.size() == 3 && !other.operator_action_required() && other.orders().empty(),
+            "empty-owned bulk failure retried forever or invented an outstanding-order alert");
+    require(std::any_of(bulk.log.begin(), bulk.log.end(),
+                        [](const auto& line) {
+                            return line.starts_with("unresolved") &&
+                                   line.find("\"business_rejections\":3") != std::string::npos &&
+                                   line.find("\"operator_action_required\":false") != std::string::npos;
+                        }),
+            "empty-owned bulk business rejection was not logged");
 }
 void ext_identity_and_relist() {
     Fixture f;
@@ -1729,6 +1870,7 @@ int main() {
         risk();
         cancel_races_and_identity();
         mass_cancel_priority_and_reconciliation();
+        operator_action_alerts_clear_only_at_terminal();
         rejected_mass_cancel_falls_back_to_each_known_id();
         accepted_mass_cancel_waits_for_trade_without_resending();
         mass_cancel_supersedes_delayed_flood_replies();
