@@ -1136,11 +1136,9 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
                         if (order.request.isin_id == *command.encoded.isin_id && order.cancel_requested &&
                             order.order_id == 0)
                             order.absence_reply = true;
-                // Acceptance still needs a subsequent committed TRADE view.
-                // Keep the timer so a lost confirmation cannot strand the group.
-                command.acknowledged = true;
-                command.deadline = now + config_.reply_timeout;
-                pending_.emplace(id, std::move(command));
+                // Acceptance completes this command. Keep only the bulk gate
+                // until a later committed TRADE view; never resend an accepted
+                // request merely because replication is unavailable.
                 return;
             }
         }

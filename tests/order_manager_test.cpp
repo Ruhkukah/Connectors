@@ -437,6 +437,46 @@ void rejected_mass_cancel_falls_back_to_each_known_id() {
     }
 }
 
+void accepted_mass_cancel_waits_for_trade_without_resending() {
+    Fixture f;
+    f.config.reply_timeout = std::chrono::milliseconds(100);
+    auto manager = f.manager();
+    ManagedOrder seed{.request = request("accepted-bulk"), .ext_id = 1};
+    auto cancelled = row(seed, 1201, 3, 1);
+    auto survivor = row(seed, 1202, 3, 1);
+    survivor.ext_id = 2;
+    cancelled.trade_repl_commit_sequence = survivor.trade_repl_commit_sequence = 1;
+    std::array initial{cancelled, survivor};
+    manager.observe_orders(initial, true);
+    require(manager.cancel_all(42).empty(), "accepted bulk fixture refused");
+    f.poll(manager, 0);
+    const auto mass = f.sent.front().id;
+    manager.on_reply(mass, {.msgid = 186, .num_orders = 2}, OrderManager::Clock::time_point{}, 1);
+    f.ready = false;
+    for (const auto now : {1000, 60000, 120000, 180000, 240000, 300000}) {
+        f.poll(manager, now);
+        manager.on_timeout(mass, OrderManager::Clock::time_point{} + std::chrono::milliseconds(now));
+        require(f.sent.size() == 1, "accepted186 mass cancel was resent while awaiting TRADE");
+        require(manager.orders().at("recovered:100:1201").state == OrderState::PendingCancel &&
+                    manager.orders().at("recovered:100:1202").state == OrderState::PendingCancel &&
+                    !manager.operator_action_required(),
+                "accepted bulk wait lost known identity or cancellation state");
+    }
+    manager.observe_trade_commit(1);
+    f.poll(manager, 300000);
+    require(f.sent.size() == 1, "accepted bulk reused its pre-reply TRADE watermark");
+    cancelled.public_amount_rest = 0;
+    cancelled.public_action = 0;
+    cancelled.trade_repl_commit_sequence = survivor.trade_repl_commit_sequence = 2;
+    std::array final{cancelled, survivor};
+    manager.observe_orders(final);
+    f.poll(manager, 300001);
+    require(f.sent.size() == 2 && f.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder &&
+                wire<official_cgate99::DelOrder>(f.sent.back()).order_id == 1202 &&
+                manager.orders().at("recovered:100:1201").state == OrderState::Cancelled,
+            "post186 TRADE reconciliation did not cancel only the surviving known ID");
+}
+
 void mass_cancel_supersedes_delayed_flood_replies() {
     Fixture f;
     auto manager = f.manager();
@@ -631,18 +671,15 @@ void uncertain_cancels_preserve_identity_and_budget() {
     require(!group.operator_action_required() && bulk.sent.size() == before + 1 &&
                 bulk.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
             "system100 spent the bulk business retry budget");
-    for (int confirmation = 0; confirmation < 4; ++confirmation) {
-        const auto accepted_at = bulk.ms;
-        const auto sent_before_confirmation = bulk.sent.size();
-        group.on_reply(bulk.sent.back().id, {.msgid = 186, .num_orders = 1},
-                       OrderManager::Clock::time_point{} + std::chrono::milliseconds(accepted_at), 6);
-        bulk.poll(group, accepted_at + 100);
-        bulk.poll(group, accepted_at + 1099);
-        require(bulk.sent.size() == sent_before_confirmation, "accepted bulk confirmation retry ignored pacing");
-        bulk.poll(group, accepted_at + 1100);
-        require(!group.operator_action_required() && bulk.sent.size() == sent_before_confirmation + 1 &&
-                    bulk.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
-                "accepted bulk without a TRADE commit stopped retrying or lost its group gate");
+    const auto accepted_at = bulk.ms;
+    const auto sent_before_confirmation = bulk.sent.size();
+    group.on_reply(bulk.sent.back().id, {.msgid = 186, .num_orders = 1},
+                   OrderManager::Clock::time_point{} + std::chrono::milliseconds(accepted_at), 6);
+    for (int confirmation = 1; confirmation <= 4; ++confirmation) {
+        bulk.poll(group, accepted_at + confirmation * 1100);
+        require(!group.operator_action_required() && bulk.sent.size() == sent_before_confirmation &&
+                    group.orders().at("recovered:100:2001").state == OrderState::PendingCancel,
+                "accepted bulk confirmation wait resent or dropped the reconciliation gate");
     }
     live.public_amount_rest = 0;
     live.public_action = 0;
@@ -1693,6 +1730,7 @@ int main() {
         cancel_races_and_identity();
         mass_cancel_priority_and_reconciliation();
         rejected_mass_cancel_falls_back_to_each_known_id();
+        accepted_mass_cancel_waits_for_trade_without_resending();
         mass_cancel_supersedes_delayed_flood_replies();
         cancel_all_and_move_failures();
         uncertain_cancels_preserve_identity_and_budget();
