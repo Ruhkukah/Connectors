@@ -168,8 +168,9 @@ class OrderManager {
     void prune_terminal();
     void add_charge(const Exposure& charge);
     void subtract_charge(const Exposure& charge);
-    [[nodiscard]] bool adopt_recovered_order(const std::string& key, std::int64_t official_id,
-                                             std::int32_t submitted_session);
+    enum class RecoveredAdoption { NotFound, Adopted, Conflict };
+    [[nodiscard]] RecoveredAdoption adopt_recovered_order(const std::string& key, std::int64_t official_id,
+                                                          std::int32_t submitted_session);
     [[nodiscard]] bool has_uncertain_submission(std::int32_t session, std::int32_t isin,
                                                 plaza2_trade::Plaza2TradeSide side) const;
     OrderManagerConfig config_;

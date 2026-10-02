@@ -167,13 +167,13 @@ bool OrderManager::has_uncertain_submission(std::int32_t session, std::int32_t i
     }
     return false;
 }
-bool OrderManager::adopt_recovered_order(const std::string& key, std::int64_t official_id,
-                                         std::int32_t submitted_session) {
+OrderManager::RecoveredAdoption OrderManager::adopt_recovered_order(const std::string& key, std::int64_t official_id,
+                                                                    std::int32_t submitted_session) {
     auto index = order_index_.find(official_id);
     if (index == order_index_.end()) {
         const auto archived = terminal_links_.find(official_id);
         if (archived == terminal_links_.end())
-            return false;
+            return RecoveredAdoption::NotFound;
         const auto link = archived->second;
         ManagedOrder recovered;
         recovered.request = {.client_order_id = link.key,
@@ -198,16 +198,27 @@ bool OrderManager::adopt_recovered_order(const std::string& key, std::int64_t of
         index = order_index_.find(official_id);
     }
     if (index->second == key)
-        return false;
+        return RecoveredAdoption::NotFound;
     const auto previous_key = index->second;
-    if (!previous_key.starts_with("recovered:") || orders_.at(previous_key).execution_baseline_known)
-        throw std::runtime_error("official Add identity already belongs to another submitted order");
     auto& original = orders_.at(key);
+    const auto conflict = [&](std::string message) {
+        original.state = OrderState::Unknown;
+        original.operator_action_required = true;
+        original.last_error = std::move(message);
+        emit("add_identity_conflict", "{\"client_order_id\":" + json_string(key) +
+                                          ",\"official_order_id\":" + std::to_string(official_id) +
+                                          ",\"existing_owner\":" + json_string(previous_key) +
+                                          ",\"message\":" + json_string(original.last_error) + "}");
+        changed(key);
+        return RecoveredAdoption::Conflict;
+    };
+    if (!previous_key.starts_with("recovered:") || orders_.at(previous_key).execution_baseline_known)
+        return conflict("official Add identity already belongs to another submitted order");
     const auto& recovered = orders_.at(previous_key);
     if (recovered.request.isin_id != original.request.isin_id || recovered.request.side != original.request.side ||
         recovered.sess_id < submitted_session ||
         (recovered.order_id != official_id && recovered.sess_id <= submitted_session))
-        throw std::runtime_error("official Add identity conflicts with recovered ownership");
+        return conflict("official Add identity conflicts with recovered ownership");
     original.state = recovered.state;
     original.sess_id = recovered.sess_id;
     original.order_id = recovered.order_id;
@@ -247,7 +258,7 @@ bool OrderManager::adopt_recovered_order(const std::string& key, std::int64_t of
     erase_exposure(previous_key);
     orders_.erase(previous_key);
     refresh_exposure(key);
-    return true;
+    return RecoveredAdoption::Adopted;
 }
 void OrderManager::advance_session(std::int32_t session) {
     if (session <= current_session_)
@@ -936,7 +947,10 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             prune_terminal();
             return;
         }
-        if (!adopt_recovered_order(key, *reply.order_id, command.submitted_session)) {
+        const auto adoption = adopt_recovered_order(key, *reply.order_id, command.submitted_session);
+        if (adoption == RecoveredAdoption::Conflict)
+            return;
+        if (adoption == RecoveredAdoption::NotFound) {
             order.order_id = *reply.order_id;
             order.sess_id = command.submitted_session;
             if (const auto fill = filled_by_id_.find(order.order_id); fill != filled_by_id_.end())
