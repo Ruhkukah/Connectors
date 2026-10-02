@@ -91,25 +91,21 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     host.connection_settings =
         "p2tcp://" + endpoint + ":" + std::to_string(port) + ";app_name=" + inputs.publisher_name + ";timeout=2000";
     const auto scheme = host.runtime.scheme_dir.string();
-    const auto stream = [&](StreamCode code, std::string name, std::string alias = {}) {
-        return CgateStreamConfig{.stream_code = code,
-                                 .settings =
-                                     "p2repl://" + name +
-                                     (alias.empty() ? "" : ";scheme=|FILE|" + scheme + "/forts_scheme.ini|" + alias),
-                                 .open_settings = "mode=snapshot+online"};
+    const auto stream = [&](StreamCode code, std::string name) {
+        return CgateStreamConfig{
+            .stream_code = code, .settings = "p2repl://" + name, .open_settings = "mode=snapshot+online"};
     };
     if (inputs.read_only_market_data)
         host.private_streams = {stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL")};
     else
-        host.private_streams = {stream(StreamCode::kFortsTradeRepl, "FORTS_TRADE_REPL", "Trade"),
-                                stream(StreamCode::kFortsUserorderbookRepl, "FORTS_USERORDERBOOK_REPL", "OrdBook"),
-                                stream(StreamCode::kFortsPosRepl, "FORTS_POS_REPL", "POS"),
-                                stream(StreamCode::kFortsPartRepl, "FORTS_PART_REPL", "PART"),
-                                stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", "REFDATA")};
+        host.private_streams = {stream(StreamCode::kFortsTradeRepl, "FORTS_TRADE_REPL"),
+                                stream(StreamCode::kFortsUserorderbookRepl, "FORTS_USERORDERBOOK_REPL"),
+                                stream(StreamCode::kFortsPosRepl, "FORTS_POS_REPL"),
+                                stream(StreamCode::kFortsPartRepl, "FORTS_PART_REPL"),
+                                stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL")};
     host.status_streams = {stream(StreamCode::kFortsSessionstateRepl, "FORTS_SESSIONSTATE_REPL"),
                            stream(StreamCode::kFortsInstrumentstateRepl, "FORTS_INSTRUMENTSTATE_REPL")};
-    host.aggr20_stream =
-        stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL", inputs.read_only_market_data ? "" : "Aggr");
+    host.aggr20_stream = stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL");
     if (inputs.public_deals)
         host.public_deals_stream = stream(StreamCode::kFortsDealsRepl, "FORTS_DEALS_REPL");
     if (!inputs.read_only_market_data) {

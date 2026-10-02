@@ -2671,6 +2671,16 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
         delete listener;
         return kCgErrIncorrectState;
     }
+    // A public FILE OrdBook alias is not the private USERORDERBOOK schema.
+    if (listener->stream_code == StreamCode::kFortsUserorderbookRepl &&
+        listener->settings.find(";scheme=|FILE|") != std::string::npos && listener->settings.ends_with("|OrdBook"))
+        for (auto& message : listener->scheme->messages)
+            if (message->name == "orders")
+                for (auto& field : message->fields)
+                    if (field->name == "client_code") {
+                        field->name = "anonymous_client_code";
+                        field->desc.name = field->name.data();
+                    }
     if (fake_flag(Option::WrongSchemeOverride) && listener->settings.find("WRONG_SCHEME") != std::string::npos) {
         listener->scheme = std::make_unique<OwnedScheme>();
         listener->message_plans.clear();

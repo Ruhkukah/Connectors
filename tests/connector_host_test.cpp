@@ -1,5 +1,6 @@
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/connector_host/dtc_market_data.hpp"
+#include "moex/connector_host/trading_host.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
 #include <cstdlib>
@@ -49,6 +50,41 @@ int main(int argc, char** argv) {
         fake.set(moex::plaza2::test::fake::Option::ClientCode, "BRK1C01");
         fake.set(moex::plaza2::test::fake::Option::AggrSnapshotReadyOnly, "1");
         {
+            auto cfg = config(fixture);
+            cfg.transport.host.allow_orders = true;
+            for (auto& stream : cfg.transport.host.private_streams)
+                if (stream.stream_code == moex::plaza2::generated::StreamCode::kFortsUserorderbookRepl)
+                    stream.settings =
+                        "p2repl://FORTS_USERORDERBOOK_REPL;scheme=|FILE|" + fixture.scheme_path.string() + "|OrdBook";
+            ConnectorHost host(cfg);
+            warm(host);
+            const auto state = host.snapshot();
+            test::require(!state.private_streams_ready &&
+                              state.last_error.find("orders.client_code") != std::string::npos &&
+                              state.last_error.find("MISSING") != std::string::npos,
+                          "public FILE OrdBook alias must fail private account schema validation: " + state.last_error);
+            test::require(state.publisher_calls.post == 0 && fake.commands().empty(),
+                          "incompatible private schema must post no commands");
+            test::require(!host.stop(), "bad private FILE alias host stops");
+            TradingHostConfig trading;
+            trading.session = cfg.transport.host;
+            trading.orders.broker_code = cfg.order.broker_code;
+            trading.orders.client_code = cfg.order.client_code;
+            trading.isin_ids = {1001};
+            trading.journal_path = path / "bad-file-alias.ndjson";
+            CgateTradingHost owner(trading);
+            test::require(!owner.start(), "bad FILE alias trading owner starts asynchronously");
+            for (int i = 0; i < 20; ++i)
+                test::require(!owner.poll(), "bad FILE alias trading owner remains recoverable");
+            test::require(
+                owner.status().find("\"reconstructing\":true") != std::string::npos &&
+                    !owner.place({.client_order_id = "bad-alias", .isin_id = 1001, .price = "103000", .quantity = 1})
+                         .empty() &&
+                    fake.commands().empty(),
+                "incompatible private FILE alias must keep the startup barrier closed with zero posts");
+            test::require(!owner.stop(), "bad FILE alias trading owner stops");
+        }
+        {
             Plaza2HostConfigInputs inputs;
             inputs.runtime_root = fixture.root;
             inputs.library_path = fixture.library_path;
@@ -64,14 +100,12 @@ int main(int argc, char** argv) {
             const auto& runtime = cfg.transport.host.runtime;
             test::require(runtime.scheme_dir == fixture.scheme_dir && runtime.config_dir == fixture.config_dir,
                           "relative scheme/config paths resolve against runtime root");
-            test::require(cfg.transport.host.publisher_settings.find(fixture.scheme_dir.string()) !=
-                                  std::string::npos &&
-                              cfg.transport.host.private_streams.front().settings.find(fixture.scheme_dir.string()) !=
-                                  std::string::npos,
-                          "listener and publisher scheme paths use resolved runtime directory");
+            test::require(cfg.transport.host.publisher_settings.find(fixture.scheme_dir.string()) != std::string::npos,
+                          "publisher scheme path uses resolved runtime directory");
             ConnectorHost host(cfg);
             warm(host);
-            test::require(host.order_entry_ready(1001), "relative runtime paths open all trading objects");
+            test::require(host.order_entry_ready(1001) && host.snapshot().private_streams_ready,
+                          "relative runtime paths open all trading objects with the private account schema");
             test::require(!host.stop(), "relative-path host stops");
         }
         {
