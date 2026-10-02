@@ -189,6 +189,7 @@ OrderManager::RecoveredAdoption OrderManager::adopt_recovered_order(const std::s
         recovered.executed = link.executed;
         recovered.confirmed_by_replication = true;
         recovered.execution_baseline_known = link.execution_baseline_known;
+        recovered.transport_retry_warned = link.transport_retry_warned;
         recovered.order_ids.insert(link.order_ids.begin(), link.order_ids.end());
         orders_.emplace(link.key, std::move(recovered));
         for (const auto id : link.order_ids) {
@@ -239,6 +240,7 @@ OrderManager::RecoveredAdoption OrderManager::adopt_recovered_order(const std::s
     original.request.price = recovered.request.price;
     original.confirmed_by_replication = recovered.confirmed_by_replication;
     original.operator_action_required = original.operator_action_required || recovered.operator_action_required;
+    original.transport_retry_warned = original.transport_retry_warned || recovered.transport_retry_warned;
     original.cancel_requested = original.cancel_requested || recovered.cancel_requested;
     original.order_ids.insert(recovered.order_ids.begin(), recovered.order_ids.end());
     for (const auto id : recovered.order_ids)
@@ -308,7 +310,8 @@ void OrderManager::prune_terminal() {
                                     .state = order.state,
                                     .order_ids = {order.order_ids.begin(), order.order_ids.end()},
                                     .cancel_requested = order.cancel_requested,
-                                    .execution_baseline_known = order.execution_baseline_known};
+                                    .execution_baseline_known = order.execution_baseline_known,
+                                    .transport_retry_warned = order.transport_retry_warned};
             for (const auto id : order.order_ids)
                 if (id == order.order_id || unresolved)
                     terminal_links_[id] = link;
@@ -622,8 +625,19 @@ void OrderManager::set_kill_switch(bool enabled) {
 }
 
 void OrderManager::complete_timeout(Command command, Clock::time_point now) {
-    emit("timeout", "{\"user_id\":" + std::to_string(command.user_id) + "}");
     const auto found = orders_.find(command.key);
+    if (command.encoded.command_kind == Kind::DelOrder || command.encoded.command_kind == Kind::DelUserOrders) {
+        auto& warned = found == orders_.end() ? command.transport_retry_warned : found->second.transport_retry_warned;
+        if (!warned && (found == orders_.end() || !terminal(found->second.state))) {
+            warned = true;
+            emit("transport_retry",
+                 "{\"client_order_id\":" + json_string(command.key) + ",\"user_id\":" +
+                     std::to_string(command.user_id) + ",\"name\":" + json_string(command.encoded.command_name) +
+                     ",\"message\":\"cancellation outcome is uncertain; transport retries continue\"}");
+        }
+    } else {
+        emit("timeout", "{\"user_id\":" + std::to_string(command.user_id) + "}");
+    }
     if (found == orders_.end()) {
         retry_cancel(std::move(command), now);
         return;
@@ -1100,6 +1114,7 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
                     restored.sent_utc_seconds = link.sent_utc_seconds;
                     restored.cancel_requested = link.cancel_requested;
                     restored.execution_baseline_known = link.execution_baseline_known;
+                    restored.transport_retry_warned = link.transport_retry_warned;
                     restored.order_ids.insert(link.order_ids.begin(), link.order_ids.end());
                     orders_.emplace(key, std::move(restored));
                     for (const auto alias : link.order_ids) {

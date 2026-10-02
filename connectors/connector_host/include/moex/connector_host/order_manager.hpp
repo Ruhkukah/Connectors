@@ -45,7 +45,7 @@ struct ManagedOrder {
     std::int64_t order_id{}, remaining{}, executed{};
     bool cancel_requested{}, absence_reply{};
     bool operator_action_required{}, confirmed_by_replication{};
-    bool add_unconfirmed{};
+    bool add_unconfirmed{}, transport_retry_warned{};
     bool execution_baseline_known{true};
     std::int64_t sent_utc_seconds{};
     std::set<std::int64_t> order_ids;
@@ -118,7 +118,7 @@ class OrderManager {
         Clock::time_point deadline{}, not_before{};
         std::uint32_t user_id{};
         std::int64_t target_order_id{};
-        bool acknowledged{};
+        bool acknowledged{}, transport_retry_warned{};
         std::uint32_t business_failures{};
         std::int32_t submitted_session{};
     };
@@ -148,7 +148,7 @@ class OrderManager {
         std::int64_t order_id{}, remaining{}, executed{}, sent_utc_seconds{};
         OrderState state{};
         std::vector<std::int64_t> order_ids;
-        bool cancel_requested{}, execution_baseline_known{};
+        bool cancel_requested{}, execution_baseline_known{}, transport_retry_warned{};
     };
     [[nodiscard]] std::string check_risk(const OrderRequest& request, std::size_t extra_orders,
                                          std::string_view exclude_key = {}) const;

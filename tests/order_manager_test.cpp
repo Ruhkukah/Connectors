@@ -1,6 +1,7 @@
 #include "moex/connector_host/order_manager.hpp"
 
 #include "fixtures/cgate99_messages.hpp"
+#include "transport_retry_warning_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -1937,6 +1938,7 @@ int main() {
         mass_cancel_supersedes_delayed_flood_replies();
         cancel_all_and_move_failures();
         uncertain_cancels_preserve_identity_and_budget();
+        moex::connector_host::transport_retry_warning_regression<Fixture>();
         cancel_during_move();
         replication_during_move();
         confirmed_add_without_reply();
