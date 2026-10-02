@@ -171,6 +171,9 @@ int main(int argc, char** argv) {
             test::require(!host.start(), "storage-failure host start");
             for (int i = 0; i < 30; ++i)
                 test::require(!host.poll(), "storage-failure host bootstrap");
+            std::ostringstream flat_diagnostics;
+            host.report_outstanding_orders(flat_diagnostics);
+            test::require(flat_diagnostics.str().empty(), "flat host printed a working-order shutdown warning");
             fake.set(test::fake::Option::PubReplyOrderId, "62001");
             test::require(host.place({.client_order_id = "working-before-storage-failure",
                                       .isin_id = 1001,

@@ -308,11 +308,16 @@ void CgateTradingHost::set_kill_switch(bool enabled) {
 }
 void CgateTradingHost::report_outstanding_orders(std::ostream& output) const {
     assert_owner();
-    output << "moexctl: trading driver is stopping. Working orders may remain on the exchange; "
-              "a disconnect does not cancel them. Confirm venue state through the broker/exchange emergency channel.\n";
+    bool warned{};
     for (const auto& [key, order] : orders_->orders()) {
         if (terminal(order.state))
             continue;
+        if (!warned) {
+            output << "moexctl: trading driver is stopping. Working orders may remain on the exchange; "
+                      "a disconnect does not cancel them. Confirm venue state through the broker/exchange emergency "
+                      "channel.\n";
+            warned = true;
+        }
         output << "outstanding order client_order_id=" << json_string(key) << " order_id=" << order.order_id
                << " ext_id=" << order.ext_id << " isin_id=" << order.request.isin_id << " sess_id=" << order.sess_id
                << " state=" << order_state_name(order.state) << " remaining=" << order.remaining << '\n';
