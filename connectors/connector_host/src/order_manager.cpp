@@ -830,7 +830,6 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
                       ",\"order_id1\":" + std::to_string(reply.order_id1.value_or(0)) +
                       ",\"order_id2\":" + std::to_string(reply.order_id2.value_or(0)) +
                       ",\"amount\":" + std::to_string(reply.amount.value_or(-1)) +
-                      ",\"iceberg_order_id\":" + std::to_string(reply.iceberg_order_id.value_or(0)) +
                       ",\"penalty_remain\":" + std::to_string(reply.penalty_remain.value_or(0)) +
                       ",\"queue_size\":" + std::to_string(reply.queue_size.value_or(0)) + "}");
     if (reply.msgid == 99)

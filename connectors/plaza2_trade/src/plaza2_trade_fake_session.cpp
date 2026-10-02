@@ -232,8 +232,6 @@ template <typename Request> std::string price_or_empty(const Request& request) {
 template <typename Request> std::int64_t amount_or_zero(const Request& request) {
     if constexpr (requires { request.amount; }) {
         return request.amount.value_or(0);
-    } else if constexpr (requires { request.iceberg_amount; }) {
-        return request.iceberg_amount.value_or(0);
     }
     return 0;
 }
@@ -251,8 +249,7 @@ std::int64_t correlation_for(const Plaza2TradeCommandRequest& request) {
             using T = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<T, MoveOrderRequest>) {
                 return value.ext_id1.value_or(0);
-            } else if constexpr (std::is_same_v<T, CODHeartbeatRequest>) {
-                return value.seq_number.value_or(0);
+
             } else {
                 return ext_id_or_zero(value);
             }
@@ -264,22 +261,12 @@ std::int32_t primary_reply_msgid(Plaza2TradeCommandKind kind) {
     switch (kind) {
     case Plaza2TradeCommandKind::AddOrder:
         return 179;
-    case Plaza2TradeCommandKind::IcebergAddOrder:
-        return 180;
     case Plaza2TradeCommandKind::DelOrder:
         return 177;
-    case Plaza2TradeCommandKind::IcebergDelOrder:
-        return 182;
     case Plaza2TradeCommandKind::MoveOrder:
         return 176;
-    case Plaza2TradeCommandKind::IcebergMoveOrder:
-        return 181;
     case Plaza2TradeCommandKind::DelUserOrders:
         return 186;
-    case Plaza2TradeCommandKind::DelOrdersByBFLimit:
-        return 172;
-    case Plaza2TradeCommandKind::CODHeartbeat:
-        return 10000;
     }
     return 0;
 }
@@ -289,18 +276,14 @@ Plaza2TradeDecodedReply make_reply(std::int32_t msgid, Plaza2TradeFakeOutcomeSta
                                    std::optional<std::int32_t> count = std::nullopt) {
     Plaza2TradeDecodedReply reply;
     reply.msgid = msgid;
-    reply.message_name = msgid == 10000 ? "CODHeartbeat" : "FORTS_MSG" + std::to_string(msgid);
+    reply.message_name = "FORTS_MSG" + std::to_string(msgid);
     reply.status = status == Plaza2TradeFakeOutcomeStatus::Accepted ? Plaza2TradeReplyStatusCategory::Accepted
                                                                     : Plaza2TradeReplyStatusCategory::Rejected;
     reply.code = status == Plaza2TradeFakeOutcomeStatus::Accepted ? 0 : -1;
     reply.message = std::move(message);
     if (order_id) {
-        if (msgid == 180) {
-            reply.iceberg_order_id = *order_id;
-        } else {
-            reply.order_id = *order_id;
-            reply.order_id1 = *order_id;
-        }
+        reply.order_id = *order_id;
+        reply.order_id1 = *order_id;
     }
     if (count) {
         reply.amount = *count;
@@ -403,7 +386,7 @@ Plaza2TradeFakeSubmitResult Plaza2TradeFakeSession::submit(const Plaza2TradeComm
         [&](const auto& value) {
             using T = std::decay_t<decltype(value)>;
             auto accepted = make_result(kind, correlation, Plaza2TradeFakeOutcomeStatus::Accepted, "accepted");
-            if constexpr (std::is_same_v<T, AddOrderRequest> || std::is_same_v<T, IcebergAddOrderRequest>) {
+            if constexpr (std::is_same_v<T, AddOrderRequest>) {
                 if (correlation != 0) {
                     seen_client_transaction_ids_.push_back(correlation);
                 }
@@ -426,7 +409,7 @@ Plaza2TradeFakeSubmitResult Plaza2TradeFakeSession::submit(const Plaza2TradeComm
                 append_order_confirmation(accepted.replication, orders_.back(), next_repl_id_, next_moment_);
                 finish_batch(accepted.replication);
                 return accepted;
-            } else if constexpr (std::is_same_v<T, DelOrderRequest> || std::is_same_v<T, IcebergDelOrderRequest>) {
+            } else if constexpr (std::is_same_v<T, DelOrderRequest>) {
                 auto it = std::find_if(orders_.begin(), orders_.end(),
                                        [&](const auto& order) { return order.synthetic_order_id == *value.order_id; });
                 if (it == orders_.end()) {
@@ -469,27 +452,6 @@ Plaza2TradeFakeSubmitResult Plaza2TradeFakeSession::submit(const Plaza2TradeComm
                 append_order_confirmation(accepted.replication, *it, next_repl_id_, next_moment_);
                 finish_batch(accepted.replication);
                 return accepted;
-            } else if constexpr (std::is_same_v<T, IcebergMoveOrderRequest>) {
-                auto it = std::find_if(orders_.begin(), orders_.end(),
-                                       [&](const auto& order) { return order.synthetic_order_id == *value.order_id; });
-                if (it == orders_.end()) {
-                    return make_result(kind, correlation, Plaza2TradeFakeOutcomeStatus::UnknownOrder, "unknown order");
-                }
-                if (is_terminal(it->status)) {
-                    return make_result(kind, correlation, Plaza2TradeFakeOutcomeStatus::Rejected,
-                                       "order is already terminal");
-                }
-                it->status = Plaza2TradeFakeOrderStatus::Moved;
-                it->price = value.price.value_or(it->price);
-                it->client_transaction_id = value.ext_id.value_or(it->client_transaction_id);
-                it->last_command_family = kind;
-                accepted.generated_order_id = it->synthetic_order_id;
-                accepted.decoded_reply =
-                    make_reply(result.reply_msgid, accepted.status, accepted.diagnostic, it->synthetic_order_id);
-                accepted.replication = make_batch("phase5c_iceberg_move_order_accept");
-                append_order_confirmation(accepted.replication, *it, next_repl_id_, next_moment_);
-                finish_batch(accepted.replication);
-                return accepted;
             } else if constexpr (std::is_same_v<T, DelUserOrdersRequest>) {
                 std::int32_t affected = 0;
                 accepted.replication = make_batch("phase5c_del_user_orders_accept");
@@ -513,11 +475,6 @@ Plaza2TradeFakeSubmitResult Plaza2TradeFakeSession::submit(const Plaza2TradeComm
                     make_reply(result.reply_msgid, accepted.status, accepted.diagnostic, std::nullopt, affected);
                 finish_batch(accepted.replication);
                 return accepted;
-            } else if constexpr (std::is_same_v<T, DelOrdersByBFLimitRequest>) {
-                return make_result(kind, correlation, Plaza2TradeFakeOutcomeStatus::UnsupportedCommand,
-                                   "Phase 5A metadata has only broker_code for this command");
-            } else {
-                return make_result(kind, correlation, Plaza2TradeFakeOutcomeStatus::Accepted, "heartbeat accepted");
             }
         },
         request);
@@ -568,8 +525,6 @@ const char* fake_outcome_name(Plaza2TradeFakeOutcomeStatus status) noexcept {
         return "UnknownOrder";
     case Plaza2TradeFakeOutcomeStatus::InvalidState:
         return "InvalidState";
-    case Plaza2TradeFakeOutcomeStatus::UnsupportedCommand:
-        return "UnsupportedCommand";
     case Plaza2TradeFakeOutcomeStatus::ValidationFailed:
         return "ValidationFailed";
     }

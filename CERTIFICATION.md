@@ -1,6 +1,6 @@
 # MoexConnector 1.0.0 — CGate certification
 
-The first certificate covers own-account SPECTRA trading over CGate 9.9. It includes TRADE, POS, PART, REFDATA, USERORDERBOOK, AGGR20, SESSIONSTATE and INSTRUMENTSTATE. Declare AddOrder, DelOrder, DelUserOrders and MoveOrder. TWIME, FullOrderLog, public DEALS, COD, RFS, .NET/C ABI and DTC order entry are excluded. Public DEALS remains an optional read-only feature, off by default; its outstanding defects are deferred. Deferred source is preserved at `archive/pre-cgate-certification-remediation-20260930`.
+The first certificate covers own-account SPECTRA trading over CGate 9.9. It includes TRADE, POS, PART, REFDATA, USERORDERBOOK, AGGR20, SESSIONSTATE and INSTRUMENTSTATE. Declare AddOrder, DelOrder, DelUserOrders and MoveOrder. TWIME, FullOrderLog, public DEALS, Iceberg commands, DelOrdersByBFLimit, COD, RFS, .NET/C ABI and DTC order entry are excluded. Public DEALS remains an optional read-only feature, off by default; its outstanding defects are deferred. Deferred source is preserved at `archive/pre-cgate-certification-remediation-20260930`.
 
 Automated tests demonstrate implementation behavior. They do not certify a release or replace the full MOEX test day. The internal live rehearsal and MOEX scenarios below still require the actual router, vendor CGate, provisioned test account and agreed test schedule. No broker command is authorized merely by running the build or tests.
 
