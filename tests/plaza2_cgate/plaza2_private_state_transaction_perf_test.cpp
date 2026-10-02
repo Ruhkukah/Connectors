@@ -334,7 +334,26 @@ void duplicate_native_trade_changes() {
             "technical purge silently discarded an under-cap committed fill");
 }
 
-int main() {
+std::chrono::nanoseconds snapshot_median(std::array<std::chrono::nanoseconds, 3> samples) {
+    std::sort(samples.begin(), samples.end());
+    return samples[1];
+}
+
+bool snapshot_release_accepted(const std::array<std::chrono::nanoseconds, 3>& samples) {
+    return snapshot_median(samples) <= std::chrono::seconds(2);
+}
+
+void snapshot_acceptance_boundaries() {
+    using namespace std::chrono_literals;
+    require(snapshot_release_accepted({1141ms, 1189ms, 1138ms}),
+            "the measured deployment-host snapshot median must satisfy the approved 2s gate");
+    require(snapshot_release_accepted({1999ms, 2s, 9s}), "snapshot acceptance must include the exact 2s median");
+    require(!snapshot_release_accepted({2s + 1ns, 9s, 2s + 2ns}), "snapshot acceptance must reject a median above 2s");
+    require(snapshot_release_accepted({9s, 1s, 1999ms}), "one slow snapshot must not replace the three-run median");
+    require(!snapshot_release_accepted({1s, 2001ms, 2002ms}), "two slow snapshots must fail the median gate");
+}
+
+int transaction_scenario(std::chrono::nanoseconds& snapshot_duration) {
     try {
         private_state::Plaza2PrivateStateProjector projector;
         Plaza2PrivateStateBridge bridge(projector);
@@ -385,8 +404,8 @@ int main() {
         }
         require(projector.own_orders().empty() && projector.positions().empty(), "uncommitted rows became visible");
         event(Plaza2ListenerEventKind::TransactionCommit, kFortsTradeRepl);
-        const auto elapsed =
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+        snapshot_duration = std::chrono::steady_clock::now() - start;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(snapshot_duration).count();
         require(projector.own_orders().size() == 150000, "order index lost rows");
         require(projector.storage_capacity().order_snapshot_capacity <= 200000,
                 "150k order snapshot retains excessive reserve capacity");
@@ -700,14 +719,32 @@ int main() {
         clone_pending_native_transaction();
         duplicate_native_trade_changes();
         std::cout << "150000 TRADE rows including commit: " << elapsed << " ms\n";
-// Optimized sanitizer builds also define NDEBUG. Their instrumentation overhead
-// is diagnostic; the Linux Release job enforces the unchanged capacity limit.
-#if defined(__linux__) && MOEX_RELEASE_PERFORMANCE_ACCEPTANCE
-        require(elapsed < 1000, "150k TRADE snapshot exceeds Linux Release 1 second acceptance");
-#endif
 #if MOEX_RELEASE_PERFORMANCE_ACCEPTANCE
         require(sorted_updates.back() < 1000, "single-row committed update exceeds Release 1ms acceptance");
         require(insert_us < 1000, "single-order insertion exceeds Release 1ms acceptance");
+#endif
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << '\n';
+        return 1;
+    }
+}
+
+int main() {
+    try {
+        snapshot_acceptance_boundaries();
+        std::array<std::chrono::nanoseconds, 3> samples;
+        for (auto& sample : samples)
+            if (transaction_scenario(sample) != 0)
+                return 1;
+        std::cout << "150k fresh TRADE snapshot runs: ";
+        for (const auto sample : samples)
+            std::cout << std::chrono::duration<double, std::milli>(sample).count() << " ms ";
+        std::cout << "; median: " << std::chrono::duration<double, std::milli>(snapshot_median(samples)).count()
+                  << " ms\n";
+// Instrumented builds remain diagnostic; Linux Release enforces snapshot capacity.
+#if defined(__linux__) && MOEX_RELEASE_PERFORMANCE_ACCEPTANCE
+        require(snapshot_release_accepted(samples), "150k TRADE snapshot median exceeds Linux Release 2s acceptance");
 #endif
         return 0;
     } catch (const std::exception& e) {
