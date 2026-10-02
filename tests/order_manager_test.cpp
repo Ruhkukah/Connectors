@@ -1349,6 +1349,59 @@ void terminal_pruning_and_relist() {
     require(manager.orders().at("carry").order_id == 9101 && manager.orders().at("carry").remaining == 3,
             "late old-session deletion hijacked the revived order");
 }
+void queued_move_rechecks_reconstructed_fill_baseline() {
+    Fixture f;
+    f.config.max_commands_per_second = 1;
+    f.config.risk.max_notional_scaled = 60'000'000;
+    auto manager = f.manager();
+    require(manager.place(request("queued-before-resync")).empty(), "resync Move seed Add refused");
+    f.poll(manager, 0);
+    manager.on_reply(f.sent.front().id, {.msgid = 179, .order_id = 1001}, OrderManager::Clock::time_point{});
+    require(manager.move("queued-before-resync", "110", 5).empty(), "pre-resync Move refused");
+    f.poll(manager, 0);
+    require(f.sent.size() == 1 && manager.queued() == 1, "rate gate did not hold the pre-resync Move");
+    require(!manager.place(request("before-baseline-recheck")).empty(), "queued Move lacked its risk reservation");
+    observe(manager, row(manager.orders().at("queued-before-resync"), 1001, 3, 1), true);
+    require(!manager.orders().at("queued-before-resync").execution_baseline_known,
+            "reconstruction retained a stale fill baseline");
+    f.poll(manager, 1000);
+    const auto& settled = manager.orders().at("queued-before-resync");
+    require(f.sent.size() == 1 && manager.queued() == 0 && settled.state == OrderState::Working &&
+                settled.order_id == 1001 && settled.last_error.find("fill baseline") != std::string::npos,
+            "rate-blocked Move was posted after reconstruction invalidated its fill baseline");
+    require(manager.place(request("after-baseline-recheck")).empty(),
+            "locally rejected reconstructed Move retained its risk reservation");
+
+    Fixture sent;
+    sent.config.risk.max_notional_scaled = 60'000'000;
+    sent.config.reply_timeout = std::chrono::milliseconds(10);
+    auto ambiguous = sent.manager();
+    require(ambiguous.place(request("sent-before-resync")).empty(), "ambiguous resync seed Add refused");
+    sent.poll(ambiguous, 0);
+    ambiguous.on_reply(sent.sent.front().id, {.msgid = 179, .order_id = 2001}, OrderManager::Clock::time_point{});
+    require(ambiguous.move("sent-before-resync", "110", 5).empty(), "ambiguous pre-resync Move refused");
+    sent.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
+    sent.poll(ambiguous, 1);
+    const auto move_id = sent.sent.at(1).id;
+    sent.certainty = cg::Plaza2SubmissionCertainty::Posted;
+    observe(ambiguous, row(ambiguous.orders().at("sent-before-resync"), 2001, 0, 0), true);
+    sent.poll(ambiguous, 20);
+    require(ambiguous.orders().at("sent-before-resync").state == OrderState::Unknown &&
+                !ambiguous.place(request("before-late-reconstructed-proof", 1)).empty(),
+            "reconstruction discarded the posted uncertain Move or its risk");
+    ambiguous.on_reply(move_id, {.msgid = 176, .order_id1 = 2002},
+                       OrderManager::Clock::time_point{} + std::chrono::milliseconds(21));
+    require(ambiguous.orders().at("sent-before-resync").order_id == 2002 &&
+                std::count_if(
+                    sent.sent.begin(), sent.sent.end(),
+                    [](const auto& command) { return command.kind == tr::Plaza2TradeCommandKind::MoveOrder; }) == 1,
+            "baseline recheck lost late176 correlation or resubmitted an uncertain Move");
+    require(!ambiguous.place(request("before-reconstructed-terminal", 1)).empty(),
+            "late176 released reconstructed replacement exposure before native terminal proof");
+    observe(ambiguous, row(ambiguous.orders().at("sent-before-resync"), 2002, 0, 0));
+    require(ambiguous.place(request("after-reconstructed-terminal", 1)).empty(),
+            "native replacement terminal did not release reconstructed uncertain risk");
+}
 void cached_risk_move_races() {
     const auto working = [](Fixture& f, OrderManager& manager) {
         require(manager.place(request("first", 3)).empty(), "risk-race Add refused");
@@ -1894,6 +1947,7 @@ int main() {
         eligible_commands_and_logging();
         aggregate_risk();
         terminal_pruning_and_relist();
+        queued_move_rechecks_reconstructed_fill_baseline();
         cached_risk_move_races();
         carried_fill_dedup_across_sessions();
         late_first_seen_carry_counts_for_risk();

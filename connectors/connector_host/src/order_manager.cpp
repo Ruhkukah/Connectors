@@ -726,7 +726,10 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
                 proposed.price = command.replacement_price;
                 proposed.quantity = command.replacement_quantity;
             }
-            const auto error = check_risk(proposed, 0, command.key);
+            const auto error =
+                command.encoded.command_kind == Kind::MoveOrder && !found->second.execution_baseline_known
+                    ? std::string("recovered order has no complete fill baseline; cancel instead of moving")
+                    : check_risk(proposed, 0, command.key);
             if (error.empty() && command.encoded.command_kind == Kind::AddOrder)
                 found->second.sess_id = terms_(proposed.isin_id)->sess_id;
             if (!error.empty()) {
