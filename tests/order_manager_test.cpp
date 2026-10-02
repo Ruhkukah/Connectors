@@ -380,6 +380,63 @@ void mass_cancel_priority_and_reconciliation() {
             "empty TRADE commit did not release a surviving per-ID fallback");
 }
 
+void rejected_mass_cancel_falls_back_to_each_known_id() {
+    Fixture f;
+    auto manager = f.manager();
+    ManagedOrder buy{.request = request("bulk-buy"), .ext_id = 1};
+    ManagedOrder sell{.request = request("bulk-sell"), .ext_id = 2};
+    auto first = row(buy, 1101, 3, 1);
+    auto second = row(sell, 1102, 3, 1);
+    second.dir = 2;
+    auto unaffected = row(buy, 1103, 3, 1);
+    unaffected.isin_id = 43;
+    std::array initial{first, second, unaffected};
+    manager.observe_orders(initial, true);
+    require(manager.cancel_all(42).empty(), "rejected mass cancel refused");
+    f.poll(manager, 0);
+    for (const auto now : {0, 1000, 3000}) {
+        require(f.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
+                "bulk retry changed command before exhausting its own budget");
+        manager.on_reply(f.sent.back().id, {.msgid = 186, .code = 17},
+                         OrderManager::Clock::time_point{} + std::chrono::milliseconds(now));
+        if (now < 3000)
+            f.poll(manager, now == 0 ? 1000 : 3000);
+    }
+    f.poll(manager, 3000);
+    const auto del_count = [&] {
+        return std::count_if(f.sent.begin(), f.sent.end(),
+                             [](const auto& sent) { return sent.kind == tr::Plaza2TradeCommandKind::DelOrder; });
+    };
+    require(del_count() == 2, "three bulk business rejections did not post individual fallback for each working ID");
+    std::set<std::int64_t> targets;
+    for (const auto& sent : f.sent)
+        if (sent.kind == tr::Plaza2TradeCommandKind::DelOrder)
+            targets.insert(wire<official_cgate99::DelOrder>(sent).order_id);
+    require(targets == std::set<std::int64_t>{1101, 1102} &&
+                !manager.orders().at("recovered:100:1103").cancel_requested,
+            "rejected bulk fallback changed ownership, side or instrument scope");
+    const auto last_cancel = [&](std::int64_t target) {
+        const auto sent = std::find_if(f.sent.rbegin(), f.sent.rend(), [&](const auto& value) {
+            return value.kind == tr::Plaza2TradeCommandKind::DelOrder &&
+                   wire<official_cgate99::DelOrder>(value).order_id == target;
+        });
+        require(sent != f.sent.rend(), "individual fallback missing");
+        return sent->id;
+    };
+    for (int failure = 0; failure < 3; ++failure) {
+        const auto now = failure == 0 ? 3000 : failure == 1 ? 4000 : 6000;
+        const auto before = del_count();
+        manager.on_reply(last_cancel(1101), {.msgid = 177, .code = 17},
+                         OrderManager::Clock::time_point{} + std::chrono::milliseconds(now));
+        require(manager.orders().at("recovered:100:1101").operator_action_required == (failure == 2) &&
+                    !manager.orders().at("recovered:100:1102").operator_action_required,
+                "bulk business budget leaked into individual fallback budget");
+        f.poll(manager, now + (failure == 0 ? 1000 : 2000));
+        require(del_count() == before + (failure == 2 ? 0 : 1),
+                "individual fallback lost its own bounded business-rejection retries");
+    }
+}
+
 void mass_cancel_supersedes_delayed_flood_replies() {
     Fixture f;
     auto manager = f.manager();
@@ -1635,6 +1692,7 @@ int main() {
         risk();
         cancel_races_and_identity();
         mass_cancel_priority_and_reconciliation();
+        rejected_mass_cancel_falls_back_to_each_known_id();
         mass_cancel_supersedes_delayed_flood_replies();
         cancel_all_and_move_failures();
         uncertain_cancels_preserve_identity_and_budget();

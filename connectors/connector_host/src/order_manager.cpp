@@ -880,8 +880,15 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now, bool bus
     if (command.business_failures >= config_.max_cancel_attempts) {
         if (found == orders_.end()) {
             operator_action_required_ = true;
-            if (command.bulk_generation && command.encoded.isin_id)
-                bulk_cancellations_.erase(*command.encoded.isin_id);
+            if (command.bulk_generation && command.encoded.isin_id) {
+                const auto isin = *command.encoded.isin_id;
+                bulk_cancellations_.erase(isin);
+                // Exchange-wide rejection does not end risk reduction for known
+                // orders. Each individual fallback has its own business budget.
+                for (auto& [key, order] : orders_)
+                    if (order.request.isin_id == isin && order.cancel_requested && !terminal(order.state))
+                        enqueue_cancel(order);
+            }
         }
         if (found != orders_.end()) {
             found->second.operator_action_required = true;
