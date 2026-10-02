@@ -96,6 +96,7 @@ class OrderManager {
     void on_timeout(std::uint32_t user_id, Clock::time_point now);
     // USERORDERBOOK is used only while rebuilding, never as a live Add gate.
     void observe_orders(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, bool rebuilding = false);
+    void invalidate_execution_baselines();
     void observe_trades(std::span<const plaza2::private_state::OwnTradeSnapshot> rows);
     // Call after applying TRADE deltas, including commits with no changed orders.
     void observe_trade_commit(std::uint64_t sequence);

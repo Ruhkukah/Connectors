@@ -2,6 +2,7 @@
 #include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -219,6 +220,7 @@ struct OrderMap : std::unordered_map<OrderKey, OwnOrderSnapshot, OrderKeyHash> {
 };
 using TradeMap = std::unordered_map<TradeKey, OwnTradeSnapshot, TradeKeyHash>;
 using SourceRevisionRows = std::unordered_map<TableCode, std::unordered_map<std::string, std::int64_t>, EnumClassHash>;
+using TradeClearFloors = std::array<std::int64_t, 4>;
 
 struct RowReader {
     std::span<const projection::FieldValueSpec> fields;
@@ -551,8 +553,10 @@ struct StagedState {
     std::vector<OrderKey> order_keys;
     std::vector<TradeKey> trade_keys;
     bool rebuild_order_view{}, rebuild_trade_view{};
+    bool trade_history_truncated{};
     std::optional<std::vector<StreamHealthSnapshot>> stream_health;
     std::optional<SourceRevisionRows> source_revisions;
+    std::optional<TradeClearFloors> trade_clear_floors;
     std::unordered_set<StreamCode, EnumClassHash> touched_streams;
     bool userbook_regular_info_seen{false};
     std::int32_t userbook_regular_info_publication_state{0};
@@ -604,6 +608,9 @@ struct Plaza2PrivateStateProjector::Impl {
     OrderMap orders_by_key;
     TradeMap trades_by_key;
     SourceRevisionRows source_revisions;
+    // Retain committed order/deal purge floors across transport reopen. A
+    // repeated server marker alone does not remove previously available fills.
+    TradeClearFloors trade_clear_floors{};
     std::unordered_map<StreamCode, std::uint64_t, EnumClassHash> lifenums_by_stream;
 
     std::vector<TradingSessionSnapshot> session_snapshots;
@@ -661,6 +668,7 @@ struct Plaza2PrivateStateProjector::Impl {
         orders_by_key.clear();
         trades_by_key.clear();
         source_revisions.clear();
+        trade_clear_floors = {};
         lifenums_by_stream.clear();
         session_snapshots.clear();
         instrument_snapshots.clear();
@@ -726,7 +734,8 @@ struct Plaza2PrivateStateProjector::Impl {
         discard_stream_row_changes(stream_code);
         if (stream_code == projection::kNoStreamCode) {
             const auto resync_required = row_changes.resync_required;
-            row_changes = {.resync_required = resync_required};
+            const auto trade_history_truncated = row_changes.trade_history_truncated;
+            row_changes = {.resync_required = resync_required, .trade_history_truncated = trade_history_truncated};
         }
         const auto invalidate = [](StreamHealthSnapshot& health) {
             health.online = false;
@@ -1185,7 +1194,18 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void require_snapshot_resync() {
-        row_changes = {.resync_required = true};
+        row_changes = {.resync_required = true, .trade_history_truncated = row_changes.trade_history_truncated};
+    }
+
+    void mark_trade_history_truncated() {
+        if (staged.active)
+            staged.trade_history_truncated = true;
+        else
+            row_changes.trade_history_truncated = true;
+    }
+
+    TradeClearFloors& active_trade_clear_floors() {
+        return staged.active ? ensure_stage_copy(staged.trade_clear_floors, trade_clear_floors) : trade_clear_floors;
     }
 
     void discard_stream_row_changes(StreamCode stream_code) {
@@ -1208,7 +1228,7 @@ struct Plaza2PrivateStateProjector::Impl {
         const auto pending = row_changes.orders.size() + row_changes.trades.size();
         if (additional_rows <= kPrivateRowChangeCapacity - pending)
             return true;
-        row_changes = {.resync_required = true};
+        row_changes = {.resync_required = true, .trade_history_truncated = true};
         return false;
     }
 
@@ -1333,6 +1353,34 @@ struct Plaza2PrivateStateProjector::Impl {
         };
 
         const auto stream_code = clear_stream_for_table(table_code);
+        const auto floor_index = [&] {
+            switch (table_code) {
+            case kFortsTradeReplOrdersLog:
+                return 0U;
+            case kFortsTradeReplMultilegOrdersLog:
+                return 1U;
+            case kFortsTradeReplUserDeal:
+                return 2U;
+            case kFortsTradeReplUserMultilegDeal:
+                return 3U;
+            default:
+                return 4U;
+            }
+        }();
+        if (floor_index < trade_clear_floors.size()) {
+            auto& floor = active_trade_clear_floors()[floor_index];
+            // An advancing floor can retire an unseen disconnected fill even
+            // if none of our cached rows is erased by this callback.
+            if (clear_revision == std::numeric_limits<std::int64_t>::max()) {
+                // Clear-all transfers the table; later finite revisions belong
+                // to rebuilt contents and must not be masked by this sentinel.
+                floor = 0;
+                mark_trade_history_truncated();
+            } else if (clear_revision > floor) {
+                floor = clear_revision;
+                mark_trade_history_truncated();
+            }
+        }
         auto mark_touched = [&]() {
             if (stream_code == projection::kNoStreamCode) {
                 return;
@@ -1369,6 +1417,7 @@ struct Plaza2PrivateStateProjector::Impl {
                     continue;
                 }
                 if (trade_source) {
+                    mark_trade_history_truncated();
                     it->second.from_trade_repl = false;
                     it->second.trade_repl_commit_sequence = 0;
                 }
@@ -1400,6 +1449,7 @@ struct Plaza2PrivateStateProjector::Impl {
             for (auto it = trades.begin(); it != trades.end();) {
                 const auto key = revision_key(it->second);
                 if (source_row_is_stale(table_code, key, clear_revision)) {
+                    mark_trade_history_truncated();
                     erase_source_row(table_code, key);
                     it = trades.erase(it);
                 } else {
@@ -2619,12 +2669,15 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         if (staged.rebuild_order_view || staged.rebuild_trade_view)
             prune_row_changes();
+        row_changes.trade_history_truncated |= staged.trade_history_truncated;
         if (staged.stream_health.has_value()) {
             stream_health = std::move(*staged.stream_health);
         }
         if (staged.source_revisions.has_value()) {
             source_revisions = std::move(*staged.source_revisions);
         }
+        if (staged.trade_clear_floors.has_value())
+            trade_clear_floors = *staged.trade_clear_floors;
         sync_base_health(state);
         if (staged.userbook_regular_info_seen) {
             auto& health = ensure_stream_health(stream_health, StreamCode::kFortsUserorderbookRepl);
@@ -2901,6 +2954,8 @@ void Plaza2PrivateStateProjector::on_event(const projection::ScenarioSpec&, cons
     case projection::EventKind::kLifeNum:
         impl_->sync_base_health(state);
         if (event.stream_code == projection::kNoStreamCode) {
+            impl_->mark_trade_history_truncated();
+            impl_->active_trade_clear_floors() = {};
             impl_->invalidate_all_stream_domains();
         } else {
             const auto known = impl_->lifenums_by_stream.find(event.stream_code);
@@ -2908,12 +2963,21 @@ void Plaza2PrivateStateProjector::on_event(const projection::ScenarioSpec&, cons
                 impl_->lifenums_by_stream.emplace(event.stream_code, event.numeric_value);
             } else if (known->second != event.numeric_value) {
                 known->second = event.numeric_value;
+                if (event.stream_code == StreamCode::kFortsTradeRepl) {
+                    impl_->mark_trade_history_truncated();
+                    impl_->active_trade_clear_floors() = {};
+                }
                 impl_->invalidate_stream_domain(event.stream_code);
             }
         }
         break;
     case projection::EventKind::kClearDeleted:
         impl_->sync_base_health(state);
+        if (event.table_code == projection::kNoTableCode &&
+            (event.stream_code == StreamCode::kFortsTradeRepl || event.stream_code == projection::kNoStreamCode)) {
+            impl_->mark_trade_history_truncated();
+            impl_->active_trade_clear_floors() = {};
+        }
         if (event.table_code != projection::kNoTableCode) {
             impl_->clear_table_owned_state(event.table_code, event.signed_value);
         } else if (impl_->staged.active) {

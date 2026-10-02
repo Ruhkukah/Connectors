@@ -361,6 +361,10 @@ struct PrivateRowChanges {
     // resync. Reconcile complete current USERORDERBOOK and TRADE snapshots
     // before using later deltas. No partial vectors are returned with this flag.
     bool resync_required{false};
+    // An advancing TRADE order/deal purge floor, actual own-row retirement,
+    // changed TRADE LifeNum or delta overflow can remove fill history.
+    // Unchanged reopen purge markers without row retirement never set this.
+    bool trade_history_truncated{false};
 };
 
 // Read-only capacity metrics for the indexed private projection. No account

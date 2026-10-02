@@ -278,7 +278,8 @@ void duplicate_native_trade_changes() {
                 "committed private purge did not preserve snapshot resync");
     }
     const auto overflow = projector.take_row_changes();
-    require(overflow.resync_required && overflow.orders.empty() && overflow.trades.empty(),
+    require(overflow.resync_required && overflow.trade_history_truncated && overflow.orders.empty() &&
+                overflow.trades.empty(),
             "overflow must stay sticky across commits and return no partial cancellation or fill batch");
     const auto latest_fill = std::find_if(projector.own_trades().begin(), projector.own_trades().end(),
                                           [](const auto& trade) { return trade.id_deal == 30001; });
@@ -299,7 +300,8 @@ void duplicate_native_trade_changes() {
     auto closed = projector.clone();
     closed.on_event({}, {.kind = projection::EventKind::kClose}, {});
     const auto closed_changes = closed.take_row_changes();
-    require(closed_changes.resync_required, "global listener invalidation lost snapshot resync");
+    require(closed_changes.resync_required && closed_changes.trade_history_truncated,
+            "global listener invalidation lost prior truncation or snapshot resync");
     const auto lost = projector.take_row_changes();
     require(lost.resync_required && lost.orders.empty() && lost.trades.empty() && projector.own_trades().empty(),
             "retired undrained fills must require current snapshot resync without partial deltas");
@@ -307,7 +309,8 @@ void duplicate_native_trade_changes() {
     row(60000, 1);
     event(Plaza2ListenerEventKind::TransactionCommit);
     const auto resumed = projector.take_row_changes();
-    require(!resumed.resync_required && resumed.trades.size() == 1 && resumed.trades[0].id_deal == 60000,
+    require(!resumed.resync_required && !resumed.trade_history_truncated && resumed.trades.size() == 1 &&
+                resumed.trades[0].id_deal == 60000,
             "acknowledging snapshot recovery did not restore bounded delta delivery");
     const auto purge_trades = [&] {
         require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
@@ -319,19 +322,213 @@ void duplicate_native_trade_changes() {
     };
     purge_trades();
     const auto drained_purge = projector.take_row_changes();
-    require(!drained_purge.resync_required, "ordinary purge after consumed history spuriously requires recovery");
+    require(!drained_purge.resync_required && drained_purge.trade_history_truncated,
+            "drained TRADE purge must report truncated fill history without inventing a missing delta");
     event(Plaza2ListenerEventKind::TransactionBegin);
     row(60001, 2);
     event(Plaza2ListenerEventKind::TransactionCommit);
     auto trade_close = projector.clone();
     trade_close.on_event({}, {.kind = projection::EventKind::kClose, .stream_code = kFortsTradeRepl}, {});
     const auto close_gap = trade_close.take_row_changes();
-    require(close_gap.resync_required && close_gap.trades.empty(),
+    require(close_gap.resync_required && !close_gap.trade_history_truncated && close_gap.trades.empty(),
             "listener close silently discarded an under-cap committed fill");
+    auto pending_clear = projector.clone();
+    (void)pending_clear.take_row_changes();
+    projection::EngineState pending_state{.open = true, .transaction_open = true};
+    pending_clear.on_event(
+        {}, {.kind = projection::EventKind::kTransactionBegin, .stream_code = kFortsTradeRepl, .numeric_value = 1},
+        pending_state);
+    pending_clear.on_event({},
+                           {.kind = projection::EventKind::kClearDeleted,
+                            .stream_code = kFortsTradeRepl,
+                            .table_code = kFortsTradeReplUserDeal,
+                            .signed_value = std::numeric_limits<std::int64_t>::max()},
+                           pending_state);
+    require(!pending_clear.clone().take_row_changes().trade_history_truncated,
+            "uncommitted ClearDeleted invalidated the fill baseline");
+    pending_state.transaction_open = false;
+    ++pending_state.commit_count;
+    pending_clear.on_transaction_commit(
+        {}, {.kind = projection::EventKind::kTransactionCommit, .stream_code = kFortsTradeRepl}, pending_state);
+    require(pending_clear.take_row_changes().trade_history_truncated,
+            "committed ClearDeleted omitted fill-history truncation");
+    auto changed_life = projector.clone();
+    (void)changed_life.take_row_changes();
+    changed_life.on_event(
+        {}, {.kind = projection::EventKind::kLifeNum, .stream_code = kFortsTradeRepl, .numeric_value = 7}, {});
+    require(!changed_life.take_row_changes().trade_history_truncated,
+            "first known TRADE LifeNum was treated as a history change");
+    changed_life.on_event(
+        {}, {.kind = projection::EventKind::kLifeNum, .stream_code = kFortsTradeRepl, .numeric_value = 8}, {});
+    require(changed_life.take_row_changes().trade_history_truncated,
+            "changed TRADE LifeNum omitted fill-history truncation");
     purge_trades();
     const auto purge_gap = projector.take_row_changes();
-    require(purge_gap.resync_required && purge_gap.trades.empty(),
+    require(purge_gap.resync_required && purge_gap.trade_history_truncated && purge_gap.trades.empty(),
             "technical purge silently discarded an under-cap committed fill");
+}
+
+void committed_trade_purge_floors() {
+    using namespace projection;
+    private_state::Plaza2PrivateStateProjector projector;
+    EngineState state{.open = true};
+    const auto begin = [&] {
+        state.transaction_open = true;
+        projector.on_event(
+            {}, {.kind = EventKind::kTransactionBegin, .stream_code = kFortsTradeRepl, .numeric_value = 1}, state);
+    };
+    const auto commit = [&] {
+        state.transaction_open = false;
+        ++state.commit_count;
+        projector.on_transaction_commit({}, {.kind = EventKind::kTransactionCommit, .stream_code = kFortsTradeRepl},
+                                        state);
+    };
+    const auto clear = [&](generated::TableCode table, std::int64_t revision) {
+        projector.on_event({},
+                           {.kind = EventKind::kClearDeleted,
+                            .stream_code = kFortsTradeRepl,
+                            .table_code = table,
+                            .signed_value = revision},
+                           state);
+    };
+    const std::array tables{kFortsTradeReplOrdersLog, kFortsTradeReplMultilegOrdersLog, kFortsTradeReplUserDeal,
+                            kFortsTradeReplUserMultilegDeal};
+    begin();
+    for (const auto table : tables) {
+        clear(table, 100);
+        clear(table, 200);
+    }
+    commit();
+    require(projector.take_row_changes().trade_history_truncated,
+            "first positive purge floors must conservatively report possible unseen history loss");
+    projector.on_event({}, {.kind = EventKind::kClose, .stream_code = kFortsTradeRepl}, state);
+    projector.reset_stream_snapshot(kFortsTradeRepl);
+    begin();
+    for (const auto table : tables) {
+        clear(table, 100);
+        clear(table, 200);
+        clear(table, 199);
+    }
+    clear(kFortsTradeReplHeartbeat, 1000);
+    clear(kFortsTradeReplSysEvents, 1000);
+    commit();
+    require(!projector.take_row_changes().trade_history_truncated,
+            "unchanged positive reopen markers without retired own rows invalidated execution history");
+    begin();
+    clear(kFortsTradeReplUserDeal, 300);
+    require(!projector.clone().take_row_changes().trade_history_truncated,
+            "an uncommitted purge floor became externally visible");
+    begin(); // Abort the previous transaction, then replay its marker.
+    clear(kFortsTradeReplUserDeal, 300);
+    commit();
+    require(projector.own_trades().empty() && projector.take_row_changes().trade_history_truncated,
+            "advanced purge floor with no cached own trades lost its signal after transaction rollback");
+    begin();
+    clear(kFortsTradeReplUserDeal, 300);
+    clear(kFortsTradeReplUserMultilegDeal, 200);
+    commit();
+    require(!projector.take_row_changes().trade_history_truncated,
+            "committed purge floors were not tracked independently per table");
+    begin();
+    clear(kFortsTradeReplUserDeal, std::numeric_limits<std::int64_t>::max());
+    begin(); // An aborted clear-all must not reset the committed finite floor.
+    clear(kFortsTradeReplUserDeal, 300);
+    commit();
+    require(!projector.take_row_changes().trade_history_truncated,
+            "aborted clear-all reset a committed finite purge floor");
+    for (const auto table :
+         {kFortsTradeReplOrdersLog, kFortsTradeReplMultilegOrdersLog, kFortsTradeReplUserMultilegDeal}) {
+        begin();
+        clear(table, 201);
+        commit();
+        require(projector.take_row_changes().trade_history_truncated,
+                "a different TRADE table's larger floor masked this table's advancing floor");
+    }
+    begin();
+    const std::array fields{FieldValueSpec{
+        .field_code = kFortsTradeReplUserDealIdDeal, .kind = ValueKind::kSignedInteger, .signed_value = 20}};
+    projector.on_stream_row({},
+                            {.kind = EventKind::kStreamData,
+                             .stream_code = kFortsTradeRepl,
+                             .table_code = kFortsTradeReplUserDeal,
+                             .signed_value = 150},
+                            {.stream_code = kFortsTradeRepl,
+                             .table_code = kFortsTradeReplUserDeal,
+                             .field_count = static_cast<std::uint32_t>(fields.size())},
+                            fields, state);
+    commit();
+    require(projector.own_trades().size() == 1, "purge-floor retirement fixture omitted its owned trade");
+    (void)projector.take_row_changes();
+    begin();
+    clear(kFortsTradeReplUserDeal, 300);
+    commit();
+    require(projector.own_trades().empty() && projector.take_row_changes().trade_history_truncated,
+            "an unchanged purge floor that actually retired a cached own trade lost its history signal");
+    begin();
+    const std::array order_fields{FieldValueSpec{
+        .field_code = kFortsTradeReplOrdersLogPublicOrderId, .kind = ValueKind::kSignedInteger, .signed_value = 30}};
+    projector.on_stream_row({},
+                            {.kind = EventKind::kStreamData,
+                             .stream_code = kFortsTradeRepl,
+                             .table_code = kFortsTradeReplOrdersLog,
+                             .signed_value = 150},
+                            {.stream_code = kFortsTradeRepl,
+                             .table_code = kFortsTradeReplOrdersLog,
+                             .field_count = static_cast<std::uint32_t>(order_fields.size())},
+                            order_fields, state);
+    commit();
+    require(projector.own_orders().size() == 1, "purge-floor retirement fixture omitted its owned order");
+    (void)projector.take_row_changes();
+    begin();
+    clear(kFortsTradeReplOrdersLog, 201);
+    commit();
+    require(projector.own_orders().empty() && projector.take_row_changes().trade_history_truncated,
+            "an unchanged purge floor that actually retired a cached own order lost its history signal");
+    projector.on_event({}, {.kind = EventKind::kLifeNum, .stream_code = kFortsTradeRepl, .numeric_value = 7}, state);
+    projector.on_event({}, {.kind = EventKind::kLifeNum, .stream_code = kFortsTradeRepl, .numeric_value = 8}, state);
+    require(projector.take_row_changes().trade_history_truncated, "changed TRADE epoch omitted history loss");
+    begin();
+    clear(kFortsTradeReplUserDeal, 100);
+    commit();
+    require(projector.take_row_changes().trade_history_truncated,
+            "new TRADE epoch inherited the prior epoch's purge floor");
+    clear(projection::kNoTableCode, 0);
+    (void)projector.take_row_changes();
+    begin();
+    clear(kFortsTradeReplUserDeal, 100);
+    commit();
+    require(projector.take_row_changes().trade_history_truncated, "whole TRADE reset inherited a prior purge floor");
+    begin();
+    clear(kFortsTradeReplUserDeal, std::numeric_limits<std::int64_t>::max());
+    commit();
+    require(projector.take_row_changes().trade_history_truncated, "clear-all omitted possible fill-history loss");
+    begin();
+    clear(kFortsTradeReplUserDeal, std::numeric_limits<std::int64_t>::max());
+    commit();
+    require(projector.take_row_changes().trade_history_truncated,
+            "repeated clear-all with an empty owned trade cache omitted possible fill-history loss");
+    projector.reset_stream_snapshot(kFortsTradeRepl);
+    begin();
+    projector.on_stream_row({},
+                            {.kind = EventKind::kStreamData,
+                             .stream_code = kFortsTradeRepl,
+                             .table_code = kFortsTradeReplOrdersLog,
+                             .signed_value = 400},
+                            {.stream_code = kFortsTradeRepl,
+                             .table_code = kFortsTradeReplOrdersLog,
+                             .field_count = static_cast<std::uint32_t>(order_fields.size())},
+                            order_fields, state);
+    commit();
+    require(projector.own_orders().size() == 1 && !projector.take_row_changes().trade_history_truncated,
+            "same-LifeNum rebuilt working order inherited the earlier clear-all's history loss");
+    projector.on_event({}, {.kind = EventKind::kClose, .stream_code = kFortsTradeRepl}, state);
+    projector.reset_stream_snapshot(kFortsTradeRepl);
+    (void)projector.take_row_changes();
+    begin();
+    clear(kFortsTradeReplUserDeal, 200);
+    commit();
+    require(projector.own_trades().empty() && projector.take_row_changes().trade_history_truncated,
+            "clear-all watermark hid a later finite purge floor with no cached own trades");
 }
 
 std::chrono::nanoseconds snapshot_median(std::array<std::chrono::nanoseconds, 3> samples) {
@@ -733,6 +930,7 @@ int transaction_scenario(std::chrono::nanoseconds& snapshot_duration) {
 int main() {
     try {
         snapshot_acceptance_boundaries();
+        committed_trade_purge_floors();
         std::array<std::chrono::nanoseconds, 3> samples;
         for (auto& sample : samples)
             if (transaction_scenario(sample) != 0)

@@ -190,6 +190,9 @@ cg::Plaza2Error CgateTradingHost::poll() {
             trade_commit_sequence = stream.last_commit_sequence;
         } else if (stream.stream_name == "FORTS_USERORDERBOOK_REPL")
             user_book_online = stream.online && stream.snapshot_complete;
+    const auto changes = session_.take_private_row_changes();
+    if (changes.trade_history_truncated)
+        orders_->invalidate_execution_baselines();
     for (const auto& event : session_.take_reply_events()) {
         if (event.timed_out) {
             orders_->on_timeout(event.user_id, now);
@@ -209,7 +212,6 @@ cg::Plaza2Error CgateTradingHost::poll() {
     // Use the startup snapshot barrier again after a lost delta batch or TRADE
     // disconnect. Keep the existing logical orders and command correlations;
     // the current committed snapshots reconcile their identities and exposure.
-    const auto changes = session_.take_private_row_changes();
     if (!rebuilding_ && (changes.resync_required || !trade_online)) {
         rebuilding_ = true;
         log_event("private_history_gap", "{\"recovering\":true}");

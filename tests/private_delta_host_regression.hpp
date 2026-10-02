@@ -38,15 +38,16 @@ inline fake::Event own_order(std::int64_t id, std::int32_t isin, const std::stri
                    integer(kFortsTradeReplOrdersLogPrivateAmountRest, 1),
                    text(kFortsTradeReplOrdersLogClientCode, account), text(kFortsTradeReplOrdersLogPrice, "103000")}};
 }
-inline fake::Event own_trade(std::int64_t deal, std::int32_t isin, const std::string& account) {
+inline fake::Event own_trade(std::int64_t deal, std::int32_t isin, const std::string& account,
+                             std::int64_t order_id = 20003) {
     using enum gen::FieldCode;
     return {.stream_code = gen::StreamCode::kFortsTradeRepl,
             .table_code = gen::TableCode::kFortsTradeReplUserDeal,
             .revision = deal,
             .fields = {integer(kFortsTradeReplUserDealReplId, deal), integer(kFortsTradeReplUserDealIdDeal, deal),
                        integer(kFortsTradeReplUserDealSessId, 321), integer(kFortsTradeReplUserDealIsinId, isin),
-                       integer(kFortsTradeReplUserDealPublicOrderIdBuy, 20003),
-                       integer(kFortsTradeReplUserDealPrivateOrderIdBuy, 20003),
+                       integer(kFortsTradeReplUserDealPublicOrderIdBuy, order_id),
+                       integer(kFortsTradeReplUserDealPrivateOrderIdBuy, order_id),
                        integer(kFortsTradeReplUserDealXamount, 1), text(kFortsTradeReplUserDealCodeBuy, account),
                        text(kFortsTradeReplUserDealCodeSell, "OTHER"), text(kFortsTradeReplUserDealPrice, "103000")}};
 }
@@ -141,6 +142,23 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
             const auto error = host.poll();
             require(!error, "ordinary private-stream resync killed the existing driver: " + error.message);
         };
+        const auto purge_markers = [&] {
+            for (const auto table :
+                 {gen::TableCode::kFortsTradeReplOrdersLog, gen::TableCode::kFortsTradeReplMultilegOrdersLog,
+                  gen::TableCode::kFortsTradeReplUserDeal, gen::TableCode::kFortsTradeReplUserMultilegDeal})
+                for (const auto revision : {1, 2})
+                    control.enqueue({.kind = fake::EventKind::ClearDeleted,
+                                     .stream_code = gen::StreamCode::kFortsTradeRepl,
+                                     .table_code = table,
+                                     .revision = revision,
+                                     .flags = 8});
+        };
+        // Native CGate publishes the same positive purge floors at initial
+        // snapshot and ordinary reopen, even when neither retires an own row.
+        control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        purge_markers();
+        control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        poll();
         const auto reply = [&](std::uint32_t id, std::int64_t order_id = 20003) {
             official_cgate99::FORTS_MSG179 accepted{};
             accepted.order_id = order_id;
@@ -174,6 +192,35 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
         order(20003, 3);
         control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
         poll();
+        std::optional<std::uint32_t> posted_before_loss;
+        if (!close) {
+            require(host.place(add("posted-before-history-loss", isin)).empty(), "pre-loss pending Add refused");
+            now += std::chrono::seconds(1);
+            poll();
+            posted_before_loss = control.commands().back().user_id;
+        }
+        if (close) {
+            auto second = add("second-working-order", isin);
+            second.quantity = 4;
+            require(host.place(second).empty(), "second reconnect Add refused");
+            now += std::chrono::seconds(1);
+            poll();
+            reply(control.commands().back().user_id, 20005);
+            auto second_row = own_order(20005, isin, account);
+            for (auto& field : second_row.fields) {
+                if (field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPublicAmount ||
+                    field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPrivateAmount)
+                    field.signed_value = 4;
+                if (field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPublicAmountRest ||
+                    field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPrivateAmountRest)
+                    field.signed_value = 3;
+            }
+            control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
+            control.enqueue(second_row);
+            control.enqueue(own_trade(900010, isin, account, 20005));
+            control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
+            poll();
+        }
         const auto before = control.commands().size();
         require(host.place(add("queued-during-resync", isin)).empty(), "resync queued Add refused");
         if (close)
@@ -210,8 +257,24 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
         // The reopened source publishes the same working identity and deal.
         // Replaying this deal again must not increment its execution twice.
         control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
+        if (close)
+            purge_markers();
         order(900001, 2);
         control.enqueue(own_trade(900000, isin, account));
+        if (close) {
+            auto second_row = own_order(20005, isin, account);
+            second_row.revision = 900011;
+            for (auto& field : second_row.fields) {
+                if (field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPublicAmount ||
+                    field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPrivateAmount)
+                    field.signed_value = 4;
+                if (field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPublicAmountRest ||
+                    field.field_code == gen::FieldCode::kFortsTradeReplOrdersLogPrivateAmountRest)
+                    field.signed_value = 3;
+            }
+            control.enqueue(second_row);
+            control.enqueue(own_trade(900010, isin, account, 20005));
+        }
         control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
         control.enqueue({.kind = fake::EventKind::Online, .stream_code = gen::StreamCode::kFortsTradeRepl});
         if (close)
@@ -226,11 +289,17 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
         require(original.find("\"order_id\":20003") != std::string::npos &&
                     original.find("\"remaining\":2") != std::string::npos &&
                     original.find("\"executed\":1") != std::string::npos &&
-                    original.find("\"execution_baseline_known\":false") != std::string::npos &&
                     status.find("\"recovered:321:20003\"") == std::string::npos,
                 "private resync changed the order identity or lost its partial fill");
-        require(host.move("same-logical-order", "103000", 3).find("baseline") != std::string::npos,
-                "resync inferred complete historical fills and allowed Move");
+        if (close) {
+            require(host.move("same-logical-order", "103000", 5).empty(),
+                    "plain TRADE reconnect refused the first tracked Move");
+            require(host.move("second-working-order", "103000", 6).empty(),
+                    "plain TRADE reconnect refused the second tracked Move");
+        } else {
+            require(host.move("same-logical-order", "103000", 3).find("baseline") != std::string::npos,
+                    "retired TRADE history incorrectly allowed Move");
+        }
         require(status.find("\"reconstructing\":false") != std::string::npos &&
                     status.find("\"order_entry_ready\":true") != std::string::npos,
                 "complete private snapshots did not restore readiness in the same host");
@@ -244,8 +313,39 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
                 "private resync blindly resubmitted the original Add");
         reply(resumed.back().user_id, 20004);
         poll();
-        require(host.move("queued-during-resync", "103000", 1).find("baseline") != std::string::npos,
-                "late 179 restored a pending Add's incomplete resync fill baseline");
+        require(host.move("queued-during-resync", "103000", 2).empty(),
+                "Add posted after the barrier inherited old history loss");
+        if (posted_before_loss) {
+            reply(*posted_before_loss, 20006);
+            poll();
+            require(host.move("posted-before-history-loss", "103000", 2).find("baseline") != std::string::npos,
+                    "late179 invented the pre-loss unresolved Add's retired fill history");
+        }
+        if (close) {
+            for (int i = 0; i < 3; ++i) {
+                now += std::chrono::seconds(1);
+                poll();
+            }
+            std::map<std::int64_t, std::int32_t> moved;
+            for (const auto& command : control.commands()) {
+                if (command.name != "MoveOrder")
+                    continue;
+                require(command.payload.size() == sizeof(official_cgate99::MoveOrder), "reconnect Move payload size");
+                official_cgate99::MoveOrder decoded{};
+                std::memcpy(&decoded, command.payload.data(), command.payload.size());
+                const std::int64_t order_id = decoded.order_id1;
+                const std::int32_t amount = decoded.amount1;
+                moved.emplace(order_id, amount);
+            }
+            require(moved.at(20003) == 5 && moved.at(20005) == 6,
+                    "reconnected Moves changed established IDs or total amount1");
+            const auto current = host.status();
+            const auto second = current.find("\"client_order_id\":\"second-working-order\"");
+            require(second != std::string::npos &&
+                        current.substr(second, current.find('}', second) - second + 1).find("\"executed\":1") !=
+                            std::string::npos,
+                    "TRADE reopen counted the second order's replayed fill twice");
+        }
         control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
         control.enqueue(own_trade(900000, isin, account));
         control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});

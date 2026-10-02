@@ -1361,6 +1361,7 @@ void queued_move_rechecks_reconstructed_fill_baseline() {
     f.poll(manager, 0);
     require(f.sent.size() == 1 && manager.queued() == 1, "rate gate did not hold the pre-resync Move");
     require(!manager.place(request("before-baseline-recheck")).empty(), "queued Move lacked its risk reservation");
+    manager.invalidate_execution_baselines();
     observe(manager, row(manager.orders().at("queued-before-resync"), 1001, 3, 1), true);
     require(!manager.orders().at("queued-before-resync").execution_baseline_known,
             "reconstruction retained a stale fill baseline");
@@ -1384,6 +1385,7 @@ void queued_move_rechecks_reconstructed_fill_baseline() {
     sent.poll(ambiguous, 1);
     const auto move_id = sent.sent.at(1).id;
     sent.certainty = cg::Plaza2SubmissionCertainty::Posted;
+    ambiguous.invalidate_execution_baselines();
     observe(ambiguous, row(ambiguous.orders().at("sent-before-resync"), 2001, 0, 0), true);
     sent.poll(ambiguous, 20);
     require(ambiguous.orders().at("sent-before-resync").state == OrderState::Unknown &&

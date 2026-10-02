@@ -1037,11 +1037,16 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
     changed(found->first);
 }
 
+void OrderManager::invalidate_execution_baselines() {
+    for (auto& [key, order] : orders_)
+        if (order.execution_baseline_known &&
+            ((!terminal(order.state) && order.order_id > 0) || order.add_unconfirmed)) {
+            order.execution_baseline_known = false;
+            changed(key);
+        }
+}
+
 void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, bool rebuilding) {
-    if (rebuilding)
-        for (auto& [key, order] : orders_)
-            if (!terminal(order.state))
-                order.execution_baseline_known = false;
     std::vector<const plaza2::private_state::OwnOrderSnapshot*> ordered;
     auto observed_session = current_session_;
     const auto has_link = [&](const auto& row) {
