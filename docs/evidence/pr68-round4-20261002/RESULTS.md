@@ -16,23 +16,24 @@ This records corrections against Claude's `MOEX_CONNECTOR_PR68_REVIEW_ROUND4_202
 | R4 late replies | Remove unused command-kind guesses from unknown-UID events. Retain raw UID/message/payload forwarding to the trading owner. | The native late-Move test reproduced a real lost replacement reply after both timers expired without forwarding. The manager owns correlation; standalone unknown replies remain ignored. Commit `fbfa1026`. |
 | R4 bulk cancellation | Remove bulk generations, the generation counter and each command's bulk marker. Retire superseded cancellation UID correlations; retain one per-ISIN accepted-reply/TRADE-watermark gate. | An old-UID regression failed before retirement; individual budgets, accepted-186 wait, scope and late replies pass. Commit `cb9dac35`. |
 | R4 command scope | Remove Iceberg Add/Del/Move, DelOrdersByBFLimit and CODHeartbeat requests, encoders and reply cases. Keep the four declared commands and system 99/100. | Independent vendor wire fixtures remain unchanged. Excluded replies fail as unsupported; all four declared command encodings pass. Commit `8212924e`. |
+| Final R2 safety review | Recheck a queued Move's fill baseline immediately before dispatch. If reconstruction invalidated it, settle the original order and release the queued reservation without sending. | Regression reproduced the rate-held Move sending after reconstruction. The fix also preserves already-posted PossiblySent Move exposure through timeout, late 176 and native terminal proof. Release focused 3/3 and ASan/UBSan focused 1/1 pass. Commit `06c1767a`. |
 
 Snapshot recovery proves current exposure, not complete retired trade history. All previously nonterminal logical orders, including pending Adds, lose their complete-fill-baseline flag on reconstruction. They permit cancellation and refuse Move. Actual execution quantities remain derived only from deduplicated trade records; a fresh order submitted after recovery starts a new tracked baseline.
 
-The production-source count using the audit's tracked `.cpp`/`.hpp` files under `apps`, `connectors` and `protocols` fell from 20,193 to 19,554 lines. All named unnecessary structures were removed, but the result is about 19.6k, above the review's approximately 19.3k target. Test-only fake sources have not been relocated to manipulate that count. The production build compiles 19 units with 13,855 `.cpp` lines; headers are included in the first count.
+The production-source count using the audit's tracked `.cpp`/`.hpp` files under `apps`, `connectors` and `protocols` fell from 20,193 to 19,557 lines. All named unnecessary structures were removed, but the result is about 19.6k, above the review's approximately 19.3k target. Test-only fake sources have not been relocated to manipulate that count. The production build compiles 19 units with 13,858 `.cpp` lines; headers are included in the first count.
 
 ## Local validation
 
-Implementation head: `7d8f738e108bc0f0f8b36bf78879c2768ae46f19`.
+Implementation head: `06c1767a9e8bef0e0296aecb5ce6f9dd0730d506`. The final full suites below include the queued-Move guard.
 
-- Native macOS Release: all 32 tests passed. The sandbox denied loopback bind in two socket tests; those two passed when rerun with local bind permission.
-- AppleClang ASan/UBSan: all 32 tests passed with the same two permitted loopback reruns. Darwin LeakSanitizer is unavailable.
+- Native macOS Release: all 32 tests passed in one complete final run with local loopback bind permission, 17.01 seconds. Earlier sandbox-bound runs denied bind in two socket tests; both passed when rerun with bind permission.
+- AppleClang ASan/UBSan: all 32 tests passed in one complete final run with local loopback bind permission, 22.15 seconds. Darwin LeakSanitizer is unavailable.
 - Production-only Release: passed with 19 compilation units and no fake/test/TWIME/ABI sources. No compiler warnings were found in the final build logs.
 - Clang-format 18: all 84 changed C++ files passed; whitespace checks passed.
 - Defect regressions were exercised against the earlier behavior before correction. The complete compressed `trading_day_test` and order-history reconstruction pass, using the production owner and a controlled fake CGate library.
 - The deployment snapshot improvement removes repeated field/snapshot copying while retaining ownership and sorted output. Paired local 150k-row measurements went from 432/423/423 ms to 357/352/365 ms. Online-update p95 remained 1 µs and the first insertion 4–5 µs. The one-second snapshot and one-millisecond update/insertion limits are unchanged.
 
-Ubuntu CI verification for the published final head will be added when its checks complete.
+Published-head Ubuntu Release and ASan/UBSan/LSan status is available from [PR 68's checks](https://github.com/Ruhkukah/Connectors/pull/68/checks). The PR description records the verified CI run. CI is implementation evidence and does not resolve the deployment capacity failure below.
 
 ## Deployment and execution evidence
 
@@ -44,6 +45,6 @@ The isolated TEST evidence directory is `/home/azgaldov/moex/qualification/pr68-
 - Deployment candidate `78efffd9` configured and built in Release. Tests passed 31/32; `plaza2_private_state_transaction_perf_test` failed the unchanged one-second snapshot limit at 1,141 ms. Two repeat measurements, 1,189 and 1,138 ms, also failed. Update p95 was 2 µs; first insertion 8–9 µs. This is a deployment-capacity failure, not a pass inferred from faster local measurements. The final copying improvement in `7d8f738e` still requires an exact-candidate deployment run.
 - Automatic approval review blocked transfer of corrected internal sources to this TEST destination pending explicit user authorization. No alternate source-transfer route was used. Final Linux verification and execution await the user's answer.
 - The existing TEST profile names an expired instrument and caps orders at one contract. The current instrument is verified above. The partial-fill rehearsal requires an explicit two-contract limit; the configuration question remains pending. No trading scenario is claimed complete from the read-only probe.
-- A temporary TEST supervisor is prepared locally with execution disabled. It guards the exact binary/source, current account-flat state, price freshness, order/notional bounds and unique Add labels across restart. It has not been deployed or used to send commands.
+- A temporary TEST supervisor is prepared locally with execution disabled. It guards the exact binary/source, current account-flat state, price freshness/current session, order/notional bounds and unique Add labels across restart. Thirteen offline regressions pass, including real local SIGTERM cleanup against a mock child, failed native shutdown, restart/relist ownership and unresolved-ID cancellation. It has not been deployed or used to send commands.
 
 No actual order, router fault, upstream fault or full-day trading scenario has run during this round. Vendor TRADE replay behavior, sustained decode/storage capacity, the complete TEST session and MOEX-coordinated TCS/reload/reserve scenarios remain pending. PR 68 stays a draft; these checks do not authorize PROD operation.
