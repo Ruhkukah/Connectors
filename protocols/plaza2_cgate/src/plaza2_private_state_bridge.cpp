@@ -234,20 +234,19 @@ Plaza2Error Plaza2PrivateStateBridge::handle_transaction_commit(StreamCode strea
 }
 
 Plaza2Error Plaza2PrivateStateBridge::handle_stream_data(const Plaza2ListenerEvent& event) {
-    const auto row_index = stream_index(state_, event.stream_code);
-    if (row_index >= transaction_open_.size() || !transaction_open_[row_index])
-        return ordering_error("private STREAM_DATA outside its stream transaction");
     const auto index = stream_index(state_, event.stream_code);
-    if (index == state_.streams.size()) {
-        return ordering_error("PLAZA II private-state bridge received STREAM_DATA for an undeclared stream");
-    }
-
-    text_storage_.clear();
-    field_storage_.clear();
-    text_storage_.reserve(event.fields.size());
-    field_storage_.reserve(event.fields.size());
+    if (index >= transaction_open_.size() || !transaction_open_[index])
+        return ordering_error("private STREAM_DATA outside its stream transaction");
+    // Own every callback value until its listener transaction commits. Text
+    // views are bound only during commit, after the owning strings stop moving.
+    Operation operation{.event = {.kind = EventKind::kStreamData,
+                                  .stream_code = event.stream_code,
+                                  .table_code = event.table_code,
+                                  .signed_value = event.signed_value}};
+    operation.fields.reserve(event.fields.size());
     for (const auto& field : event.fields) {
-        FieldValueSpec decoded{.field_code = field.field_code};
+        OwnedField owned{.value = {.field_code = field.field_code}};
+        auto& decoded = owned.value;
         switch (field.kind) {
         case Plaza2DecodedValueKind::None:
             continue;
@@ -260,19 +259,12 @@ Plaza2Error Plaza2PrivateStateBridge::handle_stream_data(const Plaza2ListenerEve
             decoded.unsigned_value = field.unsigned_value;
             break;
         case Plaza2DecodedValueKind::Decimal:
-            decoded.kind = projection::ValueKind::kDecimal;
-            text_storage_.emplace_back(field.text_value);
-            decoded.text_value = text_storage_.back();
-            break;
         case Plaza2DecodedValueKind::FloatingPoint:
-            decoded.kind = projection::ValueKind::kFloatingPoint;
-            text_storage_.emplace_back(field.text_value);
-            decoded.text_value = text_storage_.back();
-            break;
         case Plaza2DecodedValueKind::String:
-            decoded.kind = projection::ValueKind::kString;
-            text_storage_.emplace_back(field.text_value);
-            decoded.text_value = text_storage_.back();
+            decoded.kind = field.kind == Plaza2DecodedValueKind::Decimal         ? projection::ValueKind::kDecimal
+                           : field.kind == Plaza2DecodedValueKind::FloatingPoint ? projection::ValueKind::kFloatingPoint
+                                                                                 : projection::ValueKind::kString;
+            owned.text = field.text_value;
             break;
         case Plaza2DecodedValueKind::Timestamp:
             decoded.kind = projection::ValueKind::kTimestamp;
@@ -280,27 +272,6 @@ Plaza2Error Plaza2PrivateStateBridge::handle_stream_data(const Plaza2ListenerEve
             decoded.timestamp_ns = field.timestamp_ns;
             break;
         }
-        field_storage_.push_back(std::move(decoded));
-    }
-
-    // Keep table and signed_value (the runtime replRev) attached to the row.
-    const EventSpec fake_event{
-        .kind = EventKind::kStreamData,
-        .stream_code = event.stream_code,
-        .table_code = event.table_code,
-        .signed_value = event.signed_value,
-    };
-    const RowSpec row{
-        .stream_code = event.stream_code,
-        .table_code = event.table_code,
-        .field_count = static_cast<std::uint32_t>(field_storage_.size()),
-    };
-    (void)row;
-    Operation operation{.event = fake_event};
-    operation.fields.reserve(field_storage_.size());
-    for (const auto& field : field_storage_) {
-        OwnedField owned{.value = field, .text = std::string(field.text_value)};
-        owned.value.text_value = {};
         operation.fields.push_back(std::move(owned));
     }
     operations_[index].push_back(std::move(operation));

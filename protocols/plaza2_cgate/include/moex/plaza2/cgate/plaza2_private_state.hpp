@@ -413,7 +413,7 @@ class Plaza2PrivateStateProjector final : public projection::CommitListener {
     [[nodiscard]] std::span<const OwnTradeSnapshot> own_trades() const;
     // Committed upserts since the previous take, across all listener commits,
     // bounded by kPrivateRowChangeCapacity total rows. Always inspect the
-    // resync/history flags before consuming vectors. Taking acknowledges the
+    // resync flag before consuming vectors. Taking acknowledges the
     // batch; reconcile synchronously on the owner thread before later polls.
     // Technical record deletion/reload does not manufacture terminal orders.
     [[nodiscard]] PrivateRowChanges take_row_changes();

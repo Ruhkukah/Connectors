@@ -68,7 +68,6 @@ class Plaza2PrivateStateBridge final : public Plaza2ListenerEventHandler {
     std::vector<std::uint64_t> pending_row_deltas_;
     std::vector<std::vector<PendingClearDeleted>> pending_clear_deleted_;
     std::vector<std::pair<generated::StreamCode, std::uint64_t>> stream_lifenums_;
-    std::vector<std::string> text_storage_;
     std::vector<projection::FieldValueSpec> field_storage_;
     std::string last_resync_reason_;
     std::string callback_error_;

@@ -1081,49 +1081,51 @@ struct Plaza2PrivateStateProjector::Impl {
                                  TableCode::kFortsUserorderbookReplMultilegOrders,
                                  TableCode::kFortsUserorderbookReplOrdersCurrentday,
                                  TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday});
-        order_snapshots = sorted_values<OwnOrderSnapshot>(
-            orders_by_key,
-            [](const OwnOrderSnapshot& lhs, const OwnOrderSnapshot& rhs) {
-                if (lhs.multileg != rhs.multileg) {
-                    return lhs.multileg < rhs.multileg;
-                }
-                if (lhs.public_order_id != rhs.public_order_id) {
-                    return lhs.public_order_id < rhs.public_order_id;
-                }
-                if (lhs.private_order_id != rhs.private_order_id) {
-                    return lhs.private_order_id < rhs.private_order_id;
-                }
-                if (lhs.client_code != rhs.client_code) {
-                    return lhs.client_code < rhs.client_code;
-                }
-                if (lhs.ext_id != rhs.ext_id) {
-                    return lhs.ext_id < rhs.ext_id;
-                }
-                // Same identifiers can legitimately occur on the two
-                // independent MOEX TEST surfaces. Keep their order
-                // deterministic without coalescing their evidence.
-                if (lhs.from_trade_repl != rhs.from_trade_repl) {
-                    return lhs.from_trade_repl > rhs.from_trade_repl;
-                }
-                if (lhs.from_user_book != rhs.from_user_book) {
-                    return lhs.from_user_book > rhs.from_user_book;
-                }
-                return lhs.from_current_day > rhs.from_current_day;
-            },
-            growth_capacity(orders_by_key.size()));
+        // Sort references, then copy each committed row once. Sorting the
+        // snapshots themselves repeatedly moves their strings and alias lists.
+        std::vector<const OrderMap::value_type*> rows;
+        rows.reserve(orders_by_key.size());
+        for (const auto& row : orders_by_key)
+            rows.push_back(&row);
+        std::sort(rows.begin(), rows.end(), [](const auto* left, const auto* right) {
+            const auto& lhs = left->second;
+            const auto& rhs = right->second;
+            if (lhs.multileg != rhs.multileg) {
+                return lhs.multileg < rhs.multileg;
+            }
+            if (lhs.public_order_id != rhs.public_order_id) {
+                return lhs.public_order_id < rhs.public_order_id;
+            }
+            if (lhs.private_order_id != rhs.private_order_id) {
+                return lhs.private_order_id < rhs.private_order_id;
+            }
+            if (lhs.client_code != rhs.client_code) {
+                return lhs.client_code < rhs.client_code;
+            }
+            if (lhs.ext_id != rhs.ext_id) {
+                return lhs.ext_id < rhs.ext_id;
+            }
+            // Same identifiers can legitimately occur on the two
+            // independent MOEX TEST surfaces. Keep their order
+            // deterministic without coalescing their evidence.
+            if (lhs.from_trade_repl != rhs.from_trade_repl) {
+                return lhs.from_trade_repl > rhs.from_trade_repl;
+            }
+            if (lhs.from_user_book != rhs.from_user_book) {
+                return lhs.from_user_book > rhs.from_user_book;
+            }
+            return lhs.from_current_day > rhs.from_current_day;
+        });
+        std::vector<OwnOrderSnapshot> snapshots;
+        snapshots.reserve(growth_capacity(rows.size()));
         order_view_index.clear();
-        order_view_index.reserve(growth_capacity(order_snapshots.size()));
-        for (std::size_t index = 0; index < order_snapshots.size(); ++index) {
-            const auto& row = order_snapshots[index];
-            const OrderKey key{.surface = row.from_trade_repl ? OrderSurface::kTrade : OrderSurface::kUserOrderbook,
-                               .multileg = row.multileg,
-                               .public_order_id = row.public_order_id,
-                               .private_order_id = row.private_order_id,
-                               .ext_id = row.ext_id,
-                               .client_code = row.client_code};
-            const auto found = orders_by_key.identities.find(OrderMap::identity(key, 'p', row.public_order_id));
-            order_view_index[found == orders_by_key.identities.end() ? key : found->second] = index;
+        order_view_index.reserve(growth_capacity(rows.size()));
+        for (const auto* row : rows) {
+            // Keep the canonical map key, including legacy coalesced aliases.
+            order_view_index.emplace(row->first, snapshots.size());
+            snapshots.push_back(row->second);
         }
+        order_snapshots = std::move(snapshots);
     }
 
     void rebuild_trades() {

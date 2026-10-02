@@ -13,6 +13,77 @@ void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
+void bridge_owns_callback_values() {
+    private_state::Plaza2PrivateStateProjector projector;
+    Plaza2PrivateStateBridge bridge(projector);
+    const std::array streams{kFortsTradeRepl};
+    require(!bridge.reset(streams) && !bridge.begin_run(), "borrowed values begin run");
+    const auto event = [&](Plaza2ListenerEventKind kind) {
+        require(!bridge.on_plaza2_listener_event({.kind = kind, .stream_code = kFortsTradeRepl}),
+                "borrowed values transaction event");
+    };
+    std::string client = "callback account beyond small string storage";
+    std::string comment = "callback comment: \xd0\x9f\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82";
+    std::string price = "123.45";
+    const auto expected_client = client;
+    const auto expected_comment = comment;
+    const auto expected_price = price;
+    std::array fields{Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogPublicOrderId,
+                                              .kind = Plaza2DecodedValueKind::SignedInteger,
+                                              .signed_value = 92},
+                      Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogPrivateOrderId,
+                                              .kind = Plaza2DecodedValueKind::SignedInteger,
+                                              .signed_value = 92},
+                      Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogClientCode,
+                                              .kind = Plaza2DecodedValueKind::String,
+                                              .text_value = client},
+                      Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogComment,
+                                              .kind = Plaza2DecodedValueKind::String,
+                                              .text_value = comment},
+                      Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogPrice,
+                                              .kind = Plaza2DecodedValueKind::Decimal,
+                                              .text_value = price},
+                      Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogMoment,
+                                              .kind = Plaza2DecodedValueKind::Timestamp,
+                                              .unsigned_value = 1791000000,
+                                              .timestamp_ns = 1791000000123456789},
+                      Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogPublicAmountRest,
+                                              .kind = Plaza2DecodedValueKind::UnsignedInteger,
+                                              .unsigned_value = 7},
+                      Plaza2DecodedFieldValue{.field_code = kFortsTradeReplOrdersLogPublicAmount,
+                                              .kind = Plaza2DecodedValueKind::None,
+                                              .signed_value = 99}};
+    const auto row = [&](std::int64_t revision) {
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                                  .stream_code = kFortsTradeRepl,
+                                                  .table_code = kFortsTradeReplOrdersLog,
+                                                  .fields = fields,
+                                                  .signed_value = revision}),
+                "borrowed values row");
+    };
+    event(Plaza2ListenerEventKind::TransactionBegin);
+    row(1);
+    // Callback storage is reusable before commit. A second operation also
+    // moves the pending vector, so its text cannot borrow the first owner's SSO.
+    fields[0].signed_value = fields[1].signed_value = 91;
+    fields[4].kind = Plaza2DecodedValueKind::FloatingPoint;
+    row(2);
+    client.assign(512, 'a');
+    comment.assign(512, 'b');
+    price.assign(512, 'c');
+    require(projector.own_orders().empty(), "borrowed values exposed before commit");
+    event(Plaza2ListenerEventKind::TransactionCommit);
+    const auto orders = projector.own_orders();
+    require(orders.size() == 2 && orders[0].public_order_id == 91 && orders[1].public_order_id == 92,
+            "native snapshot order changed while sorting references");
+    for (const auto& order : orders)
+        require(order.client_code == expected_client && order.comment == expected_comment &&
+                    order.price == expected_price && order.moment == 1791000000 &&
+                    order.moment_ns == 1791000000123456789 && order.public_amount_rest == 7 && order.public_amount == 0,
+                "commit borrowed mutated callback text or lost decoded values");
+}
+
 void clone_pending_native_transaction() {
     using Projector = private_state::Plaza2PrivateStateProjector;
     using namespace projection;
@@ -625,6 +696,7 @@ int main() {
         const auto closed_changes = projector.take_row_changes();
         require(closed_changes.orders.empty() && closed_changes.resync_required,
                 "listener invalidation silently discarded unconsumed order evidence");
+        bridge_owns_callback_values();
         clone_pending_native_transaction();
         duplicate_native_trade_changes();
         std::cout << "150000 TRADE rows including commit: " << elapsed << " ms\n";
