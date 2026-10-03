@@ -29,7 +29,25 @@ inline void reload_missing_host_regression(TradingHostConfig config, const plaza
                 std::string::npos,
             "native missing reload seed not Working");
     const auto before = control.commands().size();
-    control.enqueue({.kind = fake::EventKind::LifeNum, .stream_code = gen::StreamCode::kFortsTradeRepl, .value = 2});
+    control.enqueue({.kind = fake::EventKind::LifeNum, .stream_code = gen::StreamCode::kFortsTradeRepl, .value = 8});
+    for (const auto stream : {gen::StreamCode::kFortsPosRepl, gen::StreamCode::kFortsUserorderbookRepl}) {
+        control.enqueue({.kind = fake::EventKind::Begin, .stream_code = stream});
+        if (stream == gen::StreamCode::kFortsPosRepl)
+            control.enqueue(
+                {.stream_code = stream,
+                 .table_code = gen::TableCode::kFortsPosReplInfo,
+                 .revision = 2000,
+                 .fields = {integer(kFortsPosReplInfoTradesRev, 1001), integer(kFortsPosReplInfoTradesLifenum, 8)}});
+        else
+            control.enqueue({.stream_code = stream,
+                             .table_code = gen::TableCode::kFortsUserorderbookReplInfo,
+                             .revision = 2000,
+                             .fields = {integer(kFortsUserorderbookReplInfoTradesRev, 1001),
+                                        integer(kFortsUserorderbookReplInfoTradesLifenum, 8),
+                                        integer(kFortsUserorderbookReplInfoPublicationState, 1)}});
+        control.enqueue({.kind = fake::EventKind::Commit, .stream_code = stream});
+        control.enqueue({.kind = fake::EventKind::Online, .stream_code = stream});
+    }
     control.enqueue({.kind = fake::EventKind::Online, .stream_code = gen::StreamCode::kFortsTradeRepl});
     for (int i = 0; i < 5; ++i)
         require(!host.poll(), "native missing reload rebuild poll");

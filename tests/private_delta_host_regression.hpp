@@ -85,8 +85,17 @@ inline void terminal_trade_stale_userbook(TradingHostConfig config, const fake::
             const auto posts = control.commands().size();
             CgateTradingHost host(config);
             require(!host.start(), "terminal TRADE fixture start");
+            // First create TRADE from a completed empty book. Then hold a real
+            // UOB reconnect barrier while both native listeners deliver rows.
+            control.clear(fake::Option::DelayUserorderbook);
             for (int i = 0; i < 30; ++i)
                 require(!host.poll(), "terminal TRADE fixture initial streams");
+            require(host.status().find("\"reconstructing\":false") != std::string::npos,
+                    "terminal TRADE fixture initial empty snapshot did not complete");
+            control.set(fake::Option::DelayUserorderbook);
+            control.enqueue({.kind = fake::EventKind::Close, .stream_code = gen::StreamCode::kFortsUserorderbookRepl});
+            for (int i = 0; i < 5; ++i)
+                require(!host.poll(), "terminal TRADE fixture USERORDERBOOK reconnect");
             require(host.status().find("\"reconstructing\":true") != std::string::npos,
                     "terminal TRADE fixture failed to hold startup USERORDERBOOK barrier");
             constexpr std::int64_t id = 91001;
@@ -151,6 +160,14 @@ inline void terminal_trade_stale_userbook(TradingHostConfig config, const fake::
                  .fields = {text(kFortsPosReplPositionClientCode, account), integer(kFortsPosReplPositionIsinId, isin),
                             integer(kFortsPosReplPositionAccountType, 2), integer(kFortsPosReplPositionXpos, 2)}});
             control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsPosRepl});
+            control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsUserorderbookRepl});
+            control.enqueue({.stream_code = gen::StreamCode::kFortsUserorderbookRepl,
+                             .table_code = gen::TableCode::kFortsUserorderbookReplInfo,
+                             .revision = 94002,
+                             .fields = {integer(kFortsUserorderbookReplInfoPublicationState, 1),
+                                        integer(kFortsUserorderbookReplInfoTradesRev, 1001),
+                                        integer(kFortsUserorderbookReplInfoTradesLifenum, 7)}});
+            control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsUserorderbookRepl});
             control.enqueue({.kind = fake::EventKind::Online, .stream_code = gen::StreamCode::kFortsUserorderbookRepl});
             for (int i = 0; i < 5; ++i)
                 require(!host.poll(), "terminal TRADE fixture reconstruction");

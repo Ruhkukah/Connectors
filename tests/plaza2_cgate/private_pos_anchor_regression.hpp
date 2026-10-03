@@ -38,6 +38,18 @@ inline void private_pos_anchor_regression(plaza2_trade::CgateSessionConfig confi
         require(session.trade_replay_anchor_ready(), "committed valid POS info did not make TRADE ready");
     };
     const auto info = [&](std::int64_t revision, std::int64_t trades_rev, std::int64_t life, bool online = false) {
+        if (life > 0) {
+            control.enqueue({.kind = fake::EventKind::Begin, .stream_code = kFortsUserorderbookRepl});
+            control.enqueue(
+                {.stream_code = kFortsUserorderbookRepl,
+                 .table_code = kFortsUserorderbookReplInfo,
+                 .revision = revision,
+                 .fields = {{.field_code = kFortsUserorderbookReplInfoPublicationState, .signed_value = 1},
+                            {.field_code = kFortsUserorderbookReplInfoTradesRev, .signed_value = trades_rev},
+                            {.field_code = kFortsUserorderbookReplInfoTradesLifenum, .signed_value = life}}});
+            control.enqueue({.kind = fake::EventKind::Commit, .stream_code = kFortsUserorderbookRepl});
+            control.enqueue({.kind = fake::EventKind::Online, .stream_code = kFortsUserorderbookRepl});
+        }
         control.enqueue({.kind = fake::EventKind::Begin, .stream_code = kFortsPosRepl});
         control.enqueue({.kind = fake::EventKind::Row,
                          .stream_code = kFortsPosRepl,

@@ -462,7 +462,9 @@ cg::Plaza2Error CgateTradingHost::poll() {
     if (rebuilding_) {
         // The bootstrap barrier reconciles full committed snapshots. Delta
         // accumulation while waiting for USERORDERBOOK serves no consumer.
-        if (trade_online && user_book_online) {
+        if (const auto sync_error = session_.synchronize_order_book(); sync_error)
+            return sync_error;
+        if (trade_online && user_book_online && session_.order_book_snapshot_ready()) {
             orders_->observe_orders(data.own_orders(), true);
             orders_->observe_trades(data.own_trades());
             orders_->reconcile_snapshot(data.own_orders(), config_.utc_now ? config_.utc_now() : utc_seconds());

@@ -33,11 +33,13 @@ struct CgateStreamConfig {
     std::string open_settings;
 };
 
-// POS.info selects the replay boundary before opening TRADE.
+// POS.info selects deal/heartbeat replay; completed USERORDERBOOK.info selects
+// orders_log replay. ONLINE then proves catch-up even for an empty own account.
 struct Plaza2TradeReplayAnchor {
     std::int64_t trades_rev{0};
     std::int64_t trades_lifenum{0};
     std::int64_t server_time{0};
+    std::int64_t orders_rev{0};
 };
 
 enum class CgateSessionMode : std::uint8_t {
@@ -179,6 +181,9 @@ class CgateSession final {
     [[nodiscard]] CgateSessionMode mode() const noexcept;
     [[nodiscard]] bool trade_replay_anchor_ready() const noexcept;
     [[nodiscard]] std::optional<Plaza2TradeReplayAnchor> trade_replay_anchor_used() const noexcept;
+    // Called only while the trading owner reconciles a fresh snapshot.
+    [[nodiscard]] plaza2::cgate::Plaza2Error synchronize_order_book();
+    [[nodiscard]] bool order_book_snapshot_ready() const noexcept;
 
     struct ReplyEvent {
         std::uint32_t user_id{0};

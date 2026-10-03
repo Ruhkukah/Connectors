@@ -71,6 +71,7 @@ fixture::Scenario scenario;
 std::deque<fixture::Event> queued_events;
 std::vector<fixture::PostedCommand> posted_commands;
 std::unordered_map<StreamCode, std::uint64_t> listener_opens;
+std::string last_trade_open_settings;
 std::uint64_t process_calls{};
 std::uint32_t last_process_timeout{};
 const char* option(Option option) {
@@ -1475,6 +1476,7 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
         for (auto& message : script)
             if (auto* field = find_field(message, FieldCode::kFortsAggrReplSysEventsSessId))
                 --field->signed_value;
+    std::erase_if(script, [](const auto& row) { return row.table_code == scenario.omitted_schema_table; });
     return script;
 }
 
@@ -1790,6 +1792,17 @@ std::uint32_t emit_script(FakeListener& listener) {
                            : 7u,
         .flags = 0,
     };
+    if (listener.stream_code == StreamCode::kFortsTradeRepl) {
+        const auto marker = listener.open_settings.find("lifenum=");
+        if (marker != std::string::npos) {
+            const auto start = marker + 8;
+            const auto end = listener.open_settings.find(';', start);
+            const auto value = std::string_view(listener.open_settings).substr(start, end - start);
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), lifenum.life_number);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+                return kCgErrInvalidArgument;
+        }
+    }
     if (const auto result = emit_simple_message(listener, kCgMsgP2replLifenum, &lifenum, sizeof(lifenum));
         result != kCgErrOk) {
         return result;
@@ -2722,6 +2735,8 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
         return kCgErrInvalidArgument;
     }
     typed->open_settings = settings ? settings : "";
+    if (typed->stream_code == StreamCode::kFortsTradeRepl)
+        last_trade_open_settings = typed->open_settings;
     if (typed->stream_code == StreamCode::kFortsSessionstateRepl ||
         typed->stream_code == StreamCode::kFortsInstrumentstateRepl)
         ++g_status_open_count;
@@ -3114,4 +3129,8 @@ extern "C" std::uint32_t moex_fake_last_process_timeout() {
 }
 extern "C" std::uint64_t moex_fake_listener_opens(StreamCode stream) {
     return listener_opens[stream];
+}
+extern "C" void moex_fake_trade_open_settings(std::string* settings) {
+    if (settings)
+        *settings = last_trade_open_settings;
 }

@@ -459,15 +459,40 @@ struct CgateSession::Impl {
         return anchor && pos && anchor->trades_rev == pos->last_trades_rev &&
                anchor->trades_lifenum == pos->last_trades_lifenum && stream_online(StreamCode::kFortsTradeRepl);
     }
-    Plaza2Error open_anchored_trade() {
+    const plaza2::private_state::StreamHealthSnapshot* userbook_anchor_health() const {
+        const auto health = projection.stream_health();
+        const auto found = std::find_if(health.begin(), health.end(), [](const auto& s) {
+            return s.stream_code == StreamCode::kFortsUserorderbookRepl;
+        });
+        return found != health.end() && found->online && found->snapshot_complete &&
+                       found->periodic_snapshot_consistent && found->last_trades_rev >= 0 &&
+                       found->last_trades_lifenum > 0
+                   ? &*found
+                   : nullptr;
+    }
+    bool order_book_snapshot_ready() const {
+        const auto* book = userbook_anchor_health();
+        const auto life = projection.stream_lifenum(StreamCode::kFortsTradeRepl);
+        return book && anchor && anchored_trade_ready() && life &&
+               *life == static_cast<std::uint64_t>(anchor->trades_lifenum) &&
+               book->last_trades_lifenum == anchor->trades_lifenum && book->last_trades_rev <= anchor->orders_rev;
+    }
+    Plaza2Error open_anchored_trade(bool refresh_orders = false) {
         if (!deferred_trade)
             return {};
         const auto* found = pos_anchor_health();
         if (!found)
             return {};
+        const bool same_pos = anchor && anchor->trades_rev == found->last_trades_rev &&
+                              anchor->trades_lifenum == found->last_trades_lifenum;
+        if (same_pos && !refresh_orders)
+            return {};
+        const auto* book = userbook_anchor_health();
+        if (!book || book->last_trades_lifenum != found->last_trades_lifenum)
+            return {};
         const Plaza2TradeReplayAnchor target{found->last_trades_rev, found->last_trades_lifenum,
-                                             found->last_server_time};
-        if (anchor && anchor->trades_rev == target.trades_rev && anchor->trades_lifenum == target.trades_lifenum)
+                                             found->last_server_time, book->last_trades_rev};
+        if (same_pos && anchor->orders_rev >= target.orders_rev)
             return {};
         if (anchor) {
             auto old = std::find_if(listeners.begin(), listeners.end(),
@@ -484,6 +509,7 @@ struct CgateSession::Impl {
         if (trade.open_settings.empty())
             trade.open_settings = "mode=snapshot+online";
         trade.open_settings += ";lifenum=" + std::to_string(target.trades_lifenum) +
+                               ";rev.orders_log=" + std::to_string(target.orders_rev) +
                                ";rev.deal=" + std::to_string(target.trades_rev) +
                                ";rev.heart_beat=" + std::to_string(target.trades_rev);
         if (auto error = add_listener(std::move(trade), bridge); error)
@@ -862,6 +888,12 @@ bool CgateSession::trade_replay_anchor_ready() const noexcept {
 }
 std::optional<Plaza2TradeReplayAnchor> CgateSession::trade_replay_anchor_used() const noexcept {
     return impl_->anchor;
+}
+plaza2::cgate::Plaza2Error CgateSession::synchronize_order_book() {
+    return impl_->open_anchored_trade(true);
+}
+bool CgateSession::order_book_snapshot_ready() const noexcept {
+    return impl_->order_book_snapshot_ready();
 }
 std::vector<CgateSession::ReplyEvent> CgateSession::take_reply_events() {
     auto out = std::move(impl_->replies.events);

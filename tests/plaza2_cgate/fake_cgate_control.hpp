@@ -241,6 +241,11 @@ class Control {
     std::uint64_t opens(generated::StreamCode stream) const {
         return call<std::uint64_t (*)(generated::StreamCode)>("moex_fake_listener_opens")(stream);
     }
+    std::string trade_open_settings() const {
+        std::string result;
+        call<void (*)(std::string*)>("moex_fake_trade_open_settings")(&result);
+        return result;
+    }
 
   private:
     template <class T> T call(const char* name) const {
