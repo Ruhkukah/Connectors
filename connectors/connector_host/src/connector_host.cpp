@@ -62,8 +62,8 @@ bool order_entry_ready(const CgateSession& host, std::int64_t isin_id, std::int3
     if (session == data.sessions().end())
         return false;
     const auto instrument = std::find_if(data.instruments().begin(), data.instruments().end(), [=](const auto& row) {
-        return row.isin_id == isin_id && row.sess_id == session_id && row.current_session_member &&
-               row.has_current_status &&
+        return row.kind == ps::InstrumentKind::kFuture && !row.is_spread && row.isin_id == isin_id &&
+               row.sess_id == session_id && row.current_session_member && row.has_current_status &&
                (row.current_status == 1 || (allow_opening_auction && row.current_status == 6));
     });
     return instrument != data.instruments().end();

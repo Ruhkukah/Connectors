@@ -15,6 +15,7 @@
 #include "storage_halt_cancel_regression.hpp"
 #include "reload_missing_host_regression.hpp"
 #include "opening_auction_host_regression.hpp"
+#include "spread_scope_host_regression.hpp"
 
 #include <cstdlib>
 #include <dlfcn.h>
@@ -177,6 +178,7 @@ int main(int argc, char** argv) {
         moex::connector_host::regression::storage_halt_cancel_regression(config, fake, root);
         moex::connector_host::reload_missing_host_regression(config, fake, root);
         moex::connector_host::opening_auction_host_regression(config, fake, root);
+        moex::connector_host::spread_scope_host_regression(config, fake, root);
         moex::connector_host::regression::immediate_dispatch_host_regression(config, fake, root);
         moex::connector_host::regression::storage_capacity_guard(config, fake, root, false);
         moex::connector_host::regression::storage_capacity_guard(config, fake, root, true);
