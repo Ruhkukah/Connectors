@@ -44,8 +44,8 @@ std::string binary_sha256(const char* argv0) {
 }
 
 volatile std::sig_atomic_t stopping{};
-void stop(int) {
-    stopping = 1;
+void stop(int signal) {
+    stopping = signal;
 }
 struct ShutdownRequest {
     bool requested{}, force{};
@@ -302,6 +302,8 @@ int main(int argc, char** argv) {
                     throw std::invalid_argument("isin id outside CGate i4 range");
                 config.isin_ids.push_back(static_cast<std::int32_t>(isin));
             }
+            const auto signal_isins = config.isin_ids;
+            const bool allow_orders = config.session.allow_orders;
             CgateTradingHost host(std::move(config));
             ScopeExit report([&] { host.report_outstanding_orders(std::cerr); });
             ScopeExit shutdown([&] { (void)host.stop(); });
@@ -312,13 +314,28 @@ int main(int argc, char** argv) {
             }
             CommandInput input;
             ShutdownRequest drain;
+            std::string signal_reason;
+            const auto signal_shutdown = [&] {
+                if (!stopping || !signal_reason.empty())
+                    return;
+                signal_reason = stopping == SIGINT ? "SIGINT" : "SIGTERM";
+                host.record_operator_input(signal_reason, "signal");
+                host.set_kill_switch(true);
+                drain.begin(true);
+                if (allow_orders)
+                    for (const auto isin : signal_isins) {
+                        const auto line = "cancel-all " + std::to_string(isin);
+                        host.record_operator_input(line, "signal");
+                        if (const auto error = host.cancel_all(isin); !error.empty())
+                            host.record_local_refusal(line, error, "signal");
+                    }
+            };
             auto input_retry = std::chrono::steady_clock::now();
             for (;;) {
-                if (stopping && !drain.force) {
-                    host.set_kill_switch(true);
-                    drain.begin(true);
-                }
+                signal_shutdown();
                 if (const auto error = host.poll()) {
+                    if (drain.requested)
+                        host.record_shutdown_drain(signal_reason.empty() ? "quit" : signal_reason, false);
                     std::cerr << error.message << '\n';
                     return 3;
                 }
@@ -347,8 +364,10 @@ int main(int argc, char** argv) {
                             });
                     }
                 }
-                if (!drain.requested ||
-                    (host.has_pending_cancellations() && std::chrono::steady_clock::now() < drain.deadline))
+                signal_shutdown();
+                const bool waiting = host.has_pending_cancellations() ||
+                                     (!signal_reason.empty() && allow_orders && host.has_working_orders());
+                if (!drain.requested || (waiting && std::chrono::steady_clock::now() < drain.deadline))
                     continue;
                 if (!drain.force && (host.has_pending_cancellations() || host.has_working_orders())) {
                     std::cout << refusal(host, drain.line,
@@ -363,6 +382,8 @@ int main(int argc, char** argv) {
                 if (host.has_pending_cancellations())
                     std::cerr << "moexctl: cancellation drain reached its 10-second deadline; acknowledgements remain "
                                  "pending\n";
+                host.record_shutdown_drain(signal_reason.empty() ? "quit" : signal_reason,
+                                           waiting && std::chrono::steady_clock::now() >= drain.deadline);
                 break;
             }
             const auto error = host.stop();

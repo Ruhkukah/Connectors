@@ -32,6 +32,7 @@ class CgateTradingHost {
     [[nodiscard]] std::string cancel_all(std::int32_t isin_id);
     void set_kill_switch(bool enabled);
     [[nodiscard]] std::string storage_ok();
+    void record_shutdown_drain(std::string_view reason, bool timed_out);
     void record_operator_input(std::string_view line, std::string_view channel = "stdin");
     void record_local_refusal(std::string_view line, std::string_view error, std::string_view channel = "stdin");
     [[nodiscard]] std::string status() const;

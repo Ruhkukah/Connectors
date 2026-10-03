@@ -725,6 +725,14 @@ int main(int argc, char** argv) {
                       "quit stopped a host with Working orders without --force");
         owner.send("quit --force\n");
         test::require(owner.wait() == 0, "forced quit did not stop host");
+        std::ifstream journal(log);
+        std::string record;
+        bool incomplete{};
+        while (std::getline(journal, record))
+            incomplete |= record.find("\"event\":\"cancel_drain\"") != std::string::npos &&
+                          field(record, "reason") == "quit" && field(record, "outcome") == "incomplete" &&
+                          record.find("\"working_orders\":true") != std::string::npos;
+        test::require(incomplete, "forced quit falsely reported a completed cancellation drain");
     });
     scenario("cancel-all plus quit drains", [&] {
         const auto log = root / "quit-drain.ndjson";
@@ -752,6 +760,46 @@ int main(int argc, char** argv) {
         owner.signal(SIGCONT);
         test::require(owner.wait() == 0, "signal drain did not stop host");
         cancelled_before_stop(log);
+    });
+    scenario("signals cancel every configured instrument before draining", [&] {
+        for (const auto signal : {SIGINT, SIGTERM}) {
+            const std::string reason = signal == SIGINT ? "SIGINT" : "SIGTERM";
+            const auto label = "signal-cancel-" + reason;
+            const auto log = root / (label + ".ndjson");
+            auto arguments = run_arguments(executable, fixture, log, "cli_" + label);
+            arguments.insert(arguments.end(), {"--allow-orders", "--isin-id", "1002", "--max-notional",
+                                               "1002=100000000", "--max-position", "1002=100"});
+            Child owner(arguments, root / (label + ".err"));
+            make_working(owner);
+            const auto start = std::chrono::steady_clock::now();
+            owner.signal(signal);
+            test::require(owner.wait() == 0, "signal cancellation did not stop the host");
+            const auto elapsed = std::chrono::steady_clock::now() - start;
+            test::require(elapsed < 12s, "signal cancellation exceeded its bounded drain");
+            std::ifstream journal(log);
+            std::string record, drain;
+            unsigned first{}, second{}, acknowledgements{};
+            while (std::getline(journal, record)) {
+                if (record.find("\"event\":\"command\"") != std::string::npos &&
+                    record.find("DelUserOrders") != std::string::npos) {
+                    first += record.find("\"isin_id\":1001") != std::string::npos;
+                    second += record.find("\"isin_id\":1002") != std::string::npos;
+                }
+                acknowledgements += record.find("\"event\":\"reply\"") != std::string::npos &&
+                                    record.find("\"msgid\":186") != std::string::npos;
+                if (record.find("\"event\":\"cancel_drain\"") != std::string::npos)
+                    drain = record;
+            }
+            test::require(first == 1 && second == 1 && acknowledgements == 2,
+                          "signal did not cancel each configured instrument once and process its acknowledgement");
+            test::require(field(drain, "reason") == reason, "signal drain outcome was not journaled");
+            const bool timed_out = field(drain, "outcome") == "timed_out";
+            test::require(timed_out ? elapsed >= 9500ms
+                                    : field(drain, "outcome") == "completed" &&
+                                          drain.find("\"pending_cancellations\":false") != std::string::npos &&
+                                          drain.find("\"working_orders\":false") != std::string::npos,
+                          "signal exited after an acknowledgement without terminal proof or a mature deadline");
+        }
     });
     scenario("storage failure keeps command owner alive", [&] {
         const auto log = root / "storage.ndjson", state = root / "storage.state";

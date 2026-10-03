@@ -568,8 +568,7 @@ cg::Plaza2Error CgateTradingHost::start() {
             ",\"source_git_sha\":" + json_string(config_.source_git_sha) +
             ",\"binary_sha256\":" + json_string(config_.binary_sha256) + ",\"router\":" + json_string(router) +
             ",\"ext_id_begin\":" + std::to_string(config_.orders.ext_id_begin) +
-            ",\"ext_id_end\":" + std::to_string(config_.orders.ext_id_end) +
-            ",\"login_from\":\"[REDACTED]\"" +
+            ",\"ext_id_end\":" + std::to_string(config_.orders.ext_id_end) + ",\"login_from\":\"[REDACTED]\"" +
             ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
             ",\"allow_orders\":" + (session.allow_orders ? "true" : "false") + ",\"risk\":" + risk + ",\"urls\":[" +
             urls + "],\"env_settings\":" + json_string(masked_settings(session.runtime.env_open_settings)) +
@@ -672,7 +671,8 @@ cg::Plaza2Error CgateTradingHost::stop() {
         return stop_error_;
     stopped_ = true;
     orders_->set_kill_switch(true);
-    log_event("shutdown", "{}");
+    log_event("shutdown", "{\"pending_cancellations\":" + std::string(has_pending_cancellations() ? "true" : "false") +
+                              ",\"working_orders\":" + (has_working_orders() ? "true" : "false") + "}");
     // Storage failures must never leave gateway handles open. Close first,
     // then attempt to flush the shutdown and close records together.
     const auto session_error = session_.stop();
@@ -760,6 +760,15 @@ std::string CgateTradingHost::storage_ok() {
     log_error_.clear();
     orders_->set_kill_switch(true);
     return {};
+}
+void CgateTradingHost::record_shutdown_drain(std::string_view reason, bool timed_out) {
+    assert_owner();
+    log_event("cancel_drain", "{\"reason\":" + json_string(reason) + ",\"outcome\":" +
+                                  json_string(timed_out                                               ? "timed_out"
+                                              : (has_pending_cancellations() || has_working_orders()) ? "incomplete"
+                                                                                                      : "completed") +
+                                  ",\"pending_cancellations\":" + (has_pending_cancellations() ? "true" : "false") +
+                                  ",\"working_orders\":" + (has_working_orders() ? "true" : "false") + "}");
 }
 void CgateTradingHost::record_operator_input(std::string_view line, std::string_view channel) {
     assert_owner();
