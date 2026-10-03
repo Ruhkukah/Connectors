@@ -648,8 +648,22 @@ int main(int argc, char** argv) {
                       "storage-failed CLI admitted another Add");
         test::require(remote_command(executable, log, "cancel rel7_working").find("\"ok\":true") != std::string::npos,
                       "storage-failed CLI refused durable-ID cancellation");
+        test::require(std::filesystem::remove(state), "repair CLI identity checkpoint directory");
+        test::require(remote_command(executable, log, "storage ok").find("\"ok\":true") != std::string::npos,
+                      "CLI did not admit an explicit storage recovery check");
+        const auto recovered = remote_command(executable, log, "status");
+        test::require(recovered.find("\"cancel_only\":false") != std::string::npos,
+                      "storage recovery failed to clear cancel-only mode");
+        test::require(
+            remote_command(executable, log, "place still_killed 1001 buy 1 102500 day").find("kill switch enabled") !=
+                std::string::npos,
+            "storage recovery silently disabled the kill switch");
         owner.signal(SIGTERM);
-        test::require(owner.wait() == 7, "storage-failed CLI shutdown concealed its storage error");
+        test::require(owner.wait() == 0, "recovered CLI shutdown retained its storage error");
+        std::ifstream journal(log);
+        const std::string contents((std::istreambuf_iterator<char>(journal)), {});
+        test::require(contents.find("\"event\":\"storage_recovered\"") != std::string::npos,
+                      "explicit storage recovery was not journaled");
     });
     std::filesystem::current_path(original_directory);
     restore_directory.release();

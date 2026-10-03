@@ -145,8 +145,14 @@ std::string command(moex::connector_host::CgateTradingHost& host, ShutdownReques
                 error = "shutdown is draining cancellations";
             else
                 host.set_kill_switch(key == "on");
+        } else if (verb == "storage") {
+            std::string extra;
+            if (!(input >> key) || key != "ok" || (input >> extra))
+                error = "usage: storage ok";
+            else
+                error = host.storage_ok();
         } else
-            error = "commands: place, cancel, move, cancel-all, kill, status, quit";
+            error = "commands: place, cancel, move, cancel-all, kill, storage ok, status, quit";
     } catch (const std::invalid_argument& invalid) {
         error = invalid.what();
     }
@@ -240,7 +246,7 @@ int main(int argc, char** argv) {
                          "--reply-timeout-ms N --clock-offset-us N --command-socket PATH\n"
                       << "run commands: place ID ISIN buy|sell QTY PRICE [day|ioc]; cancel "
                          "ID; move ID QTY PRICE; "
-                         "cancel-all ISIN; kill on|off; status; quit [--force]\n"
+                         "cancel-all ISIN; kill on|off; storage ok; status; quit [--force]\n"
                       << "reconnect: moexctl plaza2 cmd [--log FILE | --command-socket "
                          "PATH] \"COMMAND\"\n"
                       << "command socket defaults to LOGFILE.sock; restricted to its "

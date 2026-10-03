@@ -90,6 +90,11 @@ inline void storage_durable_cancel_guard(TradingHostConfig config, const plaza2:
     now += std::chrono::seconds(2);
     require(!host.poll() && control.commands().size() == posted + 1 && host.has_pending_cancellations(),
             "storage protection posted an unreserved retry ID beyond the durable ceiling");
+    std::filesystem::remove(config.identity_state_path);
+    require(host.storage_ok().empty(), "repaired durable cancel storage remained protected");
+    now += std::chrono::seconds(2);
+    require(!host.poll() && control.commands().size() == posted + 2 && control.commands().back().user_id == 1001,
+            "storage recovery failed to durably reserve and dispatch the queued cancellation retry");
     auto fill = own_trade(72002, config.isin_ids.front(), account, 72001);
     transaction(fill);
     for (auto& field : row.fields) {
@@ -115,10 +120,10 @@ inline void storage_durable_cancel_guard(TradingHostConfig config, const plaza2:
     const auto status = host.status();
     require(status.find("\"state\":\"Filled\"") != std::string::npos &&
                 status.find("\"executed\":1") != std::string::npos && status.find("\"xpos\":1") != std::string::npos &&
-                !host.has_pending_cancellations() && control.commands().size() == posted + 1,
+                !host.has_pending_cancellations() && control.commands().size() == posted + 2,
             "storage protection stopped native terminal/fill reconciliation or retried an Add: " + status +
                 "; pending=" + std::to_string(host.has_pending_cancellations()) +
                 "; posts=" + std::to_string(control.commands().size() - posted));
-    require(host.stop().code == cg::Plaza2ErrorCode::RuntimeCallFailed, "durable cancel guard stop concealed error");
+    require(!host.stop(), "recovered durable cancel guard stop failed");
 }
 } // namespace moex::connector_host::regression

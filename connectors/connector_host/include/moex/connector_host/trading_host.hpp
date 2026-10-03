@@ -16,6 +16,7 @@ struct TradingHostConfig {
     std::filesystem::path identity_state_path;
     std::optional<std::int64_t> clock_offset_us;
     std::function<std::int64_t()> utc_now;
+    std::function<std::uintmax_t(const std::filesystem::path&)> storage_space_probe;
     std::string source_git_sha{"unknown"}, binary_sha256{"unknown"};
 };
 class CgateTradingHost {
@@ -30,6 +31,7 @@ class CgateTradingHost {
     [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity);
     [[nodiscard]] std::string cancel_all(std::int32_t isin_id);
     void set_kill_switch(bool enabled);
+    [[nodiscard]] std::string storage_ok();
     void record_operator_input(std::string_view line, std::string_view channel = "stdin");
     void record_local_refusal(std::string_view line, std::string_view error, std::string_view channel = "stdin");
     [[nodiscard]] std::string status() const;
@@ -40,7 +42,7 @@ class CgateTradingHost {
   private:
     void assert_owner() const;
     void dispatch_commands();
-    void storage_failure(std::string_view error);
+    void storage_failure(std::string_view error, bool writer_failed = true);
     [[nodiscard]] std::string check_storage_space();
     plaza2_trade::CgateSessionConfig session_config();
     void log_event(std::string_view kind, std::string_view fields) noexcept;
@@ -57,6 +59,8 @@ class CgateTradingHost {
     bool link_was_active_{}, link_lost_{};
     plaza2::cgate::Plaza2Error stop_error_;
     std::string log_error_;
+    std::string identifier_reservation_;
+    bool journal_failed_{};
     OrderManager::Clock::time_point next_space_check_{};
     std::uint64_t exchange_message_commit_{};
     std::unordered_map<std::int64_t, std::pair<std::uint64_t, std::int64_t>> exchange_message_revisions_;

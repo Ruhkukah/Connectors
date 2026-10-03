@@ -80,6 +80,8 @@ Keep an owner-managed deployment card beside the terminal containing the broker 
 3. If cancellation cannot be confirmed, contact the broker desk through its authenticated emergency channel to establish venue orders and positions and request risk reduction. Escalate CGate, router or TEST session failures to MOEX support with the instance, section, time and sanitized error; never send credentials or keys.
 4. Preserve the interaction journal, identity file and CGate/router logs. Repair the fault, reconnect through the product, reconcile fresh TRADE/USERORDERBOOK/POS, and confirm flatness before any new rehearsal entry. Archive native logs immediately after the session because vendor rotation is bounded.
 
+The interaction journal is append-only. Do not use copytruncate, replace an active journal or rotate it while the driver runs. Low free space enables cancel-only protection while interaction logging continues if the writer is healthy. After repairing storage, `storage ok` verifies free space and durably flushes the journal/checkpoint before leaving protection; the kill switch stays on until an explicit `kill off`.
+
 ## Full-day rehearsal
 
 Load account values and the CGate software key from an owner-managed environment file with permissions `0600`,
