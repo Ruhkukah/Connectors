@@ -66,12 +66,118 @@ inline void bootstrap(CgateTradingHost& host) {
 inline OrderRequest add(std::string key, std::int32_t isin) {
     return {.client_order_id = std::move(key), .isin_id = isin, .price = "103000", .quantity = 1};
 }
+
+inline void terminal_trade_stale_userbook(TradingHostConfig config, const fake::Control& control,
+                                          const std::filesystem::path& root) {
+    using enum gen::FieldCode;
+    const auto isin = config.isin_ids.front();
+    const auto account = config.orders.broker_code + config.orders.client_code;
+    for (const bool userbook_first : {false, true}) {
+        for (const bool interleaved : {false, true}) {
+            fake::Scenario scenario{
+                .suppress_initial_orders = true, .zero_position = true, .client_code = account, .session_id = 321};
+            scenario.options[static_cast<std::size_t>(fake::Option::DelayUserorderbook)] = "1";
+            control.configure(scenario);
+            const auto label = std::string("terminal-trade-") + (userbook_first ? "uob-first-" : "trade-first-") +
+                               (interleaved ? "interleaved" : "sequential");
+            config.journal_path = root / (label + ".ndjson");
+            config.identity_state_path = root / (label + ".state");
+            const auto posts = control.commands().size();
+            CgateTradingHost host(config);
+            require(!host.start(), "terminal TRADE fixture start");
+            for (int i = 0; i < 30; ++i)
+                require(!host.poll(), "terminal TRADE fixture initial streams");
+            require(host.status().find("\"reconstructing\":true") != std::string::npos,
+                    "terminal TRADE fixture failed to hold startup USERORDERBOOK barrier");
+            constexpr std::int64_t id = 91001;
+            auto terminal_order = own_order(id, isin, account);
+            for (auto& field : terminal_order.fields) {
+                if (field.field_code == kFortsTradeReplOrdersLogPublicAmount ||
+                    field.field_code == kFortsTradeReplOrdersLogPrivateAmount)
+                    field.signed_value = 2;
+                if (field.field_code == kFortsTradeReplOrdersLogPublicAmountRest ||
+                    field.field_code == kFortsTradeReplOrdersLogPrivateAmountRest)
+                    field.signed_value = 0;
+                if (field.field_code == kFortsTradeReplOrdersLogPublicAction ||
+                    field.field_code == kFortsTradeReplOrdersLogPrivateAction)
+                    field.signed_value = 2;
+            }
+            auto deal = own_trade(92001, isin, account, id);
+            for (auto& field : deal.fields)
+                if (field.field_code == kFortsTradeReplUserDealXamount)
+                    field.signed_value = 2;
+            fake::Event stale_book{.stream_code = gen::StreamCode::kFortsUserorderbookRepl,
+                                   .table_code = gen::TableCode::kFortsUserorderbookReplOrders,
+                                   .revision = 93001,
+                                   .fields = {integer(kFortsUserorderbookReplOrdersReplId, id),
+                                              integer(kFortsUserorderbookReplOrdersPublicOrderId, id),
+                                              integer(kFortsUserorderbookReplOrdersPrivateOrderId, id),
+                                              integer(kFortsUserorderbookReplOrdersSessId, 321),
+                                              integer(kFortsUserorderbookReplOrdersIsinId, isin),
+                                              integer(kFortsUserorderbookReplOrdersDir, 1),
+                                              integer(kFortsUserorderbookReplOrdersPublicAction, 1),
+                                              integer(kFortsUserorderbookReplOrdersPrivateAction, 1),
+                                              integer(kFortsUserorderbookReplOrdersPublicAmount, 2),
+                                              integer(kFortsUserorderbookReplOrdersPrivateAmount, 2),
+                                              integer(kFortsUserorderbookReplOrdersPublicAmountRest, 2),
+                                              integer(kFortsUserorderbookReplOrdersPrivateAmountRest, 2),
+                                              text(kFortsUserorderbookReplOrdersClientCode, account),
+                                              text(kFortsUserorderbookReplOrdersPrice, "103000")}};
+            const auto first =
+                userbook_first ? gen::StreamCode::kFortsUserorderbookRepl : gen::StreamCode::kFortsTradeRepl;
+            const auto second =
+                userbook_first ? gen::StreamCode::kFortsTradeRepl : gen::StreamCode::kFortsUserorderbookRepl;
+            const auto rows = [&](gen::StreamCode stream) {
+                if (stream == gen::StreamCode::kFortsTradeRepl) {
+                    control.enqueue(terminal_order);
+                    control.enqueue(deal);
+                } else
+                    control.enqueue(stale_book);
+            };
+            control.enqueue({.kind = fake::EventKind::Begin, .stream_code = first});
+            rows(first);
+            if (!interleaved)
+                control.enqueue({.kind = fake::EventKind::Commit, .stream_code = first});
+            control.enqueue({.kind = fake::EventKind::Begin, .stream_code = second});
+            rows(second);
+            control.enqueue({.kind = fake::EventKind::Commit, .stream_code = second});
+            if (interleaved)
+                control.enqueue({.kind = fake::EventKind::Commit, .stream_code = first});
+            control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsPosRepl});
+            control.enqueue(
+                {.stream_code = gen::StreamCode::kFortsPosRepl,
+                 .table_code = gen::TableCode::kFortsPosReplPosition,
+                 .revision = 94001,
+                 .fields = {text(kFortsPosReplPositionClientCode, account), integer(kFortsPosReplPositionIsinId, isin),
+                            integer(kFortsPosReplPositionAccountType, 2), integer(kFortsPosReplPositionXpos, 2)}});
+            control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsPosRepl});
+            control.enqueue({.kind = fake::EventKind::Online, .stream_code = gen::StreamCode::kFortsUserorderbookRepl});
+            for (int i = 0; i < 5; ++i)
+                require(!host.poll(), "terminal TRADE fixture reconstruction");
+            const auto status = host.status();
+            require(status.find("\"reconstructing\":false") != std::string::npos &&
+                        status.find("\"xpos\":2") != std::string::npos,
+                    "terminal TRADE reconstruction lost the independent filled position");
+            require(status.find("\"state\":\"Working\"") == std::string::npos &&
+                        status.find("\"state\":\"PartFilled\"") == std::string::npos &&
+                        status.find("\"state\":\"Unknown\"") == std::string::npos &&
+                        status.find("\"operator_action_required\":true") == std::string::npos,
+                    "stale USERORDERBOOK resurrected a terminal TRADE order during reconstruction");
+            std::ostringstream diagnostics;
+            host.report_outstanding_orders(diagnostics);
+            require(diagnostics.str().empty() && control.commands().size() == posts,
+                    "terminal TRADE reconstruction manufactured an outstanding cancellation or send");
+            require(!host.stop(), "terminal TRADE fixture stop");
+        }
+    }
+}
 } // namespace private_delta_host_detail
 
 inline void private_delta_host_regression(TradingHostConfig config, const plaza2::test::fake::Control& control,
                                           const std::filesystem::path& root) {
     using namespace private_delta_host_detail;
     require(!config.isin_ids.empty(), "private-delta fixture needs an instrument");
+    terminal_trade_stale_userbook(config, control, root);
     const auto isin = config.isin_ids.front();
     const auto account = config.orders.broker_code + config.orders.client_code;
     auto now = OrderManager::Clock::time_point{} + std::chrono::hours(1);

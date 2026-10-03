@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace moex::connector_host {
 namespace {
@@ -1061,6 +1062,34 @@ void OrderManager::invalidate_execution_baselines() {
 }
 
 void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, bool rebuilding) {
+    struct Identity {
+        std::int64_t id;
+        std::int32_t session, isin;
+        std::int8_t side;
+        bool operator==(const Identity&) const = default;
+    };
+    const auto identity = [](const auto& row) {
+        return Identity{row.private_order_id > 0 ? row.private_order_id : row.public_order_id, row.sess_id, row.isin_id,
+                        row.dir};
+    };
+    const auto hash = [](const Identity& value) {
+        return std::hash<std::int64_t>{}(value.id) ^ (std::hash<std::int32_t>{}(value.session) << 1) ^
+               (std::hash<std::int32_t>{}(value.isin) << 2) ^ (std::hash<std::int8_t>{}(value.side) << 3);
+    };
+    const auto account = config_.broker_code + config_.client_code;
+    const auto owned = [&](const auto& row) {
+        return row.client_code == account && !row.multileg && !row.identity_conflict && (row.dir == 1 || row.dir == 2);
+    };
+    std::unordered_set<Identity, decltype(hash)> trade_evidence(0, hash);
+    if (rebuilding) {
+        // The periodic order book can predate a terminal TRADE update. Keep
+        // both raw surfaces, but reconcile exact owned identities from TRADE
+        // regardless of callback order or native snapshot append order.
+        trade_evidence.reserve(rows.size());
+        for (const auto& row : rows)
+            if (row.from_trade_repl && owned(row) && identity(row).id > 0)
+                trade_evidence.insert(identity(row));
+    }
     std::vector<const plaza2::private_state::OwnOrderSnapshot*> ordered;
     auto observed_session = current_session_;
     const auto has_link = [&](const auto& row) {
@@ -1076,8 +1105,8 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             ordered.push_back(&row);
     for (const auto* source : ordered) {
         const auto& row = *source;
-        if (row.client_code != config_.broker_code + config_.client_code || row.multileg || row.identity_conflict ||
-            (row.dir != 1 && row.dir != 2) || (!row.from_trade_repl && !(rebuilding && row.from_user_book)))
+        if (!owned(row) || (!row.from_trade_repl && !(rebuilding && row.from_user_book)) ||
+            (!row.from_trade_repl && trade_evidence.contains(identity(row))))
             continue;
         const auto id = row.private_order_id > 0 ? row.private_order_id : row.public_order_id;
         if (id <= 0)

@@ -84,6 +84,86 @@ void bridge_owns_callback_values() {
                 "commit borrowed mutated callback text or lost decoded values");
 }
 
+void terminal_trade_preserves_independent_userbook() {
+    for (const bool book_first : {false, true}) {
+        for (const bool interleaved : {false, true}) {
+            private_state::Plaza2PrivateStateProjector projector;
+            Plaza2PrivateStateBridge bridge(projector);
+            const std::array streams{kFortsTradeRepl, kFortsUserorderbookRepl};
+            require(!bridge.reset(streams) && !bridge.begin_run(), "independent terminal surfaces begin run");
+            const auto integer = [](generated::FieldCode code, std::int64_t value) {
+                return Plaza2DecodedFieldValue{
+                    .field_code = code, .kind = Plaza2DecodedValueKind::SignedInteger, .signed_value = value};
+            };
+            const std::array trade_fields{integer(kFortsTradeReplOrdersLogPublicOrderId, 91001),
+                                          integer(kFortsTradeReplOrdersLogPrivateOrderId, 91001),
+                                          integer(kFortsTradeReplOrdersLogSessId, 321),
+                                          integer(kFortsTradeReplOrdersLogIsinId, 1001),
+                                          integer(kFortsTradeReplOrdersLogDir, 1),
+                                          integer(kFortsTradeReplOrdersLogPublicAmount, 2),
+                                          integer(kFortsTradeReplOrdersLogPrivateAmount, 2),
+                                          integer(kFortsTradeReplOrdersLogPublicAmountRest, 0),
+                                          integer(kFortsTradeReplOrdersLogPrivateAmountRest, 0),
+                                          integer(kFortsTradeReplOrdersLogPublicAction, 2),
+                                          integer(kFortsTradeReplOrdersLogPrivateAction, 2)};
+            const std::array book_fields{integer(kFortsUserorderbookReplOrdersPublicOrderId, 91001),
+                                         integer(kFortsUserorderbookReplOrdersPrivateOrderId, 91001),
+                                         integer(kFortsUserorderbookReplOrdersSessId, 321),
+                                         integer(kFortsUserorderbookReplOrdersIsinId, 1001),
+                                         integer(kFortsUserorderbookReplOrdersDir, 1),
+                                         integer(kFortsUserorderbookReplOrdersPublicAmount, 2),
+                                         integer(kFortsUserorderbookReplOrdersPrivateAmount, 2),
+                                         integer(kFortsUserorderbookReplOrdersPublicAmountRest, 2),
+                                         integer(kFortsUserorderbookReplOrdersPrivateAmountRest, 2),
+                                         integer(kFortsUserorderbookReplOrdersPublicAction, 1),
+                                         integer(kFortsUserorderbookReplOrdersPrivateAction, 1)};
+            const auto event = [&](Plaza2ListenerEventKind kind, generated::StreamCode stream) {
+                require(!bridge.on_plaza2_listener_event({.kind = kind, .stream_code = stream}),
+                        "independent terminal surface transaction event");
+            };
+            const auto row = [&](generated::StreamCode stream) {
+                require(!bridge.on_plaza2_listener_event(
+                            {.kind = Plaza2ListenerEventKind::StreamData,
+                             .stream_code = stream,
+                             .table_code =
+                                 stream == kFortsTradeRepl ? kFortsTradeReplOrdersLog : kFortsUserorderbookReplOrders,
+                             .fields = stream == kFortsTradeRepl ? std::span(trade_fields) : std::span(book_fields),
+                             .signed_value = 1}),
+                        "independent terminal surface row");
+            };
+            const auto first = book_first ? kFortsUserorderbookRepl : kFortsTradeRepl;
+            const auto second = book_first ? kFortsTradeRepl : kFortsUserorderbookRepl;
+            event(Plaza2ListenerEventKind::TransactionBegin, first);
+            row(first);
+            if (!interleaved)
+                event(Plaza2ListenerEventKind::TransactionCommit, first);
+            event(Plaza2ListenerEventKind::TransactionBegin, second);
+            row(second);
+            event(Plaza2ListenerEventKind::TransactionCommit, second);
+            if (interleaved)
+                event(Plaza2ListenerEventKind::TransactionCommit, first);
+            const auto orders = projector.own_orders();
+            require(orders.size() == 2, "independent terminal surfaces were coalesced");
+            for (const auto& order : orders) {
+                require(order.public_order_id == 91001 && order.private_order_id == 91001 && order.sess_id == 321 &&
+                            order.isin_id == 1001 && order.dir == 1,
+                        "independent surface changed exact order identity");
+                require(order.from_trade_repl != order.from_user_book && !order.from_current_day,
+                        "independent surface manufactured mixed provenance");
+                require(order.public_amount_rest == (order.from_trade_repl ? 0 : 2) &&
+                            order.private_amount_rest == (order.from_trade_repl ? 0 : 2) &&
+                            order.public_action == (order.from_trade_repl ? 2 : 1) &&
+                            order.private_action == (order.from_trade_repl ? 2 : 1),
+                        "stale USERORDERBOOK overwrote terminal TRADE fields or lost its separate evidence");
+            }
+            projector.reset_stream_snapshot(book_first ? kFortsTradeRepl : kFortsUserorderbookRepl);
+            require(projector.own_orders().size() == 1 && projector.own_orders()[0].from_trade_repl == !book_first &&
+                        projector.own_orders()[0].public_amount_rest == (book_first ? 2 : 0),
+                    "one stream reset removed or mutated the other surface");
+        }
+    }
+}
+
 void clone_pending_native_transaction() {
     using Projector = private_state::Plaza2PrivateStateProjector;
     using namespace projection;
@@ -929,6 +1009,7 @@ int transaction_scenario(std::chrono::nanoseconds& snapshot_duration) {
 
 int main() {
     try {
+        terminal_trade_preserves_independent_userbook();
         snapshot_acceptance_boundaries();
         committed_trade_purge_floors();
         std::array<std::chrono::nanoseconds, 3> samples;

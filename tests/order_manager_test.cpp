@@ -266,6 +266,66 @@ void day_and_restart() {
     manager.observe_trades(std::span(&alien, 1));
     require(manager.orders().at("c").executed == executed, "trade ext_id collision inflated fills");
 }
+void reconstruction_prefers_matching_trade_evidence() {
+    for (const bool trade_first : {false, true}) {
+        Fixture fixture;
+        auto manager = fixture.manager();
+        ManagedOrder seed{.request = request("terminal", 2)};
+        auto trade = row(seed, 91001, 0, 2);
+        auto book = trade;
+        book.from_trade_repl = false;
+        book.from_user_book = true;
+        book.public_amount_rest = book.private_amount_rest = 2;
+        book.public_action = book.private_action = 1;
+        auto book_only = book;
+        book_only.public_order_id = book_only.private_order_id = 91002;
+        const std::array rows = trade_first ? std::array{trade, book, book_only} : std::array{book, trade, book_only};
+        manager.observe_orders(rows, true);
+        for (const auto& [key, order] : manager.orders())
+            require(order.order_id != 91001 || terminal(order.state),
+                    "stale USERORDERBOOK resurrected terminal exact-ID TRADE evidence");
+        require(manager.orders().at("recovered:100:91002").state == OrderState::Working,
+                "TRADE authority hid a genuine USERORDERBOOK-only working order");
+        require(fixture.sent.empty(), "reconstruction manufactured a cancel for a terminal TRADE order");
+    }
+    // Only the exact owned contract suppresses the periodic snapshot. Nearby
+    // identities and malformed/foreign TRADE evidence must remain conservative.
+    for (int mismatch = 0; mismatch < 6; ++mismatch) {
+        Fixture fixture;
+        auto manager = fixture.manager();
+        ManagedOrder seed{.request = request("terminal", 2)};
+        auto trade = row(seed, 91001, 0, 2);
+        auto book = trade;
+        book.from_trade_repl = false;
+        book.from_user_book = true;
+        book.public_amount_rest = book.private_amount_rest = 2;
+        book.public_action = book.private_action = 1;
+        switch (mismatch) {
+        case 0:
+            book.private_order_id = 91002;
+            break;
+        case 1:
+            book.sess_id = 101;
+            break;
+        case 2:
+            book.isin_id = 43;
+            break;
+        case 3:
+            book.dir = 2;
+            break;
+        case 4:
+            trade.client_code = "OTHER";
+            break;
+        case 5:
+            trade.identity_conflict = true;
+            break;
+        }
+        const std::array rows{trade, book};
+        manager.observe_orders(rows, true);
+        require(manager.orders().size() == 1 && manager.orders().begin()->second.state == OrderState::Working,
+                "nonmatching TRADE evidence erased conservative USERORDERBOOK exposure");
+    }
+}
 void risk() {
     Fixture f;
     f.config.risk.max_quantity = 4;
@@ -1929,6 +1989,7 @@ int main() {
         cancels();
         ambiguity();
         day_and_restart();
+        reconstruction_prefers_matching_trade_evidence();
         risk();
         cancel_races_and_identity();
         mass_cancel_priority_and_reconciliation();
