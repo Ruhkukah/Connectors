@@ -200,6 +200,72 @@ std::string transport_fields(const tr::CgateSession& session, const tr::CgateSes
            ",\"alert_active\":" + (recovery.alert_active ? "true" : "false") +
            ",\"cause\":" + error_fields(recovery.cause) + "}}";
 }
+bool journal_replication_row(const cg::Plaza2ListenerEvent& event, const TradingHostConfig& config) {
+    using enum gen::FieldCode;
+    using enum gen::TableCode;
+    const auto field = [&](gen::FieldCode code) -> const cg::Plaza2DecodedFieldValue* {
+        const auto found = std::find_if(event.fields.begin(), event.fields.end(),
+                                        [code](const auto& value) { return value.field_code == code; });
+        return found == event.fields.end() ? nullptr : &*found;
+    };
+    const auto deleted = [&](gen::FieldCode code) {
+        const auto* value = field(code);
+        return value && value->signed_value != 0;
+    };
+    const auto own = [&](gen::FieldCode code, gen::FieldCode repl_act) {
+        const auto* value = field(code);
+        // Native tombstones may omit ownership columns. Keep that rare
+        // deletion evidence without an additional order-history index.
+        return (value && value->text_value == config.orders.broker_code + config.orders.client_code) ||
+               ((!value || value->text_value.empty()) && deleted(repl_act));
+    };
+    const auto target = [&](gen::FieldCode code, gen::FieldCode repl_act) {
+        const auto* value = field(code);
+        return (value && std::find(config.isin_ids.begin(), config.isin_ids.end(), value->signed_value) !=
+                             config.isin_ids.end()) ||
+               ((!value || value->kind == cg::Plaza2DecodedValueKind::None) && deleted(repl_act));
+    };
+    switch (event.table_code) {
+    case kFortsTradeReplOrdersLog:
+        return own(kFortsTradeReplOrdersLogClientCode, kFortsTradeReplOrdersLogReplAct);
+    case kFortsUserorderbookReplOrders:
+        return own(kFortsUserorderbookReplOrdersClientCode, kFortsUserorderbookReplOrdersReplAct);
+    case kFortsUserorderbookReplOrdersCurrentday:
+        return own(kFortsUserorderbookReplOrdersCurrentdayClientCode, kFortsUserorderbookReplOrdersCurrentdayReplAct);
+    case kFortsTradeReplUserDeal:
+        return own(kFortsTradeReplUserDealCodeBuy, kFortsTradeReplUserDealReplAct) ||
+               own(kFortsTradeReplUserDealCodeSell, kFortsTradeReplUserDealReplAct);
+    case kFortsPosReplPosition: {
+        const auto* type = field(kFortsPosReplPositionAccountType);
+        return own(kFortsPosReplPositionClientCode, kFortsPosReplPositionReplAct) &&
+               target(kFortsPosReplPositionIsinId, kFortsPosReplPositionReplAct) &&
+               ((type && type->signed_value == (config.orders.client_code.empty() ? 1 : 2)) ||
+                deleted(kFortsPosReplPositionReplAct));
+    }
+    case kFortsPartReplPart:
+        return own(kFortsPartReplPartClientCode, kFortsPartReplPartReplAct);
+    case kFortsInstrumentstateReplInstrumentState:
+        return target(kFortsInstrumentstateReplInstrumentStateIsinId, kFortsInstrumentstateReplInstrumentStateReplAct);
+    case kFortsRefdataReplFutSessContents:
+        return target(kFortsRefdataReplFutSessContentsIsinId, kFortsRefdataReplFutSessContentsReplAct);
+    case kFortsRefdataReplFutInstruments:
+        return target(kFortsRefdataReplFutInstrumentsIsinId, kFortsRefdataReplFutInstrumentsReplAct);
+    case kFortsTradeReplHeartbeat:
+    case kFortsPosReplInfo:
+    case kFortsUserorderbookReplInfo:
+    case kFortsUserorderbookReplInfoCurrentday:
+    case kFortsRefdataReplSession:
+    case kFortsSessionstateReplSessionState:
+    case kFortsTradeReplSysEvents:
+    case kFortsDealsReplSysEvents:
+    case kFortsPartReplSysEvents:
+    case kFortsAggrReplSysEvents:
+    case kFortsRefdataReplSysMessages:
+        return true;
+    default:
+        return false;
+    }
+}
 std::string configured_risk_fields(const TradingHostConfig& config) {
     const auto& risk = config.orders.risk;
     std::string result = "{\"max_quantity\":" + std::to_string(risk.max_quantity) +
@@ -346,6 +412,10 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
         }
         if (!log_error_.empty())
             return;
+        const bool replication = event.stream_code != cg::kNoStreamCode;
+        if (replication && event.kind == cg::Plaza2ListenerEventKind::StreamData &&
+            !journal_replication_row(event, config_))
+            return;
         if (event.stream_code == plaza2::generated::StreamCode::kFortsAggrRepl) {
             // Book traffic and its transaction/replay boundaries are not order
             // interaction evidence. Keep lifecycle changes and the rare session
@@ -371,8 +441,10 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
             ",\"signed_value\":" + std::to_string(event.signed_value) +
             ",\"table_index\":" + std::to_string(event.table_index) +
             ",\"clear_deleted_flags\":" + std::to_string(event.clear_deleted_flags) +
-            ",\"text\":" + json_string(event.text_value) +
-            ",\"payload_hex\":" + json_string(tr::bytes_to_hex(event.raw_payload)) + ",\"fields\":[";
+            ",\"text\":" + json_string(event.text_value);
+        if (!replication)
+            fields += ",\"payload_hex\":" + json_string(tr::bytes_to_hex(event.raw_payload));
+        fields += ",\"fields\":[";
         bool first = true;
         for (const auto& field : event.fields) {
             if (!first)
