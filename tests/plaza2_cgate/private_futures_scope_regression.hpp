@@ -105,12 +105,23 @@ inline void private_userbook_refresh_regression() {
 #endif
     // Sparse deletion and same-transaction reinsertion use the same canonical
     // view index; both deleted back slots must remain resolvable until commit.
+    const auto delete_start = std::chrono::steady_clock::now();
     h.begin(kFortsUserorderbookReplOrders, true);
     h.row(kFortsUserorderbookReplOrders, count + 1, 6, 1, true);
     h.row(kFortsUserorderbookReplOrders, count + 2, 7, 1, true);
     h.commit();
+    const auto delete_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - delete_start).count();
+    const auto deleted = h.projector.take_row_changes();
     require(h.projector.own_orders().size() == count && h.has(kFortsTradeReplOrdersLog, count),
             "multiple book deletions compacted an unrelated TRADE slot");
+    require(!deleted.resync_required && !deleted.trade_history_truncated && !deleted.regular_trade_history_truncated &&
+                deleted.orders.empty() && deleted.trades.empty(),
+            "USERORDERBOOK sparse deletion required TRADE history reconstruction");
+    std::cout << "UOB sparse deletion alongside 150000 TRADE rows: " << delete_us << " us\n";
+#if MOEX_RELEASE_PERFORMANCE_ACCEPTANCE
+    require(delete_us < 1000, "periodic sparse USERORDERBOOK deletion exceeds Release 1ms acceptance");
+#endif
     h.begin(kFortsUserorderbookReplOrders, true);
     h.row(kFortsUserorderbookReplOrders, count + 3, 8);
     h.commit();

@@ -240,8 +240,8 @@ inline void rollback_and_sources() {
                              [](const auto& value) { return value.public_order_id == 10 && value.from_user_book; }),
             "sparse USERORDERBOOK deletion removed the independent same-ID TRADE source");
     const auto changes = h.projector.take_row_changes();
-    require(changes.resync_required && changes.orders.empty(),
-            "a drained delta consumer was not told to rebuild after a row deletion");
+    require(!changes.resync_required && changes.orders.empty(),
+            "USERORDERBOOK deletion unnecessarily invalidated the TRADE delta consumer");
     auto cloned = h.projector.clone();
     const auto old = std::move(h.projector);
     h.projector = std::move(cloned);

@@ -1440,7 +1440,9 @@ struct Plaza2PrivateStateProjector::Impl {
             else
                 order.from_user_book = false;
             staged.order_keys.push_back(found->first);
-            staged.deleted_rows |= tombstone;
+            // USERORDERBOOK rows are a periodic snapshot, so replacement or
+            // deletion does not invalidate the independent TRADE history.
+            staged.deleted_rows |= tombstone && trade;
             // Keep a source-empty row indexed until commit compacts its view.
             // The last snapshot may also be deleted in this transaction, so
             // its canonical key must remain resolvable during the swap.
