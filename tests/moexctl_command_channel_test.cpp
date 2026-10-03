@@ -1,6 +1,7 @@
 #include "plaza2_runtime_test_support.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 #include "scope_exit.hpp"
+#include "command_socket.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -194,7 +195,8 @@ std::string remote_command(const std::string& executable, const std::filesystem:
                  log.string() + ".client.err");
     client.close_input();
     const auto response = client.line();
-    test::require(client.wait() == 0, "command client failed");
+    test::require(client.wait() == (response.find("\"ok\":false") == std::string::npos ? 0 : 2),
+                  "command client exit status did not reflect its refusal");
     return response;
 }
 void no_posts(const std::filesystem::path& log) {
@@ -212,9 +214,12 @@ std::string raw_command(const std::filesystem::path& log, std::string_view frame
     test::require(path.size() < sizeof(address.sun_path), "raw socket path too long");
     std::copy(path.begin(), path.end(), address.sun_path);
     const auto connected = ::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
-    const auto written = connected == 0 ? ::write(fd, frame.data(), frame.size()) : -1;
+    const auto framed = std::string(32, 'a') + '\t' +
+                        std::to_string(moex::connector_host::command_socket_detail::monotonic_ms() + 5000) + '\t' +
+                        std::string(frame);
+    const auto written = connected == 0 ? ::write(fd, framed.data(), framed.size()) : -1;
     std::string response;
-    if (written == static_cast<ssize_t>(frame.size())) {
+    if (written == static_cast<ssize_t>(framed.size())) {
         pollfd descriptor{.fd = fd, .events = POLLIN};
         if (::poll(&descriptor, 1, 3000) > 0) {
             char data[4096];
@@ -226,6 +231,31 @@ std::string raw_command(const std::filesystem::path& log, std::string_view frame
     ::close(fd);
     test::require(!response.empty(), "raw socket response missing");
     return response;
+}
+void expired_frame(const std::filesystem::path& path) {
+    moex::connector_host::CommandSocket owner(path);
+    const auto fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    test::require(fd >= 0, "expired-frame socket failed");
+    moex::connector_host::ScopeExit close([&] { ::close(fd); });
+    const auto endpoint = moex::connector_host::command_socket_detail::address(path);
+    test::require(::connect(fd, reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint)) == 0,
+                  "expired-frame connection failed");
+    const auto frame = std::string(32, 'b') + '\t' +
+                       std::to_string(moex::connector_host::command_socket_detail::monotonic_ms() - 1) + "\tkill on\n";
+    test::require(::write(fd, frame.data(), frame.size()) == static_cast<ssize_t>(frame.size()),
+                  "expired-frame write failed");
+    unsigned dispatched{};
+    owner.poll(
+        [&](std::string) {
+            ++dispatched;
+            return "{\"ok\":true}";
+        },
+        [](std::string_view, std::string_view) { return "{\"ok\":false}"; });
+    test::require(dispatched == 0, "expired request reached the owner dispatcher");
+    char response[256];
+    const auto size = ::read(fd, response, sizeof(response));
+    test::require(size > 0 && std::string_view(response, size).find(std::string(32, 'b')) != std::string_view::npos,
+                  "expired-frame refusal omitted its nonce");
 }
 std::string field(std::string_view record, std::string_view name) {
     const auto key = "\"" + std::string(name) + "\":\"";
@@ -321,6 +351,41 @@ int main(int argc, char** argv) {
             std::cerr << name << ": " << error.what() << '\n';
         }
     };
+    scenario("expired socket frame never dispatches", [&] { expired_frame(root / "expired.sock"); });
+    scenario("command client rejects a wrong nonce", [&] {
+        const auto path = root / "wrong-nonce.sock";
+        const auto listener = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        test::require(listener >= 0, "wrong-nonce listener failed");
+        moex::connector_host::ScopeExit close_listener([&] {
+            ::close(listener);
+            ::unlink(path.c_str());
+        });
+        const auto address = moex::connector_host::command_socket_detail::address(path);
+        test::require(::bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0 &&
+                          ::listen(listener, 1) == 0,
+                      "wrong-nonce fixture bind failed");
+        Child client({executable, "plaza2", "cmd", "--command-socket", path.string(), "status"},
+                     root / "wrong-nonce.err");
+        client.close_input();
+        pollfd waiting{.fd = listener, .events = POLLIN};
+        test::require(::poll(&waiting, 1, 3000) > 0, "wrong-nonce client did not connect");
+        const auto fd = ::accept(listener, nullptr, nullptr);
+        test::require(fd >= 0, "wrong-nonce accept failed");
+        moex::connector_host::ScopeExit close_client([&] { ::close(fd); });
+        pollfd request{.fd = fd, .events = POLLIN};
+        test::require(::poll(&request, 1, 3000) > 0, "wrong-nonce client did not send a request");
+        char data[256];
+        test::require(::read(fd, data, sizeof(data)) > 0, "wrong-nonce request missing");
+        const auto response = "{\"nonce\":\"" + std::string(32, '0') + "\",\"ok\":true}\n";
+        test::require(::write(fd, response.data(), response.size()) == static_cast<ssize_t>(response.size()),
+                      "wrong-nonce response failed");
+        std::string accepted;
+        try {
+            accepted = client.line();
+        } catch (const std::runtime_error&) {
+        }
+        test::require(client.wait() == 2 && accepted.empty(), "client accepted an unrelated command response");
+    });
     scenario("mandatory per-instrument risk flags", [&] {
         for (const auto option : {"--max-quantity", "--max-open-orders", "--max-notional", "--max-position"}) {
             const auto label = std::string(option).substr(2);
@@ -420,6 +485,48 @@ int main(int argc, char** argv) {
         const std::string contents((std::istreambuf_iterator<char>(input)), {});
         test::require(contents.find("\"event\":\"kill_switch\"") != std::string::npos,
                       "socket command did not reach host");
+        no_posts(log);
+    });
+    scenario("timed-out socket command never dispatches later", [&] {
+        const auto log = root / "deadline.ndjson";
+        Child owner(run_arguments(executable, fixture, log, "cli_deadline"), root / "deadline.err");
+        ready(owner, [&] { owner.send("status\n"); });
+        std::array<int, 3> idle{-1, -1, -1};
+        moex::connector_host::ScopeExit close_idle([&] {
+            for (const auto fd : idle)
+                if (fd >= 0)
+                    ::close(fd);
+        });
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        const auto endpoint = log.string() + ".sock";
+        test::require(endpoint.size() < sizeof(address.sun_path), "deadline fixture socket path too long");
+        std::copy(endpoint.begin(), endpoint.end(), address.sun_path);
+        for (auto& fd : idle) {
+            fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+            test::require(fd >= 0 && ::fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 &&
+                              ::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0,
+                          "idle command client failed");
+        }
+        Child client({executable, "plaza2", "cmd", "--log", log.string(), "kill on"}, root / "deadline.client.err");
+        client.close_input();
+        std::string response;
+        try {
+            response = client.line(6s);
+        } catch (const std::runtime_error&) {
+        }
+        const auto result = client.wait();
+        // The old server accepts each queued idle client for another five
+        // seconds, executing the failed client's command after its timeout.
+        std::this_thread::sleep_for(11s);
+        const auto status = remote_command(executable, log, "status");
+        owner.send("quit\n");
+        test::require(owner.wait() == 0, "deadline fixture owner did not stop");
+        std::ifstream input(log);
+        const std::string contents((std::istreambuf_iterator<char>(input)), {});
+        test::require(result == 0 || contents.find("\"line\":\"kill on\"") == std::string::npos,
+                      "socket command executed after its client reported failure");
+        test::require(hex(field(status, "nonce"), 32), "command response omitted its nonce");
         no_posts(log);
     });
     scenario("CLI journal provenance and refusals", [&] {

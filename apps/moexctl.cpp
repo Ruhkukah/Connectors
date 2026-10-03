@@ -227,8 +227,9 @@ int main(int argc, char** argv) {
             if (arguments.size() != 3)
                 throw std::invalid_argument("usage: moexctl plaza2 cmd [--log FILE | "
                                             "--command-socket PATH] \"COMMAND\"");
-            std::cout << send_command(socket_path, std::string(arguments[2])) << '\n' << std::flush;
-            return 0;
+            const auto response = send_command(socket_path, std::string(arguments[2]));
+            std::cout << response << '\n' << std::flush;
+            return response.find("\"ok\":false") == std::string::npos ? 0 : 2;
         }
         const auto request = parse_operator_arguments(arguments);
         if (request.help) {

@@ -4,11 +4,13 @@
 
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fcntl.h>
 #include <poll.h>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
@@ -20,6 +22,55 @@ namespace moex::connector_host {
 namespace command_socket_detail {
 inline constexpr std::size_t max_command = 65536;
 inline constexpr auto timeout = std::chrono::seconds(5);
+inline constexpr auto input_timeout = std::chrono::milliseconds(250);
+inline constexpr std::size_t max_frame = max_command + 80;
+
+inline std::int64_t monotonic_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+struct Request {
+    std::string_view nonce, command;
+    std::int64_t deadline{};
+};
+inline std::optional<Request> request(std::string_view frame) {
+    const auto separator = frame.find('\t'), body = frame.find('\t', separator + 1);
+    if (separator != 32 || body == std::string_view::npos ||
+        frame.substr(0, separator).find_first_not_of("0123456789abcdef") != std::string_view::npos)
+        return std::nullopt;
+    std::int64_t deadline{};
+    const auto number = frame.substr(separator + 1, body - separator - 1);
+    const auto parsed = std::from_chars(number.data(), number.data() + number.size(), deadline);
+    if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || deadline <= 0)
+        return std::nullopt;
+    return Request{frame.substr(0, separator), frame.substr(body + 1), deadline};
+}
+inline std::string with_nonce(std::string_view nonce, std::string response) {
+    if (nonce.empty())
+        return response;
+    return "{\"nonce\":\"" + std::string(nonce) + "\"," + response.substr(1);
+}
+inline std::string nonce() {
+    std::array<unsigned char, 16> bytes{};
+    const auto fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        throw std::runtime_error("cannot create command nonce");
+    ScopeExit close([&] { ::close(fd); });
+    std::size_t count{};
+    while (count < bytes.size()) {
+        const auto read = ::read(fd, bytes.data() + count, bytes.size() - count);
+        if (read > 0)
+            count += static_cast<std::size_t>(read);
+        else if (read == 0 || errno != EINTR)
+            throw std::runtime_error("cannot create command nonce");
+    }
+    std::string out;
+    for (const auto byte : bytes) {
+        out += "0123456789abcdef"[byte >> 4];
+        out += "0123456789abcdef"[byte & 15];
+    }
+    return out;
+}
 
 inline sockaddr_un address(const std::filesystem::path& path) {
     sockaddr_un out{};
@@ -96,11 +147,31 @@ class CommandSocket {
                 close_client();
                 throw;
             }
-            deadline_ = std::chrono::steady_clock::now() + command_socket_detail::timeout;
+            deadline_ = std::chrono::steady_clock::now() + command_socket_detail::input_timeout;
+        }
+        // Drain at most the bounded listen backlog. Busy clients cannot queue
+        // a command behind an idle connection and execute after timing out.
+        for (int i = 0; i < 4; ++i) {
+            const auto busy = ::accept(fd_, nullptr, nullptr);
+            if (busy < 0)
+                break;
+            ScopeExit close_busy([&] { ::close(busy); });
+            command_socket_detail::nonblocking(busy);
+            std::array<char, 4096> data{};
+            const auto size = ::recv(busy, data.data(), data.size(), 0);
+            const auto header =
+                size > 0 ? command_socket_detail::request({data.data(), static_cast<std::size_t>(size)}) : std::nullopt;
+            const auto response = command_socket_detail::with_nonce(header ? header->nonce : std::string_view{},
+                                                                    refuse({}, "command channel busy")) +
+                                  '\n';
+            (void)::send(busy, response.data(), response.size(), 0);
         }
         // Keep malformed frames bounded in the interaction log.
         const auto rejected = [&](std::string_view error) {
-            return refuse(input_.size() <= 4096 ? std::string_view(input_) : std::string_view{}, error);
+            const auto header = command_socket_detail::request(input_);
+            const auto body = header ? header->command : std::string_view(input_);
+            return command_socket_detail::with_nonce(header ? header->nonce : std::string_view{},
+                                                     refuse(body.size() <= 4096 ? body : std::string_view{}, error));
         };
         if (std::chrono::steady_clock::now() >= deadline_) {
             if (!input_.empty() && response_.empty())
@@ -109,25 +180,37 @@ class CommandSocket {
             return;
         }
         if (response_.empty()) {
-            std::array<char, 4096> data{};
-            const auto count = ::recv(client_, data.data(), data.size(), 0);
-            if (count == 0 || (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
-                if (!input_.empty())
-                    (void)rejected("incomplete command disconnected");
-                close_client();
-                return;
+            while (input_.size() <= command_socket_detail::max_frame && input_.find('\n') == std::string::npos) {
+                std::array<char, 4096> data{};
+                const auto count = ::recv(client_, data.data(), data.size(), 0);
+                if (count == 0 || (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+                    if (!input_.empty())
+                        (void)rejected("incomplete command disconnected");
+                    close_client();
+                    return;
+                }
+                if (count < 0)
+                    break;
+                input_.append(data.data(), static_cast<std::size_t>(count));
             }
-            if (count < 0)
-                return;
-            input_.append(data.data(), static_cast<std::size_t>(count));
             const auto newline = input_.find('\n');
-            if (input_.size() > command_socket_detail::max_command + 1)
+            const auto header = command_socket_detail::request(input_);
+            if (input_.size() > command_socket_detail::max_frame ||
+                (header && header->command.size() > command_socket_detail::max_command + 1))
                 response_ = rejected("command line exceeds 65536 bytes");
             else if (newline != std::string::npos) {
-                if (newline != input_.size() - 1 || newline == 0)
+                if (!header)
+                    response_ = rejected("command nonce and deadline required");
+                else if (newline != input_.size() - 1 || header->command.size() == 1)
                     response_ = rejected("one nonempty command required");
-                else
-                    response_ = execute(input_.substr(0, newline));
+                else if (header->deadline <= command_socket_detail::monotonic_ms() ||
+                         header->deadline > command_socket_detail::monotonic_ms() + 5000)
+                    response_ = rejected("command deadline expired or invalid");
+                else {
+                    const auto command = std::string(header->command.substr(0, header->command.size() - 1));
+                    deadline_ = std::chrono::steady_clock::time_point(std::chrono::milliseconds(header->deadline));
+                    response_ = command_socket_detail::with_nonce(header->nonce, execute(command));
+                }
             } else
                 return;
             response_ += '\n';
@@ -179,7 +262,11 @@ inline std::string send_command(const std::filesystem::path& path, std::string c
         if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) < 0 || error)
             throw std::runtime_error("cannot connect to command socket");
     }
-    command += '\n';
+    const auto id = nonce();
+    command =
+        id + '\t' +
+        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(deadline.time_since_epoch()).count()) +
+        '\t' + command + '\n';
     std::size_t sent{};
     while (sent != command.size()) {
         wait(fd, POLLOUT, deadline);
@@ -196,8 +283,11 @@ inline std::string send_command(const std::filesystem::path& path, std::string c
         const auto count = ::recv(fd, data.data(), data.size(), 0);
         if (count > 0) {
             response.append(data.data(), static_cast<std::size_t>(count));
-            if (const auto newline = response.find('\n'); newline != std::string::npos)
+            if (const auto newline = response.find('\n'); newline != std::string::npos) {
+                if (!response.starts_with("{\"nonce\":\"" + id + "\","))
+                    throw std::runtime_error("command response nonce mismatch");
                 return response.substr(0, newline);
+            }
         } else if (count == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
             throw std::runtime_error("command socket response missing");
     }
