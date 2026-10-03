@@ -8,11 +8,9 @@
 #include <charconv>
 #include <csignal>
 #include <cstdlib>
-#include <fstream>
 #include <iostream>
 #include <poll.h>
 #include <sstream>
-#include <span>
 #include <stdexcept>
 #include <unistd.h>
 
@@ -32,12 +30,8 @@ std::string binary_sha256(const char* argv0) {
                 return "unknown";
             path = std::filesystem::weakly_canonical(std::filesystem::absolute(path));
         }
-        // Open Linux's executable link itself, retaining the loaded inode even after deployment replaces its path.
-        std::ifstream input(path, std::ios::binary);
-        if (!input)
-            return "unknown";
-        const std::vector<char> bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-        return moex::plaza2::cgate::plaza2_sha256_hex(std::as_bytes(std::span<const char>(bytes)));
+        // Hash the loaded Linux inode even if deployment has replaced its path.
+        return moex::plaza2::cgate::plaza2_sha256_file(path);
     } catch (...) {
         return "unknown";
     }
@@ -288,7 +282,6 @@ int main(int argc, char** argv) {
                 config.orders.ext_id_range_configured = true;
             }
             config.source_git_sha = MOEX_SOURCE_GIT_SHA;
-            config.binary_sha256 = binary_sha256(argv[0]);
             config.session = request.config.transport.host;
             config.session.reply_timeout_ms = reply_timeout;
             config.orders.broker_code = request.config.order.broker_code;
@@ -304,6 +297,8 @@ int main(int argc, char** argv) {
                     throw std::invalid_argument("isin id outside CGate i4 range");
                 config.isin_ids.push_back(static_cast<std::int32_t>(isin));
             }
+            validate_trading_host_config(config);
+            config.binary_sha256 = binary_sha256(argv[0]);
             const auto signal_isins = config.isin_ids;
             const bool allow_orders = config.session.allow_orders;
             CgateTradingHost host(std::move(config));

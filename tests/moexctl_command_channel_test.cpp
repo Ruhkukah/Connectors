@@ -417,6 +417,28 @@ int main(int argc, char** argv) {
         test::require(owner.wait() == 2, "allow-orders accepted an uncovered target position cap");
         no_posts(log);
     });
+    for (const auto option : {"--max-quantity", "--max-open-orders", "--reply-timeout-ms"}) {
+        const auto label = "prevalidate-" + std::string(option).substr(2);
+        scenario(label, [&] {
+            const auto log = root / (label + ".ndjson");
+            auto arguments = run_arguments(executable, fixture, log, "cli_" + label);
+            if (option == std::string_view("--reply-timeout-ms"))
+                arguments.insert(arguments.end(), {option, "0"});
+            else {
+                const auto found = std::find(arguments.begin(), arguments.end(), option);
+                *(found + 1) = "0";
+            }
+            arguments.push_back("--allow-orders");
+            Child owner(arguments, root / (label + ".err"));
+            owner.close_input();
+            test::require(owner.wait() == 2, "CLI accepted invalid trading bounds");
+            const auto state = root / ("cli_" + label + ".state");
+            test::require(!std::filesystem::exists(log) && !std::filesystem::exists(state) &&
+                              !std::filesystem::exists(state.string() + ".lock") &&
+                              !std::filesystem::exists(log.string() + ".sock"),
+                          "invalid arguments created owner resources before validation");
+        });
+    }
     for (const bool global : {false, true}) {
         const auto label = global ? "global-notional" : "missing-rate";
         scenario(std::string("explicit rate/per-instrument notional: ") + label, [&] {

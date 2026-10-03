@@ -209,6 +209,7 @@ class Plaza2ListenerEventHandler {
 [[nodiscard]] Plaza2Error translate_plaza2_result(std::string_view operation, std::uint32_t runtime_code);
 [[nodiscard]] std::string plaza2_sha256_hex(std::span<const std::byte> bytes);
 [[nodiscard]] std::string plaza2_sha256_hex(std::string_view text);
+[[nodiscard]] std::string plaza2_sha256_file(const std::filesystem::path& path);
 
 class Plaza2RuntimeProbe {
   public:

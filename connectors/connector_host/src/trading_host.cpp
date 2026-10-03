@@ -283,26 +283,45 @@ std::string configured_risk_fields(const TradingHostConfig& config) {
     }
     return result + "]}";
 }
+TradingHostConfig checked_config(TradingHostConfig config) {
+    validate_trading_host_config(config);
+    return config;
+}
 } // namespace
+void validate_trading_host_config(const TradingHostConfig& config) {
+    if (config.isin_ids.empty() ||
+        std::any_of(config.isin_ids.begin(), config.isin_ids.end(), [](auto id) { return id <= 0; }))
+        throw std::invalid_argument("at least one positive trading instrument is required");
+    const auto& orders = config.orders;
+    const auto& risk = orders.risk;
+    if (!orders.max_commands_per_second || orders.max_commands_per_second > 3000 || orders.reply_timeout.count() <= 0 ||
+        orders.absence_margin.count() < 0 || risk.max_quantity <= 0 || risk.max_notional_scaled <= 0 ||
+        !risk.max_open_orders || orders.next_ext_id <= 0 || !orders.next_user_id || orders.ext_id_begin <= 0 ||
+        orders.ext_id_end < orders.ext_id_begin || orders.ext_id_end >= INT32_MAX || !orders.max_cancel_attempts ||
+        orders.cancel_retry_base.count() <= 0 || orders.cancel_retry_max < orders.cancel_retry_base)
+        throw std::invalid_argument("invalid trading configuration bounds");
+    for (const auto& [isin, cap] : risk.max_notional_by_isin)
+        if (isin <= 0 || cap <= 0)
+            throw std::invalid_argument("positive per-ISIN quote-notional limits required");
+    for (const auto& [isin, cap] : risk.max_position_by_isin)
+        if (isin <= 0 || cap <= 0)
+            throw std::invalid_argument("positive per-ISIN position limits required");
+    if (!config.session.allow_orders)
+        return;
+    if (!orders.command_rate_configured)
+        throw std::invalid_argument("--allow-orders requires explicit --max-commands-per-second");
+    if (orders.login_from.empty() || !orders.ext_id_range_configured)
+        throw std::invalid_argument("--allow-orders requires explicit --login-env and --ext-id-range");
+    if (!risk.quantity_configured || !risk.open_orders_configured)
+        throw std::invalid_argument("--allow-orders requires explicit --max-quantity and --max-open-orders");
+    for (const auto isin : config.isin_ids)
+        if (!risk.max_notional_by_isin.contains(isin) || !risk.max_position_by_isin.contains(isin))
+            throw std::invalid_argument("--allow-orders requires --max-notional ISIN=QUOTE_VALUE and "
+                                        "--max-position ISIN=N for every target instrument");
+}
 CgateTradingHost::CgateTradingHost(TradingHostConfig config)
-    : config_(std::move(config)), owner_(std::this_thread::get_id()),
+    : config_(checked_config(std::move(config))), owner_(std::this_thread::get_id()),
       journal_(config_.journal_path, identity_path(config_)), session_(session_config()) {
-    if (config_.isin_ids.empty())
-        throw std::invalid_argument("at least one trading instrument is required");
-    if (config_.session.allow_orders) {
-        if (!config_.orders.command_rate_configured)
-            throw std::invalid_argument("--allow-orders requires explicit --max-commands-per-second");
-        if (config_.orders.login_from.empty() || !config_.orders.ext_id_range_configured)
-            throw std::invalid_argument("--allow-orders requires explicit --login-env and --ext-id-range");
-        const auto& risk = config_.orders.risk;
-        if (!risk.quantity_configured || !risk.open_orders_configured)
-            throw std::invalid_argument("--allow-orders requires explicit "
-                                        "--max-quantity and --max-open-orders");
-        for (const auto isin : config_.isin_ids)
-            if (!risk.max_notional_by_isin.contains(isin) || !risk.max_position_by_isin.contains(isin))
-                throw std::invalid_argument("--allow-orders requires --max-notional ISIN=QUOTE_VALUE and "
-                                            "--max-position ISIN=N for every target instrument");
-    }
     auto orders = config_.orders;
     const auto reservations = journal_.reservations();
     orders.next_ext_id = std::max({orders.next_ext_id, orders.ext_id_begin, reservations.next_ext_id});

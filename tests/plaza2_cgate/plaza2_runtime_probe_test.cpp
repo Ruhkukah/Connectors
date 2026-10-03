@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 
 int main(int argc, char** argv) {
@@ -23,6 +24,29 @@ int main(int argc, char** argv) {
         const auto scheme_text = build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test");
         const auto fixture =
             materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
+
+        const auto hash_input = fixture_root / "hash-input.bin";
+        require(plaza2_sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                "SHA-256 known vector mismatch");
+        for (const auto size : {std::size_t(0), std::size_t(3), std::size_t(2 * 1024 * 1024 + 37)}) {
+            std::string data(size, '\0');
+            for (std::size_t i = 0; i < size; ++i)
+                data[i] = static_cast<char>((i * 131 + 17) % 256);
+            {
+                std::ofstream file(hash_input, std::ios::binary);
+                file.write(data.data(), static_cast<std::streamsize>(data.size()));
+                require(bool(file), "SHA-256 fixture write failed");
+            }
+            require(plaza2_sha256_file(hash_input) == plaza2_sha256_hex(data),
+                    "streaming file SHA-256 differs across chunk/tail boundaries");
+        }
+        bool refused{};
+        try {
+            (void)plaza2_sha256_file(fixture_root / "missing-hash-input");
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        require(refused, "missing file was fingerprinted as a valid empty file");
 
         Plaza2Settings settings;
         settings.environment = Plaza2Environment::Test;

@@ -19,6 +19,8 @@ struct TradingHostConfig {
     std::function<std::uintmax_t(const std::filesystem::path&)> storage_space_probe;
     std::string source_git_sha{"unknown"}, binary_sha256{"unknown"};
 };
+// Reject invalid options before opening owner files or probing CGate.
+void validate_trading_host_config(const TradingHostConfig& config);
 class CgateTradingHost {
   public:
     explicit CgateTradingHost(TradingHostConfig config);
