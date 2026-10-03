@@ -15,7 +15,8 @@ with open(args.journal, encoding="utf-8") as journal:
         kind, data = event["event"], event["data"]
         key = data.get("client_order_id")
         if kind == "command":
-            commands[data["user_id"]] = key or "cancel-all"
+            key = key or "cancel-all"
+            commands[data["user_id"]] = key
         if kind in {"reply", "timeout", "command_result"}:
             key = commands.get(data["user_id"])
         if key and kind in {"order", "trade", "command", "reply", "timeout", "command_result"}:

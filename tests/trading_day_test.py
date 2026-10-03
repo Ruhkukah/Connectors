@@ -22,6 +22,17 @@ with tempfile.TemporaryDirectory(prefix="moex-native-day-") as directory:
     assert all("payload_hex" in row and "fields" in row for row in commands)
     output = subprocess.check_output([sys.executable, sys.argv[3], str(journal)], text=True)
     histories = {row["client_order_id"]: row["events"] for row in map(json.loads, output.splitlines())}
+    mass_cancel_ids = {row["data"]["user_id"] for row in rows
+                       if row["event"] == "command" and row["data"]["name"] == "DelUserOrders" and
+                       not row["data"]["client_order_id"]}
+    assert mass_cancel_ids, "native fixture did not exercise account-wide cancellation"
+    mass_cancel_events = [{"utc": row["utc"], "event": row["event"], "data": row["data"]} for row in rows
+                          if row["event"] in {"command", "command_result", "reply", "timeout"} and
+                          row["data"]["user_id"] in mass_cancel_ids]
+    assert histories["cancel-all"] == mass_cancel_events, \
+        "account-wide command/reply/result history lost events or changed raw fields"
+    assert all(event["data"]["client_order_id"] == "" for event in histories["cancel-all"]
+               if event["event"] == "command"), "mass cancellation acquired a fabricated per-order ID"
     assert {"partial", "cancelled", "moved", "carry", "restart-working", "evening", "recovered:322:64001"} <= histories.keys()
     assert any(event["event"] == "trade" for event in histories["partial"])
     assert any(event["event"] == "reply" and event["data"].get("order_id1") == 62003 for event in histories["moved"])
