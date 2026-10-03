@@ -119,6 +119,10 @@ int main(int argc, char** argv) {
         config.orders.max_commands_per_second = 5;
         config.session.publisher_messages_per_second = 5;
         config.isin_ids = {1001};
+        config.orders.risk.quantity_configured = true;
+        config.orders.risk.open_orders_configured = true;
+        config.orders.risk.max_notional_by_isin = {{1001, INT64_MAX}};
+        config.orders.risk.max_position_by_isin = {{1001, 100}};
         config.journal_path = root / "events.ndjson";
         config.identity_state_path = root / "day.state";
         config.utc_now = [&] { return utc; };

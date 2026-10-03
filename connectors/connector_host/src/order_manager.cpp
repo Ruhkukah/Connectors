@@ -69,15 +69,22 @@ bool terminal(OrderState state) noexcept {
     return state == OrderState::Filled || state == OrderState::Cancelled || state == OrderState::Rejected;
 }
 
-OrderManager::OrderManager(OrderManagerConfig config, Send send, Ready ready, Terms terms, Log log)
+OrderManager::OrderManager(OrderManagerConfig config, Send send, Ready ready, Terms terms, Log log, Position position)
     : config_(std::move(config)), send_(std::move(send)), ready_(std::move(ready)), terms_(std::move(terms)),
-      log_(std::move(log)), rate_(config_.max_commands_per_second) {
+      log_(std::move(log)), position_(std::move(position)), rate_(config_.max_commands_per_second) {
     if (!rate_.valid() || !send_ || !ready_ || !terms_ || config_.reply_timeout.count() <= 0 ||
         config_.absence_margin.count() < 0 || config_.risk.max_quantity <= 0 || config_.risk.max_notional_scaled <= 0 ||
         config_.risk.max_open_orders == 0 || config_.next_ext_id <= 0 || config_.next_user_id == 0 ||
         config_.max_cancel_attempts == 0 || config_.cancel_retry_base.count() <= 0 ||
         config_.cancel_retry_max < config_.cancel_retry_base)
         throw std::invalid_argument("invalid order manager configuration");
+    for (const auto& [isin, cap] : config_.risk.max_notional_by_isin)
+        if (isin <= 0 || cap <= 0)
+            throw std::invalid_argument("positive per-ISIN quote-notional limits required");
+    for (const auto& [isin, cap] : config_.risk.max_position_by_isin)
+        if (isin <= 0 || cap <= 0 || !position_)
+            throw std::invalid_argument("positive per-ISIN position limits and POS "
+                                        "authority callback required");
 }
 void OrderManager::emit(std::string_view kind, std::string_view fields) noexcept {
     try {
@@ -99,6 +106,8 @@ OrderManager::Exposure OrderManager::exposure(const std::string& key, const Mana
         return result;
     }
     result.active = true;
+    result.isin_id = order.request.isin_id;
+    result.side = order.request.side;
     const auto price = plaza2::private_state::parse_session_decimal(order.request.price);
     result.invalid_price = !price;
     auto units = price ? absolute_units(price->units) : 0;
@@ -109,6 +118,7 @@ OrderManager::Exposure OrderManager::exposure(const std::string& key, const Mana
         remaining = std::max(remaining, std::int64_t(move->second.quantity) - order.executed);
     }
     result.notional = capped_notional(units, remaining, config_.risk.max_notional_scaled);
+    result.quantity = remaining > 0 ? static_cast<std::uint64_t>(remaining) : 0;
     return result;
 }
 void OrderManager::erase_exposure(const std::string& key) {
@@ -146,16 +156,22 @@ void OrderManager::refresh_exposure(const std::string& key) {
 void OrderManager::add_charge(const Exposure& charge) {
     active_orders_ += charge.active;
     invalid_prices_ += charge.invalid_price;
-    const auto old_low = notional_low_;
-    notional_low_ += charge.notional;
-    notional_high_ += notional_low_ < old_low;
+    notional_.add(charge.notional);
+    if (charge.active) {
+        auto& instrument = instrument_exposure_[charge.isin_id];
+        instrument.notional.add(charge.notional);
+        (charge.side == tr::Plaza2TradeSide::Buy ? instrument.buys : instrument.sells).add(charge.quantity);
+    }
 }
 void OrderManager::subtract_charge(const Exposure& charge) {
     active_orders_ -= charge.active;
     invalid_prices_ -= charge.invalid_price;
-    if (notional_low_ < charge.notional)
-        --notional_high_;
-    notional_low_ -= charge.notional;
+    notional_.subtract(charge.notional);
+    if (charge.active) {
+        auto& instrument = instrument_exposure_.at(charge.isin_id);
+        instrument.notional.subtract(charge.notional);
+        (charge.side == tr::Plaza2TradeSide::Buy ? instrument.buys : instrument.sells).subtract(charge.quantity);
+    }
 }
 bool OrderManager::has_uncertain_submission(std::int32_t session, std::int32_t isin, tr::Plaza2TradeSide side) const {
     for (const auto& [id, command] : pending_) {
@@ -370,6 +386,10 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
         return "order entry not ready";
     if (request.quantity <= 0 || request.quantity > config_.risk.max_quantity)
         return "quantity exceeds configured limit";
+    if (!config_.risk.max_notional_by_isin.empty() && !config_.risk.max_notional_by_isin.contains(request.isin_id))
+        return "per-ISIN quote-notional limit missing";
+    if (!config_.risk.max_position_by_isin.empty() && !config_.risk.max_position_by_isin.contains(request.isin_id))
+        return "per-ISIN position limit missing";
     if (extra > config_.risk.max_open_orders || active_orders_ > config_.risk.max_open_orders - extra)
         return "open-order limit exceeded";
     const auto price = plaza2::private_state::parse_session_decimal(request.price);
@@ -381,13 +401,18 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
         return "price outside exchange limits";
     if (price->units % terms->min_step->units != 0)
         return "price is not tick aligned";
-    auto low = notional_low_, high = notional_high_;
+    auto notional = notional_;
+    auto instrument = instrument_exposure_.contains(request.isin_id) ? instrument_exposure_.at(request.isin_id)
+                                                                     : InstrumentExposure{};
     auto invalid = invalid_prices_;
     if (const auto excluded = exposures_.find(std::string(exclude_key)); excluded != exposures_.end()) {
         invalid -= excluded->second.invalid_price;
-        if (low < excluded->second.notional)
-            --high;
-        low -= excluded->second.notional;
+        notional.subtract(excluded->second.notional);
+        if (excluded->second.active && excluded->second.isin_id == request.isin_id) {
+            instrument.notional.subtract(excluded->second.notional);
+            (excluded->second.side == tr::Plaza2TradeSide::Buy ? instrument.buys : instrument.sells)
+                .subtract(excluded->second.quantity);
+        }
     }
     if (invalid)
         return "outstanding-order price unavailable";
@@ -408,8 +433,35 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
     }
     const auto cap = static_cast<std::uint64_t>(config_.risk.max_notional_scaled);
     const auto proposed = capped_notional(units, proposed_remaining, cap);
-    if (high || low > cap || proposed > cap - low)
+    if (notional.exceeds(cap, proposed))
         return "aggregate outstanding-order notional exceeds configured limit";
+    if (const auto limit = config_.risk.max_notional_by_isin.find(request.isin_id);
+        limit != config_.risk.max_notional_by_isin.end() &&
+        instrument.notional.exceeds(static_cast<std::uint64_t>(limit->second), proposed))
+        return "per-ISIN outstanding-order quote-notional exceeds configured limit";
+    if (const auto limit = config_.risk.max_position_by_isin.find(request.isin_id);
+        limit != config_.risk.max_position_by_isin.end()) {
+        const auto position = position_(request.isin_id);
+        if (!position)
+            return "current own POS authority unavailable";
+        const auto maximum = static_cast<std::uint64_t>(limit->second);
+        std::uint64_t available{};
+        const auto& working = request.side == tr::Plaza2TradeSide::Buy ? instrument.buys : instrument.sells;
+        if (request.side == tr::Plaza2TradeSide::Buy) {
+            if (*position > limit->second)
+                return "per-ISIN position limit exceeded";
+            available =
+                *position < 0 ? maximum + absolute_units(*position) : maximum - static_cast<std::uint64_t>(*position);
+        } else {
+            if (*position < -limit->second)
+                return "per-ISIN position limit exceeded";
+            available =
+                *position > 0 ? maximum + static_cast<std::uint64_t>(*position) : maximum - absolute_units(*position);
+        }
+        if (working.exceeds(available, static_cast<std::uint64_t>(proposed_remaining)))
+            return "per-ISIN position plus working same-side quantity exceeds "
+                   "configured limit";
+    }
     return {};
 }
 std::uint32_t OrderManager::reserve_user_id() {

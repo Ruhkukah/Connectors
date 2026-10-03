@@ -168,6 +168,14 @@ std::vector<std::string> run_arguments(const std::string& executable, const test
             "1001",
             "--instance-id",
             std::string(instance),
+            "--max-quantity",
+            "100",
+            "--max-open-orders",
+            "100",
+            "--max-notional",
+            "1001=100000000",
+            "--max-position",
+            "1001=100",
             "--log",
             log.string()};
 }
@@ -301,6 +309,30 @@ int main(int argc, char** argv) {
             std::cerr << name << ": " << error.what() << '\n';
         }
     };
+    scenario("mandatory per-instrument risk flags", [&] {
+        for (const auto option : {"--max-quantity", "--max-open-orders", "--max-notional", "--max-position"}) {
+            const auto label = std::string(option).substr(2);
+            const auto log = root / ("missing-" + label + ".ndjson");
+            auto arguments = run_arguments(argv[1], fixture, log, "cli_missing_" + label);
+            const auto found = std::find(arguments.begin(), arguments.end(), option);
+            test::require(found != arguments.end(), "risk test option missing");
+            arguments.erase(found, found + 2);
+            arguments.push_back("--allow-orders");
+            Child owner(arguments, root / ("missing-" + label + ".err"));
+            owner.close_input();
+            test::require(owner.wait() == 2, "allow-orders accepted a missing mandatory risk flag");
+            no_posts(log);
+        }
+        const auto log = root / "uncovered-risk.ndjson";
+        auto arguments = run_arguments(argv[1], fixture, log, "cli_uncovered_risk");
+        const auto found = std::find(arguments.begin(), arguments.end(), "--max-position");
+        *(found + 1) = "1002=100";
+        arguments.push_back("--allow-orders");
+        Child owner(arguments, root / "uncovered-risk.err");
+        owner.close_input();
+        test::require(owner.wait() == 2, "allow-orders accepted an uncovered target position cap");
+        no_posts(log);
+    });
     scenario("SIGHUP", [&] {
         const auto log = root / "hup.ndjson";
         Child owner(run_arguments(argv[1], fixture, log, "cli_hup"), root / "hup.err");
@@ -409,6 +441,10 @@ int main(int argc, char** argv) {
         const auto start = contents.find("\"event\":\"startup\"");
         test::require(start != std::string::npos, "CLI startup record missing");
         const auto startup = contents.substr(start, contents.find('\n', start) - start);
+        test::require(startup.find("\"max_notional_scaled\":9223372036854775807") != std::string::npos &&
+                          startup.find("\"max_quote_notional_scaled\":10000000000000") != std::string::npos &&
+                          startup.find("\"max_position\":100") != std::string::npos,
+                      "mapped CLI risk configuration inherited the legacy overall default or lost target caps");
         std::ifstream executable(argv[1], std::ios::binary);
         const std::string binary((std::istreambuf_iterator<char>(executable)), {});
         const auto expected_hash = moex::plaza2::cgate::plaza2_sha256_hex(binary);

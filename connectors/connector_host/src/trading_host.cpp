@@ -118,6 +118,16 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
       journal_(config_.journal_path, identity_path(config_)), session_(session_config()) {
     if (config_.isin_ids.empty())
         throw std::invalid_argument("at least one trading instrument is required");
+    if (config_.session.allow_orders) {
+        const auto& risk = config_.orders.risk;
+        if (!risk.quantity_configured || !risk.open_orders_configured)
+            throw std::invalid_argument("--allow-orders requires explicit "
+                                        "--max-quantity and --max-open-orders");
+        for (const auto isin : config_.isin_ids)
+            if (!risk.max_notional_by_isin.contains(isin) || !risk.max_position_by_isin.contains(isin))
+                throw std::invalid_argument("--allow-orders requires --max-notional ISIN=QUOTE_VALUE and "
+                                            "--max-position ISIN=N for every target instrument");
+    }
     auto orders = config_.orders;
     const auto reservations = journal_.reservations();
     orders.next_ext_id = std::max(orders.next_ext_id, reservations.next_ext_id);
@@ -147,7 +157,18 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
             const auto sess = current_session_id(data);
             return life && sess ? data.find_future_session_terms(isin, sess, *life) : std::nullopt;
         },
-        [this](auto kind, auto fields) noexcept { log_event(kind, fields); });
+        [this](auto kind, auto fields) noexcept { log_event(kind, fields); },
+        [this](auto isin) -> std::optional<std::int64_t> {
+            const auto& data = session_.private_state();
+            const auto pos =
+                std::find_if(data.stream_health().begin(), data.stream_health().end(),
+                             [](const auto& row) { return row.stream_code == gen::StreamCode::kFortsPosRepl; });
+            if (pos == data.stream_health().end() || !pos->online || !pos->snapshot_complete)
+                return std::nullopt;
+            const auto* row = data.find_position(config_.orders.broker_code + config_.orders.client_code, isin,
+                                                 config_.orders.client_code.empty() ? 1 : 2);
+            return row ? row->xpos : 0;
+        });
 }
 CgateTradingHost::~CgateTradingHost() noexcept {
     // Stop while callbacks can still use log_error_ and journal_. Member
@@ -311,6 +332,18 @@ cg::Plaza2Error CgateTradingHost::start() {
     auto router = masked_settings(session.connection_settings.substr(0, session.connection_settings.find(';')));
     if (router.starts_with("p2tcp://"))
         router.erase(0, 8);
+    std::string instrument_limits;
+    for (const auto isin : config_.isin_ids) {
+        if (!instrument_limits.empty())
+            instrument_limits += ',';
+        const auto& risk = config_.orders.risk;
+        const auto notional = risk.max_notional_by_isin.find(isin), position = risk.max_position_by_isin.find(isin);
+        instrument_limits += "{\"isin_id\":" + std::to_string(isin) + ",\"max_quote_notional_scaled\":" +
+                             (notional == risk.max_notional_by_isin.end() ? "null" : std::to_string(notional->second)) +
+                             ",\"max_position\":" +
+                             (position == risk.max_position_by_isin.end() ? "null" : std::to_string(position->second)) +
+                             "}";
+    }
     log_event(
         "startup",
         "{\"product\":\"MoexConnector\",\"version\":\"1.0.0\",\"instance_id\":" + json_string(session.publisher_name) +
@@ -321,7 +354,8 @@ cg::Plaza2Error CgateTradingHost::start() {
             ",\"risk\":{\"max_quantity\":" + std::to_string(config_.orders.risk.max_quantity) +
             ",\"max_open_orders\":" + std::to_string(config_.orders.risk.max_open_orders) +
             ",\"max_notional_scaled\":" + std::to_string(config_.orders.risk.max_notional_scaled) +
-            ",\"kill_switch\":" + (config_.orders.risk.kill_switch ? "true" : "false") + "},\"urls\":[" + urls +
+            ",\"kill_switch\":" + (config_.orders.risk.kill_switch ? "true" : "false") + ",\"instruments\":[" +
+            instrument_limits + "]},\"urls\":[" + urls +
             "],\"env_settings\":" + json_string(masked_settings(session.runtime.env_open_settings)) +
             ",\"clock_offset_us\":" + (config_.clock_offset_us ? std::to_string(*config_.clock_offset_us) : "null") +
             ",\"clock_offset_source\":" +

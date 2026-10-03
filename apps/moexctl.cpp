@@ -165,13 +165,14 @@ int main(int argc, char** argv) {
         std::filesystem::path state_path;
         std::filesystem::path socket_path;
         RiskLimits risk;
+        bool overall_notional_configured{};
         std::uint32_t reply_timeout{60000};
         std::optional<std::int64_t> clock_offset;
         for (int i = 1; i < argc; ++i) {
             const std::string_view arg(argv[i]);
             if (arg == "--log" || arg == "--state" || arg == "--command-socket" || arg == "--max-quantity" ||
-                arg == "--max-notional" || arg == "--max-open-orders" || arg == "--reply-timeout-ms" ||
-                arg == "--clock-offset-us") {
+                arg == "--max-notional" || arg == "--max-position" || arg == "--max-open-orders" ||
+                arg == "--reply-timeout-ms" || arg == "--clock-offset-us") {
                 if (++i == argc)
                     throw std::invalid_argument("missing option value");
                 const std::string_view value(argv[i]);
@@ -181,41 +182,68 @@ int main(int argc, char** argv) {
                     state_path = value;
                 else if (arg == "--command-socket")
                     socket_path = value;
-                else if (arg == "--max-quantity")
+                else if (arg == "--max-quantity") {
                     risk.max_quantity = integer<std::int32_t>(value);
-                else if (arg == "--max-open-orders")
+                    risk.quantity_configured = true;
+                } else if (arg == "--max-open-orders") {
                     risk.max_open_orders = integer<std::size_t>(value);
-                else if (arg == "--reply-timeout-ms")
+                    risk.open_orders_configured = true;
+                } else if (arg == "--reply-timeout-ms")
                     reply_timeout = integer<std::uint32_t>(value);
                 else if (arg == "--clock-offset-us")
                     clock_offset = integer<std::int64_t>(value);
                 else {
-                    const auto decimal = moex::plaza2::private_state::parse_session_decimal(value);
+                    const auto equal = value.find('=');
+                    if (arg == "--max-position") {
+                        if (equal == std::string_view::npos)
+                            throw std::invalid_argument("max-position must be ISIN=CONTRACTS");
+                        const auto isin = integer<std::int32_t>(value.substr(0, equal));
+                        const auto cap = integer<std::int64_t>(value.substr(equal + 1));
+                        if (isin <= 0 || cap <= 0 || !risk.max_position_by_isin.emplace(isin, cap).second)
+                            throw std::invalid_argument("positive unique per-ISIN max-position required");
+                        continue;
+                    }
+                    const auto decimal = moex::plaza2::private_state::parse_session_decimal(
+                        equal == std::string_view::npos ? value : value.substr(equal + 1));
                     if (!decimal || decimal->units <= 0)
                         throw std::invalid_argument("positive max-notional required");
-                    risk.max_notional_scaled = decimal->units;
+                    if (equal == std::string_view::npos) {
+                        risk.max_notional_scaled = decimal->units;
+                        overall_notional_configured = true;
+                    } else {
+                        const auto isin = integer<std::int32_t>(value.substr(0, equal));
+                        if (isin <= 0 || !risk.max_notional_by_isin.emplace(isin, decimal->units).second)
+                            throw std::invalid_argument("positive unique per-ISIN quote-notional limit required");
+                    }
                 }
             } else
                 arguments.push_back(arg);
         }
+        if (!overall_notional_configured && !risk.max_notional_by_isin.empty())
+            risk.max_notional_scaled = INT64_MAX;
         if (socket_path.empty())
             socket_path = log_path.string() + ".sock";
         if (arguments.size() >= 2 && arguments[0] == "plaza2" && arguments[1] == "cmd") {
             if (arguments.size() != 3)
-                throw std::invalid_argument(
-                    "usage: moexctl plaza2 cmd [--log FILE | --command-socket PATH] \"COMMAND\"");
+                throw std::invalid_argument("usage: moexctl plaza2 cmd [--log FILE | "
+                                            "--command-socket PATH] \"COMMAND\"");
             std::cout << send_command(socket_path, std::string(arguments[2])) << '\n' << std::flush;
             return 0;
         }
         const auto request = parse_operator_arguments(arguments);
         if (request.help) {
             std::cout << operator_help()
-                      << "\nrun options: --log FILE --state FILE --max-quantity N --max-notional N --max-open-orders N "
+                      << "\nrun options: --log FILE --state FILE --max-quantity N "
+                         "--max-notional ISIN=QUOTE_CAP "
+                         "--max-position ISIN=CONTRACTS --max-open-orders N "
                          "--reply-timeout-ms N --clock-offset-us N --command-socket PATH\n"
-                      << "run commands: place ID ISIN buy|sell QTY PRICE [day|ioc]; cancel ID; move ID QTY PRICE; "
+                      << "run commands: place ID ISIN buy|sell QTY PRICE [day|ioc]; cancel "
+                         "ID; move ID QTY PRICE; "
                          "cancel-all ISIN; kill on|off; status; quit [--force]\n"
-                      << "reconnect: moexctl plaza2 cmd [--log FILE | --command-socket PATH] \"COMMAND\"\n"
-                      << "command socket defaults to LOGFILE.sock; restricted to its owner\n";
+                      << "reconnect: moexctl plaza2 cmd [--log FILE | --command-socket "
+                         "PATH] \"COMMAND\"\n"
+                      << "command socket defaults to LOGFILE.sock; restricted to its "
+                         "owner\n";
             return 0;
         }
         if (request.command == "run") {

@@ -3267,6 +3267,14 @@ std::span<const LimitSnapshot> Plaza2PrivateStateProjector::limits() const {
 std::span<const PositionSnapshot> Plaza2PrivateStateProjector::positions() const {
     return impl_->position_snapshots;
 }
+const PositionSnapshot* Plaza2PrivateStateProjector::find_position(std::string_view account_code, std::int32_t isin_id,
+                                                                   std::int8_t account_type) const {
+    const auto row = impl_->positions_by_key.find({.scope = PositionScope::kClient,
+                                                   .account_code = std::string(account_code),
+                                                   .isin_id = isin_id,
+                                                   .account_type = account_type});
+    return row == impl_->positions_by_key.end() ? nullptr : &row->second;
+}
 
 std::span<const OwnOrderSnapshot> Plaza2PrivateStateProjector::own_orders() const {
     return impl_->order_snapshots;
@@ -3315,6 +3323,11 @@ Plaza2PrivateStateProjector::session_source_provenance(generated::TableCode tabl
 
 std::optional<std::uint64_t> Plaza2PrivateStateProjector::refdata_lifenum() const {
     return impl_->refdata_lifenum();
+}
+
+std::optional<std::uint64_t> Plaza2PrivateStateProjector::stream_lifenum(generated::StreamCode stream_code) const {
+    const auto found = impl_->lifenums_by_stream.find(stream_code);
+    return found == impl_->lifenums_by_stream.end() ? std::nullopt : std::optional{found->second};
 }
 
 std::uint64_t Plaza2PrivateStateProjector::status_binding_generation() const {

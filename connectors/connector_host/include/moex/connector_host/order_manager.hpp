@@ -54,9 +54,15 @@ struct ManagedOrder {
 
 struct RiskLimits {
     std::int32_t max_quantity{100};
-    // Price * quantity in quote units; this is a configured exposure cap, not a margin estimate.
+    // Price * quantity in quote units; this is a configured exposure cap, not a
+    // margin estimate.
     std::int64_t max_notional_scaled{1000000000000LL};
     std::size_t max_open_orders{100};
+    // Each cap uses that instrument's price-quote units * contracts, scaled by
+    // 1e5. Different instruments' quote units must not be compared as roubles.
+    std::map<std::int32_t, std::int64_t> max_notional_by_isin;
+    std::map<std::int32_t, std::int64_t> max_position_by_isin;
+    bool quantity_configured{}, open_orders_configured{};
     bool kill_switch{};
 };
 
@@ -83,8 +89,11 @@ class OrderManager {
     using Ready = std::function<bool(std::int32_t)>;
     using Terms = std::function<std::optional<plaza2::private_state::FutureSessionTerms>(std::int32_t)>;
     using Log = std::function<void(std::string_view, std::string_view)>;
+    // nullopt means POS authority is unavailable; an authoritative absent row is
+    // zero.
+    using Position = std::function<std::optional<std::int64_t>(std::int32_t)>;
 
-    OrderManager(OrderManagerConfig config, Send send, Ready ready, Terms terms, Log log = {});
+    OrderManager(OrderManagerConfig config, Send send, Ready ready, Terms terms, Log log = {}, Position position = {});
     [[nodiscard]] std::string place(OrderRequest request);
     [[nodiscard]] std::string cancel(std::string_view client_order_id);
     [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity);
@@ -135,8 +144,29 @@ class OrderManager {
     }
     struct Exposure {
         std::uint64_t notional{};
+        std::uint64_t quantity{};
+        std::int32_t isin_id{};
+        plaza2_trade::Plaza2TradeSide side{};
         bool active{}, invalid_price{}, unknown{}, operator_action{};
         std::int32_t terminal_session{};
+    };
+    struct ExposureSum {
+        std::uint64_t low{}, high{};
+        void add(std::uint64_t value) {
+            const auto previous = low;
+            low += value;
+            high += low < previous;
+        }
+        void subtract(std::uint64_t value) {
+            high -= low < value;
+            low -= value;
+        }
+        [[nodiscard]] bool exceeds(std::uint64_t cap, std::uint64_t proposed = 0) const {
+            return high || low > cap || proposed > cap - low;
+        }
+    };
+    struct InstrumentExposure {
+        ExposureSum notional, buys, sells;
     };
     struct MoveReservation {
         std::uint64_t price_units{};
@@ -181,6 +211,7 @@ class OrderManager {
     Ready ready_;
     Terms terms_;
     Log log_;
+    Position position_;
     plaza2::cgate::Plaza2PublisherRateGate rate_;
     std::map<std::string, ManagedOrder> orders_;
     std::unordered_map<std::string, Exposure> exposures_;
@@ -191,7 +222,8 @@ class OrderManager {
     std::size_t active_orders_{}, invalid_prices_{};
     // Each order contributes at most cap+1; a two-word sum supports subtraction
     // even when reconstructed exposure is well above the configured cap.
-    std::uint64_t notional_low_{}, notional_high_{};
+    ExposureSum notional_;
+    std::unordered_map<std::int32_t, InstrumentExposure> instrument_exposure_;
     std::int32_t current_session_{}, previous_session_{};
     std::unordered_map<std::int64_t, std::string> order_index_;
     std::unordered_map<std::int32_t, std::string> ext_index_;

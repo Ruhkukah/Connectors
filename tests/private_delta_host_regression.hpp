@@ -186,6 +186,8 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
     config.utc_now = [] { return std::int64_t{1700000005}; };
     config.orders.risk.max_open_orders = 20000;
     config.orders.risk.max_notional_scaled = std::numeric_limits<std::int64_t>::max();
+    config.orders.risk.max_notional_by_isin[isin] = std::numeric_limits<std::int64_t>::max();
+    config.orders.risk.max_position_by_isin[isin] = 20000;
     fake::Scenario scenario{
         .suppress_initial_orders = true, .zero_position = true, .client_code = account, .session_id = 321};
     control.configure(scenario);

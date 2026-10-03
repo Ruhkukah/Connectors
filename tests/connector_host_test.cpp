@@ -91,6 +91,12 @@ int main(int argc, char** argv) {
             trading.orders.client_code = cfg.order.client_code;
             trading.isin_ids = {1001};
             trading.journal_path = path / "bad-file-alias.ndjson";
+            trading.orders.risk.max_quantity = 4;
+            trading.orders.risk.max_open_orders = 5;
+            trading.orders.risk.quantity_configured = true;
+            trading.orders.risk.open_orders_configured = true;
+            trading.orders.risk.max_notional_by_isin[1001] = 103000000000000LL;
+            trading.orders.risk.max_position_by_isin[1001] = 10;
             CgateTradingHost owner(trading);
             test::require(!owner.start(), "bad FILE alias trading owner starts asynchronously");
             for (int i = 0; i < 20; ++i)

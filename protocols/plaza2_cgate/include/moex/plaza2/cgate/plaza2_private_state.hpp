@@ -415,6 +415,10 @@ class Plaza2PrivateStateProjector final : public projection::CommitListener {
     [[nodiscard]] std::size_t limit_row_count() const noexcept;
     [[nodiscard]] std::size_t unknown_limit_row_count() const noexcept;
     [[nodiscard]] std::span<const PositionSnapshot> positions() const;
+    // Borrowed committed row, invalidated by the next mutation. No row is
+    // distinct from an offline POS stream.
+    [[nodiscard]] const PositionSnapshot* find_position(std::string_view account_code, std::int32_t isin_id,
+                                                        std::int8_t account_type) const;
     // Contiguous committed views. Online updates replace indexed slots; new
     // exchange identities append. Callers must not rely on sorted order.
     [[nodiscard]] std::span<const OwnOrderSnapshot> own_orders() const;
@@ -435,6 +439,7 @@ class Plaza2PrivateStateProjector final : public projection::CommitListener {
     [[nodiscard]] std::optional<SourceRowProvenance> session_source_provenance(generated::TableCode table_code,
                                                                                std::int32_t sess_id) const;
     [[nodiscard]] std::optional<std::uint64_t> refdata_lifenum() const;
+    [[nodiscard]] std::optional<std::uint64_t> stream_lifenum(generated::StreamCode stream_code) const;
     // Local committed freshness generation, not an exchange session identifier.
     [[nodiscard]] std::uint64_t status_binding_generation() const;
     void reset_stream_snapshot(generated::StreamCode stream_code);
