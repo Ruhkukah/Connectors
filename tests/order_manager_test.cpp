@@ -9,6 +9,7 @@
 #include "reload_missing_order_regression.hpp"
 #include "risk_limits_regression.hpp"
 #include "strict_lost_add_regression.hpp"
+#include "move_not_applied_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -2037,6 +2038,7 @@ void manager_scale() {
 int main() {
     try {
         moex::connector_host::strict_lost_add_regression<Fixture>();
+        moex::connector_host::move_not_applied_regression<Fixture>();
         moex::connector_host::regression::risk_limits::run();
         reload_missing_order_regression<Fixture>();
         moex::connector_host::cancel_session_retry_regression<Fixture>();

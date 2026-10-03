@@ -903,6 +903,7 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
         const auto sent_kind = command.encoded.command_kind;
         auto sent = std::move(command);
         queue.erase(selected);
+        sent.sent_utc_seconds = utc_seconds;
         if (found != orders_.end() && found->second.sent_utc_seconds == 0)
             found->second.sent_utc_seconds = utc_seconds;
         sent.deadline = now + config_.reply_timeout;
@@ -1563,6 +1564,34 @@ bool OrderManager::cancellations_pending() const noexcept {
 void OrderManager::prove_absence(std::int64_t server_time, bool online) {
     if (!online)
         return;
+    for (auto& [id, command] : pending_) {
+        if (command.encoded.command_kind != Kind::MoveOrder || command.acknowledged ||
+            command.deadline != Clock::time_point::max() || command.sent_utc_seconds <= 0 ||
+            server_time <= command.sent_utc_seconds ||
+            server_time - command.sent_utc_seconds <= config_.absence_margin.count())
+            continue;
+        auto& order = orders_.at(command.key);
+        if (order.state != OrderState::Unknown || order.operator_action_required || order.cancel_requested ||
+            !order.confirmed_by_replication || order.remaining <= 0 || order.order_id != command.target_order_id ||
+            order.sess_id != command.submitted_session)
+            continue;
+        const bool linked = std::any_of(deferred_orders_.begin(), deferred_orders_.end(), [&](const auto& item) {
+            const auto& row = item.second;
+            return row.from_trade_repl && row.prevorder_id == command.target_order_id &&
+                   row.sess_id == command.submitted_session && row.isin_id == order.request.isin_id &&
+                   row.dir == static_cast<std::int8_t>(order.request.side) &&
+                   row.client_code == config_.broker_code + config_.client_code;
+        });
+        if (linked)
+            continue;
+        move_reservations_.erase(command.key);
+        command.acknowledged = true; // Retain UID to diagnose a contradictory delayed176.
+        order.state = settled_state(order);
+        order.last_error = "Move not applied after committed TRADE watermark";
+        emit("move_not_applied", "{\"client_order_id\":" + json_string(command.key) + ",\"user_id\":" +
+                                     std::to_string(id) + ",\"order_id\":" + std::to_string(order.order_id) + "}");
+        changed(command.key);
+    }
     for (auto it = unknown_orders_.begin(); it != unknown_orders_.end();) {
         const auto key = *it++;
         auto& order = orders_.at(key);

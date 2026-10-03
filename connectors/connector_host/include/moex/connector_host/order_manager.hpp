@@ -134,6 +134,7 @@ class OrderManager {
         Clock::time_point deadline{}, not_before{};
         std::uint32_t user_id{};
         std::int64_t target_order_id{};
+        std::int64_t sent_utc_seconds{};
         bool acknowledged{}, transport_retry_warned{}, wait_for_trading{};
         std::uint32_t business_failures{};
         std::int32_t submitted_session{};
