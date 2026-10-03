@@ -36,6 +36,7 @@ class CgateTradingHost {
 
   private:
     void assert_owner() const;
+    void dispatch_commands();
     plaza2_trade::CgateSessionConfig session_config();
     void log_event(std::string_view kind, std::string_view fields) noexcept;
     void log_listener_event(const plaza2::cgate::Plaza2ListenerEvent& event) noexcept;

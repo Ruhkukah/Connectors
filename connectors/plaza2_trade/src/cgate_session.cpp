@@ -560,7 +560,7 @@ struct CgateSession::Impl {
             out.private_active = false;
         return out;
     }
-    Plaza2Error poll() {
+    Plaza2Error poll(bool wait_for_data) {
         if (!initialized)
             return invalid("CGate session is not started");
         if (recovery.operation == Plaza2SessionOperation::Failed)
@@ -693,7 +693,7 @@ struct CgateSession::Impl {
                 break;
             }
             if (result == Timeout) {
-                if (config.process_timeout_ms) {
+                if (wait_for_data && config.process_timeout_ms) {
                     error = connection.process(config.process_timeout_ms, &result);
                     if (error) {
                         operation("connection", "process", error);
@@ -778,8 +778,8 @@ Plaza2Error CgateSession::start() {
     }
     return e;
 }
-Plaza2Error CgateSession::poll() {
-    return impl_->poll();
+Plaza2Error CgateSession::poll(bool wait_for_data) {
+    return impl_->poll(wait_for_data);
 }
 Plaza2Error CgateSession::stop() {
     return impl_->stop();

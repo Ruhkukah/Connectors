@@ -151,7 +151,8 @@ class CgateSession final {
     CgateSession& operator=(CgateSession&&) noexcept;
 
     [[nodiscard]] plaza2::cgate::Plaza2Error start();
-    [[nodiscard]] plaza2::cgate::Plaza2Error poll();
+    // Queued owner commands skip the native idle wait; outage recovery remains paced.
+    [[nodiscard]] plaza2::cgate::Plaza2Error poll(bool wait_for_data = true);
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] bool started() const noexcept;
     [[nodiscard]] bool recovering() const noexcept;

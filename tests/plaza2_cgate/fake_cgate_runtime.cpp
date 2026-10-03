@@ -72,6 +72,7 @@ std::deque<fixture::Event> queued_events;
 std::vector<fixture::PostedCommand> posted_commands;
 std::unordered_map<StreamCode, std::uint64_t> listener_opens;
 std::uint64_t process_calls{};
+std::uint32_t last_process_timeout{};
 const char* option(Option option) {
     const auto& value = scenario.options[static_cast<std::size_t>(option)];
     return value.empty() ? nullptr : value.c_str();
@@ -2007,7 +2008,8 @@ std::uint32_t cg_conn_close(void* conn) {
     return kCgErrOk;
 }
 
-std::uint32_t cg_conn_process(void* conn, std::uint32_t, void*) {
+std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
+    last_process_timeout = timeout_ms;
     if (fake_flag(Option::ProcessTimeout))
         return kCgErrTimeout;
     if (const auto result = configured_result(Option::ProcessResult); result != kCgErrOk)
@@ -3095,6 +3097,9 @@ extern "C" void moex_fake_commands(std::vector<fixture::PostedCommand>* value) {
 }
 extern "C" std::uint64_t moex_fake_process_count() {
     return process_calls;
+}
+extern "C" std::uint32_t moex_fake_last_process_timeout() {
+    return last_process_timeout;
 }
 extern "C" std::uint64_t moex_fake_listener_opens(StreamCode stream) {
     return listener_opens[stream];

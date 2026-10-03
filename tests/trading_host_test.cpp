@@ -8,6 +8,7 @@
 #include "add_reply_host_regression.hpp"
 #include "lost_add_rebuild_host_regression.hpp"
 #include "add_conflict_host_regression.hpp"
+#include "immediate_dispatch_host_regression.hpp"
 
 #include <cstdlib>
 #include <dlfcn.h>
@@ -166,6 +167,7 @@ int main(int argc, char** argv) {
         config.orders.client_code = input.client_code;
         config.isin_ids = {1001};
         config.journal_path = root / "events.ndjson";
+        moex::connector_host::regression::immediate_dispatch_host_regression(config, fake, root);
         named_journal_regression(config, fake, root);
         fake.configure(test::fake::Scenario{.client_code = "BRK1C01"});
         fake.set(moex::plaza2::test::fake::Option::AggrWrongSession, "1");
@@ -185,18 +187,18 @@ int main(int argc, char** argv) {
                 test::require(!host.poll(), "delayed USERORDERBOOK completion");
             test::require(host.status().find("recovered:321:20009") != std::string::npos,
                           "late USERORDERBOOK-only working order was not reconstructed");
+            fake.set(moex::plaza2::test::fake::Option::PubReplyOrderId, "61001");
             test::require(
                 host.place({.client_order_id = "first", .isin_id = 1001, .price = "103000", .quantity = 2}).empty(),
                 "production owner did not allow quantity2 while AGGR invalid");
-            fake.set(moex::plaza2::test::fake::Option::PubReplyOrderId, "61001");
             for (int i = 0; i < 3; ++i)
                 test::require(!host.poll(), "production Add dispatch/reply");
             test::require(host.status().find("61001") != std::string::npos,
                           "179 reply did not reach production manager");
+            fake.set(moex::plaza2::test::fake::Option::PubReplyOrderId, "61002");
             test::require(
                 host.place({.client_order_id = "second", .isin_id = 1001, .price = "103000", .quantity = 3}).empty(),
                 "production owner refused concurrent order");
-            fake.set(moex::plaza2::test::fake::Option::PubReplyOrderId, "61002");
             for (int i = 0; i < 3; ++i)
                 test::require(!host.poll(), "second concurrent Add dispatch/reply");
             test::require(host.status().find("61002") != std::string::npos, "second reply correlation lost");
@@ -277,18 +279,19 @@ int main(int argc, char** argv) {
             const auto posts = fake.commands().size();
             test::require(std::filesystem::remove(broken_storage.identity_state_path), "remove identity checkpoint");
             std::filesystem::create_directory(broken_storage.identity_state_path);
-            test::require(host.place({.client_order_id = "blocked-by-storage-failure",
-                                      .isin_id = 1001,
-                                      .price = "103000",
-                                      .quantity = 2})
-                              .empty(),
-                          "queue Add before reservation checkpoint fails");
-            // The group checkpoint is now time-based; a within-block Add
-            // reservation no longer performs its own filesystem sync.
+            // Detect the failure on its time-based owner flush before another
+            // immediate command is accepted, then verify the fatal send guard.
             std::this_thread::sleep_for(std::chrono::milliseconds(270));
             const auto poll_error = host.poll();
             test::require(poll_error.code == cg::Plaza2ErrorCode::RuntimeCallFailed && fake.commands().size() == posts,
                           "journal checkpoint failure did not stop sends before dispatch");
+            test::require(!host.place({.client_order_id = "blocked-by-storage-failure",
+                                       .isin_id = 1001,
+                                       .price = "103000",
+                                       .quantity = 2})
+                                  .empty() &&
+                              fake.commands().size() == posts,
+                          "storage-failed host admitted another Add");
             cg::Plaza2Error stop_error;
             try {
                 ScopeExit report([&] { host.report_outstanding_orders(diagnostics); });

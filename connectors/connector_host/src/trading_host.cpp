@@ -288,7 +288,10 @@ cg::Plaza2Error CgateTradingHost::start() {
 }
 cg::Plaza2Error CgateTradingHost::poll() {
     assert_owner();
-    const auto error = session_.poll();
+    dispatch_commands();
+    if (!log_error_.empty())
+        return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_};
+    const auto error = session_.poll(orders_->queued() == 0);
     try {
         observe_link(session_.runtime_health());
     } catch (const std::exception& log_error) {
@@ -362,7 +365,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
         orders_->set_kill_switch(true);
         return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_};
     }
-    orders_->poll(now, config_.utc_now ? config_.utc_now() : utc_seconds());
+    dispatch_commands();
     if (!log_error_.empty()) {
         orders_->set_kill_switch(true);
         return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_};
@@ -396,19 +399,39 @@ cg::Plaza2Error CgateTradingHost::stop() {
 }
 std::string CgateTradingHost::place(OrderRequest request) {
     assert_owner();
-    return orders_->place(std::move(request));
+    auto error = orders_->place(std::move(request));
+    if (error.empty())
+        dispatch_commands();
+    return error;
 }
 std::string CgateTradingHost::cancel(std::string_view key) {
     assert_owner();
-    return orders_->cancel(key);
+    auto error = orders_->cancel(key);
+    if (error.empty())
+        dispatch_commands();
+    return error;
 }
 std::string CgateTradingHost::move(std::string_view key, std::string price, std::int32_t quantity) {
     assert_owner();
-    return orders_->move(key, std::move(price), quantity);
+    auto error = orders_->move(key, std::move(price), quantity);
+    if (error.empty())
+        dispatch_commands();
+    return error;
 }
 std::string CgateTradingHost::cancel_all(std::int32_t isin) {
     assert_owner();
-    return orders_->cancel_all(isin);
+    auto error = orders_->cancel_all(isin);
+    if (error.empty())
+        dispatch_commands();
+    return error;
+}
+void CgateTradingHost::dispatch_commands() {
+    if (log_error_.empty()) {
+        const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
+        orders_->poll(now, config_.utc_now ? config_.utc_now() : utc_seconds());
+    }
+    if (!log_error_.empty())
+        orders_->set_kill_switch(true);
 }
 void CgateTradingHost::set_kill_switch(bool enabled) {
     assert_owner();

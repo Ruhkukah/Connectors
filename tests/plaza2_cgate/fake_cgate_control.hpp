@@ -229,6 +229,9 @@ class Control {
     std::uint64_t process_count() const {
         return call<std::uint64_t (*)()>("moex_fake_process_count")();
     }
+    std::uint32_t last_process_timeout() const {
+        return call<std::uint32_t (*)()>("moex_fake_last_process_timeout")();
+    }
     std::uint64_t opens(generated::StreamCode stream) const {
         return call<std::uint64_t (*)(generated::StreamCode)>("moex_fake_listener_opens")(stream);
     }
