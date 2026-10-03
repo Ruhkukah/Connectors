@@ -74,6 +74,75 @@ int main(int argc, char** argv) {
             reset();
         }
         {
+            auto closed_config = config;
+            closed_config.process_timeout_ms = 10;
+            fake.set(test::fake::Option::ConnectionOpenResult, "131076");
+            CgateSession closed_session(closed_config);
+            require(!closed_session.start(), "closed retry session start");
+            const auto waiting_started = std::chrono::steady_clock::now();
+            for (int i = 0; i < 4; ++i)
+                require(!closed_session.poll(), "CLOSED retry pump failed");
+            require(std::chrono::steady_clock::now() - waiting_started >= std::chrono::milliseconds(35),
+                    "CLOSED recovery polls busy-spin instead of waiting");
+            require(closed_session.recovery_status().attempts == 0,
+                    "CLOSED wait retried before the one-second recovery boundary");
+            require(!closed_session.stop(), "closed retry session stop");
+            fake.clear(test::fake::Option::ConnectionOpenResult);
+            reset();
+        }
+        {
+            // Even process_timeout_ms=0 must yield when no connection can process data.
+            fake.set(test::fake::Option::ConnectionOpenResult, "131076");
+            CgateSession nonblocking(config);
+            require(!nonblocking.start(), "nonblocking outage session start");
+            const auto waiting_started = std::chrono::steady_clock::now();
+            require(!nonblocking.poll(), "nonblocking outage poll failed");
+            require(std::chrono::steady_clock::now() - waiting_started >= std::chrono::milliseconds(45),
+                    "zero process timeout busy-spins during an outage");
+            require(!nonblocking.stop(), "nonblocking outage session stop");
+            fake.clear(test::fake::Option::ConnectionOpenResult);
+            reset();
+        }
+        {
+            auto error_config = config;
+            error_config.process_timeout_ms = 10;
+            flag(test::fake::Option::ConnectionOpenFail, true);
+            CgateSession errored(error_config);
+            require(!errored.start(), "ERROR recovery session start");
+            std::chrono::steady_clock::duration error_wait{};
+            for (int i = 0; i < 4; ++i) {
+                const auto waiting_started = std::chrono::steady_clock::now();
+                require(!errored.poll(), "ERROR recovery poll became terminal");
+                error_wait += std::chrono::steady_clock::now() - waiting_started;
+                if (i < 3) {
+                    now += std::chrono::seconds(1);
+                    require(!errored.poll(), "scheduled ERROR reconnect became terminal");
+                }
+            }
+            require(error_wait >= std::chrono::milliseconds(35), "ERROR recovery polls busy-spin instead of waiting");
+            require(errored.recovery_status().attempts == 3, "ERROR pacing changed the one-second retry schedule");
+            flag(test::fake::Option::ConnectionOpenFail, false);
+            now += std::chrono::seconds(1);
+            for (int i = 0; i < 10; ++i) {
+                now += std::chrono::seconds(1);
+                require(!errored.poll(), "ERROR recovery failed");
+            }
+            require(errored.runtime_health().private_active, "ERROR did not recover to ONLINE");
+            const auto retries = errored.recovery_status().attempts;
+            flag(test::fake::Option::ConnGetstateInternal, true);
+            const auto query_started = std::chrono::steady_clock::now();
+            for (int i = 0; i < 4; ++i)
+                require(!errored.poll(), "connection state-query error became terminal");
+            require(std::chrono::steady_clock::now() - query_started >= std::chrono::milliseconds(35),
+                    "failed connection state-query polls busy-spin instead of waiting");
+            require(errored.recovery_status().attempts == retries, "state-query wait changed the retry schedule");
+            flag(test::fake::Option::ConnGetstateInternal, false);
+            require(!errored.poll(), "state-query recovery failed");
+            require(errored.runtime_health().private_active, "state-query error did not recover");
+            require(!errored.stop(), "ERROR recovery session stop");
+            reset();
+        }
+        {
             struct StderrCapture {
                 std::ostringstream text;
                 std::streambuf* previous{std::cerr.rdbuf(text.rdbuf())};

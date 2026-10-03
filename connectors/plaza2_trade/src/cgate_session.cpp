@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <thread>
 #include <utility>
 
 namespace moex::plaza2_trade {
@@ -198,6 +199,12 @@ struct CgateSession::Impl {
     }
     std::uint64_t now_ms() const {
         return config.publisher_now_ms ? config.publisher_now_ms() : ns(now()) / 1000000;
+    }
+    void wait_for_recovery() const {
+        // A zero process timeout suppresses CGate's wait, but a disconnected
+        // owner must still yield between retries instead of consuming a core.
+        const auto delay = std::chrono::milliseconds(config.process_timeout_ms ? config.process_timeout_ms : 50);
+        std::this_thread::sleep_for(delay);
     }
     void log(std::string_view kind, std::string fields) {
         if (config.event_log)
@@ -563,6 +570,7 @@ struct CgateSession::Impl {
         if (auto error = connection.state(state); error) {
             operation("connection", "getstate", error);
             waiting(error, Plaza2RecoveryWaitState::WaitingForRouter, "connection");
+            wait_for_recovery();
             return {};
         }
         observe(observed_connection, state, "connection");
@@ -577,6 +585,7 @@ struct CgateSession::Impl {
             connection_retry = now() + config.recovery_retry_interval;
             waiting({.code = Plaza2ErrorCode::AdapterState, .message = "connection ERROR"},
                     Plaza2RecoveryWaitState::WaitingForRouter, "connection");
+            wait_for_recovery();
             return {};
         }
         if (state == Closed) {
@@ -597,6 +606,7 @@ struct CgateSession::Impl {
                     waiting(error, Plaza2RecoveryWaitState::WaitingForRouter, "connection");
                 connection_retry = now() + config.recovery_retry_interval;
             }
+            wait_for_recovery();
             return {};
         }
         if (state == Opening) {
