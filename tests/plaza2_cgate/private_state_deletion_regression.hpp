@@ -14,28 +14,18 @@ namespace pr = projection;
 using enum gen::TableCode;
 
 inline constexpr std::array tables{kFortsTradeReplOrdersLog,
-                                   kFortsTradeReplMultilegOrdersLog,
                                    kFortsTradeReplUserDeal,
-                                   kFortsTradeReplUserMultilegDeal,
                                    kFortsTradeReplHeartbeat,
                                    kFortsTradeReplSysEvents,
                                    kFortsUserorderbookReplOrders,
-                                   kFortsUserorderbookReplMultilegOrders,
-                                   kFortsUserorderbookReplOrdersCurrentday,
-                                   kFortsUserorderbookReplMultilegOrdersCurrentday,
                                    kFortsUserorderbookReplInfo,
-                                   kFortsUserorderbookReplInfoCurrentday,
                                    kFortsPosReplPosition,
                                    kFortsPosReplInfo,
-                                   kFortsPartReplPart,
                                    kFortsPartReplSysEvents,
                                    kFortsRefdataReplSession,
                                    kFortsRefdataReplFutInstruments,
                                    kFortsRefdataReplFutVcb,
                                    kFortsRefdataReplFutSessContents,
-                                   kFortsRefdataReplOptSessContents,
-                                   kFortsRefdataReplMultilegDict,
-                                   kFortsRefdataReplInstr2matchingMap,
                                    kFortsRefdataReplSysMessages,
                                    kFortsSessionstateReplSessionState,
                                    kFortsInstrumentstateReplInstrumentState};
@@ -265,8 +255,8 @@ inline void independent_userbook_tables() {
     h.row(kFortsUserorderbookReplOrders, 10, 1);
     h.row(kFortsUserorderbookReplOrdersCurrentday, 10, 1);
     h.commit();
-    require(h.projector.own_orders().size() == 2,
-            "same-ID regular and current-day USERORDERBOOK rows overwrote one another");
+    require(h.projector.own_orders().size() == 1 && h.projector.own_orders()[0].from_user_book,
+            "unconsumed current-day row replaced the regular USERORDERBOOK record");
     h.begin(kFortsUserorderbookReplOrdersCurrentday, true);
     h.row(kFortsUserorderbookReplOrdersCurrentday, 10, 2, 1, true);
     h.commit();
@@ -279,9 +269,7 @@ inline void independent_userbook_tables() {
     h.begin(kFortsUserorderbookReplOrders, true);
     h.row(kFortsUserorderbookReplOrders, 10, 4, 1, true);
     h.commit();
-    require(h.projector.own_orders().size() == 1 && !h.projector.own_orders()[0].from_user_book &&
-                h.projector.own_orders()[0].from_current_day,
-            "regular deletion removed an independent current-day USERORDERBOOK record");
+    require(h.projector.own_orders().empty(), "unconsumed current-day row survived regular USERORDERBOOK deletion");
 }
 inline void replica_identity_update() {
     Harness h;

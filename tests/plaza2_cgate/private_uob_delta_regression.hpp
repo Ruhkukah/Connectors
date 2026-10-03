@@ -8,9 +8,7 @@ namespace moex::plaza2::test {
 inline void private_uob_delta_regression() {
     using namespace deletion;
     constexpr std::int64_t count = ps::kPrivateRowChangeCapacity + 1;
-    for (const auto table :
-         {kFortsUserorderbookReplOrders, kFortsUserorderbookReplMultilegOrders, kFortsUserorderbookReplOrdersCurrentday,
-          kFortsUserorderbookReplMultilegOrdersCurrentday}) {
+    for (const auto table : {kFortsUserorderbookReplOrders}) {
         Harness h;
         const auto publish = [&](std::int64_t revision, bool republish) {
             h.begin(table, true);

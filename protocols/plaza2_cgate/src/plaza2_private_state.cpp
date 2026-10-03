@@ -593,22 +593,6 @@ void clear_user_book_source(OrderMap& orders) {
     }
 }
 
-void append_or_replace_leg(std::vector<InstrumentLegSnapshot>& legs, InstrumentLegSnapshot leg) {
-    for (auto& existing : legs) {
-        if (existing.leg_isin_id == leg.leg_isin_id && existing.leg_order_no == leg.leg_order_no) {
-            existing = std::move(leg);
-            return;
-        }
-    }
-    legs.push_back(std::move(leg));
-    std::sort(legs.begin(), legs.end(), [](const InstrumentLegSnapshot& lhs, const InstrumentLegSnapshot& rhs) {
-        if (lhs.leg_order_no != rhs.leg_order_no) {
-            return lhs.leg_order_no < rhs.leg_order_no;
-        }
-        return lhs.leg_isin_id < rhs.leg_isin_id;
-    });
-}
-
 struct StagedState {
     bool status_bindings_invalidated{false};
     bool active{false};
@@ -626,6 +610,7 @@ struct StagedState {
     // or returning thousands of small nodes to the allocator at each commit.
     // Order commit sentinels deduplicate touches; trade keys are uniqued once.
     std::vector<OrderKey> order_keys;
+    std::vector<std::int32_t> instrument_isins;
     std::vector<TradeKey> trade_keys;
     bool rebuild_order_view{}, rebuild_trade_view{};
     bool deleted_rows{};
@@ -652,6 +637,27 @@ void reset_stream_watermarks(StreamHealthSnapshot& health) {
     health.last_event_type = 0;
     health.last_message.clear();
     health.periodic_snapshot_consistent = false;
+}
+
+bool consumed_private_table(TableCode table) {
+    using enum TableCode;
+    switch (table) {
+    case kFortsTradeReplMultilegOrdersLog:
+    case kFortsTradeReplUserMultilegDeal:
+    case kFortsUserorderbookReplMultilegOrders:
+    case kFortsUserorderbookReplOrdersCurrentday:
+    case kFortsUserorderbookReplMultilegOrdersCurrentday:
+    case kFortsUserorderbookReplInfoCurrentday:
+    case kFortsPosReplPositionSa:
+    case kFortsPartReplPart:
+    case kFortsPartReplPartSa:
+    case kFortsRefdataReplOptSessContents:
+    case kFortsRefdataReplMultilegDict:
+    case kFortsRefdataReplInstr2matchingMap:
+        return false;
+    default:
+        return true;
+    }
 }
 
 bool is_regular_userorderbook_snapshot_table(TableCode table_code) {
@@ -1049,46 +1055,48 @@ struct Plaza2PrivateStateProjector::Impl {
             });
     }
 
-    void join_future_vcb_into_instruments() {
-        for (auto& [unused_isin_id, instrument] : instruments_by_isin) {
-            static_cast<void>(unused_isin_id);
-            instrument.base_contract_id = 0;
-            instrument.future_vcb_join_status = FutureVcbJoinStatus::Missing;
-            instrument.future_vcb_currency.clear();
-            instrument.future_vcb_board_md.clear();
-            instrument.future_vcb_provenance = {};
-            if (instrument.kind != InstrumentKind::kFuture || instrument.base_contract_code.empty())
-                continue;
+    void join_future_vcb(InstrumentSnapshot& instrument) {
+        instrument.base_contract_id = 0;
+        instrument.future_vcb_join_status = FutureVcbJoinStatus::Missing;
+        instrument.future_vcb_currency.clear();
+        instrument.future_vcb_board_md.clear();
+        instrument.future_vcb_provenance = {};
+        if (instrument.kind != InstrumentKind::kFuture || instrument.base_contract_code.empty())
+            return;
 
-            std::size_t match_count = 0;
-            const FutureVcbSnapshot* match = nullptr;
-            for (const auto& [unused_key, row] : future_vcb_by_row) {
-                static_cast<void>(unused_key);
-                if (row.base_contract_code != instrument.base_contract_code)
-                    continue;
-                ++match_count;
-                if (match_count == 1)
-                    match = &row;
-            }
-            if (match_count != 1) {
-                instrument.future_vcb_join_status =
-                    match_count > 1 ? FutureVcbJoinStatus::Ambiguous : FutureVcbJoinStatus::Missing;
+        std::size_t match_count = 0;
+        const FutureVcbSnapshot* match = nullptr;
+        for (const auto& [unused_key, row] : future_vcb_by_row) {
+            static_cast<void>(unused_key);
+            if (row.base_contract_code != instrument.base_contract_code)
                 continue;
-            }
-
-            // The locked schema supplies the join identity, quotation currency,
-            // ASTS SECBOARD and row provenance. Any missing piece is not a
-            // partially usable definition: it remains fail-closed.
-            if (match == nullptr || match->base_contract_id <= 0 || match->currency.empty() ||
-                match->board_md.empty() || !match->source.present) {
-                continue;
-            }
-            instrument.base_contract_id = match->base_contract_id;
-            instrument.future_vcb_join_status = FutureVcbJoinStatus::Resolved;
-            instrument.future_vcb_currency = match->currency;
-            instrument.future_vcb_board_md = match->board_md;
-            instrument.future_vcb_provenance = match->source;
+            ++match_count;
+            if (match_count == 1)
+                match = &row;
         }
+        if (match_count != 1) {
+            instrument.future_vcb_join_status =
+                match_count > 1 ? FutureVcbJoinStatus::Ambiguous : FutureVcbJoinStatus::Missing;
+            return;
+        }
+
+        // The locked schema supplies the join identity, quotation currency,
+        // ASTS SECBOARD and row provenance. Any missing piece is not a
+        // partially usable definition: it remains fail-closed.
+        if (match == nullptr || match->base_contract_id <= 0 || match->currency.empty() || match->board_md.empty() ||
+            !match->source.present) {
+            return;
+        }
+        instrument.base_contract_id = match->base_contract_id;
+        instrument.future_vcb_join_status = FutureVcbJoinStatus::Resolved;
+        instrument.future_vcb_currency = match->currency;
+        instrument.future_vcb_board_md = match->board_md;
+        instrument.future_vcb_provenance = match->source;
+    }
+
+    void join_future_vcb_into_instruments() {
+        for (auto& [unused_isin_id, instrument] : instruments_by_isin)
+            join_future_vcb(instrument);
     }
 
     void rebuild_instruments() {
@@ -1395,7 +1403,7 @@ struct Plaza2PrivateStateProjector::Impl {
         }
     }
 
-    void erase_owned_row(TableCode table, std::string_view key, bool latest_marker) {
+    void erase_owned_row(TableCode table, std::string_view key, bool latest_marker, bool tombstone = true) {
         const auto integer = static_cast<std::int32_t>(key_number(key));
         const auto definition_present = [&](std::string_view isin) {
             return has_source_row(TableCode::kFortsRefdataReplFutInstruments, isin) ||
@@ -1432,7 +1440,7 @@ struct Plaza2PrivateStateProjector::Impl {
             else
                 order.from_user_book = false;
             staged.order_keys.push_back(found->first);
-            staged.deleted_rows = true;
+            staged.deleted_rows |= tombstone;
             // Keep a source-empty row indexed until commit compacts its view.
             // The last snapshot may also be deleted in this transaction, so
             // its canonical key must remain resolvable during the swap.
@@ -1519,6 +1527,9 @@ struct Plaza2PrivateStateProjector::Impl {
         case kFortsRefdataReplOptSessContents:
         case kFortsInstrumentstateReplInstrumentState: {
             auto& instruments = ensure_staged_instruments();
+            // Deleted definitions also touch the view. A missing final map
+            // row disables incremental publication and uses the cold rebuild.
+            staged.instrument_isins.push_back(integer);
             const auto found = instruments.find(integer);
             if (found == instruments.end())
                 break;
@@ -1611,6 +1622,50 @@ struct Plaza2PrivateStateProjector::Impl {
 
     void clear_table_owned_state(TableCode table_code, std::int64_t clear_revision) {
         using enum TableCode;
+        if (!consumed_private_table(table_code)) {
+            // Retain broad multileg loss diagnostics without retaining rows
+            // or invalidating the declared regular-order execution baseline.
+            if (table_code == kFortsTradeReplMultilegOrdersLog || table_code == kFortsTradeReplUserMultilegDeal) {
+                auto& floor = active_trade_clear_floors()[table_code == kFortsTradeReplMultilegOrdersLog ? 1 : 3];
+                if (clear_revision == std::numeric_limits<std::int64_t>::max()) {
+                    floor = 0;
+                    mark_trade_history_truncated(false);
+                } else if (clear_revision > floor) {
+                    floor = clear_revision;
+                    mark_trade_history_truncated(false);
+                }
+            }
+            return;
+        }
+        if (native_commit_phase && table_code == kFortsUserorderbookReplOrders) {
+            // Periodic book replacement visits only this table's replication
+            // identities. Compact the existing view at commit, avoiding a
+            // scan/sort of unrelated TRADE history and reference-data views.
+            auto& sources = active_source_revisions();
+            const auto source = sources.find(table_code);
+            if (source != sources.end()) {
+                for (auto it = source->second.begin(); it != source->second.end();) {
+                    if (it->second.revision >= clear_revision) {
+                        ++it;
+                        continue;
+                    }
+                    const auto key = it->first;
+                    const bool last = source->second.size() == 1;
+                    ++it;
+                    erase_owned_row(table_code, key, false, false);
+                    erase_source_row(table_code, key);
+                    if (last)
+                        break; // Erasing the last row also erased its table.
+                }
+            }
+            staged.touched_streams.insert(StreamCode::kFortsUserorderbookRepl);
+            reset_stream_watermarks(
+                ensure_stream_health(ensure_staged_stream_health(), StreamCode::kFortsUserorderbookRepl));
+            staged.userbook_regular_info_seen = false;
+            return;
+        }
+        if (table_code == kFortsInstrumentstateReplInstrumentState)
+            invalidate_status_bindings();
         if (table_code == kFortsTradeReplOrdersLog || table_code == kFortsTradeReplMultilegOrdersLog ||
             table_code == kFortsUserorderbookReplOrders || table_code == kFortsUserorderbookReplMultilegOrders ||
             table_code == kFortsUserorderbookReplOrdersCurrentday ||
@@ -1717,8 +1772,8 @@ struct Plaza2PrivateStateProjector::Impl {
             staged.touched_streams.insert(stream_code);
             const bool regular_userbook_table = stream_code != StreamCode::kFortsUserorderbookRepl ||
                                                 is_regular_userorderbook_snapshot_table(table_code);
-            const bool clears_pos_anchor = stream_code != StreamCode::kFortsPosRepl ||
-                                           table_code == TableCode::kFortsPosReplInfo;
+            const bool clears_pos_anchor =
+                stream_code != StreamCode::kFortsPosRepl || table_code == TableCode::kFortsPosReplInfo;
             if (regular_userbook_table && clears_pos_anchor) {
                 auto& health = staged.active ? ensure_stream_health(ensure_staged_stream_health(), stream_code)
                                              : ensure_stream_health(stream_health, stream_code);
@@ -2481,34 +2536,6 @@ struct Plaza2PrivateStateProjector::Impl {
         position.last_quantity = row.i64(FieldCode::kFortsPosReplPositionLastQuantity);
     }
 
-    void apply_limit_row(const RowReader& row) {
-        auto& limits = ensure_staged_limits();
-        LimitKey key{
-            .participant_kind = classify_limit_participant(row.text(FieldCode::kFortsPartReplPartClientCode)),
-            .account_code = row.text(FieldCode::kFortsPartReplPartClientCode),
-            .repl_id = row.i64(FieldCode::kFortsPartReplPartReplId),
-        };
-        auto& limit = limits[key];
-        limit.participant_kind = key.participant_kind;
-        limit.repl_id = key.repl_id;
-        limit.account_code = key.account_code;
-        limit.limits_set = row.boolean(FieldCode::kFortsPartReplPartLimitsSet);
-        limit.is_auto_update_limit = row.boolean(FieldCode::kFortsPartReplPartIsAutoUpdateLimit);
-        limit.money_free = row.text(FieldCode::kFortsPartReplPartMoneyFree);
-        limit.money_blocked = row.text(FieldCode::kFortsPartReplPartMoneyBlocked);
-        limit.vm_reserve = row.text(FieldCode::kFortsPartReplPartVmReserve);
-        limit.fee = row.text(FieldCode::kFortsPartReplPartFee);
-        limit.money_old = row.text(FieldCode::kFortsPartReplPartMoneyOld);
-        limit.money_amount = row.text(FieldCode::kFortsPartReplPartMoneyAmount);
-        limit.money_pledge_amount = row.text(FieldCode::kFortsPartReplPartMoneyPledgeAmount);
-        limit.actual_amount_of_base_currency = row.text(FieldCode::kFortsPartReplPartActualAmountOfBaseCurrency);
-        limit.vm_intercl = row.text(FieldCode::kFortsPartReplPartVmIntercl);
-        limit.broker_fee = row.text(FieldCode::kFortsPartReplPartBrokerFee);
-        limit.penalty = row.text(FieldCode::kFortsPartReplPartPenalty);
-        limit.premium_intercl = row.text(FieldCode::kFortsPartReplPartPremiumIntercl);
-        limit.net_option_value = row.text(FieldCode::kFortsPartReplPartNetOptionValue);
-    }
-
     void apply_session_row(const RowReader& row) {
         auto& sessions = ensure_staged_sessions();
         const auto sess_id = row.i32(FieldCode::kFortsRefdataReplSessionSessId);
@@ -2536,6 +2563,7 @@ struct Plaza2PrivateStateProjector::Impl {
     void apply_future_instrument_row(const projection::EventSpec& event, const RowReader& row) {
         auto& instruments = ensure_staged_instruments();
         const auto isin_id = row.i32(FieldCode::kFortsRefdataReplFutInstrumentsIsinId);
+        staged.instrument_isins.push_back(isin_id);
         auto& instrument = instruments[isin_id];
         instrument.isin_id = isin_id;
         instrument.kind = InstrumentKind::kFuture;
@@ -2586,6 +2614,7 @@ struct Plaza2PrivateStateProjector::Impl {
         auto& instruments = ensure_staged_instruments();
         staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
         const auto isin_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsIsinId);
+        staged.instrument_isins.push_back(isin_id);
         auto instrument = instruments[isin_id];
         instrument.isin_id = isin_id;
         const auto sess_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsSessId);
@@ -2672,62 +2701,15 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void apply_instrument_status_row(const RowReader& row) {
-        auto& instruments = ensure_staged_instruments();
+        auto& instruments = ensure_stage_copy(staged.instruments, instruments_by_isin, native_commit_phase);
         staged.touched_streams.insert(StreamCode::kFortsInstrumentstateRepl);
         const auto isin_id = row.i32(FieldCode::kFortsInstrumentstateReplInstrumentStateIsinId);
+        staged.instrument_isins.push_back(isin_id);
         auto& instrument = instruments[isin_id];
         instrument.isin_id = isin_id;
         instrument.has_current_status = true;
         instrument.current_status = row.i32(FieldCode::kFortsInstrumentstateReplInstrumentStatePublicState);
         instrument.current_status_refdata_bound = instrument.sess_id > 0 && instrument.current_session_member;
-    }
-
-    void apply_option_instrument_row(const RowReader& row) {
-        auto& instruments = ensure_staged_instruments();
-        const auto isin_id = row.i32(FieldCode::kFortsRefdataReplOptSessContentsIsinId);
-        auto& instrument = instruments[isin_id];
-        instrument.isin_id = isin_id;
-        instrument.sess_id = row.i32(FieldCode::kFortsRefdataReplOptSessContentsSessId);
-        instrument.kind = InstrumentKind::kOption;
-        instrument.isin = row.text(FieldCode::kFortsRefdataReplOptSessContentsIsin);
-        instrument.short_isin = row.text(FieldCode::kFortsRefdataReplOptSessContentsShortIsin);
-        instrument.name = row.text(FieldCode::kFortsRefdataReplOptSessContentsName);
-        instrument.base_contract_code = row.text(FieldCode::kFortsRefdataReplOptSessContentsBaseContractCode);
-        instrument.fut_isin_id = row.i32(FieldCode::kFortsRefdataReplOptSessContentsFutIsinId);
-        instrument.option_series_id = row.i32(FieldCode::kFortsRefdataReplOptSessContentsOptionSeriesId);
-        instrument.roundto = row.i32(FieldCode::kFortsRefdataReplOptSessContentsRoundto);
-        instrument.trade_mode_id = row.i32(FieldCode::kFortsRefdataReplOptSessContentsTradeModeId);
-        instrument.state = row.i32(FieldCode::kFortsRefdataReplOptSessContentsState);
-        instrument.signs = row.i32(FieldCode::kFortsRefdataReplOptSessContentsSigns);
-        instrument.put = row.boolean(FieldCode::kFortsRefdataReplOptSessContentsPut);
-        instrument.strike = row.text(FieldCode::kFortsRefdataReplOptSessContentsStrike);
-        instrument.settlement_price = row.text(FieldCode::kFortsRefdataReplOptSessContentsSettlementPrice);
-        instrument.last_trade_date = row.i64(FieldCode::kFortsRefdataReplOptSessContentsLastTradeDate);
-        instrument.group_mask = row.i64(FieldCode::kFortsRefdataReplOptSessContentsGroupMask);
-        instrument.trade_period_access = row.i64(FieldCode::kFortsRefdataReplOptSessContentsTradePeriodAccess);
-    }
-
-    void apply_multileg_leg_row(const RowReader& row) {
-        auto& instruments = ensure_staged_instruments();
-        const auto isin_id = row.i32(FieldCode::kFortsRefdataReplMultilegDictIsinId);
-        auto& instrument = instruments[isin_id];
-        instrument.isin_id = isin_id;
-        instrument.sess_id = row.i32(FieldCode::kFortsRefdataReplMultilegDictSessId);
-        instrument.kind = InstrumentKind::kMultileg;
-        append_or_replace_leg(instrument.legs,
-                              {
-                                  .leg_isin_id = row.i32(FieldCode::kFortsRefdataReplMultilegDictIsinIdLeg),
-                                  .qty_ratio = row.i32(FieldCode::kFortsRefdataReplMultilegDictQtyRatio),
-                                  .leg_order_no = row.i8(FieldCode::kFortsRefdataReplMultilegDictLegOrderNo),
-                              });
-    }
-
-    void apply_matching_row(const RowReader& row) {
-        auto& matching = ensure_staged_matching_map();
-        const auto key = row.i32(FieldCode::kFortsRefdataReplInstr2matchingMapBaseContractId);
-        auto& entry = matching[key];
-        entry.base_contract_id = key;
-        entry.matching_id = row.i8(FieldCode::kFortsRefdataReplInstr2matchingMapMatchingId);
     }
 
     void apply_system_message_row(const projection::EventSpec& event, const RowReader& row) {
@@ -2798,6 +2780,10 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void apply_row(const projection::EventSpec& event, const RowReader& row) {
+        if (!consumed_private_table(event.table_code)) {
+            staged.touched_streams.insert(event.stream_code);
+            return;
+        }
         const auto service = generated::FieldsForTable(event.table_code);
         if (service.size() < 3)
             return;
@@ -2829,14 +2815,8 @@ struct Plaza2PrivateStateProjector::Impl {
         case TableCode::kFortsTradeReplOrdersLog:
             apply_trade_order_row(row, false);
             break;
-        case TableCode::kFortsTradeReplMultilegOrdersLog:
-            apply_trade_order_row(row, true);
-            break;
         case TableCode::kFortsTradeReplUserDeal:
             apply_trade_row(row, false);
-            break;
-        case TableCode::kFortsTradeReplUserMultilegDeal:
-            apply_trade_row(row, true);
             break;
         case TableCode::kFortsTradeReplHeartbeat:
             apply_trade_heartbeat_row(row);
@@ -2850,25 +2830,11 @@ struct Plaza2PrivateStateProjector::Impl {
         case TableCode::kFortsUserorderbookReplOrders:
             apply_user_book_order_row(row, false, false);
             break;
-        case TableCode::kFortsUserorderbookReplMultilegOrders:
-            apply_user_book_order_row(row, true, false);
-            break;
-        case TableCode::kFortsUserorderbookReplOrdersCurrentday:
-            apply_user_book_order_row(row, false, true);
-            break;
-        case TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday:
-            apply_user_book_order_row(row, true, true);
-            break;
         case TableCode::kFortsUserorderbookReplInfo:
             apply_info_row(
                 StreamCode::kFortsUserorderbookRepl, row, FieldCode::kFortsUserorderbookReplInfoPublicationState,
                 FieldCode::kFortsUserorderbookReplInfoTradesRev, FieldCode::kFortsUserorderbookReplInfoTradesLifenum,
                 std::nullopt, FieldCode::kFortsUserorderbookReplInfoMoment);
-            break;
-        case TableCode::kFortsUserorderbookReplInfoCurrentday:
-            // The current-day table is not the periodic snapshot marker.  Its
-            // publication_state must never certify regular USERORDERBOOK.
-            staged.touched_streams.insert(StreamCode::kFortsUserorderbookRepl);
             break;
         case TableCode::kFortsPosReplPosition:
             apply_position_row(row);
@@ -2877,9 +2843,6 @@ struct Plaza2PrivateStateProjector::Impl {
             apply_info_row(StreamCode::kFortsPosRepl, row, std::nullopt, FieldCode::kFortsPosReplInfoTradesRev,
                            FieldCode::kFortsPosReplInfoTradesLifenum, FieldCode::kFortsPosReplInfoServerTime,
                            std::nullopt);
-            break;
-        case TableCode::kFortsPartReplPart:
-            apply_limit_row(row);
             break;
         case TableCode::kFortsPartReplSysEvents:
             apply_sys_event_row(StreamCode::kFortsPartRepl, row, FieldCode::kFortsPartReplSysEventsEventId,
@@ -2903,15 +2866,6 @@ struct Plaza2PrivateStateProjector::Impl {
             break;
         case TableCode::kFortsInstrumentstateReplInstrumentState:
             apply_instrument_status_row(row);
-            break;
-        case TableCode::kFortsRefdataReplOptSessContents:
-            apply_option_instrument_row(row);
-            break;
-        case TableCode::kFortsRefdataReplMultilegDict:
-            apply_multileg_leg_row(row);
-            break;
-        case TableCode::kFortsRefdataReplInstr2matchingMap:
-            apply_matching_row(row);
             break;
         case TableCode::kFortsRefdataReplSysMessages:
             apply_system_message_row(event, row);
@@ -2980,9 +2934,38 @@ struct Plaza2PrivateStateProjector::Impl {
         if (staged.future_vcb.has_value())
             future_vcb_by_row = std::move(*staged.future_vcb);
         if (refdata_instruments_changed || refdata_vcb_changed || staged.sessions.has_value()) {
-            select_future_session_membership();
-            rebuild_future_vcb();
-            rebuild_instruments();
+            const auto current_session = select_session(session_snapshots);
+            const bool membership_stable =
+                std::all_of(staged.instrument_isins.begin(), staged.instrument_isins.end(), [&](auto isin) {
+                    const auto source = instruments_by_isin.find(isin);
+                    return source != instruments_by_isin.end() &&
+                           (!current_session || source->second.sess_id == current_session ||
+                            !future_sessions.contains(future_session_key(isin, current_session)));
+                });
+            const bool row_update_only = native_commit_phase && !staged.deleted_rows &&
+                                         !staged.status_bindings_invalidated && !staged.sessions &&
+                                         !staged.future_vcb && !staged.instrument_isins.empty() &&
+                                         staged.touched_streams.size() == 1 &&
+                                         (staged.touched_streams.contains(StreamCode::kFortsInstrumentstateRepl) ||
+                                          staged.touched_streams.contains(StreamCode::kFortsRefdataRepl)) &&
+                                         membership_stable && !instrument_snapshots.empty();
+            if (row_update_only) {
+                for (const auto isin : staged.instrument_isins) {
+                    auto& source = instruments_by_isin.at(isin);
+                    if (staged.touched_streams.contains(StreamCode::kFortsRefdataRepl))
+                        join_future_vcb(source);
+                    auto target = std::lower_bound(instrument_snapshots.begin(), instrument_snapshots.end(), isin,
+                                                   [](const auto& row, auto value) { return row.isin_id < value; });
+                    if (target != instrument_snapshots.end() && target->isin_id == isin)
+                        *target = source;
+                    else
+                        instrument_snapshots.insert(target, source);
+                }
+            } else {
+                select_future_session_membership();
+                rebuild_future_vcb();
+                rebuild_instruments();
+            }
         }
         if (staged.matching_map.has_value()) {
             matching_by_base_contract = std::move(*staged.matching_map);

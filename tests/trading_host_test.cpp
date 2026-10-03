@@ -11,7 +11,6 @@
 #include "add_conflict_host_regression.hpp"
 #include "immediate_dispatch_host_regression.hpp"
 #include "storage_guard_regression.hpp"
-#include "multileg_history_host_regression.hpp"
 #include "storage_halt_cancel_regression.hpp"
 #include "exchange_message_regression.hpp"
 #include "transport_status_regression.hpp"
@@ -21,6 +20,7 @@
 #include "spread_scope_host_regression.hpp"
 #include "risk_limits_host_regression.hpp"
 #include "userbook_barrier_host_regression.hpp"
+#include "multileg_history_host_regression.hpp"
 
 #include <cstdlib>
 #include <dlfcn.h>
@@ -181,11 +181,11 @@ int main(int argc, char** argv) {
         config.journal_path = root / "events.ndjson";
         moex::connector_host::regression::explicit_test_risk(config);
         moex::connector_host::regression::multileg_history_host_regression(config, fake, root);
-        moex::connector_host::regression::storage_halt_cancel_regression(config, fake, root);
         moex::connector_host::userbook_barrier_host_regression(config, fake, root);
         moex::connector_host::regression::exchange_message_regression(config, fake, root);
         moex::connector_host::regression::transport_status_regression(config, fake, root);
         moex::connector_host::regression::replication_journal_regression(config, fake, root);
+        moex::connector_host::regression::storage_halt_cancel_regression(config, fake, root);
         moex::connector_host::regression::risk_limits_host_regression(config, fake, root);
         moex::connector_host::reload_missing_host_regression(config, fake, root);
         moex::connector_host::opening_auction_host_regression(config, fake, root);

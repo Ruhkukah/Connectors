@@ -58,24 +58,6 @@ const InstrumentSnapshot* find_instrument(std::span<const InstrumentSnapshot> in
     return nullptr;
 }
 
-const MatchingMapSnapshot* find_matching(std::span<const MatchingMapSnapshot> entries, std::int32_t base_contract_id) {
-    for (const auto& entry : entries) {
-        if (entry.base_contract_id == base_contract_id) {
-            return &entry;
-        }
-    }
-    return nullptr;
-}
-
-const LimitSnapshot* find_limit(std::span<const LimitSnapshot> limits, std::string_view account_code) {
-    for (const auto& limit : limits) {
-        if (limit.account_code == account_code) {
-            return &limit;
-        }
-    }
-    return nullptr;
-}
-
 const PositionSnapshot* find_position(std::span<const PositionSnapshot> positions, std::string_view account_code,
                                       std::int32_t isin_id) {
     for (const auto& position : positions) {
@@ -149,7 +131,7 @@ int main() {
         require(!session->mon_on, "session mon flag should be projected");
 
         const auto instruments = projector.instruments();
-        require(instruments.size() == 3, "projection should expose three committed instruments");
+        require(instruments.size() == 1, "declared futures projection should omit option and multileg instruments");
 
         const auto* future = find_instrument(instruments, 1001);
         require(future != nullptr, "future instrument should be projected");
@@ -158,31 +140,9 @@ int main() {
         require(future->base_contract_code == "RTS", "future base contract should be projected");
         require(future->settlement_price == "105000.5", "future settlement price should be projected");
 
-        const auto* option = find_instrument(instruments, 2001);
-        require(option != nullptr, "option instrument should be projected");
-        require(option->kind == InstrumentKind::kOption, "option instrument kind should be correct");
-        require(option->fut_isin_id == 1001, "option-to-future mapping should be projected");
-        require(option->strike == "95000", "option strike should be projected");
-
-        const auto* multileg = find_instrument(instruments, 3001);
-        require(multileg != nullptr, "multileg instrument should be projected");
-        require(multileg->kind == InstrumentKind::kMultileg, "multileg kind should be projected");
-        require(multileg->legs.size() == 2, "multileg instrument should expose sorted leg metadata");
-        require(multileg->legs[0].leg_isin_id == 1001 && multileg->legs[0].leg_order_no == 1,
-                "first multileg leg should be projected");
-        require(multileg->legs[1].leg_isin_id == 2001 && multileg->legs[1].leg_order_no == 2,
-                "second multileg leg should be projected");
-
-        const auto* matching = find_matching(projector.matching_map(), 500);
-        require(matching != nullptr, "matching map entry should be projected");
-        require(matching->matching_id == 3, "matching id should be projected");
-
-        const auto* limit = find_limit(projector.limits(), "CL001");
-        require(limit != nullptr, "client limits should be projected");
-        require(limit->limits_set, "limits_set should be projected");
-        require(limit->is_auto_update_limit, "auto-update flag should be projected");
-        require(limit->money_free == "125000.5", "free money should be projected");
-        require(limit->broker_fee == "3.15", "broker fee should be projected");
+        require(find_instrument(instruments, 2001) == nullptr && find_instrument(instruments, 3001) == nullptr &&
+                    projector.matching_map().empty() && projector.limits().empty(),
+                "undeclared options, multileg, matching and PART rows reached product state");
 
         const auto* position = find_position(projector.positions(), "CL001", 1001);
         require(position != nullptr, "client position should be projected");
@@ -192,7 +152,7 @@ int main() {
         require(position->last_deal_id == 9001, "last deal id should be projected");
 
         const auto orders = projector.own_orders();
-        require(orders.size() == 3, "each committed TEST order surface should remain independently projected");
+        require(orders.size() == 2, "regular TRADE and USERORDERBOOK surfaces should remain independently projected");
 
         const auto* live_order = find_order(orders, 20001);
         require(live_order != nullptr, "user-orderbook-only order should be projected");
@@ -201,14 +161,8 @@ int main() {
         require(!live_order->from_current_day, "live order should not claim current-day source");
         require(live_order->price == "100500", "user-orderbook price should be projected");
 
-        const auto* current_day_order = find_order(orders, 20003, OrderSource::CurrentDay);
-        require(current_day_order != nullptr, "current-day USERORDERBOOK order should remain independently projected");
-        require(!current_day_order->from_trade_repl && !current_day_order->from_user_book,
-                "current-day order must not claim the TRADE or regular USERORDERBOOK surface");
-        require(current_day_order->price == "102250", "current-day order fields must remain unchanged");
-        require(current_day_order->public_amount_rest == 7 && current_day_order->private_amount_rest == 6,
-                "current-day order amount/rest must not be overwritten by TRADE");
-        require(current_day_order->id_deal == 0, "current-day order must not inherit TRADE deal identity");
+        require(find_order(orders, 20003, OrderSource::CurrentDay) == nullptr,
+                "unconsumed current-day book row reached the product view");
 
         const auto* trade_order = find_order(orders, 20003, OrderSource::Trade);
         require(trade_order != nullptr, "TRADE order should remain independently projected");
