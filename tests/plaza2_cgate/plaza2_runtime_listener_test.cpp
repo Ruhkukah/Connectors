@@ -1,4 +1,5 @@
 #include "plaza2_runtime_test_support.hpp"
+#include "fake_cgate_control.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 
 #include <algorithm>
@@ -51,11 +52,12 @@ struct Capture final : Plaza2ListenerEventHandler {
 };
 
 void run(const moex::plaza2::test::RuntimeFixturePaths& fixture, bool cp1251) {
+    moex::plaza2::test::fake::Control fake(fixture.library_path);
     using enum generated::FieldCode;
     if (cp1251)
-        require(::setenv("MOEX_FAKE_CP1251_TEXT", "1", 1) == 0, "set text fixture flag");
+        fake.set(moex::plaza2::test::fake::Option::Cp1251Text);
     else
-        require(::unsetenv("MOEX_FAKE_CP1251_TEXT") == 0, "clear text fixture flag");
+        fake.clear(moex::plaza2::test::fake::Option::Cp1251Text);
     Plaza2Settings settings;
     settings.environment = Plaza2Environment::Test;
     settings.runtime_root = fixture.root;
@@ -103,7 +105,6 @@ int main(int argc, char** argv) {
         remove_tree(root);
         return 0;
     } catch (const std::exception& error) {
-        ::unsetenv("MOEX_FAKE_CP1251_TEXT");
         remove_tree(root);
         std::cerr << error.what() << '\n';
         return 1;

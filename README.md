@@ -1,131 +1,31 @@
-# MoexConnector
+# MoexConnector 1.0.0
 
-Standalone C++20/Linux-first MOEX connector components with deterministic
-offline tests, guarded TEST-network tooling, and a synthetic C ABI/.NET seam.
+MoexConnector is a C++20 connector for own-account trading through MOEX PLAZA II CGate. The declared commands are AddOrder, DelOrder, DelUserOrders and MoveOrder. Certification instructions, questionnaire answers and the operator manual are in [CERTIFICATION.md](CERTIFICATION.md).
 
-License: MIT. See [LICENSE](LICENSE).
+The runtime target is the official CGate 6.102.0 distributive shipped with Spectra 9.9 on Linux. Supply the vendor runtime, configuration and negotiated schemes locally. Credentials remain outside the repository. The default tests load the fake CGate runtime and use no exchange connection.
 
-Security policy: do not publish credentials, broker configurations, production
-logs, certification logs, or broker latency/topology data. See
-[SECURITY.md](SECURITY.md).
+The first certificate covers private replication, reference/session state, AGGR20 market data and the declared command path. Public FORTS_DEALS_REPL remains opt-in and disabled by default. FullOrderLog, TWIME, C ABI V1–V3, .NET integration and DTC order entry are outside this scope. The removed implementations are preserved at `archive/pre-cgate-certification-remediation-20260930`.
 
-## Capability status
-
-### Implemented
-
-- PLAZA II CGate runtime loading, scheme validation, private replication state,
-  transaction visibility, and stream invalidation handling.
-- PLAZA II AGGR20 market-data TEST bring-up behind explicit operator arms.
-- Offline PLAZA trade command/reply codecs and fake transactional sessions.
-- A transport-neutral PLAZA order lifecycle with fail-closed AddOrder
-  uncertainty, accepted-reply-ID cancellation, exact-ext recovery, atomic local
-  journals, sticky evidence inconsistency, and identifier-lock retention.
-- Guarded native `ConnectorHost`/`moexctl` PLAZA TEST Add/cancel lifecycle
-  exercises, including the serial persistent-order-session semantics under
-  development in the native connector surface.
-- TWIME SBE codec, framing, session/recovery state, TCP transport, guarded TEST
-  session runner, health, persistence, and certification scenarios.
-- Synthetic native C ABI V1/V2, the TEST-only persistent serial-order C ABI V3
-  and .NET SafeHandle adapter, ABI policy tests, and optional AlorEngine
-  shadow-replay harness.
-
-### Offline-validated
-
-- PLAZA scheme and codec layouts, fake CGate integration, private-state
-  transaction semantics, order-lifecycle V2/V2.1/V2.2 scenarios, and journal
-  degradation behavior.
-- TWIME codec, session, retransmission, transport, gating, persistence, and
-  redaction behavior.
-- Generated metadata, fixtures, profiles, matrix integrity, ABI layout, and
-  deterministic tool output.
-
-### TEST-network-evidenced
-
-- Guarded TWIME TEST-session bring-up and PLAZA replication/AGGR20 evidence
-  workflows exist for explicit operator-authorized environments.
-- These workflows are separate from the default offline validation path and do
-  not authorize order submission.
-
-### Not yet wired to product trading
-
-- PLAZA and TWIME protocol/session components are not exposed as production or
-  live application order routing through the product surface.
-- C ABI V2 remains the bounded TEST `OrderTest` compatibility surface; C ABI V3
-  is the TEST-only persistent serial-order surface.
-- AlorEngine trading logic is not wired to the persistent V3 surface yet.
-
-### Order-routing boundary
-
-- The native `ConnectorHost` TEST surface has proven Add/cancel transport
-  semantics, but persistent application trading is still under development and
-  is not a production routing path.
-- The public C ABI V2 remains a bounded TEST `OrderTest` surface; it does not
-  expose the persistent order session.
-- C ABI V3 exposes the TEST-only persistent serial-order surface, but it is not
-  yet integrated with AlorEngine application trading.
-- No production connectivity or live application order routing is enabled, and
-  this repository does not claim exchange certification.
-
-## Repository layout
-
-- `protocols/`: TWIME SBE and PLAZA II CGate protocol/runtime components.
-- `connectors/`: TWIME session logic, PLAZA private-state reconciliation, and
-  the TEST-only PLAZA trade lifecycle with an offline and no-send live
-  pre-send boundary.
-- `apps/`: offline and explicitly guarded operator runners.
-- `tests/`: logical CTest cases and semantic shared test runners.
-- `spec-lock/`: pinned public artifacts and reviewed local scheme locks.
-- `matrix/`: machine-readable protocol coverage and adapter mappings.
-- `profiles/`: replay, TEST, and guarded production-validation profiles.
-- `tools/`: deterministic schema, style, profile, and inventory utilities.
-- `docs/`: safety boundaries, evidence reviews, and operator runbooks.
+The read-only DTC server publishes market data for consumers such as Kairos. Trading uses the native CGate command path and configured account/instrument limits.
 
 ## Build and test
 
-Python dependencies are an explicit environment responsibility. CMake never
-invokes `pip` or performs package installation.
-
 ```sh
-python3 -m pip install -r requirements.txt
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
+cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-Useful build options:
+`BUILD_TESTING=OFF` omits the fake runtime and test targets. `MOEX_BUILD_APPS=OFF` builds the libraries without operator applications. The startup log identifies product version 1.0.0; the DTC receipt also includes the source revision when the checkout provides one.
 
-- `BUILD_TESTING=OFF` omits test targets.
-- `MOEX_BUILD_DOTNET_TESTS=OFF` omits .NET ABI test registration.
-- `MOEX_BUILD_OPERATOR_TOOLS=OFF` omits offline operator tools when tests are
-  also disabled.
-
-CTest labels support focused validation:
+Useful focused checks:
 
 ```sh
 ctest --test-dir build -L plaza2 --output-on-failure
-ctest --test-dir build -L twime --output-on-failure
+ctest --test-dir build -L dtc --output-on-failure
 ctest --test-dir build -L sanitizer --output-on-failure
-ctest --test-dir build -L tooling --output-on-failure
 ```
 
-Individual consolidated cases retain their historical CTest names and can also
-be selected directly, for example:
+Use `moex_connector_host_dtc_runner --help` and `moexctl --help` for operator arguments. Vendor installation helpers remain under `scripts/vps/`.
 
-```sh
-build/tests/twime_session_tests --case twime_retransmission_test
-ctest --test-dir build -R '^plaza2_order_lifecycle_scenarios_test$' --output-on-failure
-```
-
-To enable the optional AlorEngine shadow replay against a local checkout:
-
-```sh
-cmake -S . -B build -DMOEX_ALORENGINE_PROJECT=/path/to/AlorEngine.csproj
-ctest --test-dir build -R '^dotnet_shadow_replay$' --output-on-failure
-```
-
-## Public repository boundary
-
-The repository intentionally excludes credentials and operational trading
-data. Localhost and synthetic fixtures are the default. Any external TEST
-session requires explicit arms and local credentials; production connectivity
-and live order flow remain outside the implemented boundary.
+License: MIT. See [LICENSE](LICENSE). See [SECURITY.md](SECURITY.md) for the credential and private-data policy.

@@ -39,7 +39,9 @@ struct Plaza2TradeEncodedCommand {
     std::int32_t msgid{0};
     std::vector<std::byte> payload;
     Plaza2TradeValidationResult validation;
-    bool offline_only{true};
+    std::optional<std::int32_t> isin_id;
+    std::optional<Plaza2TradeOrderType> order_type;
+    std::string fields_json{"{}"};
 };
 
 class Plaza2TradeCodec {
@@ -50,7 +52,6 @@ class Plaza2TradeCodec {
                                                        Plaza2TradeValidationResult& validation) const;
 };
 
-[[nodiscard]] bool is_sendable(const Plaza2TradeEncodedCommand& command) noexcept;
 [[nodiscard]] std::string bytes_to_hex(std::span<const std::byte> bytes);
 [[nodiscard]] std::vector<std::byte> bytes_from_hex(std::string_view hex);
 

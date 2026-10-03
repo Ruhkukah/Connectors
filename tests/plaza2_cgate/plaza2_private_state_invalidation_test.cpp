@@ -1,6 +1,8 @@
+#include "moex/plaza2/cgate/plaza2_fake_engine.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
 
 #include "plaza2_fake_scenarios.hpp"
+#include "private_state_deletion_regression.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -130,6 +132,7 @@ void clear_userbook_table(Plaza2PrivateStateProjector& projector, EngineState& s
 
 int main() {
     try {
+        moex::plaza2::test::deletion::run();
         Plaza2PrivateStateProjector clear_deleted_projector;
         run_or_throw("private_state_clear_deleted", &clear_deleted_projector);
 
@@ -233,8 +236,8 @@ int main() {
                     preserved_status_instrument->kind == moex::plaza2::private_state::InstrumentKind::kUnknown &&
                     preserved_status_instrument->has_current_status,
                 "REFDATA LifeNum must invalidate REFDATA-owned state while preserving status state");
-        require(!scoped_lifenum_projector.positions().empty() && !scoped_lifenum_projector.limits().empty(),
-                "REFDATA LifeNum must preserve POS and PART state");
+        require(!scoped_lifenum_projector.positions().empty() && scoped_lifenum_projector.limits().empty(),
+                "REFDATA LifeNum must preserve POS while undeclared PART remains absent");
         require(!scoped_lifenum_projector.sessions().empty() && !scoped_lifenum_projector.instruments().empty(),
                 "REFDATA LifeNum must preserve status-owned session and instrument state");
         const auto preserved_position_count = scoped_lifenum_projector.positions().size();
@@ -250,8 +253,8 @@ int main() {
             .kind = EventKind::kLifeNum, .stream_code = StreamCode::kFortsPosRepl, .numeric_value = 9};
         pos_lifenum_projector.on_event({}, pos_lifenum, scoped_state);
         require(pos_lifenum_projector.positions().empty(), "POS LifeNum must invalidate POS state");
-        require(!pos_lifenum_projector.limits().empty() && !pos_lifenum_projector.instruments().empty(),
-                "POS LifeNum must preserve PART and REFDATA state");
+        require(pos_lifenum_projector.limits().empty() && !pos_lifenum_projector.instruments().empty(),
+                "POS LifeNum must preserve REFDATA while undeclared PART remains absent");
 
         // USERORDERBOOK initial ONLINE and periodic consistency are separate
         // facts.  A periodic ClearDeleted keeps the listener current while

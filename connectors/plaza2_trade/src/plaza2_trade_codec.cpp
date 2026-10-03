@@ -1,4 +1,5 @@
 #include "moex/plaza2_trade/plaza2_trade_codec.hpp"
+#include "moex/plaza2/cgate/plaza2_text.hpp"
 
 #include <algorithm>
 #include <array>
@@ -173,7 +174,7 @@ Plaza2TradeValidationResult validate_order_type(const std::optional<Plaza2TradeO
     if (!value) {
         return fail(Plaza2TradeValidationCode::MissingRequiredField, "type", "required field");
     }
-    if (*value != Plaza2TradeOrderType::Limit && *value != Plaza2TradeOrderType::Market) {
+    if (*value != Plaza2TradeOrderType::Limit && *value != Plaza2TradeOrderType::Ioc) {
         return fail(Plaza2TradeValidationCode::InvalidEnum, "type", "invalid order type enum");
     }
     return ok();
@@ -219,7 +220,7 @@ std::string read_string(std::span<const std::byte> bytes, std::size_t& offset, s
         value.push_back(ch);
     }
     offset += available;
-    return value;
+    return plaza2::cgate::text::windows1251_to_utf8(value);
 }
 
 Plaza2TradeValidationResult validate_add_order(const AddOrderRequest& request) {
@@ -273,36 +274,6 @@ Plaza2TradeValidationResult validate_add_order(const AddOrderRequest& request) {
     return validate_fixed_string("compliance_id", request.compliance_id, 1, false);
 }
 
-Plaza2TradeValidationResult validate_iceberg_add_order(const IcebergAddOrderRequest& request) {
-    AddOrderRequest base;
-    base.broker_code = request.broker_code;
-    base.isin_id = request.isin_id;
-    base.client_code = request.client_code;
-    base.dir = request.dir;
-    base.type = request.type;
-    base.amount = request.iceberg_amount;
-    base.price = request.price;
-    base.comment = request.comment;
-    base.ext_id = request.ext_id;
-    base.is_check_limit = request.is_check_limit;
-    base.date_exp = request.date_exp;
-    base.dont_check_money = request.dont_check_money;
-    base.ncc_request = request.ncc_request;
-    base.compliance_id = request.compliance_id;
-    if (auto result = validate_add_order(base); !result.ok()) {
-        return result.field_name == "amount" ? fail(result.code, "iceberg_amount", result.message) : result;
-    }
-    if (auto result = validate_integer("disclose_const_amount", request.disclose_const_amount, true, std::int32_t{1});
-        !result.ok()) {
-        return result;
-    }
-    if (auto result = validate_integer("variance_amount", request.variance_amount, false, std::int32_t{0});
-        !result.ok()) {
-        return result;
-    }
-    return ok();
-}
-
 Plaza2TradeValidationResult validate_del_order(const DelOrderRequest& request) {
     if (auto result = validate_fixed_string("broker_code", request.broker_code, 4, true); !result.ok()) {
         return result;
@@ -319,19 +290,6 @@ Plaza2TradeValidationResult validate_del_order(const DelOrderRequest& request) {
     return validate_integer("isin_id", request.isin_id, true, std::int32_t{1});
 }
 
-Plaza2TradeValidationResult validate_iceberg_del_order(const IcebergDelOrderRequest& request) {
-    if (auto result = validate_fixed_string("broker_code", request.broker_code, 4, true); !result.ok()) {
-        return result;
-    }
-    if (auto result = validate_integer("order_id", request.order_id, true, std::int64_t{1}); !result.ok()) {
-        return result;
-    }
-    if (auto result = validate_integer("isin_id", request.isin_id, true, std::int32_t{1}); !result.ok()) {
-        return result;
-    }
-    return validate_integer("ncc_request", request.ncc_request, false, std::int8_t{0});
-}
-
 Plaza2TradeValidationResult validate_move_order(const MoveOrderRequest& request) {
     if (auto result = validate_fixed_string("broker_code", request.broker_code, 4, true); !result.ok()) {
         return result;
@@ -339,6 +297,8 @@ Plaza2TradeValidationResult validate_move_order(const MoveOrderRequest& request)
     if (auto result = validate_integer("regime", request.regime, true, std::int32_t{0}); !result.ok()) {
         return result;
     }
+    if (*request.regime > 3)
+        return fail(Plaza2TradeValidationCode::InvalidEnum, "regime", "expected regime 0, 1, 2 or 3");
     if (auto result = validate_integer("order_id1", request.order_id1, true, std::int64_t{1}); !result.ok()) {
         return result;
     }
@@ -351,16 +311,16 @@ Plaza2TradeValidationResult validate_move_order(const MoveOrderRequest& request)
     if (auto result = validate_integer("ext_id1", request.ext_id1, true); !result.ok()) {
         return result;
     }
-    if (auto result = validate_integer("order_id2", request.order_id2, true, std::int64_t{1}); !result.ok()) {
+    if (auto result = validate_integer("order_id2", request.order_id2, false, std::int64_t{0}); !result.ok()) {
         return result;
     }
-    if (auto result = validate_integer("amount2", request.amount2, true, std::int32_t{1}); !result.ok()) {
+    if (auto result = validate_integer("amount2", request.amount2, false, std::int32_t{0}); !result.ok()) {
         return result;
     }
-    if (auto result = validate_decimal("price2", request.price2, 17, true); !result.ok()) {
+    if (auto result = validate_decimal("price2", request.price2, 17, request.order_id2.value_or(0) > 0); !result.ok()) {
         return result;
     }
-    if (auto result = validate_integer("ext_id2", request.ext_id2, true); !result.ok()) {
+    if (auto result = validate_integer("ext_id2", request.ext_id2, false); !result.ok()) {
         return result;
     }
     if (auto result = validate_integer("is_check_limit", request.is_check_limit, false, std::int32_t{0});
@@ -379,42 +339,20 @@ Plaza2TradeValidationResult validate_move_order(const MoveOrderRequest& request)
     return validate_fixed_string("compliance_id", request.compliance_id, 1, false);
 }
 
-Plaza2TradeValidationResult validate_iceberg_move_order(const IcebergMoveOrderRequest& request) {
-    if (auto result = validate_fixed_string("broker_code", request.broker_code, 4, true); !result.ok()) {
-        return result;
-    }
-    if (auto result = validate_integer("order_id", request.order_id, true, std::int64_t{1}); !result.ok()) {
-        return result;
-    }
-    if (auto result = validate_integer("isin_id", request.isin_id, true, std::int32_t{1}); !result.ok()) {
-        return result;
-    }
-    if (auto result = validate_decimal("price", request.price, 17, true); !result.ok()) {
-        return result;
-    }
-    if (auto result = validate_integer("ext_id", request.ext_id, true); !result.ok()) {
-        return result;
-    }
-    if (auto result = validate_integer("ncc_request", request.ncc_request, false, std::int8_t{0}); !result.ok()) {
-        return result;
-    }
-    if (auto result = validate_integer("is_check_limit", request.is_check_limit, false, std::int32_t{0});
-        !result.ok()) {
-        return result;
-    }
-    return validate_fixed_string("compliance_id", request.compliance_id, 1, false);
-}
-
 Plaza2TradeValidationResult validate_del_user_orders(const DelUserOrdersRequest& request) {
     if (auto result = validate_fixed_string("broker_code", request.broker_code, 4, true); !result.ok()) {
         return result;
     }
-    if (auto result = validate_integer("buy_sell", request.buy_sell, true, std::int32_t{0}); !result.ok()) {
+    if (auto result = validate_integer("buy_sell", request.buy_sell, true); !result.ok()) {
         return result;
     }
+    if (*request.buy_sell < 1 || *request.buy_sell > 3)
+        return fail(Plaza2TradeValidationCode::InvalidEnum, "buy_sell", "expected Buy=1, Sell=2 or Both=3");
     if (auto result = validate_integer("non_system", request.non_system, true, std::int32_t{0}); !result.ok()) {
         return result;
     }
+    if (*request.non_system > 2)
+        return fail(Plaza2TradeValidationCode::InvalidEnum, "non_system", "expected Common=0, Negotiated=1 or All=2");
     if (auto result = validate_fixed_string("code", request.code, 3, true); !result.ok()) {
         return result;
     }
@@ -428,14 +366,6 @@ Plaza2TradeValidationResult validate_del_user_orders(const DelUserOrdersRequest&
         return result;
     }
     return validate_integer("instrument_mask", request.instrument_mask, true, std::int8_t{0});
-}
-
-Plaza2TradeValidationResult validate_del_orders_by_bf_limit(const DelOrdersByBFLimitRequest& request) {
-    return validate_fixed_string("broker_code", request.broker_code, 4, true);
-}
-
-Plaza2TradeValidationResult validate_cod_heartbeat(const CODHeartbeatRequest& request) {
-    return validate_integer("seq_number", request.seq_number, false, std::int32_t{0});
 }
 
 std::vector<std::byte> encode_add_order_payload(const AddOrderRequest& request) {
@@ -459,27 +389,6 @@ std::vector<std::byte> encode_add_order_payload(const AddOrderRequest& request) 
     return out;
 }
 
-std::vector<std::byte> encode_iceberg_add_order_payload(const IcebergAddOrderRequest& request) {
-    std::vector<std::byte> out;
-    append_string(out, request.broker_code, 4);
-    append_i4(out, request.isin_id);
-    append_string(out, request.client_code, 3);
-    append_side(out, request.dir);
-    append_order_type(out, request.type);
-    append_i4(out, request.disclose_const_amount);
-    append_i4(out, request.iceberg_amount);
-    append_i4(out, request.variance_amount);
-    append_string(out, request.price, 17);
-    append_string(out, request.comment, 20);
-    append_i4(out, request.ext_id);
-    append_i4(out, request.is_check_limit);
-    append_string(out, request.date_exp, 8);
-    append_i4(out, request.dont_check_money);
-    append_i1(out, request.ncc_request);
-    append_string(out, request.compliance_id, 1);
-    return out;
-}
-
 std::vector<std::byte> encode_del_order_payload(const DelOrderRequest& request) {
     std::vector<std::byte> out;
     append_string(out, request.broker_code, 4);
@@ -487,15 +396,6 @@ std::vector<std::byte> encode_del_order_payload(const DelOrderRequest& request) 
     append_i1(out, request.ncc_request);
     append_string(out, request.client_code, 3);
     append_i4(out, request.isin_id);
-    return out;
-}
-
-std::vector<std::byte> encode_iceberg_del_order_payload(const IcebergDelOrderRequest& request) {
-    std::vector<std::byte> out;
-    append_string(out, request.broker_code, 4);
-    append_i8(out, request.order_id);
-    append_i4(out, request.isin_id);
-    append_i1(out, request.ncc_request);
     return out;
 }
 
@@ -519,19 +419,6 @@ std::vector<std::byte> encode_move_order_payload(const MoveOrderRequest& request
     return out;
 }
 
-std::vector<std::byte> encode_iceberg_move_order_payload(const IcebergMoveOrderRequest& request) {
-    std::vector<std::byte> out;
-    append_string(out, request.broker_code, 4);
-    append_i8(out, request.order_id);
-    append_i4(out, request.isin_id);
-    append_string(out, request.price, 17);
-    append_i4(out, request.ext_id);
-    append_i1(out, request.ncc_request);
-    append_i4(out, request.is_check_limit);
-    append_string(out, request.compliance_id, 1);
-    return out;
-}
-
 std::vector<std::byte> encode_del_user_orders_payload(const DelUserOrdersRequest& request) {
     std::vector<std::byte> out;
     append_string(out, request.broker_code, 4);
@@ -542,18 +429,6 @@ std::vector<std::byte> encode_del_user_orders_payload(const DelUserOrdersRequest
     append_i4(out, request.ext_id);
     append_i4(out, request.isin_id);
     append_i1(out, request.instrument_mask);
-    return out;
-}
-
-std::vector<std::byte> encode_del_orders_by_bf_limit_payload(const DelOrdersByBFLimitRequest& request) {
-    std::vector<std::byte> out;
-    append_string(out, request.broker_code, 4);
-    return out;
-}
-
-std::vector<std::byte> encode_cod_heartbeat_payload(const CODHeartbeatRequest& request) {
-    std::vector<std::byte> out;
-    append_i4(out, request.seq_number);
     return out;
 }
 
@@ -572,22 +447,12 @@ Plaza2TradeCommandKind command_kind(const Plaza2TradeCommandRequest& request) {
             using T = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<T, AddOrderRequest>) {
                 return Plaza2TradeCommandKind::AddOrder;
-            } else if constexpr (std::is_same_v<T, IcebergAddOrderRequest>) {
-                return Plaza2TradeCommandKind::IcebergAddOrder;
             } else if constexpr (std::is_same_v<T, DelOrderRequest>) {
                 return Plaza2TradeCommandKind::DelOrder;
-            } else if constexpr (std::is_same_v<T, IcebergDelOrderRequest>) {
-                return Plaza2TradeCommandKind::IcebergDelOrder;
             } else if constexpr (std::is_same_v<T, MoveOrderRequest>) {
                 return Plaza2TradeCommandKind::MoveOrder;
-            } else if constexpr (std::is_same_v<T, IcebergMoveOrderRequest>) {
-                return Plaza2TradeCommandKind::IcebergMoveOrder;
             } else if constexpr (std::is_same_v<T, DelUserOrdersRequest>) {
                 return Plaza2TradeCommandKind::DelUserOrders;
-            } else if constexpr (std::is_same_v<T, DelOrdersByBFLimitRequest>) {
-                return Plaza2TradeCommandKind::DelOrdersByBFLimit;
-            } else {
-                return Plaza2TradeCommandKind::CODHeartbeat;
             }
         },
         request);
@@ -597,22 +462,12 @@ const char* command_name(Plaza2TradeCommandKind kind) noexcept {
     switch (kind) {
     case Plaza2TradeCommandKind::AddOrder:
         return "AddOrder";
-    case Plaza2TradeCommandKind::IcebergAddOrder:
-        return "IcebergAddOrder";
     case Plaza2TradeCommandKind::DelOrder:
         return "DelOrder";
-    case Plaza2TradeCommandKind::IcebergDelOrder:
-        return "IcebergDelOrder";
     case Plaza2TradeCommandKind::MoveOrder:
         return "MoveOrder";
-    case Plaza2TradeCommandKind::IcebergMoveOrder:
-        return "IcebergMoveOrder";
     case Plaza2TradeCommandKind::DelUserOrders:
         return "DelUserOrders";
-    case Plaza2TradeCommandKind::DelOrdersByBFLimit:
-        return "DelOrdersByBFLimit";
-    case Plaza2TradeCommandKind::CODHeartbeat:
-        return "CODHeartbeat";
     }
     return "Unknown";
 }
@@ -627,22 +482,12 @@ Plaza2TradeValidationResult Plaza2TradeCodec::validate(const Plaza2TradeCommandR
             using T = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<T, AddOrderRequest>) {
                 return validate_add_order(value);
-            } else if constexpr (std::is_same_v<T, IcebergAddOrderRequest>) {
-                return validate_iceberg_add_order(value);
             } else if constexpr (std::is_same_v<T, DelOrderRequest>) {
                 return validate_del_order(value);
-            } else if constexpr (std::is_same_v<T, IcebergDelOrderRequest>) {
-                return validate_iceberg_del_order(value);
             } else if constexpr (std::is_same_v<T, MoveOrderRequest>) {
                 return validate_move_order(value);
-            } else if constexpr (std::is_same_v<T, IcebergMoveOrderRequest>) {
-                return validate_iceberg_move_order(value);
             } else if constexpr (std::is_same_v<T, DelUserOrdersRequest>) {
                 return validate_del_user_orders(value);
-            } else if constexpr (std::is_same_v<T, DelOrdersByBFLimitRequest>) {
-                return validate_del_orders_by_bf_limit(value);
-            } else {
-                return validate_cod_heartbeat(value);
             }
         },
         request);
@@ -656,38 +501,84 @@ Plaza2TradeEncodedCommand Plaza2TradeCodec::encode(const Plaza2TradeCommandReque
         .msgid = command_msgid(kind),
         .payload = {},
         .validation = validate(request),
-        .offline_only = true,
     };
     if (!encoded.validation.ok()) {
         return encoded;
     }
+    std::visit(
+        [&](const auto& value) {
+            if constexpr (requires { value.isin_id; })
+                encoded.isin_id = value.isin_id;
+            if constexpr (std::is_same_v<std::decay_t<decltype(value)>, AddOrderRequest>)
+                encoded.order_type = value.type;
+            std::string fields{"{"};
+            const auto field = [&](std::string_view name, const auto& optional) {
+                if (!optional)
+                    return;
+                if (fields.size() > 1)
+                    fields += ',';
+                fields += plaza2::cgate::text::json_quote_utf8(name) + ":";
+                using T = std::decay_t<decltype(*optional)>;
+                if constexpr (std::is_same_v<T, std::string>)
+                    fields += plaza2::cgate::text::json_quote_utf8(*optional);
+                else if constexpr (std::is_enum_v<T>)
+                    fields += std::to_string(static_cast<std::underlying_type_t<T>>(*optional));
+                else
+                    fields += std::to_string(*optional);
+            };
+#define COMMAND_FIELD(name)                                                                                            \
+    if constexpr (requires { value.name; })                                                                            \
+    field(#name, value.name)
+            COMMAND_FIELD(broker_code);
+            COMMAND_FIELD(client_code);
+            COMMAND_FIELD(isin_id);
+            COMMAND_FIELD(dir);
+            COMMAND_FIELD(type);
+            COMMAND_FIELD(amount);
+            COMMAND_FIELD(price);
+            COMMAND_FIELD(comment);
+            COMMAND_FIELD(broker_to);
+            COMMAND_FIELD(ext_id);
+            COMMAND_FIELD(is_check_limit);
+            COMMAND_FIELD(date_exp);
+            COMMAND_FIELD(dont_check_money);
+            COMMAND_FIELD(match_ref);
+            COMMAND_FIELD(ncc_request);
+            COMMAND_FIELD(compliance_id);
+            COMMAND_FIELD(order_id);
+            COMMAND_FIELD(regime);
+            COMMAND_FIELD(order_id1);
+            COMMAND_FIELD(amount1);
+            COMMAND_FIELD(price1);
+            COMMAND_FIELD(ext_id1);
+            COMMAND_FIELD(order_id2);
+            COMMAND_FIELD(amount2);
+            COMMAND_FIELD(price2);
+            COMMAND_FIELD(ext_id2);
+            COMMAND_FIELD(buy_sell);
+            COMMAND_FIELD(non_system);
+            COMMAND_FIELD(code);
+            COMMAND_FIELD(base_contract_code);
+            COMMAND_FIELD(instrument_mask);
+#undef COMMAND_FIELD
+            encoded.fields_json = fields + "}";
+        },
+        request);
     encoded.payload = std::visit(
         [](const auto& value) {
             using T = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<T, AddOrderRequest>) {
                 return encode_add_order_payload(value);
-            } else if constexpr (std::is_same_v<T, IcebergAddOrderRequest>) {
-                return encode_iceberg_add_order_payload(value);
             } else if constexpr (std::is_same_v<T, DelOrderRequest>) {
                 return encode_del_order_payload(value);
-            } else if constexpr (std::is_same_v<T, IcebergDelOrderRequest>) {
-                return encode_iceberg_del_order_payload(value);
             } else if constexpr (std::is_same_v<T, MoveOrderRequest>) {
                 return encode_move_order_payload(value);
-            } else if constexpr (std::is_same_v<T, IcebergMoveOrderRequest>) {
-                return encode_iceberg_move_order_payload(value);
             } else if constexpr (std::is_same_v<T, DelUserOrdersRequest>) {
                 return encode_del_user_orders_payload(value);
-            } else if constexpr (std::is_same_v<T, DelOrdersByBFLimitRequest>) {
-                return encode_del_orders_by_bf_limit_payload(value);
-            } else {
-                return encode_cod_heartbeat_payload(value);
             }
         },
         request);
-    if (encoded.command_kind != Plaza2TradeCommandKind::DelOrdersByBFLimit) {
-        align_payload(encoded.payload, 4);
-    }
+    align_payload(encoded.payload, 4);
     return encoded;
 }
 
@@ -713,8 +604,7 @@ Plaza2TradeDecodedReply Plaza2TradeCodec::decode_reply(std::int32_t msgid, std::
         }
         break;
     case 177:
-    case 182:
-        reply.message_name = msgid == 177 ? "FORTS_MSG177" : "FORTS_MSG182";
+        reply.message_name = "FORTS_MSG177";
         if (auto code = read_i4(); code && offset + kReplyMessageLength + 4 <= payload.size()) {
             reply.code = *code;
             reply.message = read_message();
@@ -724,8 +614,7 @@ Plaza2TradeDecodedReply Plaza2TradeCodec::decode_reply(std::int32_t msgid, std::
         }
         break;
     case 179:
-    case 181:
-        reply.message_name = msgid == 179 ? "FORTS_MSG179" : "FORTS_MSG181";
+        reply.message_name = "FORTS_MSG179";
         if (auto code = read_i4(); code && offset + kReplyMessageLength + 8 <= payload.size()) {
             reply.code = *code;
             reply.message = read_message();
@@ -734,19 +623,8 @@ Plaza2TradeDecodedReply Plaza2TradeCodec::decode_reply(std::int32_t msgid, std::
             validation = fail(Plaza2TradeValidationCode::BufferTooSmall, reply.message_name, "reply payload too short");
         }
         break;
-    case 180:
-        reply.message_name = "FORTS_MSG180";
-        if (auto code = read_i4(); code && offset + kReplyMessageLength + 8 <= payload.size()) {
-            reply.code = *code;
-            reply.message = read_message();
-            reply.iceberg_order_id = read_i8();
-        } else {
-            validation = fail(Plaza2TradeValidationCode::BufferTooSmall, "FORTS_MSG180", "reply payload too short");
-        }
-        break;
     case 186:
-    case 172:
-        reply.message_name = msgid == 186 ? "FORTS_MSG186" : "FORTS_MSG172";
+        reply.message_name = "FORTS_MSG186";
         if (auto code = read_i4(); code && offset + kReplyMessageLength + 4 <= payload.size()) {
             reply.code = *code;
             reply.message = read_message();
@@ -785,10 +663,6 @@ Plaza2TradeDecodedReply Plaza2TradeCodec::decode_reply(std::int32_t msgid, std::
         reply.status = status_from_code(reply.code, false);
     }
     return reply;
-}
-
-bool is_sendable(const Plaza2TradeEncodedCommand& command) noexcept {
-    return !command.offline_only;
 }
 
 std::string bytes_to_hex(std::span<const std::byte> bytes) {

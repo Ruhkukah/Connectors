@@ -66,13 +66,28 @@ int main(int argc, char** argv) {
         Plaza2Settings incorrect_hash_settings = settings;
         incorrect_hash_settings.expected_runtime_library_sha256 = std::string(64, '0');
         const auto incorrect_hash_report = Plaza2RuntimeProbe::probe(incorrect_hash_settings);
-        require(incorrect_hash_report.compatibility == Plaza2Compatibility::Incompatible,
-                "incorrect runtime library hash must fail closed");
+        require(incorrect_hash_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
+                "runtime hash drift must remain diagnostic");
         require(std::ranges::any_of(incorrect_hash_report.issues,
                                     [](const auto& issue) {
-                                        return issue.code == Plaza2ProbeIssueCode::FileHashMismatch && issue.fatal;
+                                        return issue.code == Plaza2ProbeIssueCode::FileHashMismatch && !issue.fatal;
                                     }),
-                "incorrect runtime library hash should report a fatal mismatch");
+                "runtime library hash drift should report a warning");
+
+        Plaza2Settings changed_release_settings = settings;
+        changed_release_settings.expected_spectra_release = "SPECTRA9.9.0";
+        const auto changed_release_report = Plaza2RuntimeProbe::probe(changed_release_settings);
+        require(changed_release_report.compatibility == Plaza2Compatibility::CompatibleWithWarnings,
+                "Spectra release drift must remain diagnostic");
+        require(changed_release_report.layout.version_markers.spectra_release == "SPECTRA93" &&
+                    changed_release_report.runtime_library_loadable && changed_release_report.trading_capable,
+                "Spectra warning must preserve the observed version and runtime capabilities");
+        require(std::ranges::any_of(changed_release_report.issues,
+                                    [](const auto& issue) {
+                                        return issue.code == Plaza2ProbeIssueCode::UnsupportedVersion && !issue.fatal &&
+                                               issue.subject == "scheme";
+                                    }),
+                "Spectra release drift must report a nonfatal UnsupportedVersion issue");
 
         Plaza2Settings scoped_config_settings = settings;
         scoped_config_settings.env_open_settings = "ini=config/t1.ini;key=${MOEX_PLAZA2_TEST_CREDENTIALS}";

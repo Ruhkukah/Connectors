@@ -1,27 +1,5 @@
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/schema/plaza2_forts_reviewed.ini")
-    message(FATAL_ERROR
-        "Reviewed PLAZA II scheme fixture is missing at protocols/plaza2_cgate/schema/plaza2_forts_reviewed.ini. "
-        "Materialize it from the locked docs with: "
-        "python3 tools/plaza2_schema_materialize.py --project-root .")
-endif()
-
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/plaza2_generated_metadata.cpp")
-    message(FATAL_ERROR
-        "Generated PLAZA II metadata is missing at protocols/plaza2_cgate/generated/plaza2_generated_metadata.cpp. "
-        "Re-generate it with: "
-        "python3 tools/plaza2_codegen.py --schema protocols/plaza2_cgate/schema/plaza2_forts_reviewed.ini "
-        "--out protocols/plaza2_cgate/generated")
-endif()
-
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/plaza2_fake_scenarios.cpp")
-    message(FATAL_ERROR
-        "Generated PLAZA II fake scenarios are missing at protocols/plaza2_cgate/generated/plaza2_fake_scenarios.cpp. "
-        "Re-generate them with: "
-        "python3 tools/plaza2_fake_scenario_materialize.py --project-root .")
-endif()
-
 add_library(moex_plaza2_cgate_metadata STATIC
-    generated/plaza2_generated_metadata.cpp)
+    src/plaza2_metadata.cpp)
 
 target_include_directories(moex_plaza2_cgate_metadata
     PUBLIC
@@ -30,15 +8,14 @@ target_include_directories(moex_plaza2_cgate_metadata
 
 target_compile_features(moex_plaza2_cgate_metadata PUBLIC cxx_std_20)
 
-# Hashing is independently linkable by the listener-only capture tool.
+# Runtime source/file identity hashing.
 add_library(moex_plaza2_cgate_hash STATIC src/plaza2_sha256.cpp)
 set_target_properties(moex_plaza2_cgate_hash PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(moex_plaza2_cgate_hash PUBLIC moex_plaza2_cgate_metadata)
 target_compile_features(moex_plaza2_cgate_hash PUBLIC cxx_std_20)
 
 add_library(moex_plaza2_cgate_runtime STATIC
-    src/plaza2_runtime.cpp
-    src/plaza2_ordlog.cpp)
+    src/plaza2_runtime.cpp)
 
 target_link_libraries(moex_plaza2_cgate_runtime
     PUBLIC
@@ -54,6 +31,7 @@ target_include_directories(moex_plaza2_cgate_runtime
 
 target_compile_features(moex_plaza2_cgate_runtime PUBLIC cxx_std_20)
 
+if(BUILD_TESTING)
 add_library(moex_plaza2_cgate_fake_engine STATIC
     src/plaza2_fake_engine.cpp)
 
@@ -82,6 +60,7 @@ target_include_directories(moex_plaza2_cgate_fake_scenarios
 
 target_compile_features(moex_plaza2_cgate_fake_scenarios PUBLIC cxx_std_20)
 
+endif()
 add_library(moex_plaza2_cgate_private_state STATIC
     src/plaza2_private_state.cpp)
 
@@ -90,7 +69,7 @@ set_target_properties(moex_plaza2_cgate_private_state PROPERTIES
 
 target_link_libraries(moex_plaza2_cgate_private_state
     PUBLIC
-        moex_plaza2_cgate_fake_engine)
+        moex_plaza2_cgate_metadata)
 
 target_include_directories(moex_plaza2_cgate_private_state
     PUBLIC
@@ -99,32 +78,30 @@ target_include_directories(moex_plaza2_cgate_private_state
 
 target_compile_features(moex_plaza2_cgate_private_state PUBLIC cxx_std_20)
 
-add_library(moex_plaza2_cgate_live_session STATIC
+add_library(moex_plaza2_cgate_bridge STATIC
     src/plaza2_credential_provider.cpp
-    src/plaza2_manual_operator_gate.cpp
-    src/plaza2_private_state_bridge.cpp
-    src/plaza2_live_session_runner.cpp)
+    src/plaza2_private_state_bridge.cpp)
 
-target_link_libraries(moex_plaza2_cgate_live_session
+target_link_libraries(moex_plaza2_cgate_bridge
     PUBLIC
-        moex_phase0_core
         moex_plaza2_cgate_private_state
         moex_plaza2_cgate_runtime)
 
-target_include_directories(moex_plaza2_cgate_live_session
+target_include_directories(moex_plaza2_cgate_bridge
     PUBLIC
+        "${MOEX_SOURCE_ROOT}/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 
-target_compile_features(moex_plaza2_cgate_live_session PUBLIC cxx_std_20)
+target_compile_features(moex_plaza2_cgate_bridge PUBLIC cxx_std_20)
 
 add_library(moex_plaza2_cgate_aggr20_md STATIC
     src/plaza2_aggr20_md.cpp
-    src/plaza2_aggr20_authority_probe.cpp)
+    src/plaza2_public_deals.cpp)
 
 target_link_libraries(moex_plaza2_cgate_aggr20_md
     PUBLIC
-        moex_plaza2_cgate_live_session)
+        moex_plaza2_cgate_bridge)
 
 target_include_directories(moex_plaza2_cgate_aggr20_md
     PUBLIC
@@ -132,18 +109,3 @@ target_include_directories(moex_plaza2_cgate_aggr20_md
         "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 
 target_compile_features(moex_plaza2_cgate_aggr20_md PUBLIC cxx_std_20)
-
-add_library(moex_plaza2_cgate_connectivity_qualifier STATIC
-    src/plaza2_trade_connectivity_qualifier.cpp)
-
-target_link_libraries(moex_plaza2_cgate_connectivity_qualifier
-    PUBLIC
-        moex_plaza2_cgate_aggr20_md
-        moex_plaza2_cgate_live_session)
-
-target_include_directories(moex_plaza2_cgate_connectivity_qualifier
-    PUBLIC
-        "${CMAKE_CURRENT_SOURCE_DIR}/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/generated")
-
-target_compile_features(moex_plaza2_cgate_connectivity_qualifier PUBLIC cxx_std_20)

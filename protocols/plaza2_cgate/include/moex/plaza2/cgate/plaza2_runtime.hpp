@@ -1,10 +1,11 @@
 #pragma once
 
-#include "plaza2_generated_metadata.hpp"
+#include "moex/plaza2/cgate/plaza2_metadata.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -33,6 +34,7 @@ enum class Plaza2ErrorCode : std::uint16_t {
     AdapterState,
     RuntimeCallFailed,
     DecodeFailed,
+    IncompatibleScheme,
     CallbackFailed,
     ProbeIncompatible,
     UnknownRuntimeResult,
@@ -51,10 +53,6 @@ enum class Plaza2ProbeIssueCode : std::uint16_t {
     UnsupportedVersion,
     MissingSymbol,
     FileHashMismatch,
-    RuntimeSchemeParseFailed,
-    ReviewedTableMissing,
-    ReviewedTableSignatureMismatch,
-    RuntimeTableUnexpected,
 };
 
 struct Plaza2Error {
@@ -80,7 +78,7 @@ struct Plaza2VersionMarkers {
     std::string target_polygon;
 };
 
-class Plaza2QualificationObserver;
+struct Plaza2ListenerEvent;
 
 struct Plaza2Settings {
     Plaza2Environment environment{Plaza2Environment::Test};
@@ -95,8 +93,7 @@ struct Plaza2Settings {
     std::string expected_spectra_release;
     std::string expected_runtime_library_sha256;
     std::string expected_scheme_sha256;
-    // Optional qualification sink. Owner outlives Env; callbacks must not throw or call CGate.
-    Plaza2QualificationObserver* qualification_observer{nullptr};
+    std::function<void(const Plaza2ListenerEvent&)> listener_event_log;
 };
 
 struct Plaza2RuntimeLayout {
@@ -110,26 +107,10 @@ struct Plaza2RuntimeLayout {
     std::vector<std::string> present_config_files;
 };
 
-struct Plaza2SchemeDriftReport {
-    Plaza2Compatibility compatibility{Plaza2Compatibility::Unknown};
-    std::string runtime_scheme_sha256;
-    std::size_t reviewed_table_count{0};
-    std::size_t runtime_table_count{0};
-    std::size_t reviewed_field_count{0};
-    std::size_t runtime_field_count{0};
-    std::size_t fatal_drift_count{0};
-    std::size_t warning_drift_count{0};
-    std::vector<std::string> fatal_drift_tables;
-    std::vector<std::string> warning_drift_tables;
-    std::string last_fatal_drift_reason;
-    std::string last_warning_drift_reason;
-    std::vector<Plaza2ProbeIssue> issues;
-};
-
 struct Plaza2RuntimeProbeReport {
     Plaza2Compatibility compatibility{Plaza2Compatibility::Unknown};
     Plaza2RuntimeLayout layout;
-    Plaza2SchemeDriftReport scheme_drift;
+    std::string runtime_scheme_sha256;
     std::string runtime_version;
     std::string runtime_library_sha256;
     std::vector<std::string> resolved_symbols;
@@ -189,6 +170,7 @@ struct Plaza2DecodedFieldValue {
     std::int64_t decimal_mantissa{0};
     std::int32_t decimal_scale{0};
     bool decimal_exact{false};
+    std::uint64_t timestamp_ns{0};
 };
 
 struct Plaza2ListenerEvent {
@@ -207,34 +189,6 @@ struct Plaza2ListenerEvent {
     std::uint32_t close_reason{0};
     std::span<const std::uint8_t> raw_nulls{};
     std::size_t table_index{0};
-};
-
-struct Plaza2ForensicField {
-    std::string name, type, generic_value, independent_value;
-    std::size_t offset{}, size{}, ordinal{};
-    bool is_null{}, equal{};
-    std::uint32_t conversion_result{};
-};
-struct Plaza2ForensicRow {
-    generated::StreamCode stream_code{kNoStreamCode};
-    generated::TableCode table_code{kNoTableCode};
-    std::size_t table_index{}, message_size{};
-    std::string message_name;
-    std::vector<std::byte> payload;
-    std::vector<std::uint8_t> nulls;
-    std::vector<Plaza2ForensicField> fields;
-};
-
-class Plaza2QualificationObserver {
-  public:
-    virtual ~Plaza2QualificationObserver() = default;
-    virtual void observe(const Plaza2ListenerEvent&, const Plaza2Error&) noexcept = 0;
-    [[nodiscard]] virtual bool wants_forensic_row(const Plaza2ListenerEvent&) const noexcept {
-        return false;
-    }
-    virtual void forensic_row(Plaza2ForensicRow) noexcept {}
-    // object: 10 connection, 11 publisher, 12 listener; stream zero for reply.
-    virtual void runtime_state(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) noexcept {}
 };
 
 class Plaza2ListenerEventHandler {
@@ -331,6 +285,7 @@ class Plaza2Listener {
     [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, generated::StreamCode stream_code,
                                      std::string_view settings, Plaza2ListenerEventHandler* handler);
     [[nodiscard]] Plaza2Error open(std::string_view settings);
+    void clear_callback_error() noexcept;
     [[nodiscard]] Plaza2Error close();
     [[nodiscard]] Plaza2Error destroy();
     [[nodiscard]] Plaza2Error state(std::uint32_t& out_state) const;

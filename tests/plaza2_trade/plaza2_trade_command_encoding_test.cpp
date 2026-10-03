@@ -10,7 +10,6 @@ using moex::plaza2_trade::Plaza2TradeCodec;
 using moex::plaza2_trade::Plaza2TradeCommandRequest;
 using moex::plaza2_trade::test_support::fixture_text;
 using moex::plaza2_trade::test_support::make_add_order;
-using moex::plaza2_trade::test_support::make_cod_heartbeat;
 using moex::plaza2_trade::test_support::make_del_order;
 using moex::plaza2_trade::test_support::make_del_user_orders;
 using moex::plaza2_trade::test_support::make_move_order;
@@ -32,7 +31,6 @@ void test_golden_encodings() {
     assert_golden("del_order_minimal.golden.bin.hex", Plaza2TradeCommandRequest{make_del_order()});
     assert_golden("move_order_minimal.golden.bin.hex", Plaza2TradeCommandRequest{make_move_order()});
     assert_golden("del_user_orders_minimal.golden.bin.hex", Plaza2TradeCommandRequest{make_del_user_orders()});
-    assert_golden("cod_heartbeat_minimal.golden.bin.hex", Plaza2TradeCommandRequest{make_cod_heartbeat()});
 }
 
 void test_deterministic_repeated_encoding() {
@@ -40,19 +38,22 @@ void test_deterministic_repeated_encoding() {
     const auto first = codec.encode(Plaza2TradeCommandRequest{make_add_order()});
     const auto second = codec.encode(Plaza2TradeCommandRequest{make_add_order()});
     require(first.payload == second.payload, "same command should encode byte-identically");
-    require(first.msgid == 474, "AddOrder msgid should come from Phase 5A lock");
+    require(first.msgid == 474, "AddOrder msgid must match official CGate");
 }
 
 void test_all_official_command_layouts() {
     using namespace moex::plaza2_trade::test_support;
     const Plaza2TradeCodec codec;
-    for (const auto& request : std::vector<Plaza2TradeCommandRequest>{
-             make_add_order(), make_iceberg_add_order(), make_del_order(), make_iceberg_del_order(), make_move_order(),
-             make_iceberg_move_order(), make_del_user_orders(), make_del_orders_by_bf_limit(), make_cod_heartbeat()}) {
+    const std::int32_t expected_ids[] = {official_cgate99::AddOrder_msgid, official_cgate99::DelOrder_msgid,
+                                         official_cgate99::MoveOrder_msgid, official_cgate99::DelUserOrders_msgid};
+    std::size_t index = 0;
+    for (const auto& request : std::vector<Plaza2TradeCommandRequest>{make_add_order(), make_del_order(),
+                                                                      make_move_order(), make_del_user_orders()}) {
         const auto encoded = codec.encode(request);
         require(encoded.validation.ok(), "official-layout command must validate");
+        require(encoded.msgid == expected_ids[index++], "declared command message id differs from official scheme");
         require(encoded.payload == std::visit([](const auto& value) { return official_wire(value); }, request),
-                "all existing command bytes must match official layout");
+                "four declared command bytes must match official layout");
     }
 }
 
