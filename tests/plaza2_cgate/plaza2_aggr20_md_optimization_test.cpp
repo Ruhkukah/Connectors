@@ -26,6 +26,23 @@ auto row(std::uint64_t id, std::int64_t revision, std::int64_t isin = 1001, std:
 }
 int main() {
     try {
+        Plaza2Aggr20BookProjector scoped({}, {1001, 1002});
+        scoped.begin_transaction();
+        for (int i = 0; i < 5000; ++i)
+            require(!scoped.on_row(row(10000 + i, 1, 2000 + i)), "unconfigured AGGR row");
+        require(!scoped.on_row(row(1, 1, 1001)) && !scoped.on_row(row(2, 1, 1002)), "configured AGGR row");
+        require(!scoped.commit() && scoped.snapshot().row_count == 2 && !scoped.snapshot_for_isin(2000),
+                "AGGR retains the entire exchange instead of configured ISINs");
+        scoped.begin_transaction();
+        const std::array sparse{number(F::kFortsAggrReplOrdersAggrReplId, 1),
+                                number(F::kFortsAggrReplOrdersAggrReplRev, 2),
+                                number(F::kFortsAggrReplOrdersAggrReplAct, 1)};
+        require(!scoped.on_row(sparse) && !scoped.commit() && scoped.snapshot().row_count == 1,
+                "configured filter discarded a sparse target deletion");
+        scoped.begin_transaction();
+        require(!scoped.on_row(row(2, 2, 2000)) && !scoped.commit() && scoped.snapshot().row_count == 0,
+                "replID moved outside configured scope left a stale target level");
+
         Plaza2Aggr20BookProjector projector;
         const auto started = std::chrono::steady_clock::now();
         projector.begin_transaction();

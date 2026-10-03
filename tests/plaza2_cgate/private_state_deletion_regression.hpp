@@ -1,6 +1,7 @@
 #pragma once
 
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
+#include "fixtures/server_schema.hpp"
 
 #include <algorithm>
 #include <array>
@@ -41,11 +42,12 @@ struct Row {
     std::vector<std::string> text;
     std::vector<pr::FieldValueSpec> fields;
     Row(gen::TableCode table, std::int64_t id, std::int64_t revision, std::int64_t act = 0, bool sparse = false) {
-        const auto descriptors = gen::FieldsForTable(table);
+        const auto descriptors = server_schema_fields(table);
         text.reserve(descriptors.size());
         fields.reserve(descriptors.size());
         for (const auto& field : descriptors) {
-            if (sparse && !field.service_field)
+            if (sparse && field.field_name != "replID" && field.field_name != "replRev" &&
+                field.field_name != "replAct")
                 continue;
             auto value = id;
             if (field.field_name == "replID")

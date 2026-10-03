@@ -87,6 +87,7 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     host.runtime.expected_spectra_release = inputs.expected_spectra_release;
     host.runtime.expected_scheme_sha256 = inputs.expected_scheme_sha256;
     host.publisher_messages_per_second = inputs.publisher_messages_per_second;
+    host.market_data_isin_ids = inputs.isin_ids;
     host.publisher_name = inputs.read_only_market_data ? std::string{} : inputs.publisher_name;
     host.connection_settings =
         "p2tcp://" + endpoint + ":" + std::to_string(port) + ";app_name=" + inputs.publisher_name + ";timeout=2000";

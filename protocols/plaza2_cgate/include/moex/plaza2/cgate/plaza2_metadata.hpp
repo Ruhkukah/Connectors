@@ -574,7 +574,7 @@ struct FieldDescriptor {
 inline constexpr std::size_t kTypeCount = 18;
 inline constexpr std::size_t kStreamCount = 9;
 inline constexpr std::size_t kTableCount = 34;
-inline constexpr std::size_t kFieldCount = 465;
+inline constexpr std::size_t kFieldCount = 273;
 
 std::span<const TypeDescriptor> TypeDescriptors();
 std::span<const StreamDescriptor> StreamDescriptors();

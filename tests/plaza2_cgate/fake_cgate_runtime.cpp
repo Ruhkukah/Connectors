@@ -1429,7 +1429,11 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
         if (found != script.end()) {
             FakeMessageScript regular{.table_code = kFortsUserorderbookReplOrders, .rev = 107};
             for (const auto& value : found->fields) {
-                const auto* source = FindFieldByCode(value.field_code);
+                const auto native_fields = moex::plaza2::test::server_schema_fields(found->table_code);
+                const auto source = std::ranges::find_if(
+                    native_fields, [&](const auto& field) { return field.field_code == value.field_code; });
+                if (source == native_fields.end())
+                    continue;
                 for (const auto& target : moex::plaza2::generated::FieldsForTable(regular.table_code))
                     if (source->field_name == target.field_name) {
                         auto copy = value;

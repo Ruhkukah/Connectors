@@ -185,7 +185,8 @@ struct CgateSession::Impl {
     std::optional<Plaza2TradeReplayAnchor> anchor;
     std::optional<std::uint32_t> observed_connection, observed_publisher;
     explicit Impl(CgateSessionConfig c)
-        : config(std::move(c)), deals(config.public_deals_target_isin_id, config.aggr20_target_session_id),
+        : config(std::move(c)), book({}, config.market_data_isin_ids),
+          deals(config.public_deals_target_isin_id, config.aggr20_target_session_id),
           rate(config.publisher_messages_per_second) {
         replies.penalty = [this](std::uint32_t ms) {
             if (config.publisher_rate_owner == PublisherRateOwner::Session)

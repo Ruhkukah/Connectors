@@ -82,7 +82,7 @@ class Plaza2Aggr20BookProjector {
     using Clock = std::chrono::steady_clock;
     using NowFn = std::function<Clock::time_point()>;
 
-    explicit Plaza2Aggr20BookProjector(NowFn now = {});
+    explicit Plaza2Aggr20BookProjector(NowFn now = {}, std::vector<std::int64_t> isin_ids = {});
 
     void reset();
     void begin_transaction();
@@ -98,6 +98,7 @@ class Plaza2Aggr20BookProjector {
     [[nodiscard]] bool transaction_open() const noexcept;
 
   private:
+    std::vector<std::int64_t> isin_ids_;
     struct InstrumentBook {
         // Price and replID uniquely identify each visible level.
         std::map<std::pair<std::int64_t, std::uint64_t>, std::uint64_t> bids, asks;

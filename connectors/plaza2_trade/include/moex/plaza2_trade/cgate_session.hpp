@@ -70,6 +70,7 @@ struct CgateSessionConfig {
     // non-zero current session id and is suitable only before refdata
     // negotiation has supplied the target session.
     std::int32_t aggr20_target_session_id{0};
+    std::vector<std::int64_t> market_data_isin_ids;
     std::string publisher_settings;
     std::string publisher_open_settings;
     std::string publisher_name{"PUB"};

@@ -247,8 +247,8 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
     }
     return {};
 }
-Plaza2Aggr20BookProjector::Plaza2Aggr20BookProjector(NowFn now)
-    : now_(now ? std::move(now) : [] { return Clock::now(); }) {}
+Plaza2Aggr20BookProjector::Plaza2Aggr20BookProjector(NowFn now, std::vector<std::int64_t> isin_ids)
+    : isin_ids_(std::move(isin_ids)), now_(now ? std::move(now) : [] { return Clock::now(); }) {}
 void Plaza2Aggr20BookProjector::reset() {
     staged_.clear();
     rows_.clear();
@@ -268,6 +268,16 @@ Plaza2Error Plaza2Aggr20BookProjector::on_row(std::span<const Plaza2DecodedField
     row.repl_id = unsigned_field(fields, FieldCode::kFortsAggrReplOrdersAggrReplId).value_or(0);
     row.repl_rev = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrReplRev).value_or(0);
     row.isin_id = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrIsinId).value_or(0);
+    if (row.isin_id > 0 && !isin_ids_.empty() &&
+        std::find(isin_ids_.begin(), isin_ids_.end(), row.isin_id) == isin_ids_.end()) {
+        // A replID reassignment must retire any previously retained target
+        // level, including an earlier upsert in the same transaction.
+        if (rows_.contains(row.repl_id) || std::any_of(staged_.begin(), staged_.end(), [&](const auto& op) {
+                return !op.clear && op.row.repl_id == row.repl_id;
+            }))
+            staged_.push_back({.row = std::move(row)});
+        return {};
+    }
     row.volume = signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrVolume).value_or(0);
     if (signed_field(fields, FieldCode::kFortsAggrReplOrdersAggrReplAct).value_or(0) != 0 || row.volume == 0) {
         row.volume = 0;
