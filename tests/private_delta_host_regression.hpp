@@ -251,16 +251,20 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
         const auto purge_markers = [&] {
             for (const auto table :
                  {gen::TableCode::kFortsTradeReplOrdersLog, gen::TableCode::kFortsTradeReplMultilegOrdersLog,
-                  gen::TableCode::kFortsTradeReplUserDeal, gen::TableCode::kFortsTradeReplUserMultilegDeal})
-                for (const auto revision : {1, 2})
+                  gen::TableCode::kFortsTradeReplUserDeal, gen::TableCode::kFortsTradeReplUserMultilegDeal}) {
+                const bool multileg = table == gen::TableCode::kFortsTradeReplMultilegOrdersLog ||
+                                      table == gen::TableCode::kFortsTradeReplUserMultilegDeal;
+                for (const auto revision : {multileg ? std::numeric_limits<std::int64_t>::max() : std::int64_t{1},
+                                            multileg ? std::numeric_limits<std::int64_t>::max() : std::int64_t{2}})
                     control.enqueue({.kind = fake::EventKind::ClearDeleted,
                                      .stream_code = gen::StreamCode::kFortsTradeRepl,
                                      .table_code = table,
                                      .revision = revision,
                                      .flags = 8});
+            }
         };
-        // Native CGate publishes the same positive purge floors at initial
-        // snapshot and ordinary reopen, even when neither retires an own row.
+        // Native CGate repeats regular purge floors and multileg clear-all
+        // markers at initial snapshot and reopen without retiring regular fills.
         control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
         purge_markers();
         control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});

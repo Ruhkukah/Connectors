@@ -191,7 +191,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
         } else if (stream.stream_name == "FORTS_USERORDERBOOK_REPL")
             user_book_online = stream.online && stream.snapshot_complete;
     const auto changes = session_.take_private_row_changes();
-    if (changes.trade_history_truncated)
+    if (changes.regular_trade_history_truncated)
         orders_->invalidate_execution_baselines();
     for (const auto& event : session_.take_reply_events()) {
         if (event.timed_out) {

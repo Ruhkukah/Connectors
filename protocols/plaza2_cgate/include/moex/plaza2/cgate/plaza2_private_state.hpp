@@ -363,8 +363,12 @@ struct PrivateRowChanges {
     bool resync_required{false};
     // An advancing TRADE order/deal purge floor, actual own-row retirement,
     // changed TRADE LifeNum or delta overflow can remove fill history.
-    // Unchanged reopen purge markers without row retirement never set this.
+    // Unchanged finite reopen markers without row retirement never set this;
+    // clear-all remains a loss signal even for an empty table.
     bool trade_history_truncated{false};
+    // Regular-order fill baselines exclude loss confined to multileg tables.
+    // Whole TRADE resets, epoch changes and delta overflow affect both scopes.
+    bool regular_trade_history_truncated{false};
 };
 
 // Read-only capacity metrics for the indexed private projection. No account
