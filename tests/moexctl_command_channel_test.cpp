@@ -1,5 +1,6 @@
 #include "plaza2_runtime_test_support.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
+#include "scope_exit.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -288,11 +289,22 @@ int main(int argc, char** argv) {
     if (argc != 3)
         return 2;
     std::signal(SIGPIPE, SIG_IGN);
-    const auto root = std::filesystem::path("/tmp") / ("moexctl_channel_" + std::to_string(::getpid()));
-    test::require(std::filesystem::create_directory(root), "test directory already exists");
-    const auto fixture =
-        test::materialize_runtime_fixture(root / "runtime", argv[2], moex::plaza2::cgate::Plaza2Environment::Test,
-                                          test::build_vendor_like_runtime_scheme("SPECTRA 9.9.0", "9.9", "T1"));
+    const auto executable = std::filesystem::absolute(argv[1]).string();
+    const auto library = std::filesystem::absolute(argv[2]);
+    const auto temporary_directory = std::filesystem::canonical(std::filesystem::temp_directory_path());
+    const auto fixture_root = temporary_directory / ("moexctl_channel_" + std::to_string(::getpid()));
+    test::require(fixture_root.parent_path() == temporary_directory,
+                  "CLI fixture escaped the configured temporary directory");
+    test::require(std::filesystem::create_directory(fixture_root), "test directory already exists");
+    const auto fixture = test::materialize_runtime_fixture(
+        fixture_root / "runtime", library, moex::plaza2::cgate::Plaza2Environment::Test,
+        test::build_vendor_like_runtime_scheme("SPECTRA 9.9.0", "9.9", "T1"));
+    const auto original_directory = std::filesystem::current_path();
+    std::filesystem::current_path(fixture_root);
+    moex::connector_host::ScopeExit restore_directory([&] { std::filesystem::current_path(original_directory); });
+    // Keep UNIX socket names short even when the authorized TMPDIR is long.
+    // Children inherit this directory; executable and runtime paths remain absolute.
+    const std::filesystem::path root{"."};
     const auto settings = "ini=" + (fixture.config_dir / "t1.ini").string() + ";key=00000000";
     ::setenv("MOEX_CLI_TEST_SETTINGS", settings.c_str(), 1);
     ::setenv("MOEX_CLI_TEST_CREDENTIALS", "fake-test-only", 1);
@@ -313,7 +325,7 @@ int main(int argc, char** argv) {
         for (const auto option : {"--max-quantity", "--max-open-orders", "--max-notional", "--max-position"}) {
             const auto label = std::string(option).substr(2);
             const auto log = root / ("missing-" + label + ".ndjson");
-            auto arguments = run_arguments(argv[1], fixture, log, "cli_missing_" + label);
+            auto arguments = run_arguments(executable, fixture, log, "cli_missing_" + label);
             const auto found = std::find(arguments.begin(), arguments.end(), option);
             test::require(found != arguments.end(), "risk test option missing");
             arguments.erase(found, found + 2);
@@ -324,7 +336,7 @@ int main(int argc, char** argv) {
             no_posts(log);
         }
         const auto log = root / "uncovered-risk.ndjson";
-        auto arguments = run_arguments(argv[1], fixture, log, "cli_uncovered_risk");
+        auto arguments = run_arguments(executable, fixture, log, "cli_uncovered_risk");
         const auto found = std::find(arguments.begin(), arguments.end(), "--max-position");
         *(found + 1) = "1002=100";
         arguments.push_back("--allow-orders");
@@ -335,28 +347,28 @@ int main(int argc, char** argv) {
     });
     scenario("SIGHUP", [&] {
         const auto log = root / "hup.ndjson";
-        Child owner(run_arguments(argv[1], fixture, log, "cli_hup"), root / "hup.err");
+        Child owner(run_arguments(executable, fixture, log, "cli_hup"), root / "hup.err");
         ready(owner, [&] { owner.send("status\n"); });
         owner.signal(SIGHUP);
         std::this_thread::sleep_for(200ms);
         test::require(owner.alive(), "SIGHUP terminated the running host");
-        test::require(remote_command(argv[1], log, "status").find("\"reconstructing\":false") != std::string::npos,
+        test::require(remote_command(executable, log, "status").find("\"reconstructing\":false") != std::string::npos,
                       "SIGHUP lost command access");
-        remote_command(argv[1], log, "quit");
+        remote_command(executable, log, "quit");
         test::require(owner.wait() == 0, "SIGHUP host shutdown failed");
         no_posts(log);
     });
     scenario("SIGPIPE", [&] {
         const auto log = root / "pipe.ndjson";
-        Child owner(run_arguments(argv[1], fixture, log, "cli_pipe"), root / "pipe.err");
+        Child owner(run_arguments(executable, fixture, log, "cli_pipe"), root / "pipe.err");
         ready(owner, [&] { owner.send("status\n"); });
         owner.close_output();
         owner.send("status\n");
         std::this_thread::sleep_for(200ms);
         test::require(owner.alive(), "broken stdout terminated the running host");
-        test::require(remote_command(argv[1], log, "status").find("\"reconstructing\":false") != std::string::npos,
+        test::require(remote_command(executable, log, "status").find("\"reconstructing\":false") != std::string::npos,
                       "broken stdout lost socket responses");
-        remote_command(argv[1], log, "quit");
+        remote_command(executable, log, "quit");
         test::require(owner.wait() == 0, "SIGPIPE host shutdown failed");
         no_posts(log);
     });
@@ -365,7 +377,7 @@ int main(int argc, char** argv) {
         test::require(::mkfifo(fifo.c_str(), 0600) == 0, "FIFO creation failed");
         const auto reader = ::open(fifo.c_str(), O_RDONLY | O_NONBLOCK);
         test::require(reader >= 0, "FIFO reader failed");
-        Child owner(run_arguments(argv[1], fixture, log, "cli_eof"), root / "eof.err", reader);
+        Child owner(run_arguments(executable, fixture, log, "cli_eof"), root / "eof.err", reader);
         ::close(reader);
         auto writer = ::open(fifo.c_str(), O_WRONLY | O_NONBLOCK);
         test::require(writer >= 0, "FIFO writer failed");
@@ -390,18 +402,18 @@ int main(int argc, char** argv) {
     });
     scenario("UNIX command channel", [&] {
         const auto log = root / "socket.ndjson";
-        Child owner(run_arguments(argv[1], fixture, log, "cli_socket"), root / "socket.err");
+        Child owner(run_arguments(executable, fixture, log, "cli_socket"), root / "socket.err");
         ready(owner, [&] { owner.send("status\n"); });
         owner.close_input();
         struct stat endpoint {};
         test::require(::stat((log.string() + ".sock").c_str(), &endpoint) == 0 && (endpoint.st_mode & 0777) == 0600 &&
                           S_ISSOCK(endpoint.st_mode),
                       "owner-only command socket missing");
-        test::require(remote_command(argv[1], log, "kill on").find("\"ok\":true") != std::string::npos,
+        test::require(remote_command(executable, log, "kill on").find("\"ok\":true") != std::string::npos,
                       "kill switch could not be enabled through socket");
-        test::require(remote_command(argv[1], log, "kill off").find("\"ok\":true") != std::string::npos,
+        test::require(remote_command(executable, log, "kill off").find("\"ok\":true") != std::string::npos,
                       "kill switch could not be disabled through socket");
-        remote_command(argv[1], log, "quit");
+        remote_command(executable, log, "quit");
         test::require(owner.wait() == 0, "socket quit did not stop host");
         test::require(!std::filesystem::exists(log.string() + ".sock"), "socket endpoint survived host stop");
         std::ifstream input(log);
@@ -412,7 +424,7 @@ int main(int argc, char** argv) {
     });
     scenario("CLI journal provenance and refusals", [&] {
         const auto log = root / "journal.ndjson";
-        Child owner(run_arguments(argv[1], fixture, log, "cli_journal"), root / "journal.err");
+        Child owner(run_arguments(executable, fixture, log, "cli_journal"), root / "journal.err");
         ready(owner, [&] { owner.send("status\n"); });
         const std::string stdin_parse = "place stdin_parse_error invalid_isin buy 1 1 day";
         const std::string stdin_admission = "cancel stdin_unknown_order";
@@ -424,7 +436,7 @@ int main(int argc, char** argv) {
         const std::string socket_parse = "move socket_parse_error";
         const std::string socket_admission = "cancel socket_unknown_order";
         for (const auto& line : {socket_parse, socket_admission})
-            test::require(remote_command(argv[1], log, line).find("\"ok\":false") != std::string::npos,
+            test::require(remote_command(executable, log, line).find("\"ok\":false") != std::string::npos,
                           "CLI refusal fixture was admitted");
         test::require(raw_command(log, "status\nkill on\n").find("\"ok\":false") != std::string::npos,
                       "malformed socket frame was admitted");
@@ -434,7 +446,7 @@ int main(int argc, char** argv) {
         owner.send(std::string(65537, 'x') + "\n");
         while (owner.line().find("\"ok\":false") == std::string::npos) {
         }
-        remote_command(argv[1], log, "quit");
+        remote_command(executable, log, "quit");
         test::require(owner.wait() == 0, "journal host stop failed");
         std::ifstream input(log);
         const std::string contents((std::istreambuf_iterator<char>(input)), {});
@@ -445,8 +457,8 @@ int main(int argc, char** argv) {
                           startup.find("\"max_quote_notional_scaled\":10000000000000") != std::string::npos &&
                           startup.find("\"max_position\":100") != std::string::npos,
                       "mapped CLI risk configuration inherited the legacy overall default or lost target caps");
-        std::ifstream executable(argv[1], std::ios::binary);
-        const std::string binary((std::istreambuf_iterator<char>(executable)), {});
+        std::ifstream binary_input(executable, std::ios::binary);
+        const std::string binary((std::istreambuf_iterator<char>(binary_input)), {});
         const auto expected_hash = moex::plaza2::cgate::plaza2_sha256_hex(binary);
         test::require(
             field(startup, "source_git_sha") == MOEX_SOURCE_GIT_SHA &&
@@ -473,7 +485,7 @@ int main(int argc, char** argv) {
     });
     scenario("quit refuses Working orders", [&] {
         const auto log = root / "quit-working.ndjson";
-        auto arguments = run_arguments(argv[1], fixture, log, "cli_working");
+        auto arguments = run_arguments(executable, fixture, log, "cli_working");
         arguments.push_back("--allow-orders");
         Child owner(arguments, root / "quit-working.err");
         make_working(owner);
@@ -485,7 +497,7 @@ int main(int argc, char** argv) {
     });
     scenario("cancel-all plus quit drains", [&] {
         const auto log = root / "quit-drain.ndjson";
-        auto arguments = run_arguments(argv[1], fixture, log, "cli_quit_drain");
+        auto arguments = run_arguments(executable, fixture, log, "cli_quit_drain");
         arguments.push_back("--allow-orders");
         Child owner(arguments, root / "quit-drain.err");
         make_working(owner);
@@ -499,7 +511,7 @@ int main(int argc, char** argv) {
     });
     scenario("SIGTERM drains pending cancellation input", [&] {
         const auto log = root / "signal-drain.ndjson";
-        auto arguments = run_arguments(argv[1], fixture, log, "cli_signal_drain");
+        auto arguments = run_arguments(executable, fixture, log, "cli_signal_drain");
         arguments.push_back("--allow-orders");
         Child owner(arguments, root / "signal-drain.err");
         make_working(owner);
@@ -512,7 +524,7 @@ int main(int argc, char** argv) {
     });
     scenario("storage failure keeps command owner alive", [&] {
         const auto log = root / "storage.ndjson", state = root / "storage.state";
-        auto arguments = run_arguments(argv[1], fixture, log, "cli_storage");
+        auto arguments = run_arguments(executable, fixture, log, "cli_storage");
         arguments.insert(arguments.end(), {"--allow-orders", "--state", state.string()});
         Child owner(arguments, root / "storage.err");
         make_working(owner);
@@ -520,19 +532,21 @@ int main(int argc, char** argv) {
         std::filesystem::create_directory(state);
         std::this_thread::sleep_for(350ms);
         test::require(owner.alive(), "storage failure exited the CLI with a working order");
-        const auto status = remote_command(argv[1], log, "status");
+        const auto status = remote_command(executable, log, "status");
         test::require(status.find("\"cancel_only\":true") != std::string::npos &&
                           status.find("\"order_entry_ready\":false") != std::string::npos,
                       "storage-failed CLI did not report cancel-only entry protection");
-        test::require(remote_command(argv[1], log, "place blocked 1001 buy 1 102500 day").find("\"ok\":false") !=
+        test::require(remote_command(executable, log, "place blocked 1001 buy 1 102500 day").find("\"ok\":false") !=
                           std::string::npos,
                       "storage-failed CLI admitted another Add");
-        test::require(remote_command(argv[1], log, "cancel rel7_working").find("\"ok\":true") != std::string::npos,
+        test::require(remote_command(executable, log, "cancel rel7_working").find("\"ok\":true") != std::string::npos,
                       "storage-failed CLI refused durable-ID cancellation");
         owner.signal(SIGTERM);
         test::require(owner.wait() == 7, "storage-failed CLI shutdown concealed its storage error");
     });
+    std::filesystem::current_path(original_directory);
+    restore_directory.release();
     if (failures == 0)
-        test::remove_tree(root);
+        test::remove_tree(fixture_root);
     return failures == 0 ? 0 : 1;
 }
