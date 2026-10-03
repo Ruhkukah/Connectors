@@ -1,4 +1,5 @@
 #include "moex/plaza2/cgate/plaza2_aggr20_md.hpp"
+#include "moex/plaza2/cgate/plaza2_field_read_audit.hpp"
 #include <algorithm>
 #include <charconv>
 #include <sstream>
@@ -19,6 +20,9 @@ std::optional<std::int64_t> parse_i64(std::string_view value) {
 }
 
 std::optional<std::int64_t> signed_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCode code) {
+#ifdef MOEX_CGATE_FIELD_READ_AUDIT
+    generated::AuditFieldRead(code);
+#endif
     for (const auto& field : fields) {
         if (field.field_code != code) {
             continue;
@@ -37,6 +41,9 @@ std::optional<std::int64_t> signed_field(std::span<const Plaza2DecodedFieldValue
 }
 
 std::optional<std::uint64_t> unsigned_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCode code) {
+#ifdef MOEX_CGATE_FIELD_READ_AUDIT
+    generated::AuditFieldRead(code);
+#endif
     for (const auto& field : fields) {
         if (field.field_code != code) {
             continue;
@@ -52,6 +59,9 @@ std::optional<std::uint64_t> unsigned_field(std::span<const Plaza2DecodedFieldVa
 }
 
 std::string text_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCode code) {
+#ifdef MOEX_CGATE_FIELD_READ_AUDIT
+    generated::AuditFieldRead(code);
+#endif
     for (const auto& field : fields) {
         if (field.field_code != code) {
             continue;
@@ -71,6 +81,9 @@ std::string text_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCod
 }
 
 const Plaza2DecodedFieldValue* find_decoded_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCode code) {
+#ifdef MOEX_CGATE_FIELD_READ_AUDIT
+    generated::AuditFieldRead(code);
+#endif
     for (const auto& field : fields) {
         if (field.field_code == code)
             return &field;

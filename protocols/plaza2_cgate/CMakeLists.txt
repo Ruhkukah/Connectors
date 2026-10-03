@@ -1,6 +1,11 @@
 add_library(moex_plaza2_cgate_metadata STATIC
     src/plaza2_metadata.cpp)
 
+if(BUILD_TESTING)
+    target_sources(moex_plaza2_cgate_metadata PRIVATE src/plaza2_field_read_audit.cpp)
+    target_compile_definitions(moex_plaza2_cgate_metadata PUBLIC MOEX_CGATE_FIELD_READ_AUDIT=1)
+endif()
+
 target_include_directories(moex_plaza2_cgate_metadata
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include"

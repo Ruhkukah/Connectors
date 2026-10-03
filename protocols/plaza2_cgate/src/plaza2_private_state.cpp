@@ -1,5 +1,6 @@
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
 #include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
+#include "moex/plaza2/cgate/plaza2_field_read_audit.hpp"
 
 #include <algorithm>
 #include <array>
@@ -273,6 +274,9 @@ struct RowReader {
     std::span<const projection::FieldValueSpec> fields;
 
     const projection::FieldValueSpec* find(FieldCode code) const {
+#ifdef MOEX_CGATE_FIELD_READ_AUDIT
+        generated::AuditFieldRead(code);
+#endif
         for (const auto& field : fields) {
             if (field.field_code == code) {
                 return &field;
@@ -663,7 +667,6 @@ bool consumed_private_table(TableCode table) {
 bool is_regular_userorderbook_snapshot_table(TableCode table_code) {
     switch (table_code) {
     case TableCode::kFortsUserorderbookReplOrders:
-    case TableCode::kFortsUserorderbookReplMultilegOrders:
     case TableCode::kFortsUserorderbookReplInfo:
         return true;
     default:
@@ -940,18 +943,8 @@ struct Plaza2PrivateStateProjector::Impl {
                 .ext_id = row.i32(FieldCode::kFortsTradeReplOrdersLogExtId),
                 .client_code = row.text(FieldCode::kFortsTradeReplOrdersLogClientCode),
             });
-        case TableCode::kFortsTradeReplMultilegOrdersLog:
-            return revision_key(OrderKey{
-                .multileg = true,
-                .public_order_id = row.i64(FieldCode::kFortsTradeReplMultilegOrdersLogPublicOrderId),
-                .private_order_id = row.i64(FieldCode::kFortsTradeReplMultilegOrdersLogPrivateOrderId),
-                .ext_id = row.i32(FieldCode::kFortsTradeReplMultilegOrdersLogExtId),
-                .client_code = row.text(FieldCode::kFortsTradeReplMultilegOrdersLogClientCode),
-            });
         case TableCode::kFortsTradeReplUserDeal:
             return revision_key({"0", std::to_string(row.i64(FieldCode::kFortsTradeReplUserDealIdDeal))});
-        case TableCode::kFortsTradeReplUserMultilegDeal:
-            return revision_key({"1", std::to_string(row.i64(FieldCode::kFortsTradeReplUserMultilegDealIdDeal))});
         case TableCode::kFortsUserorderbookReplOrders:
             return revision_key(OrderKey{
                 .multileg = false,
@@ -960,42 +953,12 @@ struct Plaza2PrivateStateProjector::Impl {
                 .ext_id = row.i32(FieldCode::kFortsUserorderbookReplOrdersExtId),
                 .client_code = row.text(FieldCode::kFortsUserorderbookReplOrdersClientCode),
             });
-        case TableCode::kFortsUserorderbookReplMultilegOrders:
-            return revision_key(OrderKey{
-                .multileg = true,
-                .public_order_id = row.i64(FieldCode::kFortsUserorderbookReplMultilegOrdersPublicOrderId),
-                .private_order_id = row.i64(FieldCode::kFortsUserorderbookReplMultilegOrdersPrivateOrderId),
-                .ext_id = row.i32(FieldCode::kFortsUserorderbookReplMultilegOrdersExtId),
-                .client_code = row.text(FieldCode::kFortsUserorderbookReplMultilegOrdersClientCode),
-            });
-        case TableCode::kFortsUserorderbookReplOrdersCurrentday:
-            return revision_key(OrderKey{
-                .multileg = false,
-                .public_order_id = row.i64(FieldCode::kFortsUserorderbookReplOrdersCurrentdayPublicOrderId),
-                .private_order_id = row.i64(FieldCode::kFortsUserorderbookReplOrdersCurrentdayPrivateOrderId),
-                .ext_id = row.i32(FieldCode::kFortsUserorderbookReplOrdersCurrentdayExtId),
-                .client_code = row.text(FieldCode::kFortsUserorderbookReplOrdersCurrentdayClientCode),
-            });
-        case TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday:
-            return revision_key(OrderKey{
-                .multileg = true,
-                .public_order_id = row.i64(FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPublicOrderId),
-                .private_order_id = row.i64(FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateOrderId),
-                .ext_id = row.i32(FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayExtId),
-                .client_code = row.text(FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayClientCode),
-            });
         case TableCode::kFortsPosReplPosition:
             return revision_key(PositionKey{
                 .scope = PositionScope::kClient,
                 .account_code = row.text(FieldCode::kFortsPosReplPositionClientCode),
                 .isin_id = row.i32(FieldCode::kFortsPosReplPositionIsinId),
                 .account_type = row.i8(FieldCode::kFortsPosReplPositionAccountType),
-            });
-        case TableCode::kFortsPartReplPart:
-            return revision_key(LimitKey{
-                .participant_kind = classify_limit_participant(row.text(FieldCode::kFortsPartReplPartClientCode)),
-                .account_code = row.text(FieldCode::kFortsPartReplPartClientCode),
-                .repl_id = row.i64(FieldCode::kFortsPartReplPartReplId),
             });
         case TableCode::kFortsRefdataReplSession:
             return revision_key(row.i32(FieldCode::kFortsRefdataReplSessionSessId));
@@ -1006,13 +969,6 @@ struct Plaza2PrivateStateProjector::Impl {
                                  std::to_string(row.i32(FieldCode::kFortsRefdataReplFutSessContentsSessId))});
         case TableCode::kFortsRefdataReplFutVcb:
             return future_vcb_row_key(row);
-        case TableCode::kFortsRefdataReplOptSessContents:
-            return revision_key(row.i32(FieldCode::kFortsRefdataReplOptSessContentsIsinId));
-        case TableCode::kFortsRefdataReplMultilegDict:
-            return revision_key({std::to_string(row.i32(FieldCode::kFortsRefdataReplMultilegDictIsinId)),
-                                 std::to_string(row.i8(FieldCode::kFortsRefdataReplMultilegDictLegOrderNo))});
-        case TableCode::kFortsRefdataReplInstr2matchingMap:
-            return revision_key(row.i32(FieldCode::kFortsRefdataReplInstr2matchingMapBaseContractId));
         case TableCode::kFortsRefdataReplSysMessages:
             return revision_key(row.i64(FieldCode::kFortsRefdataReplSysMessagesReplId));
         case TableCode::kFortsSessionstateReplSessionState:
@@ -1192,11 +1148,7 @@ struct Plaza2PrivateStateProjector::Impl {
         reserve_growth(orders_by_key);
         orders_by_key.refresh_index();
         reserve_growth(orders_by_key.identities);
-        reserve_revision_growth({TableCode::kFortsTradeReplOrdersLog, TableCode::kFortsTradeReplMultilegOrdersLog,
-                                 TableCode::kFortsUserorderbookReplOrders,
-                                 TableCode::kFortsUserorderbookReplMultilegOrders,
-                                 TableCode::kFortsUserorderbookReplOrdersCurrentday,
-                                 TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday});
+        reserve_revision_growth({TableCode::kFortsTradeReplOrdersLog, TableCode::kFortsUserorderbookReplOrders});
         // Sort references, then copy each committed row once. Sorting the
         // snapshots themselves repeatedly moves their strings and alias lists.
         std::vector<const OrderMap::value_type*> rows;
@@ -1246,7 +1198,7 @@ struct Plaza2PrivateStateProjector::Impl {
 
     void rebuild_trades() {
         reserve_growth(trades_by_key);
-        reserve_revision_growth({TableCode::kFortsTradeReplUserDeal, TableCode::kFortsTradeReplUserMultilegDeal});
+        reserve_revision_growth({TableCode::kFortsTradeReplUserDeal});
         trade_snapshots = sorted_values<OwnTradeSnapshot>(
             trades_by_key,
             [](const OwnTradeSnapshot& lhs, const OwnTradeSnapshot& rhs) {
@@ -1373,9 +1325,8 @@ struct Plaza2PrivateStateProjector::Impl {
             revisions = &*staged.source_revisions;
         }
         const auto table_it = revisions->find(table_code);
-        if ((table_code == TableCode::kFortsRefdataReplFutSessContents ||
-             table_code == TableCode::kFortsRefdataReplMultilegDict) &&
-            key.find('|') == std::string_view::npos && table_it != revisions->end()) {
+        if (table_code == TableCode::kFortsRefdataReplFutSessContents && key.find('|') == std::string_view::npos &&
+            table_it != revisions->end()) {
             const auto prefix = std::string(key) + '|';
             return std::any_of(table_it->second.begin(), table_it->second.end(),
                                [&](const auto& row) { return row.first.starts_with(prefix); });
@@ -1408,27 +1359,17 @@ struct Plaza2PrivateStateProjector::Impl {
         const auto integer = static_cast<std::int32_t>(key_number(key));
         const auto definition_present = [&](std::string_view isin) {
             return has_source_row(TableCode::kFortsRefdataReplFutInstruments, isin) ||
-                   has_source_row(TableCode::kFortsRefdataReplFutSessContents, isin) ||
-                   has_source_row(TableCode::kFortsRefdataReplOptSessContents, isin) ||
-                   has_source_row(TableCode::kFortsRefdataReplMultilegDict, isin);
+                   has_source_row(TableCode::kFortsRefdataReplFutSessContents, isin);
         };
         using enum TableCode;
         switch (table) {
         case kFortsTradeReplOrdersLog:
-        case kFortsTradeReplMultilegOrdersLog:
-        case kFortsUserorderbookReplOrders:
-        case kFortsUserorderbookReplMultilegOrders:
-        case kFortsUserorderbookReplOrdersCurrentday:
-        case kFortsUserorderbookReplMultilegOrdersCurrentday: {
-            const bool trade = table == kFortsTradeReplOrdersLog || table == kFortsTradeReplMultilegOrdersLog;
-            const bool current = table == kFortsUserorderbookReplOrdersCurrentday ||
-                                 table == kFortsUserorderbookReplMultilegOrdersCurrentday;
+        case kFortsUserorderbookReplOrders: {
+            const bool trade = table == kFortsTradeReplOrdersLog;
             auto& orders =
                 ensure_staged_orders(trade ? StreamCode::kFortsTradeRepl : StreamCode::kFortsUserorderbookRepl);
-            const auto found = orders.find_identity(order_key(key, trade     ? OrderSurface::kTrade
-                                                                   : current ? OrderSurface::kUserOrderbookCurrentDay
-                                                                             : OrderSurface::kUserOrderbook),
-                                                    !native_commit_phase);
+            const auto found = orders.find_identity(
+                order_key(key, trade ? OrderSurface::kTrade : OrderSurface::kUserOrderbook), !native_commit_phase);
             // TRADE retirement remains history loss even when a newer alias
             // supplies the view. Periodic USERORDERBOOK removal is replacement.
             if (trade) {
@@ -1445,20 +1386,17 @@ struct Plaza2PrivateStateProjector::Impl {
             if (trade) {
                 order.from_trade_repl = false;
                 order.trade_repl_commit_sequence = 0;
-            } else if (current)
-                order.from_current_day = false;
-            else
+            } else
                 order.from_user_book = false;
             staged.order_keys.push_back(found->first);
             // Keep a source-empty row indexed until commit compacts its view.
             // The last snapshot may also be deleted in this transaction, so
             // its canonical key must remain resolvable during the swap.
-            if (order.from_user_book || order.from_current_day)
+            if (order.from_user_book)
                 order.user_orderbook_commit_sequence = std::numeric_limits<std::uint64_t>::max();
             break;
         }
-        case kFortsTradeReplUserDeal:
-        case kFortsTradeReplUserMultilegDeal: {
+        case kFortsTradeReplUserDeal: {
             const auto multileg = key_number(key_part(key)) != 0;
             const TradeKey identity{multileg, key_number(key)};
             auto& trades = ensure_staged_trades();
@@ -1477,18 +1415,6 @@ struct Plaza2PrivateStateProjector::Impl {
             identity.isin_id = static_cast<std::int32_t>(key_number(key_part(key)));
             identity.account_type = static_cast<std::int8_t>(key_number(key));
             ensure_staged_positions().erase(identity);
-            break;
-        }
-        case kFortsPartReplPart: {
-            const auto kind = key_part(key);
-            LimitKey identity;
-            if (kind == "repl")
-                identity.repl_id = key_number(key);
-            else {
-                identity.participant_kind = static_cast<LimitParticipantKind>(key_number(kind));
-                identity.account_code = key;
-            }
-            ensure_staged_limits().erase(identity);
             break;
         }
         case kFortsRefdataReplSession:
@@ -1533,7 +1459,6 @@ struct Plaza2PrivateStateProjector::Impl {
             break;
         }
         case kFortsRefdataReplFutInstruments:
-        case kFortsRefdataReplOptSessContents:
         case kFortsInstrumentstateReplInstrumentState: {
             auto& instruments = ensure_staged_instruments();
             // Deleted definitions also touch the view. A missing final map
@@ -1570,22 +1495,6 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         case kFortsRefdataReplFutVcb:
             ensure_staged_future_vcb().erase(std::string(key));
-            break;
-        case kFortsRefdataReplMultilegDict: {
-            const auto isin = static_cast<std::int32_t>(key_number(key_part(key)));
-            const auto ordinal = static_cast<std::int8_t>(key_number(key));
-            auto& instruments = ensure_staged_instruments();
-            const auto found = instruments.find(isin);
-            if (found != instruments.end()) {
-                std::erase_if(found->second.legs, [&](const auto& leg) { return leg.leg_order_no == ordinal; });
-                if (found->second.legs.empty() && !definition_present(revision_key(isin)) &&
-                    !has_source_row(kFortsInstrumentstateReplInstrumentState, revision_key(isin)))
-                    instruments.erase(found);
-            }
-            break;
-        }
-        case kFortsRefdataReplInstr2matchingMap:
-            ensure_staged_matching_map().erase(integer);
             break;
         case kFortsRefdataReplSysMessages:
             ensure_staged_system_messages().erase(key_number(key));
@@ -1676,12 +1585,9 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         if (table_code == kFortsInstrumentstateReplInstrumentState)
             invalidate_status_bindings();
-        if (table_code == kFortsTradeReplOrdersLog || table_code == kFortsTradeReplMultilegOrdersLog ||
-            table_code == kFortsUserorderbookReplOrders || table_code == kFortsUserorderbookReplMultilegOrders ||
-            table_code == kFortsUserorderbookReplOrdersCurrentday ||
-            table_code == kFortsUserorderbookReplMultilegOrdersCurrentday)
+        if (table_code == kFortsTradeReplOrdersLog || table_code == kFortsUserorderbookReplOrders)
             staged.rebuild_order_view = true;
-        if (table_code == kFortsTradeReplUserDeal || table_code == kFortsTradeReplUserMultilegDeal)
+        if (table_code == kFortsTradeReplUserDeal)
             staged.rebuild_trade_view = true;
         static_cast<void>(active_source_revisions());
         auto& sessions =
@@ -1691,14 +1597,9 @@ struct Plaza2PrivateStateProjector::Impl {
                                 : instruments_by_isin;
         auto& future_vcb = staged.active ? ensure_stage_copy(staged.future_vcb, future_vcb_by_row, native_commit_phase)
                                          : future_vcb_by_row;
-        auto& matching = staged.active
-                             ? ensure_stage_copy(staged.matching_map, matching_by_base_contract, native_commit_phase)
-                             : matching_by_base_contract;
         auto& system_messages =
             staged.active ? ensure_stage_copy(staged.system_messages, system_messages_by_id, native_commit_phase)
                           : system_messages_by_id;
-        auto& limits =
-            staged.active ? ensure_stage_copy(staged.limits, limits_by_key, native_commit_phase) : limits_by_key;
         auto& positions = staged.active ? ensure_stage_copy(staged.positions, positions_by_key, native_commit_phase)
                                         : positions_by_key;
         auto& orders =
@@ -1709,31 +1610,18 @@ struct Plaza2PrivateStateProjector::Impl {
         const auto clear_stream_for_table = [&](TableCode code) {
             switch (code) {
             case TableCode::kFortsTradeReplOrdersLog:
-            case TableCode::kFortsTradeReplMultilegOrdersLog:
             case TableCode::kFortsTradeReplUserDeal:
-            case TableCode::kFortsTradeReplUserMultilegDeal:
                 return StreamCode::kFortsTradeRepl;
             case TableCode::kFortsUserorderbookReplOrders:
-            case TableCode::kFortsUserorderbookReplMultilegOrders:
             case TableCode::kFortsUserorderbookReplInfo:
-            case TableCode::kFortsUserorderbookReplOrdersCurrentday:
-            case TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday:
-            case TableCode::kFortsUserorderbookReplInfoCurrentday:
                 return StreamCode::kFortsUserorderbookRepl;
             case TableCode::kFortsPosReplPosition:
-            case TableCode::kFortsPosReplPositionSa:
             case TableCode::kFortsPosReplInfo:
                 return StreamCode::kFortsPosRepl;
-            case TableCode::kFortsPartReplPart:
-            case TableCode::kFortsPartReplPartSa:
-                return StreamCode::kFortsPartRepl;
             case TableCode::kFortsRefdataReplSession:
             case TableCode::kFortsRefdataReplFutVcb:
             case TableCode::kFortsRefdataReplFutInstruments:
             case TableCode::kFortsRefdataReplFutSessContents:
-            case TableCode::kFortsRefdataReplOptSessContents:
-            case TableCode::kFortsRefdataReplMultilegDict:
-            case TableCode::kFortsRefdataReplInstr2matchingMap:
             case TableCode::kFortsRefdataReplSysMessages:
                 return StreamCode::kFortsRefdataRepl;
             case TableCode::kFortsSessionstateReplSessionState:
@@ -1750,12 +1638,8 @@ struct Plaza2PrivateStateProjector::Impl {
             switch (table_code) {
             case kFortsTradeReplOrdersLog:
                 return 0U;
-            case kFortsTradeReplMultilegOrdersLog:
-                return 1U;
             case kFortsTradeReplUserDeal:
                 return 2U;
-            case kFortsTradeReplUserMultilegDeal:
-                return 3U;
             default:
                 return 4U;
             }
@@ -1794,15 +1678,14 @@ struct Plaza2PrivateStateProjector::Impl {
             }
         };
 
-        const auto clear_orders = [&](bool trade_source, bool user_source, bool current_day_source) {
+        const auto clear_orders = [&](bool trade_source) {
             const auto table_it = active_source_revisions().find(table_code);
             if (table_it == active_source_revisions().end()) {
                 return;
             }
             for (auto it = orders.begin(); it != orders.end();) {
-                const bool owns_requested_surface = (trade_source && it->second.from_trade_repl) ||
-                                                    (user_source && it->second.from_user_book) ||
-                                                    (current_day_source && it->second.from_current_day);
+                const bool owns_requested_surface =
+                    trade_source ? it->second.from_trade_repl : it->second.from_user_book;
                 if (!owns_requested_surface) {
                     ++it;
                     continue;
@@ -1821,16 +1704,13 @@ struct Plaza2PrivateStateProjector::Impl {
                     continue;
                 }
                 if (trade_source) {
-                    mark_trade_history_truncated(table_code != kFortsTradeReplMultilegOrdersLog);
+                    mark_trade_history_truncated();
                     it->second.from_trade_repl = false;
                     it->second.trade_repl_commit_sequence = 0;
                 }
-                if (user_source) {
+                if (!trade_source) {
                     it->second.from_user_book = false;
                     it->second.user_orderbook_commit_sequence = 0;
-                }
-                if (current_day_source) {
-                    it->second.from_current_day = false;
                 }
                 erase_source_row(table_code, key);
                 if (!order_has_any_source(it->second)) {
@@ -1861,17 +1741,13 @@ struct Plaza2PrivateStateProjector::Impl {
 
         switch (table_code) {
         case TableCode::kFortsTradeReplOrdersLog:
-            clear_orders(true, false, false);
+            clear_orders(true);
             break;
-        case TableCode::kFortsTradeReplMultilegOrdersLog:
-            clear_orders(true, false, false);
-            break;
-        case TableCode::kFortsTradeReplUserDeal:
-        case TableCode::kFortsTradeReplUserMultilegDeal: {
+        case TableCode::kFortsTradeReplUserDeal: {
             for (auto it = trades.begin(); it != trades.end();) {
                 const auto key = revision_key(it->second);
                 if (source_row_is_stale(table_code, key, clear_revision)) {
-                    mark_trade_history_truncated(table_code != kFortsTradeReplUserMultilegDeal);
+                    mark_trade_history_truncated();
                     erase_source_row(table_code, key);
                     it = trades.erase(it);
                 } else {
@@ -1881,12 +1757,7 @@ struct Plaza2PrivateStateProjector::Impl {
             break;
         }
         case TableCode::kFortsUserorderbookReplOrders:
-        case TableCode::kFortsUserorderbookReplMultilegOrders:
-            clear_orders(false, true, false);
-            break;
-        case TableCode::kFortsUserorderbookReplOrdersCurrentday:
-        case TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday:
-            clear_orders(false, false, true);
+            clear_orders(false);
             break;
         case TableCode::kFortsPosReplPosition:
             for (auto it = positions.begin(); it != positions.end();) {
@@ -1894,17 +1765,6 @@ struct Plaza2PrivateStateProjector::Impl {
                 if (source_row_is_stale(table_code, key, clear_revision)) {
                     erase_source_row(table_code, key);
                     it = positions.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-            break;
-        case TableCode::kFortsPartReplPart:
-            for (auto it = limits.begin(); it != limits.end();) {
-                const auto key = revision_key(it->first);
-                if (source_row_is_stale(table_code, key, clear_revision)) {
-                    erase_source_row(table_code, key);
-                    it = limits.erase(it);
                 } else {
                     ++it;
                 }
@@ -1954,7 +1814,6 @@ struct Plaza2PrivateStateProjector::Impl {
                     continue;
                 }
                 const bool keep_other = has_source_row(TableCode::kFortsRefdataReplFutInstruments, key) ||
-                                        has_source_row(TableCode::kFortsRefdataReplOptSessContents, key) ||
                                         has_source_row(TableCode::kFortsInstrumentstateReplInstrumentState, key);
                 if (keep_other) {
                     it->second.sess_id = 0;
@@ -1981,46 +1840,19 @@ struct Plaza2PrivateStateProjector::Impl {
             }
             break;
         case TableCode::kFortsRefdataReplFutInstruments:
-        case TableCode::kFortsRefdataReplOptSessContents:
             for (auto it = instruments.begin(); it != instruments.end();) {
                 const auto key = revision_key(it->first);
                 if (!source_row_is_stale(table_code, key, clear_revision)) {
                     ++it;
                     continue;
                 }
-                const bool keep_other = has_source_row(table_code == TableCode::kFortsRefdataReplFutInstruments
-                                                           ? TableCode::kFortsRefdataReplFutSessContents
-                                                           : TableCode::kFortsRefdataReplFutInstruments,
-                                                       key) ||
+                const bool keep_other = has_source_row(TableCode::kFortsRefdataReplFutSessContents, key) ||
                                         has_source_row(TableCode::kFortsInstrumentstateReplInstrumentState, key);
                 erase_source_row(table_code, key);
                 if (keep_other) {
                     ++it;
                 } else {
                     it = instruments.erase(it);
-                }
-            }
-            break;
-        case TableCode::kFortsRefdataReplMultilegDict:
-            for (auto& [isin_id, instrument] : instruments) {
-                std::erase_if(instrument.legs, [&](const InstrumentLegSnapshot& leg) {
-                    const auto key = revision_key({std::to_string(isin_id), std::to_string(leg.leg_order_no)});
-                    if (!source_row_is_stale(table_code, key, clear_revision)) {
-                        return false;
-                    }
-                    erase_source_row(table_code, key);
-                    return true;
-                });
-            }
-            break;
-        case TableCode::kFortsRefdataReplInstr2matchingMap:
-            for (auto it = matching.begin(); it != matching.end();) {
-                const auto key = revision_key(it->first);
-                if (source_row_is_stale(table_code, key, clear_revision)) {
-                    erase_source_row(table_code, key);
-                    it = matching.erase(it);
-                } else {
-                    ++it;
                 }
             }
             break;
@@ -2061,8 +1893,7 @@ struct Plaza2PrivateStateProjector::Impl {
                 }
                 erase_source_row(table_code, key);
                 if (has_source_row(TableCode::kFortsRefdataReplFutSessContents, key) ||
-                    has_source_row(TableCode::kFortsRefdataReplFutInstruments, key) ||
-                    has_source_row(TableCode::kFortsRefdataReplOptSessContents, key)) {
+                    has_source_row(TableCode::kFortsRefdataReplFutInstruments, key)) {
                     it->second.has_current_status = false;
                     it->second.current_status = 0;
                     it->second.current_status_refdata_bound = false;
@@ -2283,274 +2114,115 @@ struct Plaza2PrivateStateProjector::Impl {
             staged.order_keys.push_back(std::move(key));
     }
 
-    void apply_trade_order_row(const RowReader& row, bool multileg) {
+    void apply_trade_order_row(const RowReader& row) {
         auto& orders = ensure_staged_orders(StreamCode::kFortsTradeRepl);
         OrderKey key{
             .surface = OrderSurface::kTrade,
-            .multileg = multileg,
-            .public_order_id = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPublicOrderId
-                                                : FieldCode::kFortsTradeReplOrdersLogPublicOrderId),
-            .private_order_id = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPrivateOrderId
-                                                 : FieldCode::kFortsTradeReplOrdersLogPrivateOrderId),
-            .ext_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogExtId
-                                       : FieldCode::kFortsTradeReplOrdersLogExtId),
-            .client_code = row.text(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogClientCode
-                                             : FieldCode::kFortsTradeReplOrdersLogClientCode),
+            .multileg = false,
+            .public_order_id = row.i64(FieldCode::kFortsTradeReplOrdersLogPublicOrderId),
+            .private_order_id = row.i64(FieldCode::kFortsTradeReplOrdersLogPrivateOrderId),
+            .ext_id = row.i32(FieldCode::kFortsTradeReplOrdersLogExtId),
+            .client_code = row.text(FieldCode::kFortsTradeReplOrdersLogClientCode),
         };
-        const auto previous_id = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogIdOrd1
-                                                  : FieldCode::kFortsTradeReplOrdersLogIdOrd1);
+        const auto previous_id = row.i64(FieldCode::kFortsTradeReplOrdersLogIdOrd1);
         OrderKey resolved;
         // Native TRADE rows are exchange records. Move can reuse ext_id for a
         // distinct positive order ID before reply 176 supplies the logical link.
         auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase && previous_id == 0,
                                            !native_commit_phase);
         record_order_change(order, std::move(resolved));
-        order.repl_id = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogReplId
-                                         : FieldCode::kFortsTradeReplOrdersLogReplId);
-        order.sess_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogSessId
-                                         : FieldCode::kFortsTradeReplOrdersLogSessId);
-        order.isin_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogIsinId
-                                         : FieldCode::kFortsTradeReplOrdersLogIsinId);
-        order.login_from = row.text(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogLoginFrom
-                                             : FieldCode::kFortsTradeReplOrdersLogLoginFrom);
-        order.comment = row.text(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogComment
-                                          : FieldCode::kFortsTradeReplOrdersLogComment);
-        order.price = row.text(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPrice
-                                        : FieldCode::kFortsTradeReplOrdersLogPrice);
-        order.public_amount = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPublicAmount
-                                               : FieldCode::kFortsTradeReplOrdersLogPublicAmount);
-        order.public_amount_rest = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPublicAmountRest
-                                                    : FieldCode::kFortsTradeReplOrdersLogPublicAmountRest);
-        order.private_amount = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPrivateAmount
-                                                : FieldCode::kFortsTradeReplOrdersLogPrivateAmount);
-        order.private_amount_rest = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPrivateAmountRest
-                                                     : FieldCode::kFortsTradeReplOrdersLogPrivateAmountRest);
-        order.id_deal = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogIdDeal
-                                         : FieldCode::kFortsTradeReplOrdersLogIdDeal);
+        order.repl_id = row.i64(FieldCode::kFortsTradeReplOrdersLogReplId);
+        order.sess_id = row.i32(FieldCode::kFortsTradeReplOrdersLogSessId);
+        order.isin_id = row.i32(FieldCode::kFortsTradeReplOrdersLogIsinId);
+        order.login_from = row.text(FieldCode::kFortsTradeReplOrdersLogLoginFrom);
+        order.comment = row.text(FieldCode::kFortsTradeReplOrdersLogComment);
+        order.price = row.text(FieldCode::kFortsTradeReplOrdersLogPrice);
+        order.public_amount = row.i64(FieldCode::kFortsTradeReplOrdersLogPublicAmount);
+        order.public_amount_rest = row.i64(FieldCode::kFortsTradeReplOrdersLogPublicAmountRest);
+        order.private_amount = row.i64(FieldCode::kFortsTradeReplOrdersLogPrivateAmount);
+        order.private_amount_rest = row.i64(FieldCode::kFortsTradeReplOrdersLogPrivateAmountRest);
+        order.id_deal = row.i64(FieldCode::kFortsTradeReplOrdersLogIdDeal);
         order.id_ord1 = previous_id;
-        order.prevorder_id = multileg ? 0 : row.i64(FieldCode::kFortsTradeReplOrdersLogPrevorderId);
-        order.xstatus = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogXstatus
-                                         : FieldCode::kFortsTradeReplOrdersLogXstatus);
-        order.xstatus2 = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogXstatus2
-                                          : FieldCode::kFortsTradeReplOrdersLogXstatus2);
-        order.dir =
-            row.i8(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogDir : FieldCode::kFortsTradeReplOrdersLogDir);
-        order.public_action = row.i8(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPublicAction
-                                              : FieldCode::kFortsTradeReplOrdersLogPublicAction);
-        order.private_action = row.i8(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogPrivateAction
-                                               : FieldCode::kFortsTradeReplOrdersLogPrivateAction);
-        order.moment = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogMoment
-                                        : FieldCode::kFortsTradeReplOrdersLogMoment);
-        order.moment_ns = row.u64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogMomentNs
-                                           : FieldCode::kFortsTradeReplOrdersLogMomentNs);
+        order.prevorder_id = row.i64(FieldCode::kFortsTradeReplOrdersLogPrevorderId);
+        order.xstatus = row.i64(FieldCode::kFortsTradeReplOrdersLogXstatus);
+        order.xstatus2 = row.i64(FieldCode::kFortsTradeReplOrdersLogXstatus2);
+        order.dir = row.i8(FieldCode::kFortsTradeReplOrdersLogDir);
+        order.public_action = row.i8(FieldCode::kFortsTradeReplOrdersLogPublicAction);
+        order.private_action = row.i8(FieldCode::kFortsTradeReplOrdersLogPrivateAction);
+        order.moment = row.i64(FieldCode::kFortsTradeReplOrdersLogMoment);
+        order.moment_ns = row.u64(FieldCode::kFortsTradeReplOrdersLogMomentNs);
         if (!order.moment_ns)
-            order.moment_ns = row.timestamp_ns(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogMoment
-                                                        : FieldCode::kFortsTradeReplOrdersLogMoment);
+            order.moment_ns = row.timestamp_ns(FieldCode::kFortsTradeReplOrdersLogMoment);
         order.from_trade_repl = true;
         order.trade_repl_commit_sequence = std::numeric_limits<std::uint64_t>::max();
     }
 
-    void apply_user_book_order_row(const RowReader& row, bool multileg, bool current_day) {
+    void apply_user_book_order_row(const RowReader& row) {
         auto& orders = ensure_staged_orders(StreamCode::kFortsUserorderbookRepl);
-        const auto public_order_id_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPublicOrderId
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersPublicOrderId)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayPublicOrderId
-                                    : FieldCode::kFortsUserorderbookReplOrdersPublicOrderId);
-        const auto private_order_id_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateOrderId
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersPrivateOrderId)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayPrivateOrderId
-                                    : FieldCode::kFortsUserorderbookReplOrdersPrivateOrderId);
-        const auto ext_id_field = multileg
-                                      ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayExtId
-                                                     : FieldCode::kFortsUserorderbookReplMultilegOrdersExtId)
-                                      : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayExtId
-                                                     : FieldCode::kFortsUserorderbookReplOrdersExtId);
-        const auto client_code_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayClientCode
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersClientCode)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayClientCode
-                                    : FieldCode::kFortsUserorderbookReplOrdersClientCode);
-        const auto sess_field = multileg
-                                    ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdaySessId
-                                                   : FieldCode::kFortsUserorderbookReplMultilegOrdersSessId)
-                                    : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdaySessId
-                                                   : FieldCode::kFortsUserorderbookReplOrdersSessId);
-        const auto isin_field = multileg
-                                    ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayIsinId
-                                                   : FieldCode::kFortsUserorderbookReplMultilegOrdersIsinId)
-                                    : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayIsinId
-                                                   : FieldCode::kFortsUserorderbookReplOrdersIsinId);
-        const auto login_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayLoginFrom
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersLoginFrom)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayLoginFrom
-                                    : FieldCode::kFortsUserorderbookReplOrdersLoginFrom);
-        const auto comment_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayComment
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersComment)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayComment
-                                    : FieldCode::kFortsUserorderbookReplOrdersComment);
-        const auto price_field = multileg
-                                     ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPrice
-                                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersPrice)
-                                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayPrice
-                                                    : FieldCode::kFortsUserorderbookReplOrdersPrice);
-        const auto public_amount_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPublicAmount
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersPublicAmount)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayPublicAmount
-                                    : FieldCode::kFortsUserorderbookReplOrdersPublicAmount);
-        const auto public_rest_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPublicAmountRest
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersPublicAmountRest)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayPublicAmountRest
-                                    : FieldCode::kFortsUserorderbookReplOrdersPublicAmountRest);
-        const auto private_amount_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateAmount
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersPrivateAmount)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayPrivateAmount
-                                    : FieldCode::kFortsUserorderbookReplOrdersPrivateAmount);
-        const auto private_rest_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateAmountRest
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersPrivateAmountRest)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayPrivateAmountRest
-                                    : FieldCode::kFortsUserorderbookReplOrdersPrivateAmountRest);
-        const auto xstatus_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayXstatus
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersXstatus)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayXstatus
-                                    : FieldCode::kFortsUserorderbookReplOrdersXstatus);
-        const auto xstatus2_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayXstatus2
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersXstatus2)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayXstatus2
-                                    : FieldCode::kFortsUserorderbookReplOrdersXstatus2);
-        const auto dir_field = multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayDir
-                                                       : FieldCode::kFortsUserorderbookReplMultilegOrdersDir)
-                                        : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayDir
-                                                       : FieldCode::kFortsUserorderbookReplOrdersDir);
-        const auto public_action_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPublicAction
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersPublicAction)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayPublicAction
-                                    : FieldCode::kFortsUserorderbookReplOrdersPublicAction);
-        const auto private_action_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayPrivateAction
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersPrivateAction)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayPrivateAction
-                                    : FieldCode::kFortsUserorderbookReplOrdersPrivateAction);
-        const auto moment_field = multileg
-                                      ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayMoment
-                                                     : FieldCode::kFortsUserorderbookReplMultilegOrdersMoment)
-                                      : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayMoment
-                                                     : FieldCode::kFortsUserorderbookReplOrdersMoment);
-        const auto moment_ns_field =
-            multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayMomentNs
-                                    : FieldCode::kFortsUserorderbookReplMultilegOrdersMomentNs)
-                     : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayMomentNs
-                                    : FieldCode::kFortsUserorderbookReplOrdersMomentNs);
-
         OrderKey key{
-            .surface = current_day ? OrderSurface::kUserOrderbookCurrentDay : OrderSurface::kUserOrderbook,
-            .multileg = multileg,
-            .public_order_id = row.i64(public_order_id_field),
-            .private_order_id = row.i64(private_order_id_field),
-            .ext_id = row.i32(ext_id_field),
-            .client_code = row.text(client_code_field),
+            .surface = OrderSurface::kUserOrderbook,
+            .public_order_id = row.i64(FieldCode::kFortsUserorderbookReplOrdersPublicOrderId),
+            .private_order_id = row.i64(FieldCode::kFortsUserorderbookReplOrdersPrivateOrderId),
+            .ext_id = row.i32(FieldCode::kFortsUserorderbookReplOrdersExtId),
+            .client_code = row.text(FieldCode::kFortsUserorderbookReplOrdersClientCode),
         };
         OrderKey resolved;
         auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase, !native_commit_phase);
         record_order_change(order, std::move(resolved));
-        order.repl_id =
-            row.i64(multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayReplId
-                                            : FieldCode::kFortsUserorderbookReplMultilegOrdersReplId)
-                             : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayReplId
-                                            : FieldCode::kFortsUserorderbookReplOrdersReplId));
-
-        order.sess_id = row.i32(sess_field);
-        order.isin_id = row.i32(isin_field);
-        order.login_from = row.text(login_field);
-        order.comment = row.text(comment_field);
-        order.id_ord1 =
-            row.i64(multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayIdOrd1
-                                            : FieldCode::kFortsUserorderbookReplMultilegOrdersIdOrd1)
-                             : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayIdOrd1
-                                            : FieldCode::kFortsUserorderbookReplOrdersIdOrd1));
-        order.price = row.text(price_field);
-        order.public_amount = row.i64(public_amount_field);
-        order.public_amount_rest = row.i64(public_rest_field);
-        order.private_amount = row.i64(private_amount_field);
-        order.private_amount_rest = row.i64(private_rest_field);
-        order.xstatus = row.i64(xstatus_field);
-        order.xstatus2 = row.i64(xstatus2_field);
-        order.dir = row.i8(dir_field);
-        order.public_action = row.i8(public_action_field);
-        order.private_action = row.i8(private_action_field);
-        order.moment = row.i64(moment_field);
-        order.moment_ns = row.u64(moment_ns_field);
+        order.repl_id = row.i64(FieldCode::kFortsUserorderbookReplOrdersReplId);
+        order.sess_id = row.i32(FieldCode::kFortsUserorderbookReplOrdersSessId);
+        order.isin_id = row.i32(FieldCode::kFortsUserorderbookReplOrdersIsinId);
+        order.login_from = row.text(FieldCode::kFortsUserorderbookReplOrdersLoginFrom);
+        order.comment = row.text(FieldCode::kFortsUserorderbookReplOrdersComment);
+        order.id_ord1 = row.i64(FieldCode::kFortsUserorderbookReplOrdersIdOrd1);
+        order.price = row.text(FieldCode::kFortsUserorderbookReplOrdersPrice);
+        order.public_amount = row.i64(FieldCode::kFortsUserorderbookReplOrdersPublicAmount);
+        order.public_amount_rest = row.i64(FieldCode::kFortsUserorderbookReplOrdersPublicAmountRest);
+        order.private_amount = row.i64(FieldCode::kFortsUserorderbookReplOrdersPrivateAmount);
+        order.private_amount_rest = row.i64(FieldCode::kFortsUserorderbookReplOrdersPrivateAmountRest);
+        order.xstatus = row.i64(FieldCode::kFortsUserorderbookReplOrdersXstatus);
+        order.xstatus2 = row.i64(FieldCode::kFortsUserorderbookReplOrdersXstatus2);
+        order.dir = row.i8(FieldCode::kFortsUserorderbookReplOrdersDir);
+        order.public_action = row.i8(FieldCode::kFortsUserorderbookReplOrdersPublicAction);
+        order.private_action = row.i8(FieldCode::kFortsUserorderbookReplOrdersPrivateAction);
+        order.moment = row.i64(FieldCode::kFortsUserorderbookReplOrdersMoment);
+        order.moment_ns = row.u64(FieldCode::kFortsUserorderbookReplOrdersMomentNs);
         if (!order.moment_ns)
-            order.moment_ns = row.timestamp_ns(moment_field);
-        order.from_user_book = !current_day;
-        order.from_current_day = current_day;
+            order.moment_ns = row.timestamp_ns(FieldCode::kFortsUserorderbookReplOrdersMoment);
+        order.from_user_book = true;
         order.user_orderbook_commit_sequence = std::numeric_limits<std::uint64_t>::max();
     }
 
-    void apply_trade_row(const RowReader& row, bool multileg) {
+    void apply_trade_row(const RowReader& row) {
         auto& trades = ensure_staged_trades();
         const auto key = TradeKey{
-            .multileg = multileg,
-            .id_deal = row.i64(multileg ? FieldCode::kFortsTradeReplUserMultilegDealIdDeal
-                                        : FieldCode::kFortsTradeReplUserDealIdDeal),
+            .multileg = false,
+            .id_deal = row.i64(FieldCode::kFortsTradeReplUserDealIdDeal),
         };
         auto& trade = trades[key];
         staged.trade_keys.push_back(key);
-        trade.multileg = multileg;
+        trade.multileg = false;
         trade.id_deal = key.id_deal;
-        trade.sess_id = row.i32(multileg ? FieldCode::kFortsTradeReplUserMultilegDealSessId
-                                         : FieldCode::kFortsTradeReplUserDealSessId);
-        trade.isin_id = row.i32(multileg ? FieldCode::kFortsTradeReplUserMultilegDealIsinId
-                                         : FieldCode::kFortsTradeReplUserDealIsinId);
-        trade.price = row.text(multileg ? FieldCode::kFortsTradeReplUserMultilegDealPrice
-                                        : FieldCode::kFortsTradeReplUserDealPrice);
-        if (multileg) {
-            trade.rate_price = row.text(FieldCode::kFortsTradeReplUserMultilegDealRatePrice);
-            trade.swap_price = row.text(FieldCode::kFortsTradeReplUserMultilegDealSwapPrice);
-        }
-        trade.amount = row.i64(multileg ? FieldCode::kFortsTradeReplUserMultilegDealXamount
-                                        : FieldCode::kFortsTradeReplUserDealXamount);
-        trade.public_order_id_buy = row.i64(multileg ? FieldCode::kFortsTradeReplUserMultilegDealPublicOrderIdBuy
-                                                     : FieldCode::kFortsTradeReplUserDealPublicOrderIdBuy);
-        trade.public_order_id_sell = row.i64(multileg ? FieldCode::kFortsTradeReplUserMultilegDealPublicOrderIdSell
-                                                      : FieldCode::kFortsTradeReplUserDealPublicOrderIdSell);
-        trade.private_order_id_buy = row.i64(multileg ? FieldCode::kFortsTradeReplUserMultilegDealPrivateOrderIdBuy
-                                                      : FieldCode::kFortsTradeReplUserDealPrivateOrderIdBuy);
-        trade.private_order_id_sell = row.i64(multileg ? FieldCode::kFortsTradeReplUserMultilegDealPrivateOrderIdSell
-                                                       : FieldCode::kFortsTradeReplUserDealPrivateOrderIdSell);
-        trade.ext_id_buy = row.i32(multileg ? FieldCode::kFortsTradeReplUserMultilegDealExtIdBuy
-                                            : FieldCode::kFortsTradeReplUserDealExtIdBuy);
-        trade.ext_id_sell = row.i32(multileg ? FieldCode::kFortsTradeReplUserMultilegDealExtIdSell
-                                             : FieldCode::kFortsTradeReplUserDealExtIdSell);
-        trade.code_buy = row.text(multileg ? FieldCode::kFortsTradeReplUserMultilegDealCodeBuy
-                                           : FieldCode::kFortsTradeReplUserDealCodeBuy);
-        trade.code_sell = row.text(multileg ? FieldCode::kFortsTradeReplUserMultilegDealCodeSell
-                                            : FieldCode::kFortsTradeReplUserDealCodeSell);
-        trade.comment_buy = row.text(multileg ? FieldCode::kFortsTradeReplUserMultilegDealCommentBuy
-                                              : FieldCode::kFortsTradeReplUserDealCommentBuy);
-        trade.comment_sell = row.text(multileg ? FieldCode::kFortsTradeReplUserMultilegDealCommentSell
-                                               : FieldCode::kFortsTradeReplUserDealCommentSell);
-        trade.login_buy = row.text(multileg ? FieldCode::kFortsTradeReplUserMultilegDealLoginBuy
-                                            : FieldCode::kFortsTradeReplUserDealLoginBuy);
-        trade.login_sell = row.text(multileg ? FieldCode::kFortsTradeReplUserMultilegDealLoginSell
-                                             : FieldCode::kFortsTradeReplUserDealLoginSell);
-        trade.moment = row.i64(multileg ? FieldCode::kFortsTradeReplUserMultilegDealMoment
-                                        : FieldCode::kFortsTradeReplUserDealMoment);
-        trade.moment_ns = row.u64(multileg ? FieldCode::kFortsTradeReplUserMultilegDealMomentNs
-                                           : FieldCode::kFortsTradeReplUserDealMomentNs);
+        trade.sess_id = row.i32(FieldCode::kFortsTradeReplUserDealSessId);
+        trade.isin_id = row.i32(FieldCode::kFortsTradeReplUserDealIsinId);
+        trade.price = row.text(FieldCode::kFortsTradeReplUserDealPrice);
+        trade.amount = row.i64(FieldCode::kFortsTradeReplUserDealXamount);
+        trade.public_order_id_buy = row.i64(FieldCode::kFortsTradeReplUserDealPublicOrderIdBuy);
+        trade.public_order_id_sell = row.i64(FieldCode::kFortsTradeReplUserDealPublicOrderIdSell);
+        trade.private_order_id_buy = row.i64(FieldCode::kFortsTradeReplUserDealPrivateOrderIdBuy);
+        trade.private_order_id_sell = row.i64(FieldCode::kFortsTradeReplUserDealPrivateOrderIdSell);
+        trade.ext_id_buy = row.i32(FieldCode::kFortsTradeReplUserDealExtIdBuy);
+        trade.ext_id_sell = row.i32(FieldCode::kFortsTradeReplUserDealExtIdSell);
+        trade.code_buy = row.text(FieldCode::kFortsTradeReplUserDealCodeBuy);
+        trade.code_sell = row.text(FieldCode::kFortsTradeReplUserDealCodeSell);
+        trade.comment_buy = row.text(FieldCode::kFortsTradeReplUserDealCommentBuy);
+        trade.comment_sell = row.text(FieldCode::kFortsTradeReplUserDealCommentSell);
+        trade.login_buy = row.text(FieldCode::kFortsTradeReplUserDealLoginBuy);
+        trade.login_sell = row.text(FieldCode::kFortsTradeReplUserDealLoginSell);
+        trade.moment = row.i64(FieldCode::kFortsTradeReplUserDealMoment);
+        trade.moment_ns = row.u64(FieldCode::kFortsTradeReplUserDealMomentNs);
         if (!trade.moment_ns)
-            trade.moment_ns = row.timestamp_ns(multileg ? FieldCode::kFortsTradeReplUserMultilegDealMoment
-                                                        : FieldCode::kFortsTradeReplUserDealMoment);
+            trade.moment_ns = row.timestamp_ns(FieldCode::kFortsTradeReplUserDealMoment);
     }
 
     void apply_position_row(const RowReader& row) {
@@ -2856,10 +2528,10 @@ struct Plaza2PrivateStateProjector::Impl {
         record_source_revision(event.table_code, std::move(key), event.signed_value, repl_id);
         switch (event.table_code) {
         case TableCode::kFortsTradeReplOrdersLog:
-            apply_trade_order_row(row, false);
+            apply_trade_order_row(row);
             break;
         case TableCode::kFortsTradeReplUserDeal:
-            apply_trade_row(row, false);
+            apply_trade_row(row);
             break;
         case TableCode::kFortsTradeReplHeartbeat:
             apply_trade_heartbeat_row(row);
@@ -2871,7 +2543,7 @@ struct Plaza2PrivateStateProjector::Impl {
                                 FieldCode::kFortsTradeReplSysEventsServerTime);
             break;
         case TableCode::kFortsUserorderbookReplOrders:
-            apply_user_book_order_row(row, false, false);
+            apply_user_book_order_row(row);
             break;
         case TableCode::kFortsUserorderbookReplInfo:
             apply_info_row(
@@ -3140,37 +2812,8 @@ struct Plaza2PrivateStateProjector::Impl {
     void clear_source_revisions_for_stream(StreamCode stream_code) {
         auto& revisions = active_source_revisions();
         const auto belongs_to_stream = [stream_code](TableCode table_code) {
-            switch (stream_code) {
-            case StreamCode::kFortsTradeRepl:
-                return table_code == TableCode::kFortsTradeReplOrdersLog ||
-                       table_code == TableCode::kFortsTradeReplMultilegOrdersLog ||
-                       table_code == TableCode::kFortsTradeReplUserDeal ||
-                       table_code == TableCode::kFortsTradeReplUserMultilegDeal;
-            case StreamCode::kFortsUserorderbookRepl:
-                return table_code == TableCode::kFortsUserorderbookReplOrders ||
-                       table_code == TableCode::kFortsUserorderbookReplMultilegOrders ||
-                       table_code == TableCode::kFortsUserorderbookReplOrdersCurrentday ||
-                       table_code == TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday;
-            case StreamCode::kFortsPosRepl:
-                return table_code == TableCode::kFortsPosReplPosition;
-            case StreamCode::kFortsPartRepl:
-                return table_code == TableCode::kFortsPartReplPart;
-            case StreamCode::kFortsRefdataRepl:
-                return table_code == TableCode::kFortsRefdataReplSession ||
-                       table_code == TableCode::kFortsRefdataReplFutVcb ||
-                       table_code == TableCode::kFortsRefdataReplFutInstruments ||
-                       table_code == TableCode::kFortsRefdataReplFutSessContents ||
-                       table_code == TableCode::kFortsRefdataReplOptSessContents ||
-                       table_code == TableCode::kFortsRefdataReplMultilegDict ||
-                       table_code == TableCode::kFortsRefdataReplInstr2matchingMap ||
-                       table_code == TableCode::kFortsRefdataReplSysMessages;
-            case StreamCode::kFortsSessionstateRepl:
-                return table_code == TableCode::kFortsSessionstateReplSessionState;
-            case StreamCode::kFortsInstrumentstateRepl:
-                return table_code == TableCode::kFortsInstrumentstateReplInstrumentState;
-            default:
-                return false;
-            }
+            const auto* table = generated::FindTableByCode(table_code);
+            return table && table->stream_id == static_cast<std::uint32_t>(stream_code);
         };
         for (auto it = revisions.begin(); it != revisions.end();) {
             if (belongs_to_stream(it->first)) {

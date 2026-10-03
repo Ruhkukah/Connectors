@@ -1,4 +1,5 @@
 #include "moex/plaza2/cgate/plaza2_public_deals.hpp"
+#include "field_read_contract.hpp"
 
 #include <array>
 #include <cstdint>
@@ -510,12 +511,14 @@ void test_conflicting_identity_and_pending_bound() {
 
 int main() {
     try {
+        moex::plaza2::test::FieldReadContract field_reads;
         test_snapshot_barrier_and_atomic_commit();
         test_aggressor_status_flags();
         test_lifenum_revision_and_cursor_ring();
         test_bad_transactions_prices_and_lifenum();
         test_conflicting_identity_and_pending_bound();
         std::cout << "PASS plaza2_public_deals_test\n";
+        field_reads.verify("optional public DEALS projection", 13);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL plaza2_public_deals_test: " << error.what() << '\n';

@@ -23,6 +23,7 @@
 #include "userbook_barrier_host_regression.hpp"
 #include "multileg_history_host_regression.hpp"
 #include "userbook_replacement_host_regression.hpp"
+#include "plaza2_cgate/field_read_contract.hpp"
 
 #include <cstdlib>
 #include <dlfcn.h>
@@ -148,6 +149,7 @@ void named_journal_regression(TradingHostConfig config, const test::fake::Contro
 } // namespace
 int main(int argc, char** argv) {
     try {
+        moex::plaza2::test::FieldReadContract field_reads;
         test::require(argc == 2, "fake runtime path required");
         scope_exit_regression();
         const auto root = test::make_temp_directory("trading-host");
@@ -362,6 +364,7 @@ int main(int argc, char** argv) {
         fake.clear(moex::plaza2::test::fake::Option::UserbookOnlyOrder);
         fake.clear(moex::plaza2::test::fake::Option::PubReplyOrderId);
         test::remove_tree(root);
+        field_reads.verify("native trading and journal", 170);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

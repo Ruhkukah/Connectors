@@ -1,4 +1,5 @@
 #include "moex/connector_host/trading_host.hpp"
+#include "moex/plaza2/cgate/plaza2_field_read_audit.hpp"
 
 #include <algorithm>
 #include <array>
@@ -204,6 +205,9 @@ bool journal_replication_row(const cg::Plaza2ListenerEvent& event, const Trading
     using enum gen::FieldCode;
     using enum gen::TableCode;
     const auto field = [&](gen::FieldCode code) -> const cg::Plaza2DecodedFieldValue* {
+#ifdef MOEX_CGATE_FIELD_READ_AUDIT
+        gen::AuditFieldRead(code);
+#endif
         const auto found = std::find_if(event.fields.begin(), event.fields.end(),
                                         [code](const auto& value) { return value.field_code == code; });
         return found == event.fields.end() ? nullptr : &*found;
@@ -230,8 +234,6 @@ bool journal_replication_row(const cg::Plaza2ListenerEvent& event, const Trading
         return own(kFortsTradeReplOrdersLogClientCode, kFortsTradeReplOrdersLogReplAct);
     case kFortsUserorderbookReplOrders:
         return own(kFortsUserorderbookReplOrdersClientCode, kFortsUserorderbookReplOrdersReplAct);
-    case kFortsUserorderbookReplOrdersCurrentday:
-        return own(kFortsUserorderbookReplOrdersCurrentdayClientCode, kFortsUserorderbookReplOrdersCurrentdayReplAct);
     case kFortsTradeReplUserDeal:
         return own(kFortsTradeReplUserDealCodeBuy, kFortsTradeReplUserDealReplAct) ||
                own(kFortsTradeReplUserDealCodeSell, kFortsTradeReplUserDealReplAct);
@@ -242,8 +244,6 @@ bool journal_replication_row(const cg::Plaza2ListenerEvent& event, const Trading
                ((type && type->signed_value == (config.orders.client_code.empty() ? 1 : 2)) ||
                 deleted(kFortsPosReplPositionReplAct));
     }
-    case kFortsPartReplPart:
-        return own(kFortsPartReplPartClientCode, kFortsPartReplPartReplAct);
     case kFortsInstrumentstateReplInstrumentState:
         return target(kFortsInstrumentstateReplInstrumentStateIsinId, kFortsInstrumentstateReplInstrumentStateReplAct);
     case kFortsRefdataReplFutSessContents:
@@ -253,7 +253,6 @@ bool journal_replication_row(const cg::Plaza2ListenerEvent& event, const Trading
     case kFortsTradeReplHeartbeat:
     case kFortsPosReplInfo:
     case kFortsUserorderbookReplInfo:
-    case kFortsUserorderbookReplInfoCurrentday:
     case kFortsRefdataReplSession:
     case kFortsSessionstateReplSessionState:
     case kFortsTradeReplSysEvents:

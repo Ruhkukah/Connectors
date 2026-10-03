@@ -1,6 +1,7 @@
 #include "moex/plaza2/cgate/plaza2_aggr20_md.hpp"
 
 #include "plaza2_runtime_test_support.hpp"
+#include "field_read_contract.hpp"
 
 #include <array>
 #include <chrono>
@@ -40,6 +41,7 @@ Plaza2DecodedFieldValue decimal_field(FieldCode code, std::string_view value) {
 
 int main() {
     try {
+        moex::plaza2::test::FieldReadContract field_reads;
         using namespace moex::plaza2::cgate;
         using moex::plaza2::test::require;
 
@@ -292,6 +294,7 @@ int main() {
         slots.reset();
         require(slots.snapshot().row_count == 0 && !slots.snapshot_for_isin(1001),
                 "epoch reset must discard slot state");
+        field_reads.verify("AGGR projection", 10);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

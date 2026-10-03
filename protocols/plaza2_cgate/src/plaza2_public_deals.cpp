@@ -1,4 +1,5 @@
 #include "moex/plaza2/cgate/plaza2_public_deals.hpp"
+#include "moex/plaza2/cgate/plaza2_field_read_audit.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -20,6 +21,9 @@ constexpr auto kPassiveSide = std::uint64_t{0x40000000000};
 constexpr auto kMaxD16_5Magnitude = std::int64_t{9'999'999'999'999'999};
 
 const Plaza2DecodedFieldValue* find_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCode code) noexcept {
+#ifdef MOEX_CGATE_FIELD_READ_AUDIT
+    generated::AuditFieldRead(code);
+#endif
     for (const auto& field : fields) {
         if (field.field_code == code) {
             return &field;
