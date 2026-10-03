@@ -139,7 +139,7 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
             // Storage protection blocks entry through the kill/send guards.
             return !rebuilding_ &&
                    std::find(config_.isin_ids.begin(), config_.isin_ids.end(), isin) != config_.isin_ids.end() &&
-                   moex::connector_host::order_entry_ready(session_, isin);
+                   moex::connector_host::order_entry_ready(session_, isin, 0, true);
         },
         [this](auto isin) -> std::optional<plaza2::private_state::FutureSessionTerms> {
             const auto& data = session_.private_state();
@@ -433,6 +433,8 @@ std::string CgateTradingHost::place(OrderRequest request) {
     assert_owner();
     if (!log_error_.empty())
         return "storage failure; cancel-only mode blocks Add";
+    if (request.type == tr::Plaza2TradeOrderType::Ioc && !order_entry_ready(session_, request.isin_id))
+        return "IOC requires continuous trading; opening-auction IOC is prohibited";
     auto error = orders_->place(std::move(request));
     if (error.empty())
         dispatch_commands();
@@ -449,6 +451,9 @@ std::string CgateTradingHost::move(std::string_view key, std::string price, std:
     assert_owner();
     if (!log_error_.empty())
         return "storage failure; cancel-only mode blocks Move";
+    const auto order = orders_->orders().find(std::string(key));
+    if (order != orders_->orders().end() && !order_entry_ready(session_, order->second.request.isin_id))
+        return "Move requires continuous trading; opening-auction Move is prohibited";
     auto error = orders_->move(key, std::move(price), quantity);
     if (error.empty())
         dispatch_commands();

@@ -65,6 +65,7 @@ October 2 round-four corrections add individual fallback after rejected mass can
 - Message creation: **Сообщения создаются перед отправкой и уничтожаются после отправки**.
 - Commands/replies: AddOrder/179, DelOrder/177, DelUserOrders/186, MoveOrder/176; system messages 99 and 100; timeout processing. Type 1 is a day limit order, type 2 is IOC.
 - Market validity uses the latest committed event_type 1 for the current session, and is invalidated by a later event_type 5. Order readiness uses private stream and session/instrument states independently of AGGR. No fixed session ID is configured.
+- Opening auction: instrument public_state 6 permits Day limit Adds. IOC/FOK and Move are refused, following CGate Appendix C codes 4302 and 4300. Close-only states 8/9 are not declared for new entry. Cancels remain available in non-entry phases (0/2/5/6/8/9).
 - Declare morning/day/evening support as implemented; attach the full-day logs before claiming it was rehearsed. Leave FullOrderLog/public DEALS/COD/RFS unchecked.
 
 ## Operator emergency procedure

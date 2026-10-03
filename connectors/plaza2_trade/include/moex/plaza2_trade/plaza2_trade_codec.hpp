@@ -40,6 +40,7 @@ struct Plaza2TradeEncodedCommand {
     std::vector<std::byte> payload;
     Plaza2TradeValidationResult validation;
     std::optional<std::int32_t> isin_id;
+    std::optional<Plaza2TradeOrderType> order_type;
     std::string fields_json{"{}"};
 };
 

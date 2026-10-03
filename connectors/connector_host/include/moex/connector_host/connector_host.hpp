@@ -148,7 +148,7 @@ struct ConnectorHostMarketDataSnapshot {
 [[nodiscard]] std::int32_t current_session_id(const plaza2::private_state::Plaza2PrivateStateProjector& data,
                                               std::int64_t now_seconds = 0);
 [[nodiscard]] bool order_entry_ready(const plaza2_trade::CgateSession& host, std::int64_t isin_id,
-                                     std::int32_t session_id = 0);
+                                     std::int32_t session_id = 0, bool allow_opening_auction = false);
 [[nodiscard]] std::string_view host_state_name(ConnectorHostState state) noexcept;
 [[nodiscard]] std::string render_snapshot(const ConnectorHostSnapshot& snapshot, bool json);
 

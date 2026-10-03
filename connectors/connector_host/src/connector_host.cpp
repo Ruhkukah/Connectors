@@ -41,7 +41,8 @@ std::int32_t current_session_id(const ps::Plaza2PrivateStateProjector& data, std
     return data.current_session_id(now_seconds);
 }
 
-bool order_entry_ready(const CgateSession& host, std::int64_t isin_id, std::int32_t session_id) {
+bool order_entry_ready(const CgateSession& host, std::int64_t isin_id, std::int32_t session_id,
+                       bool allow_opening_auction) {
     const auto health = host.runtime_health();
     if (!host.started() || !health.valid || health.connection != 3 || health.publisher != 3 || health.reply != 3 ||
         !host.trade_replay_anchor_ready())
@@ -60,11 +61,11 @@ bool order_entry_ready(const CgateSession& host, std::int64_t isin_id, std::int3
     });
     if (session == data.sessions().end())
         return false;
-    const auto instrument =
-        std::find_if(data.instruments().begin(), data.instruments().end(), [isin_id, session_id](const auto& row) {
-            return row.isin_id == isin_id && row.sess_id == session_id && row.current_session_member &&
-                   row.has_current_status && row.current_status == 1;
-        });
+    const auto instrument = std::find_if(data.instruments().begin(), data.instruments().end(), [=](const auto& row) {
+        return row.isin_id == isin_id && row.sess_id == session_id && row.current_session_member &&
+               row.has_current_status &&
+               (row.current_status == 1 || (allow_opening_auction && row.current_status == 6));
+    });
     return instrument != data.instruments().end();
 }
 

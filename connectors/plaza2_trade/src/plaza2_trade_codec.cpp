@@ -509,6 +509,8 @@ Plaza2TradeEncodedCommand Plaza2TradeCodec::encode(const Plaza2TradeCommandReque
         [&](const auto& value) {
             if constexpr (requires { value.isin_id; })
                 encoded.isin_id = value.isin_id;
+            if constexpr (std::is_same_v<std::decay_t<decltype(value)>, AddOrderRequest>)
+                encoded.order_type = value.type;
             std::string fields{"{"};
             const auto field = [&](std::string_view name, const auto& optional) {
                 if (!optional)

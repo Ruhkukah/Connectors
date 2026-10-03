@@ -416,7 +416,7 @@ struct CgateSession::Impl {
         streams_created = true;
         return {};
     }
-    bool trading_ready(std::int32_t isin_id) const {
+    bool trading_ready(const Plaza2TradeEncodedCommand& command) const {
         for (auto code :
              {StreamCode::kFortsRefdataRepl, StreamCode::kFortsSessionstateRepl, StreamCode::kFortsInstrumentstateRepl})
             if (!stream_online(code))
@@ -431,8 +431,11 @@ struct CgateSession::Impl {
             return false;
         const auto instruments = projection.instruments();
         return std::any_of(instruments.begin(), instruments.end(), [=](const auto& row) {
-            return row.isin_id == isin_id && row.sess_id == day && row.current_session_member &&
-                   row.has_current_status && row.current_status == 1;
+            const bool auction_day_add = row.current_status == 6 &&
+                                         command.command_kind == Plaza2TradeCommandKind::AddOrder &&
+                                         command.order_type == Plaza2TradeOrderType::Limit;
+            return row.isin_id == command.isin_id && row.sess_id == day && row.current_session_member &&
+                   row.has_current_status && (row.current_status == 1 || auction_day_add);
         });
     }
     bool stream_online(StreamCode code) const {
@@ -886,7 +889,7 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
     bool required_private = true;
     if (command.command_kind == Plaza2TradeCommandKind::AddOrder ||
         command.command_kind == Plaza2TradeCommandKind::MoveOrder) {
-        required_private = trade_replay_anchor_ready() && command.isin_id && impl_->trading_ready(*command.isin_id);
+        required_private = trade_replay_anchor_ready() && command.isin_id && impl_->trading_ready(command);
         for (auto code : {StreamCode::kFortsTradeRepl, StreamCode::kFortsPosRepl, StreamCode::kFortsPartRepl,
                           StreamCode::kFortsRefdataRepl, StreamCode::kFortsSessionstateRepl,
                           StreamCode::kFortsInstrumentstateRepl}) {
