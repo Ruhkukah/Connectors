@@ -626,6 +626,7 @@ void OrderManager::set_kill_switch(bool enabled) {
 }
 
 void OrderManager::complete_timeout(Command command, Clock::time_point now) {
+    emit("timeout", "{\"user_id\":" + std::to_string(command.user_id) + "}");
     const auto found = orders_.find(command.key);
     if (command.encoded.command_kind == Kind::DelOrder || command.encoded.command_kind == Kind::DelUserOrders) {
         auto& warned = found == orders_.end() ? command.transport_retry_warned : found->second.transport_retry_warned;
@@ -636,8 +637,6 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
                      std::to_string(command.user_id) + ",\"name\":" + json_string(command.encoded.command_name) +
                      ",\"message\":\"cancellation outcome is uncertain; transport retries continue\"}");
         }
-    } else {
-        emit("timeout", "{\"user_id\":" + std::to_string(command.user_id) + "}");
     }
     if (found == orders_.end()) {
         retry_cancel(std::move(command), now);

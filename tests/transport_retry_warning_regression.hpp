@@ -43,8 +43,12 @@ template <class Fixture> void transport_retry_warning_regression() {
     });
     require(cancellations == 7 && !manager.operator_action_required(),
             "transport timeouts exhausted cancellation business budget or changed retry pacing");
-    require(warnings("retry-first") == 1 && audit("timeout{") == 0,
-            "seven cancellation sends did not produce one transport retry warning per order");
+    require(warnings("retry-first") == 1 && audit("timeout{") == 6,
+            "cancellation timeouts must remain audited while the operator warning occurs once");
+    for (std::size_t i = 2; i + 1 < f.sent.size(); ++i)
+        require(std::count(f.log.begin(), f.log.end(), "timeout{\"user_id\":" + std::to_string(f.sent[i].id) + "}") ==
+                    1,
+                "a timed-out cancellation lost its exact command correlation");
     require(audit("command{") == static_cast<std::ptrdiff_t>(f.sent.size()) &&
                 audit("command_result{") == static_cast<std::ptrdiff_t>(f.sent.size()),
             "transport warning suppression lost an actual command/result audit record");
@@ -90,9 +94,9 @@ template <class Fixture> void transport_retry_warning_regression() {
     require(bulk.sent.size() == 7 &&
                 std::count_if(bulk.log.begin(), bulk.log.end(),
                               [](const auto& line) { return line.starts_with("transport_retry{"); }) == 1 &&
-                std::none_of(bulk.log.begin(), bulk.log.end(),
-                             [](const auto& line) { return line.starts_with("timeout{"); }),
-            "mass cancellation transport retry warnings were not bounded to one scope");
+                std::count_if(bulk.log.begin(), bulk.log.end(),
+                              [](const auto& line) { return line.starts_with("timeout{"); }) == 6,
+            "mass cancellation lost its timeout audit or repeated its operator warning");
 
     Fixture carry;
     carry.config.reply_timeout = std::chrono::milliseconds(100);

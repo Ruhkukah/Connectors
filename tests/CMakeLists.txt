@@ -1,5 +1,8 @@
 find_package(Threads REQUIRED)
 
+add_test(NAME reconstruct_orders_test COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/reconstruct_orders_test.py" "${MOEX_SOURCE_ROOT}/scripts/reconstruct_orders.py")
+
 add_library(plaza2_runtime_test_support STATIC plaza2_cgate/plaza2_runtime_test_support.cpp)
 target_link_libraries(plaza2_runtime_test_support PUBLIC moex_plaza2_cgate_runtime)
 target_include_directories(plaza2_runtime_test_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/plaza2_cgate")
