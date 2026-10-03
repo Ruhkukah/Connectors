@@ -282,6 +282,9 @@ int main(int argc, char** argv) {
                                       .quantity = 2})
                               .empty(),
                           "queue Add before reservation checkpoint fails");
+            // The group checkpoint is now time-based; a within-block Add
+            // reservation no longer performs its own filesystem sync.
+            std::this_thread::sleep_for(std::chrono::milliseconds(270));
             const auto poll_error = host.poll();
             test::require(poll_error.code == cg::Plaza2ErrorCode::RuntimeCallFailed && fake.commands().size() == posts,
                           "journal checkpoint failure did not stop sends before dispatch");

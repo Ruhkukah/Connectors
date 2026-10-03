@@ -1,6 +1,7 @@
 #include "moex/connector_host/event_journal.hpp"
 #include "command_input.hpp"
 #include "journal_write_failure.hpp"
+#include "journal_id_block_regression.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -19,6 +20,7 @@ int main() {
     const auto root = std::filesystem::temp_directory_path() / ("moex-journal-" + std::to_string(getpid()));
     try {
         std::filesystem::create_directories(root);
+        moex::connector_host::test::journal_id_block_regression(root);
         moex::connector_host::test::journal_write_failure_regression(root);
         const auto path = root / "events.ndjson";
         {
@@ -31,9 +33,9 @@ int main() {
             buffered.append("reservation", "{\"next_ext_id\":52,\"next_user_id\":92}");
             require(buffered.reservations().next_ext_id == 52 && buffered.reservations().next_user_id == 92,
                     "buffered reservations did not advance in memory");
-            buffered.flush_reservations();
+            buffered.flush();
             require(std::filesystem::file_size(buffered_path) > 0,
-                    "pre-send reservation flush did not persist buffered records");
+                    "explicit group flush did not persist buffered records");
             std::ifstream records(buffered_path);
             std::string record;
             int lines{};
@@ -68,8 +70,8 @@ int main() {
         }
         {
             EventJournal restarted(path);
-            require(restarted.reservations().next_ext_id == 17 && restarted.reservations().next_user_id == 40,
-                    "restart reservation missing");
+            require(restarted.reservations().next_ext_id == 1001 && restarted.reservations().next_user_id == 1001,
+                    "restart reused the previous reserved block");
             restarted.append("shutdown");
         }
         std::ifstream input(path);
@@ -103,23 +105,23 @@ int main() {
         {
             EventJournal restarted(first_log, stable);
             require(restarted.recovery_read_bytes() == 0, "restart reread the checkpointed megabyte");
-            require(restarted.reservations().next_ext_id == 501, "checkpoint reservation lost");
+            require(restarted.reservations().next_ext_id == 1001, "checkpoint reservation block lost");
         }
         // Simulate complete, uncheckpointed records followed by a torn crash tail.
         {
             std::ofstream tail(first_log, std::ios::app);
-            tail << "{\"next_ext_id\":502,\"next_user_id\":901}\n{\"next_ext_id\":999";
+            tail << "{\"next_ext_id\":2502,\"next_user_id\":2901}\n{\"next_ext_id\":9999";
         }
         {
             EventJournal restarted(first_log, stable);
             require(restarted.recovery_read_bytes() > 0 && restarted.recovery_read_bytes() < 100,
                     "restart scanned beyond the uncheckpointed tail");
-            require(restarted.reservations().next_ext_id == 502 && restarted.reservations().next_user_id == 901,
+            require(restarted.reservations().next_ext_id == 2502 && restarted.reservations().next_user_id == 2901,
                     "complete crash-tail reservation not recovered");
         }
         {
             EventJournal rotated(second_log, stable);
-            require(rotated.reservations().next_ext_id == 502 && rotated.reservations().next_user_id == 901,
+            require(rotated.reservations().next_ext_id == 3502 && rotated.reservations().next_user_id == 3901,
                     "log rotation reused identifiers");
             require(rotated.recovery_read_bytes() == 0, "empty rotated file unexpectedly scanned");
         }
@@ -127,9 +129,10 @@ int main() {
         std::ostringstream saved;
         saved << saved_state.rdbuf();
         auto numeric_corruption = saved.str();
-        const auto counters = numeric_corruption.find(" 502 901 ");
+        const std::string reserved_counters = " 4502 4901 ";
+        const auto counters = numeric_corruption.find(reserved_counters);
         require(counters != std::string::npos, "test checkpoint missing reserved counters");
-        numeric_corruption.replace(counters, 9, " 1 1 ");
+        numeric_corruption.replace(counters, reserved_counters.size(), " 1 1 ");
         std::ofstream(stable) << numeric_corruption;
         bool rollback_refused{};
         try {

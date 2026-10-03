@@ -124,16 +124,10 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     orders_ = std::make_unique<OrderManager>(
         std::move(orders),
         [this](const auto& command, auto id) {
-            try {
-                if (!log_error_.empty())
-                    throw std::runtime_error(log_error_);
-                journal_.flush_reservations();
-            } catch (const std::exception& error) {
-                log_error_ = error.what();
+            if (!log_error_.empty())
                 return cg::Plaza2PublisherMessageResult{
                     .certainty = cg::Plaza2SubmissionCertainty::DefinitelyNotSent,
                     .validation_error = {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_}};
-            }
             return session_.post_command(command, id);
         },
         [this](auto isin) {
@@ -358,10 +352,9 @@ cg::Plaza2Error CgateTradingHost::poll() {
     // Apply their rows first so individual fallbacks see only surviving orders.
     orders_->observe_trade_commit(trade_commit_sequence);
     orders_->prove_absence(server_time, trade_online);
-    // Reserve identities durably once per owner-loop batch, then submit the
-    // queued commands. The event stream itself uses 250ms group commit.
+    // ID blocks are already durable. Sync interaction records on the owner
+    // loop's 250ms schedule, outside append and transport submission.
     try {
-        journal_.flush_reservations();
         journal_.flush_if_due();
     } catch (const std::exception& storage_error) {
         log_error_ = storage_error.what();

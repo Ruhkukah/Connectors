@@ -50,6 +50,13 @@ void update_reservations(JournalReservation& value, std::string_view text) {
     value.next_ext_id = std::max(value.next_ext_id, static_cast<std::int32_t>(ext));
     value.next_user_id = std::max(value.next_user_id, static_cast<std::uint32_t>(user));
 }
+JournalReservation reserve_block(JournalReservation next) {
+    next.next_ext_id =
+        static_cast<std::int32_t>(std::min<std::int64_t>(INT32_MAX, std::int64_t(next.next_ext_id) + 1000));
+    next.next_user_id =
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(UINT32_MAX, std::uint64_t(next.next_user_id) + 1000));
+    return next;
+}
 std::uint64_t text_hash(std::string_view text) {
     std::uint64_t hash = 14695981039346656037ULL;
     for (const unsigned char value : text)
@@ -179,6 +186,7 @@ EventJournal::EventJournal(const std::filesystem::path& path, const std::filesys
         if (::ftruncate(fd_, static_cast<off_t>(complete)) != 0)
             throw std::runtime_error("cannot recover interaction log tail");
         offset_ = complete;
+        high_water_ = reserve_block(reservations_);
         dirty_ = true;
         flush();
         last_sync_ = std::chrono::steady_clock::now();
@@ -206,20 +214,36 @@ void EventJournal::append(std::string_view kind, std::string_view fields) {
     if (fields.size() < 2 || fields.front() != '{' || fields.back() != '}' ||
         fields.find('\n') != std::string_view::npos)
         throw std::invalid_argument("journal event fields must be a one-line JSON object");
+    auto next = reservations_;
+    update_reservations(next, fields);
+    extend_reservations(next);
     const auto wall = std::chrono::system_clock::now();
     const auto line = "{\"utc\":" + json_string(stamp(wall, 0)) + ",\"msk\":" + json_string(stamp(wall, 3)) +
                       ",\"event\":" + json_string(kind) + ",\"data\":" + std::string(fields) + "}\n";
     buffered_ += line;
-    const auto before = reservations_;
-    update_reservations(reservations_, fields);
-    reservations_dirty_ |=
-        before.next_ext_id != reservations_.next_ext_id || before.next_user_id != reservations_.next_user_id;
+    reservations_ = next;
     dirty_ = true;
-    // Bound burst memory while batching writes. Durability and the identity
-    // checkpoint remain tied to flush(), including the mandatory pre-send flush.
+    // Burst writes bound memory; the owner loop performs time-based group
+    // syncs. IDs within the startup block require no filesystem operation.
     if (buffered_.size() >= 64 * 1024)
         write_buffer();
-    flush_if_due();
+}
+void EventJournal::extend_reservations(const JournalReservation& next) {
+    auto reserved = high_water_;
+    const auto block = reserve_block(next);
+    if (next.next_ext_id > reserved.next_ext_id)
+        reserved.next_ext_id = block.next_ext_id;
+    if (next.next_user_id > reserved.next_user_id)
+        reserved.next_user_id = block.next_user_id;
+    if (reserved.next_ext_id == high_water_.next_ext_id && reserved.next_user_id == high_water_.next_user_id)
+        return;
+    // A rollover reserves IDs before its event can be buffered or sent. It
+    // references only the last synced journal boundary, even when a burst
+    // write has already advanced offset_ without syncing those newer bytes.
+    const auto record = checkpoint_record(device_, inode_, durable_offset_, reserved.next_ext_id, reserved.next_user_id,
+                                          durable_boundary_);
+    write_checkpoint(state_path_, record + " " + std::to_string(text_hash(record)) + "\n");
+    high_water_ = reserved;
 }
 void EventJournal::write_buffer() {
     std::size_t written{};
@@ -243,17 +267,15 @@ void EventJournal::flush() {
     if (dirty_ && ::fsync(fd_) != 0)
         throw std::runtime_error("interaction log fsync failed");
     if (dirty_) {
-        const auto record = checkpoint_record(device_, inode_, offset_, reservations_.next_ext_id,
-                                              reservations_.next_user_id, boundary_hash(fd_, offset_));
+        const auto boundary = boundary_hash(fd_, offset_);
+        const auto record =
+            checkpoint_record(device_, inode_, offset_, high_water_.next_ext_id, high_water_.next_user_id, boundary);
         write_checkpoint(state_path_, record + " " + std::to_string(text_hash(record)) + "\n");
+        durable_offset_ = offset_;
+        durable_boundary_ = boundary;
     }
     dirty_ = false;
-    reservations_dirty_ = false;
     last_sync_ = std::chrono::steady_clock::now();
-}
-void EventJournal::flush_reservations() {
-    if (reservations_dirty_)
-        flush();
 }
 void EventJournal::flush_if_due() {
     if (dirty_ && std::chrono::steady_clock::now() - last_sync_ >= std::chrono::milliseconds(250))

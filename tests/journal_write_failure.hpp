@@ -41,23 +41,23 @@ inline void journal_write_failure_regression(const std::filesystem::path& root) 
             bool write_failed{};
             try {
                 journal.append("reservation", fields);
-                journal.flush_reservations();
+                journal.flush();
             } catch (const std::runtime_error&) {
                 write_failed = true;
             }
             check(write_failed && std::filesystem::file_size(path) == limited.rlim_cur,
                   "journal did not exercise a partial write followed by file-size failure");
             check(::setrlimit(RLIMIT_FSIZE, &original) == 0, "lift child file-size limit");
-            journal.flush_reservations();
+            journal.flush();
             std::ifstream checkpoint(state);
             std::string magic;
             std::uint64_t device{}, inode{}, offset{}, ext{}, user{}, boundary{}, checksum{};
             check(static_cast<bool>(checkpoint >> magic >> device >> inode >> offset >> ext >> user >> boundary >>
                                     checksum) &&
-                      magic == "MOEXJ2" && offset == std::filesystem::file_size(path) && ext == 42 && user == 72,
+                      magic == "MOEXJ2" && offset == std::filesystem::file_size(path) && ext == 1001 && user == 1001,
                   "retry did not immediately checkpoint the complete bytes and reserved identifiers");
             // Bypass all destructors: restart must depend on the explicit
-            // pre-send flush, rather than a successful destructor retry.
+            // group flush, rather than a successful destructor retry.
             ::_exit(0);
         } catch (const std::exception& error) {
             std::cerr << "partial journal write regression: " << error.what() << '\n';
@@ -81,7 +81,7 @@ inline void journal_write_failure_regression(const std::filesystem::path& root) 
               std::filesystem::file_size(path) == line.size() + 1,
           "retry duplicated a written prefix or lost the original record suffix");
     EventJournal recovered(path, state);
-    check(recovered.reservations().next_ext_id == 42 && recovered.reservations().next_user_id == 72 &&
+    check(recovered.reservations().next_ext_id == 1001 && recovered.reservations().next_user_id == 1001 &&
               recovered.recovery_read_bytes() == 0,
           "explicit retry flush did not survive restart without tail repair");
 }

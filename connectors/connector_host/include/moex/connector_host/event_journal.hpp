@@ -22,7 +22,6 @@ class EventJournal {
     EventJournal& operator=(const EventJournal&) = delete;
     void append(std::string_view kind, std::string_view fields = "{}");
     void flush();
-    void flush_reservations();
     void flush_if_due();
     [[nodiscard]] JournalReservation reservations() const noexcept {
         return reservations_;
@@ -32,14 +31,17 @@ class EventJournal {
     }
 
   private:
+    void extend_reservations(const JournalReservation& next);
     void write_buffer();
     int fd_{-1};
     int state_lock_fd_{-1};
     std::filesystem::path state_path_;
     std::uint64_t device_{}, inode_{}, offset_{}, recovery_read_bytes_{};
+    std::uint64_t durable_offset_{}, durable_boundary_{14695981039346656037ULL};
     std::chrono::steady_clock::time_point last_sync_{};
     JournalReservation reservations_;
+    JournalReservation high_water_;
     std::string buffered_;
-    bool dirty_{}, reservations_dirty_{};
+    bool dirty_{};
 };
 } // namespace moex::connector_host
