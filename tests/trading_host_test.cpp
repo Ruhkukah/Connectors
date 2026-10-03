@@ -59,6 +59,76 @@ void scope_exit_regression() {
     }
     test::require(calls == 4 && reported, "shutdown exception prevented outstanding-order reporting");
 }
+void named_journal_regression(TradingHostConfig config, const test::fake::Control& control,
+                              const std::filesystem::path& root) {
+    test::fake::Scenario scenario{.suppress_initial_orders = true, .zero_position = true, .client_code = "BRK1C01"};
+    control.configure(scenario);
+    config.journal_path = root / "named-journal.ndjson";
+    config.identity_state_path = root / "named-journal.state";
+    config.source_git_sha = std::string(40, 'a');
+    config.binary_sha256 = std::string(64, 'b');
+    config.session.connection_settings += ";password=crt6-private-password";
+    auto now = OrderManager::Clock::time_point{};
+    config.session.recovery_now = [&] { return now; };
+    CgateTradingHost host(config);
+    test::require(!host.start(), "named journal fixture start");
+    for (int i = 0; i < 30; ++i)
+        test::require(!host.poll(), "named journal bootstrap");
+    const std::string refused_line = "place refused 1001 buy 0 103000 day";
+    host.record_operator_input(refused_line, "command_socket");
+    const auto refusal = host.place({.client_order_id = "refused", .isin_id = 1001, .price = "103000", .quantity = 0});
+    test::require(!refusal.empty(), "local refusal fixture admitted quantity zero");
+    host.record_local_refusal(refused_line, refusal, "command_socket");
+    control.set(test::fake::Option::PublisherClosed, "1");
+    for (int i = 0; i < 3; ++i)
+        test::require(!host.poll(), "publisher loss while connection ACTIVE");
+    control.clear(test::fake::Option::PublisherClosed);
+    now += std::chrono::seconds(2);
+    for (int i = 0; i < 30; ++i)
+        test::require(!host.poll(), "publisher recovery while connection ACTIVE");
+    control.set(test::fake::Option::ConnToOpening, "1");
+    for (int i = 0; i < 3; ++i)
+        test::require(!host.poll(), "connection loss journal");
+    control.clear(test::fake::Option::ConnToOpening);
+    now += std::chrono::seconds(2);
+    for (int i = 0; i < 30; ++i)
+        test::require(!host.poll(), "connection recovery journal");
+    test::require(!host.stop(), "named journal fixture stop");
+    std::ifstream journal(config.journal_path);
+    std::string line;
+    bool startup{}, named_row{}, publisher_loss{};
+    std::size_t lost{}, restored{}, inputs{}, refusals{};
+    while (std::getline(journal, line)) {
+        if (line.find("\"event\":\"startup\"") != std::string::npos) {
+            startup = line.find("\"source_git_sha\":") != std::string::npos &&
+                      line.find(std::string(40, 'a')) != std::string::npos &&
+                      line.find("\"binary_sha256\":") != std::string::npos &&
+                      line.find(std::string(64, 'b')) != std::string::npos &&
+                      line.find("\"rate\":30") != std::string::npos && line.find("\"risk\":") != std::string::npos &&
+                      line.find("p2tcp://127.0.0.1:4101;app_name=moex_connector;") != std::string::npos &&
+                      line.find("p2repl://FORTS_TRADE_REPL") != std::string::npos &&
+                      line.find("p2mq://FORTS_SRV") != std::string::npos;
+            test::require(line.find("crt6-private-password") == std::string::npos &&
+                              line.find("key=00000000") == std::string::npos,
+                          "startup journal exposed a CGate setting secret");
+        }
+        named_row |= line.find("\"stream\":\"FORTS_TRADE_REPL\"") != std::string::npos &&
+                     line.find("\"table\":\"heartbeat\"") != std::string::npos;
+        if (line.find("\"event\":\"link_lost\"") != std::string::npos) {
+            ++lost;
+            publisher_loss |= line.find("\"connection_state\":3,\"publisher_state\":0") != std::string::npos;
+        }
+        restored += line.find("\"event\":\"link_restored\"") != std::string::npos;
+        inputs += line.find("\"event\":\"operator_input\"") != std::string::npos &&
+                  line.find(refused_line) != std::string::npos;
+        refusals += line.find("\"event\":\"local_refusal\"") != std::string::npos &&
+                    line.find(refused_line) != std::string::npos;
+    }
+    test::require(startup && named_row, "journal omitted masked startup configuration or named replication streams");
+    test::require(lost == 2 && restored == 2 && publisher_loss,
+                  "journal omitted/doubled connection or ACTIVE-connection publisher loss/restoration");
+    test::require(inputs == 1 && refusals == 1, "journal lost the operator input or its local refusal");
+}
 } // namespace
 int main(int argc, char** argv) {
     try {
@@ -95,6 +165,11 @@ int main(int argc, char** argv) {
         config.orders.client_code = input.client_code;
         config.isin_ids = {1001};
         config.journal_path = root / "events.ndjson";
+        named_journal_regression(config, fake, root);
+        fake.configure(test::fake::Scenario{.client_code = "BRK1C01"});
+        fake.set(moex::plaza2::test::fake::Option::AggrWrongSession, "1");
+        fake.set(moex::plaza2::test::fake::Option::DelayUserorderbook, "1");
+        fake.set(moex::plaza2::test::fake::Option::UserbookOnlyOrder, "1");
         {
             CgateTradingHost host(config);
             test::require(!host.start(), "production owner starts with fake CGate");

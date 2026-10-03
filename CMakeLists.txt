@@ -6,9 +6,11 @@ project(
     DESCRIPTION "Standalone C++20/Linux-first MOEX connector suite"
     LANGUAGES CXX)
 
-# The source revision is an optional log label; archive builds use "unknown".
-execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    OUTPUT_VARIABLE MOEX_SOURCE_GIT_SHA OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+# Archive builds may supply the revision from their verified source manifest.
+if(NOT DEFINED MOEX_SOURCE_GIT_SHA)
+    execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE MOEX_SOURCE_GIT_SHA OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+endif()
 if(NOT MOEX_SOURCE_GIT_SHA)
     set(MOEX_SOURCE_GIT_SHA "unknown")
 endif()

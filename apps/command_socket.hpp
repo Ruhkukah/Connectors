@@ -85,7 +85,7 @@ class CommandSocket {
     CommandSocket(const CommandSocket&) = delete;
     CommandSocket& operator=(const CommandSocket&) = delete;
 
-    template <typename Execute> void poll(Execute execute) {
+    template <typename Execute, typename Refuse> void poll(Execute execute, Refuse refuse) {
         if (client_ < 0) {
             client_ = ::accept(fd_, nullptr, nullptr);
             if (client_ < 0)
@@ -98,7 +98,13 @@ class CommandSocket {
             }
             deadline_ = std::chrono::steady_clock::now() + command_socket_detail::timeout;
         }
+        // Keep malformed frames bounded in the interaction log.
+        const auto rejected = [&](std::string_view error) {
+            return refuse(input_.size() <= 4096 ? std::string_view(input_) : std::string_view{}, error);
+        };
         if (std::chrono::steady_clock::now() >= deadline_) {
+            if (!input_.empty() && response_.empty())
+                (void)rejected("incomplete command timed out");
             close_client();
             return;
         }
@@ -106,6 +112,8 @@ class CommandSocket {
             std::array<char, 4096> data{};
             const auto count = ::recv(client_, data.data(), data.size(), 0);
             if (count == 0 || (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+                if (!input_.empty())
+                    (void)rejected("incomplete command disconnected");
                 close_client();
                 return;
             }
@@ -114,10 +122,10 @@ class CommandSocket {
             input_.append(data.data(), static_cast<std::size_t>(count));
             const auto newline = input_.find('\n');
             if (input_.size() > command_socket_detail::max_command + 1)
-                response_ = "{\"ok\":false,\"error\":\"command line exceeds 65536 bytes\"}";
+                response_ = rejected("command line exceeds 65536 bytes");
             else if (newline != std::string::npos) {
                 if (newline != input_.size() - 1 || newline == 0)
-                    response_ = "{\"ok\":false,\"error\":\"one nonempty command required\"}";
+                    response_ = rejected("one nonempty command required");
                 else
                     response_ = execute(input_.substr(0, newline));
             } else

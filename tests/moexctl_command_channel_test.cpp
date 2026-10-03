@@ -1,5 +1,7 @@
 #include "plaza2_runtime_test_support.hpp"
+#include "moex/plaza2/cgate/plaza2_text.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <fcntl.h>
@@ -7,12 +9,19 @@
 #include <functional>
 #include <iostream>
 #include <poll.h>
+#include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
+
+#ifndef MOEX_SOURCE_GIT_SHA
+#define MOEX_SOURCE_GIT_SHA "unknown"
+#endif
 
 namespace {
 using namespace std::chrono_literals;
@@ -185,6 +194,53 @@ void no_posts(const std::filesystem::path& log) {
     test::require(contents.find("\"event\":\"command\"") == std::string::npos,
                   "read-only CLI test posted a trading command");
 }
+std::string raw_command(const std::filesystem::path& log, std::string_view frame) {
+    const auto fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    test::require(fd >= 0, "raw command socket failed");
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    const auto path = log.string() + ".sock";
+    test::require(path.size() < sizeof(address.sun_path), "raw socket path too long");
+    std::copy(path.begin(), path.end(), address.sun_path);
+    const auto connected = ::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+    const auto written = connected == 0 ? ::write(fd, frame.data(), frame.size()) : -1;
+    std::string response;
+    if (written == static_cast<ssize_t>(frame.size())) {
+        pollfd descriptor{.fd = fd, .events = POLLIN};
+        if (::poll(&descriptor, 1, 3000) > 0) {
+            char data[4096];
+            const auto count = ::read(fd, data, sizeof(data));
+            if (count > 0)
+                response.assign(data, static_cast<std::size_t>(count));
+        }
+    }
+    ::close(fd);
+    test::require(!response.empty(), "raw socket response missing");
+    return response;
+}
+std::string field(std::string_view record, std::string_view name) {
+    const auto key = "\"" + std::string(name) + "\":\"";
+    const auto offset = record.find(key);
+    if (offset == std::string_view::npos)
+        return {};
+    const auto value = record.substr(offset + key.size());
+    return std::string(value.substr(0, value.find('"')));
+}
+bool hex(std::string_view value, std::size_t size) {
+    return value.size() == size && value.find_first_not_of("0123456789abcdef") == std::string_view::npos;
+}
+void journal_input(const std::string& contents, std::string_view line, std::string_view channel) {
+    const auto expected_line = "\"line\":" + moex::plaza2::cgate::text::json_quote_utf8(line);
+    for (const auto event : {"operator_input", "local_refusal"}) {
+        std::size_t count{};
+        std::istringstream records(contents);
+        std::string record;
+        while (std::getline(records, record))
+            count += record.find("\"event\":\"" + std::string(event) + "\"") != std::string::npos &&
+                     record.find(expected_line) != std::string::npos && field(record, "channel") == channel;
+        test::require(count == 1, "CLI omitted/doubled operator input or local refusal");
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -287,6 +343,64 @@ int main(int argc, char** argv) {
         const std::string contents((std::istreambuf_iterator<char>(input)), {});
         test::require(contents.find("\"event\":\"kill_switch\"") != std::string::npos,
                       "socket command did not reach host");
+        no_posts(log);
+    });
+    scenario("CLI journal provenance and refusals", [&] {
+        const auto log = root / "journal.ndjson";
+        Child owner(run_arguments(argv[1], fixture, log, "cli_journal"), root / "journal.err");
+        ready(owner, [&] { owner.send("status\n"); });
+        const std::string stdin_parse = "place stdin_parse_error invalid_isin buy 1 1 day";
+        const std::string stdin_admission = "cancel stdin_unknown_order";
+        for (const auto& line : {stdin_parse, stdin_admission}) {
+            owner.send(line + "\n");
+            while (owner.line().find("\"ok\":false") == std::string::npos) {
+            }
+        }
+        const std::string socket_parse = "move socket_parse_error";
+        const std::string socket_admission = "cancel socket_unknown_order";
+        for (const auto& line : {socket_parse, socket_admission})
+            test::require(remote_command(argv[1], log, line).find("\"ok\":false") != std::string::npos,
+                          "CLI refusal fixture was admitted");
+        test::require(raw_command(log, "status\nkill on\n").find("\"ok\":false") != std::string::npos,
+                      "malformed socket frame was admitted");
+        test::require(raw_command(log, std::string(65537, 'x') + "\n").find("\"ok\":false") != std::string::npos,
+                      "oversized socket frame was admitted");
+        // An oversized stdin line is discarded; its refusal still needs an audit record.
+        owner.send(std::string(65537, 'x') + "\n");
+        while (owner.line().find("\"ok\":false") == std::string::npos) {
+        }
+        remote_command(argv[1], log, "quit");
+        test::require(owner.wait() == 0, "journal host stop failed");
+        std::ifstream input(log);
+        const std::string contents((std::istreambuf_iterator<char>(input)), {});
+        const auto start = contents.find("\"event\":\"startup\"");
+        test::require(start != std::string::npos, "CLI startup record missing");
+        const auto startup = contents.substr(start, contents.find('\n', start) - start);
+        std::ifstream executable(argv[1], std::ios::binary);
+        const std::string binary((std::istreambuf_iterator<char>(executable)), {});
+        const auto expected_hash = moex::plaza2::cgate::plaza2_sha256_hex(binary);
+        test::require(field(startup, "source_git_sha") == MOEX_SOURCE_GIT_SHA &&
+                          (std::string_view(MOEX_SOURCE_GIT_SHA) == "unknown" ||
+                           hex(field(startup, "source_git_sha"), 40)) &&
+                          hex(field(startup, "binary_sha256"), 64) &&
+                          field(startup, "binary_sha256") == expected_hash,
+                      "CLI startup omitted actual build/executable identities");
+        journal_input(contents, stdin_parse, "stdin");
+        journal_input(contents, stdin_admission, "stdin");
+        journal_input(contents, socket_parse, "command_socket");
+        journal_input(contents, socket_admission, "command_socket");
+        journal_input(contents, "status\nkill on\n", "command_socket");
+        std::size_t socket_overflow{}, stdin_overflow{};
+        std::istringstream records(contents);
+        std::string record;
+        while (std::getline(records, record)) {
+            if (record.find("\"event\":\"local_refusal\"") != std::string::npos &&
+                field(record, "error") == "command line exceeds 65536 bytes") {
+                socket_overflow += field(record, "channel") == "command_socket";
+                stdin_overflow += field(record, "channel") == "stdin";
+            }
+        }
+        test::require(socket_overflow == 1 && stdin_overflow == 1, "CLI overflow refusals omitted/doubled");
         no_posts(log);
     });
     if (failures == 0)

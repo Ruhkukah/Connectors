@@ -94,6 +94,7 @@ enum class Option : std::uint32_t {
     ProcessInvalidArgument,
     ProcessResult,
     ProcessTimeout,
+    PublisherClosed,
     PublisherError,
     PublisherOpenResult,
     PubDuplicateReply,

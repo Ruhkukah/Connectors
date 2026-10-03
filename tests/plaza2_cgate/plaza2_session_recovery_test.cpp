@@ -269,10 +269,12 @@ int main(int argc, char** argv) {
         }
         flag(moex::plaza2::test::fake::Option::ConnHoldOpening, true);
         CgateSession session(config);
-        const auto wall_start = std::chrono::steady_clock::now();
+        const auto start_process_calls = fake.process_count();
         require(!session.start(), "nonblocking start");
-        require(std::chrono::steady_clock::now() - wall_start < std::chrono::milliseconds(100),
-                "start blocked waiting for ACTIVE");
+        // Synchronous runtime identity hashing is unrelated to ACTIVE waiting.
+        // The native connection deliberately stays OPENING until later polls.
+        require(session.runtime_health().connection == 2 && fake.process_count() == start_process_calls,
+                "start waited or processed CGate while ACTIVE was withheld");
         for (int i = 0; i < 600; ++i) {
             now += std::chrono::seconds(1);
             require(!session.poll(), "10 minute OPENING pump failed");

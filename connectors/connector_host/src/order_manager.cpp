@@ -781,10 +781,11 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
         if (throttled_)
             emit("throttle", "{\"active\":false,\"queued\":" + std::to_string(queued()) + "}");
         throttled_ = false;
-        emit("command", "{\"user_id\":" + std::to_string(command.user_id) +
-                            ",\"name\":" + json_string(command.encoded.command_name) + ",\"client_order_id\":" +
-                            json_string(command.key) + ",\"fields\":" + command.encoded.fields_json +
-                            ",\"payload_hex\":" + json_string(tr::bytes_to_hex(command.encoded.payload)) + "}");
+        const auto command_fields = "{\"user_id\":" + std::to_string(command.user_id) +
+                                    ",\"name\":" + json_string(command.encoded.command_name) +
+                                    ",\"client_order_id\":" + json_string(command.key) +
+                                    ",\"fields\":" + command.encoded.fields_json +
+                                    ",\"payload_hex\":" + json_string(tr::bytes_to_hex(command.encoded.payload)) + "}";
         if (logging_failed_ && add_or_move)
             break;
         const auto result = send_(command.encoded, command.user_id);
@@ -792,7 +793,7 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
             "{\"user_id\":" + std::to_string(command.user_id) +
             ",\"certainty\":" + std::to_string(static_cast<int>(result.certainty)) + ",\"error\":" +
             json_string(result.validation_error.message + result.allocation_error.message + result.post_error.message) +
-            "}";
+            ",\"post_invoked\":" + (result.post_invoked ? "true}" : "false}");
         if (result.certainty == cg::Plaza2SubmissionCertainty::DefinitelyNotSent) {
             command.not_before = now + std::chrono::seconds(1);
             // Definitive local validation failures cannot become an ambiguous Add.
@@ -807,6 +808,8 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
                 }
                 queue.erase(selected);
             }
+            if (result.post_invoked)
+                emit("command", command_fields);
             emit("command_result", result_fields);
             break;
         }
@@ -822,6 +825,8 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
             found->second.add_unconfirmed = true;
         pending_.emplace(sent.user_id, std::move(sent));
         // Commit submission bookkeeping before a user-supplied log callback.
+        if (result.post_invoked)
+            emit("command", command_fields);
         emit("command_result", result_fields);
         if (result.certainty == cg::Plaza2SubmissionCertainty::PossiblySent &&
             (sent_kind == Kind::AddOrder || sent_kind == Kind::MoveOrder)) {

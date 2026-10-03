@@ -2857,7 +2857,9 @@ std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
     if (publisher == nullptr || state == nullptr) {
         return kCgErrInvalidArgument;
     }
-    *state = fake_flag(Option::PublisherError) ? kStateError : static_cast<FakePublisher*>(publisher)->state;
+    *state = fake_flag(Option::PublisherClosed)  ? kStateClosed
+             : fake_flag(Option::PublisherError) ? kStateError
+                                                 : static_cast<FakePublisher*>(publisher)->state;
     return kCgErrOk;
 }
 

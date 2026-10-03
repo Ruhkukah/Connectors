@@ -26,7 +26,7 @@ struct Sent {
 struct Fixture {
     bool ready{true};
     std::set<std::int32_t> unavailable_isins;
-    bool throw_result_log{};
+    bool throw_result_log{}, throw_command_log{};
     std::int32_t session{100};
     std::int64_t ms{};
     cg::Plaza2SubmissionCertainty certainty{cg::Plaza2SubmissionCertainty::Posted};
@@ -62,7 +62,7 @@ struct Fixture {
             [this](auto isin) { return ready && !unavailable_isins.contains(isin); },
             [this](auto isin) { return terms(isin); },
             [this](auto kind, auto fields) {
-                if (throw_result_log && kind == "command_result")
+                if ((throw_result_log && kind == "command_result") || (throw_command_log && kind == "command"))
                     throw std::runtime_error("journal failure");
                 log.push_back(std::string(kind) + std::string(fields));
             });
@@ -1356,6 +1356,47 @@ void aggregate_risk() {
     require(!manager.place(request("over", 1)).empty(), "recovered own order outside configured ISIN did not count");
     require(manager.cancel_all(42).empty(), "aggregate cap blocked emergency cancellation");
 }
+void command_audit_only_actual_post() {
+    Fixture f;
+    // Keep the recovery cancel queued so this assertion isolates one Add post.
+    f.config.max_commands_per_second = 1;
+    auto manager = f.manager();
+    require(manager.place(request("post-audit")).empty(), "post audit seed Add refused");
+    f.certainty = cg::Plaza2SubmissionCertainty::DefinitelyNotSent;
+    f.poll(manager, 0);
+    const auto count = [&](std::string_view kind) {
+        return std::count_if(f.log.begin(), f.log.end(), [&](const auto& line) { return line.starts_with(kind); });
+    };
+    require(count("command{") == 0 && count("command_result{") == 1,
+            "local send validation/allocation failure was journaled as an exchange command");
+    f.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
+    f.poll(manager, 1000);
+    require(count("command{") == 1 && count("command_result{") == 2,
+            "actual uncertain post lost its command/result journal record");
+    const auto posted_id = f.sent.back().id;
+    require(std::any_of(f.log.begin(), f.log.end(),
+                        [&](const auto& line) {
+                            return line.starts_with("command{") &&
+                                   line.find("\"user_id\":" + std::to_string(posted_id) + ",") != std::string::npos &&
+                                   line.find("\"client_order_id\":\"post-audit\"") != std::string::npos;
+                        }),
+            "actual post audit lost command ownership/correlation");
+    manager.on_reply(posted_id, {.msgid = 179, .order_id = 11201},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(1001));
+    require(manager.orders().at("post-audit").order_id == 11201,
+            "post audit change lost an uncertain command's retained correlation");
+
+    Fixture broken_log;
+    broken_log.throw_command_log = true;
+    auto guarded = broken_log.manager();
+    require(guarded.place(request("post-before-log-error")).empty(), "post/log failure seed Add refused");
+    broken_log.poll(guarded, 0);
+    require(broken_log.sent.size() == 1, "post/log failure did not exercise an actual send");
+    guarded.on_reply(broken_log.sent.front().id, {.msgid = 179, .order_id = 11202}, OrderManager::Clock::time_point{});
+    require(guarded.orders().at("post-before-log-error").order_id == 11202 &&
+                !guarded.place(request("after-command-log-error")).empty(),
+            "post-time command logging failure lost correlation or permitted new risk");
+}
 void terminal_pruning_and_relist() {
     Fixture f;
     auto manager = f.manager();
@@ -1985,6 +2026,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        command_audit_only_actual_post();
         burst();
         cancels();
         ambiguity();

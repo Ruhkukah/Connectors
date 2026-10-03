@@ -7,13 +7,41 @@
 #include <array>
 #include <charconv>
 #include <csignal>
+#include <fstream>
 #include <iostream>
 #include <poll.h>
 #include <sstream>
+#include <span>
 #include <stdexcept>
 #include <unistd.h>
 
 namespace {
+#ifndef MOEX_SOURCE_GIT_SHA
+#define MOEX_SOURCE_GIT_SHA "unknown"
+#endif
+
+std::string binary_sha256(const char* argv0) {
+    try {
+        std::error_code error;
+        std::filesystem::path path{"/proc/self/exe"};
+        if (std::filesystem::read_symlink(path, error).empty() || error) {
+            path = std::filesystem::path(argv0 ? argv0 : "");
+            // A bare argv[0] after PATH lookup is not an exact executable identity.
+            if (path.empty() || (path.is_relative() && path.parent_path().empty()))
+                return "unknown";
+            path = std::filesystem::weakly_canonical(std::filesystem::absolute(path));
+        }
+        // Open Linux's executable link itself, retaining the loaded inode even after deployment replaces its path.
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+            return "unknown";
+        const std::vector<char> bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        return moex::plaza2::cgate::plaza2_sha256_hex(std::as_bytes(std::span<const char>(bytes)));
+    } catch (...) {
+        return "unknown";
+    }
+}
+
 volatile std::sig_atomic_t stopping{};
 void stop(int) {
     stopping = 1;
@@ -25,63 +53,74 @@ template <typename T> T integer(std::string_view text) {
         throw std::invalid_argument("invalid numeric argument");
     return out;
 }
-std::string command(moex::connector_host::CgateTradingHost& host, std::string line) {
+std::string refusal(moex::connector_host::CgateTradingHost& host, std::string_view line, std::string_view error,
+                    std::string_view channel) {
+    host.record_local_refusal(line, error, channel);
+    return "{\"ok\":false,\"error\":" + moex::connector_host::json_string(error) + "}";
+}
+std::string command(moex::connector_host::CgateTradingHost& host, std::string line, std::string_view channel) {
     using namespace moex::connector_host;
+    if (!line.empty())
+        host.record_operator_input(line, channel);
     std::istringstream input(line);
     std::string verb, key, price, side, type, error;
-    input >> verb;
-    if (verb.empty())
-        return "{\"ok\":false,\"error\":\"empty command\"}";
-    if (verb == "quit") {
-        stopping = 1;
-        return "{\"ok\":true,\"error\":\"\"}";
-    }
-    if (verb == "status")
-        return host.status();
-    if (verb == "place") {
-        OrderRequest request;
-        if (!(input >> request.client_order_id >> request.isin_id >> side >> request.quantity >> request.price))
-            error = "usage: place ID ISIN buy|sell QUANTITY PRICE [day|ioc]";
-        else if (side != "buy" && side != "sell")
-            error = "side must be buy or sell";
-        else {
-            request.side =
-                side == "buy" ? moex::plaza2_trade::Plaza2TradeSide::Buy : moex::plaza2_trade::Plaza2TradeSide::Sell;
-            if (input >> type) {
-                if (type != "day" && type != "ioc")
-                    error = "type must be day or ioc";
-                else
-                    request.type = type == "ioc" ? moex::plaza2_trade::Plaza2TradeOrderType::Ioc
-                                                 : moex::plaza2_trade::Plaza2TradeOrderType::Limit;
-            }
-            if (error.empty())
-                error = host.place(std::move(request));
+    try {
+        input >> verb;
+        if (verb.empty())
+            return refusal(host, line, "empty command", channel);
+        if (verb == "quit") {
+            stopping = 1;
+            return "{\"ok\":true,\"error\":\"\"}";
         }
-    } else if (verb == "cancel") {
-        if (!(input >> key))
-            error = "usage: cancel ID";
-        else
-            error = host.cancel(key);
-    } else if (verb == "move") {
-        std::int32_t quantity{};
-        if (!(input >> key >> quantity >> price))
-            error = "usage: move ID QUANTITY PRICE";
-        else
-            error = host.move(key, price, quantity);
-    } else if (verb == "cancel-all") {
-        std::int32_t isin{};
-        if (!(input >> isin))
-            error = "usage: cancel-all ISIN";
-        else
-            error = host.cancel_all(isin);
-    } else if (verb == "kill") {
-        if (!(input >> key) || (key != "on" && key != "off"))
-            error = "usage: kill on|off";
-        else
-            host.set_kill_switch(key == "on");
-    } else
-        error = "commands: place, cancel, move, cancel-all, kill, status, quit";
-    return std::string("{\"ok\":") + (error.empty() ? "true" : "false") + ",\"error\":" + json_string(error) + "}";
+        if (verb == "status")
+            return host.status();
+        if (verb == "place") {
+            OrderRequest request;
+            if (!(input >> request.client_order_id >> request.isin_id >> side >> request.quantity >> request.price))
+                error = "usage: place ID ISIN buy|sell QUANTITY PRICE [day|ioc]";
+            else if (side != "buy" && side != "sell")
+                error = "side must be buy or sell";
+            else {
+                request.side = side == "buy" ? moex::plaza2_trade::Plaza2TradeSide::Buy
+                                             : moex::plaza2_trade::Plaza2TradeSide::Sell;
+                if (input >> type) {
+                    if (type != "day" && type != "ioc")
+                        error = "type must be day or ioc";
+                    else
+                        request.type = type == "ioc" ? moex::plaza2_trade::Plaza2TradeOrderType::Ioc
+                                                     : moex::plaza2_trade::Plaza2TradeOrderType::Limit;
+                }
+                if (error.empty())
+                    error = host.place(std::move(request));
+            }
+        } else if (verb == "cancel") {
+            if (!(input >> key))
+                error = "usage: cancel ID";
+            else
+                error = host.cancel(key);
+        } else if (verb == "move") {
+            std::int32_t quantity{};
+            if (!(input >> key >> quantity >> price))
+                error = "usage: move ID QUANTITY PRICE";
+            else
+                error = host.move(key, price, quantity);
+        } else if (verb == "cancel-all") {
+            std::int32_t isin{};
+            if (!(input >> isin))
+                error = "usage: cancel-all ISIN";
+            else
+                error = host.cancel_all(isin);
+        } else if (verb == "kill") {
+            if (!(input >> key) || (key != "on" && key != "off"))
+                error = "usage: kill on|off";
+            else
+                host.set_kill_switch(key == "on");
+        } else
+            error = "commands: place, cancel, move, cancel-all, kill, status, quit";
+    } catch (const std::invalid_argument& invalid) {
+        error = invalid.what();
+    }
+    return error.empty() ? "{\"ok\":true,\"error\":\"\"}" : refusal(host, line, error, channel);
 }
 } // namespace
 int main(int argc, char** argv) {
@@ -149,6 +188,8 @@ int main(int argc, char** argv) {
         }
         if (request.command == "run") {
             TradingHostConfig config;
+            config.source_git_sha = MOEX_SOURCE_GIT_SHA;
+            config.binary_sha256 = binary_sha256(argv[0]);
             config.session = request.config.transport.host;
             config.session.reply_timeout_ms = reply_timeout;
             config.orders.broker_code = request.config.order.broker_code;
@@ -181,7 +222,12 @@ int main(int argc, char** argv) {
                     std::cerr << error.message << '\n';
                     return 3;
                 }
-                socket.poll([&](std::string line) { return command(host, std::move(line)); });
+                socket.poll([&](std::string line) { return command(host, std::move(line), "command_socket"); },
+                            [&](std::string_view line, std::string_view error) {
+                                if (!line.empty())
+                                    host.record_operator_input(line, "command_socket");
+                                return refusal(host, line, error, "command_socket");
+                            });
                 pollfd descriptor{.fd = STDIN_FILENO, .events = POLLIN};
                 if (std::chrono::steady_clock::now() >= input_retry && ::poll(&descriptor, 1, 0) > 0 &&
                     (descriptor.revents & (POLLIN | POLLHUP))) {
@@ -193,10 +239,11 @@ int main(int argc, char** argv) {
                     } else if (count > 0) {
                         input.feed(
                             std::string_view(data.data(), static_cast<std::size_t>(count)),
-                            [&](const std::string& line) { std::cout << command(host, line) << '\n'
-                                                                     << std::flush; },
-                            [](std::string_view error) {
-                                std::cout << "{\"ok\":false,\"error\":" << json_string(error) << "}\n" << std::flush;
+                            [&](const std::string& line) {
+                                std::cout << command(host, line, "stdin") << '\n' << std::flush;
+                            },
+                            [&](std::string_view error) {
+                                std::cout << refusal(host, {}, error, "stdin") << '\n' << std::flush;
                             });
                     }
                 }
