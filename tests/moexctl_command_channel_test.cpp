@@ -127,7 +127,7 @@ class Child {
                                  std::to_string(reaped_) + ")");
     }
     int wait() {
-        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        const auto deadline = std::chrono::steady_clock::now() + 15s;
         while (alive() && std::chrono::steady_clock::now() < deadline)
             std::this_thread::sleep_for(10ms);
         test::require(!alive(), "CLI did not stop");
@@ -240,6 +240,39 @@ void journal_input(const std::string& contents, std::string_view line, std::stri
                      record.find(expected_line) != std::string::npos && field(record, "channel") == channel;
         test::require(count == 1, "CLI omitted/doubled operator input or local refusal");
     }
+}
+std::string reply(Child& owner) {
+    for (;;) {
+        const auto response = owner.line();
+        if (response.find("\"ok\":") != std::string::npos)
+            return response;
+    }
+}
+void make_working(Child& owner) {
+    ready(owner, [&] { owner.send("status\n"); });
+    owner.send("place rel7_working 1001 buy 1 102500 day\n");
+    test::require(reply(owner).find("\"ok\":true") != std::string::npos, "fake Working Add was refused");
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    do {
+        owner.send("status\n");
+        const auto status = owner.line();
+        if (status.find("\"client_order_id\":\"rel7_working\"") != std::string::npos &&
+            status.find("\"state\":\"Working\"") != std::string::npos)
+            return;
+    } while (std::chrono::steady_clock::now() < deadline);
+    throw std::runtime_error("fake Add did not become Working");
+}
+void cancelled_before_stop(const std::filesystem::path& log) {
+    std::ifstream input(log);
+    std::string record;
+    bool posted{}, acknowledged{};
+    while (std::getline(input, record)) {
+        posted |= record.find("\"event\":\"command\"") != std::string::npos &&
+                  record.find("DelUserOrders") != std::string::npos;
+        acknowledged |=
+            record.find("\"event\":\"reply\"") != std::string::npos && record.find("186") != std::string::npos;
+    }
+    test::require(posted && acknowledged, "shutdown dropped queued cancellation or its acknowledgement");
 }
 } // namespace
 
@@ -379,12 +412,11 @@ int main(int argc, char** argv) {
         std::ifstream executable(argv[1], std::ios::binary);
         const std::string binary((std::istreambuf_iterator<char>(executable)), {});
         const auto expected_hash = moex::plaza2::cgate::plaza2_sha256_hex(binary);
-        test::require(field(startup, "source_git_sha") == MOEX_SOURCE_GIT_SHA &&
-                          (std::string_view(MOEX_SOURCE_GIT_SHA) == "unknown" ||
-                           hex(field(startup, "source_git_sha"), 40)) &&
-                          hex(field(startup, "binary_sha256"), 64) &&
-                          field(startup, "binary_sha256") == expected_hash,
-                      "CLI startup omitted actual build/executable identities");
+        test::require(
+            field(startup, "source_git_sha") == MOEX_SOURCE_GIT_SHA &&
+                (std::string_view(MOEX_SOURCE_GIT_SHA) == "unknown" || hex(field(startup, "source_git_sha"), 40)) &&
+                hex(field(startup, "binary_sha256"), 64) && field(startup, "binary_sha256") == expected_hash,
+            "CLI startup omitted actual build/executable identities");
         journal_input(contents, stdin_parse, "stdin");
         journal_input(contents, stdin_admission, "stdin");
         journal_input(contents, socket_parse, "command_socket");
@@ -402,6 +434,45 @@ int main(int argc, char** argv) {
         }
         test::require(socket_overflow == 1 && stdin_overflow == 1, "CLI overflow refusals omitted/doubled");
         no_posts(log);
+    });
+    scenario("quit refuses Working orders", [&] {
+        const auto log = root / "quit-working.ndjson";
+        auto arguments = run_arguments(argv[1], fixture, log, "cli_working");
+        arguments.push_back("--allow-orders");
+        Child owner(arguments, root / "quit-working.err");
+        make_working(owner);
+        owner.send("quit\n");
+        test::require(reply(owner).find("\"ok\":false") != std::string::npos && owner.alive(),
+                      "quit stopped a host with Working orders without --force");
+        owner.send("quit --force\n");
+        test::require(owner.wait() == 0, "forced quit did not stop host");
+    });
+    scenario("cancel-all plus quit drains", [&] {
+        const auto log = root / "quit-drain.ndjson";
+        auto arguments = run_arguments(argv[1], fixture, log, "cli_quit_drain");
+        arguments.push_back("--allow-orders");
+        Child owner(arguments, root / "quit-drain.err");
+        make_working(owner);
+        owner.send("cancel-all 1001\nquit --force\nplace during_shutdown 1001 buy 1 102500 day\nkill off\n");
+        test::require(owner.wait() == 0, "cancel/quit drain did not stop host");
+        cancelled_before_stop(log);
+        std::ifstream input(log);
+        const std::string contents((std::istreambuf_iterator<char>(input)), {});
+        journal_input(contents, "place during_shutdown 1001 buy 1 102500 day", "stdin");
+        journal_input(contents, "kill off", "stdin");
+    });
+    scenario("SIGTERM drains pending cancellation input", [&] {
+        const auto log = root / "signal-drain.ndjson";
+        auto arguments = run_arguments(argv[1], fixture, log, "cli_signal_drain");
+        arguments.push_back("--allow-orders");
+        Child owner(arguments, root / "signal-drain.err");
+        make_working(owner);
+        owner.signal(SIGSTOP);
+        owner.send("cancel-all 1001\n");
+        owner.signal(SIGTERM);
+        owner.signal(SIGCONT);
+        test::require(owner.wait() == 0, "signal drain did not stop host");
+        cancelled_before_stop(log);
     });
     if (failures == 0)
         test::remove_tree(root);

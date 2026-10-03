@@ -1379,6 +1379,13 @@ void OrderManager::observe_trades(std::span<const plaza2::private_state::OwnTrad
             deferred_trades_.erase({row.sess_id, row.id_deal});
     }
 }
+bool OrderManager::cancellations_pending() const noexcept {
+    return !cancels_.empty() || !bulk_cancellations_.empty() ||
+           std::any_of(pending_.begin(), pending_.end(), [](const auto& entry) {
+               const auto kind = entry.second.encoded.command_kind;
+               return kind == Kind::DelOrder || kind == Kind::DelUserOrders;
+           });
+}
 void OrderManager::prove_absence(std::int64_t server_time, bool online) {
     if (!online)
         return;

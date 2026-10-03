@@ -108,6 +108,7 @@ class OrderManager {
         return cancels_.size() + adds_.size();
     }
     [[nodiscard]] bool operator_action_required() const noexcept;
+    [[nodiscard]] bool cancellations_pending() const noexcept;
 
   private:
     struct Command {

@@ -46,6 +46,20 @@ volatile std::sig_atomic_t stopping{};
 void stop(int) {
     stopping = 1;
 }
+struct ShutdownRequest {
+    bool requested{}, force{};
+    std::chrono::steady_clock::time_point deadline;
+    std::string line, channel;
+    void begin(bool forced, std::string_view input = {}, std::string_view source = {}) {
+        if (!requested) {
+            requested = true;
+            deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            line = input;
+            channel = source;
+        }
+        force |= forced;
+    }
+};
 template <typename T> T integer(std::string_view text) {
     T out{};
     auto result = std::from_chars(text.data(), text.data() + text.size(), out);
@@ -58,10 +72,15 @@ std::string refusal(moex::connector_host::CgateTradingHost& host, std::string_vi
     host.record_local_refusal(line, error, channel);
     return "{\"ok\":false,\"error\":" + moex::connector_host::json_string(error) + "}";
 }
-std::string command(moex::connector_host::CgateTradingHost& host, std::string line, std::string_view channel) {
+std::string command(moex::connector_host::CgateTradingHost& host, ShutdownRequest& shutdown, std::string line,
+                    std::string_view channel) {
     using namespace moex::connector_host;
     if (!line.empty())
         host.record_operator_input(line, channel);
+    if (stopping && !shutdown.force) {
+        host.set_kill_switch(true);
+        shutdown.begin(true);
+    }
     std::istringstream input(line);
     std::string verb, key, price, side, type, error;
     try {
@@ -69,8 +88,17 @@ std::string command(moex::connector_host::CgateTradingHost& host, std::string li
         if (verb.empty())
             return refusal(host, line, "empty command", channel);
         if (verb == "quit") {
-            stopping = 1;
-            return "{\"ok\":true,\"error\":\"\"}";
+            std::string extra;
+            input >> key;
+            if ((!key.empty() && key != "--force") || (input >> extra))
+                return refusal(host, line, "usage: quit [--force]", channel);
+            const bool force = key == "--force";
+            if (!force && !host.has_pending_cancellations() && host.has_working_orders())
+                return refusal(host, line, "working orders remain; use quit --force", channel);
+            if (!shutdown.requested)
+                host.set_kill_switch(true);
+            shutdown.begin(force, line, channel);
+            return "{\"ok\":true,\"draining\":true,\"error\":\"\"}";
         }
         if (verb == "status")
             return host.status();
@@ -113,6 +141,8 @@ std::string command(moex::connector_host::CgateTradingHost& host, std::string li
         } else if (verb == "kill") {
             if (!(input >> key) || (key != "on" && key != "off"))
                 error = "usage: kill on|off";
+            else if (shutdown.requested && key == "off")
+                error = "shutdown is draining cancellations";
             else
                 host.set_kill_switch(key == "on");
         } else
@@ -127,6 +157,8 @@ int main(int argc, char** argv) {
     using namespace moex::connector_host;
     std::signal(SIGHUP, SIG_IGN);
     std::signal(SIGPIPE, SIG_IGN);
+    std::signal(SIGINT, stop);
+    std::signal(SIGTERM, stop);
     try {
         std::vector<std::string_view> arguments;
         std::filesystem::path log_path{"logs/moex_connector.ndjson"};
@@ -181,7 +213,7 @@ int main(int argc, char** argv) {
                       << "\nrun options: --log FILE --state FILE --max-quantity N --max-notional N --max-open-orders N "
                          "--reply-timeout-ms N --clock-offset-us N --command-socket PATH\n"
                       << "run commands: place ID ISIN buy|sell QTY PRICE [day|ioc]; cancel ID; move ID QTY PRICE; "
-                         "cancel-all ISIN; kill on|off; status; quit\n"
+                         "cancel-all ISIN; kill on|off; status; quit [--force]\n"
                       << "reconnect: moexctl plaza2 cmd [--log FILE | --command-socket PATH] \"COMMAND\"\n"
                       << "command socket defaults to LOGFILE.sock; restricted to its owner\n";
             return 0;
@@ -212,17 +244,20 @@ int main(int argc, char** argv) {
                 std::cerr << error.message << '\n';
                 return 3;
             }
-            std::signal(SIGINT, stop);
-            std::signal(SIGTERM, stop);
             CommandSocket socket(socket_path);
             CommandInput input;
+            ShutdownRequest drain;
             auto input_retry = std::chrono::steady_clock::now();
-            while (!stopping) {
+            for (;;) {
+                if (stopping && !drain.force) {
+                    host.set_kill_switch(true);
+                    drain.begin(true);
+                }
                 if (const auto error = host.poll()) {
                     std::cerr << error.message << '\n';
                     return 3;
                 }
-                socket.poll([&](std::string line) { return command(host, std::move(line), "command_socket"); },
+                socket.poll([&](std::string line) { return command(host, drain, std::move(line), "command_socket"); },
                             [&](std::string_view line, std::string_view error) {
                                 if (!line.empty())
                                     host.record_operator_input(line, "command_socket");
@@ -240,13 +275,30 @@ int main(int argc, char** argv) {
                         input.feed(
                             std::string_view(data.data(), static_cast<std::size_t>(count)),
                             [&](const std::string& line) {
-                                std::cout << command(host, line, "stdin") << '\n' << std::flush;
+                                std::cout << command(host, drain, line, "stdin") << '\n' << std::flush;
                             },
                             [&](std::string_view error) {
                                 std::cout << refusal(host, {}, error, "stdin") << '\n' << std::flush;
                             });
                     }
                 }
+                if (!drain.requested ||
+                    (host.has_pending_cancellations() && std::chrono::steady_clock::now() < drain.deadline))
+                    continue;
+                if (!drain.force && (host.has_pending_cancellations() || host.has_working_orders())) {
+                    std::cout << refusal(host, drain.line,
+                                         "cancellations incomplete or working orders remain; kill switch stays on; use "
+                                         "quit --force",
+                                         drain.channel)
+                              << '\n'
+                              << std::flush;
+                    drain = {};
+                    continue;
+                }
+                if (host.has_pending_cancellations())
+                    std::cerr << "moexctl: cancellation drain reached its 10-second deadline; acknowledgements remain "
+                                 "pending\n";
+                break;
             }
             const auto error = host.stop();
             shutdown.release();

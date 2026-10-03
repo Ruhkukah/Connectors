@@ -101,7 +101,7 @@ if(MOEX_BUILD_APPS)
     add_dependencies(moexctl_command_channel_test moexctl plaza2_fake_cgate_runtime)
     add_test(NAME moexctl_command_channel_test COMMAND moexctl_command_channel_test
         "$<TARGET_FILE:moexctl>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
-    set_tests_properties(moexctl_command_channel_test PROPERTIES LABELS "integration;plaza2;sanitizer" TIMEOUT 60)
+    set_tests_properties(moexctl_command_channel_test PROPERTIES LABELS "integration;plaza2;sanitizer" TIMEOUT 90)
 endif()
 moex_test(plaza2_private_state_transaction_perf_test plaza2_cgate/plaza2_private_state_transaction_perf_test.cpp
     moex_plaza2_cgate_bridge)

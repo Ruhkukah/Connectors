@@ -446,6 +446,15 @@ void CgateTradingHost::record_local_refusal(std::string_view line, std::string_v
     log_event("local_refusal", "{\"channel\":" + json_string(channel) + ",\"line\":" + json_string(line) +
                                    ",\"error\":" + json_string(error) + "}");
 }
+bool CgateTradingHost::has_pending_cancellations() const {
+    assert_owner();
+    return orders_->cancellations_pending();
+}
+bool CgateTradingHost::has_working_orders() const {
+    assert_owner();
+    return std::any_of(orders_->orders().begin(), orders_->orders().end(),
+                       [](const auto& entry) { return !terminal(entry.second.state); });
+}
 void CgateTradingHost::report_outstanding_orders(std::ostream& output) const {
     assert_owner();
     bool warned{};
