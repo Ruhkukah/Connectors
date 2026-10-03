@@ -8,6 +8,7 @@
 #include "cancel_session_retry_regression.hpp"
 #include "reload_missing_order_regression.hpp"
 #include "risk_limits_regression.hpp"
+#include "strict_lost_add_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -43,6 +44,7 @@ struct Fixture {
     Fixture() {
         config.broker_code = "ABCD";
         config.client_code = "001";
+        config.login_from = "owner-login";
         config.max_commands_per_second = 5;
     }
     std::optional<ps::FutureSessionTerms> terms(std::int32_t isin) {
@@ -89,6 +91,7 @@ ps::OwnOrderSnapshot row(const ManagedOrder& order, std::int64_t id, std::int64_
     result.sess_id = session;
     result.isin_id = order.request.isin_id;
     result.client_code = "ABCD001";
+    result.login_from = "owner-login";
     result.price = order.request.price;
     result.public_amount = order.request.quantity;
     result.public_amount_rest = remaining;
@@ -2033,6 +2036,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::strict_lost_add_regression<Fixture>();
         moex::connector_host::regression::risk_limits::run();
         reload_missing_order_regression<Fixture>();
         moex::connector_host::cancel_session_retry_regression<Fixture>();

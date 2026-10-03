@@ -166,6 +166,10 @@ std::vector<std::string> run_arguments(const std::string& executable, const test
             "MOEX_CLI_TEST_BROKER",
             "--client-code-env",
             "MOEX_CLI_TEST_CLIENT",
+            "--login-env",
+            "MOEX_CLI_TEST_LOGIN",
+            "--ext-id-range",
+            "100:199",
             "--isin-id",
             "1001",
             "--instance-id",
@@ -341,6 +345,7 @@ int main(int argc, char** argv) {
     ::setenv("MOEX_CLI_TEST_KEY", "00000000", 1);
     ::setenv("MOEX_CLI_TEST_BROKER", "BRK1", 1);
     ::setenv("MOEX_CLI_TEST_CLIENT", "C01", 1);
+    ::setenv("MOEX_CLI_TEST_LOGIN", "private-cli-owner", 1);
     unsigned failures{};
     auto scenario = [&](std::string_view name, const auto& body) {
         try {
@@ -409,6 +414,66 @@ int main(int argc, char** argv) {
         owner.close_input();
         test::require(owner.wait() == 2, "allow-orders accepted an uncovered target position cap");
         no_posts(log);
+    });
+    scenario("mandatory login and instance ext_id scope", [&] {
+        for (const auto option : {"--login-env", "--ext-id-range"}) {
+            const auto label = std::string(option).substr(2);
+            const auto log = root / ("missing-" + label + ".ndjson");
+            auto arguments = run_arguments(executable, fixture, log, "cli_missing_" + label);
+            const auto found = std::find(arguments.begin(), arguments.end(), option);
+            arguments.erase(found, found + 2);
+            arguments.push_back("--allow-orders");
+            Child owner(arguments, root / ("missing-" + label + ".err"));
+            owner.close_input();
+            test::require(owner.wait() == 2, "allow-orders accepted a missing login or assigned range");
+            no_posts(log);
+        }
+        unsigned index{};
+        for (const auto range : {"0:199", "100:99", "100:2147483647", "100", "100:199:299"}) {
+            const auto label = "invalid-range-" + std::to_string(index++);
+            const auto log = root / (label + ".ndjson");
+            auto arguments = run_arguments(executable, fixture, log, "cli_" + label);
+            const auto found = std::find(arguments.begin(), arguments.end(), "--ext-id-range");
+            *(found + 1) = range;
+            arguments.push_back("--allow-orders");
+            Child owner(arguments, root / (label + ".err"));
+            owner.close_input();
+            test::require(owner.wait() == 2, "allow-orders accepted an invalid assigned range");
+            no_posts(log);
+        }
+        ::unsetenv("MOEX_CLI_TEST_MISSING_LOGIN");
+        ::setenv("MOEX_CLI_TEST_EMPTY_LOGIN", "", 1);
+        for (const auto variable : {"MOEX_CLI_TEST_MISSING_LOGIN", "MOEX_CLI_TEST_EMPTY_LOGIN"}) {
+            const auto label = std::string(variable);
+            const auto log = root / (label + ".ndjson");
+            auto arguments = run_arguments(executable, fixture, log, "cli_" + label);
+            const auto found = std::find(arguments.begin(), arguments.end(), "--login-env");
+            *(found + 1) = variable;
+            arguments.push_back("--allow-orders");
+            Child owner(arguments, root / (label + ".err"));
+            owner.close_input();
+            test::require(owner.wait() == 2, "allow-orders accepted an unavailable login value");
+            no_posts(log);
+        }
+    });
+    scenario("explicit login and instance ext_id scope", [&] {
+        const auto log = root / "identity-scope.ndjson";
+        auto arguments = run_arguments(executable, fixture, log, "cli_identity_scope");
+        arguments.push_back("--allow-orders");
+        Child owner(arguments, root / "identity-scope.err");
+        make_working(owner);
+        const auto status = remote_command(executable, log, "status");
+        test::require(status.find("\"ext_id\":100,") != std::string::npos,
+                      "CLI Add did not start at its assigned ext_id range");
+        remote_command(executable, log, "quit --force");
+        test::require(owner.wait() == 0, "scoped CLI failed to stop");
+        std::ifstream journal(log), errors(root / "identity-scope.err");
+        const std::string contents((std::istreambuf_iterator<char>(journal)), {});
+        const std::string diagnostics((std::istreambuf_iterator<char>(errors)), {});
+        test::require(status.find("private-cli-owner") == std::string::npos &&
+                          contents.find("private-cli-owner") == std::string::npos &&
+                          diagnostics.find("private-cli-owner") == std::string::npos,
+                      "CLI exposed its configured login value");
     });
     scenario("SIGHUP", [&] {
         const auto log = root / "hup.ndjson";

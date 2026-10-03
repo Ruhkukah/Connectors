@@ -5,6 +5,8 @@
 
 namespace moex::connector_host::regression {
 inline void explicit_test_risk(TradingHostConfig& config) {
+    config.orders.login_from = "owner-login";
+    config.orders.ext_id_range_configured = true;
     config.orders.risk.quantity_configured = true;
     config.orders.risk.open_orders_configured = true;
     for (const auto isin : config.isin_ids) {
@@ -23,6 +25,24 @@ inline void risk_limits_host_regression(TradingHostConfig config, const plaza2::
     config.journal_path = root / "risk-limits.ndjson";
     config.identity_state_path = root / "risk-limits.state";
     auto missing = config;
+    missing.orders.login_from.clear();
+    bool identity_refused{};
+    try {
+        CgateTradingHost invalid(missing);
+    } catch (const std::invalid_argument&) {
+        identity_refused = true;
+    }
+    test::require(identity_refused, "allow-orders admitted no explicit order login");
+    missing = config;
+    missing.orders.ext_id_range_configured = false;
+    identity_refused = false;
+    try {
+        CgateTradingHost invalid(missing);
+    } catch (const std::invalid_argument&) {
+        identity_refused = true;
+    }
+    test::require(identity_refused, "allow-orders admitted no instance-specific ext_id range");
+    missing = config;
     missing.orders.risk.quantity_configured = false;
     bool refused{};
     try {

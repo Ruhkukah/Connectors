@@ -84,6 +84,7 @@ inline void lost_add_rebuild_host_regression(TradingHostConfig config, const pla
 
     auto row = own_order(71002, isin, account);
     row.fields.push_back(integer(kFortsTradeReplOrdersLogExtId, add.ext_id));
+    row.fields.push_back(text(kFortsTradeReplOrdersLogLoginFrom, config.orders.login_from));
     for (auto& field : row.fields) {
         if (field.field_code == kFortsTradeReplOrdersLogPublicAmount ||
             field.field_code == kFortsTradeReplOrdersLogPrivateAmount)

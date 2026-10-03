@@ -72,9 +72,11 @@ bool terminal(OrderState state) noexcept {
 OrderManager::OrderManager(OrderManagerConfig config, Send send, Ready ready, Terms terms, Log log, Position position)
     : config_(std::move(config)), send_(std::move(send)), ready_(std::move(ready)), terms_(std::move(terms)),
       log_(std::move(log)), position_(std::move(position)), rate_(config_.max_commands_per_second) {
+    config_.next_ext_id = std::max(config_.next_ext_id, config_.ext_id_begin);
     if (!rate_.valid() || !send_ || !ready_ || !terms_ || config_.reply_timeout.count() <= 0 ||
         config_.absence_margin.count() < 0 || config_.risk.max_quantity <= 0 || config_.risk.max_notional_scaled <= 0 ||
         config_.risk.max_open_orders == 0 || config_.next_ext_id <= 0 || config_.next_user_id == 0 ||
+        config_.ext_id_begin <= 0 || config_.ext_id_end < config_.ext_id_begin || config_.ext_id_end >= INT32_MAX ||
         config_.max_cancel_attempts == 0 || config_.cancel_retry_base.count() <= 0 ||
         config_.cancel_retry_max < config_.cancel_retry_base)
         throw std::invalid_argument("invalid order manager configuration");
@@ -490,8 +492,8 @@ std::string OrderManager::place(OrderRequest request) {
         return "client order id empty or already used";
     if (auto error = check_risk(request, 1); !error.empty())
         return error;
-    if (config_.next_ext_id == INT32_MAX)
-        return "ext_id space exhausted";
+    if (config_.next_ext_id > config_.ext_id_end)
+        return "instance ext_id range exhausted";
     const auto ext = config_.next_ext_id++;
     tr::AddOrderRequest add;
     add.broker_code = config_.broker_code;
@@ -719,9 +721,7 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
             // the existing early-row buffer to resolve it under the original key.
             std::vector<plaza2::private_state::OwnOrderSnapshot> rows;
             for (const auto& [identity, row] : deferred_orders_)
-                if (row.ext_id == order.ext_id && row.client_code == config_.broker_code + config_.client_code &&
-                    row.sess_id == order.sess_id && row.isin_id == order.request.isin_id &&
-                    row.dir == static_cast<std::int8_t>(order.request.side))
+                if (row.ext_id == order.ext_id)
                     rows.push_back(row);
             if (!rows.empty())
                 observe_orders(rows);
@@ -1211,6 +1211,23 @@ void OrderManager::invalidate_execution_baselines() {
         }
 }
 
+bool OrderManager::matches_lost_add(const plaza2::private_state::OwnOrderSnapshot& row,
+                                    const ManagedOrder& order) const {
+    if (config_.login_from.empty() || row.login_from != config_.login_from ||
+        row.client_code != config_.broker_code + config_.client_code || row.sess_id != order.sess_id ||
+        row.isin_id != order.request.isin_id || row.dir != static_cast<std::int8_t>(order.request.side))
+        return false;
+    const auto price = plaza2::private_state::parse_session_decimal(row.price);
+    const auto requested = plaza2::private_state::parse_session_decimal(order.request.price);
+    if (!price || !requested || price->units != requested->units)
+        return false;
+    const auto amount = row.from_trade_repl ? row.public_amount : row.private_amount;
+    const auto id = row.private_order_id > 0 ? row.private_order_id : row.public_order_id;
+    const auto fill = filled_by_id_.find(id);
+    const auto executed = fill == filled_by_id_.end() ? order.executed : fill->second;
+    return amount == order.request.quantity ||
+           (amount >= 0 && amount <= order.request.quantity && executed == order.request.quantity - amount);
+}
 void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, bool rebuilding) {
     struct Identity {
         std::int64_t id;
@@ -1255,10 +1272,29 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             ordered.push_back(&row);
     for (const auto* source : ordered) {
         const auto& row = *source;
+        const auto id = row.private_order_id > 0 ? row.private_order_id : row.public_order_id;
+        if (id > 0 && !row.multileg && !row.identity_conflict &&
+            (row.from_trade_repl || (rebuilding && row.from_user_book))) {
+            const auto ext = ext_index_.find(row.ext_id);
+            if (ext != ext_index_.end()) {
+                auto& candidate = orders_.at(ext->second);
+                if (candidate.add_unconfirmed && candidate.order_id == 0 && !candidate.operator_action_required) {
+                    deferred_orders_[{row.sess_id, id}] = row;
+                    if (candidate.state == OrderState::Unknown && !matches_lost_add(row, candidate)) {
+                        candidate.operator_action_required = true;
+                        candidate.last_error =
+                            "lost Add ext_id evidence does not match login/client/session/ISIN/side/price/quantity";
+                        std::erase_if(cancels_, [&](const auto& command) { return command.key == ext->second; });
+                        emit("add_identity_conflict", "{\"client_order_id\":" + json_string(ext->second) +
+                                                          ",\"message\":" + json_string(candidate.last_error) + "}");
+                        changed(ext->second);
+                    }
+                }
+            }
+        }
         if (!owned(row) || (!row.from_trade_repl && !(rebuilding && row.from_user_book)) ||
             (!row.from_trade_repl && trade_evidence.contains(identity(row))))
             continue;
-        const auto id = row.private_order_id > 0 ? row.private_order_id : row.public_order_id;
         if (id <= 0)
             continue;
         const auto remaining = row.from_trade_repl ? row.public_amount_rest : row.private_amount_rest;
@@ -1309,9 +1345,8 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             auto& candidate = orders_.at(ext_index_.at(row.ext_id));
             const bool contract = row.isin_id == candidate.request.isin_id && row.sess_id == candidate.sess_id &&
                                   row.dir == static_cast<std::int8_t>(candidate.request.side);
-            if (row.isin_id == candidate.request.isin_id && row.sess_id == candidate.sess_id &&
-                row.dir == static_cast<std::int8_t>(candidate.request.side) && candidate.add_unconfirmed &&
-                candidate.order_id == 0 && !candidate.operator_action_required) {
+            if (matches_lost_add(row, candidate) && candidate.add_unconfirmed && candidate.order_id == 0 &&
+                !candidate.operator_action_required) {
                 deferred_orders_[{row.sess_id, id}] = row;
                 if (candidate.state == OrderState::Unknown) {
                     key = candidate.request.client_order_id;
@@ -1409,7 +1444,9 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             order.order_ids.insert(row.id_ord1);
             order_index_.emplace(row.id_ord1, key);
         }
-        config_.next_ext_id = std::max(config_.next_ext_id, row.ext_id == INT32_MAX ? INT32_MAX : row.ext_id + 1);
+        if (!config_.login_from.empty() && row.login_from == config_.login_from && row.ext_id >= config_.ext_id_begin &&
+            row.ext_id <= config_.ext_id_end)
+            config_.next_ext_id = std::max(config_.next_ext_id, row.ext_id + 1);
         order.remaining = std::max<std::int64_t>(0, remaining);
         if (unresolved_replacement)
             order.state = OrderState::Unknown; // Old-ID deletion does not prove the replacement absent.

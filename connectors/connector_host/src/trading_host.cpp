@@ -291,6 +291,8 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     if (config_.isin_ids.empty())
         throw std::invalid_argument("at least one trading instrument is required");
     if (config_.session.allow_orders) {
+        if (config_.orders.login_from.empty() || !config_.orders.ext_id_range_configured)
+            throw std::invalid_argument("--allow-orders requires explicit --login-env and --ext-id-range");
         const auto& risk = config_.orders.risk;
         if (!risk.quantity_configured || !risk.open_orders_configured)
             throw std::invalid_argument("--allow-orders requires explicit "
@@ -302,7 +304,7 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     }
     auto orders = config_.orders;
     const auto reservations = journal_.reservations();
-    orders.next_ext_id = std::max(orders.next_ext_id, reservations.next_ext_id);
+    orders.next_ext_id = std::max({orders.next_ext_id, orders.ext_id_begin, reservations.next_ext_id});
     orders.next_user_id = std::max(orders.next_user_id, reservations.next_user_id);
     orders_ = std::make_unique<OrderManager>(
         std::move(orders),
@@ -566,6 +568,9 @@ cg::Plaza2Error CgateTradingHost::start() {
         "{\"product\":\"MoexConnector\",\"version\":\"1.0.0\",\"instance_id\":" + json_string(session.publisher_name) +
             ",\"source_git_sha\":" + json_string(config_.source_git_sha) +
             ",\"binary_sha256\":" + json_string(config_.binary_sha256) + ",\"router\":" + json_string(router) +
+            ",\"ext_id_begin\":" + std::to_string(config_.orders.ext_id_begin) +
+            ",\"ext_id_end\":" + std::to_string(config_.orders.ext_id_end) +
+            ",\"login_from\":\"[REDACTED]\"" +
             ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
             ",\"allow_orders\":" + (session.allow_orders ? "true" : "false") + ",\"risk\":" + risk + ",\"urls\":[" +
             urls + "],\"env_settings\":" + json_string(masked_settings(session.runtime.env_open_settings)) +

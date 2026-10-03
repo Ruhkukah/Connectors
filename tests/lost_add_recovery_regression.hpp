@@ -25,6 +25,7 @@ template <class Fixture> void lost_add_recovery_regression() {
         row.sess_id = 100;
         row.isin_id = 42;
         row.client_code = "ABCD001";
+        row.login_from = "owner-login";
         row.price = "100";
         row.ext_id = ext;
         row.dir = 1;
@@ -79,6 +80,7 @@ template <class Fixture> void lost_add_recovery_regression() {
         row.sess_id = mismatch == 1 ? 101 : 100;
         row.isin_id = mismatch == 2 ? 43 : 42;
         row.client_code = mismatch == 0 ? "OTHER01" : "ABCD001";
+        row.login_from = "owner-login";
         row.dir = mismatch == 3 ? 2 : 1;
         row.price = "100";
         row.ext_id = manager.orders().at("unmatched").ext_id;
@@ -102,6 +104,7 @@ template <class Fixture> void lost_add_recovery_regression() {
     row.sess_id = 100;
     row.isin_id = 42;
     row.client_code = "ABCD001";
+    row.login_from = "owner-login";
     row.price = "100";
     row.ext_id = manager.orders().at("resting").ext_id;
     row.dir = 1;

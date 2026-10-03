@@ -7,6 +7,7 @@
 #include <array>
 #include <charconv>
 #include <csignal>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <poll.h>
@@ -170,6 +171,8 @@ int main(int argc, char** argv) {
         std::filesystem::path log_path{"logs/moex_connector.ndjson"};
         std::filesystem::path state_path;
         std::filesystem::path socket_path;
+        std::string login_env;
+        std::optional<std::array<std::int32_t, 2>> ext_id_range;
         RiskLimits risk;
         bool overall_notional_configured{};
         std::uint32_t reply_timeout{60000};
@@ -178,7 +181,8 @@ int main(int argc, char** argv) {
             const std::string_view arg(argv[i]);
             if (arg == "--log" || arg == "--state" || arg == "--command-socket" || arg == "--max-quantity" ||
                 arg == "--max-notional" || arg == "--max-position" || arg == "--max-open-orders" ||
-                arg == "--reply-timeout-ms" || arg == "--clock-offset-us") {
+                arg == "--reply-timeout-ms" || arg == "--clock-offset-us" || arg == "--login-env" ||
+                arg == "--ext-id-range") {
                 if (++i == argc)
                     throw std::invalid_argument("missing option value");
                 const std::string_view value(argv[i]);
@@ -188,7 +192,18 @@ int main(int argc, char** argv) {
                     state_path = value;
                 else if (arg == "--command-socket")
                     socket_path = value;
-                else if (arg == "--max-quantity") {
+                else if (arg == "--login-env")
+                    login_env = value;
+                else if (arg == "--ext-id-range") {
+                    const auto colon = value.find(':');
+                    if (colon == std::string_view::npos)
+                        throw std::invalid_argument("ext-id-range must be MIN:MAX");
+                    const auto first = integer<std::int32_t>(value.substr(0, colon));
+                    const auto last = integer<std::int32_t>(value.substr(colon + 1));
+                    if (first <= 0 || last < first || last >= INT32_MAX)
+                        throw std::invalid_argument("positive inclusive ext-id-range below INT32_MAX required");
+                    ext_id_range = {{first, last}};
+                } else if (arg == "--max-quantity") {
                     risk.max_quantity = integer<std::int32_t>(value);
                     risk.quantity_configured = true;
                 } else if (arg == "--max-open-orders") {
@@ -244,6 +259,8 @@ int main(int argc, char** argv) {
                          "--max-notional ISIN=QUOTE_CAP "
                          "--max-position ISIN=CONTRACTS --max-open-orders N "
                          "--reply-timeout-ms N --clock-offset-us N --command-socket PATH\n"
+                      << "required with --allow-orders: --login-env NAME --ext-id-range MIN:MAX "
+                         "(deployment-assigned, nonoverlapping)\n"
                       << "run commands: place ID ISIN buy|sell QTY PRICE [day|ioc]; cancel "
                          "ID; move ID QTY PRICE; "
                          "cancel-all ISIN; kill on|off; storage ok; status; quit [--force]\n"
@@ -255,6 +272,19 @@ int main(int argc, char** argv) {
         }
         if (request.command == "run") {
             TradingHostConfig config;
+            if (request.config.transport.host.allow_orders && (login_env.empty() || !ext_id_range))
+                throw std::invalid_argument("--allow-orders requires --login-env and --ext-id-range");
+            if (!login_env.empty()) {
+                const auto* login = std::getenv(login_env.c_str());
+                if (!login || !*login)
+                    throw std::invalid_argument("required login environment variable is missing");
+                config.orders.login_from = login;
+            }
+            if (ext_id_range) {
+                config.orders.ext_id_begin = (*ext_id_range)[0];
+                config.orders.ext_id_end = (*ext_id_range)[1];
+                config.orders.ext_id_range_configured = true;
+            }
             config.source_git_sha = MOEX_SOURCE_GIT_SHA;
             config.binary_sha256 = binary_sha256(argv[0]);
             config.session = request.config.transport.host;

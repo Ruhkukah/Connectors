@@ -68,6 +68,11 @@ struct RiskLimits {
 
 struct OrderManagerConfig {
     std::string broker_code, client_code;
+    // Explicit login and deployment-assigned inclusive range, never inferred
+    // from credentials or hashed from the instance name.
+    std::string login_from;
+    std::int32_t ext_id_begin{1}, ext_id_end{INT32_MAX - 1};
+    bool ext_id_range_configured{};
     std::uint32_t max_commands_per_second{30};
     std::chrono::milliseconds reply_timeout{60000};
     std::chrono::seconds absence_margin{60};
@@ -206,6 +211,8 @@ class OrderManager {
                                                           std::int32_t submitted_session);
     [[nodiscard]] bool has_uncertain_submission(std::int32_t session, std::int32_t isin,
                                                 plaza2_trade::Plaza2TradeSide side) const;
+    [[nodiscard]] bool matches_lost_add(const plaza2::private_state::OwnOrderSnapshot& row,
+                                        const ManagedOrder& order) const;
     OrderManagerConfig config_;
     Send send_;
     Ready ready_;
