@@ -1487,4 +1487,40 @@ void OrderManager::prove_absence(std::int64_t server_time, bool online) {
     }
     prune_terminal();
 }
+void OrderManager::reconcile_snapshot(std::span<const plaza2::private_state::OwnOrderSnapshot> rows,
+                                      std::int64_t utc_seconds) {
+    std::unordered_set<std::string> present;
+    const auto account = config_.broker_code + config_.client_code;
+    for (const auto& row : rows) {
+        if (row.multileg || row.identity_conflict || row.client_code != account ||
+            (!row.from_trade_repl && !row.from_user_book))
+            continue;
+        const auto id = row.private_order_id > 0 ? row.private_order_id : row.public_order_id;
+        const auto link = order_index_.find(id);
+        if (link == order_index_.end())
+            continue;
+        const auto& order = orders_.at(link->second);
+        if (order.order_id == id && order.sess_id == row.sess_id && order.request.isin_id == row.isin_id &&
+            static_cast<std::int8_t>(order.request.side) == row.dir)
+            present.insert(link->second);
+    }
+    for (auto& [key, order] : orders_) {
+        if (terminal(order.state) || order.order_id <= 0 || present.contains(key))
+            continue;
+        order.state = OrderState::Unknown;
+        order.last_error = "owned order missing from complete current TRADE/USERORDERBOOK snapshots";
+        // History loss cannot establish a Move's replacement identity. Keep
+        // that uncertainty visible instead of introducing a cancellation.
+        if (has_outstanding_command(key, Kind::MoveOrder)) {
+            order.operator_action_required = true;
+        } else {
+            order.order_id = 0;
+            order.absence_reply = false;
+            order.sent_utc_seconds = utc_seconds;
+            order.cancel_requested = true;
+            recovery_cancel(order);
+        }
+        changed(key);
+    }
+}
 } // namespace moex::connector_host

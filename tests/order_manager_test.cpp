@@ -6,6 +6,7 @@
 #include "move_no_replacement_regression.hpp"
 #include "move_replication_recovery_regression.hpp"
 #include "cancel_session_retry_regression.hpp"
+#include "reload_missing_order_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -2031,6 +2032,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        reload_missing_order_regression<Fixture>();
         moex::connector_host::cancel_session_retry_regression<Fixture>();
         moex::connector_host::move_replication_recovery_regression<Fixture>();
         moex::connector_host::move_no_replacement_regression<Fixture>();

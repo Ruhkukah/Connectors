@@ -11,7 +11,9 @@
 #include "add_conflict_host_regression.hpp"
 #include "immediate_dispatch_host_regression.hpp"
 #include "storage_guard_regression.hpp"
+#include "multileg_history_host_regression.hpp"
 #include "storage_halt_cancel_regression.hpp"
+#include "reload_missing_host_regression.hpp"
 
 #include <cstdlib>
 #include <dlfcn.h>
@@ -170,7 +172,9 @@ int main(int argc, char** argv) {
         config.orders.client_code = input.client_code;
         config.isin_ids = {1001};
         config.journal_path = root / "events.ndjson";
+        moex::connector_host::regression::multileg_history_host_regression(config, fake, root);
         moex::connector_host::regression::storage_halt_cancel_regression(config, fake, root);
+        moex::connector_host::reload_missing_host_regression(config, fake, root);
         moex::connector_host::regression::immediate_dispatch_host_regression(config, fake, root);
         moex::connector_host::regression::storage_capacity_guard(config, fake, root, false);
         moex::connector_host::regression::storage_capacity_guard(config, fake, root, true);

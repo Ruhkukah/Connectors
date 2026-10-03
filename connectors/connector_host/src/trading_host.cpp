@@ -374,7 +374,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
     // Use the startup snapshot barrier again after a lost delta batch or either
     // private order stream disconnects. Keep logical orders and correlations;
     // the current committed snapshots reconcile their identities and exposure.
-    if (!rebuilding_ && (changes.resync_required || !trade_online || !user_book_online)) {
+    if (!rebuilding_ && (changes.resync_required || changes.regular_trade_history_truncated || !trade_online || !user_book_online)) {
         rebuilding_ = true;
         log_event("private_history_gap", "{\"recovering\":true}");
     }
@@ -384,6 +384,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
         if (trade_online && user_book_online) {
             orders_->observe_orders(data.own_orders(), true);
             orders_->observe_trades(data.own_trades());
+            orders_->reconcile_snapshot(data.own_orders(), config_.utc_now ? config_.utc_now() : utc_seconds());
             rebuilding_ = false;
         }
     } else {
