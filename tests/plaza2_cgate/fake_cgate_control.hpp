@@ -150,6 +150,9 @@ struct Scenario {
     bool zero_position{false};
     std::uint32_t listener_create_result{0}, publisher_create_result{0};
     generated::StreamCode unrecognized_schema_stream{};
+    generated::FieldCode mutated_schema_field{};
+    bool omit_schema_field{false};
+    std::string schema_field_type;
     std::string client_code;
     std::int32_t session_id{0};
     std::array<std::string, static_cast<std::size_t>(Option::Count)> options;

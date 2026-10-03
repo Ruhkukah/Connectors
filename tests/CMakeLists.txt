@@ -38,7 +38,7 @@ function(moex_runtime_test name source)
 endfunction()
 
 foreach(name IN ITEMS plaza2_runtime_probe_test
-        plaza2_runtime_adapter_test plaza2_runtime_listener_test)
+        plaza2_runtime_adapter_test plaza2_runtime_listener_test plaza2_schema_contract_test)
     moex_runtime_test(${name} plaza2_cgate/${name}.cpp)
 endforeach()
 moex_runtime_test(connector_host_test connector_host_test.cpp moex_connector_host)

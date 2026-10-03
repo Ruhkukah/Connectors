@@ -818,7 +818,7 @@ struct Plaza2ListenerCallbackState {
                 .name = std::string(field_name),
                 .field_code = descriptor->field_code,
                 .value_class = descriptor->value_class,
-                .type_token = field->type == nullptr ? std::string(descriptor->type_token) : std::string(field->type),
+                .type_token = field->type == nullptr ? std::string{} : std::string(field->type),
                 .offset = field->offset,
                 .size = field->size,
                 .ordinal = ordinal,
@@ -837,48 +837,14 @@ struct Plaza2ListenerCallbackState {
             return {.code = Plaza2ErrorCode::DecodeFailed,
                     .message = "public DEALS schema does not contain all reviewed deal fields"};
         }
-        const auto required = [&](std::string_view name) {
-            if (name == "replID" || name == "replRev" || name == "replAct")
-                return true;
-            if (message_name == "orders_aggr")
-                return name == "isin_id" || name == "price" || name == "volume" || name == "dir";
-            if (message_name == "sys_events")
-                return name == "event_type" || name == "sess_id";
-            if (message_name == "session")
-                return name == "sess_id" || name == "state";
-            if (message_name == "session_state")
-                return name == "sess_id" || name == "public_state";
-            if (message_name == "instrument_state")
-                return name == "isin_id" || name == "public_state";
-            if (message_name == "instrument")
-                return name == "isin_id" || name == "state";
-            if (message_name == "user_deal" || message_name == "user_multileg_deal")
-                return name == "id_deal" || name == "sess_id" || name == "isin_id" || name == "price" ||
-                       name == "xamount" || name == "public_order_id_buy" || name == "public_order_id_sell" ||
-                       name == "private_order_id_buy" || name == "private_order_id_sell" || name == "ext_id_buy" ||
-                       name == "ext_id_sell" || name == "code_buy" || name == "code_sell";
-            if (message_name == "orders_log" || message_name == "orders")
-                return name == "public_order_id" || name == "private_order_id" || name == "isin_id" ||
-                       name == "public_amount_rest" || name == "private_amount_rest" || name == "public_action" ||
-                       name == "private_action" || name == "ext_id" || name == "sess_id" || name == "dir" ||
-                       name == "client_code" || name == "price" || name == "public_amount" || name == "private_amount";
-            if (message_name == "position")
-                return name == "isin_id" || name == "xpos" || name == "client_code";
-            if (message_name == "fut_instruments")
-                return name == "isin_id" || name == "isin";
-            if (message_name == "fut_sess_contents")
-                return name == "isin_id" || name == "sess_id" || name == "min_step" || name == "settlement_price" ||
-                       name == "limit_up" || name == "limit_down";
-            if (message_name == "part")
-                return name == "client_code" || name == "money_free" || name == "money_amount" || name == "limits_set";
-            return false;
-        };
+        // Product metadata is the retained decoder's consumed field contract.
+        // Validate all of it; unrelated server fields remain accepted above.
         for (const auto& expected : generated::FieldsForTable(table->table_code)) {
-            if (!required(expected.field_name))
-                continue;
             const auto actual = std::find_if(plan.fields.begin(), plan.fields.end(),
                                              [&](const auto& f) { return f.field_code == expected.field_code; });
-            if (actual == plan.fields.end() || actual->type_token != expected.type_token) {
+            if (actual == plan.fields.end() || actual->type_token != expected.type_token ||
+                std::count_if(plan.fields.begin(), plan.fields.end(),
+                              [&](const auto& f) { return f.field_code == expected.field_code; }) != 1) {
                 return {.code = Plaza2ErrorCode::IncompatibleScheme,
                         .message = "INCOMPATIBLE_SCHEME " + message_name + "." + std::string(expected.field_name) +
                                    " expected=" + std::string(expected.type_token) +

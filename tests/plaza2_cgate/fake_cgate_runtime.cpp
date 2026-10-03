@@ -1560,6 +1560,12 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             auto owned_field = std::make_unique<OwnedField>();
             owned_field->name = std::string(field->field_name);
             owned_field->type_token = std::string(field->type_token);
+            if (field->field_code == scenario.mutated_schema_field) {
+                if (scenario.omit_schema_field)
+                    owned_field->name = "removed_" + owned_field->name;
+                if (!scenario.schema_field_type.empty())
+                    owned_field->type_token = scenario.schema_field_type;
+            }
             owned_field->desc.id = static_cast<std::uint32_t>(field->field_code);
             if (table->table_name == "orders_aggr" && field->field_name == "price") {
                 if (fake_flag(Option::SchemeMissingPrice))
