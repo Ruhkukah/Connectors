@@ -1,6 +1,7 @@
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/connector_host/trading_host.hpp"
 #include "command_input.hpp"
+#include "command_socket.hpp"
 #include "scope_exit.hpp"
 
 #include <array>
@@ -24,21 +25,19 @@ template <typename T> T integer(std::string_view text) {
         throw std::invalid_argument("invalid numeric argument");
     return out;
 }
-void command(moex::connector_host::CgateTradingHost& host, std::string line) {
+std::string command(moex::connector_host::CgateTradingHost& host, std::string line) {
     using namespace moex::connector_host;
     std::istringstream input(line);
     std::string verb, key, price, side, type, error;
     input >> verb;
     if (verb.empty())
-        return;
+        return "{\"ok\":false,\"error\":\"empty command\"}";
     if (verb == "quit") {
         stopping = 1;
-        return;
+        return "{\"ok\":true,\"error\":\"\"}";
     }
-    if (verb == "status") {
-        std::cout << host.status() << '\n' << std::flush;
-        return;
-    }
+    if (verb == "status")
+        return host.status();
     if (verb == "place") {
         OrderRequest request;
         if (!(input >> request.client_order_id >> request.isin_id >> side >> request.quantity >> request.price))
@@ -82,23 +81,26 @@ void command(moex::connector_host::CgateTradingHost& host, std::string line) {
             host.set_kill_switch(key == "on");
     } else
         error = "commands: place, cancel, move, cancel-all, kill, status, quit";
-    std::cout << "{\"ok\":" << (error.empty() ? "true" : "false") << ",\"error\":" << json_string(error) << "}\n"
-              << std::flush;
+    return std::string("{\"ok\":") + (error.empty() ? "true" : "false") + ",\"error\":" + json_string(error) + "}";
 }
 } // namespace
 int main(int argc, char** argv) {
     using namespace moex::connector_host;
+    std::signal(SIGHUP, SIG_IGN);
+    std::signal(SIGPIPE, SIG_IGN);
     try {
         std::vector<std::string_view> arguments;
         std::filesystem::path log_path{"logs/moex_connector.ndjson"};
         std::filesystem::path state_path;
+        std::filesystem::path socket_path;
         RiskLimits risk;
         std::uint32_t reply_timeout{60000};
         std::optional<std::int64_t> clock_offset;
         for (int i = 1; i < argc; ++i) {
             const std::string_view arg(argv[i]);
-            if (arg == "--log" || arg == "--state" || arg == "--max-quantity" || arg == "--max-notional" ||
-                arg == "--max-open-orders" || arg == "--reply-timeout-ms" || arg == "--clock-offset-us") {
+            if (arg == "--log" || arg == "--state" || arg == "--command-socket" || arg == "--max-quantity" ||
+                arg == "--max-notional" || arg == "--max-open-orders" || arg == "--reply-timeout-ms" ||
+                arg == "--clock-offset-us") {
                 if (++i == argc)
                     throw std::invalid_argument("missing option value");
                 const std::string_view value(argv[i]);
@@ -106,6 +108,8 @@ int main(int argc, char** argv) {
                     log_path = value;
                 else if (arg == "--state")
                     state_path = value;
+                else if (arg == "--command-socket")
+                    socket_path = value;
                 else if (arg == "--max-quantity")
                     risk.max_quantity = integer<std::int32_t>(value);
                 else if (arg == "--max-open-orders")
@@ -123,13 +127,24 @@ int main(int argc, char** argv) {
             } else
                 arguments.push_back(arg);
         }
+        if (socket_path.empty())
+            socket_path = log_path.string() + ".sock";
+        if (arguments.size() >= 2 && arguments[0] == "plaza2" && arguments[1] == "cmd") {
+            if (arguments.size() != 3)
+                throw std::invalid_argument(
+                    "usage: moexctl plaza2 cmd [--log FILE | --command-socket PATH] \"COMMAND\"");
+            std::cout << send_command(socket_path, std::string(arguments[2])) << '\n' << std::flush;
+            return 0;
+        }
         const auto request = parse_operator_arguments(arguments);
         if (request.help) {
             std::cout << operator_help()
                       << "\nrun options: --log FILE --state FILE --max-quantity N --max-notional N --max-open-orders N "
-                         "--reply-timeout-ms N --clock-offset-us N\n"
+                         "--reply-timeout-ms N --clock-offset-us N --command-socket PATH\n"
                       << "run commands: place ID ISIN buy|sell QTY PRICE [day|ioc]; cancel ID; move ID QTY PRICE; "
-                         "cancel-all ISIN; kill on|off; status; quit\n";
+                         "cancel-all ISIN; kill on|off; status; quit\n"
+                      << "reconnect: moexctl plaza2 cmd [--log FILE | --command-socket PATH] \"COMMAND\"\n"
+                      << "command socket defaults to LOGFILE.sock; restricted to its owner\n";
             return 0;
         }
         if (request.command == "run") {
@@ -158,23 +173,28 @@ int main(int argc, char** argv) {
             }
             std::signal(SIGINT, stop);
             std::signal(SIGTERM, stop);
+            CommandSocket socket(socket_path);
             CommandInput input;
-            bool input_open = true;
+            auto input_retry = std::chrono::steady_clock::now();
             while (!stopping) {
                 if (const auto error = host.poll()) {
                     std::cerr << error.message << '\n';
                     return 3;
                 }
+                socket.poll([&](std::string line) { return command(host, std::move(line)); });
                 pollfd descriptor{.fd = STDIN_FILENO, .events = POLLIN};
-                if (input_open && ::poll(&descriptor, 1, 0) > 0 && (descriptor.revents & (POLLIN | POLLHUP))) {
+                if (std::chrono::steady_clock::now() >= input_retry && ::poll(&descriptor, 1, 0) > 0 &&
+                    (descriptor.revents & (POLLIN | POLLHUP))) {
                     std::array<char, 4096> data{};
                     const auto count = ::read(STDIN_FILENO, data.data(), data.size());
-                    if (count <= 0)
-                        input_open = false;
-                    else {
+                    if (count == 0 || (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+                        input = CommandInput{};
+                        input_retry = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+                    } else if (count > 0) {
                         input.feed(
                             std::string_view(data.data(), static_cast<std::size_t>(count)),
-                            [&](const std::string& line) { command(host, line); },
+                            [&](const std::string& line) { std::cout << command(host, line) << '\n'
+                                                                     << std::flush; },
                             [](std::string_view error) {
                                 std::cout << "{\"ok\":false,\"error\":" << json_string(error) << "}\n" << std::flush;
                             });
