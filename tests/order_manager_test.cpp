@@ -3,6 +3,7 @@
 #include "fixtures/cgate99_messages.hpp"
 #include "transport_retry_warning_regression.hpp"
 #include "lost_add_recovery_regression.hpp"
+#include "move_no_replacement_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -2027,6 +2028,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::move_no_replacement_regression<Fixture>();
         moex::connector_host::lost_add_recovery_regression<Fixture>();
         command_audit_only_actual_post();
         burst();

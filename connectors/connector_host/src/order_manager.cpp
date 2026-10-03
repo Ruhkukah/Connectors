@@ -546,8 +546,8 @@ std::string OrderManager::move(std::string_view client_id, std::string price, st
     if (!order.execution_baseline_known)
         return "recovered order has no complete fill baseline; cancel instead of moving";
     const auto earlier_fills = order.executed - filled_by_id_[order.order_id];
-    if (quantity <= earlier_fills)
-        return "target quantity is no greater than fills on previous order IDs; cancel instead";
+    if (quantity <= order.executed)
+        return "target quantity is no greater than total executed quantity; cancel instead";
     auto requested = order.request;
     requested.price = price;
     requested.quantity = quantity;
@@ -1045,6 +1045,14 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             order.state = settled_state(order);
         } else
             retry_cancel(std::move(command), now, true);
+        changed(found->first);
+        return;
+    }
+    if (command.encoded.command_kind == Kind::MoveOrder && reply.msgid == 176 && reply.order_id1 == 0) {
+        // Regime3 accepted the deletion but created no replacement. TRADE
+        // settles the old identity; there is no uncertain command to recover.
+        move_reservations_.erase(found->first);
+        order.state = OrderState::PendingCancel;
         changed(found->first);
         return;
     }
