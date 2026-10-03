@@ -55,6 +55,7 @@ class CgateTradingHost {
     plaza2_trade::CgateSession session_;
     std::unique_ptr<OrderManager> orders_;
     bool rebuilding_{true};
+    bool reconcile_reload_{};
     bool stopped_{};
     bool link_was_active_{}, link_lost_{};
     plaza2::cgate::Plaza2Error stop_error_;

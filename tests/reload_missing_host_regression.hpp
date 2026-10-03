@@ -52,9 +52,23 @@ inline void reload_missing_host_regression(TradingHostConfig config, const plaza
     for (int i = 0; i < 5; ++i)
         require(!host.poll(), "native missing reload rebuild poll");
     require(host.status().find("\"reconstructing\":false") != std::string::npos &&
-                late_move_host_detail::logical_order(host, "missing-after-reload").find("\"state\":\"Unknown\"") !=
-                    std::string::npos,
-            "native complete LifeNum reload left missing tracked order Working");
+                late_move_host_detail::logical_order(host, "missing-after-reload").find("\"state\":\"Working\"") !=
+                    std::string::npos &&
+                control.commands().size() == before,
+            "native LifeNum reload cancelled an order before mature TRADE absence proof");
+    control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
+    control.enqueue({.stream_code = gen::StreamCode::kFortsTradeRepl,
+                     .table_code = gen::TableCode::kFortsTradeReplHeartbeat,
+                     .revision = 80000,
+                     .fields = {{.field_code = kFortsTradeReplHeartbeatServerTime,
+                                 .kind = fake::FieldKind::Timestamp,
+                                 .unsigned_value = 1700000161 + 3 * 3600}}});
+    control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
+    for (int i = 0; i < 5; ++i)
+        require(!host.poll(), "native mature reload absence proof poll");
+    require(late_move_host_detail::logical_order(host, "missing-after-reload").find("\"state\":\"Unknown\"") !=
+                std::string::npos,
+            "mature snapshot absence proof failed to expose the missing order");
     require(control.commands().size() == before + 1 && control.commands().back().name == "DelUserOrders",
             "native reload did not issue exact ext_id absence recovery");
     require(!host.stop(), "native missing reload stop");

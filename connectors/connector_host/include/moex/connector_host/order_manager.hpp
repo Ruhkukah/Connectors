@@ -46,6 +46,7 @@ struct ManagedOrder {
     bool cancel_requested{}, absence_reply{};
     bool operator_action_required{}, confirmed_by_replication{};
     bool add_unconfirmed{}, transport_retry_warned{};
+    bool snapshot_missing{};
     bool execution_baseline_known{true};
     std::int64_t sent_utc_seconds{};
     std::set<std::int64_t> order_ids;
@@ -110,7 +111,8 @@ class OrderManager {
     void on_timeout(std::uint32_t user_id, Clock::time_point now);
     // USERORDERBOOK is used only while rebuilding, never as a live Add gate.
     void observe_orders(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, bool rebuilding = false);
-    void reconcile_snapshot(std::span<const plaza2::private_state::OwnOrderSnapshot> rows, std::int64_t utc_seconds);
+    void reconcile_snapshot(std::span<const plaza2::private_state::OwnOrderSnapshot> rows,
+                            std::int64_t trade_server_time);
     void invalidate_execution_baselines();
     void observe_trades(std::span<const plaza2::private_state::OwnTradeSnapshot> rows);
     // Call after applying TRADE deltas, including commits with no changed orders.

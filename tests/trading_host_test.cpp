@@ -17,6 +17,7 @@
 #include "transport_status_regression.hpp"
 #include "replication_journal_regression.hpp"
 #include "reload_missing_host_regression.hpp"
+#include "inflight_rebuild_host_regression.hpp"
 #include "opening_auction_host_regression.hpp"
 #include "spread_scope_host_regression.hpp"
 #include "risk_limits_host_regression.hpp"
@@ -184,6 +185,7 @@ int main(int argc, char** argv) {
         config.isin_ids = {1001};
         config.journal_path = root / "events.ndjson";
         moex::connector_host::regression::explicit_test_risk(config);
+        moex::connector_host::inflight_rebuild_host_regression(config, fake, root);
         moex::connector_host::regression::storage_recovery_regression(config, fake, root);
         moex::connector_host::regression::multileg_history_host_regression(config, fake, root);
         moex::connector_host::regression::userbook_replacement_host_regression(config, fake, root);

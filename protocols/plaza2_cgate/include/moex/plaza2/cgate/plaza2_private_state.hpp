@@ -371,6 +371,9 @@ struct PrivateRowChanges {
     // Regular-order fill baselines exclude loss confined to multileg tables.
     // Whole TRADE resets, epoch changes and delta overflow affect both scopes.
     bool regular_trade_history_truncated{false};
+    // A committed regular TRADE epoch/clear-all reload, distinct from finite
+    // purges, row retirement and buffer overflow. Used for absence reconciliation.
+    bool regular_trade_history_reloaded{false};
 };
 
 // Read-only capacity metrics for the indexed private projection. No account

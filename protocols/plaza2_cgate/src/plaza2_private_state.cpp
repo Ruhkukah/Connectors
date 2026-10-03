@@ -620,6 +620,7 @@ struct StagedState {
     bool deleted_rows{};
     bool trade_history_truncated{};
     bool regular_trade_history_truncated{};
+    bool regular_trade_history_reloaded{};
     std::optional<std::vector<StreamHealthSnapshot>> stream_health;
     std::optional<SourceRevisionRows> source_revisions;
     std::optional<TradeClearFloors> trade_clear_floors;
@@ -822,9 +823,11 @@ struct Plaza2PrivateStateProjector::Impl {
             const auto resync_required = row_changes.resync_required;
             const auto trade_history_truncated = row_changes.trade_history_truncated;
             const auto regular_trade_history_truncated = row_changes.regular_trade_history_truncated;
+            const auto regular_trade_history_reloaded = row_changes.regular_trade_history_reloaded;
             row_changes = {.resync_required = resync_required,
                            .trade_history_truncated = trade_history_truncated,
-                           .regular_trade_history_truncated = regular_trade_history_truncated};
+                           .regular_trade_history_truncated = regular_trade_history_truncated,
+                           .regular_trade_history_reloaded = regular_trade_history_reloaded};
         }
         const auto invalidate = [](StreamHealthSnapshot& health) {
             health.online = false;
@@ -1255,16 +1258,19 @@ struct Plaza2PrivateStateProjector::Impl {
     void require_snapshot_resync() {
         row_changes = {.resync_required = true,
                        .trade_history_truncated = row_changes.trade_history_truncated,
-                       .regular_trade_history_truncated = row_changes.regular_trade_history_truncated};
+                       .regular_trade_history_truncated = row_changes.regular_trade_history_truncated,
+                       .regular_trade_history_reloaded = row_changes.regular_trade_history_reloaded};
     }
 
-    void mark_trade_history_truncated(bool regular = true) {
+    void mark_trade_history_truncated(bool regular = true, bool reloaded = false) {
         if (staged.active) {
             staged.trade_history_truncated = true;
             staged.regular_trade_history_truncated |= regular;
+            staged.regular_trade_history_reloaded |= regular && reloaded;
         } else {
             row_changes.trade_history_truncated = true;
             row_changes.regular_trade_history_truncated |= regular;
+            row_changes.regular_trade_history_reloaded |= regular && reloaded;
         }
     }
 
@@ -1292,8 +1298,10 @@ struct Plaza2PrivateStateProjector::Impl {
         const auto pending = row_changes.orders.size() + row_changes.trades.size();
         if (additional_rows <= kPrivateRowChangeCapacity - pending)
             return true;
-        row_changes = {
-            .resync_required = true, .trade_history_truncated = true, .regular_trade_history_truncated = true};
+        row_changes = {.resync_required = true,
+                       .trade_history_truncated = true,
+                       .regular_trade_history_truncated = true,
+                       .regular_trade_history_reloaded = row_changes.regular_trade_history_reloaded};
         return false;
     }
 
@@ -1653,7 +1661,7 @@ struct Plaza2PrivateStateProjector::Impl {
                 // Clear-all transfers the table; later finite revisions belong
                 // to rebuilt contents and must not be masked by this sentinel.
                 floor = 0;
-                mark_trade_history_truncated(regular);
+                mark_trade_history_truncated(regular, true);
             } else if (clear_revision > floor) {
                 floor = clear_revision;
                 mark_trade_history_truncated(regular);
@@ -2786,6 +2794,7 @@ struct Plaza2PrivateStateProjector::Impl {
             prune_row_changes();
         row_changes.trade_history_truncated |= staged.trade_history_truncated;
         row_changes.regular_trade_history_truncated |= staged.regular_trade_history_truncated;
+        row_changes.regular_trade_history_reloaded |= staged.regular_trade_history_reloaded;
         if (staged.stream_health.has_value()) {
             stream_health = std::move(*staged.stream_health);
         }
@@ -3064,7 +3073,7 @@ void Plaza2PrivateStateProjector::on_event(const projection::ScenarioSpec&, cons
             } else if (known->second != event.numeric_value) {
                 known->second = event.numeric_value;
                 if (event.stream_code == StreamCode::kFortsTradeRepl) {
-                    impl_->mark_trade_history_truncated();
+                    impl_->mark_trade_history_truncated(true, true);
                     impl_->active_trade_clear_floors() = {};
                 }
                 impl_->invalidate_stream_domain(event.stream_code);
@@ -3075,7 +3084,7 @@ void Plaza2PrivateStateProjector::on_event(const projection::ScenarioSpec&, cons
         impl_->sync_base_health(state);
         if (event.table_code == projection::kNoTableCode &&
             (event.stream_code == StreamCode::kFortsTradeRepl || event.stream_code == projection::kNoStreamCode)) {
-            impl_->mark_trade_history_truncated();
+            impl_->mark_trade_history_truncated(true, true);
             impl_->active_trade_clear_floors() = {};
         }
         if (event.table_code != projection::kNoTableCode) {

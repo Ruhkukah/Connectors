@@ -99,7 +99,7 @@ void OrderManager::emit(std::string_view kind, std::string_view fields) noexcept
 }
 OrderManager::Exposure OrderManager::exposure(const std::string& key, const ManagedOrder& order) const {
     Exposure result;
-    result.unknown = order.state == OrderState::Unknown;
+    result.unknown = order.state == OrderState::Unknown || order.snapshot_missing;
     result.operator_action = order.operator_action_required;
     if (terminal(order.state)) {
         // A late authoritative179 can still revive an absence-resolved Add.
@@ -143,6 +143,7 @@ void OrderManager::refresh_exposure(const std::string& key) {
     auto& order = orders_.at(key);
     if (terminal(order.state)) {
         order.operator_action_required = false;
+        order.snapshot_missing = false;
         move_reservations_.erase(key);
     }
     const auto next = exposure(key, order);
@@ -904,7 +905,7 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
         auto sent = std::move(command);
         queue.erase(selected);
         sent.sent_utc_seconds = utc_seconds;
-        if (found != orders_.end() && found->second.sent_utc_seconds == 0)
+        if (found != orders_.end() && (sent_kind == Kind::AddOrder || sent_kind == Kind::MoveOrder))
             found->second.sent_utc_seconds = utc_seconds;
         sent.deadline = now + config_.reply_timeout;
         if (found != orders_.end())
@@ -1435,6 +1436,7 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
         order.sess_id = row.sess_id;
         order.order_id = id;
         order.confirmed_by_replication = true;
+        order.snapshot_missing = false;
         order.order_ids.insert(id);
         order_index_[id] = key;
         // An absent ancestor remains provisional until an exact179 proves it.
@@ -1571,9 +1573,9 @@ void OrderManager::prove_absence(std::int64_t server_time, bool online) {
             server_time - command.sent_utc_seconds <= config_.absence_margin.count())
             continue;
         auto& order = orders_.at(command.key);
-        if (order.state != OrderState::Unknown || order.operator_action_required || order.cancel_requested ||
-            !order.confirmed_by_replication || order.remaining <= 0 || order.order_id != command.target_order_id ||
-            order.sess_id != command.submitted_session)
+        if (order.state != OrderState::Unknown || order.snapshot_missing || order.operator_action_required ||
+            order.cancel_requested || !order.confirmed_by_replication || order.remaining <= 0 ||
+            order.order_id != command.target_order_id || order.sess_id != command.submitted_session)
             continue;
         const bool linked = std::any_of(deferred_orders_.begin(), deferred_orders_.end(), [&](const auto& item) {
             const auto& row = item.second;
@@ -1595,18 +1597,43 @@ void OrderManager::prove_absence(std::int64_t server_time, bool online) {
     for (auto it = unknown_orders_.begin(); it != unknown_orders_.end();) {
         const auto key = *it++;
         auto& order = orders_.at(key);
-        if (order.order_id == 0 && !order.operator_action_required && order.absence_reply &&
-            order.sent_utc_seconds > 0 && server_time > order.sent_utc_seconds + config_.absence_margin.count()) {
+        if (order.snapshot_missing && order.sent_utc_seconds <= 0 && server_time > 0) {
+            // A recovered row has no local submission clock. Its first known
+            // committed watermark starts the same conservative safety margin.
+            order.sent_utc_seconds = server_time;
+        }
+        if (order.operator_action_required || order.sent_utc_seconds <= 0 || server_time <= order.sent_utc_seconds ||
+            server_time - order.sent_utc_seconds <= config_.absence_margin.count())
+            continue;
+        if ((order.order_id == 0 || order.snapshot_missing) && order.absence_reply) {
             order.state = OrderState::Cancelled;
             order.remaining = 0;
             order.last_error = "NotFound after TRADE watermark and DelUserOrders num_orders=0";
             changed(key);
+        } else if (order.snapshot_missing) {
+            // Missing history cannot prove a Move's replacement absent. Keep
+            // its identity and reservation; never introduce a cancellation.
+            if (has_outstanding_command(key, Kind::MoveOrder) || order.ext_id <= 0) {
+                order.state = OrderState::Unknown;
+                order.last_error = "missing reloaded order requires explicit identity reconciliation";
+                order.operator_action_required = true;
+                changed(key);
+            } else {
+                const bool first_proof = order.state != OrderState::Unknown || !order.cancel_requested;
+                order.state = OrderState::Unknown;
+                order.cancel_requested = true;
+                recovery_cancel(order);
+                if (first_proof) {
+                    order.last_error = "owned order missing after complete reload and committed TRADE safety margin";
+                    changed(key);
+                }
+            }
         }
     }
     prune_terminal();
 }
 void OrderManager::reconcile_snapshot(std::span<const plaza2::private_state::OwnOrderSnapshot> rows,
-                                      std::int64_t utc_seconds) {
+                                      std::int64_t server_time) {
     std::unordered_set<std::string> present;
     const auto account = config_.broker_code + config_.client_code;
     for (const auto& row : rows) {
@@ -1623,22 +1650,22 @@ void OrderManager::reconcile_snapshot(std::span<const plaza2::private_state::Own
             present.insert(link->second);
     }
     for (auto& [key, order] : orders_) {
-        if (terminal(order.state) || order.order_id <= 0 || present.contains(key))
+        if (terminal(order.state) || order.order_id <= 0)
             continue;
-        order.state = OrderState::Unknown;
-        order.last_error = "owned order missing from complete current TRADE/USERORDERBOOK snapshots";
-        // History loss cannot establish a Move's replacement identity. Keep
-        // that uncertainty visible instead of introducing a cancellation.
-        if (has_outstanding_command(key, Kind::MoveOrder)) {
-            order.operator_action_required = true;
-        } else {
-            order.order_id = 0;
-            order.absence_reply = false;
-            order.sent_utc_seconds = utc_seconds;
-            order.cancel_requested = true;
-            recovery_cancel(order);
+        if (present.contains(key)) {
+            if (order.snapshot_missing) {
+                order.snapshot_missing = false;
+                refresh_exposure(key);
+            }
+            continue;
         }
-        changed(key);
+        if (!order.snapshot_missing) {
+            order.snapshot_missing = true;
+            order.absence_reply = false;
+            if (order.sent_utc_seconds <= 0 && server_time > 0)
+                order.sent_utc_seconds = server_time;
+            changed(key);
+        }
     }
 }
 } // namespace moex::connector_host

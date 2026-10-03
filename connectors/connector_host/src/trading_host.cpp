@@ -604,6 +604,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
         } else if (stream.stream_name == "FORTS_USERORDERBOOK_REPL")
             user_book_online = stream.online && stream.snapshot_complete;
     const auto changes = session_.take_private_row_changes();
+    reconcile_reload_ |= changes.regular_trade_history_reloaded;
     if (changes.regular_trade_history_truncated)
         orders_->invalidate_execution_baselines();
     for (const auto& event : session_.take_reply_events()) {
@@ -638,7 +639,10 @@ cg::Plaza2Error CgateTradingHost::poll() {
         if (trade_online && user_book_online && session_.order_book_snapshot_ready()) {
             orders_->observe_orders(data.own_orders(), true);
             orders_->observe_trades(data.own_trades());
-            orders_->reconcile_snapshot(data.own_orders(), config_.utc_now ? config_.utc_now() : utc_seconds());
+            if (reconcile_reload_) {
+                orders_->reconcile_snapshot(data.own_orders(), server_time);
+                reconcile_reload_ = false;
+            }
             rebuilding_ = false;
         }
     } else {
