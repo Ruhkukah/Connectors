@@ -161,10 +161,13 @@ int main() {
         require(input_errors == 1 && lines == std::vector<std::string>{"kill on", "cancel-all 1001"},
                 "overlong input terminated processing or corrupted later emergency commands");
         const auto ini = root / "cgate.ini";
-        {
-            std::ofstream out(ini);
-            out << "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n";
-        }
+        const auto write_logging_ini = [&](std::string contents) {
+            const std::string section = "[p2syslog]\n";
+            if (const auto pos = contents.find(section); pos != std::string::npos)
+                contents.insert(pos + section.size(), "logfile=" + (root / "cgate-client.log").string() + "\n");
+            std::ofstream(ini) << contents;
+        };
+        write_logging_ini("[cgate]\nlog=p2:p2syslog\n[p2syslog]\n");
         validate_cgate_logging("ini=" + ini.string());
         validate_cgate_logging("ini=config/cgate.ini", root);
         // CGate manual section 2.4 defines debug as the default minimum
@@ -174,10 +177,10 @@ int main() {
               "logfileperday=2\nlogfilenametype=1\nlogfiledepth=168\nlogtoconsole=0\nlogasync=1\n",
               "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n[application]\n"
               "log=std\nloglevel=error\nminloglevel=critical\nenabled=0\nlogging=off\n"}) {
-            std::ofstream(ini) << contents;
+            write_logging_ini(contents);
             validate_cgate_logging("ini=" + ini.string());
         }
-        std::ofstream(ini) << "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n";
+        write_logging_ini("[cgate]\nlog=p2:p2syslog\n[p2syslog]\n");
         validate_cgate_logging("ini=" + ini.string() + ";minloglevel=debug");
         require(json_string(std::string(1, '\xff')) == "\"\\ufffd\"", "invalid UTF8 corrupted JSON");
         for (const auto option : {";log=", ";log=std", ";minloglevel=error"}) {
@@ -189,10 +192,7 @@ int main() {
             }
             require(refused, "logging-disabled settings accepted");
         }
-        {
-            std::ofstream out(ini);
-            out << "[cgate]\nlog=\n[p2syslog]\n";
-        }
+        write_logging_ini("[cgate]\nlog=\n[p2syslog]\n");
         bool refused{};
         try {
             validate_cgate_logging("ini=" + ini.string());
@@ -204,7 +204,7 @@ int main() {
              {"[cgate]\nlog=p2:p2syslog\n;[p2syslog]\n", "[cgate]\n# log=p2:p2syslog\n[p2syslog]\n",
               "[cgate]\nlog=p2:p2syslog\nminloglevel=error\n[p2syslog]\n",
               "[cgate]\nlog=p2:p2syslog\n[p2syslog]\nlogfile=nul\n"}) {
-            std::ofstream(ini) << contents;
+            write_logging_ini(contents);
             bool invalid{};
             try {
                 validate_cgate_logging("ini=" + ini.string());

@@ -104,7 +104,8 @@ RuntimeFixturePaths materialize_runtime_fixture(const std::filesystem::path& roo
     write_text_file(fixture.scheme_path, scheme_text);
 
     for (const auto name : moex::plaza2::cgate::Plaza2RuntimeProbe::expected_config_filenames(environment)) {
-        write_text_file(fixture.config_dir / name, "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n");
+        write_text_file(fixture.config_dir / name,
+                        "[cgate]\nlog=p2:p2syslog\n[p2syslog]\nlogfile=" + (root / "cgate-client.log").string() + "\n");
     }
 
     return fixture;

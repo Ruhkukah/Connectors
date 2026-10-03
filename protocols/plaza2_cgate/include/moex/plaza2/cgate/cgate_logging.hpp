@@ -30,7 +30,7 @@ inline void validate_cgate_logging(std::string_view settings, const std::filesys
     };
     const auto check_sink = [](const std::string& key, const std::string& value) {
         // Section 2.4.1 documents logfile=nul as disabling the P2 log file.
-        if ((key == "logfile" && value == "nul") ||
+        if ((key == "logfile" && (value == "nul" || value == "null" || value == "/dev/null")) ||
             ((key == "logging" || key == "enabled") && (value == "0" || value == "false" || value == "off")))
             throw std::invalid_argument("CGate P2 logging sink must remain enabled");
     };
@@ -38,6 +38,7 @@ inline void validate_cgate_logging(std::string_view settings, const std::filesys
     std::replace(text.begin(), text.end(), ';', '\n');
     std::istringstream overrides(text);
     std::string line;
+    bool log{};
     while (std::getline(overrides, line)) {
         const auto equal = line.find('=');
         if (equal == std::string::npos)
@@ -45,6 +46,7 @@ inline void validate_cgate_logging(std::string_view settings, const std::filesys
         const auto key = lower(trim(line.substr(0, equal)));
         const auto value = trim(line.substr(equal + 1));
         check_cgate(key, lower(value));
+        log |= key == "log" && lower(value) == "p2:p2syslog";
         if (key == "ini")
             ini = value;
     }
@@ -59,7 +61,8 @@ inline void validate_cgate_logging(std::string_view settings, const std::filesys
     if (!input)
         throw std::invalid_argument("cannot read CGate logging ini");
     std::string section;
-    bool log{}, sink{};
+    std::string logfile;
+    bool sink{};
     while (std::getline(input, line)) {
         line = trim(line);
         if (line.empty() || line.front() == '#' || line.front() == ';')
@@ -77,14 +80,22 @@ inline void validate_cgate_logging(std::string_view settings, const std::filesys
         const auto equal = line.find('=');
         if (equal == std::string::npos)
             continue;
-        const auto key = lower(trim(line.substr(0, equal))), value = lower(trim(line.substr(equal + 1)));
+        const auto key = lower(trim(line.substr(0, equal))), raw_value = trim(line.substr(equal + 1));
+        const auto value = lower(raw_value);
         if (section == "cgate")
             check_cgate(key, value);
-        else if (section == "p2syslog")
+        else if (section == "p2syslog") {
             check_sink(key, value);
+            if (key == "logfile")
+                logfile = raw_value;
+        }
         log |= section == "cgate" && key == "log" && value == "p2:p2syslog";
     }
     if (!log || !sink)
-        throw std::invalid_argument("CGate ini requires active [cgate] log=p2:p2syslog and [p2syslog] sections");
+        throw std::invalid_argument(
+            "CGate requires log=p2:p2syslog in env settings or [cgate], and a [p2syslog] section");
+    const auto log_path = std::filesystem::path(logfile).lexically_normal();
+    if (!log_path.is_absolute() || log_path.filename().empty() || log_path == "/dev/null")
+        throw std::invalid_argument("CGate [p2syslog] requires an absolute enabled logfile path");
 }
 } // namespace moex::plaza2::cgate

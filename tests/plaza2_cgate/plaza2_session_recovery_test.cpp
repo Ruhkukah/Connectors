@@ -54,6 +54,7 @@ int main(int argc, char** argv) {
         }
         config.aggr20_stream = {generated::StreamCode::kFortsAggrRepl, "p2repl://FORTS_AGGR20_REPL",
                                 "mode=snapshot+online"};
+        const auto absolute_logfile = "logfile=" + (root / "CGate-client.log").string() + "\n";
         for (const bool read_only : {false, true}) {
             auto live_config = config;
             live_config.mode = CgateSessionMode::Live;
@@ -62,16 +63,69 @@ int main(int argc, char** argv) {
                 live_config.allow_orders = false;
                 live_config.publisher_settings.clear();
             }
-            test::write_text_file(fixture.config_dir / "t1.ini", "[cgate]\n# log=p2:p2syslog\n[p2syslog]\n");
+            test::write_text_file(fixture.config_dir / "t1.ini",
+                                  "[cgate]\n# log=p2:p2syslog\n[p2syslog]\n" + absolute_logfile);
             CgateSession invalid_logging(live_config);
             require(invalid_logging.start().code == cgate::Plaza2ErrorCode::InvalidConfiguration,
                     "Live session accepted disabled native logging");
             require(envs() == 0, "Live logging validation ran after opening native environment");
-            test::write_text_file(fixture.config_dir / "t1.ini", "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n");
+            test::write_text_file(fixture.config_dir / "t1.ini",
+                                  "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n" + absolute_logfile);
             CgateSession valid_logging(live_config);
             require(!valid_logging.start(), "Live session rejected valid native logging");
             require(!valid_logging.stop(), "Live logging session stop");
             reset();
+        }
+        {
+            struct LoggingCase {
+                std::string name, ini, env;
+                bool valid{};
+            };
+            const std::vector<LoggingCase> cases{
+                {"env_log_default_severity", "[p2syslog]\n" + absolute_logfile, ";log=p2:p2syslog", true},
+                {"env_log_debug", "[p2syslog]\n" + absolute_logfile, ";log=p2:p2syslog;minloglevel=debug", true},
+                {"unrelated_application_options",
+                 "[p2syslog]\n" + absolute_logfile + "[application]\nlogfile=relative.log\nminloglevel=error\n",
+                 ";log=p2:p2syslog", true},
+                {"missing_logfile", "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n", "", false},
+                {"relative_logfile", "[cgate]\nlog=p2:p2syslog\n[p2syslog]\nlogfile=CGate-client.log\n", "", false},
+                {"empty_logfile", "[cgate]\nlog=p2:p2syslog\n[p2syslog]\nlogfile=\n", "", false},
+                {"nul_sink", "[p2syslog]\nlogfile=nul\n", ";log=p2:p2syslog", false},
+                {"null_sink", "[p2syslog]\nlogfile=null\n", ";log=p2:p2syslog", false},
+                {"dev_null_sink", "[p2syslog]\nlogfile=/dev/null\n", ";log=p2:p2syslog", false},
+                {"commented_sink", ";[p2syslog]\n" + absolute_logfile, ";log=p2:p2syslog", false},
+                {"disabled_env_log", "[p2syslog]\n" + absolute_logfile, ";log=null", false},
+                {"reduced_env_severity", "[p2syslog]\n" + absolute_logfile, ";log=p2:p2syslog;minloglevel=error",
+                 false},
+            };
+            std::vector<std::string> failures;
+            for (const bool read_only : {false, true}) {
+                for (const auto& example : cases) {
+                    auto live_config = config;
+                    live_config.mode = CgateSessionMode::Live;
+                    live_config.read_only_market_data = read_only;
+                    live_config.runtime.env_open_settings += example.env;
+                    if (read_only) {
+                        live_config.allow_orders = false;
+                        live_config.publisher_settings.clear();
+                    }
+                    test::write_text_file(fixture.config_dir / "t1.ini", example.ini);
+                    const auto opens_before = envs();
+                    CgateSession logging(live_config);
+                    const auto error = logging.start();
+                    if (example.valid ? bool(error) : error.code != cgate::Plaza2ErrorCode::InvalidConfiguration)
+                        failures.push_back(example.name);
+                    if (!example.valid && envs() != opens_before)
+                        failures.push_back(example.name + "_opened_native_environment");
+                    require(!logging.stop(), "logging matrix session stop");
+                    reset();
+                }
+            }
+            for (const auto& failure : failures)
+                std::cerr << "CGate logging validation mismatch: " << failure << '\n';
+            require(failures.empty(), "Live startup must accept env logging and require an absolute enabled logfile");
+            test::write_text_file(fixture.config_dir / "t1.ini",
+                                  "[cgate]\nlog=p2:p2syslog\n[p2syslog]\n" + absolute_logfile);
         }
         {
             auto closed_config = config;

@@ -74,7 +74,7 @@ then run `set -a; . "$MOEX_ENV_FILE"; set +a`. The file must define `MOEX_BROKER
 `MOEX_PLAZA2_CGATE_SOFTWARE_KEY` and the following literal template (substitute a readable absolute ini path):
 
 ```sh
-MOEX_CGATE_ENV='ini=/absolute/path/client.ini;key=${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}'
+MOEX_CGATE_ENV='ini=/absolute/path/client.ini;log=p2:p2syslog;key=${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}'
 ```
 
 The driver expands the software-key placeholder internally. Do not put the key on the command line or commit
@@ -95,7 +95,7 @@ build/apps/moexctl plaza2 run \
   --state logs/moex_certification.state
 ```
 
-Measure clock offset with the host's time service; pass `--clock-offset-us` with that measurement. A null/unavailable startup value is not clock qualification. Use `config/cgate.ini` as the default logging example; the environment ini path must be readable and must preserve the default sink/severity.
+Measure clock offset with the host's time service; pass `--clock-offset-us` with that measurement. A null/unavailable startup value is not clock qualification. Use `config/cgate.ini` as the logging template: enable `log=p2:p2syslog` in the environment settings or the `[cgate]` section, and set `[p2syslog] logfile` to an absolute writable path for the client log. Omit severity overrides to preserve CGate's default debug level. Preserve the router INI logging defaults. Archive client and router logs immediately after the session, before the vendor's hourly rotation and 168-file retention remove earlier evidence.
 
 1. Leave the connector idle for five minutes.
 2. Stop/start the router; interrupt/restore its upstream connection. Verify commands stop during loss, the process waits, and private streams/commands resume after ONLINE.
