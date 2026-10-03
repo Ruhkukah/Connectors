@@ -2,6 +2,7 @@
 #include "moex/connector_host/event_journal.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
@@ -696,6 +697,13 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
     }
     changed(found->first);
 }
+namespace {
+bool cancellation_state_rejection(std::int32_t code) {
+    // Appendix C: inactive/halted sessions and explicit trading/auction halts.
+    constexpr std::array codes{3, 4, 60, 61, 62, 63, 64, 65, 66, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135};
+    return std::find(codes.begin(), codes.end(), code) != codes.end();
+}
+} // namespace
 void OrderManager::retry_cancel(Command command, Clock::time_point now, bool business_rejection) {
     auto found = orders_.find(command.key);
     if (is_bulk_cancel(command) && !bulk_cancellations_.contains(*command.encoded.isin_id))
@@ -749,8 +757,10 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
         on_timeout(id, now);
     while (!cancels_.empty() || !adds_.empty()) {
         auto* queue_pointer = &cancels_;
-        auto selected =
-            std::find_if(cancels_.begin(), cancels_.end(), [&](const auto& cmd) { return now >= cmd.not_before; });
+        auto selected = std::find_if(cancels_.begin(), cancels_.end(), [&](const auto& cmd) {
+            return now >= cmd.not_before &&
+                   (!cmd.wait_for_trading || (cmd.encoded.isin_id && ready_(*cmd.encoded.isin_id)));
+        });
         if (selected == cancels_.end()) {
             queue_pointer = &adds_;
             selected = std::find_if(adds_.begin(), adds_.end(), [&](const auto& cmd) {
@@ -922,6 +932,19 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
     auto command = std::move(pending->second);
     pending_.erase(pending);
     const auto found = orders_.find(command.key);
+    if ((kind == Kind::DelOrder || kind == Kind::DelUserOrders) && reply.msgid != 99 && reply.msgid != 100 &&
+        cancellation_state_rejection(reply.code)) {
+        command.wait_for_trading = true;
+        if (found != orders_.end()) {
+            found->second.last_error = reply.message;
+            changed(found->first);
+        }
+        emit("cancel_wait_for_trading", "{\"user_id\":" + std::to_string(id) +
+                                            ",\"isin_id\":" + std::to_string(command.encoded.isin_id.value_or(0)) +
+                                            ",\"code\":" + std::to_string(reply.code) + "}");
+        retry_cancel(std::move(command), now);
+        return;
+    }
     if (reply.msgid == 99) {
         if (found != orders_.end() && command.encoded.command_kind != Kind::AddOrder &&
             (terminal(found->second.state) || bulk_cancellations_.contains(found->second.request.isin_id) ||
@@ -1259,9 +1282,8 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
                 if (candidate.state != OrderState::Unknown || candidate.remaining != 0 ||
                     candidate.order_id != row.prevorder_id || move == pending_.end())
                     continue;
-                if (!key.empty() &&
-                    adopt_recovered_order(candidate.request.client_order_id, id, candidate.sess_id) ==
-                        RecoveredAdoption::Conflict) {
+                if (!key.empty() && adopt_recovered_order(candidate.request.client_order_id, id, candidate.sess_id) ==
+                                        RecoveredAdoption::Conflict) {
                     deferred_orders_.erase({row.sess_id, id});
                     continue;
                 }
