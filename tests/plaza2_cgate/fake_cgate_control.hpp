@@ -152,6 +152,7 @@ struct Scenario {
     std::uint32_t listener_create_result{0}, publisher_create_result{0};
     generated::StreamCode unrecognized_schema_stream{};
     generated::FieldCode mutated_schema_field{};
+    generated::TableCode omitted_schema_table{};
     bool omit_schema_field{false};
     std::string schema_field_type;
     std::string client_code;

@@ -1532,6 +1532,8 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
     }
     plans->reserve(schema_messages.size());
 
+    std::erase_if(schema_messages, [](const auto& row) { return row.table_code == scenario.omitted_schema_table; });
+
     for (std::size_t index = 0; index < schema_messages.size(); ++index) {
         const auto& message_script = schema_messages[index];
         const auto* table = FindTableByCode(message_script.table_code);

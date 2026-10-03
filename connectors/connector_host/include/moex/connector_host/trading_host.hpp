@@ -5,6 +5,7 @@
 
 #include <thread>
 #include <iosfwd>
+#include <unordered_map>
 
 namespace moex::connector_host {
 struct TradingHostConfig {
@@ -45,6 +46,7 @@ class CgateTradingHost {
     void log_event(std::string_view kind, std::string_view fields) noexcept;
     void log_listener_event(const plaza2::cgate::Plaza2ListenerEvent& event) noexcept;
     void observe_link(const plaza2_trade::Plaza2TransportHealth& health);
+    void observe_exchange_messages();
     TradingHostConfig config_;
     std::thread::id owner_;
     EventJournal journal_;
@@ -56,5 +58,8 @@ class CgateTradingHost {
     plaza2::cgate::Plaza2Error stop_error_;
     std::string log_error_;
     OrderManager::Clock::time_point next_space_check_{};
+    std::uint64_t exchange_message_commit_{};
+    std::unordered_map<std::int64_t, std::pair<std::uint64_t, std::int64_t>> exchange_message_revisions_;
+    std::vector<plaza2::private_state::SystemMessageSnapshot> exchange_messages_;
 };
 } // namespace moex::connector_host

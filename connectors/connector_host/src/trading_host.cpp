@@ -112,6 +112,14 @@ std::string event_kind(cg::Plaza2ListenerEventKind kind) {
     }
     return "listener_event";
 }
+std::string exchange_message_fields(const plaza2::private_state::SystemMessageSnapshot& message) {
+    return "{\"repl_id\":" + std::to_string(message.repl_id) + ",\"repl_rev\":" + std::to_string(message.repl_rev) +
+           ",\"lifenum\":" + std::to_string(message.source.lifenum) + ",\"msg_id\":" + std::to_string(message.msg_id) +
+           ",\"lang_code\":" + json_string(message.lang_code) + ",\"type_id\":" + std::to_string(message.type_id) +
+           ",\"moment\":" + std::to_string(message.moment) + ",\"urgency\":" + std::to_string(message.urgency) +
+           ",\"status\":" + std::to_string(message.status) + ",\"text\":" + json_string(message.text) +
+           ",\"message_body\":" + json_string(message.message_body) + "}";
+}
 } // namespace
 CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     : config_(std::move(config)), owner_(std::this_thread::get_id()),
@@ -221,9 +229,21 @@ void CgateTradingHost::observe_link(const tr::Plaza2TransportHealth& health) {
     }
 }
 void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) noexcept {
-    if (!log_error_.empty())
-        return;
     try {
+        if (event.stream_code == gen::StreamCode::kFortsRefdataRepl) {
+            // The callback precedes projection. Drain the preceding committed
+            // message updates before another transaction or listener reset.
+            if (event.kind != cg::Plaza2ListenerEventKind::StreamData)
+                observe_exchange_messages();
+            if (event.kind == cg::Plaza2ListenerEventKind::LifeNum)
+                exchange_message_commit_ = UINT64_MAX;
+            if (event.kind == cg::Plaza2ListenerEventKind::Open && !event.text_value.empty()) {
+                std::cerr << "moexctl: " << event.text_value << '\n';
+                log_event("exchange_messages_unavailable", "{\"warning\":" + json_string(event.text_value) + "}");
+            }
+        }
+        if (!log_error_.empty())
+            return;
         if (event.stream_code == plaza2::generated::StreamCode::kFortsAggrRepl) {
             // Book traffic and its transaction/replay boundaries are not order
             // interaction evidence. Keep lifecycle changes and the rare session
@@ -270,6 +290,31 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
     } catch (const std::exception& error) {
         storage_failure(error.what());
     }
+}
+void CgateTradingHost::observe_exchange_messages() {
+    const auto& data = session_.private_state();
+    const auto health = data.stream_health();
+    const auto ref = std::find_if(health.begin(), health.end(),
+                                  [](const auto& row) { return row.stream_name == "FORTS_REFDATA_REPL"; });
+    if (ref == health.end() || !ref->online || !ref->snapshot_complete ||
+        ref->last_commit_sequence == exchange_message_commit_)
+        return;
+    exchange_message_commit_ = ref->last_commit_sequence;
+    decltype(exchange_message_revisions_) current;
+    for (const auto& message : data.system_messages()) {
+        const auto revision = std::pair{message.source.lifenum, message.repl_rev};
+        const auto previous = exchange_message_revisions_.find(message.repl_id);
+        if (previous == exchange_message_revisions_.end() || previous->second != revision) {
+            const auto fields = exchange_message_fields(message);
+            log_event("exchange_message", fields);
+            std::cerr << "exchange_message: " << fields << '\n';
+            if (exchange_messages_.size() == 20)
+                exchange_messages_.erase(exchange_messages_.begin());
+            exchange_messages_.push_back(message);
+        }
+        current.emplace(message.repl_id, revision);
+    }
+    exchange_message_revisions_ = std::move(current);
 }
 void CgateTradingHost::storage_failure(std::string_view error) {
     if (!log_error_.empty())
@@ -370,6 +415,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
             storage_failure(error);
     dispatch_commands();
     const auto error = session_.poll(orders_->queued() == 0);
+    observe_exchange_messages();
     try {
         observe_link(session_.runtime_health());
     } catch (const std::exception& log_error) {
@@ -408,7 +454,8 @@ cg::Plaza2Error CgateTradingHost::poll() {
     // Use the startup snapshot barrier again after a lost delta batch or either
     // private order stream disconnects. Keep logical orders and correlations;
     // the current committed snapshots reconcile their identities and exposure.
-    if (!rebuilding_ && (changes.resync_required || changes.regular_trade_history_truncated || !trade_online || !user_book_online)) {
+    if (!rebuilding_ &&
+        (changes.resync_required || changes.regular_trade_history_truncated || !trade_online || !user_book_online)) {
         rebuilding_ = true;
         log_event("private_history_gap", "{\"recovering\":true}");
     }
@@ -577,6 +624,14 @@ std::string CgateTradingHost::status() const {
         first = false;
         result +=
             "{\"isin_id\":" + std::to_string(position.isin_id) + ",\"xpos\":" + std::to_string(position.xpos) + "}";
+    }
+    result += "],\"exchange_messages\":[";
+    first = true;
+    for (const auto& message : exchange_messages_) {
+        if (!first)
+            result += ',';
+        first = false;
+        result += exchange_message_fields(message);
     }
     result += "],\"orders\":[";
     first = true;

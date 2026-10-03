@@ -946,6 +946,14 @@ struct Plaza2ListenerCallbackState {
             const auto event = Plaza2ListenerEvent{
                 .kind = Plaza2ListenerEventKind::Open,
                 .stream_code = state->stream_code,
+                .text_value = state->stream_code == generated::StreamCode::kFortsRefdataRepl &&
+                                      std::none_of(state->message_plans.begin(), state->message_plans.end(),
+                                                   [](const auto& plan) {
+                                                       return plan.table_code ==
+                                                              generated::TableCode::kFortsRefdataReplSysMessages;
+                                                   })
+                                  ? "REFDATA sys_messages table unavailable; exchange messages cannot be shown"
+                                  : "",
             };
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
