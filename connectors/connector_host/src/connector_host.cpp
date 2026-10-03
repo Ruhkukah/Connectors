@@ -43,7 +43,8 @@ std::int32_t current_session_id(const ps::Plaza2PrivateStateProjector& data, std
 
 bool order_entry_ready(const CgateSession& host, std::int64_t isin_id, std::int32_t session_id) {
     const auto health = host.runtime_health();
-    if (!host.started() || !health.valid || health.connection != 3 || health.publisher != 3 || health.reply != 3)
+    if (!host.started() || !health.valid || health.connection != 3 || health.publisher != 3 || health.reply != 3 ||
+        !host.trade_replay_anchor_ready())
         return false;
     const auto& data = host.private_state();
     constexpr std::array required{StreamCode::kFortsTradeRepl,        StreamCode::kFortsPosRepl,

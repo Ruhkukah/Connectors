@@ -1717,7 +1717,9 @@ struct Plaza2PrivateStateProjector::Impl {
             staged.touched_streams.insert(stream_code);
             const bool regular_userbook_table = stream_code != StreamCode::kFortsUserorderbookRepl ||
                                                 is_regular_userorderbook_snapshot_table(table_code);
-            if (regular_userbook_table) {
+            const bool clears_pos_anchor = stream_code != StreamCode::kFortsPosRepl ||
+                                           table_code == TableCode::kFortsPosReplInfo;
+            if (regular_userbook_table && clears_pos_anchor) {
                 auto& health = staged.active ? ensure_stream_health(ensure_staged_stream_health(), stream_code)
                                              : ensure_stream_health(stream_health, stream_code);
                 reset_stream_watermarks(health);

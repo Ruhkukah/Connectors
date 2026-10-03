@@ -441,16 +441,29 @@ struct CgateSession::Impl {
             std::find_if(health.begin(), health.end(), [&](const auto& s) { return s.stream_code == code; });
         return found != health.end() && found->online && found->snapshot_complete;
     }
-    Plaza2Error open_anchored_trade() {
-        if (!deferred_trade)
-            return {};
+    const plaza2::private_state::StreamHealthSnapshot* pos_anchor_health() const {
         const auto health = projection.stream_health();
         const auto found = std::find_if(health.begin(), health.end(),
                                         [](const auto& s) { return s.stream_code == StreamCode::kFortsPosRepl; });
-        if (found == health.end() || !found->online || !found->snapshot_complete)
+        return found != health.end() && found->online && found->snapshot_complete && found->last_trades_rev > 0 &&
+                       found->last_trades_lifenum > 0
+                   ? &*found
+                   : nullptr;
+    }
+    bool anchored_trade_ready() const {
+        const auto* pos = pos_anchor_health();
+        return anchor && pos && anchor->trades_rev == pos->last_trades_rev &&
+               anchor->trades_lifenum == pos->last_trades_lifenum && stream_online(StreamCode::kFortsTradeRepl);
+    }
+    Plaza2Error open_anchored_trade() {
+        if (!deferred_trade)
             return {};
-        if (anchor && anchor->trades_rev == found->last_trades_rev &&
-            anchor->trades_lifenum == found->last_trades_lifenum)
+        const auto* found = pos_anchor_health();
+        if (!found)
+            return {};
+        const Plaza2TradeReplayAnchor target{found->last_trades_rev, found->last_trades_lifenum,
+                                             found->last_server_time};
+        if (anchor && anchor->trades_rev == target.trades_rev && anchor->trades_lifenum == target.trades_lifenum)
             return {};
         if (anchor) {
             auto old = std::find_if(listeners.begin(), listeners.end(),
@@ -462,16 +475,16 @@ struct CgateSession::Impl {
             }
         }
         auto trade = *deferred_trade;
-        replace(trade.open_settings, "${POS_TRADES_REV}", std::to_string(found->last_trades_rev));
-        replace(trade.open_settings, "${POS_TRADES_LIFENUM}", std::to_string(found->last_trades_lifenum));
+        replace(trade.open_settings, "${POS_TRADES_REV}", std::to_string(target.trades_rev));
+        replace(trade.open_settings, "${POS_TRADES_LIFENUM}", std::to_string(target.trades_lifenum));
         if (trade.open_settings.empty())
             trade.open_settings = "mode=snapshot+online";
-        trade.open_settings += ";lifenum=" + std::to_string(found->last_trades_lifenum) +
-                               ";rev.deal=" + std::to_string(found->last_trades_rev) +
-                               ";rev.heart_beat=" + std::to_string(found->last_trades_rev);
+        trade.open_settings += ";lifenum=" + std::to_string(target.trades_lifenum) +
+                               ";rev.deal=" + std::to_string(target.trades_rev) +
+                               ";rev.heart_beat=" + std::to_string(target.trades_rev);
         if (auto error = add_listener(std::move(trade), bridge); error)
             return error;
-        anchor = Plaza2TradeReplayAnchor{found->last_trades_rev, found->last_trades_lifenum, found->last_server_time};
+        anchor = target;
         return {};
     }
     void invalidate(Listener& listener) {
@@ -504,8 +517,7 @@ struct CgateSession::Impl {
             return;
         }
         if (state == Closed && now() >= listener.retry) {
-            if (listener.config.stream_code == StreamCode::kFortsTradeRepl && deferred_trade &&
-                !stream_online(StreamCode::kFortsPosRepl))
+            if (listener.config.stream_code == StreamCode::kFortsTradeRepl && deferred_trade && !pos_anchor_health())
                 return;
             // Each new snapshot replaces only its own stream's pending/committed domain.
             if (listener.handler == &bridge)
@@ -556,7 +568,7 @@ struct CgateSession::Impl {
                 out.private_active &= state == Active && stream_online(code);
             }
         }
-        if (deferred_trade && !anchor)
+        if (deferred_trade && !anchored_trade_ready())
             out.private_active = false;
         return out;
     }
@@ -842,8 +854,7 @@ CgateSessionMode CgateSession::mode() const noexcept {
     return impl_->config.mode;
 }
 bool CgateSession::trade_replay_anchor_ready() const noexcept {
-    return !impl_->config.trade_replay_from_pos_anchor ||
-           (impl_->anchor && impl_->stream_online(StreamCode::kFortsTradeRepl));
+    return !impl_->config.trade_replay_from_pos_anchor || impl_->anchored_trade_ready();
 }
 std::optional<Plaza2TradeReplayAnchor> CgateSession::trade_replay_anchor_used() const noexcept {
     return impl_->anchor;
@@ -875,7 +886,7 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
     bool required_private = true;
     if (command.command_kind == Plaza2TradeCommandKind::AddOrder ||
         command.command_kind == Plaza2TradeCommandKind::MoveOrder) {
-        required_private = command.isin_id && impl_->trading_ready(*command.isin_id);
+        required_private = trade_replay_anchor_ready() && command.isin_id && impl_->trading_ready(*command.isin_id);
         for (auto code : {StreamCode::kFortsTradeRepl, StreamCode::kFortsPosRepl, StreamCode::kFortsPartRepl,
                           StreamCode::kFortsRefdataRepl, StreamCode::kFortsSessionstateRepl,
                           StreamCode::kFortsInstrumentstateRepl}) {

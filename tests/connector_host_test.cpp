@@ -5,6 +5,7 @@
 #include "fake_cgate_control.hpp"
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 
 using namespace moex::connector_host;
 namespace cg = moex::plaza2::cgate;
@@ -125,6 +126,23 @@ int main(int argc, char** argv) {
             test::require(host.order_entry_ready(1001) && host.snapshot().private_streams_ready,
                           "relative runtime paths open all trading objects with the private account schema");
             test::require(!host.stop(), "relative-path host stops");
+        }
+        {
+            const auto cfg = config(fixture);
+            ConnectorHost host(cfg);
+            warm(host);
+            test::require(host.order_entry_ready(1001), "POS anchor admission baseline is ready");
+            using enum moex::plaza2::generated::StreamCode;
+            fake.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = kFortsPosRepl});
+            fake.enqueue({.kind = test::fake::EventKind::ClearDeleted,
+                          .stream_code = kFortsPosRepl,
+                          .table_code = moex::plaza2::generated::TableCode::kFortsPosReplInfo,
+                          .revision = std::numeric_limits<std::int64_t>::max(),
+                          .flags = 8});
+            fake.enqueue({.kind = test::fake::EventKind::Commit, .stream_code = kFortsPosRepl});
+            test::require(!host.poll() && !host.poll(), "POS info loss admission polls");
+            test::require(!host.order_entry_ready(1001), "shared host readiness ignored an absent POS replay anchor");
+            test::require(!host.stop(), "POS anchor admission host stops");
         }
         {
             const auto cfg = config(fixture);

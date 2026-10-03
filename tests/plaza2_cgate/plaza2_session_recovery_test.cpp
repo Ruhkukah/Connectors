@@ -2,6 +2,7 @@
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
 #include "plaza2_trade_test_support.hpp"
+#include "private_pos_anchor_regression.hpp"
 #include "fixtures/cgate99_messages.hpp"
 #include <cstdlib>
 #include <cstring>
@@ -181,7 +182,8 @@ int main(int argc, char** argv) {
                 now += std::chrono::seconds(1);
                 require(!errored.poll(), "ERROR recovery failed");
             }
-            require(errored.runtime_health().private_active, "ERROR did not recover to ONLINE");
+            require(errored.runtime_health().private_active,
+                    "ERROR did not recover to ONLINE: " + errored.last_callback_error());
             const auto retries = errored.recovery_status().attempts;
             flag(test::fake::Option::ConnGetstateInternal, true);
             const auto query_started = std::chrono::steady_clock::now();
@@ -267,6 +269,8 @@ int main(int argc, char** argv) {
             fake.clear(test::fake::Option::ConnectionOpenResult);
             reset();
         }
+        test::private_pos_anchor_regression(config, fake);
+        reset();
         flag(moex::plaza2::test::fake::Option::ConnHoldOpening, true);
         CgateSession session(config);
         const auto start_process_calls = fake.process_count();
