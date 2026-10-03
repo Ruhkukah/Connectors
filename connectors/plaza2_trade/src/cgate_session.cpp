@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <map>
 #include <utility>
 
@@ -14,7 +15,7 @@ namespace cg = moex::plaza2::cgate;
 using cg::Plaza2Error;
 using cg::Plaza2ErrorCode;
 using moex::plaza2::generated::StreamCode;
-constexpr std::uint32_t Closed = 0, Error = 1, Opening = 2, Active = 3, Timeout = 131075;
+constexpr std::uint32_t Closed = 0, Error = 1, Opening = 2, Active = 3, Unsupported = 131074, Timeout = 131075;
 Plaza2Error invalid(std::string message) {
     return {.code = Plaza2ErrorCode::InvalidConfiguration, .message = std::move(message)};
 }
@@ -176,6 +177,7 @@ struct CgateSession::Impl {
     std::vector<Listener> listeners;
     Plaza2RecoveryStatus recovery;
     std::chrono::steady_clock::time_point connection_retry{}, publisher_retry{};
+    std::optional<std::chrono::steady_clock::time_point> key_check_warning_time;
     std::string app_name, last_error, credentials, software_key;
     bool initialized{}, streams_created{}, connection_was_active{};
     std::optional<CgateStreamConfig> deferred_trade;
@@ -222,6 +224,22 @@ struct CgateSession::Impl {
     Plaza2Error open_connection() {
         const auto error = connection.open(config.connection_open_settings);
         operation("connection", "open", error);
+        if (error.runtime_code == Unsupported) {
+            // CGate cg_conn_open documents this result as a user-key check
+            // failure, with "Certificate check failed" in its client log.
+            recovery.key_check_failed = true;
+            const auto current = now();
+            if (!key_check_warning_time || current - *key_check_warning_time >= std::chrono::minutes(1)) {
+                key_check_warning_time = current;
+                log("cgate_key_check_failed", "{\"operation\":\"cg_conn_open\",\"runtime_code\":131074,"
+                                              "\"message\":\"CGate user-key verification failed; inspect Certificate "
+                                              "check failed in the CGate client log\"}");
+                std::cerr << "cgate_key_check_failed: CGate could not verify the user key "
+                             "(cg_conn_open, CG_ERR_UNSUPPORTED, 131074). Check the CGate client log for "
+                             "Certificate check failed, the key configuration, and router upstream connectivity. "
+                             "Connection retries continue.\n";
+            }
+        }
         return error;
     }
     void close_connection() {
@@ -593,6 +611,8 @@ struct CgateSession::Impl {
             waiting({.code = Plaza2ErrorCode::AdapterState, .message = "connection OPENING"},
                     Plaza2RecoveryWaitState::WaitingForPlaza, "connection");
         } else if (state == Active) {
+            recovery.key_check_failed = false;
+            key_check_warning_time.reset();
             connection_was_active = true;
             if (!streams_created) {
                 if (now() < connection_retry)
@@ -728,6 +748,8 @@ struct CgateSession::Impl {
         deferred_trade.reset();
         replies.pending.clear();
         recovery.operation = Plaza2SessionOperation::Stopped;
+        recovery.key_check_failed = false;
+        key_check_warning_time.reset();
         return {};
     }
 };

@@ -132,6 +132,8 @@ struct Plaza2RecoveryStatus {
     std::uint64_t wait_start_time_ns{0};
     std::uint64_t wait_duration_ms{0};
     bool alert_active{false};
+    // cg_conn_open reported failed user-key verification; cleared on ACTIVE.
+    bool key_check_failed{false};
     Plaza2RecoveryWaitState wait_state{Plaza2RecoveryWaitState::None};
     std::string involved_service;
     plaza2::cgate::Plaza2Error cause;

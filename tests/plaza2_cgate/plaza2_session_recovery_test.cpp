@@ -7,6 +7,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <iostream>
+#include <sstream>
 using namespace moex::plaza2_trade;
 using namespace moex::plaza2;
 using test::require;
@@ -70,6 +71,77 @@ int main(int argc, char** argv) {
             CgateSession valid_logging(live_config);
             require(!valid_logging.start(), "Live session rejected valid native logging");
             require(!valid_logging.stop(), "Live logging session stop");
+            reset();
+        }
+        {
+            struct StderrCapture {
+                std::ostringstream text;
+                std::streambuf* previous{std::cerr.rdbuf(text.rdbuf())};
+                ~StderrCapture() {
+                    std::cerr.rdbuf(previous);
+                }
+            } stderr_capture;
+            std::size_t key_check_alerts = 0;
+            auto key_config = config;
+            key_config.event_log = [&](std::string_view kind, std::string_view fields) {
+                if (kind == "cgate_key_check_failed") {
+                    ++key_check_alerts;
+                    require(fields.find("131074") != std::string_view::npos, "key-check alert lost native error code");
+                }
+                require(fields.find("00000000") == std::string_view::npos,
+                        "key-check alert disclosed the configured software key");
+            };
+            fake.set(test::fake::Option::ConnectionOpenResult, "131074");
+            CgateSession key_failure(key_config);
+            require(!key_failure.start(), "key verification failure stopped C5 recovery");
+            require(key_check_alerts == 1, "unsupported connection did not emit key-check alert immediately");
+            require(stderr_capture.text.str().find("cgate_key_check_failed") != std::string::npos,
+                    "key-check failure was silent on operator stderr");
+            require(key_failure.recovery_status().key_check_failed, "key-check failure missing from recovery status");
+            for (int i = 0; i < 59; ++i) {
+                now += std::chrono::seconds(1);
+                require(!key_failure.poll(), "key-check retry became terminal");
+            }
+            require(key_check_alerts == 1 && key_failure.recovery_status().attempts == 59,
+                    "key-check warning throttle changed C5 retries or repeated before one minute");
+            now += std::chrono::seconds(1);
+            require(!key_failure.poll(), "one-minute key-check retry failed");
+            require(key_check_alerts == 2, "persistent key-check failure did not repeat at one minute");
+            for (int i = 0; i < 10; ++i)
+                require(!key_failure.poll(), "same-time key-check poll failed");
+            require(key_check_alerts == 2, "same-time key-check polls repeated the warning");
+            fake.clear(test::fake::Option::ConnectionOpenResult);
+            for (int i = 0; i < 10; ++i) {
+                now += std::chrono::seconds(1);
+                require(!key_failure.poll(), "key-check recovery pump failed");
+            }
+            require(key_failure.runtime_health().private_active && !key_failure.recovery_status().key_check_failed,
+                    "successful ACTIVE recovery retained key-check failure");
+            flag(test::fake::Option::ConnectionError, true);
+            require(!key_failure.poll(), "new key-check episode close failed");
+            flag(test::fake::Option::ConnectionError, false);
+            fake.set(test::fake::Option::ConnectionOpenResult, "131074");
+            now += std::chrono::seconds(1);
+            require(!key_failure.poll(), "new key-check episode retry failed");
+            require(key_check_alerts == 3 && key_failure.recovery_status().key_check_failed,
+                    "new key-check failure after recovery did not warn immediately");
+            const auto warnings = stderr_capture.text.str();
+            std::size_t warning_count = 0, at = 0;
+            while ((at = warnings.find("cgate_key_check_failed", at)) != std::string::npos) {
+                ++warning_count;
+                at += std::string_view("cgate_key_check_failed").size();
+            }
+            require(warning_count == key_check_alerts && warnings.find("00000000") == std::string::npos,
+                    "operator key-check warnings were not throttled with the journal or leaked the key");
+            require(!key_failure.stop(), "key failure stop");
+            fake.clear(test::fake::Option::ConnectionOpenResult);
+            fake.set(test::fake::Option::ConnectionOpenResult, "131075");
+            CgateSession other_open_error(key_config);
+            require(!other_open_error.start(), "other connection failure stopped recovery");
+            require(key_check_alerts == 3 && !other_open_error.recovery_status().key_check_failed,
+                    "ordinary connection timeout was misreported as a key-check failure");
+            require(!other_open_error.stop(), "ordinary open failure stop");
+            fake.clear(test::fake::Option::ConnectionOpenResult);
             reset();
         }
         flag(moex::plaza2::test::fake::Option::ConnHoldOpening, true);

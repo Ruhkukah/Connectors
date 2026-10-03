@@ -317,6 +317,8 @@ std::string CgateTradingHost::status() const {
     const auto& data = session_.private_state();
     std::string result = "{\"version\":\"1.0.0\",\"queued\":" + std::to_string(orders_->queued()) +
                          ",\"reconstructing\":" + (rebuilding_ ? "true" : "false") +
+                         ",\"cgate_key_check_failed\":" +
+                         (session_.recovery_status().key_check_failed ? "true" : "false") +
                          ",\"sess_id\":" + std::to_string(current_session_id(data)) +
                          ",\"log_error\":" + json_string(log_error_) +
                          ",\"operator_action_required\":" + (orders_->operator_action_required() ? "true" : "false") +
