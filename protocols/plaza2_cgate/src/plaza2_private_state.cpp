@@ -3002,10 +3002,14 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         if (staged.orders.has_value()) {
             orders_by_key = std::move(*staged.orders);
-            const auto publish_changes = prepare_row_changes(staged.order_keys.size());
-            if (publish_changes && row_changes.orders.empty() && !staged.order_keys.empty())
-                row_changes.orders.reserve(
-                    std::min(kPrivateRowChangeCapacity, growth_capacity(staged.order_keys.size())));
+            // USERORDERBOOK is a periodic snapshot. Keep its committed views,
+            // but reserve the bounded incremental buffer for TRADE changes.
+            const auto trade_changes =
+                std::count_if(staged.order_keys.begin(), staged.order_keys.end(),
+                              [](const OrderKey& key) { return key.surface == OrderSurface::kTrade; });
+            const auto publish_changes = prepare_row_changes(trade_changes);
+            if (publish_changes && row_changes.orders.empty() && trade_changes != 0)
+                row_changes.orders.reserve(std::min(kPrivateRowChangeCapacity, growth_capacity(trade_changes)));
             for (const auto& key : staged.order_keys) {
                 const auto found = orders_by_key.find(key);
                 if (found == orders_by_key.end()) {
@@ -3031,7 +3035,7 @@ struct Plaza2PrivateStateProjector::Impl {
                 if (order.user_orderbook_commit_sequence == std::numeric_limits<std::uint64_t>::max()) {
                     order.user_orderbook_commit_sequence = state.commit_count;
                 }
-                if (publish_changes)
+                if (publish_changes && order.from_trade_repl)
                     row_changes.orders.push_back(order);
                 if (native_commit_phase && !staged.rebuild_order_view && !order_snapshots.empty()) {
                     const auto [slot, inserted] = order_view_index.try_emplace(key, order_snapshots.size());

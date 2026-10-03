@@ -335,7 +335,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
     // Use the startup snapshot barrier again after a lost delta batch or TRADE
     // disconnect. Keep the existing logical orders and command correlations;
     // the current committed snapshots reconcile their identities and exposure.
-    if (!rebuilding_ && (changes.resync_required || !trade_online)) {
+    if (!rebuilding_ && (changes.resync_required || !trade_online || !user_book_online)) {
         rebuilding_ = true;
         log_event("private_history_gap", "{\"recovering\":true}");
     }
