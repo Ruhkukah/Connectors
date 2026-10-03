@@ -649,7 +649,18 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
         if (!terminal(order.state)) {
             order.state = OrderState::Unknown;
             order.cancel_requested = true;
-            recovery_cancel(order);
+            // An owned row may have arrived before the reply timeout. Reuse
+            // the existing early-row buffer to resolve it under the original key.
+            std::vector<plaza2::private_state::OwnOrderSnapshot> rows;
+            for (const auto& [identity, row] : deferred_orders_)
+                if (row.ext_id == order.ext_id && row.client_code == config_.broker_code + config_.client_code &&
+                    row.sess_id == order.sess_id && row.isin_id == order.request.isin_id &&
+                    row.dir == static_cast<std::int8_t>(order.request.side))
+                    rows.push_back(row);
+            if (!rows.empty())
+                observe_orders(rows);
+            if (!terminal(order.state))
+                enqueue_cancel(order);
             changed(found->first);
         }
         return;
@@ -966,6 +977,27 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             prune_terminal();
             return;
         }
+        if (order.confirmed_by_replication && order.order_ids.contains(*reply.order_id)) {
+            // Timeout recovery has already bound this exact exchange identity.
+            // A delayed 179 cannot resurrect its terminal TRADE state.
+            order.add_unconfirmed = false;
+            refresh_exposure(key);
+            changed(key);
+            prune_terminal();
+            return;
+        }
+        if (order.confirmed_by_replication && order.order_id > 0) {
+            order.state = OrderState::Unknown;
+            order.operator_action_required = true;
+            order.last_error = "late Add confirmation conflicts with timeout recovery";
+            config_.risk.kill_switch = true;
+            emit("add_identity_conflict", "{\"client_order_id\":" + json_string(key) +
+                                              ",\"official_order_id\":" + std::to_string(*reply.order_id) +
+                                              ",\"replicated_order_id\":" + std::to_string(order.order_id) +
+                                              ",\"message\":" + json_string(order.last_error) + "}");
+            changed(key);
+            return;
+        }
         const auto adoption = adopt_recovered_order(key, *reply.order_id, command.submitted_session);
         if (adoption == RecoveredAdoption::Conflict)
             return;
@@ -982,6 +1014,8 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             refresh_exposure(key);
         }
         order.add_unconfirmed = false;
+        std::erase_if(deferred_orders_,
+                      [&](const auto& entry) { return order.order_ids.contains(entry.first.second); });
         replay_deferred_trades();
         if (order.cancel_requested && !terminal(order.state))
             enqueue_cancel(order, true);
@@ -1159,13 +1193,25 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
                 }
             }
         }
-        if (key.empty() && row.ext_id != 0 && ext_index_.contains(row.ext_id)) {
+        if (row.ext_id != 0 && ext_index_.contains(row.ext_id)) {
             auto& candidate = orders_.at(ext_index_.at(row.ext_id));
             const auto terms = terms_(row.isin_id);
             const bool contract = row.isin_id == candidate.request.isin_id && row.sess_id == candidate.sess_id &&
                                   row.dir == static_cast<std::int8_t>(candidate.request.side) && terms &&
                                   terms->sess_id == row.sess_id;
-            if (contract && has_outstanding_command(candidate.request.client_order_id, Kind::MoveOrder)) {
+            if (row.isin_id == candidate.request.isin_id && row.sess_id == candidate.sess_id &&
+                row.dir == static_cast<std::int8_t>(candidate.request.side) && candidate.add_unconfirmed &&
+                candidate.order_id == 0 && !candidate.operator_action_required) {
+                deferred_orders_[{row.sess_id, id}] = row;
+                if (candidate.state == OrderState::Unknown) {
+                    key = candidate.request.client_order_id;
+                    if (adopt_recovered_order(key, id, candidate.sess_id) == RecoveredAdoption::Conflict)
+                        continue;
+                    deferred_orders_.erase({row.sess_id, id});
+                }
+            }
+            if (key.empty() && contract &&
+                has_outstanding_command(candidate.request.client_order_id, Kind::MoveOrder)) {
                 // ext_id never renames a known order. Save early new-ID TRADE
                 // evidence until 176 identifies the actual replacement ID.
                 deferred_orders_[{row.sess_id, id}] = row;
@@ -1331,8 +1377,8 @@ void OrderManager::prove_absence(std::int64_t server_time, bool online) {
     for (auto it = unknown_orders_.begin(); it != unknown_orders_.end();) {
         const auto key = *it++;
         auto& order = orders_.at(key);
-        if (order.order_id == 0 && order.absence_reply && order.sent_utc_seconds > 0 &&
-            server_time > order.sent_utc_seconds + config_.absence_margin.count()) {
+        if (order.order_id == 0 && !order.operator_action_required && order.absence_reply &&
+            order.sent_utc_seconds > 0 && server_time > order.sent_utc_seconds + config_.absence_margin.count()) {
             order.state = OrderState::Cancelled;
             order.remaining = 0;
             order.last_error = "NotFound after TRADE watermark and DelUserOrders num_orders=0";

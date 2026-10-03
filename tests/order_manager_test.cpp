@@ -2,6 +2,7 @@
 
 #include "fixtures/cgate99_messages.hpp"
 #include "transport_retry_warning_regression.hpp"
+#include "lost_add_recovery_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -948,14 +949,14 @@ void confirmed_add_without_reply() {
     f.poll(manager, 0);
     observe(manager, row(manager.orders().at("confirmed"), 1001, 3, 1));
     f.poll(manager, 62000);
-    require(manager.orders().at("confirmed").state == OrderState::Unknown &&
-                manager.orders().at("confirmed").order_id == 0 &&
+    require(manager.orders().at("confirmed").state == OrderState::PendingCancel &&
+                manager.orders().at("confirmed").order_id == 1001 &&
                 std::count_if(f.sent.begin(), f.sent.end(),
                               [](const auto& sent) { return sent.kind == tr::Plaza2TradeCommandKind::AddOrder; }) ==
                     1 &&
-                f.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
-            "lost179 guessed identity or blindly resent the Add instead of ext recovery");
-    require(!manager.move("confirmed", "101", 2).empty(), "ext-only identity permitted a Move");
+                f.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder,
+            "lost179 did not adopt its exact owned replication or blindly resent Add");
+    require(!manager.move("confirmed", "101", 2).empty(), "recovery cancellation permitted a Move");
 
     Fixture uncertain;
     uncertain.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
@@ -965,12 +966,12 @@ void confirmed_add_without_reply() {
     observe(other, row(other.orders().at("uncertain-confirmed"), 1002, 3, 1));
     uncertain.certainty = cg::Plaza2SubmissionCertainty::Posted;
     uncertain.poll(other, 1000);
-    require(other.orders().at("uncertain-confirmed").state == OrderState::Unknown &&
-                other.orders().at("uncertain-confirmed").order_id == 0 &&
+    require(other.orders().at("uncertain-confirmed").state == OrderState::PendingCancel &&
+                other.orders().at("uncertain-confirmed").order_id == 1002 &&
                 other.orders().at("uncertain-confirmed").cancel_requested &&
-                std::none_of(uncertain.sent.begin(), uncertain.sent.end(),
-                             [](auto command) { return command.kind == tr::Plaza2TradeCommandKind::DelOrder; }),
-            "ext-only row guessed a direct cancellation identity");
+                std::any_of(uncertain.sent.begin(), uncertain.sent.end(),
+                            [](auto command) { return command.kind == tr::Plaza2TradeCommandKind::DelOrder; }),
+            "timed-out Add did not adopt and cancel its owned row");
     other.on_reply(uncertain.sent.front().id, {.msgid = 179, .order_id = 1002},
                    OrderManager::Clock::time_point{} + std::chrono::milliseconds(1001));
     uncertain.poll(other, 1002);
@@ -2026,6 +2027,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::lost_add_recovery_regression<Fixture>();
         command_audit_only_actual_post();
         burst();
         cancels();

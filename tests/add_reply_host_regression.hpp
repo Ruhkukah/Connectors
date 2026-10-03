@@ -111,8 +111,7 @@ inline void add_reply_host_regression(TradingHostConfig config, const plaza2::te
         const auto scoped = wire<official_cgate99::DelUserOrders>(pending_cancel);
         require(scoped.ext_id == request.ext_id && scoped.isin_id == isin,
                 "provisional Add cancellation lost its exact ext_id/instrument scope");
-        now += std::chrono::milliseconds(20);
-        poll(); // Both Session and OrderManager reply timers have expired.
+        now += std::chrono::milliseconds(2);
         official_cgate99::FORTS_MSG179 reply{};
         reply.order_id = 63011;
         late_move_host_detail::reply(control, posted.user_id, 179, reply);

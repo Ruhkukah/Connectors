@@ -351,7 +351,8 @@ cg::Plaza2Error CgateTradingHost::poll() {
     // Empty TRADE commits also establish the post-186 reconciliation boundary.
     // Apply their rows first so individual fallbacks see only surviving orders.
     orders_->observe_trade_commit(trade_commit_sequence);
-    orders_->prove_absence(server_time, trade_online);
+    if (!rebuilding_)
+        orders_->prove_absence(server_time, trade_online);
     // ID blocks are already durable. Sync interaction records on the owner
     // loop's 250ms schedule, outside append and transport submission.
     try {
