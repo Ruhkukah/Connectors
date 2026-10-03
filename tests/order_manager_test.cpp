@@ -4,6 +4,7 @@
 #include "transport_retry_warning_regression.hpp"
 #include "lost_add_recovery_regression.hpp"
 #include "move_no_replacement_regression.hpp"
+#include "move_replication_recovery_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -1588,8 +1589,9 @@ void cached_risk_move_races() {
     require(next_day.orders().at("first").order_id == 7001 && next_day.orders().at("first").sess_id == 101 &&
                 next_day.orders().at("first").request.quantity == 3 &&
                 next_day.orders().at("first").request.price == "100" &&
-                next_day.orders().at("first").state == OrderState::PendingCancel,
-            "late old-session176 rolled back a proven next-session relist");
+                next_day.orders().at("first").state == OrderState::Working &&
+                !next_day.orders().at("first").cancel_requested,
+            "late old-session176 rolled back or cancelled a proven next-session relist");
     relisted.session = 101;
     require(next_day.place(request("fits-after-relist", 3)).empty(),
             "proven next-session relist retained old replacement exposure");
@@ -2028,6 +2030,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::move_replication_recovery_regression<Fixture>();
         moex::connector_host::move_no_replacement_regression<Fixture>();
         moex::connector_host::lost_add_recovery_regression<Fixture>();
         command_audit_only_actual_post();

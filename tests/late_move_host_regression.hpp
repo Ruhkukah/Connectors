@@ -120,7 +120,12 @@ inline void late_move_host_regression(TradingHostConfig config, const plaza2::te
             replacement_cancel |= cancel.order_id == 63002;
         }
     }
-    require(moves == 1 && replacement_cancel, "late176 resubmitted Move or failed to target the replacement cancel");
+    require(moves == 1 && !replacement_cancel &&
+                std::none_of(commands.begin() + begin, commands.end(),
+                             [](const auto& command) { return command.name == "DelUserOrders"; }),
+            "uncertain Move sent an unrequested cancel or resubmitted its replacement");
+    require(host.cancel("late-move").empty(), "explicit replacement cancellation refused");
+    poll();
     order(control, 63002, 65001, 5, 0, isin, account);
     poll();
     require(logical_order(host, "late-move").find("\"state\":\"Cancelled\"") != std::string::npos,

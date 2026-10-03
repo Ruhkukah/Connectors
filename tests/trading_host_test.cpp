@@ -5,6 +5,7 @@
 #include "scope_exit.hpp"
 #include "private_delta_host_regression.hpp"
 #include "late_move_host_regression.hpp"
+#include "move_link_host_regression.hpp"
 #include "add_reply_host_regression.hpp"
 #include "lost_add_rebuild_host_regression.hpp"
 #include "add_conflict_host_regression.hpp"
@@ -322,6 +323,7 @@ int main(int argc, char** argv) {
         }
         moex::connector_host::private_delta_host_regression(config, fake, root);
         moex::connector_host::late_move_host_regression(config, fake, root);
+        moex::connector_host::move_link_host_regression(config, fake, root);
         moex::connector_host::add_reply_host_regression(config, fake, root);
         moex::connector_host::lost_add_rebuild_host_regression(config, fake, root);
         moex::connector_host::add_conflict_host_regression(config, fake, root);

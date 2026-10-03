@@ -2235,6 +2235,7 @@ struct Plaza2PrivateStateProjector::Impl {
         order.id_deal = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogIdDeal
                                          : FieldCode::kFortsTradeReplOrdersLogIdDeal);
         order.id_ord1 = previous_id;
+        order.prevorder_id = multileg ? 0 : row.i64(FieldCode::kFortsTradeReplOrdersLogPrevorderId);
         order.xstatus = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogXstatus
                                          : FieldCode::kFortsTradeReplOrdersLogXstatus);
         order.xstatus2 = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogXstatus2

@@ -288,8 +288,7 @@ struct PositionSnapshot {
 struct OwnOrderSnapshot {
     // TRADE and USERORDERBOOK are independent MOEX TEST evidence surfaces.
     // A snapshot is never a cross-stream merge: the source flags identify the
-    // surface that supplied this row (regular/current-day are one
-    // USERORDERBOOK surface).
+    // surface that supplied this row.
     bool multileg{false};
     std::int64_t public_order_id{0};
     std::int64_t private_order_id{0};
@@ -314,6 +313,7 @@ struct OwnOrderSnapshot {
     std::int32_t ext_id{0};
     // Previous exchange order ID when the venue relists a multi-day order.
     std::int64_t id_ord1{0};
+    std::int64_t prevorder_id{0};
     // Native aliases contain alternate IDs; canonical IDs remain in the
     // public_order_id/private_order_id scalar fields.
     std::vector<std::int64_t> public_order_id_aliases;

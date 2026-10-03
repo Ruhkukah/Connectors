@@ -159,8 +159,8 @@ void OrderManager::subtract_charge(const Exposure& charge) {
 bool OrderManager::has_uncertain_submission(std::int32_t session, std::int32_t isin, tr::Plaza2TradeSide side) const {
     for (const auto& [id, command] : pending_) {
         const auto kind = command.encoded.command_kind;
-        if ((kind != Kind::AddOrder && kind != Kind::MoveOrder) || command.submitted_session > session ||
-            (kind == Kind::MoveOrder && command.submitted_session != session))
+        if ((kind == Kind::MoveOrder && command.acknowledged) || (kind != Kind::AddOrder && kind != Kind::MoveOrder) ||
+            command.submitted_session > session || (kind == Kind::MoveOrder && command.submitted_session != session))
             continue;
         const auto order = orders_.find(command.key);
         if (order != orders_.end() && order->second.request.isin_id == isin && order->second.request.side == side)
@@ -341,12 +341,18 @@ void OrderManager::prune_terminal() {
     }
 }
 void OrderManager::changed(const std::string& key) {
+    if (terminal(orders_.at(key).state))
+        std::erase_if(pending_, [&](const auto& entry) {
+            return entry.second.key == key && (entry.second.encoded.command_kind == Kind::DelOrder ||
+                                               entry.second.encoded.command_kind == Kind::DelUserOrders);
+        });
     refresh_exposure(key);
     emit("order", order_json(key, orders_.at(key)));
 }
 bool OrderManager::has_outstanding_command(std::string_view key, Kind kind) const {
     const auto same = [&](const Command& command) {
-        return command.key == key && command.encoded.command_kind == kind;
+        return command.key == key && command.encoded.command_kind == kind &&
+               !(kind == Kind::MoveOrder && command.acknowledged);
     };
     return std::any_of(adds_.begin(), adds_.end(), same) || std::any_of(cancels_.begin(), cancels_.end(), same) ||
            std::any_of(pending_.begin(), pending_.end(), [&](const auto& item) { return same(item.second); });
@@ -419,6 +425,8 @@ OrderManager::Command OrderManager::encode(tr::Plaza2TradeCommandRequest request
         throw std::invalid_argument(result.encoded.validation.field_name + ": " + result.encoded.validation.message);
     if (const auto* cancel = std::get_if<tr::DelOrderRequest>(&request))
         result.target_order_id = cancel->order_id.value_or(0);
+    if (const auto* move = std::get_if<tr::MoveOrderRequest>(&request))
+        result.target_order_id = move->order_id1.value_or(0);
     result.user_id = reserve_user_id();
     emit("reservation", "{\"next_ext_id\":" + std::to_string(config_.next_ext_id) +
                             ",\"next_user_id\":" + std::to_string(config_.next_user_id) + "}");
@@ -628,6 +636,11 @@ void OrderManager::set_kill_switch(bool enabled) {
 void OrderManager::complete_timeout(Command command, Clock::time_point now) {
     emit("timeout", "{\"user_id\":" + std::to_string(command.user_id) + "}");
     const auto found = orders_.find(command.key);
+    if (command.encoded.command_kind == Kind::DelUserOrders && command.acknowledged) {
+        command.deadline = Clock::time_point::max();
+        pending_.emplace(command.user_id, std::move(command));
+        return; // Accepted186 waits for replication, never another cancellation request.
+    }
     if (command.encoded.command_kind == Kind::DelOrder || command.encoded.command_kind == Kind::DelUserOrders) {
         auto& warned = found == orders_.end() ? command.transport_retry_warned : found->second.transport_retry_warned;
         if (!warned && (found == orders_.end() || !terminal(found->second.state))) {
@@ -669,14 +682,15 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
         return;
     if (command.encoded.command_kind == Kind::MoveOrder) {
         order.state = OrderState::Unknown;
-        order.cancel_requested = true;
-        if (command.encoded.command_kind == Kind::MoveOrder) {
-            // Never resend an uncertain replacement. Retain its correlation
-            // for a late definitive reply and reserve its possible new order.
-            command.deadline = Clock::time_point::max();
-            pending_.emplace(command.user_id, std::move(command));
-        }
-        recovery_cancel(order);
+        // An uncertain Move reserves its replacement and retains correlation,
+        // but does not imply any operator request to cancel the order.
+        command.deadline = Clock::time_point::max();
+        pending_.emplace(command.user_id, std::move(command));
+        std::vector<plaza2::private_state::OwnOrderSnapshot> rows;
+        for (const auto& [identity, row] : deferred_orders_)
+            rows.push_back(row);
+        if (!rows.empty())
+            observe_orders(rows);
     } else {
         retry_cancel(std::move(command), now);
     }
@@ -845,8 +859,10 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
             // targets its known ID and awaits replication/confirmation retry.
             if (found != orders_.end()) {
                 found->second.state = OrderState::Unknown;
-                found->second.cancel_requested = true;
-                recovery_cancel(found->second);
+                if (sent_kind == Kind::AddOrder) {
+                    found->second.cancel_requested = true;
+                    recovery_cancel(found->second);
+                }
                 changed(found->first);
             }
         }
@@ -889,8 +905,20 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
         emit("unexpected_reply", "{\"user_id\":" + std::to_string(id) + "}");
         return;
     }
-    if (pending->second.acknowledged)
+    if (pending->second.acknowledged) {
+        if (kind == Kind::MoveOrder && reply.msgid == 176 && reply.code == 0 &&
+            !orders_.at(pending->second.key).order_ids.contains(reply.order_id1.value_or(0))) {
+            auto& order = orders_.at(pending->second.key);
+            order.state = OrderState::Unknown;
+            order.operator_action_required = true;
+            order.last_error = "late Move confirmation conflicts with replicated replacement";
+            config_.risk.kill_switch = true;
+            emit("move_identity_conflict", "{\"user_id\":" + std::to_string(id) +
+                                               ",\"order_id\":" + std::to_string(reply.order_id1.value_or(0)) + "}");
+            changed(pending->second.key);
+        }
         return;
+    }
     auto command = std::move(pending->second);
     pending_.erase(pending);
     const auto found = orders_.find(command.key);
@@ -1085,7 +1113,8 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
     }
     if (command.encoded.command_kind == Kind::DelOrder || command.encoded.command_kind == Kind::DelUserOrders) {
         command.acknowledged = true;
-        command.deadline = now + config_.reply_timeout;
+        command.deadline = command.encoded.command_kind == Kind::DelUserOrders ? Clock::time_point::max()
+                                                                               : now + config_.reply_timeout;
         pending_.emplace(id, std::move(command));
     }
     if ((command.encoded.command_kind == Kind::AddOrder && reply.order_id.value_or(0) <= 0) ||
@@ -1203,10 +1232,8 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
         }
         if (row.ext_id != 0 && ext_index_.contains(row.ext_id)) {
             auto& candidate = orders_.at(ext_index_.at(row.ext_id));
-            const auto terms = terms_(row.isin_id);
             const bool contract = row.isin_id == candidate.request.isin_id && row.sess_id == candidate.sess_id &&
-                                  row.dir == static_cast<std::int8_t>(candidate.request.side) && terms &&
-                                  terms->sess_id == row.sess_id;
+                                  row.dir == static_cast<std::int8_t>(candidate.request.side);
             if (row.isin_id == candidate.request.isin_id && row.sess_id == candidate.sess_id &&
                 row.dir == static_cast<std::int8_t>(candidate.request.side) && candidate.add_unconfirmed &&
                 candidate.order_id == 0 && !candidate.operator_action_required) {
@@ -1218,12 +1245,32 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
                     deferred_orders_.erase({row.sess_id, id});
                 }
             }
-            if (key.empty() && contract &&
+            if (key != candidate.request.client_order_id && contract &&
                 has_outstanding_command(candidate.request.client_order_id, Kind::MoveOrder)) {
                 // ext_id never renames a known order. Save early new-ID TRADE
                 // evidence until 176 identifies the actual replacement ID.
                 deferred_orders_[{row.sess_id, id}] = row;
-                continue;
+                const auto move = std::find_if(pending_.begin(), pending_.end(), [&](const auto& entry) {
+                    const auto& command = entry.second;
+                    return command.key == candidate.request.client_order_id &&
+                           command.encoded.command_kind == Kind::MoveOrder && !command.acknowledged &&
+                           command.deadline == Clock::time_point::max() && command.target_order_id == row.prevorder_id;
+                });
+                if (candidate.state != OrderState::Unknown || candidate.remaining != 0 ||
+                    candidate.order_id != row.prevorder_id || move == pending_.end())
+                    continue;
+                if (!key.empty() &&
+                    adopt_recovered_order(candidate.request.client_order_id, id, candidate.sess_id) ==
+                        RecoveredAdoption::Conflict) {
+                    deferred_orders_.erase({row.sess_id, id});
+                    continue;
+                }
+                key = candidate.request.client_order_id;
+                candidate.request.price = move->second.replacement_price;
+                candidate.request.quantity = move->second.replacement_quantity;
+                move->second.acknowledged = true; // Keep UID solely for delayed confirmation checks.
+                move_reservations_.erase(key);
+                deferred_orders_.erase({row.sess_id, id});
             }
         }
         if (key.empty()) {
@@ -1272,7 +1319,8 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
         const bool unresolved_replacement =
             order.order_id == id && order.state == OrderState::Unknown && move_reservations_.contains(key);
         const bool posted_move = std::any_of(pending_.begin(), pending_.end(), [&](const auto& item) {
-            return item.second.key == key && item.second.encoded.command_kind == Kind::MoveOrder;
+            return item.second.key == key && item.second.encoded.command_kind == Kind::MoveOrder &&
+                   !item.second.acknowledged;
         });
         order.sess_id = row.sess_id;
         order.order_id = id;
@@ -1308,6 +1356,21 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
         if (order.cancel_requested && !terminal(order.state))
             enqueue_cancel(order, relisted);
     }
+    std::vector<plaza2::private_state::OwnOrderSnapshot> replacements;
+    for (const auto& [uid, command] : pending_)
+        if (command.encoded.command_kind == Kind::MoveOrder && !command.acknowledged &&
+            command.deadline == Clock::time_point::max()) {
+            const auto& order = orders_.at(command.key);
+            if (order.state != OrderState::Unknown || order.remaining != 0 || order.operator_action_required)
+                continue;
+            for (const auto& [identity, row] : deferred_orders_)
+                if (row.prevorder_id == command.target_order_id && row.ext_id == order.ext_id &&
+                    row.client_code == account && row.sess_id == order.sess_id &&
+                    row.isin_id == order.request.isin_id && row.dir == static_cast<std::int8_t>(order.request.side))
+                    replacements.push_back(row);
+        }
+    if (!replacements.empty())
+        observe_orders(replacements);
     replay_deferred_trades();
     std::uint64_t sequence{};
     for (const auto& row : rows)

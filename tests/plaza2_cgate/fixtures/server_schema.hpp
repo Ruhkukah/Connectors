@@ -38,6 +38,7 @@ inline std::span<const ServerSchemaField> server_schema_fields(generated::TableC
         {static_cast<FieldCode>(0x2A5B76DEu), "broker_from_rts", "c7", ValueClass::kFixedString, 8},
         {static_cast<FieldCode>(0x6808C990u), "date_exp", "t", ValueClass::kTimestamp, 0},
         {static_cast<FieldCode>(0xE003C3F0u), "id_ord1", "i8", ValueClass::kSignedInteger, 8},
+        {static_cast<FieldCode>(0x2672335Fu), "prevorder_id", "i8", ValueClass::kSignedInteger, 8},
         {static_cast<FieldCode>(0x930BA241u), "aspref", "i4", ValueClass::kSignedInteger, 4},
         {static_cast<FieldCode>(0xE9654BC0u), "private_order_id", "i8", ValueClass::kSignedInteger, 8},
         {static_cast<FieldCode>(0xB5C7545Cu), "private_amount", "i8", ValueClass::kSignedInteger, 8},
@@ -692,73 +693,73 @@ inline std::span<const ServerSchemaField> server_schema_fields(generated::TableC
     };
     switch (table) {
     case TableCode::kFortsTradeReplOrdersLog:
-        return {fields + 0, 36};
+        return {fields + 0, 37};
     case TableCode::kFortsTradeReplMultilegOrdersLog:
-        return {fields + 36, 38};
+        return {fields + 37, 38};
     case TableCode::kFortsTradeReplUserDeal:
-        return {fields + 74, 36};
+        return {fields + 75, 36};
     case TableCode::kFortsTradeReplUserMultilegDeal:
-        return {fields + 110, 38};
+        return {fields + 111, 38};
     case TableCode::kFortsTradeReplHeartbeat:
-        return {fields + 148, 4};
+        return {fields + 149, 4};
     case TableCode::kFortsTradeReplSysEvents:
-        return {fields + 152, 8};
+        return {fields + 153, 8};
     case TableCode::kFortsDealsReplDeal:
-        return {fields + 160, 18};
+        return {fields + 161, 18};
     case TableCode::kFortsDealsReplMultilegDeal:
-        return {fields + 178, 19};
+        return {fields + 179, 19};
     case TableCode::kFortsDealsReplHeartbeat:
-        return {fields + 197, 4};
+        return {fields + 198, 4};
     case TableCode::kFortsDealsReplSysEvents:
-        return {fields + 201, 8};
+        return {fields + 202, 8};
     case TableCode::kFortsUserorderbookReplOrders:
-        return {fields + 209, 38};
+        return {fields + 210, 38};
     case TableCode::kFortsUserorderbookReplMultilegOrders:
-        return {fields + 247, 40};
+        return {fields + 248, 40};
     case TableCode::kFortsUserorderbookReplInfo:
-        return {fields + 287, 8};
+        return {fields + 288, 8};
     case TableCode::kFortsUserorderbookReplOrdersCurrentday:
-        return {fields + 295, 38};
+        return {fields + 296, 38};
     case TableCode::kFortsUserorderbookReplMultilegOrdersCurrentday:
-        return {fields + 333, 40};
+        return {fields + 334, 40};
     case TableCode::kFortsUserorderbookReplInfoCurrentday:
-        return {fields + 373, 7};
+        return {fields + 374, 7};
     case TableCode::kFortsAggrReplOrdersAggr:
-        return {fields + 380, 10};
+        return {fields + 381, 10};
     case TableCode::kFortsAggrReplSysEvents:
-        return {fields + 390, 8};
+        return {fields + 391, 8};
     case TableCode::kFortsPosReplPosition:
-        return {fields + 398, 17};
+        return {fields + 399, 17};
     case TableCode::kFortsPosReplPositionSa:
-        return {fields + 415, 16};
+        return {fields + 416, 16};
     case TableCode::kFortsPosReplInfo:
-        return {fields + 431, 6};
+        return {fields + 432, 6};
     case TableCode::kFortsPartReplPart:
-        return {fields + 437, 19};
+        return {fields + 438, 19};
     case TableCode::kFortsPartReplPartSa:
-        return {fields + 456, 19};
+        return {fields + 457, 19};
     case TableCode::kFortsPartReplSysEvents:
-        return {fields + 475, 8};
+        return {fields + 476, 8};
     case TableCode::kFortsRefdataReplFutSessContents:
-        return {fields + 483, 49};
+        return {fields + 484, 49};
     case TableCode::kFortsRefdataReplFutVcb:
-        return {fields + 532, 19};
+        return {fields + 533, 19};
     case TableCode::kFortsRefdataReplFutInstruments:
-        return {fields + 551, 33};
+        return {fields + 552, 33};
     case TableCode::kFortsRefdataReplSysMessages:
-        return {fields + 584, 11};
+        return {fields + 585, 11};
     case TableCode::kFortsRefdataReplOptSessContents:
-        return {fields + 595, 38};
+        return {fields + 596, 38};
     case TableCode::kFortsRefdataReplMultilegDict:
-        return {fields + 633, 8};
+        return {fields + 634, 8};
     case TableCode::kFortsRefdataReplInstr2matchingMap:
-        return {fields + 641, 5};
+        return {fields + 642, 5};
     case TableCode::kFortsRefdataReplSession:
-        return {fields + 646, 21};
+        return {fields + 647, 21};
     case TableCode::kFortsSessionstateReplSessionState:
-        return {fields + 667, 5};
+        return {fields + 668, 5};
     case TableCode::kFortsInstrumentstateReplInstrumentState:
-        return {fields + 672, 5};
+        return {fields + 673, 5};
     }
     return {};
 }
