@@ -5,6 +5,7 @@
 #include <charconv>
 #include <stdexcept>
 #include <ostream>
+#include <iostream>
 
 namespace moex::connector_host {
 namespace {
@@ -124,14 +125,19 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     orders_ = std::make_unique<OrderManager>(
         std::move(orders),
         [this](const auto& command, auto id) {
-            if (!log_error_.empty())
+            const bool cancel = command.command_kind == tr::Plaza2TradeCommandKind::DelOrder ||
+                                command.command_kind == tr::Plaza2TradeCommandKind::DelUserOrders;
+            if (!journal_.user_id_reserved(id) || (!log_error_.empty() && !cancel))
                 return cg::Plaza2PublisherMessageResult{
                     .certainty = cg::Plaza2SubmissionCertainty::DefinitelyNotSent,
-                    .validation_error = {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_}};
+                    .validation_error = {.code = cg::Plaza2ErrorCode::RuntimeCallFailed,
+                                         .message = "storage failure or command ID not durably reserved"}};
             return session_.post_command(command, id);
         },
         [this](auto isin) {
-            return !rebuilding_ && log_error_.empty() &&
+            // Clearing-rejected cancels share this exchange readiness check.
+            // Storage protection blocks entry through the kill/send guards.
+            return !rebuilding_ &&
                    std::find(config_.isin_ids.begin(), config_.isin_ids.end(), isin) != config_.isin_ids.end() &&
                    moex::connector_host::order_entry_ready(session_, isin);
         },
@@ -165,16 +171,20 @@ tr::CgateSessionConfig CgateTradingHost::session_config() {
     return result;
 }
 void CgateTradingHost::log_event(std::string_view kind, std::string_view fields) noexcept {
+    if (!log_error_.empty())
+        return; // Do not grow the buffer or retry its failed writer on every callback.
     try {
         journal_.append(kind, kind == "cgate_state" || kind == "cgate_operation" ? named_transport_fields(fields)
                                                                                  : std::string(fields));
         if (kind == "cgate_state" && !stopped_)
             observe_link(session_.runtime_health());
     } catch (const std::exception& error) {
-        log_error_ = error.what();
+        storage_failure(error.what());
     }
 }
 void CgateTradingHost::observe_link(const tr::Plaza2TransportHealth& health) {
+    if (!log_error_.empty())
+        return;
     const bool active = health.valid && health.connection == 3 && health.publisher == 3 && health.reply == 3;
     if (link_was_active_ && !active && !link_lost_) {
         link_lost_ = true;
@@ -190,6 +200,8 @@ void CgateTradingHost::observe_link(const tr::Plaza2TransportHealth& health) {
     }
 }
 void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) noexcept {
+    if (!log_error_.empty())
+        return;
     try {
         if (event.stream_code == plaza2::generated::StreamCode::kFortsAggrRepl) {
             // Book traffic and its transaction/replay boundaries are not order
@@ -235,14 +247,44 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
         fields += "]}";
         journal_.append(event_kind(event.kind), fields);
     } catch (const std::exception& error) {
-        log_error_ = error.what();
+        storage_failure(error.what());
     }
+}
+void CgateTradingHost::storage_failure(std::string_view error) {
+    if (!log_error_.empty())
+        return;
+    log_error_ = error;
+    if (orders_)
+        orders_->set_kill_switch(true);
+    std::cerr << "moexctl: storage failure; cancel-only mode with durably reserved command IDs; " << log_error_ << '\n';
+}
+std::string CgateTradingHost::check_storage_space() {
+    const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
+    next_space_check_ = now + std::chrono::minutes(1);
+    std::uintmax_t available = UINTMAX_MAX;
+    for (const auto& file : {config_.journal_path, identity_path(config_)}) {
+        std::error_code error;
+        const auto space = std::filesystem::space(file.parent_path().empty() ? "." : file.parent_path(), error);
+        if (error)
+            return "cannot check journal/identity storage capacity: " + error.message();
+        available = std::min(available, space.available);
+    }
+    constexpr std::uintmax_t minimum = 64 * 1024 * 1024;
+    if (available < minimum)
+        return "journal/identity storage has less than the required 64 MiB free";
+    log_event("storage_capacity", "{\"available_bytes\":" + std::to_string(available) +
+                                      ",\"minimum_bytes\":" + std::to_string(minimum) + "}");
+    return {};
 }
 cg::Plaza2Error CgateTradingHost::start() {
     assert_owner();
     if (stopped_)
         return {.code = cg::Plaza2ErrorCode::InvalidConfiguration,
                 .message = "trading host has stopped; create a fresh host to restart"};
+    if (const auto error = check_storage_space(); !error.empty()) {
+        storage_failure(error);
+        return {.code = cg::Plaza2ErrorCode::InvalidConfiguration, .message = error};
+    }
     if (config_.session.mode != tr::CgateSessionMode::OfflineFake)
         validate_cgate_logging(config_.session.runtime.env_open_settings, config_.session.runtime.config_dir);
     const auto& session = config_.session;
@@ -269,7 +311,7 @@ cg::Plaza2Error CgateTradingHost::start() {
     auto router = masked_settings(session.connection_settings.substr(0, session.connection_settings.find(';')));
     if (router.starts_with("p2tcp://"))
         router.erase(0, 8);
-    journal_.append(
+    log_event(
         "startup",
         "{\"product\":\"MoexConnector\",\"version\":\"1.0.0\",\"instance_id\":" + json_string(session.publisher_name) +
             ",\"source_git_sha\":" + json_string(config_.source_git_sha) +
@@ -288,20 +330,17 @@ cg::Plaza2Error CgateTradingHost::start() {
 }
 cg::Plaza2Error CgateTradingHost::poll() {
     assert_owner();
+    const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
+    if (log_error_.empty() && now >= next_space_check_)
+        if (const auto error = check_storage_space(); !error.empty())
+            storage_failure(error);
     dispatch_commands();
-    if (!log_error_.empty())
-        return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_};
     const auto error = session_.poll(orders_->queued() == 0);
     try {
         observe_link(session_.runtime_health());
     } catch (const std::exception& log_error) {
-        log_error_ = log_error.what();
+        storage_failure(log_error.what());
     }
-    if (!log_error_.empty()) {
-        orders_->set_kill_switch(true);
-        return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_};
-    }
-    const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
     const auto& data = session_.private_state();
     bool trade_online{}, user_book_online{};
     std::int64_t server_time{};
@@ -332,8 +371,8 @@ cg::Plaza2Error CgateTradingHost::poll() {
             orders_->on_timeout(event.user_id, now);
         }
     }
-    // Use the startup snapshot barrier again after a lost delta batch or TRADE
-    // disconnect. Keep the existing logical orders and command correlations;
+    // Use the startup snapshot barrier again after a lost delta batch or either
+    // private order stream disconnects. Keep logical orders and correlations;
     // the current committed snapshots reconcile their identities and exposure.
     if (!rebuilding_ && (changes.resync_required || !trade_online || !user_book_online)) {
         rebuilding_ = true;
@@ -358,18 +397,14 @@ cg::Plaza2Error CgateTradingHost::poll() {
         orders_->prove_absence(server_time, trade_online);
     // ID blocks are already durable. Sync interaction records on the owner
     // loop's 250ms schedule, outside append and transport submission.
-    try {
-        journal_.flush_if_due();
-    } catch (const std::exception& storage_error) {
-        log_error_ = storage_error.what();
-        orders_->set_kill_switch(true);
-        return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_};
+    if (log_error_.empty()) {
+        try {
+            journal_.flush_if_due();
+        } catch (const std::exception& storage_error) {
+            storage_failure(storage_error.what());
+        }
     }
     dispatch_commands();
-    if (!log_error_.empty()) {
-        orders_->set_kill_switch(true);
-        return {.code = cg::Plaza2ErrorCode::RuntimeCallFailed, .message = log_error_};
-    }
     return error;
 }
 cg::Plaza2Error CgateTradingHost::stop() {
@@ -378,18 +413,14 @@ cg::Plaza2Error CgateTradingHost::stop() {
         return stop_error_;
     stopped_ = true;
     orders_->set_kill_switch(true);
-    try {
-        journal_.append("shutdown");
-    } catch (const std::exception& error) {
-        log_error_ = error.what();
-    }
+    log_event("shutdown", "{}");
     // Storage failures must never leave gateway handles open. Close first,
     // then attempt to flush the shutdown and close records together.
     const auto session_error = session_.stop();
     try {
         journal_.flush();
     } catch (const std::exception& error) {
-        log_error_ = error.what();
+        storage_failure(error.what());
     }
     stop_error_ = log_error_.empty()
                       ? session_error
@@ -399,6 +430,8 @@ cg::Plaza2Error CgateTradingHost::stop() {
 }
 std::string CgateTradingHost::place(OrderRequest request) {
     assert_owner();
+    if (!log_error_.empty())
+        return "storage failure; cancel-only mode blocks Add";
     auto error = orders_->place(std::move(request));
     if (error.empty())
         dispatch_commands();
@@ -413,6 +446,8 @@ std::string CgateTradingHost::cancel(std::string_view key) {
 }
 std::string CgateTradingHost::move(std::string_view key, std::string price, std::int32_t quantity) {
     assert_owner();
+    if (!log_error_.empty())
+        return "storage failure; cancel-only mode blocks Move";
     auto error = orders_->move(key, std::move(price), quantity);
     if (error.empty())
         dispatch_commands();
@@ -426,15 +461,15 @@ std::string CgateTradingHost::cancel_all(std::int32_t isin) {
     return error;
 }
 void CgateTradingHost::dispatch_commands() {
-    if (log_error_.empty()) {
-        const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
-        orders_->poll(now, config_.utc_now ? config_.utc_now() : utc_seconds());
-    }
+    const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
     if (!log_error_.empty())
         orders_->set_kill_switch(true);
+    orders_->poll(now, config_.utc_now ? config_.utc_now() : utc_seconds());
 }
 void CgateTradingHost::set_kill_switch(bool enabled) {
     assert_owner();
+    if (!enabled && !log_error_.empty())
+        throw std::invalid_argument("storage failure; cancel-only mode keeps the kill switch on");
     orders_->set_kill_switch(enabled);
 }
 void CgateTradingHost::record_operator_input(std::string_view line, std::string_view channel) {
@@ -481,6 +516,7 @@ std::string CgateTradingHost::status() const {
         ",\"reconstructing\":" + (rebuilding_ ? "true" : "false") +
         ",\"cgate_key_check_failed\":" + (session_.recovery_status().key_check_failed ? "true" : "false") +
         ",\"sess_id\":" + std::to_string(current_session_id(data)) + ",\"log_error\":" + json_string(log_error_) +
+        ",\"cancel_only\":" + (log_error_.empty() ? "false" : "true") +
         ",\"operator_action_required\":" + (orders_->operator_action_required() ? "true" : "false") +
         ",\"instruments\":[";
     bool first = true;

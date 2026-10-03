@@ -184,6 +184,7 @@ std::uint64_t g_pub_post_calls = 0;
 std::uint64_t g_env_open_count = 0;
 std::uint64_t g_status_open_count = 0;
 std::uint64_t g_conn_new_count = 0;
+std::array<std::uint64_t, 4> successful_closes{}; // environment, connection, listener, publisher
 std::unordered_map<void*, FakePublisherMessage*> g_publisher_messages;
 
 std::uint32_t configured_result(Option variable) {
@@ -1941,6 +1942,7 @@ std::uint32_t cg_env_close() {
         return kCgErrIncorrectState;
     }
     g_env_open = false;
+    ++successful_closes[0];
     return kCgErrOk;
 }
 
@@ -2005,6 +2007,7 @@ std::uint32_t cg_conn_close(void* conn) {
     }
     auto* connection = static_cast<FakeConnection*>(conn);
     connection->state = kStateClosed;
+    ++successful_closes[1];
     return kCgErrOk;
 }
 
@@ -2788,6 +2791,7 @@ std::uint32_t cg_lsn_close(void* listener) {
     }
     auto* typed = static_cast<FakeListener*>(listener);
     typed->state = kStateClosed;
+    ++successful_closes[2];
     return kCgErrOk;
 }
 
@@ -2842,6 +2846,7 @@ std::uint32_t cg_pub_close(void* publisher) {
         return kCgErrInvalidArgument;
     }
     static_cast<FakePublisher*>(publisher)->state = kStateClosed;
+    ++successful_closes[3];
     return kCgErrOk;
 }
 
@@ -3097,6 +3102,10 @@ extern "C" void moex_fake_commands(std::vector<fixture::PostedCommand>* value) {
 }
 extern "C" std::uint64_t moex_fake_process_count() {
     return process_calls;
+}
+extern "C" void moex_fake_successful_closes(std::array<std::uint64_t, 4>* counts) {
+    if (counts)
+        *counts = successful_closes;
 }
 extern "C" std::uint32_t moex_fake_last_process_timeout() {
     return last_process_timeout;

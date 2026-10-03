@@ -39,6 +39,8 @@ class CgateTradingHost {
   private:
     void assert_owner() const;
     void dispatch_commands();
+    void storage_failure(std::string_view error);
+    [[nodiscard]] std::string check_storage_space();
     plaza2_trade::CgateSessionConfig session_config();
     void log_event(std::string_view kind, std::string_view fields) noexcept;
     void log_listener_event(const plaza2::cgate::Plaza2ListenerEvent& event) noexcept;
@@ -53,5 +55,6 @@ class CgateTradingHost {
     bool link_was_active_{}, link_lost_{};
     plaza2::cgate::Plaza2Error stop_error_;
     std::string log_error_;
+    OrderManager::Clock::time_point next_space_check_{};
 };
 } // namespace moex::connector_host

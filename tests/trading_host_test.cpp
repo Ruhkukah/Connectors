@@ -10,6 +10,8 @@
 #include "lost_add_rebuild_host_regression.hpp"
 #include "add_conflict_host_regression.hpp"
 #include "immediate_dispatch_host_regression.hpp"
+#include "storage_guard_regression.hpp"
+#include "storage_halt_cancel_regression.hpp"
 
 #include <cstdlib>
 #include <dlfcn.h>
@@ -168,7 +170,11 @@ int main(int argc, char** argv) {
         config.orders.client_code = input.client_code;
         config.isin_ids = {1001};
         config.journal_path = root / "events.ndjson";
+        moex::connector_host::regression::storage_halt_cancel_regression(config, fake, root);
         moex::connector_host::regression::immediate_dispatch_host_regression(config, fake, root);
+        moex::connector_host::regression::storage_capacity_guard(config, fake, root, false);
+        moex::connector_host::regression::storage_capacity_guard(config, fake, root, true);
+        moex::connector_host::regression::storage_durable_cancel_guard(config, fake, root);
         named_journal_regression(config, fake, root);
         fake.configure(test::fake::Scenario{.client_code = "BRK1C01"});
         fake.set(moex::plaza2::test::fake::Option::AggrWrongSession, "1");
@@ -280,12 +286,13 @@ int main(int argc, char** argv) {
             const auto posts = fake.commands().size();
             test::require(std::filesystem::remove(broken_storage.identity_state_path), "remove identity checkpoint");
             std::filesystem::create_directory(broken_storage.identity_state_path);
-            // Detect the failure on its time-based owner flush before another
-            // immediate command is accepted, then verify the fatal send guard.
+            // A time-based checkpoint failure blocks entry while the native
+            // owner remains available for reconciliation and durable-ID cancels.
             std::this_thread::sleep_for(std::chrono::milliseconds(270));
             const auto poll_error = host.poll();
-            test::require(poll_error.code == cg::Plaza2ErrorCode::RuntimeCallFailed && fake.commands().size() == posts,
-                          "journal checkpoint failure did not stop sends before dispatch");
+            test::require(!poll_error && fake.commands().size() == posts &&
+                              host.status().find("\"cancel_only\":true") != std::string::npos,
+                          "journal checkpoint failure stopped the native owner instead of entering cancel-only mode");
             test::require(!host.place({.client_order_id = "blocked-by-storage-failure",
                                        .isin_id = 1001,
                                        .price = "103000",
@@ -293,7 +300,16 @@ int main(int argc, char** argv) {
                                   .empty() &&
                               fake.commands().size() == posts,
                           "storage-failed host admitted another Add");
+            test::require(!host.move("working-before-storage-failure", "103250", 2).empty(),
+                          "storage-failed host admitted a Move");
+            test::require(host.cancel("working-before-storage-failure").empty() &&
+                              fake.commands().size() == posts + 1 && fake.commands().back().name == "DelOrder",
+                          "storage-failed owner did not post a cancellation from its durable ID block");
+            const auto native_polls = fake.process_count();
+            test::require(!host.poll() && fake.process_count() > native_polls,
+                          "storage-failed owner stopped native replication/reply processing");
             cg::Plaza2Error stop_error;
+            const auto closes_before = fake.successful_closes();
             try {
                 ScopeExit report([&] { host.report_outstanding_orders(diagnostics); });
                 stop_error = host.stop();
@@ -306,20 +322,12 @@ int main(int argc, char** argv) {
             test::require(diagnostics.str().find("Working orders may remain on the exchange") != std::string::npos &&
                               diagnostics.str().find("order_id=62001") != std::string::npos,
                           "fatal shutdown omitted its warning and known working order");
-            std::ifstream closed_log(broken_storage.journal_path);
-            std::string closed_line;
-            bool connection_closed{}, publisher_closed{}, listener_closed{};
-            while (std::getline(closed_log, closed_line)) {
-                if (closed_line.find("\"operation\":\"close\"") == std::string::npos)
-                    continue;
-                connection_closed |= closed_line.find("\"object\":\"connection\"") != std::string::npos;
-                publisher_closed |= closed_line.find("\"object\":\"publisher\"") != std::string::npos;
-                listener_closed |= closed_line.find("\"object\":\"listener\"") != std::string::npos;
-            }
-            test::require(connection_closed && publisher_closed && listener_closed,
-                          "journal failure prevented CGate objects from closing");
+            const auto closes_after = fake.successful_closes();
+            for (std::size_t object = 0; object < closes_before.size(); ++object)
+                test::require(closes_after[object] > closes_before[object],
+                              "failed journal prevented native environment/connection/listener/publisher closure");
             test::require(host.stop().code == stop_error.code, "repeated shutdown lost its stored result");
-            test::require(fake.commands().size() == posts, "shutdown bypassed durability guard to send commands");
+            test::require(fake.commands().size() == posts + 1, "shutdown sent an unrequested command");
         }
         moex::connector_host::private_delta_host_regression(config, fake, root);
         moex::connector_host::late_move_host_regression(config, fake, root);

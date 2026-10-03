@@ -131,6 +131,8 @@ inline void journal_id_block_regression(const std::filesystem::path& root) {
         check(refused && journal.reservations().next_ext_id == 2 && journal.reservations().next_user_id == 2 &&
                   std::filesystem::file_size(failed_path) == 0,
               "failed block extension handed out or recorded an unreserved ID");
+        check(!journal.user_id_reserved(0) && journal.user_id_reserved(1000) && !journal.user_id_reserved(1001),
+              "failed extension changed the durable cancellation ceiling");
         std::filesystem::remove(failed_state);
         std::filesystem::rename(backup, failed_state);
         ::_exit(0);

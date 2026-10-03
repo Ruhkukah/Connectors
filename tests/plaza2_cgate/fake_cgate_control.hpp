@@ -229,6 +229,11 @@ class Control {
     std::uint64_t process_count() const {
         return call<std::uint64_t (*)()>("moex_fake_process_count")();
     }
+    std::array<std::uint64_t, 4> successful_closes() const {
+        std::array<std::uint64_t, 4> counts{};
+        call<void (*)(std::array<std::uint64_t, 4>*)>("moex_fake_successful_closes")(&counts);
+        return counts;
+    }
     std::uint32_t last_process_timeout() const {
         return call<std::uint32_t (*)()>("moex_fake_last_process_timeout")();
     }

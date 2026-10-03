@@ -474,6 +474,28 @@ int main(int argc, char** argv) {
         test::require(owner.wait() == 0, "signal drain did not stop host");
         cancelled_before_stop(log);
     });
+    scenario("storage failure keeps command owner alive", [&] {
+        const auto log = root / "storage.ndjson", state = root / "storage.state";
+        auto arguments = run_arguments(argv[1], fixture, log, "cli_storage");
+        arguments.insert(arguments.end(), {"--allow-orders", "--state", state.string()});
+        Child owner(arguments, root / "storage.err");
+        make_working(owner);
+        test::require(std::filesystem::remove(state), "remove CLI identity checkpoint");
+        std::filesystem::create_directory(state);
+        std::this_thread::sleep_for(350ms);
+        test::require(owner.alive(), "storage failure exited the CLI with a working order");
+        const auto status = remote_command(argv[1], log, "status");
+        test::require(status.find("\"cancel_only\":true") != std::string::npos &&
+                          status.find("\"order_entry_ready\":false") != std::string::npos,
+                      "storage-failed CLI did not report cancel-only entry protection");
+        test::require(remote_command(argv[1], log, "place blocked 1001 buy 1 102500 day").find("\"ok\":false") !=
+                          std::string::npos,
+                      "storage-failed CLI admitted another Add");
+        test::require(remote_command(argv[1], log, "cancel rel7_working").find("\"ok\":true") != std::string::npos,
+                      "storage-failed CLI refused durable-ID cancellation");
+        owner.signal(SIGTERM);
+        test::require(owner.wait() == 7, "storage-failed CLI shutdown concealed its storage error");
+    });
     if (failures == 0)
         test::remove_tree(root);
     return failures == 0 ? 0 : 1;

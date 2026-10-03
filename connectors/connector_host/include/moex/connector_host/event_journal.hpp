@@ -26,6 +26,11 @@ class EventJournal {
     [[nodiscard]] JournalReservation reservations() const noexcept {
         return reservations_;
     }
+    // The checkpoint's exclusive ceiling is unchanged after a failed block
+    // extension. Storage-failed cancellation may use only this durable range.
+    [[nodiscard]] bool user_id_reserved(std::uint32_t id) const noexcept {
+        return id != 0 && id < high_water_.next_user_id;
+    }
     [[nodiscard]] std::uint64_t recovery_read_bytes() const noexcept {
         return recovery_read_bytes_;
     }
