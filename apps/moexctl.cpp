@@ -305,11 +305,11 @@ int main(int argc, char** argv) {
             CgateTradingHost host(std::move(config));
             ScopeExit report([&] { host.report_outstanding_orders(std::cerr); });
             ScopeExit shutdown([&] { (void)host.stop(); });
+            CommandSocket socket(socket_path);
             if (const auto error = host.start()) {
                 std::cerr << error.message << '\n';
                 return 3;
             }
-            CommandSocket socket(socket_path);
             CommandInput input;
             ShutdownRequest drain;
             auto input_retry = std::chrono::steady_clock::now();

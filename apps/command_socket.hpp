@@ -85,6 +85,27 @@ inline void nonblocking(int fd) {
     if (::fcntl(fd, F_SETFD, FD_CLOEXEC) < 0 || ::fcntl(fd, F_SETFL, O_NONBLOCK) < 0)
         throw std::runtime_error("cannot configure command socket");
 }
+inline void remove_stale(const std::filesystem::path& path, const sockaddr_un& address) {
+    struct stat original {};
+    if (::lstat(path.c_str(), &original) < 0) {
+        if (errno == ENOENT)
+            return;
+        throw std::runtime_error("cannot inspect command socket");
+    }
+    if (!S_ISSOCK(original.st_mode) || original.st_uid != ::geteuid())
+        throw std::runtime_error("existing command endpoint is not an owned socket");
+    const auto probe = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (probe < 0)
+        throw std::runtime_error("cannot probe existing command socket");
+    ScopeExit close([&] { ::close(probe); });
+    nonblocking(probe);
+    if (::connect(probe, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0 || errno != ECONNREFUSED)
+        throw std::runtime_error("existing command socket is active or cannot be verified stale");
+    struct stat current {};
+    if (::lstat(path.c_str(), &current) < 0 || !S_ISSOCK(current.st_mode) || current.st_uid != ::geteuid() ||
+        current.st_dev != original.st_dev || current.st_ino != original.st_ino || ::unlink(path.c_str()) < 0)
+        throw std::runtime_error("stale command socket changed before cleanup");
+}
 inline void wait(int fd, short events, std::chrono::steady_clock::time_point deadline) {
     while (std::chrono::steady_clock::now() < deadline) {
         const auto remaining =
@@ -116,10 +137,9 @@ class CommandSocket {
                 ::unlink(path_.c_str());
         });
         command_socket_detail::nonblocking(fd_);
-        // An existing endpoint is never removed or taken over, including after an unclean exit.
+        command_socket_detail::remove_stale(path_, address);
         if (::bind(fd_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) < 0)
-            throw std::runtime_error(std::string("cannot bind command socket: ") + std::strerror(errno) +
-                                     " (remove a stale endpoint only after verifying its owner)");
+            throw std::runtime_error(std::string("cannot bind command socket: ") + std::strerror(errno));
         bound_ = true;
         if (::chmod(path_.c_str(), 0600) < 0 || ::lstat(path_.c_str(), &identity_) < 0 || ::listen(fd_, 4) < 0)
             throw std::runtime_error("cannot secure command socket");

@@ -475,6 +475,65 @@ int main(int argc, char** argv) {
                           diagnostics.find("private-cli-owner") == std::string::npos,
                       "CLI exposed its configured login value");
     });
+    scenario("channel bind failure precedes CGate login", [&] {
+        const auto occupied = root / "occupied.sock";
+        {
+            std::ofstream file(occupied);
+            file << "preserve";
+        }
+        unsigned index{};
+        for (const auto& path : {occupied, root / std::string(120, 'x')}) {
+            const auto label = "channel-bind-" + std::to_string(index++);
+            const auto log = root / (label + ".ndjson");
+            auto arguments = run_arguments(executable, fixture, log, "cli_" + label);
+            arguments.insert(arguments.end(), {"--command-socket", path.string()});
+            Child owner(arguments, root / (label + ".err"));
+            owner.close_input();
+            test::require(owner.wait() == 2, "invalid command endpoint did not fail startup");
+            std::ifstream input(log);
+            const std::string contents((std::istreambuf_iterator<char>(input)), {});
+            test::require(contents.find("\"event\":\"runtime_identity\"") == std::string::npos,
+                          "command endpoint failed only after CGate login");
+            no_posts(log);
+        }
+        std::ifstream file(occupied);
+        std::string content;
+        file >> content;
+        test::require(content == "preserve", "command endpoint cleanup removed a non-socket file");
+    });
+    scenario("verified stale command socket restarts", [&] {
+        const auto path = root / "stale.sock", log = root / "stale.ndjson";
+        const auto fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        test::require(fd >= 0, "stale socket fixture failed");
+        const auto address = moex::connector_host::command_socket_detail::address(path);
+        test::require(::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0,
+                      "stale socket fixture bind failed");
+        ::close(fd); // The same owner crashed, leaving no listener on this socket inode.
+        auto arguments = run_arguments(executable, fixture, log, "cli_stale");
+        arguments.insert(arguments.end(), {"--command-socket", path.string()});
+        Child owner(arguments, root / "stale.err");
+        ready(owner, [&] { owner.send("status\n"); });
+        owner.send("quit\n");
+        test::require(owner.wait() == 0, "verified stale command socket blocked restart");
+        test::require(!std::filesystem::exists(path), "restarted owner's socket was not removed at shutdown");
+        no_posts(log);
+    });
+    scenario("active command socket cannot be replaced", [&] {
+        const auto path = root / "active.sock";
+        moex::connector_host::CommandSocket original(path);
+        struct stat before {
+        }, after{};
+        test::require(::lstat(path.c_str(), &before) == 0, "active socket fixture missing");
+        bool refused{};
+        try {
+            moex::connector_host::CommandSocket replacement(path);
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        test::require(refused && ::lstat(path.c_str(), &after) == 0 && before.st_dev == after.st_dev &&
+                          before.st_ino == after.st_ino,
+                      "command startup replaced an active owner's socket");
+    });
     scenario("SIGHUP", [&] {
         const auto log = root / "hup.ndjson";
         Child owner(run_arguments(executable, fixture, log, "cli_hup"), root / "hup.err");
