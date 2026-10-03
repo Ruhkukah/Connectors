@@ -58,6 +58,7 @@ namespace cg = moex::plaza2::cgate;
 constexpr std::uint16_t kDefaultDtcPort = 11200;
 constexpr std::uint32_t kDefaultSymbolId = 1;
 constexpr std::uint32_t kDefaultStartupWaitMs = 10000;
+constexpr std::string_view kDefaultInstanceId = "moex_connector_dtc";
 constexpr std::string_view kDefaultDtcUsernameEnv = "MOEX_PLAZA_DTC_USERNAME";
 constexpr std::string_view kDefaultDtcPasswordEnv = "MOEX_PLAZA_DTC_PASSWORD";
 
@@ -101,6 +102,7 @@ TEST-only, strict read-only ConnectorHost market-data runner.
 Optional operator bindings: --dtc-underlying-board ASTS_SECBOARD --dtc-currency CODE
                             (legacy --dtc-board is an alias for the raw underlying board only)
 DTC:       --no-dtc (observe the streams without a DTC listener)
+           --instance-id NAME (default moex_connector_dtc)
            --dtc-port N (default 11200, loopback only)
            --dtc-symbol-id N (default 1)
            --startup-wait-ms N (default 10000, maximum 60000)
@@ -118,10 +120,12 @@ surface, exposes no orders/accounts, and never authorizes or submits orders.
 Missing authoritative live metadata leaves DTC 506 unavailable (509) and
 revokes DTC source authority on the next owner poll. No economics or clock
 semantics are inferred. See operator_help() for ConnectorHost options.
+Keep this runner stopped during certification, which declares one connection.
 )";
 
 Options parse_options(int argc, char** argv) {
     Options out;
+    bool instance_id_given = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg(argv[i]);
         const auto value = [&](std::string_view option) {
@@ -129,7 +133,11 @@ Options parse_options(int argc, char** argv) {
                 throw std::invalid_argument(std::string(option) + " requires a value");
             return std::string_view(argv[i]);
         };
-        if (arg == "--no-dtc") {
+        if (arg == "--instance-id") {
+            instance_id_given = true;
+            out.host_arguments.push_back(arg);
+            out.host_arguments.push_back(value(arg));
+        } else if (arg == "--no-dtc") {
             if (out.no_dtc)
                 throw std::invalid_argument("duplicate --no-dtc");
             out.no_dtc = true;
@@ -184,6 +192,10 @@ Options parse_options(int argc, char** argv) {
     };
     if (!dedicated_dtc_environment_name(out.username_env) || !dedicated_dtc_environment_name(out.password_env))
         throw std::invalid_argument("DTC credential environment names must use the MOEX_PLAZA_DTC_* namespace");
+    if (!instance_id_given) {
+        out.host_arguments.push_back("--instance-id");
+        out.host_arguments.push_back(kDefaultInstanceId);
+    }
     return out;
 }
 
