@@ -120,6 +120,104 @@ std::string exchange_message_fields(const plaza2::private_state::SystemMessageSn
            ",\"status\":" + std::to_string(message.status) + ",\"text\":" + json_string(message.text) +
            ",\"message_body\":" + json_string(message.message_body) + "}";
 }
+std::string state_fields(std::uint32_t state) {
+    constexpr std::array names{"CLOSED", "ERROR", "OPENING", "ACTIVE"};
+    return "{\"state\":" + std::to_string(state) +
+           ",\"name\":" + json_string(state < names.size() ? names[state] : "UNKNOWN") + "}";
+}
+std::string_view operation_name(tr::Plaza2SessionOperation operation) {
+    switch (operation) {
+    case tr::Plaza2SessionOperation::Stopped:
+        return "Stopped";
+    case tr::Plaza2SessionOperation::Starting:
+        return "Starting";
+    case tr::Plaza2SessionOperation::Running:
+        return "Running";
+    case tr::Plaza2SessionOperation::Recovering:
+        return "Recovering";
+    case tr::Plaza2SessionOperation::Failed:
+        return "Failed";
+    }
+    return "Unknown";
+}
+std::string error_fields(const cg::Plaza2Error& error) {
+    return "{\"code\":" + std::to_string(static_cast<unsigned>(error.code)) +
+           ",\"incompatible_scheme\":" + (error.code == cg::Plaza2ErrorCode::IncompatibleScheme ? "true" : "false") +
+           ",\"runtime_code\":" + std::to_string(error.runtime_code) + ",\"message\":" + json_string(error.message) +
+           "}";
+}
+std::string transport_fields(const tr::CgateSession& session, const tr::CgateSessionConfig& config) {
+    const auto health = session.runtime_health();
+    const auto& recovery = session.recovery_status();
+    const auto streams = session.private_state().stream_health();
+    std::string result = "{\"valid\":" + std::string(health.valid ? "true" : "false") +
+                         ",\"connection\":" + state_fields(health.connection) +
+                         ",\"publisher\":" + state_fields(health.publisher) + ",\"listeners\":[";
+    bool first = true;
+    const auto listener = [&](gen::StreamCode code, std::uint32_t state) {
+        if (!first)
+            result += ',';
+        first = false;
+        const auto projected =
+            std::find_if(streams.begin(), streams.end(), [&](const auto& row) { return row.stream_code == code; });
+        const bool aggr = code == gen::StreamCode::kFortsAggrRepl;
+        const bool reply = code == cg::kNoStreamCode;
+        const bool online = aggr    ? session.aggr_online()
+                            : reply ? state == 3
+                                    : projected != streams.end() && projected->online;
+        const bool complete = aggr    ? session.aggr_snapshot_complete()
+                              : reply ? state == 3
+                                      : projected != streams.end() && projected->snapshot_complete;
+        result += "{\"stream\":" + json_string(stream_name(code)) + ",\"native\":" + state_fields(state) +
+                  ",\"online\":" + (online ? "true" : "false") +
+                  ",\"snapshot_complete\":" + (complete ? "true" : "false") +
+                  ",\"error\":" + error_fields(session.listener_error(code)) + "}";
+    };
+    const auto private_listener = [&](const auto& stream) {
+        const auto found = std::find(health.private_streams.begin(),
+                                     health.private_streams.begin() + health.private_count, stream.stream_code);
+        listener(stream.stream_code, found == health.private_streams.begin() + health.private_count
+                                         ? 0
+                                         : health.private_states[found - health.private_streams.begin()]);
+    };
+    for (const auto& stream : config.private_streams)
+        private_listener(stream);
+    for (const auto& stream : config.status_streams)
+        private_listener(stream);
+    if (!config.p2mqreply_settings.empty())
+        listener(cg::kNoStreamCode, health.reply);
+    if (!config.aggr20_stream.settings.empty())
+        listener(config.aggr20_stream.stream_code, health.aggr);
+    if (!config.public_deals_stream.settings.empty())
+        listener(config.public_deals_stream.stream_code, health.public_deals);
+    return result + "],\"recovery\":{\"operation\":" + json_string(operation_name(recovery.operation)) +
+           ",\"wait_state\":" + json_string(tr::plaza2_recovery_wait_state_name(recovery.wait_state)) +
+           ",\"service\":" + json_string(recovery.involved_service) +
+           ",\"generation\":" + std::to_string(recovery.generation) +
+           ",\"attempts\":" + std::to_string(recovery.attempts) +
+           ",\"transitions\":" + std::to_string(recovery.transitions) +
+           ",\"wait_duration_ms\":" + std::to_string(recovery.wait_duration_ms) +
+           ",\"alert_active\":" + (recovery.alert_active ? "true" : "false") +
+           ",\"cause\":" + error_fields(recovery.cause) + "}}";
+}
+std::string configured_risk_fields(const TradingHostConfig& config) {
+    const auto& risk = config.orders.risk;
+    std::string result = "{\"max_quantity\":" + std::to_string(risk.max_quantity) +
+                         ",\"max_open_orders\":" + std::to_string(risk.max_open_orders) +
+                         ",\"max_notional_scaled\":" + std::to_string(risk.max_notional_scaled) + ",\"instruments\":[";
+    bool first = true;
+    for (const auto isin : config.isin_ids) {
+        if (!first)
+            result += ',';
+        first = false;
+        const auto notional = risk.max_notional_by_isin.find(isin), position = risk.max_position_by_isin.find(isin);
+        result += "{\"isin_id\":" + std::to_string(isin) + ",\"max_quote_notional_scaled\":" +
+                  (notional == risk.max_notional_by_isin.end() ? "null" : std::to_string(notional->second)) +
+                  ",\"max_position\":" +
+                  (position == risk.max_position_by_isin.end() ? "null" : std::to_string(position->second)) + "}";
+    }
+    return result + "]}";
+}
 } // namespace
 CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     : config_(std::move(config)), owner_(std::this_thread::get_id()),
@@ -200,11 +298,15 @@ tr::CgateSessionConfig CgateTradingHost::session_config() {
     return result;
 }
 void CgateTradingHost::log_event(std::string_view kind, std::string_view fields) noexcept {
-    if (!log_error_.empty())
-        return; // Do not grow the buffer or retry its failed writer on every callback.
     try {
-        journal_.append(kind, kind == "cgate_state" || kind == "cgate_operation" ? named_transport_fields(fields)
-                                                                                 : std::string(fields));
+        const auto named = kind == "cgate_state" || kind == "cgate_operation" || kind == "listener_recovery"
+                               ? named_transport_fields(fields)
+                               : std::string(fields);
+        if (kind == "cgate_state" || kind == "recovery" || kind == "listener_recovery")
+            std::cerr << kind << ": " << named << '\n';
+        if (!log_error_.empty())
+            return; // Never buffer ordinary traffic after a failed writer.
+        journal_.append(kind, named);
         if (kind == "cgate_state" && !stopped_)
             observe_link(session_.runtime_health());
     } catch (const std::exception& error) {
@@ -377,31 +479,16 @@ cg::Plaza2Error CgateTradingHost::start() {
     auto router = masked_settings(session.connection_settings.substr(0, session.connection_settings.find(';')));
     if (router.starts_with("p2tcp://"))
         router.erase(0, 8);
-    std::string instrument_limits;
-    for (const auto isin : config_.isin_ids) {
-        if (!instrument_limits.empty())
-            instrument_limits += ',';
-        const auto& risk = config_.orders.risk;
-        const auto notional = risk.max_notional_by_isin.find(isin), position = risk.max_position_by_isin.find(isin);
-        instrument_limits += "{\"isin_id\":" + std::to_string(isin) + ",\"max_quote_notional_scaled\":" +
-                             (notional == risk.max_notional_by_isin.end() ? "null" : std::to_string(notional->second)) +
-                             ",\"max_position\":" +
-                             (position == risk.max_position_by_isin.end() ? "null" : std::to_string(position->second)) +
-                             "}";
-    }
+    auto risk = configured_risk_fields(config_);
+    risk.insert(risk.size() - 1, ",\"kill_switch\":" + std::string(config_.orders.risk.kill_switch ? "true" : "false"));
     log_event(
         "startup",
         "{\"product\":\"MoexConnector\",\"version\":\"1.0.0\",\"instance_id\":" + json_string(session.publisher_name) +
             ",\"source_git_sha\":" + json_string(config_.source_git_sha) +
             ",\"binary_sha256\":" + json_string(config_.binary_sha256) + ",\"router\":" + json_string(router) +
             ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
-            ",\"allow_orders\":" + (session.allow_orders ? "true" : "false") +
-            ",\"risk\":{\"max_quantity\":" + std::to_string(config_.orders.risk.max_quantity) +
-            ",\"max_open_orders\":" + std::to_string(config_.orders.risk.max_open_orders) +
-            ",\"max_notional_scaled\":" + std::to_string(config_.orders.risk.max_notional_scaled) +
-            ",\"kill_switch\":" + (config_.orders.risk.kill_switch ? "true" : "false") + ",\"instruments\":[" +
-            instrument_limits + "]},\"urls\":[" + urls +
-            "],\"env_settings\":" + json_string(masked_settings(session.runtime.env_open_settings)) +
+            ",\"allow_orders\":" + (session.allow_orders ? "true" : "false") + ",\"risk\":" + risk + ",\"urls\":[" +
+            urls + "],\"env_settings\":" + json_string(masked_settings(session.runtime.env_open_settings)) +
             ",\"clock_offset_us\":" + (config_.clock_offset_us ? std::to_string(*config_.clock_offset_us) : "null") +
             ",\"clock_offset_source\":" +
             json_string(config_.clock_offset_us ? "operator measurement" : "unavailable") + "}");
@@ -607,7 +694,10 @@ std::string CgateTradingHost::status() const {
         ",\"sess_id\":" + std::to_string(current_session_id(data)) + ",\"log_error\":" + json_string(log_error_) +
         ",\"cancel_only\":" + (log_error_.empty() ? "false" : "true") +
         ",\"operator_action_required\":" + (orders_->operator_action_required() ? "true" : "false") +
-        ",\"instruments\":[";
+        ",\"transport\":" + transport_fields(session_, config_.session) +
+        ",\"configuration\":{\"allow_orders\":" + (config_.session.allow_orders ? "true" : "false") +
+        ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
+        ",\"risk\":" + configured_risk_fields(config_) + "}" + ",\"instruments\":[";
     bool first = true;
     for (const auto isin : config_.isin_ids) {
         if (!first)

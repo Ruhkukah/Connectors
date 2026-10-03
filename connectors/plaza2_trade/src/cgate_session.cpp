@@ -295,11 +295,14 @@ struct CgateSession::Impl {
     }
     void waiting(Plaza2Error error, Plaza2RecoveryWaitState state, std::string service) {
         last_error = error.message;
+        const bool changed = recovery.operation != Plaza2SessionOperation::Recovering || recovery.wait_state != state ||
+                             recovery.involved_service != service;
         if (recovery.operation != Plaza2SessionOperation::Recovering) {
             recovery.wait_start_time_ns = ns(now());
             ++recovery.transitions;
-            log("recovery", "{\"state\":\"" + std::string(plaza2_recovery_wait_state_name(state)) + "\"}");
         }
+        if (changed)
+            log("recovery", "{\"state\":\"" + std::string(plaza2_recovery_wait_state_name(state)) + "\"}");
         recovery.operation = Plaza2SessionOperation::Recovering;
         recovery.wait_state = state;
         recovery.cause = std::move(error);
@@ -434,9 +437,9 @@ struct CgateSession::Impl {
             const bool auction_day_add = row.current_status == 6 &&
                                          command.command_kind == Plaza2TradeCommandKind::AddOrder &&
                                          command.order_type == Plaza2TradeOrderType::Limit;
-            return row.kind == plaza2::private_state::InstrumentKind::kFuture && !row.is_spread && row.isin_id == command.isin_id &&
-                   row.sess_id == day && row.current_session_member && row.has_current_status &&
-                   (row.current_status == 1 || auction_day_add);
+            return row.kind == plaza2::private_state::InstrumentKind::kFuture && !row.is_spread &&
+                   row.isin_id == command.isin_id && row.sess_id == day && row.current_session_member &&
+                   row.has_current_status && (row.current_status == 1 || auction_day_add);
         });
     }
     bool stream_online(StreamCode code) const {
@@ -521,7 +524,10 @@ struct CgateSession::Impl {
         static_cast<void>(listener.handler->on_plaza2_listener_event(
             {.kind = cg::Plaza2ListenerEventKind::Close, .stream_code = listener.config.stream_code}));
         close_listener(listener);
-        listener.object.clear_callback_error();
+        // A pinned schema failure must remain visible until the connection
+        // resets it; this listener deliberately does not retry that schema.
+        if (!listener.scheme_incompatible)
+            listener.object.clear_callback_error();
         listener.retry = now() + config.recovery_retry_interval;
     }
     void supervise_listener(Listener& listener) {
@@ -837,6 +843,12 @@ const Plaza2RecoveryStatus& CgateSession::recovery_status() const noexcept {
 }
 Plaza2TransportHealth CgateSession::runtime_health() const {
     return impl_->health();
+}
+const cg::Plaza2Error& CgateSession::listener_error(StreamCode stream) const noexcept {
+    static const cg::Plaza2Error none;
+    const auto found = std::find_if(impl_->listeners.begin(), impl_->listeners.end(),
+                                    [&](const auto& listener) { return listener.config.stream_code == stream; });
+    return found == impl_->listeners.end() ? none : found->object.last_callback_error();
 }
 const cg::Plaza2RuntimeProbeReport& CgateSession::probe_report() const noexcept {
     return impl_->probe;

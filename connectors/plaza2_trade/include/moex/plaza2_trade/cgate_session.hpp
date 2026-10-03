@@ -160,6 +160,7 @@ class CgateSession final {
     [[nodiscard]] bool recovering() const noexcept;
     [[nodiscard]] const Plaza2RecoveryStatus& recovery_status() const noexcept;
     [[nodiscard]] Plaza2TransportHealth runtime_health() const;
+    [[nodiscard]] const plaza2::cgate::Plaza2Error& listener_error(plaza2::generated::StreamCode stream) const noexcept;
 
     [[nodiscard]] const plaza2::cgate::Plaza2RuntimeProbeReport& probe_report() const noexcept;
     [[nodiscard]] const plaza2::private_state::Plaza2PrivateStateProjector& private_state() const noexcept;
