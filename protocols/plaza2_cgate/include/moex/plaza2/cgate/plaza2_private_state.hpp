@@ -290,6 +290,8 @@ struct OwnOrderSnapshot {
     // A snapshot is never a cross-stream merge: the source flags identify the
     // surface that supplied this row.
     bool multileg{false};
+    // Physical replication row currently supplying this independent surface.
+    std::int64_t repl_id{0};
     std::int64_t public_order_id{0};
     std::int64_t private_order_id{0};
     std::int32_t sess_id{0};

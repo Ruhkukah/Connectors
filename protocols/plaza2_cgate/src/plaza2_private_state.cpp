@@ -917,7 +917,7 @@ struct Plaza2PrivateStateProjector::Impl {
                 const auto old_key = previous->second;
                 const bool latest = rows.latest_key == old_key;
                 erase_source_row(table_code, old_key);
-                erase_owned_row(table_code, old_key, latest);
+                erase_owned_row(table_code, old_key, latest, true, repl_id);
             }
         }
         auto& rows = active_source_revisions()[table_code];
@@ -1403,7 +1403,8 @@ struct Plaza2PrivateStateProjector::Impl {
         }
     }
 
-    void erase_owned_row(TableCode table, std::string_view key, bool latest_marker, bool tombstone = true) {
+    void erase_owned_row(TableCode table, std::string_view key, bool latest_marker, bool tombstone = true,
+                         std::int64_t repl_id = 0) {
         const auto integer = static_cast<std::int32_t>(key_number(key));
         const auto definition_present = [&](std::string_view isin) {
             return has_source_row(TableCode::kFortsRefdataReplFutInstruments, isin) ||
@@ -1428,21 +1429,27 @@ struct Plaza2PrivateStateProjector::Impl {
                                                                    : current ? OrderSurface::kUserOrderbookCurrentDay
                                                                              : OrderSurface::kUserOrderbook),
                                                     !native_commit_phase);
+            // TRADE retirement remains history loss even when a newer alias
+            // supplies the view. Periodic USERORDERBOOK removal is replacement.
+            if (trade) {
+                mark_trade_history_truncated(table == kFortsTradeReplOrdersLog);
+                staged.deleted_rows |= tombstone;
+            }
             if (found == orders.end())
                 break;
             auto& order = found->second;
+            // Exchange aliases can share a projected identity. A superseded
+            // physical row must not remove the newer row supplying that view.
+            if (order.repl_id != repl_id)
+                break;
             if (trade) {
                 order.from_trade_repl = false;
                 order.trade_repl_commit_sequence = 0;
-                mark_trade_history_truncated(table == kFortsTradeReplOrdersLog);
             } else if (current)
                 order.from_current_day = false;
             else
                 order.from_user_book = false;
             staged.order_keys.push_back(found->first);
-            // USERORDERBOOK rows are a periodic snapshot, so replacement or
-            // deletion does not invalidate the independent TRADE history.
-            staged.deleted_rows |= tombstone && trade;
             // Keep a source-empty row indexed until commit compacts its view.
             // The last snapshot may also be deleted in this transaction, so
             // its canonical key must remain resolvable during the swap.
@@ -1652,9 +1659,10 @@ struct Plaza2PrivateStateProjector::Impl {
                         continue;
                     }
                     const auto key = it->first;
+                    const auto repl_id = it->second.repl_id;
                     const bool last = source->second.size() == 1;
                     ++it;
-                    erase_owned_row(table_code, key, false, false);
+                    erase_owned_row(table_code, key, false, false, repl_id);
                     erase_source_row(table_code, key);
                     if (last)
                         break; // Erasing the last row also erased its table.
@@ -1799,7 +1807,15 @@ struct Plaza2PrivateStateProjector::Impl {
                     ++it;
                     continue;
                 }
-                const auto key = revision_key(it->second);
+                auto key = revision_key(it->second);
+                if (it->second.repl_id) {
+                    const auto source = active_source_revisions().find(table_code);
+                    if (source != active_source_revisions().end()) {
+                        const auto physical = source->second.replication_keys.find(it->second.repl_id);
+                        if (physical != source->second.replication_keys.end())
+                            key = physical->second;
+                    }
+                }
                 if (!source_row_is_stale(table_code, key, clear_revision)) {
                     ++it;
                     continue;
@@ -1821,6 +1837,24 @@ struct Plaza2PrivateStateProjector::Impl {
                     it = orders.erase(it);
                 } else {
                     ++it;
+                }
+            }
+            // Remove obsolete alias rows too; their revision must not survive
+            // a purge merely because the latest merged view was retained.
+            const auto remaining = active_source_revisions().find(table_code);
+            if (remaining != active_source_revisions().end()) {
+                for (auto it = remaining->second.begin(); it != remaining->second.end();) {
+                    if (clear_revision != std::numeric_limits<std::int64_t>::max() &&
+                        it->second.revision >= clear_revision) {
+                        ++it;
+                        continue;
+                    }
+                    const auto key = it->first;
+                    const bool last = remaining->second.size() == 1;
+                    ++it;
+                    erase_source_row(table_code, key);
+                    if (last)
+                        break;
                 }
             }
         };
@@ -2271,6 +2305,8 @@ struct Plaza2PrivateStateProjector::Impl {
         auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase && previous_id == 0,
                                            !native_commit_phase);
         record_order_change(order, std::move(resolved));
+        order.repl_id = row.i64(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogReplId
+                                         : FieldCode::kFortsTradeReplOrdersLogReplId);
         order.sess_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogSessId
                                          : FieldCode::kFortsTradeReplOrdersLogSessId);
         order.isin_id = row.i32(multileg ? FieldCode::kFortsTradeReplMultilegOrdersLogIsinId
@@ -2427,6 +2463,11 @@ struct Plaza2PrivateStateProjector::Impl {
         OrderKey resolved;
         auto& order = find_or_create_order(orders, key, &resolved, true, !native_commit_phase, !native_commit_phase);
         record_order_change(order, std::move(resolved));
+        order.repl_id =
+            row.i64(multileg ? (current_day ? FieldCode::kFortsUserorderbookReplMultilegOrdersCurrentdayReplId
+                                            : FieldCode::kFortsUserorderbookReplMultilegOrdersReplId)
+                             : (current_day ? FieldCode::kFortsUserorderbookReplOrdersCurrentdayReplId
+                                            : FieldCode::kFortsUserorderbookReplOrdersReplId));
 
         order.sess_id = row.i32(sess_field);
         order.isin_id = row.i32(isin_field);
@@ -2806,7 +2847,7 @@ struct Plaza2PrivateStateProjector::Impl {
                 key = row_revision_key(event.table_code, row); // Legacy synthetic rows have no replID.
             const bool latest_marker = table->second.latest_key == key;
             erase_source_row(event.table_code, key);
-            erase_owned_row(event.table_code, key, latest_marker);
+            erase_owned_row(event.table_code, key, latest_marker, true, repl_id);
             return;
         }
         auto key = row_revision_key(event.table_code, row);

@@ -2,6 +2,7 @@
 #include "private_uob_delta_regression.hpp"
 #include "private_futures_scope_regression.hpp"
 #include "private_userbook_replacement_regression.hpp"
+#include "private_superseded_order_deletion_regression.hpp"
 #include "private_instrument_update_regression.hpp"
 #include "private_refdata_update_regression.hpp"
 #include <algorithm>
@@ -1033,6 +1034,7 @@ int main() {
     try {
         moex::plaza2::test::private_futures_scope_regression();
         moex::plaza2::test::private_userbook_replacement_regression();
+        moex::plaza2::test::private_superseded_order_deletion_regression();
         moex::plaza2::test::private_userbook_refresh_regression();
         private_instrument_update_regression();
         private_refdata_update_regression();
