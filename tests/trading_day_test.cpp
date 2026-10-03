@@ -118,6 +118,7 @@ int main(int argc, char** argv) {
         config.orders.client_code = input.client_code;
         config.orders.login_from = "owner-login";
         config.orders.ext_id_range_configured = true;
+        config.orders.command_rate_configured = true;
         config.orders.max_commands_per_second = 5;
         config.session.publisher_messages_per_second = 5;
         config.isin_ids = {1001};

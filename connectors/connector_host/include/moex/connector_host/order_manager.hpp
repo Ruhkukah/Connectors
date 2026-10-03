@@ -75,6 +75,7 @@ struct OrderManagerConfig {
     std::int32_t ext_id_begin{1}, ext_id_end{INT32_MAX - 1};
     bool ext_id_range_configured{};
     std::uint32_t max_commands_per_second{30};
+    bool command_rate_configured{};
     std::chrono::milliseconds reply_timeout{60000};
     std::chrono::seconds absence_margin{60};
     // Only definitive business rejections spend this budget.
@@ -83,6 +84,14 @@ struct OrderManagerConfig {
     RiskLimits risk;
     std::int32_t next_ext_id{1};
     std::uint32_t next_user_id{1};
+};
+
+// POS.info identifies the calendar snapshot, not the last processed fill.
+// Catch-up requires this committed own POS row's exact last deal and counters.
+struct PositionProof {
+    std::uint64_t trade_lifenum{};
+    std::int64_t calendar_revision{}, last_deal_id{}, bought{}, sold{}, day_open_bought{}, day_open_sold{};
+    bool operator==(const PositionProof&) const = default;
 };
 
 // The owner loop calls every method on one thread. Commands remain queued across
@@ -98,8 +107,10 @@ class OrderManager {
     // nullopt means POS authority is unavailable; an authoritative absent row is
     // zero.
     using Position = std::function<std::optional<std::int64_t>(std::int32_t)>;
+    using PositionAnchor = std::function<std::optional<PositionProof>(std::int32_t)>;
 
-    OrderManager(OrderManagerConfig config, Send send, Ready ready, Terms terms, Log log = {}, Position position = {});
+    OrderManager(OrderManagerConfig config, Send send, Ready ready, Terms terms, Log log = {}, Position position = {},
+                 PositionAnchor position_anchor = {});
     [[nodiscard]] std::string place(OrderRequest request);
     [[nodiscard]] std::string cancel(std::string_view client_order_id);
     [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity);
@@ -165,6 +176,10 @@ class OrderManager {
             low += value;
             high += low < previous;
         }
+        void add(const ExposureSum& value) {
+            add(value.low);
+            high += value.high;
+        }
         void subtract(std::uint64_t value) {
             high -= low < value;
             low -= value;
@@ -175,7 +190,19 @@ class OrderManager {
     };
     struct InstrumentExposure {
         ExposureSum notional, buys, sells;
+        ExposureSum filled_buys, filled_sells, covered_buys, covered_sells, calendar_buys, calendar_sells;
+        std::optional<PositionProof> position_proof;
+        std::optional<std::int64_t> position_last_revision;
+        bool fills_dirty{}, fill_proof_valid{true}, fill_conflict{};
     };
+    using DealKey = std::tuple<std::int64_t, std::int32_t, bool>; // deal ID, session, buy
+    struct DealRecord {
+        std::int32_t isin_id{};
+        std::uint64_t trade_lifenum{};
+        std::int64_t repl_rev{}, amount{};
+        bool credited{}, conflicted{};
+    };
+    using PositionFillKey = std::tuple<std::int32_t, std::uint64_t, std::int64_t, DealKey>;
     struct MoveReservation {
         std::uint64_t price_units{};
         std::int32_t quantity{};
@@ -191,7 +218,11 @@ class OrderManager {
         bool cancel_requested{}, execution_baseline_known{}, transport_retry_warned{};
     };
     [[nodiscard]] std::string check_risk(const OrderRequest& request, std::size_t extra_orders,
-                                         std::string_view exclude_key = {}) const;
+                                         std::string_view exclude_key = {});
+    [[nodiscard]] static PositionFillKey position_fill_key(const DealKey& key, const DealRecord& record);
+    void reserve_position_fill(const DealKey& key, DealRecord& record,
+                               const plaza2::private_state::OwnTradeSnapshot& row, bool first);
+    [[nodiscard]] bool reconcile_position_fills(std::int32_t isin, const PositionProof& proof);
     [[nodiscard]] Command encode(plaza2_trade::Plaza2TradeCommandRequest request, std::string key);
     [[nodiscard]] std::uint32_t reserve_user_id();
     [[nodiscard]] bool has_outstanding_command(std::string_view key, plaza2_trade::Plaza2TradeCommandKind kind) const;
@@ -222,6 +253,7 @@ class OrderManager {
     Terms terms_;
     Log log_;
     Position position_;
+    PositionAnchor position_anchor_;
     plaza2::cgate::Plaza2PublisherRateGate rate_;
     std::map<std::string, ManagedOrder> orders_;
     std::unordered_map<std::string, Exposure> exposures_;
@@ -237,7 +269,8 @@ class OrderManager {
     std::int32_t current_session_{}, previous_session_{};
     std::unordered_map<std::int64_t, std::string> order_index_;
     std::unordered_map<std::int32_t, std::string> ext_index_;
-    std::set<std::tuple<std::int32_t, std::int64_t, bool>> deals_;
+    std::map<DealKey, DealRecord> deals_;
+    std::map<PositionFillKey, std::int64_t> position_fills_;
     std::unordered_map<std::int64_t, std::int64_t> filled_by_id_;
     std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnOrderSnapshot> deferred_orders_;
     std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnTradeSnapshot> deferred_trades_;

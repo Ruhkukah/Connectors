@@ -351,6 +351,10 @@ struct OwnTradeSnapshot {
     std::string login_sell;
     std::int64_t moment{0};
     std::uint64_t moment_ns{0};
+    // Committed user_deal revision within the named TRADE LifeNum. Zero
+    // denotes unavailable provenance; revisions cannot be compared across lives.
+    std::int64_t repl_rev{0};
+    std::uint64_t trade_lifenum{0};
 };
 
 inline constexpr std::size_t kPrivateRowChangeCapacity = 8192;

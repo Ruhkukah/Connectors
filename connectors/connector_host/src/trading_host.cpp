@@ -290,6 +290,8 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     if (config_.isin_ids.empty())
         throw std::invalid_argument("at least one trading instrument is required");
     if (config_.session.allow_orders) {
+        if (!config_.orders.command_rate_configured)
+            throw std::invalid_argument("--allow-orders requires explicit --max-commands-per-second");
         if (config_.orders.login_from.empty() || !config_.orders.ext_id_range_configured)
             throw std::invalid_argument("--allow-orders requires explicit --login-env and --ext-id-range");
         const auto& risk = config_.orders.risk;
@@ -341,6 +343,27 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
             const auto* row = data.find_position(config_.orders.broker_code + config_.orders.client_code, isin,
                                                  config_.orders.client_code.empty() ? 1 : 2);
             return row ? row->xpos : 0;
+        },
+        [this](auto isin) -> std::optional<PositionProof> {
+            const auto& data = session_.private_state();
+            const auto streams = data.stream_health();
+            const auto pos = std::find_if(streams.begin(), streams.end(), [](const auto& row) {
+                return row.stream_code == gen::StreamCode::kFortsPosRepl;
+            });
+            const auto life = data.stream_lifenum(gen::StreamCode::kFortsTradeRepl);
+            if (pos == streams.end() || !pos->online || !pos->snapshot_complete || !life ||
+                pos->last_trades_lifenum <= 0 || pos->last_trades_rev < 0 ||
+                static_cast<std::uint64_t>(pos->last_trades_lifenum) != *life)
+                return std::nullopt;
+            const auto* row = data.find_position(config_.orders.broker_code + config_.orders.client_code, isin,
+                                                 config_.orders.client_code.empty() ? 1 : 2);
+            return PositionProof{.trade_lifenum = *life,
+                                 .calendar_revision = pos->last_trades_rev,
+                                 .last_deal_id = row ? row->last_deal_id : 0,
+                                 .bought = row ? row->xbuys_qty : 0,
+                                 .sold = row ? row->xsells_qty : 0,
+                                 .day_open_bought = row ? row->xday_open_buys_qty : 0,
+                                 .day_open_sold = row ? row->xday_open_sells_qty : 0};
         });
 }
 CgateTradingHost::~CgateTradingHost() noexcept {

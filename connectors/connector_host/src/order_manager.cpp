@@ -69,9 +69,11 @@ bool terminal(OrderState state) noexcept {
     return state == OrderState::Filled || state == OrderState::Cancelled || state == OrderState::Rejected;
 }
 
-OrderManager::OrderManager(OrderManagerConfig config, Send send, Ready ready, Terms terms, Log log, Position position)
+OrderManager::OrderManager(OrderManagerConfig config, Send send, Ready ready, Terms terms, Log log, Position position,
+                           PositionAnchor position_anchor)
     : config_(std::move(config)), send_(std::move(send)), ready_(std::move(ready)), terms_(std::move(terms)),
-      log_(std::move(log)), position_(std::move(position)), rate_(config_.max_commands_per_second) {
+      log_(std::move(log)), position_(std::move(position)), position_anchor_(std::move(position_anchor)),
+      rate_(config_.max_commands_per_second) {
     config_.next_ext_id = std::max(config_.next_ext_id, config_.ext_id_begin);
     if (!rate_.valid() || !send_ || !ready_ || !terms_ || config_.reply_timeout.count() <= 0 ||
         config_.absence_margin.count() < 0 || config_.risk.max_quantity <= 0 || config_.risk.max_notional_scaled <= 0 ||
@@ -175,6 +177,152 @@ void OrderManager::subtract_charge(const Exposure& charge) {
         instrument.notional.subtract(charge.notional);
         (charge.side == tr::Plaza2TradeSide::Buy ? instrument.buys : instrument.sells).subtract(charge.quantity);
     }
+}
+OrderManager::PositionFillKey OrderManager::position_fill_key(const DealKey& key, const DealRecord& record) {
+    return {record.isin_id, record.trade_lifenum, record.repl_rev, key};
+}
+void OrderManager::reserve_position_fill(const DealKey& key, DealRecord& record,
+                                         const plaza2::private_state::OwnTradeSnapshot& row, bool first) {
+    if (!config_.risk.max_position_by_isin.contains(row.isin_id))
+        return;
+    auto& instrument = instrument_exposure_[row.isin_id];
+    if (record.isin_id != row.isin_id || record.amount != row.amount) {
+        instrument.fill_conflict = true;
+        instrument_exposure_[record.isin_id].fill_conflict = true;
+        return;
+    }
+    if (first) {
+        position_fills_.emplace(position_fill_key(key, record), record.amount);
+        (std::get<2>(key) ? instrument.filled_buys : instrument.filled_sells)
+            .add(static_cast<std::uint64_t>(record.amount));
+        instrument.fills_dirty |=
+            !instrument.position_proof || record.repl_rev <= 0 ||
+            record.trade_lifenum != instrument.position_proof->trade_lifenum ||
+            record.repl_rev <= instrument.position_proof->calendar_revision ||
+            std::get<0>(key) == instrument.position_proof->last_deal_id ||
+            (instrument.position_last_revision && record.repl_rev <= *instrument.position_last_revision);
+    } else if (row.trade_lifenum > 0 && row.repl_rev > 0 &&
+               (record.trade_lifenum != row.trade_lifenum || record.repl_rev <= 0)) {
+        // Replay can repair a missing/new-epoch source proof without crediting
+        // the logical execution or reserving its quantity a second time.
+        const auto pending = position_fills_.find(position_fill_key(key, record));
+        const bool reserved = pending != position_fills_.end();
+        if (reserved)
+            position_fills_.erase(pending);
+        record.trade_lifenum = row.trade_lifenum;
+        record.repl_rev = row.repl_rev;
+        if (reserved)
+            position_fills_.emplace(position_fill_key(key, record), record.amount);
+        instrument.fills_dirty = true;
+    }
+}
+bool OrderManager::reconcile_position_fills(std::int32_t isin, const PositionProof& proof) {
+    auto& instrument = instrument_exposure_[isin];
+    if (instrument.fill_conflict)
+        return false;
+    if (!instrument.fills_dirty && instrument.position_proof && *instrument.position_proof == proof)
+        return instrument.fill_proof_valid;
+    if (!proof.trade_lifenum || proof.calendar_revision < 0 || proof.bought < proof.day_open_bought ||
+        proof.sold < proof.day_open_sold || proof.day_open_bought < 0 || proof.day_open_sold < 0)
+        return false;
+    const bool same_life = instrument.position_proof && instrument.position_proof->trade_lifenum == proof.trade_lifenum;
+    const bool same_calendar = same_life && instrument.position_proof->calendar_revision == proof.calendar_revision;
+    if (same_life && proof.calendar_revision < instrument.position_proof->calendar_revision)
+        return false;
+    if (same_calendar &&
+        (proof.bought < instrument.position_proof->bought || proof.sold < instrument.position_proof->sold ||
+         proof.day_open_bought < instrument.position_proof->day_open_bought ||
+         proof.day_open_sold < instrument.position_proof->day_open_sold ||
+         (instrument.position_last_revision && proof.last_deal_id <= 0)))
+        return false;
+    const auto previous_revision = same_calendar ? instrument.position_last_revision : std::nullopt;
+    if (!same_calendar) {
+        if (same_life) {
+            // Preserve quantities already proved in this trading epoch. A new
+            // info cutoff alone cannot spend the same day-open coverage twice.
+            instrument.calendar_buys.add(instrument.covered_buys);
+            instrument.calendar_sells.add(instrument.covered_sells);
+        } else {
+            instrument.calendar_buys = {};
+            instrument.calendar_sells = {};
+        }
+        instrument.covered_buys = {};
+        instrument.covered_sells = {};
+    }
+    instrument.position_proof = proof;
+    instrument.position_last_revision = previous_revision;
+    instrument.fills_dirty = false;
+    instrument.fill_proof_valid = true;
+    const auto first = PositionFillKey{isin, 0, INT64_MIN, {INT64_MIN, INT32_MIN, false}};
+    const auto finish = position_fills_.upper_bound({isin, UINT64_MAX, INT64_MAX, {INT64_MAX, INT32_MAX, true}});
+    auto start = position_fills_.lower_bound(first);
+    if (start != finish &&
+        (std::get<1>(start->first) != proof.trade_lifenum ||
+         std::get<1>(std::prev(finish)->first) != proof.trade_lifenum || std::get<2>(start->first) <= 0)) {
+        instrument.fill_proof_valid = false;
+        return false;
+    }
+    auto calendar_buys = instrument.calendar_buys;
+    auto calendar_sells = instrument.calendar_sells;
+    const auto calendar_end =
+        position_fills_.upper_bound({isin, proof.trade_lifenum, proof.calendar_revision, {INT64_MAX, INT32_MAX, true}});
+    for (auto it = start; it != calendar_end; ++it)
+        (std::get<2>(std::get<3>(it->first)) ? calendar_buys : calendar_sells)
+            .add(static_cast<std::uint64_t>(it->second));
+    if (instrument.calendar_buys.exceeds(static_cast<std::uint64_t>(proof.day_open_bought)) ||
+        instrument.calendar_sells.exceeds(static_cast<std::uint64_t>(proof.day_open_sold))) {
+        instrument.fill_proof_valid = false;
+        return false;
+    }
+    if (!calendar_buys.exceeds(static_cast<std::uint64_t>(proof.day_open_bought)) &&
+        !calendar_sells.exceeds(static_cast<std::uint64_t>(proof.day_open_sold))) {
+        while (start != calendar_end) {
+            (std::get<2>(std::get<3>(start->first)) ? instrument.filled_buys : instrument.filled_sells)
+                .subtract(static_cast<std::uint64_t>(start->second));
+            start = position_fills_.erase(start);
+        }
+        instrument.calendar_buys = calendar_buys;
+        instrument.calendar_sells = calendar_sells;
+    }
+    // Only committed day-open quantities can cover the calendar prefix.
+    // A later last-deal marker proves the separate post-calendar prefix.
+    start = calendar_end;
+    if (proof.last_deal_id <= 0)
+        return true;
+    std::optional<std::int64_t> last_revision;
+    for (auto it = deals_.lower_bound({proof.last_deal_id, INT32_MIN, false});
+         it != deals_.end() && std::get<0>(it->first) == proof.last_deal_id; ++it) {
+        const auto& record = it->second;
+        if (record.isin_id != isin || record.trade_lifenum != proof.trade_lifenum || record.repl_rev <= 0)
+            continue;
+        if (last_revision && *last_revision != record.repl_rev)
+            return true; // Ambiguous reused ID cannot establish a fill prefix.
+        last_revision = record.repl_rev;
+    }
+    if (previous_revision && last_revision && *last_revision < *previous_revision) {
+        instrument.fill_proof_valid = false;
+        return false;
+    }
+    if (!last_revision || *last_revision <= proof.calendar_revision)
+        return true; // A numerically greater or unknown deal ID is not proof.
+    instrument.position_last_revision = last_revision;
+    auto buys = instrument.covered_buys;
+    auto sells = instrument.covered_sells;
+    const auto covered_end =
+        position_fills_.upper_bound({isin, proof.trade_lifenum, *last_revision, {INT64_MAX, INT32_MAX, true}});
+    for (auto it = start; it != covered_end; ++it)
+        (std::get<2>(std::get<3>(it->first)) ? buys : sells).add(static_cast<std::uint64_t>(it->second));
+    if (buys.exceeds(static_cast<std::uint64_t>(proof.bought - proof.day_open_bought)) ||
+        sells.exceeds(static_cast<std::uint64_t>(proof.sold - proof.day_open_sold)))
+        return true;
+    while (start != covered_end) {
+        const auto quantity = static_cast<std::uint64_t>(start->second);
+        const auto buy = std::get<2>(std::get<3>(start->first));
+        (buy ? instrument.filled_buys : instrument.filled_sells).subtract(quantity);
+        (buy ? instrument.covered_buys : instrument.covered_sells).add(quantity);
+        start = position_fills_.erase(start);
+    }
+    return true;
 }
 bool OrderManager::has_uncertain_submission(std::int32_t session, std::int32_t isin, tr::Plaza2TradeSide side) const {
     for (const auto& [id, command] : pending_) {
@@ -381,8 +529,7 @@ bool OrderManager::operator_action_required() const noexcept {
     return !operator_orders_.empty();
 }
 
-std::string OrderManager::check_risk(const OrderRequest& request, std::size_t extra,
-                                     std::string_view exclude_key) const {
+std::string OrderManager::check_risk(const OrderRequest& request, std::size_t extra, std::string_view exclude_key) {
     if (config_.risk.kill_switch)
         return "kill switch enabled";
     if (!ready_(request.isin_id))
@@ -404,6 +551,19 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
         return "price outside exchange limits";
     if (price->units % terms->min_step->units != 0)
         return "price is not tick aligned";
+    std::optional<std::int64_t> position;
+    if (config_.risk.max_position_by_isin.contains(request.isin_id)) {
+        position = position_(request.isin_id);
+        if (!position)
+            return "current own POS authority unavailable";
+        if (position_anchor_) {
+            const auto proof = position_anchor_(request.isin_id);
+            if (!proof)
+                return "current own POS fill proof unavailable";
+            if (!reconcile_position_fills(request.isin_id, *proof))
+                return "own fill source epoch or quantity conflicts with POS proof";
+        }
+    }
     auto notional = notional_;
     auto instrument = instrument_exposure_.contains(request.isin_id) ? instrument_exposure_.at(request.isin_id)
                                                                      : InstrumentExposure{};
@@ -444,9 +604,6 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
         return "per-ISIN outstanding-order quote-notional exceeds configured limit";
     if (const auto limit = config_.risk.max_position_by_isin.find(request.isin_id);
         limit != config_.risk.max_position_by_isin.end()) {
-        const auto position = position_(request.isin_id);
-        if (!position)
-            return "current own POS authority unavailable";
         const auto maximum = static_cast<std::uint64_t>(limit->second);
         std::uint64_t available{};
         const auto& working = request.side == tr::Plaza2TradeSide::Buy ? instrument.buys : instrument.sells;
@@ -461,7 +618,9 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
             available =
                 *position > 0 ? maximum + static_cast<std::uint64_t>(*position) : maximum - absolute_units(*position);
         }
-        if (working.exceeds(available, static_cast<std::uint64_t>(proposed_remaining)))
+        const auto& fills = request.side == tr::Plaza2TradeSide::Buy ? instrument.filled_buys : instrument.filled_sells;
+        if (working.exceeds(available) ||
+            fills.exceeds(available - working.low, static_cast<std::uint64_t>(proposed_remaining)))
             return "per-ISIN position plus working same-side quantity exceeds "
                    "configured limit";
     }
@@ -1525,11 +1684,38 @@ void OrderManager::observe_trades(std::span<const plaza2::private_state::OwnTrad
             const auto id =
                 buy ? (row.private_order_id_buy > 0 ? row.private_order_id_buy : row.public_order_id_buy)
                     : (row.private_order_id_sell > 0 ? row.private_order_id_sell : row.public_order_id_sell);
-            if (code != config_.broker_code + config_.client_code || id <= 0 ||
-                deals_.contains({row.sess_id, row.id_deal, buy}))
+            if (code != config_.broker_code + config_.client_code)
+                continue;
+            const DealKey deal_key{row.id_deal, row.sess_id, buy};
+            auto [deal, first] = deals_.try_emplace(deal_key, DealRecord{.isin_id = row.isin_id,
+                                                                         .trade_lifenum = row.trade_lifenum,
+                                                                         .repl_rev = row.repl_rev,
+                                                                         .amount = row.amount});
+            const bool conflict = deal->second.isin_id != row.isin_id || deal->second.amount != row.amount;
+            if (conflict && !deal->second.conflicted) {
+                deal->second.conflicted = true;
+                emit("trade_source_conflict", "{\"deal_id\":" + std::to_string(row.id_deal) +
+                                                  ",\"session\":" + std::to_string(row.sess_id) + "}");
+            }
+            reserve_position_fill(deal_key, deal->second, row, first);
+            if (deal->second.conflicted) {
+                const auto owner = order_index_.find(id);
+                if (owner != order_index_.end()) {
+                    auto& order = orders_.at(owner->second);
+                    if (!order.operator_action_required) {
+                        order.state = OrderState::Unknown;
+                        order.operator_action_required = true;
+                        order.last_error = "contradictory own trade quantity or instrument";
+                        changed(owner->second);
+                    }
+                }
+                owned_unmatched = true;
+                continue;
+            }
+            if (deal->second.credited)
                 continue;
             const auto index = order_index_.find(id);
-            if (index == order_index_.end()) {
+            if (id <= 0 || index == order_index_.end()) {
                 owned_unmatched = true;
                 continue;
             }
@@ -1548,7 +1734,7 @@ void OrderManager::observe_trades(std::span<const plaza2::private_state::OwnTrad
                               ",\"deal_id\":" + std::to_string(row.id_deal) + ",\"quantity\":" +
                               std::to_string(row.amount) + ",\"price\":" + json_string(row.price) + "}");
             changed(index->second);
-            deals_.insert({row.sess_id, row.id_deal, buy});
+            deal->second.credited = true;
         }
         if (owned_unmatched)
             deferred_trades_[{row.sess_id, row.id_deal}] = row;

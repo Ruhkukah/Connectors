@@ -91,6 +91,7 @@ int main(int argc, char** argv) {
             trading.orders.client_code = cfg.order.client_code;
             trading.orders.login_from = "owner-login";
             trading.orders.ext_id_range_configured = true;
+            trading.orders.command_rate_configured = true;
             trading.isin_ids = {1001};
             trading.journal_path = path / "bad-file-alias.ndjson";
             trading.orders.risk.max_quantity = 4;

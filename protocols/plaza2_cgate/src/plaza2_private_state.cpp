@@ -2201,7 +2201,7 @@ struct Plaza2PrivateStateProjector::Impl {
         order.user_orderbook_commit_sequence = std::numeric_limits<std::uint64_t>::max();
     }
 
-    void apply_trade_row(const RowReader& row) {
+    void apply_trade_row(const projection::EventSpec& event, const RowReader& row) {
         auto& trades = ensure_staged_trades();
         const auto key = TradeKey{
             .multileg = false,
@@ -2211,6 +2211,9 @@ struct Plaza2PrivateStateProjector::Impl {
         staged.trade_keys.push_back(key);
         trade.multileg = false;
         trade.id_deal = key.id_deal;
+        trade.repl_rev = event.signed_value;
+        const auto life = lifenums_by_stream.find(StreamCode::kFortsTradeRepl);
+        trade.trade_lifenum = life == lifenums_by_stream.end() ? 0 : life->second;
         trade.sess_id = row.i32(FieldCode::kFortsTradeReplUserDealSessId);
         trade.isin_id = row.i32(FieldCode::kFortsTradeReplUserDealIsinId);
         trade.price = row.text(FieldCode::kFortsTradeReplUserDealPrice);
@@ -2539,7 +2542,7 @@ struct Plaza2PrivateStateProjector::Impl {
             apply_trade_order_row(row);
             break;
         case TableCode::kFortsTradeReplUserDeal:
-            apply_trade_row(row);
+            apply_trade_row(event, row);
             break;
         case TableCode::kFortsTradeReplHeartbeat:
             apply_trade_heartbeat_row(row);

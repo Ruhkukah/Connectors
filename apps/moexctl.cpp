@@ -174,11 +174,13 @@ int main(int argc, char** argv) {
         std::string login_env;
         std::optional<std::array<std::int32_t, 2>> ext_id_range;
         RiskLimits risk;
-        bool overall_notional_configured{};
+        bool command_rate_configured{};
         std::uint32_t reply_timeout{60000};
         std::optional<std::int64_t> clock_offset;
         for (int i = 1; i < argc; ++i) {
             const std::string_view arg(argv[i]);
+            if (arg == "--max-commands-per-second")
+                command_rate_configured = true;
             if (arg == "--log" || arg == "--state" || arg == "--command-socket" || arg == "--max-quantity" ||
                 arg == "--max-notional" || arg == "--max-position" || arg == "--max-open-orders" ||
                 arg == "--reply-timeout-ms" || arg == "--clock-offset-us" || arg == "--login-env" ||
@@ -224,23 +226,19 @@ int main(int argc, char** argv) {
                             throw std::invalid_argument("positive unique per-ISIN max-position required");
                         continue;
                     }
-                    const auto decimal = moex::plaza2::private_state::parse_session_decimal(
-                        equal == std::string_view::npos ? value : value.substr(equal + 1));
+                    if (equal == std::string_view::npos)
+                        throw std::invalid_argument("max-notional must be ISIN=QUOTE_CAP");
+                    const auto decimal = moex::plaza2::private_state::parse_session_decimal(value.substr(equal + 1));
                     if (!decimal || decimal->units <= 0)
                         throw std::invalid_argument("positive max-notional required");
-                    if (equal == std::string_view::npos) {
-                        risk.max_notional_scaled = decimal->units;
-                        overall_notional_configured = true;
-                    } else {
-                        const auto isin = integer<std::int32_t>(value.substr(0, equal));
-                        if (isin <= 0 || !risk.max_notional_by_isin.emplace(isin, decimal->units).second)
-                            throw std::invalid_argument("positive unique per-ISIN quote-notional limit required");
-                    }
+                    const auto isin = integer<std::int32_t>(value.substr(0, equal));
+                    if (isin <= 0 || !risk.max_notional_by_isin.emplace(isin, decimal->units).second)
+                        throw std::invalid_argument("positive unique per-ISIN quote-notional limit required");
                 }
             } else
                 arguments.push_back(arg);
         }
-        if (!overall_notional_configured && !risk.max_notional_by_isin.empty())
+        if (!risk.max_notional_by_isin.empty())
             risk.max_notional_scaled = INT64_MAX;
         if (socket_path.empty())
             socket_path = log_path.string() + ".sock";
@@ -259,7 +257,8 @@ int main(int argc, char** argv) {
                          "--max-notional ISIN=QUOTE_CAP "
                          "--max-position ISIN=CONTRACTS --max-open-orders N "
                          "--reply-timeout-ms N --clock-offset-us N --command-socket PATH\n"
-                      << "required with --allow-orders: --login-env NAME --ext-id-range MIN:MAX "
+                      << "required with --allow-orders: --max-commands-per-second N "
+                         "--login-env NAME --ext-id-range MIN:MAX "
                          "(deployment-assigned, nonoverlapping)\n"
                       << "run commands: place ID ISIN buy|sell QTY PRICE [day|ioc]; cancel "
                          "ID; move ID QTY PRICE; "
@@ -274,6 +273,9 @@ int main(int argc, char** argv) {
             TradingHostConfig config;
             if (request.config.transport.host.allow_orders && (login_env.empty() || !ext_id_range))
                 throw std::invalid_argument("--allow-orders requires --login-env and --ext-id-range");
+            if (request.config.transport.host.allow_orders && !command_rate_configured)
+                throw std::invalid_argument("--allow-orders requires --max-commands-per-second");
+            config.orders.command_rate_configured = command_rate_configured;
             if (!login_env.empty()) {
                 const auto* login = std::getenv(login_env.c_str());
                 if (!login || !*login)

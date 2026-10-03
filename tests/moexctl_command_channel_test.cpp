@@ -170,6 +170,8 @@ std::vector<std::string> run_arguments(const std::string& executable, const test
             "MOEX_CLI_TEST_LOGIN",
             "--ext-id-range",
             "100:199",
+            "--max-commands-per-second",
+            "30",
             "--isin-id",
             "1001",
             "--instance-id",
@@ -415,6 +417,26 @@ int main(int argc, char** argv) {
         test::require(owner.wait() == 2, "allow-orders accepted an uncovered target position cap");
         no_posts(log);
     });
+    for (const bool global : {false, true}) {
+        const auto label = global ? "global-notional" : "missing-rate";
+        scenario(std::string("explicit rate/per-instrument notional: ") + label, [&] {
+            const auto log = root / (std::string(label) + ".ndjson");
+            auto arguments = run_arguments(executable, fixture, log, "cli_" + std::string(label));
+            if (global)
+                arguments.insert(arguments.end(), {"--max-notional", "100000000"});
+            else {
+                const auto found = std::find(arguments.begin(), arguments.end(), "--max-commands-per-second");
+                arguments.erase(found, found + 2);
+            }
+            arguments.push_back("--allow-orders");
+            Child owner(arguments, root / (std::string(label) + ".err"));
+            owner.send("quit --force\n");
+            owner.close_input();
+            test::require(owner.wait() == 2, global ? "CLI accepted cross-instrument numeric notional"
+                                                    : "allow-orders accepted its default command rate");
+            no_posts(log);
+        });
+    }
     scenario("mandatory login and instance ext_id scope", [&] {
         for (const auto option : {"--login-env", "--ext-id-range"}) {
             const auto label = std::string(option).substr(2);
@@ -459,6 +481,8 @@ int main(int argc, char** argv) {
     scenario("explicit login and instance ext_id scope", [&] {
         const auto log = root / "identity-scope.ndjson";
         auto arguments = run_arguments(executable, fixture, log, "cli_identity_scope");
+        const auto rate = std::find(arguments.begin(), arguments.end(), "--max-commands-per-second");
+        *(rate + 1) = "7";
         arguments.push_back("--allow-orders");
         Child owner(arguments, root / "identity-scope.err");
         make_working(owner);
@@ -470,6 +494,8 @@ int main(int argc, char** argv) {
         std::ifstream journal(log), errors(root / "identity-scope.err");
         const std::string contents((std::istreambuf_iterator<char>(journal)), {});
         const std::string diagnostics((std::istreambuf_iterator<char>(errors)), {});
+        test::require(contents.find("\"rate\":7,") != std::string::npos,
+                      "CLI did not apply its explicitly configured command rate");
         test::require(status.find("private-cli-owner") == std::string::npos &&
                           contents.find("private-cli-owner") == std::string::npos &&
                           diagnostics.find("private-cli-owner") == std::string::npos,
