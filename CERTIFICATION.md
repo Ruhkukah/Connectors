@@ -67,6 +67,15 @@ October 2 round-four corrections add individual fallback after rejected mass can
 - Market validity uses the latest committed event_type 1 for the current session, and is invalidated by a later event_type 5. Order readiness uses private stream and session/instrument states independently of AGGR. No fixed session ID is configured.
 - Declare morning/day/evening support as implemented; attach the full-day logs before claiming it was rehearsed. Leave FullOrderLog/public DEALS/COD/RFS unchecked.
 
+## Operator emergency procedure
+
+Keep an owner-managed deployment card beside the terminal containing the broker desk's telephone and authenticated emergency channel, the TEST login and section, broker/client identity, instance ID, router endpoint, dated interaction journal, identity file, absolute CGate `[p2syslog] logfile` and router log location. Fill these private values before the rehearsal; keep them outside Git. MOEX TEST technical support is [help@moex.com and +7 495 363-32-32](https://www.moex.com/s3439).
+
+1. Send `kill on` through the command socket and inspect `status`. Identify each configured instrument, working order and current POS.
+2. Send `cancel-all ISIN` for each affected instrument. Keep the driver polling; verify accepted replies and committed TRADE terminal evidence. A disconnect or forced quit does not cancel venue orders.
+3. If cancellation cannot be confirmed, contact the broker desk through its authenticated emergency channel to establish venue orders and positions and request risk reduction. Escalate CGate, router or TEST session failures to MOEX support with the instance, section, time and sanitized error; never send credentials or keys.
+4. Preserve the interaction journal, identity file and CGate/router logs. Repair the fault, reconnect through the product, reconcile fresh TRADE/USERORDERBOOK/POS, and confirm flatness before any new rehearsal entry. Archive native logs immediately after the session because vendor rotation is bounded.
+
 ## Full-day rehearsal
 
 Load account values and the CGate software key from an owner-managed environment file with permissions `0600`,
