@@ -50,6 +50,24 @@ int main(int argc, char** argv) {
         fake.set(moex::plaza2::test::fake::Option::ClientCode, "BRK1C01");
         fake.set(moex::plaza2::test::fake::Option::AggrSnapshotReadyOnly, "1");
         {
+            ::unsetenv("MOEX_PLAZA2_TEST_CREDENTIALS");
+            ConnectorHost host(config(fixture));
+            const auto started = host.start();
+            test::require(!started, "optional unused CGate credentials refused startup: " + started.message);
+            for (int i = 0; i < 20; ++i)
+                test::require(!host.poll(), "optional-credentials host polls");
+            test::require(host.snapshot().private_streams_ready,
+                          "router-owned authentication must work with only the CGate software key");
+            test::require(!host.stop(), "optional-credentials host stops");
+            ::unsetenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY");
+            ConnectorHost missing_key(config(fixture));
+            const auto missing = missing_key.start();
+            test::require(missing && missing.message.find("software key") != std::string::npos,
+                          "optional router credentials must not make the software key optional");
+            ::setenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "00000000", 1);
+            ::setenv("MOEX_PLAZA2_TEST_CREDENTIALS", "fake-test-only", 1);
+        }
+        {
             auto cfg = config(fixture);
             cfg.transport.host.allow_orders = true;
             for (auto& stream : cfg.transport.host.private_streams)

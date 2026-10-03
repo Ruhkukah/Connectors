@@ -321,10 +321,10 @@ struct CgateSession::Impl {
             return invalid("CGate runtime is missing required trading symbols");
         if (config.mode == CgateSessionMode::OfflineFake && !probe.fake_runtime_marker_present)
             return invalid("OfflineFake requires the test CGate runtime marker");
-        auto c = secret(config.credentials), k = secret(config.software_key);
-        if (!c || !k)
-            return invalid("configured CGate secret source is missing");
-        credentials = *c;
+        const auto k = secret(config.software_key);
+        if (!k)
+            return invalid("configured CGate software key source is missing");
+        credentials = secret(config.credentials).value_or("");
         software_key = *k;
         auto runtime = config.runtime;
         runtime.listener_event_log = config.listener_event_log;

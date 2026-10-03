@@ -69,6 +69,18 @@ October 2 round-four corrections add individual fallback after rejected mass can
 
 ## Full-day rehearsal
 
+Load account values and the CGate software key from an owner-managed environment file with permissions `0600`,
+then run `set -a; . "$MOEX_ENV_FILE"; set +a`. The file must define `MOEX_BROKER`, `MOEX_CLIENT`,
+`MOEX_PLAZA2_CGATE_SOFTWARE_KEY` and the following literal template (substitute a readable absolute ini path):
+
+```sh
+MOEX_CGATE_ENV='ini=/absolute/path/client.ini;key=${MOEX_PLAZA2_CGATE_SOFTWARE_KEY}'
+```
+
+The driver expands the software-key placeholder internally. Do not put the key on the command line or commit
+the environment file. Router login credentials belong in the router configuration; the driver's unused
+`--credentials-env` value is optional. The configured CGate software key remains required.
+
 Build Release on the actual Linux deployment host, then run the exact build with the provisioned TEST account. Preserve default router/client logging. Set the instance name, router, instrument list, rate and risk limits explicitly. Example configuration (environment variables carry local settings and account values):
 
 ```sh

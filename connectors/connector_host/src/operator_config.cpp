@@ -114,7 +114,8 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
         host.p2mqreply_settings = "p2mqreply://;ref=" + host.publisher_name;
         host.trade_replay_from_pos_anchor = true;
     }
-    host.credentials = {.source = cg::Plaza2CredentialSource::Env, .env_var = inputs.credentials_env_var};
+    if (!inputs.credentials_env_var.empty())
+        host.credentials = {.source = cg::Plaza2CredentialSource::Env, .env_var = inputs.credentials_env_var};
     host.software_key = {.source = cg::Plaza2CredentialSource::Env, .env_var = inputs.software_key_env_var};
     out.order.broker_code = inputs.broker_code;
     out.order.client_code = inputs.client_code;
@@ -175,7 +176,7 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
     inputs.library_path = get("--library-path");
     inputs.expected_spectra_release = get("--expected-release", "SPECTRA9.9.0");
     inputs.env_open_settings = environment(required("--env-settings-var"));
-    inputs.credentials_env_var = get("--credentials-env", "MOEX_PLAZA2_CREDENTIALS");
+    inputs.credentials_env_var = get("--credentials-env");
     inputs.software_key_env_var = get("--software-key-env", "MOEX_PLAZA2_CGATE_SOFTWARE_KEY");
     if (!inputs.read_only_market_data) {
         inputs.broker_code = environment(required("--broker-code-env"));
