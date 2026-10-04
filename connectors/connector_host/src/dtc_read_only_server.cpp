@@ -315,8 +315,8 @@ struct DtcReadOnlyServer::Impl {
             market_data_reject(id ? id : symbol_id, reason);
         }
     }
-    void reject(const std::string& reason) {
-        error = reason;
+    void reject(std::string_view reason, const DtcMarketDataSnapshot* source_state = nullptr) {
+        error = std::string(reason);
         // A partially written frame cannot be replaced by a LOGOFF header.
         if (sent) {
             disconnect();
@@ -333,8 +333,17 @@ struct DtcReadOnlyServer::Impl {
         pending_definition_response_end = 0;
         pending_definition_response = false;
         Bytes p;
-        str(p, 1, reason);
-        integer(p, 2, 1);
+        if (source_state) {
+            if (!authority(*source_state))
+                return;
+            integer(p, 1, symbol_id);
+            integer(p, 2, 1);
+            if (!queue(116, p))
+                return;
+            p.clear();
+        }
+        str(p, 1, error);
+        integer(p, 2, source_state ? 0 : 1);
         if (queue(5, p))
             closing = true;
     }
@@ -401,38 +410,10 @@ struct DtcReadOnlyServer::Impl {
         integer(p, 2, 0);
         return queue(kDtcSourceAuthorityMessage, p);
     }
-    void retire_depth_source(const DtcMarketDataSnapshot& s,
-                             std::string_view reason = "source authority or metadata changed; fresh session required") {
-        // Discard unsent stale batches. A partially written frame is closed.
-        if (sent) {
-            disconnect();
-            return;
-        }
-        output.clear();
-        trade_output_ranges.clear();
-        pending_wire_logon_capabilities = {};
-        pending_logon_response_end = 0;
-        pending_logon_response = false;
-        pending_definition_response_end = 0;
-        pending_definition_response = false;
-        if (!authority(s))
-            return;
-        Bytes unavailable;
-        integer(unavailable, 1, symbol_id);
-        integer(unavailable, 2, 1);
-        if (!queue(116, unavailable))
-            return;
-        Bytes logoff;
-        error = std::string(reason);
-        str(logoff, 1, error);
-        integer(logoff, 2, 0);
-        if (queue(5, logoff))
-            closing = true;
-    }
     void snapshot(const DtcMarketDataSnapshot& s) {
         if (!usable(s)) {
             if (s.full_order_log)
-                retire_depth_source(s);
+                reject("source authority or metadata changed; fresh session required", &s);
             else
                 reject("source authority unavailable; fresh session required");
             return;
@@ -549,13 +530,13 @@ struct DtcReadOnlyServer::Impl {
         const auto s = source.status_snapshot();
         if (!usable(s) || !accepted_definition || definition_validation(s).definition != accepted_definition ||
             s.market_data_authority_epoch != authority_epoch || s.stream_epoch != epoch) {
-            retire_depth_source(s);
+            reject("source authority or metadata changed; fresh session required", &s);
             return;
         }
         if (s.source_snapshot_version == version)
             return;
         if (version == UINT64_MAX || s.source_snapshot_version != version + 1) {
-            retire_depth_source(s, "FullOrderLog commit was missed; fresh snapshot required");
+            reject("FullOrderLog commit was missed; fresh snapshot required", &s);
             return;
         }
         const auto changes = source.depth_changes();
@@ -596,19 +577,18 @@ struct DtcReadOnlyServer::Impl {
             staged.insert(staged.end(), f.begin(), f.end());
         }
         if (staged.size() > config.max_queued_bytes - output.size()) {
-            retire_depth_source(s, "FullOrderLog commit backpressure; fresh snapshot required");
+            reject("FullOrderLog commit backpressure; fresh snapshot required", &s);
             return;
         }
         if (!staged.empty()) {
             if (output.empty())
                 last_write = Clock::now();
             output.insert(output.end(), staged.begin(), staged.end());
+            batch = next_batch;
             if (s.committed_at != Clock::time_point{})
                 commit_to_queue_ns =
                     std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - s.committed_at).count();
         }
-        if (!staged.empty())
-            batch = next_batch;
         version = s.source_snapshot_version;
     }
     void poll_public_deals() {
@@ -1048,7 +1028,7 @@ struct DtcReadOnlyServer::Impl {
                     definition_validation(s).definition != accepted_definition ||
                     s.market_data_authority_epoch != authority_epoch ||
                     witness_number(s.session_ready_witness_kind) != witness) {
-                    retire_depth_source(s);
+                    reject("source authority or metadata changed; fresh session required", &s);
                 } else if (s.source_snapshot_version != version || s.stream_epoch != epoch) {
                     if (source.incremental_depth())
                         publish_depth_commit();

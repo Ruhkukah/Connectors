@@ -28,6 +28,13 @@ using Kind = Plaza2ListenerEventKind;
 
 static void semantics() {
     Harness h;
+    for (const auto kind : {Kind::TransactionBegin, Kind::TransactionCommit, Kind::ReplState, Kind::Timeout})
+        require(!h.book.should_log_listener_event({.kind = kind}), "routine callback controls cannot flood logs");
+    const Plaza2RawTableBinding sys{.name = "sys_events"};
+    require(h.book.should_log_listener_event({.kind = Kind::ClearDeleted}) &&
+                h.book.should_log_listener_event({.kind = Kind::StreamData, .raw_table = &sys}) &&
+                !h.book.should_log_listener_event({.kind = Kind::StreamData, .raw_table = &h.schema[2]}),
+            "sparse diagnostics preserve clear/system events and suppress public order rows");
     std::size_t commits{};
     h.book.on_commit = [&](const auto&) { ++commits; };
     h.begin();
@@ -281,7 +288,14 @@ static void review_semantics() {
     h.clear(0, 31);
     h.begin();
     h.commit();
-    require(h.book.order_count() == 0, "snapshot-source revision remains available after online updates");
+    require(h.book.order_count() == 1 && h.book.levels(11, true).at(200000) == 6,
+            "snapshot clear cannot retire an order whose current source is the log");
+    const auto cleared = h.book.metrics().clear_deleted_erased;
+    h.clear(2, 51);
+    h.begin();
+    h.commit();
+    require(h.book.order_count() == 0 && h.book.metrics().clear_deleted_erased == cleared + 1,
+            "partial log clear retains its per-source revision behavior and reports erasure");
     h.begin();
     h.apply(row(h.schema[0], 3, 11, 300000, 5, 1, 80));
     h.commit();
@@ -292,14 +306,17 @@ static void review_semantics() {
     h.online();
     h.begin();
     h.commit();
-    require(!h.book.valid(), "MAX cannot reacquire readiness without a fresh snapshot");
+    require(!h.book.valid() && h.book.needs_fresh_snapshot(),
+            "MAX cannot reacquire readiness without a fresh snapshot");
     h.begin();
     h.apply(row(h.schema[0], 4, 11, 400000, 3));
     h.commit();
     h.online();
+    require(h.book.needs_fresh_snapshot(), "ONLINE cannot disarm the snapshot wait before commit");
     h.begin();
     h.commit();
-    require(h.book.valid() && h.book.order_count() == 1, "fresh snapshot and ONLINE recover MAX");
+    require(h.book.valid() && !h.book.needs_fresh_snapshot() && h.book.order_count() == 1,
+            "fresh snapshot and committed ONLINE recover MAX");
 }
 static void life_time_and_cross() {
     Harness h;
@@ -319,7 +336,7 @@ static void life_time_and_cross() {
     require(h.book.valid() && h.book.epoch() == epoch && h.book.order_count() == 1,
             "ORDBOOK life then info-bound ORDLOG life preserves snapshot");
     require(!h.book.on_plaza2_listener_event({.kind = Kind::LifeNum, .unsigned_value = 5}), "unchanged snapshot life");
-    require(h.book.valid() && h.book.life_state().info_trades_lifenum == 8,
+    require(h.book.valid() && h.book.committed_log_lifenum() == 8,
             "a repeated snapshot life does not masquerade as a log-life change");
     const auto utc =
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())

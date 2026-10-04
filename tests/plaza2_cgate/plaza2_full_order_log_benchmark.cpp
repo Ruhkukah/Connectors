@@ -145,8 +145,14 @@ int main(int argc, char** argv) {
                                            .settings = "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL"};
         transport.full_order_log_handler = &timed;
         moex::connector_host::ConnectorHost host(std::move(config));
-        moex::connector_host::FullOrderLogDtcLoop loop(host, book, 0, 20000, dtc::DtcSourceMode::Replay,
-                                                       {"RUB", "Explicit offline fake definition", 1, 12.5});
+        moex::connector_host::FullOrderLogDtcLoop loop(host, book,
+                                                       {.source_mode = dtc::DtcSourceMode::Replay,
+                                                        .max_queued_bytes = 4 * 1024 * 1024,
+                                                        .max_depth_levels = 20000,
+                                                        .currency = "RUB",
+                                                        .description = "Explicit offline fake definition",
+                                                        .contract_size = 1,
+                                                        .currency_value_per_increment = 12.5});
         auto& source = loop.source();
         auto& server = loop.server();
         std::vector<std::uint64_t> commits;
