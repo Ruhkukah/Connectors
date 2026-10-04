@@ -287,6 +287,23 @@ int main(int argc, char** argv) {
                       "same-instance refusal must precede logging/runtime validation");
         md_args.resize(md_args.size() - 3);
         md_args.push_back("--offline-fake");
+        // Equivalent loopback spelling and a normalized port cannot bypass isolation.
+        for (const auto& endpoint : {"127.0.0.1:4101", "LOCALHOST:04101", "[::1]:4101"}) {
+            auto same_router_args = md_args;
+            same_router_args.insert(same_router_args.end(), {"--router", endpoint});
+            Child same_router(same_router_args, root / "same-router.err");
+            same_router.close_input();
+            test::require(same_router.wait() == 2, "same trading router refused before native startup");
+            std::ifstream router_log(root / "same-router.err");
+            const std::string router_refused((std::istreambuf_iterator<char>(router_log)), {});
+            test::require(router_refused.find("router addresses must differ") != std::string::npos,
+                          "router refusal must precede logging/runtime validation");
+        }
+        auto overridden_router_args = md_args;
+        overridden_router_args.insert(overridden_router_args.end(), {"--trading-router", "localhost:4102"});
+        Child overridden_router(overridden_router_args, root / "overridden-router.err");
+        overridden_router.close_input();
+        test::require(overridden_router.wait() == 2, "owner-specified trading router protects a nondefault port");
         // A DTC bind failure after host startup must unwind cleanly.
         const auto occupied_port = ::socket(AF_INET, SOCK_STREAM, 0);
         test::require(occupied_port >= 0, "occupied port socket");

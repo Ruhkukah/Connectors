@@ -82,6 +82,21 @@ int main(int argc, char** argv) {
         pump();
         require(!book.valid() && book.order_count() == 0, "ClearDeleted MAX must fence until a fresh snapshot");
         auto opens = fake.opens(cgate::kFullOrderLogStreamCode);
+        now += std::chrono::seconds(30);
+        pump(1);
+        require(fake.opens(cgate::kFullOrderLogStreamCode) == opens && book.needs_fresh_snapshot(),
+                "watchdog must not reopen at the exact 30-second boundary");
+        now += std::chrono::milliseconds(1);
+        pump(1);
+        require(fake.opens(cgate::kFullOrderLogStreamCode) == opens && !book.needs_fresh_snapshot(),
+                "expired MAX watchdog closes the composite before retry");
+        now += std::chrono::milliseconds(999);
+        pump(1);
+        require(fake.opens(cgate::kFullOrderLogStreamCode) == opens, "watchdog retry waits a full second");
+        now += std::chrono::milliseconds(1);
+        pump();
+        require(fake.opens(cgate::kFullOrderLogStreamCode) == ++opens && book.valid() && book.order_count() == 2,
+                "MAX watchdog reopens a fresh native snapshot");
         enqueue(f::EventKind::ListenerError);
         pump(2);
         require(!book.valid(), "ERROR must fence the old book");
@@ -173,7 +188,43 @@ int main(int argc, char** argv) {
                 "new committed rollover terms resume the composite snapshot");
         enqueue(f::EventKind::LifeNum, 0, cgate::kNoTableCode, 8);
         pump();
-        require(!book.valid() && book.order_count() == 0, "LifeNum change must clear public book");
+        require(!book.valid() && book.order_count() == 0 && book.needs_fresh_snapshot(),
+                "unexplained LifeNum change must clear the book and arm snapshot recovery");
+        const auto life_opens = fake.opens(cgate::kFullOrderLogStreamCode);
+        now += std::chrono::seconds(29);
+        // The native source can provide a fresh snapshot before the watchdog fires.
+        enqueue(f::EventKind::Begin);
+        fake.enqueue({.kind = f::EventKind::Row,
+                      .stream_code = cgate::kFullOrderLogStreamCode,
+                      .table_code = generated::TableCode::kFortsUserorderbookReplInfo,
+                      .fields = {{.field_code = kFortsUserorderbookReplInfoPublicationState, .signed_value = 1},
+                                 {.field_code = kFortsUserorderbookReplInfoTradesLifenum, .signed_value = 8}}});
+        enqueue(f::EventKind::Commit);
+        enqueue(f::EventKind::Online);
+        pump();
+        require(!book.valid() && book.needs_fresh_snapshot(), "fresh ONLINE alone cannot cancel the watchdog");
+        enqueue(f::EventKind::Begin);
+        enqueue(f::EventKind::Commit);
+        pump();
+        now += std::chrono::seconds(2);
+        pump();
+        require(book.valid() && !book.needs_fresh_snapshot() &&
+                    fake.opens(cgate::kFullOrderLogStreamCode) == life_opens,
+                "committed fresh snapshot cancels the pending LifeNum watchdog");
+        enqueue(f::EventKind::LifeNum, 0, cgate::kNoTableCode, 99);
+        pump();
+        now += std::chrono::seconds(31);
+        pump();
+        require(!book.valid() && fake.opens(cgate::kFullOrderLogStreamCode) == life_opens,
+                "a second unexplained LifeNum independently expires its watchdog");
+        now += std::chrono::seconds(1);
+        pump();
+        require(book.valid() && book.order_count() == 2 && fake.opens(cgate::kFullOrderLogStreamCode) == life_opens + 1,
+                "repeated watchdog recovery opens a fresh composite without replay state");
+        now += std::chrono::seconds(31);
+        pump();
+        require(fake.opens(cgate::kFullOrderLogStreamCode) == life_opens + 1,
+                "successful fresh reopen does not rearm the watchdog");
         require(!session.stop(), "full log stop");
         // A bad anonymous table contract is a startup refusal with its missing field named.
         scenario.mutated_schema_field = generated::FieldCode::kFortsUserorderbookReplOrdersPublicAmountRest;

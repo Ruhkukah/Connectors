@@ -23,6 +23,7 @@ struct Plaza2HostConfigInputs {
     std::string publisher_name{"moex_connector"};
     std::uint32_t publisher_messages_per_second{30};
 };
+[[nodiscard]] std::pair<std::string, std::uint16_t> router_address(std::string_view router);
 [[nodiscard]] Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs);
 [[nodiscard]] OperatorRequest parse_operator_arguments(std::span<const std::string_view> arguments);
 [[nodiscard]] std::string_view operator_help() noexcept;

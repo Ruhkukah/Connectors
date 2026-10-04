@@ -8,22 +8,15 @@ namespace moex::connector_host {
 // The standalone process and offline benchmark share the same owner loop.
 class FullOrderLogDtcLoop {
   public:
-    FullOrderLogDtcLoop(ConnectorHost& host, plaza2::cgate::Plaza2FullOrderLog& book, std::uint16_t base_port,
-                        std::uint32_t depth, dtc::DtcSourceMode mode, dtc::DtcReplayDefinitionTerms replay = {})
+    FullOrderLogDtcLoop(ConnectorHost& host, plaza2::cgate::Plaza2FullOrderLog& book,
+                        dtc::DtcReadOnlyServerConfig config)
         : host_(host), book_(book) {
+        const auto base_port = config.port;
         for (const auto isin : book.instruments()) {
-            sources_.push_back(
-                std::make_unique<dtc::DtcFullOrderLogSource>(book, isin, dtc::DtcMarketDataSnapshot{}, depth * 2));
-            dtc::DtcReadOnlyServerConfig config;
+            sources_.push_back(std::make_unique<dtc::DtcFullOrderLogSource>(book, isin, dtc::DtcMarketDataSnapshot{},
+                                                                            config.max_depth_levels * 2));
             config.port = base_port ? base_port + servers_.size() : 0;
             config.symbol_id = servers_.size() + 1;
-            config.source_mode = mode;
-            config.currency = replay.currency;
-            config.description = replay.description;
-            config.contract_size = replay.contract_size;
-            config.currency_value_per_increment = replay.currency_value_per_increment;
-            config.max_depth_levels = depth;
-            config.max_queued_bytes = 4 * 1024 * 1024;
             servers_.push_back(std::make_unique<dtc::DtcReadOnlyServer>(*sources_.back(), config));
         }
         book_.on_commit = [&](const auto&) {

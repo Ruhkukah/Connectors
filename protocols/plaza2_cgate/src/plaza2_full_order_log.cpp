@@ -338,7 +338,9 @@ struct Plaza2FullOrderLog::Impl {
         committed_count = orders.size();
         transaction = false;
         committed_at = Clock::now();
-        valid = online && !waiting_snapshot;
+        valid = online && (!waiting_snapshot || snapshot_seen);
+        if (valid)
+            waiting_snapshot = false;
         const auto utc =
             std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
                 .count();
@@ -361,9 +363,11 @@ struct Plaza2FullOrderLog::Impl {
 Plaza2FullOrderLog::Plaza2FullOrderLog(std::span<const std::int32_t> ids, std::size_t orders, std::size_t levels)
     : impl_(std::make_unique<Impl>(ids, orders, levels)) {}
 Plaza2FullOrderLog::~Plaza2FullOrderLog() = default;
-void Plaza2FullOrderLog::reset() {
+void Plaza2FullOrderLog::reset(bool require_snapshot) {
+    const bool transaction = require_snapshot && impl_->transaction;
     impl_->clear();
-    impl_->waiting_snapshot = false;
+    impl_->waiting_snapshot = require_snapshot;
+    impl_->transaction = transaction;
     if (on_invalidate)
         on_invalidate();
 }
@@ -413,42 +417,37 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
                 on_commit(*this);
             break;
         case Kind::Online:
-            if (!p.waiting_snapshot || p.snapshot_seen) {
+            if (!p.waiting_snapshot || p.snapshot_seen)
                 p.online = true;
-                p.waiting_snapshot = false;
-            }
             break; // visibility waits for the following commit
         case Kind::LifeNum:
             ++p.metrics.life_events;
             if (p.have_life && p.life != e.unsigned_value &&
-                !(p.have_info && (p.info_log_life == e.unsigned_value || p.initial_life == e.unsigned_value))) {
-                reset();
-                p.waiting_snapshot = true;
-            }
+                !(p.have_info && (p.info_log_life == e.unsigned_value || p.initial_life == e.unsigned_value)))
+                reset(true);
             if (!p.have_life)
                 p.initial_life = e.unsigned_value;
             p.life = e.unsigned_value;
             p.have_life = true;
             break;
         case Kind::ClearDeleted: {
+            ++p.metrics.clear_deleted_events;
             if (!e.raw_table || (e.raw_table->name != "orders_log" && e.raw_table->name != "orders"))
                 break;
             require(e.raw_table->index == e.table_index, "ClearDeleted index mismatch");
             if (e.signed_value == INT64_MAX) {
-                const bool transaction = p.transaction;
-                reset();
-                p.waiting_snapshot = true;
-                p.transaction = transaction;
-                break;
-            }
-            const unsigned source = e.raw_table->name == "orders_log" ? 1 : 0;
-            for (auto i = p.orders.begin(); i != p.orders.end();) {
-                const auto& row = i->second.source[source];
-                if (row.row && row.revision < e.signed_value) {
-                    auto old = i++;
-                    p.erase(old);
-                } else
-                    ++i;
+                p.metrics.clear_deleted_erased += p.orders.size();
+                reset(true);
+            } else {
+                const unsigned source = e.raw_table->name == "orders_log" ? 1 : 0;
+                p.metrics.clear_deleted_erased += std::erase_if(p.orders, [&](const auto& item) {
+                    const auto& o = item.second;
+                    const auto& row = o.source[source];
+                    if (!row.row || row.revision >= e.signed_value || (!source && o.current != source))
+                        return false;
+                    p.adjust(o, -o.quantity);
+                    return true;
+                });
             }
             break;
         }
@@ -471,6 +470,9 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
     }
     return {};
 }
+bool Plaza2FullOrderLog::needs_fresh_snapshot() const noexcept {
+    return impl_->waiting_snapshot;
+}
 bool Plaza2FullOrderLog::valid() const noexcept {
     return impl_->valid;
 }
@@ -487,11 +489,14 @@ FullOrderLogMetrics Plaza2FullOrderLog::metrics() const noexcept {
     result.excluded_ids = impl_->excluded.size();
     return result;
 }
-FullOrderLogLifeState Plaza2FullOrderLog::life_state() const noexcept {
-    return {impl_->life, impl_->info_log_life, impl_->have_info};
+std::optional<std::uint64_t> Plaza2FullOrderLog::committed_log_lifenum() const noexcept {
+    return impl_->have_info ? std::optional{impl_->info_log_life} : std::nullopt;
 }
 bool Plaza2FullOrderLog::should_log_listener_event(const Plaza2ListenerEvent& e) const noexcept {
-    return e.kind != Plaza2ListenerEventKind::StreamData || (e.raw_table && e.raw_table->name == "sys_events");
+    using Kind = Plaza2ListenerEventKind;
+    return e.kind != Kind::TransactionBegin && e.kind != Kind::TransactionCommit && e.kind != Kind::ReplState &&
+           e.kind != Kind::Timeout &&
+           (e.kind != Kind::StreamData || (e.raw_table && e.raw_table->name == "sys_events"));
 }
 std::uint64_t Plaza2FullOrderLog::epoch() const noexcept {
     return impl_->epoch;

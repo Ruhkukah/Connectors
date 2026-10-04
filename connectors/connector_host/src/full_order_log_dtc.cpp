@@ -23,13 +23,14 @@ void DtcFullOrderLogSource::update_metadata(DtcMarketDataSnapshot metadata) {
 void DtcFullOrderLogSource::load_top(bool bid, std::vector<Level>& into) const {
     into.clear();
     const auto& levels = book_.levels(isin_, bid);
-    if (bid) {
-        for (auto row = levels.rbegin(); row != levels.rend() && into.size() < depth_; ++row)
-            into.emplace_back(*row);
-    } else {
-        for (auto row = levels.begin(); row != levels.end() && into.size() < depth_; ++row)
-            into.emplace_back(*row);
-    }
+    const auto append = [&](auto begin, auto end) {
+        for (; begin != end && into.size() < depth_; ++begin)
+            into.emplace_back(*begin);
+    };
+    if (bid)
+        append(levels.rbegin(), levels.rend());
+    else
+        append(levels.begin(), levels.end());
 }
 void DtcFullOrderLogSource::configure_depth_limit(std::size_t depth) {
     if (!depth || depth > published_[0].capacity())

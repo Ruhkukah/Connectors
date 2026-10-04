@@ -21,6 +21,7 @@ std::string environment(const std::string& name) {
         throw std::invalid_argument("required environment variable is missing");
     return value;
 }
+} // namespace
 std::pair<std::string, std::uint16_t> router_address(std::string_view router) {
     if (router.find_first_of("; /\\\r\n") != std::string_view::npos)
         throw std::invalid_argument("router must be host:port");
@@ -29,7 +30,6 @@ std::pair<std::string, std::uint16_t> router_address(std::string_view router) {
         throw std::invalid_argument("router must be host:port");
     return {std::string(router.substr(0, colon)), integer<std::uint16_t>(router.substr(colon + 1))};
 }
-} // namespace
 std::string_view operator_help() noexcept {
     return R"(moexctl plaza2 {status|qualify|run} [options]
 Required: --runtime-root PATH --scheme-dir PATH --config-dir PATH

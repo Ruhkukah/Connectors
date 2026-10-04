@@ -180,6 +180,7 @@ struct CgateSession::Impl {
         cg::Plaza2Listener object;
         cg::Plaza2ListenerEventHandler* handler{};
         std::chrono::steady_clock::time_point retry{};
+        std::optional<std::chrono::steady_clock::time_point> snapshot_wait;
         bool scheme_incompatible{};
         std::optional<std::uint32_t> observed_state;
     };
@@ -615,6 +616,7 @@ struct CgateSession::Impl {
         return {};
     }
     void invalidate(Listener& listener) {
+        listener.snapshot_wait.reset();
         static_cast<void>(listener.handler->on_plaza2_listener_event(
             {.kind = cg::Plaza2ListenerEventKind::Close, .stream_code = listener.config.stream_code}));
         close_listener(listener);
@@ -660,6 +662,17 @@ struct CgateSession::Impl {
                     ",\"cause\":" + json_quote(last_error) + "}");
             invalidate(listener);
             return;
+        }
+        if (listener.config.stream_code == cg::kFullOrderLogStreamCode && state == Active) {
+            if (!listener.handler->needs_fresh_snapshot())
+                listener.snapshot_wait.reset();
+            else if (!listener.snapshot_wait)
+                listener.snapshot_wait = now();
+            else if (now() - *listener.snapshot_wait > std::chrono::seconds(30)) {
+                log("full_order_log_snapshot_watchdog", "{\"reason\":\"fresh snapshot absent for over 30 seconds\"}");
+                invalidate(listener);
+                return;
+            }
         }
         if (state == Closed && now() >= listener.retry) {
             if (listener.config.stream_code == cg::kFullOrderLogStreamCode && !matching_id)

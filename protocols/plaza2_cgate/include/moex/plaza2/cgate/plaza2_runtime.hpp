@@ -221,6 +221,9 @@ class Plaza2ListenerEventHandler {
     [[nodiscard]] virtual bool should_log_listener_event(const Plaza2ListenerEvent&) const noexcept {
         return true;
     }
+    [[nodiscard]] virtual bool needs_fresh_snapshot() const noexcept {
+        return false;
+    }
     [[nodiscard]] virtual Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) = 0;
 };
 
