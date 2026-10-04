@@ -91,12 +91,12 @@ template <class Fixture> void transport_retry_warning_regression() {
     bulk.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
     for (std::int64_t ms = 0; ms <= 400000; ms += 1000)
         bulk.poll(group, ms);
-    require(bulk.sent.size() == 7 &&
+    require(bulk.sent.size() == 3 && group.operator_action_required() &&
                 std::count_if(bulk.log.begin(), bulk.log.end(),
                               [](const auto& line) { return line.starts_with("transport_retry{"); }) == 1 &&
                 std::count_if(bulk.log.begin(), bulk.log.end(),
-                              [](const auto& line) { return line.starts_with("timeout{"); }) == 6,
-            "mass cancellation lost its timeout audit or repeated its operator warning");
+                              [](const auto& line) { return line.starts_with("timeout{"); }) == 3,
+            "bounded mass cancellation lost its timeout audit or repeated its operator warning");
 
     Fixture carry;
     carry.config.reply_timeout = std::chrono::milliseconds(100);

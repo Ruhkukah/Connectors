@@ -11,6 +11,7 @@
 #include "strict_lost_add_regression.hpp"
 #include "move_not_applied_regression.hpp"
 #include "position_lag_regression.hpp"
+#include "bounded_duo_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -859,7 +860,7 @@ void uncertain_cancels_preserve_identity_and_budget() {
     bulk.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
     bulk.poll(group, 0);
     bulk.certainty = cg::Plaza2SubmissionCertainty::Posted;
-    for (std::int64_t cycle = 0; cycle < 5; ++cycle) {
+    for (std::int64_t cycle = 0; cycle < 3; ++cycle) {
         const auto posted_at = cycle * 1100;
         group.on_timeout(bulk.sent.back().id,
                          OrderManager::Clock::time_point{} + std::chrono::milliseconds(posted_at + 100));
@@ -867,10 +868,11 @@ void uncertain_cancels_preserve_identity_and_budget() {
         observe(group, live);
         bulk.poll(group, posted_at + 1100);
         require(
-            !group.operator_action_required() && bulk.sent.size() == static_cast<std::size_t>(cycle + 2) &&
+            group.operator_action_required() == (cycle == 2) &&
+                bulk.sent.size() == static_cast<std::size_t>(std::min<std::int64_t>(cycle + 2, 3)) &&
                 std::all_of(bulk.sent.begin(), bulk.sent.end(),
                             [](const auto& sent) { return sent.kind == tr::Plaza2TradeCommandKind::DelUserOrders; }),
-            "bulk timeout exhausted business retries or dropped the reconciliation gate");
+            "bulk timeout exceeded its independent uncertain-outcome limit or dropped the reconciliation gate");
     }
     // A system100 is still an unknown result, including a nonzero system code.
     const auto before = bulk.sent.size();
@@ -878,17 +880,17 @@ void uncertain_cancels_preserve_identity_and_budget() {
     group.on_reply(bulk.sent.back().id, {.msgid = 100, .code = 1},
                    OrderManager::Clock::time_point{} + std::chrono::milliseconds(now));
     bulk.poll(group, now + 1000);
-    require(!group.operator_action_required() && bulk.sent.size() == before + 1 &&
+    require(group.operator_action_required() && bulk.sent.size() == before &&
                 bulk.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
-            "system100 spent the bulk business retry budget");
+            "late system100 restarted an exhausted bulk uncertain-outcome budget");
     const auto accepted_at = bulk.ms;
     const auto sent_before_confirmation = bulk.sent.size();
     group.on_reply(bulk.sent.back().id, {.msgid = 186, .num_orders = 1},
                    OrderManager::Clock::time_point{} + std::chrono::milliseconds(accepted_at), 6);
     for (int confirmation = 1; confirmation <= 4; ++confirmation) {
         bulk.poll(group, accepted_at + confirmation * 1100);
-        require(!group.operator_action_required() && bulk.sent.size() == sent_before_confirmation &&
-                    group.orders().at("recovered:100:2001").state == OrderState::PendingCancel,
+        require(group.operator_action_required() && bulk.sent.size() == sent_before_confirmation &&
+                    group.orders().at("recovered:100:2001").state == OrderState::Unknown,
                 "accepted bulk confirmation wait resent or dropped the reconciliation gate");
     }
     live.public_amount_rest = 0;
@@ -897,7 +899,8 @@ void uncertain_cancels_preserve_identity_and_budget() {
     observe(group, live);
     const auto after = bulk.sent.size();
     bulk.poll(group, bulk.ms + 10000);
-    require(group.orders().at("recovered:100:2001").state == OrderState::Cancelled && bulk.sent.size() == after,
+    require(group.orders().at("recovered:100:2001").state == OrderState::Cancelled && bulk.sent.size() == after &&
+                !group.operator_action_required() && !group.cancellations_pending(),
             "authoritative bulk terminal row did not stop retries");
 }
 
@@ -1545,6 +1548,12 @@ void cached_risk_move_races() {
             "mass cancel released a possibly accepted in-flight replacement");
     superseded.on_reply(move_id, {.msgid = 99, .penalty_remain = 1000},
                         OrderManager::Clock::time_point{} + std::chrono::milliseconds(2));
+    require(!superseded.place(request("bulk-still-unacknowledged", 3)).empty(),
+            "Move99 admitted new risk before the broad cancellation was acknowledged");
+    flood.poll(superseded, 1002);
+    superseded.on_reply(flood.sent.back().id, {.msgid = 186, .num_orders = 0},
+                        OrderManager::Clock::time_point{} + std::chrono::milliseconds(1002));
+    superseded.observe_trade_commit(1);
     require(superseded.place(request("fits-after-flood", 3)).empty(),
             "superseded Move99 did not release rejected replacement exposure");
 
@@ -2038,6 +2047,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::bounded_duo_regression<Fixture>();
         moex::connector_host::strict_lost_add_regression<Fixture>();
         moex::connector_host::move_not_applied_regression<Fixture>();
         moex::connector_host::regression::risk_limits::run();

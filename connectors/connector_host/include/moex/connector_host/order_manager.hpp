@@ -45,7 +45,7 @@ struct ManagedOrder {
     std::int64_t order_id{}, remaining{}, executed{};
     bool cancel_requested{}, absence_reply{};
     bool operator_action_required{}, confirmed_by_replication{};
-    bool add_unconfirmed{}, transport_retry_warned{};
+    bool add_unconfirmed{}, transport_retry_warned{}, duo_exhaustion_alert{};
     bool snapshot_missing{};
     bool execution_baseline_known{true};
     std::int64_t sent_utc_seconds{};
@@ -149,12 +149,12 @@ class OrderManager {
         std::int64_t target_order_id{};
         std::int64_t sent_utc_seconds{};
         bool acknowledged{}, transport_retry_warned{}, wait_for_trading{};
-        std::uint32_t business_failures{};
+        std::uint32_t business_failures{}, uncertain_outcomes{};
         std::int32_t submitted_session{};
     };
     struct BulkCancellation {
         std::uint64_t after_commit_sequence{};
-        bool awaiting_reply{true};
+        bool awaiting_reply{true}, uncertain_exhausted{};
     };
     [[nodiscard]] static bool is_bulk_cancel(const Command& command) {
         return command.key.empty() &&

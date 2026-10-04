@@ -245,10 +245,22 @@ int main(int argc, char** argv) {
                                      integer(gen::FieldCode::kFortsSessionstateReplSessionStatePublicState, 1)}}});
             poll(host);
             host.set_kill_switch(false);
+            const auto unconfirmed_mass_error = host.place(
+                {.client_order_id = "before-mass-reconciliation", .isin_id = 1001, .price = "103000", .quantity = 1});
+            test::require(unconfirmed_mass_error.find("mass cancellation") != std::string::npos,
+                          "mass cancellation admitted new risk before a later TRADE view: " + unconfirmed_mass_error);
+            transaction(control, gen::StreamCode::kFortsTradeRepl,
+                        {{.stream_code = gen::StreamCode::kFortsTradeRepl,
+                          .table_code = gen::TableCode::kFortsTradeReplHeartbeat,
+                          .revision = 603,
+                          .fields = {{.field_code = gen::FieldCode::kFortsTradeReplHeartbeatServerTime,
+                                      .kind = fake::FieldKind::Timestamp,
+                                      .unsigned_value = static_cast<std::uint64_t>(utc)}}}});
+            poll(host);
             for (const auto key : {"carry", "restart-working"}) {
-                test::require(
-                    host.place({.client_order_id = key, .isin_id = 1001, .price = "103000", .quantity = 3}).empty(),
-                    "post-clearing Add refused");
+                const auto error =
+                    host.place({.client_order_id = key, .isin_id = 1001, .price = "103000", .quantity = 3});
+                test::require(error.empty(), "post-clearing Add refused: " + error);
                 poll(host);
                 const auto add = control.commands().back();
                 const bool carry = std::string_view(key) == "carry";
