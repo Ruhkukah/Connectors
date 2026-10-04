@@ -114,6 +114,17 @@ add_test(NAME plaza2_full_order_log_test COMMAND plaza2_full_order_log_test)
 
 moex_runtime_test(plaza2_full_order_log_session_test plaza2_cgate/plaza2_full_order_log_session_test.cpp moex_plaza2_trade_session moex_plaza2_cgate_full_order_log)
 
+# Opt-in performance gate; the executable is available in every test build.
+moex_test_target(plaza2_full_order_log_benchmark plaza2_cgate/plaza2_full_order_log_benchmark.cpp
+    plaza2_runtime_test_support moex_connector_host)
+add_dependencies(plaza2_full_order_log_benchmark plaza2_fake_cgate_runtime)
+option(MOEX_ENABLE_PERF_TESTS "Include sustained Full Order Log perf acceptance in CTest" OFF)
+if(MOEX_ENABLE_PERF_TESTS)
+    add_test(NAME plaza2_full_order_log_perf COMMAND plaza2_full_order_log_benchmark
+        "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+    set_tests_properties(plaza2_full_order_log_perf PROPERTIES LABELS "perf;plaza2" TIMEOUT 120)
+endif()
+
 if(MOEX_BUILD_APPS)
     moex_test_target(full_order_log_runner_test_driver full_order_log_runner_test_driver.cpp moex_connector_host)
     moex_test_target(full_order_log_isolation_test full_order_log_isolation_test.cpp plaza2_runtime_test_support moex_connector_host)

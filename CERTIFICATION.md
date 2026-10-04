@@ -8,7 +8,7 @@ The official [certification procedure](https://www.moex.com/files/4xgv6e2x1paqr1
 
 ## Checks and implementation
 
-The automated suite contains 35 tests. Its fake-runtime checks demonstrate implementation behavior; vendor load, replay and full-day acceptance remain separate qualification gates.
+The automated suite covers trading and replication behavior. Its fake-runtime checks demonstrate implementation behavior; vendor load, replay and full-day acceptance remain separate qualification gates.
 
 | Check | Feature or automated check | Live verification |
 |---|---|---|
@@ -53,6 +53,16 @@ The automated suite contains 35 tests. Its fake-runtime checks demonstrate imple
 - Market validity uses the latest committed event_type 1 for the current session, and is invalidated by a later event_type 5. Order readiness uses private stream and session/instrument states independently of AGGR. No fixed session ID is configured.
 - Opening auction: instrument public_state 6 permits Day limit Adds. IOC/FOK and Move are refused, following CGate Appendix C codes 4302 and 4300. Close-only states 8/9 are not declared for new entry. Cancels remain available in non-entry phases (0/2/5/6/8/9).
 - Declare morning/day/evening support as implemented; attach the full-day logs before claiming it was rehearsed. Leave FullOrderLog/public DEALS/COD/RFS unchecked.
+
+## Full Order Log second connection — not yet declared
+
+The first certificate remains AGGR + own-account trading. Full Order Log is implemented as a separate read-only market-data process with its own CGate connection, `app_name` and owner thread, using the same local router. A later certificate or amendment will declare both the trading and market-data connections after qualification. The market-data process creates no publisher or reply listener and cannot submit orders.
+
+The market-data subscription uses the vendor composite listener `p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL`. CGate binds the snapshot to the online log at `info.trades_rev`; the application validates required named fields at OPEN, filters configured ISINs, keeps exact signed d16.5 prices and publishes committed market-by-price depth through the existing read-only DTC server. Composite recovery closes, waits one second and recreates the listener without `replstate`. LifeNum invalidates the book; table-scoped ClearDeleted removes older revisions or clears at MAX. REFDATA must resolve a single matching ID for all configured instruments before opening ORDLOG; partitioned matching remains deferred.
+
+R7 is **not yet declared**. The implementation target is at least 300,000 messages/s through fake-CGate callback, decode, book and commit on the TEST Linux host, callback-to-book p99 below 5 microseconds, commit-to-DTC-queue p99 below 50 microseconds, a full configured-universe snapshot below two seconds, bounded reported memory and no steady-state per-row heap allocations. The separately labelled `perf` test is outside the default gate. Its PR results are offline implementation evidence. Formal R7 acceptance still requires MOEX to feed at least 100,000 messages/s with no lag.
+
+Before any live anonymous ORDLOG/ORDBOOK open, obtain written MOEX/broker entitlement confirmation for the login (or a new entitled login) and the owner's go-ahead. The historical T1 denial was `REPL:ACCESS_DENIED 40969 / 0xA009` on 8 September 2026. The qualified weekday read-only run must confirm snapshot/ONLINE completion and ORDBOOK agreement after 30 minutes, measure exchange-moment-to-commit lag and live rate, and show unchanged trading order-entry p99 while both processes run. These live and MOEX checks remain pending. The runner defaults to 20 displayed levels per side for the existing Kairos subscription, with `--dtc-depth` configurable up to 20,000; all individual orders remain in the internal book. Each configured ISIN receives one consecutive loopback DTC port starting at `--dtc-port` (default 11300). Initial empty books provide a definition and unavailable status, then require a fresh subscription once liquidity exists; subsequent complete depletion is delivered as committed deletions. Individual-order DTC output requires a separate owner request.
 
 ## Operator emergency procedure
 
