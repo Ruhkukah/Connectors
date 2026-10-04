@@ -62,6 +62,7 @@ static void semantics() {
     require(h.book.levels(11, true).at(-1234567) == 2, "cancel removes regardless of nonzero cancel remainder");
     h.begin();
     auto erased = row(h.schema[2], 3, 11, 0, 0, 1, 5);
+    erased.set("replID", std::int64_t{1});
     erased.set("replAct", std::int64_t{1});
     erased.nulls[erased.field("price").index] = 1;
     h.apply(erased);
@@ -80,11 +81,14 @@ static void semantics() {
     require(h.book.order_count() == 1 && h.book.levels(11, true).at(100000) == 4,
             "IOC remainders, NonQuote and multileg excluded; resting IOC-flagged execution applied");
     h.begin();
+    const auto before = h.book.metrics();
     auto excluded = row(h.schema[2], 9, 33, 0, 1);
     excluded.nulls[excluded.field("price").index] = 1;
     h.apply(excluded);
     h.commit();
-    require(h.book.order_count() == 1, "ISIN filter precedes other field validation");
+    require(h.book.order_count() == 1 && h.book.metrics().rows_total == before.rows_total + 1 &&
+                h.book.metrics().rows_filtered == before.rows_filtered + 1,
+            "ISIN filter precedes other field validation and filtered rows enter total rate");
 }
 
 static void recovery() {
@@ -104,7 +108,8 @@ static void recovery() {
     h.clear(2, std::numeric_limits<std::int64_t>::max());
     h.begin();
     h.commit();
-    require(h.book.order_count() == 1 && h.book.levels(22, true).empty(), "ClearDeleted MAX erases affected table");
+    require(h.book.order_count() == 0 && !h.book.valid(),
+            "ClearDeleted MAX resets the composite and awaits a fresh snapshot");
     require(!h.book.on_plaza2_listener_event({.kind = Kind::LifeNum, .unsigned_value = 1}), "first life");
     const auto epoch = h.book.epoch();
     require(!h.book.on_plaza2_listener_event({.kind = Kind::LifeNum, .unsigned_value = 2}), "new life");
@@ -226,12 +231,148 @@ static void allocation_reuse() {
     require(allocations == 0, "no heap allocations on steady callback/decode/book/commit path");
     require(h.book.memory_bytes() < 200000, "reported memory stays bounded");
 }
+static void review_semantics() {
+    Harness h(4, 16);
+    h.online();
+    h.begin();
+    h.commit();
+    require(h.book.valid() && h.book.revision(11) == 1, "empty ONLINE commit has a publishable revision");
+    h.begin();
+    h.add(1, 11, 100000, 10, 1, 1);
+    h.commit();
+    h.begin();
+    h.add(1, 11, 100000, 6, 2, 2, 0x4);
+    h.commit();
+    require(h.book.levels(11, true).at(100000) == 6, "NonQuote fill still updates an admitted order");
+    h.begin();
+    h.add(1, 11, 100000, 6, 0, 3, 0x8000000);
+    h.commit();
+    require(h.book.levels(11, true).empty(), "flagged cancel removes an admitted outright order");
+    h.begin();
+    for (std::int64_t id = 10; id < 16; ++id)
+        h.add(id, 11, 100000, 10, 1, id, 0x4);
+    h.add(15, 11, 100000, 6, 2, 20, 0);
+    h.add(99, 11, 100000, 2, 2, 21, 0);
+    h.commit();
+    const auto counters = h.book.metrics();
+    require(h.book.valid() && counters.excluded_ids == 4 && counters.excluded_evictions == 2 &&
+                counters.ignored_executions == 2 && counters.excluded_executions == 1,
+            "excluded IDs are bounded and unknown executions are counted without recovery");
+    h.begin();
+    h.apply(row(h.schema[0], 2, 11, 200000, 10, 1, 30));
+    h.commit();
+    h.begin();
+    h.add(2, 11, 200000, 8, 2, 40);
+    h.add(2, 11, 200000, 6, 2, 50);
+    h.commit();
+    h.begin();
+    auto stale = row(h.schema[2], 2, 11, 0, 0, 0, 70);
+    stale.set("replID", std::int64_t{40});
+    stale.set("replAct", std::int64_t{1});
+    h.apply(stale);
+    h.commit();
+    require(h.book.order_count() == 1 && h.book.levels(11, true).at(200000) == 6,
+            "replAct of an old operation cannot erase the current order");
+    h.begin();
+    h.add(2, 11, 200000, 4, 2, 45);
+    h.commit();
+    require(h.book.levels(11, true).at(200000) == 6, "an older source operation cannot replace the latest row");
+    h.clear(0, 31);
+    h.begin();
+    h.commit();
+    require(h.book.order_count() == 0, "snapshot-source revision remains available after online updates");
+    h.begin();
+    h.apply(row(h.schema[0], 3, 11, 300000, 5, 1, 80));
+    h.commit();
+    h.begin();
+    h.clear(2, std::numeric_limits<std::int64_t>::max());
+    h.commit();
+    require(!h.book.valid() && h.book.order_count() == 0, "log MAX also clears snapshot-only orders");
+    h.online();
+    h.begin();
+    h.commit();
+    require(!h.book.valid(), "MAX cannot reacquire readiness without a fresh snapshot");
+    h.begin();
+    h.apply(row(h.schema[0], 4, 11, 400000, 3));
+    h.commit();
+    h.online();
+    h.begin();
+    h.commit();
+    require(h.book.valid() && h.book.order_count() == 1, "fresh snapshot and ONLINE recover MAX");
+}
+static void life_time_and_cross() {
+    Harness h;
+    require(!h.book.on_plaza2_listener_event({.kind = Kind::LifeNum, .unsigned_value = 5}), "snapshot life");
+    h.begin();
+    h.apply(row(h.schema[0], 1, 11, 100000, 10));
+    Row info(h.schema[1]);
+    info.set("publication_state", std::int8_t{1});
+    info.set("trades_lifenum", std::int64_t{8});
+    h.apply(info);
+    h.commit();
+    const auto epoch = h.book.epoch();
+    require(!h.book.on_plaza2_listener_event({.kind = Kind::LifeNum, .unsigned_value = 8}), "online log life");
+    h.online();
+    h.begin();
+    h.commit();
+    require(h.book.valid() && h.book.epoch() == epoch && h.book.order_count() == 1,
+            "ORDBOOK life then info-bound ORDLOG life preserves snapshot");
+    require(!h.book.on_plaza2_listener_event({.kind = Kind::LifeNum, .unsigned_value = 5}), "unchanged snapshot life");
+    require(h.book.valid() && h.book.life_state().info_trades_lifenum == 8,
+            "a repeated snapshot life does not masquerade as a log-life change");
+    const auto utc =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    h.begin();
+    auto trade = row(h.schema[2], 1, 11, 100000, 6, 2, 2);
+    trade.set("moment_ns", static_cast<std::uint64_t>(utc - 2000000));
+    h.apply(trade);
+    h.commit();
+    require(h.book.exchange_moment_ns(11) == static_cast<std::uint64_t>(utc - 2000000) &&
+                h.book.changes()[0].exchange_moment_ns == h.book.exchange_moment_ns(11),
+            "exact source ns reaches committed changes");
+    require(h.book.metrics().lag_samples == 1 && h.book.metrics().lag_last_ns >= 2000000,
+            "UTC exchange-to-commit lag is aggregated");
+    std::size_t transitions{};
+    h.book.on_crossed = [&](auto isin, bool) {
+        require(isin == 11, "crossed scope");
+        ++transitions;
+    };
+    h.begin();
+    h.add(2, 11, 90000, 2, 1, 3, 1, 2);
+    h.commit();
+    require(h.book.crossed(11) && !h.book.crossed(22) && transitions == 1, "crossed committed instrument is flagged");
+    h.begin();
+    h.add(1, 11, 100000, 0, 0, 4);
+    h.commit();
+    require(!h.book.crossed(11) && transitions == 2, "uncross transition is counted once");
+    require(!h.book.on_plaza2_listener_event({.kind = Kind::LifeNum, .unsigned_value = 9}), "changed online life");
+    require(!h.book.valid() && h.book.order_count() == 0, "actual life change clears the generation");
+    Harness changed_info;
+    changed_info.begin();
+    Row first(changed_info.schema[1]);
+    first.set("publication_state", std::int8_t{1});
+    first.set("trades_lifenum", std::int64_t{8});
+    changed_info.apply(first);
+    changed_info.commit();
+    changed_info.online();
+    changed_info.begin();
+    changed_info.commit();
+    changed_info.begin();
+    first.set("trades_lifenum", std::int64_t{9});
+    changed_info.apply(first);
+    require(static_cast<bool>(changed_info.book.on_plaza2_listener_event({.kind = Kind::TransactionCommit})) &&
+                !changed_info.book.valid(),
+            "changed authoritative info log life requests a fresh bootstrap");
+}
 int main() {
     try {
         semantics();
         recovery();
         independent_snapshot();
         allocation_reuse();
+        review_semantics();
+        life_time_and_cross();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
         return 1;

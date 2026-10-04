@@ -5,6 +5,7 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace moex::plaza2::cgate {
 namespace {
@@ -48,7 +49,8 @@ class BookArena final : public std::pmr::memory_resource {
     }
 
   public:
-    BookArena(std::size_t orders, std::size_t levels) : nodes_(orders + levels * 5 + 32), large_(orders * 24 + 4096) {}
+    BookArena(std::size_t orders, std::size_t levels)
+        : nodes_(orders * 2 + levels * 5 + 32), large_(orders * 48 + 4096) {}
     std::size_t bytes() const {
         return nodes_.size() * sizeof(Block) + large_.size();
     }
@@ -62,7 +64,7 @@ struct BoundField {
 };
 struct Binding {
     std::size_t index{}, row_size{};
-    BoundField isin, order, rev, act, price, rest, status, dir, action;
+    BoundField isin, order, row, rev, act, price, rest, status, dir, action, moment;
 };
 BoundField field(const Plaza2RawTableBinding& table, std::string_view name, std::string_view type, std::size_t size) {
     const auto i =
@@ -76,12 +78,14 @@ Binding bind(const Plaza2RawTableBinding& t, bool log) {
     Binding b{.index = t.index, .row_size = t.row_size};
     b.isin = field(t, "isin_id", "i4", 4);
     b.order = field(t, "public_order_id", "i8", 8);
+    b.row = field(t, "replID", "i8", 8);
     b.rev = field(t, "replRev", "i8", 8);
     b.act = field(t, "replAct", "i8", 8);
     b.price = field(t, "price", "d16.5", 11);
     b.rest = field(t, "public_amount_rest", "i8", 8);
     b.status = field(t, "xstatus", "i8", 8);
     b.dir = field(t, "dir", "i1", 1);
+    b.moment = field(t, "moment_ns", "u8", 8);
     if (log)
         b.action = field(t, "public_action", "i1", 1);
     return b;
@@ -97,27 +101,39 @@ template <class T> T read(const Plaza2ListenerEvent& e, const BoundField& f) {
 struct Plaza2FullOrderLog::Impl {
     struct Instrument {
         LevelMap working[2], published[2], dirty[2];
-        std::uint64_t revision{};
+        std::uint64_t revision{}, moment{}, committed_moment{};
+        bool touched{}, crossed{};
         explicit Instrument(std::pmr::memory_resource* r)
             : working{LevelMap(r), LevelMap(r)}, published{LevelMap(r), LevelMap(r)}, dirty{LevelMap(r), LevelMap(r)} {}
     };
+    struct Source {
+        std::int64_t row{}, revision{};
+    };
     struct Order {
-        std::int64_t price{}, quantity{}, revision{};
-        std::size_t instrument{}, table{};
+        std::int64_t price{}, quantity{};
+        Source source[2]{};
+        std::size_t instrument{};
+        unsigned current{};
         bool bid{};
     };
     BookArena arena;
     std::pmr::unordered_map<std::int64_t, Order> orders;
+    std::pmr::unordered_set<std::int64_t> excluded;
     std::vector<std::int32_t> isins;
     std::vector<Instrument> books;
     std::vector<FullOrderLogLevelChange> changes;
     std::size_t order_capacity, level_capacity, active_levels{}, dirty_levels{}, committed_count{};
     Binding log, snapshot;
-    std::uint64_t epoch{}, life{};
-    bool have_life{}, bound{}, online{}, transaction{}, valid{};
+    BoundField info_life, info_publication;
+    std::size_t info_index{};
+    FullOrderLogMetrics metrics;
+    std::uint64_t epoch{}, life{}, initial_life{}, info_log_life{}, pending_log_life{};
+    bool have_life{}, have_info{}, pending_info{}, bound{}, online{}, transaction{}, valid{}, waiting_snapshot{},
+        snapshot_seen{};
     Clock::time_point committed_at{};
     Impl(std::span<const std::int32_t> ids, std::size_t oc, std::size_t lc)
-        : arena(oc, lc), orders(&arena), isins(ids.begin(), ids.end()), order_capacity(oc), level_capacity(lc) {
+        : arena(oc, lc), orders(&arena), excluded(&arena), isins(ids.begin(), ids.end()), order_capacity(oc),
+          level_capacity(lc) {
         if (!oc || !lc || ids.empty())
             throw std::invalid_argument("Full Order Log requires instruments and capacities");
         std::sort(isins.begin(), isins.end());
@@ -125,6 +141,8 @@ struct Plaza2FullOrderLog::Impl {
             throw std::invalid_argument("Full Order Log duplicate instrument");
         orders.max_load_factor(0.7f);
         orders.reserve(oc);
+        excluded.max_load_factor(0.7f);
+        excluded.reserve(oc);
         books.reserve(isins.size());
         for (auto id : isins) {
             if (id <= 0)
@@ -139,6 +157,7 @@ struct Plaza2FullOrderLog::Impl {
     }
     void clear() {
         orders.clear();
+        excluded.clear();
         changes.clear();
         active_levels = dirty_levels = committed_count = 0;
         for (auto& b : books) {
@@ -147,11 +166,21 @@ struct Plaza2FullOrderLog::Impl {
                 b.published[side].clear();
                 b.dirty[side].clear();
             }
-            b.revision = 0;
+            b.revision = b.moment = b.committed_moment = 0;
+            b.touched = b.crossed = false;
         }
-        valid = online = transaction = false;
+        valid = online = transaction = have_info = pending_info = snapshot_seen = false;
+        info_log_life = pending_log_life = 0;
         committed_at = {};
         ++epoch;
+    }
+    void exclude(std::int64_t id) {
+        ++metrics.excluded_adds;
+        if (!excluded.contains(id) && excluded.size() == order_capacity) {
+            excluded.erase(excluded.begin());
+            ++metrics.excluded_evictions;
+        }
+        excluded.insert(id);
     }
     void adjust(const Order& o, std::int64_t delta) {
         auto& book = books[o.instrument];
@@ -183,6 +212,11 @@ struct Plaza2FullOrderLog::Impl {
         } else
             d->second = quantity;
     }
+    void touch(std::size_t index, const Plaza2ListenerEvent& e, const Binding& b) {
+        auto& book = books[index];
+        book.moment = std::max(book.moment, read<std::uint64_t>(e, b.moment));
+        book.touched = true;
+    }
     void erase(std::pmr::unordered_map<std::int64_t, Order>::iterator i) {
         adjust(i->second, -i->second.quantity);
         orders.erase(i);
@@ -190,51 +224,86 @@ struct Plaza2FullOrderLog::Impl {
     void row(const Plaza2ListenerEvent& e) {
         if (!e.raw_table)
             throw std::invalid_argument("Full Order Log missing row binding");
+        if (e.raw_table->name == "info") {
+            if (!transaction || e.table_index != info_index)
+                throw std::invalid_argument("Full Order Log invalid info delivery");
+            const auto publication = read<std::int8_t>(e, info_publication);
+            const auto value = read<std::int64_t>(e, info_life);
+            if (publication < 0 || publication > 1 || value < 0)
+                throw std::invalid_argument("Full Order Log invalid snapshot info");
+            if (publication == 1) {
+                pending_log_life = value;
+                pending_info = true;
+                snapshot_seen = true;
+            }
+            return;
+        }
         const bool is_log = e.raw_table->name == "orders_log";
         if (!is_log && e.raw_table->name != "orders")
-            return; // includes multileg tables
+            return;
+        ++metrics.rows_total;
         const auto& b = is_log ? log : snapshot;
         if (!bound || e.table_index != b.index)
             throw std::invalid_argument("Full Order Log unknown table index");
+        if (!is_log)
+            snapshot_seen = true;
         const auto index = instrument(read<std::int32_t>(e, b.isin));
-        if (index == isins.size())
-            return; // no other field decoded for excluded ISINs
-        if (!transaction)
-            throw std::invalid_argument("Full Order Log row outside transaction");
-        if (e.raw_payload.size() < b.row_size)
-            throw std::invalid_argument("Full Order Log truncated row");
-        const auto id = read<std::int64_t>(e, b.order), rev = read<std::int64_t>(e, b.rev);
+        if (index == isins.size()) {
+            ++metrics.rows_filtered;
+            return;
+        }
+        if (!transaction || e.raw_payload.size() < b.row_size)
+            throw std::invalid_argument("Full Order Log invalid row transaction or size");
+        const auto id = read<std::int64_t>(e, b.order), rev = read<std::int64_t>(e, b.rev),
+                   row_id = read<std::int64_t>(e, b.row);
         const auto act = read<std::int64_t>(e, b.act);
+        const unsigned source = is_log ? 1 : 0;
         auto i = orders.find(id);
         if (id <= 0 || rev < 0)
             throw std::invalid_argument("Full Order Log invalid identity or revision");
         if (i != orders.end() && i->second.instrument != index)
             throw std::invalid_argument("Full Order Log order identity contradicts instrument");
         if (act) {
-            if (i != orders.end())
+            if (i != orders.end() && i->second.current == source && i->second.source[source].row == row_id &&
+                rev >= i->second.source[source].revision) {
+                touch(index, e, b);
                 erase(i);
+            } else
+                ++metrics.retired_rows_ignored;
             return;
         }
-        const auto status = static_cast<std::uint64_t>(read<std::int64_t>(e, b.status));
-        if (status & (kNonQuote | kMultileg))
+        if (i != orders.end() && rev < i->second.source[source].revision) {
+            ++metrics.retired_rows_ignored;
             return;
+        }
         const auto action = is_log ? read<std::int8_t>(e, b.action) : 1;
         if (action < 0 || action > 2)
             throw std::invalid_argument("Full Order Log unknown action");
         if (action == 0) {
-            if (i != orders.end())
+            if (i != orders.end()) {
+                touch(index, e, b);
                 erase(i);
+            }
+            excluded.erase(id);
             return;
         }
-        // IOC orders never leave a queued remainder. Execution rows for a
-        // resting order still update it even if the operation carries IOC.
-        if (action == 1 && (status & kIoc))
+        if (i == orders.end() && action == 2) {
+            ++metrics.ignored_executions;
+            if (excluded.contains(id))
+                ++metrics.excluded_executions;
             return;
+        }
+        const auto status = static_cast<std::uint64_t>(read<std::int64_t>(e, b.status));
+        if (i == orders.end() && (status & (kNonQuote | kMultileg | kIoc))) {
+            exclude(id);
+            return;
+        }
         const auto quantity = read<std::int64_t>(e, b.rest);
         const auto dir = read<std::int8_t>(e, b.dir);
         const auto price = public_wire::decimal_scaled(read<public_wire::Bcd16_5>(e, b.price));
         if (!price || quantity < 0 || (dir != 1 && dir != 2))
             throw std::invalid_argument("Full Order Log invalid price, remainder, or direction");
+        touch(index, e, b);
         if (i != orders.end()) {
             auto& o = i->second;
             if (o.price != *price || o.bid != (dir == 1))
@@ -247,19 +316,25 @@ struct Plaza2FullOrderLog::Impl {
             }
             adjust(o, quantity - o.quantity);
             o.quantity = quantity;
-            o.revision = rev;
-            o.table = b.index;
-        } else if (quantity && action == 1) {
+            o.source[source] = {row_id, rev};
+            o.current = source;
+        } else if (quantity) {
             if (orders.size() == order_capacity)
                 throw std::bad_alloc();
-            Order o{*price, quantity, rev, index, b.index, dir == 1};
+            Order o{.price = *price, .quantity = quantity, .instrument = index, .current = source, .bid = dir == 1};
+            o.source[source] = {row_id, rev};
             adjust(o, quantity);
             orders.emplace(id, o);
-        } else if (quantity && !(status & kIoc))
-            throw std::invalid_argument("Full Order Log execution references missing order");
+            excluded.erase(id);
+        }
     }
-    void commit() {
+    void commit(Plaza2FullOrderLog& owner) {
+        if (online && pending_info && have_info && pending_log_life != info_log_life)
+            throw std::invalid_argument("Full Order Log snapshot log life changed; fresh snapshot required");
         changes.clear();
+        const auto utc =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
         for (std::size_t n = 0; n < books.size(); ++n) {
             auto& b = books[n];
             bool changed = false;
@@ -271,7 +346,7 @@ struct Plaza2FullOrderLog::Impl {
                     if (old == quantity)
                         continue;
                     changed = true;
-                    changes.push_back({isins[n], side == 0, price, quantity});
+                    changes.push_back({isins[n], side == 0, price, quantity, b.moment});
                     if (!quantity) {
                         if (i != levels.end())
                             levels.erase(i);
@@ -282,14 +357,39 @@ struct Plaza2FullOrderLog::Impl {
                 }
                 b.dirty[side].clear();
             }
-            if (changed)
+            if (changed || (online && !b.revision))
                 ++b.revision;
+            const bool cross = !b.published[0].empty() && !b.published[1].empty() &&
+                               b.published[0].rbegin()->first >= b.published[1].begin()->first;
+            if (cross != b.crossed) {
+                b.crossed = cross;
+                ++metrics.crossed_transitions;
+                if (owner.on_crossed)
+                    owner.on_crossed(isins[n], cross);
+            }
+            b.committed_moment = b.moment;
+            if (online && b.touched && b.moment) {
+                const auto now = static_cast<std::uint64_t>(utc);
+                if (b.moment > now)
+                    ++metrics.exchange_ahead_of_clock;
+                const auto lag = b.moment > now ? 0 : now - b.moment;
+                ++metrics.lag_samples;
+                metrics.lag_last_ns = lag;
+                metrics.lag_max_ns = std::max(metrics.lag_max_ns, lag);
+                metrics.lag_sum_ns += std::min(lag, UINT64_MAX - metrics.lag_sum_ns);
+            }
+            b.touched = false;
+        }
+        if (pending_info) {
+            info_log_life = pending_log_life;
+            have_info = true;
+            pending_info = false;
         }
         dirty_levels = 0;
         committed_count = orders.size();
         transaction = false;
         committed_at = Clock::now();
-        valid = online;
+        valid = online && !waiting_snapshot;
     }
 };
 
@@ -298,6 +398,7 @@ Plaza2FullOrderLog::Plaza2FullOrderLog(std::span<const std::int32_t> ids, std::s
 Plaza2FullOrderLog::~Plaza2FullOrderLog() = default;
 void Plaza2FullOrderLog::reset() {
     impl_->clear();
+    impl_->waiting_snapshot = false;
     if (on_invalidate)
         on_invalidate();
 }
@@ -315,6 +416,8 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
         case Kind::Open: {
             reset();
             p.bound = false;
+            p.have_life = false;
+            p.life = p.initial_life = 0;
             bool log = false, snapshot = false, info = false;
             for (const auto& t : e.raw_tables) {
                 if (t.name == "orders_log") {
@@ -325,8 +428,9 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
                     snapshot = true;
                 } else if (t.name == "info") {
                     field(t, "trades_rev", "i8", 8);
-                    field(t, "trades_lifenum", "i8", 8);
-                    field(t, "publication_state", "i1", 1);
+                    p.info_life = field(t, "trades_lifenum", "i8", 8);
+                    p.info_publication = field(t, "publication_state", "i1", 1);
+                    p.info_index = t.index;
                     info = true;
                 }
             }
@@ -346,16 +450,25 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
         case Kind::TransactionCommit:
             if (!p.transaction)
                 throw std::invalid_argument("Full Order Log commit without begin");
-            p.commit();
+            p.commit(*this);
             if (p.valid && on_commit)
                 on_commit(*this);
             break;
         case Kind::Online:
-            p.online = true;
+            if (!p.waiting_snapshot || p.snapshot_seen) {
+                p.online = true;
+                p.waiting_snapshot = false;
+            }
             break; // visibility waits for the following commit
         case Kind::LifeNum:
-            if (p.have_life && p.life != e.unsigned_value)
+            ++p.metrics.life_events;
+            if (p.have_life && p.life != e.unsigned_value &&
+                !(p.have_info && (p.info_log_life == e.unsigned_value || p.initial_life == e.unsigned_value))) {
                 reset();
+                p.waiting_snapshot = true;
+            }
+            if (!p.have_life)
+                p.initial_life = e.unsigned_value;
             p.life = e.unsigned_value;
             p.have_life = true;
             break;
@@ -364,9 +477,17 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
                 break;
             if (e.raw_table->index != e.table_index)
                 throw std::invalid_argument("Full Order Log ClearDeleted index mismatch");
+            if (e.signed_value == std::numeric_limits<std::int64_t>::max()) {
+                const bool transaction = p.transaction;
+                reset();
+                p.waiting_snapshot = true;
+                p.transaction = transaction;
+                break;
+            }
+            const unsigned source = e.raw_table->name == "orders_log" ? 1 : 0;
             for (auto i = p.orders.begin(); i != p.orders.end();) {
-                if (i->second.table == e.table_index && (e.signed_value == std::numeric_limits<std::int64_t>::max() ||
-                                                         i->second.revision < e.signed_value)) {
+                const auto& row = i->second.source[source];
+                if (row.row && row.revision < e.signed_value) {
                     auto old = i++;
                     p.erase(old);
                 } else
@@ -395,6 +516,25 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
 }
 bool Plaza2FullOrderLog::valid() const noexcept {
     return impl_->valid;
+}
+bool Plaza2FullOrderLog::crossed(std::int32_t isin) const noexcept {
+    const auto n = impl_->instrument(isin);
+    return n < impl_->books.size() && impl_->books[n].crossed;
+}
+std::uint64_t Plaza2FullOrderLog::exchange_moment_ns(std::int32_t isin) const noexcept {
+    const auto n = impl_->instrument(isin);
+    return n < impl_->books.size() ? impl_->books[n].committed_moment : 0;
+}
+FullOrderLogMetrics Plaza2FullOrderLog::metrics() const noexcept {
+    auto result = impl_->metrics;
+    result.excluded_ids = impl_->excluded.size();
+    return result;
+}
+FullOrderLogLifeState Plaza2FullOrderLog::life_state() const noexcept {
+    return {impl_->life, impl_->info_log_life, impl_->have_info};
+}
+bool Plaza2FullOrderLog::should_log_listener_event(const Plaza2ListenerEvent& e) const noexcept {
+    return e.kind != Plaza2ListenerEventKind::StreamData || (e.raw_table && e.raw_table->name == "sys_events");
 }
 std::uint64_t Plaza2FullOrderLog::epoch() const noexcept {
     return impl_->epoch;
