@@ -196,7 +196,9 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
     // These are explicit operator bindings until an unambiguous committed
     // fut_vcb join supplies the source values below.
     out.currency = config.target_currency;
-    out.transport_active = host.started() && health.aggr == 3 && status.transport_active;
+    const bool full_order_log = !config.transport.host.full_order_log_stream.settings.empty();
+    out.transport_active = full_order_log ? host.started() && health.connection == 3 && health.full_order_log == 3
+                                          : host.started() && health.aggr == 3 && status.transport_active;
     out.snapshot_complete = status.snapshot_complete;
     const bool matching_ready =
         status.ready_event && status.ready_event->sess_id == out.target_session_id && status.session_data_ready;
@@ -298,8 +300,8 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
                                   online_stream(data, health, StreamCode::kFortsRefdataRepl) &&
                                   online_stream(data, health, StreamCode::kFortsSessionstateRepl) &&
                                   online_stream(data, health, StreamCode::kFortsInstrumentstateRepl);
-    out.refdata_metadata_current =
-        !out.underlying_board.empty() && target_instrument_refdata_current && !operator_binding_conflict;
+    out.refdata_metadata_current = !out.underlying_board.empty() && target_instrument_refdata_current &&
+                                   !operator_binding_conflict && (!full_order_log || (healthy && identity_current));
     out.session_tradable = identity_current && session_status == std::optional<std::int32_t>{1};
     out.instrument_tradable = identity_current && instrument_status == std::optional<std::int32_t>{1};
     out.source_consistent = healthy && identity_current && out.transport_active && out.snapshot_complete &&

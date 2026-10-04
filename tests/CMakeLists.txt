@@ -113,3 +113,15 @@ target_link_libraries(plaza2_full_order_log_test PRIVATE moex_plaza2_cgate_full_
 add_test(NAME plaza2_full_order_log_test COMMAND plaza2_full_order_log_test)
 
 moex_runtime_test(plaza2_full_order_log_session_test plaza2_cgate/plaza2_full_order_log_session_test.cpp moex_plaza2_trade_session moex_plaza2_cgate_full_order_log)
+
+if(MOEX_BUILD_APPS)
+    moex_test_target(full_order_log_runner_test_driver full_order_log_runner_test_driver.cpp moex_connector_host)
+    moex_test_target(full_order_log_isolation_test full_order_log_isolation_test.cpp plaza2_runtime_test_support moex_connector_host)
+    add_dependencies(full_order_log_isolation_test moexctl full_order_log_runner_test_driver plaza2_fake_cgate_runtime)
+    add_test(NAME full_order_log_isolation_test COMMAND full_order_log_isolation_test
+        "$<TARGET_FILE:moexctl>" "$<TARGET_FILE:full_order_log_runner_test_driver>"
+        "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+    set_tests_properties(full_order_log_isolation_test PROPERTIES LABELS "integration;plaza2;sanitizer" TIMEOUT 30)
+endif()
+
+moex_test(full_order_log_dtc_source_test full_order_log_dtc_source_test.cpp moex_connector_host)
