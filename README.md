@@ -11,12 +11,12 @@ The read-only DTC server publishes market data for consumers such as Kairos. Tra
 ## Build and test
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-`BUILD_TESTING=OFF` omits the fake runtime and test targets. `MOEX_BUILD_APPS=OFF` builds the libraries without operator applications. The startup log identifies product version 1.0.0; the DTC receipt also includes the source revision when the checkout provides one.
+`BUILD_TESTING=OFF` omits the fake runtime and test targets. `MOEX_BUILD_APPS=OFF` builds the libraries without operator applications. The `moexctl` startup record identifies product version 1.0.0, `source_git_sha` and the executable SHA-256; the DTC receipt also includes the source revision when the checkout provides one.
 
 Useful focused checks:
 

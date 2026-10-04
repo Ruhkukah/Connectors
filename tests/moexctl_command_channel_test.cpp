@@ -2,6 +2,7 @@
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 #include "scope_exit.hpp"
 #include "command_socket.hpp"
+#include "command_input.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -211,7 +212,7 @@ void no_posts(const std::filesystem::path& log) {
     test::require(contents.find("\"event\":\"command\"") == std::string::npos,
                   "read-only CLI test posted a trading command");
 }
-std::string raw_command(const std::filesystem::path& log, std::string_view frame) {
+std::string raw_command(const std::filesystem::path& log, std::string_view frame, bool disconnect = false) {
     const auto fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     test::require(fd >= 0, "raw command socket failed");
     sockaddr_un address{};
@@ -225,6 +226,11 @@ std::string raw_command(const std::filesystem::path& log, std::string_view frame
                         std::string(frame);
     const auto written = connected == 0 ? ::write(fd, framed.data(), framed.size()) : -1;
     std::string response;
+    if (disconnect) {
+        ::close(fd);
+        test::require(written == static_cast<ssize_t>(framed.size()), "partial socket write failed");
+        return {};
+    }
     if (written == static_cast<ssize_t>(framed.size())) {
         pollfd descriptor{.fd = fd, .events = POLLIN};
         if (::poll(&descriptor, 1, 3000) > 0) {
@@ -358,6 +364,68 @@ int main(int argc, char** argv) {
             std::cerr << name << ": " << error.what() << '\n';
         }
     };
+    scenario("socket permissions and peer ownership", [&] {
+        using namespace moex::connector_host;
+        int peers[2];
+        test::require(::socketpair(AF_UNIX, SOCK_STREAM, 0, peers) == 0, "peer credential fixture failed");
+        ScopeExit close_peers([&] {
+            ::close(peers[0]);
+            ::close(peers[1]);
+        });
+        test::require(command_socket_detail::owned_peer(peers[0]) &&
+                          !command_socket_detail::owned_peer(peers[0], ::geteuid() ^ 1) &&
+                          !command_socket_detail::owned_peer(-1),
+                      "command peer ownership did not fail closed");
+        const auto mask = ::umask(0077);
+        ScopeExit restore_mask([&] { ::umask(mask); });
+        const auto path = root / "permission.sock";
+        {
+            CommandSocket socket(path);
+            const auto current_mask = ::umask(0077);
+            struct stat endpoint {};
+            test::require(current_mask == 0077 && ::lstat(path.c_str(), &endpoint) == 0 && S_ISSOCK(endpoint.st_mode) &&
+                              (endpoint.st_mode & 0777) == 0600,
+                          "command socket was not private or changed the process umask");
+            test::require(::unlink(path.c_str()) == 0, "socket replacement fixture failed");
+            std::ofstream replacement(path);
+            replacement << "preserve replacement";
+        }
+        test::require(std::filesystem::is_regular_file(path), "socket destructor unlinked a replacement path");
+        bool failed{};
+        try {
+            CommandSocket socket(root / "missing-directory" / "bind.sock");
+        } catch (const std::runtime_error&) {
+            failed = true;
+        }
+        test::require(failed && ::umask(0077) == 0077, "failed bind leaked the temporary umask");
+        const auto link = root / "symlink.sock";
+        test::require(::symlink(path.c_str(), link.c_str()) == 0, "symlink fixture failed");
+        failed = false;
+        try {
+            CommandSocket socket(link);
+        } catch (const std::runtime_error&) {
+            failed = true;
+        }
+        test::require(failed && std::filesystem::is_symlink(link) && std::filesystem::is_regular_file(path),
+                      "command bind followed or removed a symlink");
+    });
+    scenario("EOF audit is bounded and clears partial input", [&] {
+        moex::connector_host::CommandInput input;
+        unsigned refused{};
+        std::string last;
+        const auto line = [&](const auto& value) { last = value; };
+        input.feed("kill on", line, [](auto) {});
+        input.finish([&](auto value, auto error) {
+            ++refused;
+            test::require(value == "kill on" && error == "incomplete command at input EOF", "partial EOF audit lost");
+        });
+        input.feed("status\n", line, [](auto) {});
+        input.finish([&](auto, auto) { ++refused; });
+        test::require(last == "status" && refused == 1, "EOF retained partial bytes or doubled a refusal");
+        input.feed(std::string(65537, 'x'), line, [&](auto) { ++refused; });
+        input.finish([&](auto, auto) { ++refused; });
+        test::require(refused == 2, "oversized input was audited twice on EOF");
+    });
     scenario("expired socket frame never dispatches", [&] { expired_frame(root / "expired.sock"); });
     scenario("command client rejects a wrong nonce", [&] {
         const auto path = root / "wrong-nonce.sock";
@@ -637,6 +705,29 @@ int main(int argc, char** argv) {
         test::require(owner.wait() == 0, "EOF host shutdown failed");
         no_posts(log);
     });
+    scenario("partial stdin EOF is audited", [&] {
+        const auto log = root / "partial-eof.ndjson";
+        Child owner(run_arguments(executable, fixture, log, "cli_partial_eof"), root / "partial-eof.err");
+        ready(owner, [&] { owner.send("status\n"); });
+        const std::string partial = "kill on";
+        owner.send(partial);
+        owner.close_input();
+        std::this_thread::sleep_for(200ms);
+        const auto status = remote_command(executable, log, "status");
+        test::require(status.find("\"reconstructing\":false") != std::string::npos,
+                      "partial stdin EOF stopped the owner loop");
+        remote_command(executable, log, "quit");
+        test::require(owner.wait() == 0, "partial EOF owner did not stop");
+        std::ifstream journal(log);
+        const std::string contents((std::istreambuf_iterator<char>(journal)), {});
+        journal_input(contents, partial, "stdin");
+        test::require(contents.find("incomplete command at input EOF") != std::string::npos,
+                      "partial stdin EOF was silently discarded");
+        test::require(contents.substr(0, contents.find("\"line\":\"quit\"")).find("\"event\":\"kill_switch\"") ==
+                          std::string::npos,
+                      "an unterminated stdin command executed before quit");
+        no_posts(log);
+    });
     scenario("UNIX command channel", [&] {
         const auto log = root / "socket.ndjson";
         Child owner(run_arguments(executable, fixture, log, "cli_socket"), root / "socket.err");
@@ -719,6 +810,11 @@ int main(int argc, char** argv) {
                           "CLI refusal fixture was admitted");
         test::require(raw_command(log, "status\nkill on\n").find("\"ok\":false") != std::string::npos,
                       "malformed socket frame was admitted");
+        const std::string socket_partial = "kill on";
+        raw_command(log, socket_partial, true);
+        std::this_thread::sleep_for(100ms);
+        test::require(remote_command(executable, log, "status").find("\"reconstructing\":false") != std::string::npos,
+                      "partial socket disconnect stopped the owner loop");
         test::require(raw_command(log, std::string(65537, 'x') + "\n").find("\"ok\":false") != std::string::npos,
                       "oversized socket frame was admitted");
         // An oversized stdin line is discarded; its refusal still needs an audit record.
@@ -749,6 +845,10 @@ int main(int argc, char** argv) {
         journal_input(contents, socket_parse, "command_socket");
         journal_input(contents, socket_admission, "command_socket");
         journal_input(contents, "status\nkill on\n", "command_socket");
+        journal_input(contents, socket_partial, "command_socket");
+        test::require(contents.find("incomplete command disconnected") != std::string::npos,
+                      "partial socket disconnect was not audited");
+
         std::size_t socket_overflow{}, stdin_overflow{};
         std::istringstream records(contents);
         std::string record;
@@ -760,6 +860,9 @@ int main(int argc, char** argv) {
             }
         }
         test::require(socket_overflow == 1 && stdin_overflow == 1, "CLI overflow refusals omitted/doubled");
+        test::require(contents.substr(0, contents.find("\"line\":\"quit\"")).find("\"event\":\"kill_switch\"") ==
+                          std::string::npos,
+                      "a second or unterminated socket command executed before quit");
         no_posts(log);
     });
     scenario("quit refuses Working orders", [&] {
@@ -775,12 +878,12 @@ int main(int argc, char** argv) {
         test::require(owner.wait() == 0, "forced quit did not stop host");
         std::ifstream journal(log);
         std::string record;
-        bool incomplete{};
+        unsigned incomplete{};
         while (std::getline(journal, record))
-            incomplete |= record.find("\"event\":\"cancel_drain\"") != std::string::npos &&
+            incomplete += record.find("\"event\":\"cancel_drain\"") != std::string::npos &&
                           field(record, "reason") == "quit" && field(record, "outcome") == "incomplete" &&
                           record.find("\"working_orders\":true") != std::string::npos;
-        test::require(incomplete, "forced quit falsely reported a completed cancellation drain");
+        test::require(incomplete == 2, "refused/forced quit drain outcomes were omitted or reported completed");
     });
     scenario("cancel-all plus quit drains", [&] {
         const auto log = root / "quit-drain.ndjson";

@@ -1,6 +1,7 @@
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
 #include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 #include "moex/plaza2/cgate/plaza2_field_read_audit.hpp"
+#include "moex/plaza2/cgate/plaza2_snapshot_index.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,7 +13,6 @@
 #include <limits>
 #include <optional>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -2611,9 +2611,12 @@ struct Plaza2PrivateStateProjector::Impl {
         if (found == order_view_index.end())
             return;
         const auto slot = found->second;
+        if (slot >= order_snapshots.size()) {
+            staged.rebuild_order_view = true;
+            return;
+        }
         if (slot != order_snapshots.size() - 1) {
-            order_snapshots[slot] = std::move(order_snapshots.back());
-            const auto& row = order_snapshots[slot];
+            const auto& row = order_snapshots.back();
             const auto moved = orders_by_key.find_identity({.surface = order_surface(row),
                                                             .multileg = row.multileg,
                                                             .public_order_id = row.public_order_id,
@@ -2621,9 +2624,13 @@ struct Plaza2PrivateStateProjector::Impl {
                                                             .ext_id = row.ext_id,
                                                             .client_code = row.client_code},
                                                            true);
-            if (moved == orders_by_key.end())
-                throw std::logic_error("order snapshot identity missing after row deletion");
-            order_view_index.at(moved->first) = slot;
+            // If a view invariant is lost, rebuild from the final committed map
+            // instead of throwing after partially moving the published view.
+            if (moved == orders_by_key.end() || !detail::rebind_snapshot_slot(order_view_index, moved->first, slot)) {
+                staged.rebuild_order_view = true;
+                return;
+            }
+            order_snapshots[slot] = std::move(order_snapshots.back());
         }
         order_snapshots.pop_back();
         order_view_index.erase(found);
@@ -2633,15 +2640,24 @@ struct Plaza2PrivateStateProjector::Impl {
         if (found == trade_view_index.end())
             return;
         const auto slot = found->second;
+        if (slot >= trade_snapshots.size()) {
+            staged.rebuild_trade_view = true;
+            return;
+        }
         if (slot != trade_snapshots.size() - 1) {
+            const auto& moved = trade_snapshots.back();
+            if (!detail::rebind_snapshot_slot(trade_view_index, TradeKey{moved.multileg, moved.id_deal}, slot)) {
+                staged.rebuild_trade_view = true;
+                return;
+            }
             trade_snapshots[slot] = std::move(trade_snapshots.back());
-            const auto& moved = trade_snapshots[slot];
-            trade_view_index.at({moved.multileg, moved.id_deal}) = slot;
         }
         trade_snapshots.pop_back();
         trade_view_index.erase(found);
     }
 
+    // Commit avoids intentional invariant exceptions. Rebuilding/growing the
+    // owned snapshots can still allocate; allocation failure is not suppressed.
     void commit_transaction(const projection::EngineState& state) {
         if (!staged.active) {
             return;
@@ -2677,7 +2693,14 @@ struct Plaza2PrivateStateProjector::Impl {
                                          membership_stable && !instrument_snapshots.empty();
             if (row_update_only) {
                 for (const auto isin : staged.instrument_isins) {
-                    auto& source = instruments_by_isin.at(isin);
+                    const auto found = instruments_by_isin.find(isin);
+                    if (found == instruments_by_isin.end()) {
+                        select_future_session_membership();
+                        rebuild_future_vcb();
+                        rebuild_instruments();
+                        break;
+                    }
+                    auto& source = found->second;
                     if (staged.touched_streams.contains(StreamCode::kFortsRefdataRepl))
                         join_future_vcb(source);
                     auto target = std::lower_bound(instrument_snapshots.begin(), instrument_snapshots.end(), isin,

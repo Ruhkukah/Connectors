@@ -25,6 +25,14 @@ class CommandInput {
         }
     }
 
+    template <class Error> void finish(Error error) {
+        if (!pending_.empty())
+            error(pending_.size() <= 4096 ? std::string_view(pending_) : std::string_view{},
+                  "incomplete command at input EOF");
+        pending_.clear();
+        discarding_ = false;
+    }
+
   private:
     std::string pending_;
     bool discarding_{};

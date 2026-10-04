@@ -88,8 +88,10 @@ std::string command(moex::connector_host::CgateTradingHost& host, ShutdownReques
             if ((!key.empty() && key != "--force") || (input >> extra))
                 return refusal(host, line, "usage: quit [--force]", channel);
             const bool force = key == "--force";
-            if (!force && !host.has_pending_cancellations() && host.has_working_orders())
+            if (!force && !host.has_pending_cancellations() && host.has_working_orders()) {
+                host.record_shutdown_drain("quit", false);
                 return refusal(host, line, "working orders remain; use quit --force", channel);
+            }
             if (!shutdown.requested)
                 host.set_kill_switch(true);
             shutdown.begin(force, line, channel);
@@ -348,7 +350,11 @@ int main(int argc, char** argv) {
                     std::array<char, 4096> data{};
                     const auto count = ::read(STDIN_FILENO, data.data(), data.size());
                     if (count == 0 || (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
-                        input = CommandInput{};
+                        input.finish([&](std::string_view line, std::string_view error) {
+                            if (!line.empty())
+                                host.record_operator_input(line, "stdin");
+                            std::cout << refusal(host, line, error, "stdin") << '\n' << std::flush;
+                        });
                         input_retry = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
                     } else if (count > 0) {
                         input.feed(
@@ -367,6 +373,7 @@ int main(int argc, char** argv) {
                 if (!drain.requested || (waiting && std::chrono::steady_clock::now() < drain.deadline))
                     continue;
                 if (!drain.force && (host.has_pending_cancellations() || host.has_working_orders())) {
+                    host.record_shutdown_drain("quit", waiting && std::chrono::steady_clock::now() >= drain.deadline);
                     std::cout << refusal(host, drain.line,
                                          "cancellations incomplete or working orders remain; kill switch stays on; use "
                                          "quit --force",

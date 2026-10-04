@@ -659,6 +659,8 @@ OrderManager::Command OrderManager::encode(tr::Plaza2TradeCommandRequest request
     return result;
 }
 std::string OrderManager::place(OrderRequest request) {
+    if (request.client_order_id.starts_with("recovered:"))
+        return "client order id prefix recovered: is reserved for native recovery";
     if (request.client_order_id.empty() || used_client_ids_.contains(request.client_order_id))
         return "client order id empty or already used";
     if (auto error = check_risk(request, 1); !error.empty())
@@ -677,6 +679,7 @@ std::string OrderManager::place(OrderRequest request) {
     add.comment = request.comment;
     add.ext_id = ext;
     add.is_check_limit = 0;
+    add.compliance_id = "M";
     try {
         auto command = encode(add, request.client_order_id);
         ManagedOrder order{.request = std::move(request), .ext_id = ext};
@@ -805,6 +808,7 @@ std::string OrderManager::move(std::string_view client_id, std::string price, st
     request.price1 = price;
     request.ext_id1 = order.ext_id;
     request.is_check_limit = 0;
+    request.compliance_id = "M";
     auto command = encode(request, found->first);
     command.replacement_price = std::move(price);
     command.replacement_quantity = quantity;

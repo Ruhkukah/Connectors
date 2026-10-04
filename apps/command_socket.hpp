@@ -85,6 +85,18 @@ inline void nonblocking(int fd) {
     if (::fcntl(fd, F_SETFD, FD_CLOEXEC) < 0 || ::fcntl(fd, F_SETFL, O_NONBLOCK) < 0)
         throw std::runtime_error("cannot configure command socket");
 }
+inline bool owned_peer(int fd, uid_t owner = ::geteuid()) {
+#if defined(__linux__)
+    struct ucred credentials {};
+    socklen_t size = sizeof(credentials);
+    return ::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &size) == 0 && size == sizeof(credentials) &&
+           credentials.uid == owner;
+#else
+    uid_t uid{};
+    gid_t gid{};
+    return ::getpeereid(fd, &uid, &gid) == 0 && uid == owner;
+#endif
+}
 inline void remove_stale(const std::filesystem::path& path, const sockaddr_un& address) {
     struct stat original {};
     if (::lstat(path.c_str(), &original) < 0) {
@@ -133,25 +145,25 @@ class CommandSocket {
             throw std::runtime_error("cannot create command socket");
         ScopeExit failed([&] {
             ::close(fd_);
-            if (bound_)
-                ::unlink(path_.c_str());
+            unlink_endpoint();
         });
         command_socket_detail::nonblocking(fd_);
         command_socket_detail::remove_stale(path_, address);
-        if (::bind(fd_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) < 0)
-            throw std::runtime_error(std::string("cannot bind command socket: ") + std::strerror(errno));
-        bound_ = true;
-        if (::chmod(path_.c_str(), 0600) < 0 || ::lstat(path_.c_str(), &identity_) < 0 || ::listen(fd_, 4) < 0)
+        {
+            const auto previous_mask = ::umask(0177);
+            ScopeExit restore_mask([&] { ::umask(previous_mask); });
+            if (::bind(fd_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) < 0)
+                throw std::runtime_error(std::string("cannot bind command socket: ") + std::strerror(errno));
+        }
+        if (::lstat(path_.c_str(), &identity_) < 0 || !S_ISSOCK(identity_.st_mode) || identity_.st_uid != ::geteuid() ||
+            ::listen(fd_, 4) < 0)
             throw std::runtime_error("cannot secure command socket");
         failed.release();
     }
     ~CommandSocket() {
         close_client();
         ::close(fd_);
-        struct stat current {};
-        if (::lstat(path_.c_str(), &current) == 0 && current.st_dev == identity_.st_dev &&
-            current.st_ino == identity_.st_ino)
-            ::unlink(path_.c_str());
+        unlink_endpoint();
     }
     CommandSocket(const CommandSocket&) = delete;
     CommandSocket& operator=(const CommandSocket&) = delete;
@@ -161,6 +173,11 @@ class CommandSocket {
             client_ = ::accept(fd_, nullptr, nullptr);
             if (client_ < 0)
                 return;
+            if (!command_socket_detail::owned_peer(client_)) {
+                (void)refuse({}, "command peer is not the socket owner");
+                close_client();
+                return;
+            }
             try {
                 command_socket_detail::nonblocking(client_);
             } catch (...) {
@@ -176,6 +193,10 @@ class CommandSocket {
             if (busy < 0)
                 break;
             ScopeExit close_busy([&] { ::close(busy); });
+            if (!command_socket_detail::owned_peer(busy)) {
+                (void)refuse({}, "command peer is not the socket owner");
+                continue;
+            }
             command_socket_detail::nonblocking(busy);
             std::array<char, 4096> data{};
             const auto size = ::recv(busy, data.data(), data.size(), 0);
@@ -245,6 +266,12 @@ class CommandSocket {
     }
 
   private:
+    void unlink_endpoint() {
+        struct stat current {};
+        if (::lstat(path_.c_str(), &current) == 0 && S_ISSOCK(current.st_mode) && current.st_uid == ::geteuid() &&
+            current.st_dev == identity_.st_dev && current.st_ino == identity_.st_ino)
+            ::unlink(path_.c_str());
+    }
     void close_client() {
         if (client_ >= 0)
             ::close(client_);
@@ -255,7 +282,6 @@ class CommandSocket {
     }
     std::filesystem::path path_;
     int fd_{-1}, client_{-1};
-    bool bound_{};
     struct stat identity_ {};
     std::chrono::steady_clock::time_point deadline_{};
     std::string input_, response_;

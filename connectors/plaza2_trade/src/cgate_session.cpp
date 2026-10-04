@@ -27,6 +27,26 @@ void replace(std::string& value, std::string_view from, std::string_view to) {
         at += to.size();
     }
 }
+bool set_lifenum(std::string& settings, std::int64_t life) {
+    std::size_t found = std::string::npos;
+    for (std::size_t start = 0; start < settings.size();) {
+        const auto end = settings.find(';', start);
+        if (std::string_view(settings).substr(start, end - start).starts_with("lifenum=")) {
+            if (found != std::string::npos)
+                return false;
+            found = start;
+        }
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    const auto value = "lifenum=" + std::to_string(life);
+    if (found == std::string::npos)
+        settings += ";" + value;
+    else
+        settings.replace(found, settings.find(';', found) - found, value);
+    return true;
+}
 std::optional<std::string> secret(const cg::Plaza2CredentialConfig& config) {
     if (config.source == cg::Plaza2CredentialSource::None)
         return std::string{};
@@ -512,8 +532,9 @@ struct CgateSession::Impl {
         replace(trade.open_settings, "${POS_TRADES_LIFENUM}", std::to_string(target.trades_lifenum));
         if (trade.open_settings.empty())
             trade.open_settings = "mode=snapshot+online";
-        trade.open_settings += ";lifenum=" + std::to_string(target.trades_lifenum) +
-                               ";rev.orders_log=" + std::to_string(target.orders_rev) +
+        if (!set_lifenum(trade.open_settings, target.trades_lifenum))
+            return invalid("TRADE open settings contain duplicate lifenum keys");
+        trade.open_settings += ";rev.orders_log=" + std::to_string(target.orders_rev) +
                                ";rev.deal=" + std::to_string(target.trades_rev) +
                                ";rev.heart_beat=" + std::to_string(target.trades_rev);
         if (auto error = add_listener(std::move(trade), bridge); error)

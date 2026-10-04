@@ -23,6 +23,9 @@ inline void private_pos_anchor_regression(plaza2_trade::CgateSessionConfig confi
         config.status_streams.push_back(
             {code, "p2repl://" + std::string(descriptor->stream_name), "mode=snapshot+online"});
     }
+    for (auto& stream : config.private_streams)
+        if (stream.stream_code == kFortsTradeRepl)
+            stream.open_settings += ";lifenum=${POS_TRADES_LIFENUM}";
     config.event_log = {};
     config.listener_event_log = {};
     control.configure({});
@@ -81,6 +84,10 @@ inline void private_pos_anchor_regression(plaza2_trade::CgateSessionConfig confi
     ready();
     const auto initial = session.trade_replay_anchor_used();
     require(initial && initial->trades_rev == 44 && initial->trades_lifenum == 7, "initial native POS anchor");
+    const auto settings = control.trade_open_settings();
+    const auto life_setting = settings.find("lifenum=");
+    require(life_setting != std::string::npos && settings.find("lifenum=", life_setting + 1) == std::string::npos,
+            "TRADE replay duplicated an existing lifenum setting");
     const auto opens = control.opens(kFortsTradeRepl);
     auto add_request = test_support::make_add_order();
     add_request.isin_id = 1001;
@@ -136,5 +143,18 @@ inline void private_pos_anchor_regression(plaza2_trade::CgateSessionConfig confi
                 posted.back().name == "DelOrder",
             "invalid POS anchor allowed an additional Add/Move publisher call");
     require(!session.stop(), "POS anchor regression stop");
+    for (auto& stream : config.private_streams)
+        if (stream.stream_code == kFortsTradeRepl)
+            stream.open_settings += ";lifenum=999";
+    control.configure({});
+    const auto duplicate_opens = control.opens(kFortsTradeRepl);
+    CgateSession duplicate(config);
+    require(!duplicate.start(), "duplicate lifenum regression startup");
+    for (int i = 0; i < 30 && duplicate.last_callback_error().empty(); ++i)
+        require(!duplicate.poll(), "duplicate lifenum recovery poll");
+    require(duplicate.last_callback_error().find("duplicate lifenum") != std::string::npos &&
+                control.opens(kFortsTradeRepl) == duplicate_opens,
+            "ambiguous duplicate lifenum did not stay down with a visible configuration error");
+    require(!duplicate.stop(), "duplicate lifenum regression stop");
 }
 } // namespace moex::plaza2::test
