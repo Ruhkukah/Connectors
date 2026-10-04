@@ -409,6 +409,66 @@ int main(int argc, char** argv) {
         test::require(failed && std::filesystem::is_symlink(link) && std::filesystem::is_regular_file(path),
                       "command bind followed or removed a symlink");
     });
+    scenario("busy socket refuses before receiving a frame", [&] {
+        using namespace moex::connector_host;
+        const auto path = root / "unframed-busy.sock";
+        CommandSocket socket(path);
+        const auto address = command_socket_detail::address(path);
+        const auto first = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        test::require(first >= 0, "idle command client failed");
+        ScopeExit close_first([&] { ::close(first); });
+        test::require(::connect(first, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0,
+                      "idle command client did not connect");
+        unsigned dispatched{}, busy_refusals{};
+        const auto execute = [&](const auto&) {
+            ++dispatched;
+            return "{\"ok\":true}";
+        };
+        const auto refuse = [&](std::string_view, std::string_view error) {
+            busy_refusals += error == "command channel busy";
+            return "{\"ok\":false}";
+        };
+        socket.poll(execute, refuse);
+        const auto second = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        test::require(second >= 0, "busy command client failed");
+        ScopeExit close_second([&] { ::close(second); });
+        test::require(::connect(second, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0,
+                      "busy command client did not connect");
+        socket.poll(execute, refuse);
+        pollfd waiting{.fd = second, .events = POLLIN};
+        test::require(::poll(&waiting, 1, 1000) > 0, "busy refusal was delayed until a client sent its frame");
+        char data[128];
+        const auto size = ::recv(second, data, sizeof(data), 0);
+        test::require(size == 5 && std::string_view(data, size) == "BUSY\n" && dispatched == 0 && busy_refusals == 1,
+                      "busy refusal guessed a nonce or dispatched a command");
+    });
+    scenario("command client reports an unframed busy refusal", [&] {
+        const auto path = root / "busy-client.sock";
+        const auto listener = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        test::require(listener >= 0, "busy listener failed");
+        moex::connector_host::ScopeExit close_listener([&] {
+            ::close(listener);
+            ::unlink(path.c_str());
+        });
+        const auto address = moex::connector_host::command_socket_detail::address(path);
+        test::require(::bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0 &&
+                          ::listen(listener, 1) == 0,
+                      "busy listener bind failed");
+        Child client({executable, "plaza2", "cmd", "--command-socket", path.string(), "status"},
+                     root / "busy-client.err");
+        client.close_input();
+        pollfd waiting{.fd = listener, .events = POLLIN};
+        test::require(::poll(&waiting, 1, 3000) > 0, "busy command client did not connect");
+        const auto fd = ::accept(listener, nullptr, nullptr);
+        test::require(fd >= 0, "busy client accept failed");
+        moex::connector_host::ScopeExit close_client([&] { ::close(fd); });
+        test::require(::send(fd, "BUSY\n", 5, 0) == 5, "busy refusal send failed");
+        ::close(fd); // Refuse without reading a frame; the owner never admitted this command.
+        close_client.release();
+        const auto response = client.line();
+        test::require(response == "{\"ok\":false,\"error\":\"command channel busy\"}" && client.wait() == 2,
+                      "busy command client mislabeled its refusal or returned success");
+    });
     scenario("EOF audit is bounded and clears partial input", [&] {
         moex::connector_host::CommandInput input;
         unsigned refused{};

@@ -198,14 +198,9 @@ class CommandSocket {
                 continue;
             }
             command_socket_detail::nonblocking(busy);
-            std::array<char, 4096> data{};
-            const auto size = ::recv(busy, data.data(), data.size(), 0);
-            const auto header =
-                size > 0 ? command_socket_detail::request({data.data(), static_cast<std::size_t>(size)}) : std::nullopt;
-            const auto response = command_socket_detail::with_nonce(header ? header->nonce : std::string_view{},
-                                                                    refuse({}, "command channel busy")) +
-                                  '\n';
-            (void)::send(busy, response.data(), response.size(), 0);
+            (void)refuse({}, "command channel busy");
+            // This connection was never admitted, so no request nonce is available.
+            (void)::send(busy, "BUSY\n", 5, 0);
         }
         // Keep malformed frames bounded in the interaction log.
         const auto rejected = [&](std::string_view error) {
@@ -314,13 +309,21 @@ inline std::string send_command(const std::filesystem::path& path, std::string c
         std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(deadline.time_since_epoch()).count()) +
         '\t' + command + '\n';
     std::size_t sent{};
+    bool write_failed{};
     while (sent != command.size()) {
-        wait(fd, POLLOUT, deadline);
+        try {
+            wait(fd, POLLOUT, deadline);
+        } catch (const std::runtime_error&) {
+            write_failed = true;
+            break;
+        }
         const auto count = ::send(fd, command.data() + sent, command.size() - sent, 0);
         if (count > 0)
             sent += static_cast<std::size_t>(count);
-        else if (count == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
-            throw std::runtime_error("command socket write failed");
+        else if (count == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+            write_failed = true;
+            break; // A busy peer can send its refusal and close before this write.
+        }
     }
     std::string response;
     for (;;) {
@@ -330,6 +333,10 @@ inline std::string send_command(const std::filesystem::path& path, std::string c
         if (count > 0) {
             response.append(data.data(), static_cast<std::size_t>(count));
             if (const auto newline = response.find('\n'); newline != std::string::npos) {
+                if (response.substr(0, newline) == "BUSY")
+                    return "{\"ok\":false,\"error\":\"command channel busy\"}";
+                if (write_failed)
+                    throw std::runtime_error("command socket write failed");
                 if (!response.starts_with("{\"nonce\":\"" + id + "\","))
                     throw std::runtime_error("command response nonce mismatch");
                 return response.substr(0, newline);
