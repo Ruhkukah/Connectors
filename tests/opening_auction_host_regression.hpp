@@ -8,6 +8,7 @@ inline void opening_auction_host_regression(TradingHostConfig config, const plaz
     const auto isin = config.isin_ids.front();
     auto now = OrderManager::Clock::time_point{};
     config.session.recovery_now = [&] { return now; };
+    config.orders.sole_instance = true;
     config.journal_path = root / "opening-auction.ndjson";
     config.identity_state_path = root / "opening-auction.state";
     control.configure({.suppress_initial_orders = true,

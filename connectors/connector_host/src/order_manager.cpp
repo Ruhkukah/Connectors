@@ -361,6 +361,7 @@ OrderManager::RecoveredAdoption OrderManager::adopt_recovered_order(const std::s
         recovered.confirmed_by_replication = true;
         recovered.execution_baseline_known = link.execution_baseline_known;
         recovered.transport_retry_warned = link.transport_retry_warned;
+        recovered.instance_owned = link.instance_owned;
         recovered.order_ids.insert(link.order_ids.begin(), link.order_ids.end());
         orders_.emplace(link.key, std::move(recovered));
         for (const auto id : link.order_ids) {
@@ -417,6 +418,7 @@ OrderManager::RecoveredAdoption OrderManager::adopt_recovered_order(const std::s
     original.operator_action_required = original.operator_action_required || recovered.operator_action_required;
     original.transport_retry_warned = original.transport_retry_warned || recovered.transport_retry_warned;
     original.cancel_requested = original.cancel_requested || recovered.cancel_requested;
+    original.instance_owned = original.instance_owned || recovered.instance_owned;
     original.order_ids.insert(recovered.order_ids.begin(), recovered.order_ids.end());
     for (const auto id : recovered.order_ids)
         order_index_[id] = key;
@@ -486,7 +488,8 @@ void OrderManager::prune_terminal() {
                                     .order_ids = {order.order_ids.begin(), order.order_ids.end()},
                                     .cancel_requested = order.cancel_requested,
                                     .execution_baseline_known = order.execution_baseline_known,
-                                    .transport_retry_warned = order.transport_retry_warned};
+                                    .transport_retry_warned = order.transport_retry_warned,
+                                    .instance_owned = order.instance_owned};
             for (const auto id : order.order_ids)
                 if (id == order.order_id || unresolved)
                     terminal_links_[id] = link;
@@ -682,7 +685,7 @@ std::string OrderManager::place(OrderRequest request) {
     add.compliance_id = "M";
     try {
         auto command = encode(add, request.client_order_id);
-        ManagedOrder order{.request = std::move(request), .ext_id = ext};
+        ManagedOrder order{.request = std::move(request), .ext_id = ext, .instance_owned = true};
         order.sess_id = terms_(order.request.isin_id)->sess_id;
         order.remaining = order.request.quantity;
         const auto key = order.request.client_order_id;
@@ -822,6 +825,13 @@ std::string OrderManager::move(std::string_view client_id, std::string price, st
 std::string OrderManager::cancel_all(std::int32_t isin) {
     if (isin <= 0)
         return "cancel-all requires an instrument id";
+    if (!config_.sole_instance) {
+        for (auto& [key, order] : orders_)
+            if (order.instance_owned && order.request.isin_id == isin && !terminal(order.state) &&
+                (order.order_id > 0 || !order.operator_action_required))
+                (void)cancel(key);
+        return {};
+    }
     tr::DelUserOrdersRequest request;
     request.broker_code = config_.broker_code;
     request.code = config_.client_code;
@@ -1589,6 +1599,7 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
                     restored.cancel_requested = link.cancel_requested;
                     restored.execution_baseline_known = link.execution_baseline_known;
                     restored.transport_retry_warned = link.transport_retry_warned;
+                    restored.instance_owned = link.instance_owned;
                     restored.order_ids.insert(link.order_ids.begin(), link.order_ids.end());
                     orders_.emplace(key, std::move(restored));
                     for (const auto alias : link.order_ids) {
@@ -1657,6 +1668,9 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             recovered.ext_id = row.ext_id;
             recovered.sess_id = row.sess_id;
             recovered.execution_baseline_known = false;
+            recovered.instance_owned = config_.ext_id_range_configured && !config_.login_from.empty() &&
+                                       row.login_from == config_.login_from && row.ext_id >= config_.ext_id_begin &&
+                                       row.ext_id <= config_.ext_id_end;
             orders_.emplace(key, std::move(recovered));
             used_client_ids_.insert(key);
             // Do not replace another logical order's ext_id reservation.
@@ -1904,7 +1918,8 @@ void OrderManager::prove_absence(std::int64_t server_time, bool online) {
         } else if (order.snapshot_missing) {
             // Missing history cannot prove a Move's replacement absent. Keep
             // its identity and reservation; never introduce a cancellation.
-            if (has_outstanding_command(key, Kind::MoveOrder) || order.ext_id <= 0) {
+            if ((!config_.sole_instance && !order.instance_owned && !order.cancel_requested) ||
+                has_outstanding_command(key, Kind::MoveOrder) || order.ext_id <= 0) {
                 order.state = OrderState::Unknown;
                 order.last_error = "missing reloaded order requires explicit identity reconciliation";
                 order.operator_action_required = true;

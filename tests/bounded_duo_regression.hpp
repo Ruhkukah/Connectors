@@ -13,6 +13,7 @@ template <class Fixture> void bounded_duo_regression() {
         namespace tr = plaza2_trade;
         Fixture f;
         f.config.reply_timeout = std::chrono::milliseconds(100);
+        f.config.sole_instance = true;
         auto manager = f.manager();
         check(manager.place({.client_order_id = "mixed-known", .isin_id = 42, .price = "100", .quantity = 2}).empty(),
               "mixed fallback seed Add refused");
@@ -75,6 +76,7 @@ template <class Fixture> void bounded_duo_regression() {
     for (const bool system_result : {false, true}) {
         Fixture f;
         f.config.reply_timeout = std::chrono::milliseconds(100);
+        f.config.sole_instance = true;
         auto manager = f.manager();
         check(manager.cancel_all(42).empty(), "mixed bulk request refused");
         f.poll(manager, 0);
@@ -117,6 +119,7 @@ template <class Fixture> void bounded_duo_regression() {
     }
     {
         Fixture f;
+        f.config.sole_instance = true;
         auto manager = f.manager();
         check(manager.cancel_all(42).empty(), "bulk intent readiness seed refused");
         f.poll(manager, 0);
@@ -138,6 +141,7 @@ template <class Fixture> void bounded_duo_regression() {
     for (const bool system_result : {false, true}) {
         Fixture f;
         f.config.reply_timeout = std::chrono::milliseconds(100);
+        f.config.sole_instance = true;
         auto manager = f.manager();
         check(manager.cancel_all(42).empty(), "bounded empty bulk cancel refused");
         f.poll(manager, 0);
@@ -249,6 +253,7 @@ template <class Fixture> void bounded_duo_regression() {
     {
         Fixture f;
         f.config.reply_timeout = std::chrono::milliseconds(100);
+        f.config.sole_instance = true;
         auto manager = f.manager();
         check(manager.cancel_all(42).empty(), "bulk renewal seed refused");
         f.poll(manager, 0);
@@ -273,6 +278,7 @@ template <class Fixture> void bounded_duo_regression() {
     {
         Fixture f;
         f.config.reply_timeout = std::chrono::milliseconds(100);
+        f.config.sole_instance = true;
         auto manager = f.manager();
         check(manager.place({.client_order_id = "bulk-terminal", .isin_id = 42, .price = "100", .quantity = 2}).empty(),
               "bulk terminal proof Add refused");

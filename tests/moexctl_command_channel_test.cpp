@@ -888,7 +888,7 @@ int main(int argc, char** argv) {
     scenario("cancel-all plus quit drains", [&] {
         const auto log = root / "quit-drain.ndjson";
         auto arguments = run_arguments(executable, fixture, log, "cli_quit_drain");
-        arguments.push_back("--allow-orders");
+        arguments.insert(arguments.end(), {"--allow-orders", "--sole-instance"});
         Child owner(arguments, root / "quit-drain.err");
         make_working(owner);
         owner.send("cancel-all 1001\nquit --force\nplace during_shutdown 1001 buy 1 102500 day\nkill off\n");
@@ -902,7 +902,7 @@ int main(int argc, char** argv) {
     scenario("SIGTERM drains pending cancellation input", [&] {
         const auto log = root / "signal-drain.ndjson";
         auto arguments = run_arguments(executable, fixture, log, "cli_signal_drain");
-        arguments.push_back("--allow-orders");
+        arguments.insert(arguments.end(), {"--allow-orders", "--sole-instance"});
         Child owner(arguments, root / "signal-drain.err");
         make_working(owner);
         owner.signal(SIGSTOP);
@@ -912,14 +912,14 @@ int main(int argc, char** argv) {
         test::require(owner.wait() == 8, "signal drain reported success without native terminal proof");
         cancelled_before_stop(log);
     });
-    scenario("signals cancel every configured instrument before draining", [&] {
+    scenario("sole-instance signals cancel every configured instrument before draining", [&] {
         for (const auto signal : {SIGINT, SIGTERM}) {
             const std::string reason = signal == SIGINT ? "SIGINT" : "SIGTERM";
             const auto label = "signal-cancel-" + reason;
             const auto log = root / (label + ".ndjson");
             auto arguments = run_arguments(executable, fixture, log, "cli_" + label);
-            arguments.insert(arguments.end(), {"--allow-orders", "--isin-id", "1002", "--max-notional",
-                                               "1002=100000000", "--max-position", "1002=100"});
+            arguments.insert(arguments.end(), {"--allow-orders", "--sole-instance", "--isin-id", "1002",
+                                               "--max-notional", "1002=100000000", "--max-position", "1002=100"});
             Child owner(arguments, root / (label + ".err"));
             make_working(owner);
             const auto start = std::chrono::steady_clock::now();
@@ -930,7 +930,10 @@ int main(int argc, char** argv) {
             std::ifstream journal(log);
             std::string record, drain;
             unsigned first{}, second{}, acknowledgements{};
+            bool sole_instance{};
             while (std::getline(journal, record)) {
+                sole_instance |= record.find("\"event\":\"startup\"") != std::string::npos &&
+                                 record.find("\"sole_instance\":true") != std::string::npos;
                 if (record.find("\"event\":\"command\"") != std::string::npos &&
                     record.find("DelUserOrders") != std::string::npos) {
                     first += record.find("\"isin_id\":1001") != std::string::npos;
@@ -941,7 +944,7 @@ int main(int argc, char** argv) {
                 if (record.find("\"event\":\"cancel_drain\"") != std::string::npos)
                     drain = record;
             }
-            test::require(first == 1 && second == 1 && acknowledgements == 2,
+            test::require(sole_instance && first == 1 && second == 1 && acknowledgements == 2,
                           "signal did not cancel each configured instrument once and process its acknowledgement");
             test::require(field(drain, "reason") == reason, "signal drain outcome was not journaled");
             const bool timed_out = field(drain, "outcome") == "timed_out";
@@ -980,7 +983,9 @@ int main(int argc, char** argv) {
         Child owner(arguments, root / "second-signal.err");
         make_working(owner);
         owner.signal(SIGTERM);
-        (void)remote_command(executable, log, "status"); // First signal has reached the owner loop.
+        const auto status = remote_command(executable, log, "status"); // First signal reached the owner loop.
+        test::require(status.find("\"sole_instance\":false") != std::string::npos,
+                      "CLI enabled instrument-wide cancellation without explicit authorization");
         const auto start = std::chrono::steady_clock::now();
         owner.signal(SIGINT);
         const auto result = owner.wait();
@@ -992,6 +997,17 @@ int main(int argc, char** argv) {
         test::require(errors.find("rel7_working") != std::string::npos &&
                           records.find("\"outcome\":\"incomplete\"") != std::string::npos,
                       "second signal omitted the outstanding report or incomplete drain audit");
+        unsigned known_id_cancels{}, broad_cancels{};
+        std::istringstream command_records(records);
+        std::string record;
+        while (std::getline(command_records, record)) {
+            if (record.find("\"event\":\"command\"") == std::string::npos)
+                continue;
+            known_id_cancels += record.find("DelOrder") != std::string::npos;
+            broad_cancels += record.find("DelUserOrders") != std::string::npos;
+        }
+        test::require(known_id_cancels == 1 && broad_cancels == 0,
+                      "default signal cancellation did not use the instance's known order ID");
     });
     scenario("storage failure keeps command owner alive", [&] {
         const auto log = root / "storage.ndjson", state = root / "storage.state";

@@ -10,6 +10,7 @@ template <class Fixture> void cancel_session_retry_regression() {
     };
     for (const bool bulk : {false, true}) {
         Fixture fixture;
+        fixture.config.sole_instance = true;
         auto manager = fixture.manager();
         check(manager.place({.client_order_id = "clearing", .isin_id = 42, .price = "100", .quantity = 2}).empty(),
               "clearing retry seed refused");

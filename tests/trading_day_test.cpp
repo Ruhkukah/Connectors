@@ -117,6 +117,7 @@ int main(int argc, char** argv) {
         config.orders.broker_code = input.broker_code;
         config.orders.client_code = input.client_code;
         config.orders.login_from = "owner-login";
+        config.orders.sole_instance = true;
         config.orders.ext_id_range_configured = true;
         config.orders.command_rate_configured = true;
         config.orders.max_commands_per_second = 5;

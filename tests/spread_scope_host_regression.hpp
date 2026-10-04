@@ -6,6 +6,7 @@ inline void spread_scope_host_regression(TradingHostConfig config, const plaza2:
     using namespace private_delta_host_detail;
     using enum gen::FieldCode;
     const auto isin = config.isin_ids.front();
+    config.orders.sole_instance = true;
     config.journal_path = root / "spread-scope.ndjson";
     config.identity_state_path = root / "spread-scope.state";
     control.configure({.suppress_initial_orders = true,

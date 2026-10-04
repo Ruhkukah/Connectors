@@ -14,6 +14,7 @@
 #include "bounded_duo_regression.hpp"
 #include "manual_entry_regression.hpp"
 #include "mismatched_recovery_cancel_regression.hpp"
+#include "instance_cancel_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -393,6 +394,7 @@ void mass_cancel_priority_and_reconciliation() {
     Fixture f;
     f.config.max_commands_per_second = 30;
     f.config.risk.max_open_orders = 200;
+    f.config.sole_instance = true;
     auto manager = f.manager();
     std::vector<ps::OwnOrderSnapshot> initial;
     for (std::int32_t index = 1; index <= 100; ++index) {
@@ -439,6 +441,7 @@ void mass_cancel_priority_and_reconciliation() {
             "post186 TRADE reconciliation did not target only the surviving order");
 
     Fixture empty_commit;
+    empty_commit.config.sole_instance = true;
     auto empty = empty_commit.manager();
     auto working = initial.front();
     working.trade_repl_commit_sequence = 5;
@@ -458,6 +461,7 @@ void mass_cancel_priority_and_reconciliation() {
 void operator_action_alerts_clear_only_at_terminal() {
     Fixture f;
     f.config.max_cancel_attempts = 1;
+    f.config.sole_instance = true;
     auto manager = f.manager();
     require(manager.place(request("operator-order")).empty(), "operator fixture Add refused");
     f.poll(manager, 0);
@@ -550,6 +554,7 @@ void operator_action_alerts_clear_only_at_terminal() {
 
     Fixture bulk;
     bulk.config.max_cancel_attempts = 1;
+    bulk.config.sole_instance = true;
     auto all = bulk.manager();
     ManagedOrder seed{.request = request("bulk-alert"), .ext_id = 1};
     auto first = row(seed, 1303, 3, 1);
@@ -589,6 +594,7 @@ void operator_action_alerts_clear_only_at_terminal() {
 
 void rejected_mass_cancel_falls_back_to_each_known_id() {
     Fixture f;
+    f.config.sole_instance = true;
     auto manager = f.manager();
     ManagedOrder buy{.request = request("bulk-buy"), .ext_id = 1};
     ManagedOrder sell{.request = request("bulk-sell"), .ext_id = 2};
@@ -647,6 +653,7 @@ void rejected_mass_cancel_falls_back_to_each_known_id() {
 void accepted_mass_cancel_waits_for_trade_without_resending() {
     Fixture f;
     f.config.reply_timeout = std::chrono::milliseconds(100);
+    f.config.sole_instance = true;
     auto manager = f.manager();
     ManagedOrder seed{.request = request("accepted-bulk"), .ext_id = 1};
     auto cancelled = row(seed, 1201, 3, 1);
@@ -686,6 +693,7 @@ void accepted_mass_cancel_waits_for_trade_without_resending() {
 
 void mass_cancel_supersedes_delayed_flood_replies() {
     Fixture f;
+    f.config.sole_instance = true;
     auto manager = f.manager();
     require(manager.place(request("sent-cancel")).empty() && manager.place(request("sent-move")).empty(),
             "delayed flood fixture Adds refused");
@@ -746,6 +754,7 @@ void mass_cancel_supersedes_delayed_flood_replies() {
             "delayed99 revived a Move superseded by an explicit individual cancellation");
 
     Fixture replacement;
+    replacement.config.sole_instance = true;
     auto replaced = replacement.manager();
     ManagedOrder seed{.request = request("replacement-seed"), .ext_id = 1};
     auto live = row(seed, 2001, 3, 1);
@@ -772,6 +781,7 @@ void mass_cancel_supersedes_delayed_flood_replies() {
 
 void cancel_all_and_move_failures() {
     Fixture f;
+    f.config.sole_instance = true;
     auto manager = f.manager();
     require(manager.place(request("all")).empty(), "bulk-cancel Add refused");
     f.poll(manager, 0);
@@ -853,6 +863,7 @@ void uncertain_cancels_preserve_identity_and_budget() {
 
     Fixture bulk;
     bulk.config.reply_timeout = std::chrono::milliseconds(100);
+    bulk.config.sole_instance = true;
     auto group = bulk.manager();
     ManagedOrder seed{.request = request("bulk-timeout-seed"), .ext_id = 1};
     auto live = row(seed, 2001, 3, 1);
@@ -1137,6 +1148,7 @@ void recovery_bounds_and_wire() {
             "explicit retry was disabled or prematurely cleared unresolved alert");
 
     Fixture bulk;
+    bulk.config.sole_instance = true;
     auto other = bulk.manager();
     require(other.cancel_all(42).empty(), "bulk cancellation refused");
     std::size_t count{};
@@ -1242,6 +1254,7 @@ void move_fill_accounting() {
 
 void deferred_fill_identity() {
     Fixture f;
+    f.config.sole_instance = true;
     auto manager = f.manager();
     require(manager.place(request("buy")).empty(), "deferred buy Add refused");
     auto sell_request = request("sell");
@@ -1358,6 +1371,7 @@ void eligible_commands_and_logging() {
 void aggregate_risk() {
     Fixture f;
     f.config.risk.max_notional_scaled = 50'000'000;
+    f.config.sole_instance = true;
     auto manager = f.manager();
     require(manager.place(request("first", 3)).empty(), "first under-cap Add refused");
     require(!manager.place(request("second", 3)).empty(), "individually valid orders exceeded aggregate cap");
@@ -1540,6 +1554,7 @@ void cached_risk_move_races() {
 
     Fixture flood;
     flood.config.risk.max_notional_scaled = 60'000'000;
+    flood.config.sole_instance = true;
     auto superseded = flood.manager();
     working(flood, superseded);
     require(superseded.move("first", "120", 3).empty(), "sent risk-race Move refused");
@@ -2049,6 +2064,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::instance_cancel_regression<Fixture>();
         moex::connector_host::mismatched_recovery_cancel_regression<Fixture>();
         moex::connector_host::manual_entry_regression<Fixture>();
         moex::connector_host::bounded_duo_regression<Fixture>();

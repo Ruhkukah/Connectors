@@ -182,10 +182,15 @@ int main(int argc, char** argv) {
         std::optional<std::array<std::int32_t, 2>> ext_id_range;
         RiskLimits risk;
         bool command_rate_configured{};
+        bool sole_instance{};
         std::uint32_t reply_timeout{60000};
         std::optional<std::int64_t> clock_offset;
         for (int i = 1; i < argc; ++i) {
             const std::string_view arg(argv[i]);
+            if (arg == "--sole-instance") {
+                sole_instance = true;
+                continue;
+            }
             if (arg == "--max-commands-per-second")
                 command_rate_configured = true;
             if (arg == "--log" || arg == "--state" || arg == "--command-socket" || arg == "--max-quantity" ||
@@ -263,7 +268,7 @@ int main(int argc, char** argv) {
                       << "\nrun options: --log FILE --state FILE --max-quantity N "
                          "--max-notional ISIN=QUOTE_CAP "
                          "--max-position ISIN=CONTRACTS --max-open-orders N "
-                         "--reply-timeout-ms N --clock-offset-us N --command-socket PATH\n"
+                         "--reply-timeout-ms N --clock-offset-us N --command-socket PATH --sole-instance\n"
                       << "required with --allow-orders: --max-commands-per-second N "
                          "--login-env NAME --ext-id-range MIN:MAX "
                          "(deployment-assigned, nonoverlapping)\n"
@@ -273,7 +278,9 @@ int main(int argc, char** argv) {
                       << "reconnect: moexctl plaza2 cmd [--log FILE | --command-socket "
                          "PATH] \"COMMAND\"\n"
                       << "command socket defaults to LOGFILE.sock; restricted to its "
-                         "owner\n";
+                         "owner\n"
+                      << "cancel-all and signals cancel this instance's orders; --sole-instance "
+                         "enables instrument-wide cancellation\n";
             return 0;
         }
         if (request.command == "run") {
@@ -283,6 +290,7 @@ int main(int argc, char** argv) {
             if (request.config.transport.host.allow_orders && !command_rate_configured)
                 throw std::invalid_argument("--allow-orders requires --max-commands-per-second");
             config.orders.command_rate_configured = command_rate_configured;
+            config.orders.sole_instance = sole_instance;
             if (!login_env.empty()) {
                 const auto* login = std::getenv(login_env.c_str());
                 if (!login || !*login)

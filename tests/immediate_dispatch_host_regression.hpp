@@ -13,6 +13,7 @@ inline void immediate_dispatch_host_regression(TradingHostConfig config, const p
     };
     configure();
     config.session.process_timeout_ms = 50;
+    config.orders.sole_instance = true;
     auto now = OrderManager::Clock::time_point(std::chrono::seconds(100));
     config.session.recovery_now = [&] { return now; };
     config.orders.max_commands_per_second = 30;

@@ -611,6 +611,7 @@ cg::Plaza2Error CgateTradingHost::start() {
             ",\"binary_sha256\":" + json_string(config_.binary_sha256) + ",\"router\":" + json_string(router) +
             ",\"ext_id_begin\":" + std::to_string(config_.orders.ext_id_begin) +
             ",\"ext_id_end\":" + std::to_string(config_.orders.ext_id_end) + ",\"login_from\":\"[REDACTED]\"" +
+            ",\"sole_instance\":" + (config_.orders.sole_instance ? "true" : "false") +
             ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
             ",\"allow_orders\":" + (session.allow_orders ? "true" : "false") + ",\"risk\":" + risk + ",\"urls\":[" +
             urls + "],\"env_settings\":" + json_string(masked_settings(session.runtime.env_open_settings)) +
@@ -827,14 +828,15 @@ bool CgateTradingHost::has_pending_cancellations() const {
 }
 bool CgateTradingHost::has_working_orders() const {
     assert_owner();
-    return std::any_of(orders_->orders().begin(), orders_->orders().end(),
-                       [](const auto& entry) { return !terminal(entry.second.state); });
+    return std::any_of(orders_->orders().begin(), orders_->orders().end(), [&](const auto& entry) {
+        return !terminal(entry.second.state) && (config_.orders.sole_instance || entry.second.instance_owned);
+    });
 }
 void CgateTradingHost::report_outstanding_orders(std::ostream& output) const {
     assert_owner();
     bool warned{};
     for (const auto& [key, order] : orders_->orders()) {
-        if (terminal(order.state))
+        if (terminal(order.state) || (!config_.orders.sole_instance && !order.instance_owned))
             continue;
         if (!warned) {
             output << "moexctl: trading driver is stopping. Working orders may remain on the exchange; "
@@ -861,6 +863,7 @@ std::string CgateTradingHost::status() const {
         ",\"operator_action_required\":" + (orders_->operator_action_required() ? "true" : "false") +
         ",\"transport\":" + transport_fields(session_, config_.session) +
         ",\"configuration\":{\"allow_orders\":" + (config_.session.allow_orders ? "true" : "false") +
+        ",\"sole_instance\":" + (config_.orders.sole_instance ? "true" : "false") +
         ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
         ",\"risk\":" + configured_risk_fields(config_) + "}" + ",\"instruments\":[";
     bool first = true;

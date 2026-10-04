@@ -47,6 +47,7 @@ struct ManagedOrder {
     bool operator_action_required{}, confirmed_by_replication{};
     bool add_unconfirmed{}, transport_retry_warned{}, duo_exhaustion_alert{};
     bool snapshot_missing{};
+    bool instance_owned{};
     bool execution_baseline_known{true};
     std::int64_t sent_utc_seconds{};
     std::set<std::int64_t> order_ids;
@@ -74,6 +75,8 @@ struct OrderManagerConfig {
     std::string login_from;
     std::int32_t ext_id_begin{1}, ext_id_end{INT32_MAX - 1};
     bool ext_id_range_configured{};
+    // Instrument-wide DUO is permitted only for a declared sole instance.
+    bool sole_instance{};
     std::uint32_t max_commands_per_second{30};
     bool command_rate_configured{};
     std::chrono::milliseconds reply_timeout{60000};
@@ -215,7 +218,7 @@ class OrderManager {
         std::int64_t order_id{}, remaining{}, executed{}, sent_utc_seconds{};
         OrderState state{};
         std::vector<std::int64_t> order_ids;
-        bool cancel_requested{}, execution_baseline_known{}, transport_retry_warned{};
+        bool cancel_requested{}, execution_baseline_known{}, transport_retry_warned{}, instance_owned{};
     };
     [[nodiscard]] std::string check_risk(const OrderRequest& request, std::size_t extra_orders,
                                          std::string_view exclude_key = {});

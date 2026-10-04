@@ -24,6 +24,7 @@
 #include "userbook_barrier_host_regression.hpp"
 #include "multileg_history_host_regression.hpp"
 #include "userbook_replacement_host_regression.hpp"
+#include "instance_cancel_host_regression.hpp"
 #include "plaza2_cgate/field_read_contract.hpp"
 
 #include <cstdlib>
@@ -185,6 +186,7 @@ int main(int argc, char** argv) {
         config.isin_ids = {1001};
         config.journal_path = root / "events.ndjson";
         moex::connector_host::regression::explicit_test_risk(config);
+        moex::connector_host::regression::instance_cancel_host_regression(config, fake, root);
         moex::connector_host::inflight_rebuild_host_regression(config, fake, root);
         moex::connector_host::regression::storage_recovery_regression(config, fake, root);
         moex::connector_host::regression::multileg_history_host_regression(config, fake, root);

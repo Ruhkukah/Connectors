@@ -94,6 +94,9 @@ template <class Fixture> void reload_missing_order_regression() {
     }
     {
         Fixture f;
+        f.config.ext_id_begin = 70;
+        f.config.ext_id_end = 79;
+        f.config.ext_id_range_configured = true;
         auto manager = f.manager();
         ManagedOrder recovered;
         recovered.request = {.isin_id = 42, .price = "100", .quantity = 2};

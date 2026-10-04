@@ -86,6 +86,7 @@ template <class Fixture> void transport_retry_warning_regression() {
             "retry warnings repeated or actual cancellation/send/reply audit records were lost");
 
     Fixture bulk;
+    bulk.config.sole_instance = true;
     auto group = bulk.manager();
     require(group.cancel_all(42).empty(), "transport warning mass cancellation refused");
     bulk.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
