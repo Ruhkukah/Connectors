@@ -1038,19 +1038,54 @@ void full_order_log_committed_depth() {
     {
         Harness empty(c);
         empty.source.incremental = empty.source.state.full_order_log = true;
-        const auto restored = empty.source.state.levels;
         empty.source.state.levels.clear();
-        empty.source.state.source_snapshot_version = 0;
-        empty.logon();
-        empty.subscribe();
-        check(empty.count(507) == 1 && empty.count(145) == 0 && empty.eof && Read(empty.first(5).payload).n.at(2) == 0,
-              "initial empty full book publishes no invented quote and permits reconnect");
-        empty.source.state.levels = restored;
+        empty.source.state.empty_book = true;
         empty.source.state.source_snapshot_version = 1;
-        empty.connect();
         empty.logon();
         empty.subscribe();
-        check(empty.count(145) == 2, "first nonempty committed book allows a fresh snapshot");
+        check(empty.count(507) == 1 && empty.count(145) == 0 && !empty.eof && empty.count(5) == 0,
+              "initial empty full book stays subscribed without an invented quote");
+        const auto control = Read(empty.first(700).payload).s.at(1);
+        check(control.find("\"source_kind\":\"full_order_log\"") != std::string::npos &&
+                  control.find("\"book_state\":\"empty\"") != std::string::npos &&
+                  control.find("\"depth_snapshot\":{\"empty\":true,\"dtc_batch_sequence\":1") != std::string::npos &&
+                  control.find("\"level_count\":0") != std::string::npos,
+              "700 explicitly marks a completed empty snapshot with no quote row");
+        empty.got.clear();
+        empty.source.state.empty_book = false;
+        empty.source.state.source_snapshot_version = 2;
+        empty.source.changes = {{.price_scaled = 1000000,
+                                 .volume = 3,
+                                 .side = DtcDepthSide::Bid,
+                                 .exchange_moment_ns = 1759651234567890123ULL,
+                                 .depth_level = 1}};
+        empty.server.publish_depth_commit();
+        empty.pump();
+        check(empty.count(140) == 1 && empty.count(145) == 0 && !empty.eof,
+              "first nonempty commit follows the empty snapshot as a normal incremental batch");
+        const auto row = Read(empty.first(140).payload);
+        check(row.n.at(2) == 1759651234567ULL && row.n.at(14) == 2 && row.n.at(15) == 2,
+              "DTC increments preserve exchange milliseconds and consecutive batch metadata");
+    }
+    {
+        Harness crossed(c);
+        crossed.source.incremental = crossed.source.state.full_order_log = true;
+        crossed.logon();
+        crossed.subscribe();
+        crossed.got.clear();
+        crossed.source.state.crossed_book = true;
+        crossed.source.state.market_data_display_allowed = crossed.source.state.book_snapshot_current = false;
+        crossed.server.publish_depth_commit();
+        crossed.pump(5);
+        check(crossed.eof && crossed.count(140) == 0 && Read(crossed.first(5).payload).n.at(2) == 0 &&
+                  Read(crossed.first(700).payload).s.at(1).find("\"book_state\":\"crossed\"") != std::string::npos,
+              "crossed source withdraws authority without publishing invalid prices");
+        crossed.source.state.crossed_book = false;
+        crossed.source.state.market_data_display_allowed = crossed.source.state.book_snapshot_current = true;
+        crossed.connect();
+        crossed.logon();
+        crossed.subscribe();
+        check(crossed.count(145) == 2, "uncrossing permits a fresh valid snapshot");
     }
     {
         Harness startup(c);
