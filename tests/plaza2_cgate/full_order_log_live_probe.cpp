@@ -34,8 +34,8 @@ int main(int argc, char** argv) {
                          "  plaza2 qualify [owner FullOrderLog runtime options; --router explicitly required]\n"
                          "No 4101 fallback. Matching must come from fresh committed REFDATA for all selected ISINs.\n"
                          "Creates composite and independent raw ORDBOOK listeners; no broker order APIs.\n"
-                         "Bootstrap comparison requires identical native info.trades_lifenum and info.trades_rev.\n"
-                         "Later log commits lack a proven global watermark and remain UNALIGNED.\n"
+                         "Comparison requires identical native log life and committed orders_log cutover.\n"
+                         "ORDBOOK targets inside a CGate block, missed/evicted targets remain UNALIGNED.\n"
                          "Bounded SHA256 state history; missing alignment/P9 remains INCONCLUSIVE.\n";
             return 0;
         }
@@ -202,12 +202,14 @@ int main(int argc, char** argv) {
             << ",\"connection_active\":" << (connection_active ? "true" : "false")
             << ",\"duration_complete\":" << (elapsed >= seconds ? "true" : "false")
             << ",\"current\":" << (current ? "true" : "false")
-            << ",\"comparison_scope\":\"bootstrap_snapshot_anchors_only\",\"p9_qualified\":false,\"complete\":false"
+            << ",\"comparison_scope\":\"exact_committed_orders_log_cutovers\",\"p9_qualified\":false,\"complete\":false"
             << "}\n";
         check(raw.close());
         check(full.close());
         check(connection.close());
-        return window.mismatched ? 4 : 3; // Exact live log-state alignment is unsupported, never claim qualification.
+        return window.mismatched
+                   ? 4
+                   : 3; // Observations cannot qualify absent exact post-clear proof and the required live run.
     } catch (const std::exception& e) {
         std::cerr << cg::redact_plaza2_setting_value(e.what()) << '\n';
         return 2;

@@ -12,7 +12,12 @@
 
 namespace full_order_log_probe {
 namespace cg = moex::plaza2::cgate;
-using Key = std::pair<std::uint64_t, std::int64_t>; // Native log life and info.trades_rev, never local book revision.
+// MOEX9.9: https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/docs/p2gate_en.html
+// #g_3_3_1 (table-local revisions), #stream_FORTS_ORDBOOK_REPL (info binds orders_log).
+// CGate API printed pp11–12: TN_COMMIT completes a consistent block, without a revision payload.
+// https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/docs/cgate_en.pdf
+using Key =
+    std::pair<std::uint64_t, std::int64_t>; // Native log life and orders_log cutover; never local book revision.
 using Levels = std::map<std::tuple<std::int32_t, bool, std::int64_t>, std::int64_t>;
 inline void require(bool ok, const char* text) {
     if (!ok)
@@ -32,14 +37,14 @@ inline std::string digest(const Levels& levels, std::span<const std::int32_t> id
 struct Window {
     struct Entry {
         std::string hash;
-        bool ambiguous{}, paired{};
+        bool ambiguous{}, paired{}, paired_equal{};
     };
     std::map<Key, Entry> states[2];
     std::deque<Key> order[2];
     std::size_t capacity;
     std::ostream* output;
     std::uint64_t matched{}, mismatched{}, ambiguous{}, evicted{}, raw_snapshots{}, composite_commits{},
-        unresolved_raw_retired{};
+        unresolved_raw_retired{}, generation{};
     explicit Window(std::size_t cap = 4096, std::ostream* out = nullptr) : capacity(cap), output(out) {
         require(cap > 0 && cap <= 65536, "invalid bounded comparison window");
     }
@@ -49,6 +54,25 @@ struct Window {
                                                     [](const auto& entry) { return !entry.second.paired; });
         states[side].clear();
         order[side].clear();
+    }
+    void disqualify(unsigned side, Key key) {
+        const auto own = states[side].find(key), other = states[1 - side].find(key);
+        if (own == states[side].end())
+            return;
+        if (!own->second.ambiguous) {
+            own->second.ambiguous = true;
+            ++ambiguous;
+        }
+        if (own->second.paired) {
+            if (own->second.paired_equal) {
+                if (matched)
+                    --matched;
+            } else if (mismatched)
+                --mismatched;
+            own->second.paired = false;
+            if (other != states[1 - side].end())
+                other->second.paired = false;
+        }
     }
     void record(unsigned side, Key key, std::string hash) {
         if (side)
@@ -63,8 +87,7 @@ struct Window {
         if (inserted)
             order[side].push_back(key);
         else if (at->second.hash != hash && !at->second.ambiguous) {
-            at->second.ambiguous = true;
-            ++ambiguous;
+            disqualify(side, key);
         }
         if (own.size() > capacity) {
             if (side == 1 && !own.at(order[side].front()).paired)
@@ -79,6 +102,7 @@ struct Window {
             return;
         at->second.paired = other->second.paired = true;
         const bool equal = at->second.hash == other->second.hash;
+        at->second.paired_equal = other->second.paired_equal = equal;
         if (equal)
             ++matched;
         else
@@ -122,12 +146,20 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     std::vector<std::int32_t> ids_;
     std::unordered_map<std::int64_t, Order> orders_;
     OrderBinding fields_;
-    cg::Plaza2RawFieldBinding publication_, info_rev_, info_life_;
-    std::size_t order_index_{}, info_index_{}, order_capacity_;
+    cg::Plaza2RawFieldBinding publication_, info_rev_, info_life_, log_rev_, log_status_, log_act_;
+    std::size_t order_index_{}, info_index_{}, log_index_{}, order_capacity_;
     Key committed_{}, pending_{};
-    bool transaction_{}, info_done_{}, have_info_{}, log_rows_seen_{};
+    bool transaction_{}, info_done_{}, have_info_{}, online_{}, fenced_{}, log_started_{}, progress_needed_{};
+    bool committed_lastrec_{true}, pending_lastrec_{true};
     std::ostream* output_;
-    std::uint64_t diagnostic_limit_, diagnostics_{};
+    std::uint64_t diagnostic_limit_, diagnostics_{}, generation_{};
+    void retire_generation() {
+        // Native table revisions may restart without a different log life; neither old peer may survive.
+        window_.retire(0);
+        window_.retire(1);
+        generation_ = ++window_.generation;
+        progress_needed_ = true;
+    }
     Levels levels() const {
         Levels out;
         if (book_) {
@@ -144,7 +176,7 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
         return out;
     }
     void bind(std::span<const cg::Plaza2RawTableBinding> tables) {
-        bool orders = false, info = false;
+        bool orders = false, info = false, log = false;
         for (const auto& t : tables) {
             if (t.name == "orders") {
                 order_index_ = t.index;
@@ -157,6 +189,12 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                            field(t, "price", "d16.5", 11),
                            field(t, "public_amount_rest", "i8", 8),
                            field(t, "xstatus", "i8", 8)};
+            } else if (book_ && t.name == "orders_log") {
+                log = true;
+                log_index_ = t.index;
+                log_rev_ = field(t, "replRev", "i8", 8);
+                log_status_ = field(t, "xstatus", "i8", 8);
+                log_act_ = field(t, "replAct", "i8", 8);
             } else if (t.name == "info") {
                 info = true;
                 info_index_ = t.index;
@@ -165,7 +203,8 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 info_life_ = field(t, "trades_lifenum", "i8", 8);
             }
         }
-        require(orders && info, "probe requires native orders and info tables");
+        require(orders && info && (!book_ || log),
+                "probe requires native orders, info and composite orders_log tables");
     }
     void data(const cg::Plaza2ListenerEvent& e) {
         require(e.raw_table && transaction_, "probe row outside bound transaction");
@@ -176,18 +215,33 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
             const auto rev = read<std::int64_t>(e, info_rev_), life = read<std::int64_t>(e, info_life_);
             require((publication == 0 || publication == 1) && rev >= 0 && life >= 0, "invalid probe snapshot info");
             info_done_ = publication == 1;
+            if (info_done_ && book_ && log_started_) {
+                fenced_ = true; // Snapshot info cannot roll back/complete an already advancing online cutover.
+                return;
+            }
             if (info_done_) {
                 pending_.first = static_cast<std::uint64_t>(life);
                 pending_.second = rev;
                 have_info_ = true;
+                pending_lastrec_ = true;
+                progress_needed_ = false; // A fresh native completed publication seeds this cohort.
             }
             return;
         }
         if (book_) {
-            if (name == "orders_log" || name == "multileg_orders_log" || name == "heartbeat" || name == "sys_events") {
-                // Table-local replRev is not a documented global linked watermark.
-                // A later log-mutated state cannot reuse the native snapshot anchor.
-                log_rows_seen_ = true;
+            if (name == "orders_log") {
+                log_started_ = true;
+                require(e.table_index == log_index_, "probe orders_log index mismatch");
+                const auto revision = read<std::int64_t>(e, log_rev_);
+                require(revision > 0, "invalid native orders_log revision");
+                // All rows advance this one table's cutover, including filtered instruments/statuses.
+                if (read<std::int64_t>(e, log_act_))
+                    fenced_ = true; // Replication administration has no documented matching cutover.
+                if (revision > pending_.second) {
+                    pending_.second = revision;
+                    progress_needed_ = false; // New source progress, never an empty cached commit.
+                    pending_lastrec_ = (read<std::int64_t>(e, log_status_) & 0x1000) != 0;
+                }
             }
             return;
         }
@@ -242,22 +296,30 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
         try {
             using Kind = cg::Plaza2ListenerEventKind;
             const unsigned side = book_ ? 0 : 1;
+            if (generation_ != window_.generation) {
+                generation_ = window_.generation;
+                progress_needed_ = true;
+            }
             if (e.kind == Kind::Open) {
                 bind(e.raw_tables);
-                window_.retire(side);
+                retire_generation();
                 orders_.clear();
                 committed_ = {};
                 pending_ = {};
-                transaction_ = info_done_ = have_info_ = log_rows_seen_ = false;
+                transaction_ = info_done_ = have_info_ = online_ = fenced_ = log_started_ = false;
+                committed_lastrec_ = pending_lastrec_ = true;
             }
             if (e.kind == Kind::TransactionBegin) {
                 require(!transaction_, "nested probe transaction");
                 transaction_ = true;
                 pending_ = committed_;
+                pending_lastrec_ = committed_lastrec_;
                 info_done_ = false;
             }
             if (e.kind == Kind::StreamData)
                 data(e);
+            if (e.kind == Kind::Online)
+                online_ = true;
             std::uint64_t erased = 0;
             const auto prior = book_ ? book_->metrics().clear_deleted_erased : 0;
             const auto epoch = book_ ? book_->epoch() : 0;
@@ -269,6 +331,10 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
             }
             if (e.kind == Kind::ClearDeleted) {
                 ++clear_events;
+                if (book_) {
+                    window_.disqualify(side, committed_);
+                    fenced_ = true; // A later business revision in this block cannot rehabilitate the clear.
+                }
                 const auto name = e.raw_table ? e.raw_table->name : std::string("unresolved");
                 if (!book_ && name == "orders") {
                     for (auto i = orders_.begin(); i != orders_.end();) {
@@ -279,8 +345,9 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                             ++i;
                     }
                     if (e.signed_value == INT64_MAX) {
-                        have_info_ = false;
-                        window_.retire(side);
+                        have_info_ = info_done_ = false;
+                        committed_ = pending_ = {};
+                        retire_generation();
                     }
                 }
                 if (book_ && name == "orders_log") {
@@ -294,9 +361,10 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                              << ",\"erased\":" << erased << "}\n"
                              << std::flush;
             }
-            if (book_ && epoch != book_->epoch()) {
-                window_.retire(side);
-                have_info_ = false;
+            if (book_ && (epoch != book_->epoch() || e.kind == Kind::LifeNum)) {
+                retire_generation();
+                have_info_ = online_ = fenced_ = log_started_ = false;
+                committed_lastrec_ = pending_lastrec_ = true;
                 committed_ = {};
                 pending_ = {};
             }
@@ -304,15 +372,21 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 require(transaction_, "probe commit without begin");
                 transaction_ = false;
                 committed_ = pending_;
-                if (book_ && log_rows_seen_)
-                    ++unanchored_commits;
-                if (have_info_ && info_done_ && (!book_ || !log_rows_seen_))
+                committed_lastrec_ = pending_lastrec_;
+                // Capture only the actual published maps after native TN_COMMIT. A raw target
+                // inside this CGate block has no committed digest and remains UNALIGNED.
+                if (!progress_needed_ &&
+                    (book_ ? have_info_ && online_ && book_->valid() && pending_lastrec_ && !fenced_
+                           : have_info_ && info_done_))
                     window_.record(side, committed_, digest(levels(), ids_));
+                else if (book_ && online_)
+                    ++unanchored_commits;
             }
             if (e.kind == Kind::Close || (!book_ && e.kind == Kind::LifeNum)) {
                 orders_.clear();
-                have_info_ = false;
-                window_.retire(side);
+                transaction_ = info_done_ = have_info_ = online_ = false;
+                committed_ = pending_ = {};
+                retire_generation();
             }
             return {};
         } catch (const std::exception& error) {
