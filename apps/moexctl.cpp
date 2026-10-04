@@ -37,9 +37,12 @@ std::string binary_sha256(const char* argv0) {
     }
 }
 
-volatile std::sig_atomic_t stopping{};
+volatile std::sig_atomic_t stopping{}, second_signal{};
 void stop(int signal) {
-    stopping = signal;
+    if (stopping)
+        second_signal = 1;
+    else
+        stopping = signal;
 }
 struct ShutdownRequest {
     bool requested{}, force{};
@@ -160,8 +163,16 @@ int main(int argc, char** argv) {
     using namespace moex::connector_host;
     std::signal(SIGHUP, SIG_IGN);
     std::signal(SIGPIPE, SIG_IGN);
-    std::signal(SIGINT, stop);
-    std::signal(SIGTERM, stop);
+    struct sigaction action {};
+    action.sa_handler = stop;
+    action.sa_flags = SA_RESTART;
+    (void)sigemptyset(&action.sa_mask);
+    (void)sigaddset(&action.sa_mask, SIGINT);
+    (void)sigaddset(&action.sa_mask, SIGTERM);
+    if (::sigaction(SIGINT, &action, nullptr) < 0 || ::sigaction(SIGTERM, &action, nullptr) < 0) {
+        std::cerr << "cannot configure shutdown signals\n";
+        return 2;
+    }
     try {
         std::vector<std::string_view> arguments;
         std::filesystem::path log_path{"logs/moex_connector.ndjson"};
@@ -314,12 +325,14 @@ int main(int argc, char** argv) {
             CommandInput input;
             ShutdownRequest drain;
             std::string signal_reason;
+            bool drain_failed{};
             const auto signal_shutdown = [&] {
                 if (!stopping || !signal_reason.empty())
                     return;
                 signal_reason = stopping == SIGINT ? "SIGINT" : "SIGTERM";
                 host.record_operator_input(signal_reason, "signal");
                 host.set_kill_switch(true);
+                drain = {}; // The signal gets its own deadline, even after an operator quit.
                 drain.begin(true);
                 if (allow_orders)
                     for (const auto isin : signal_isins) {
@@ -332,6 +345,12 @@ int main(int argc, char** argv) {
             auto input_retry = std::chrono::steady_clock::now();
             for (;;) {
                 signal_shutdown();
+                if (second_signal) {
+                    host.record_operator_input("second signal", "signal");
+                    host.record_shutdown_drain(signal_reason, false);
+                    drain_failed = host.has_pending_cancellations() || host.has_working_orders();
+                    break;
+                }
                 if (const auto error = host.poll()) {
                     if (drain.requested)
                         host.record_shutdown_drain(signal_reason.empty() ? "quit" : signal_reason, false);
@@ -386,8 +405,9 @@ int main(int argc, char** argv) {
                 if (host.has_pending_cancellations())
                     std::cerr << "moexctl: cancellation drain reached its 10-second deadline; acknowledgements remain "
                                  "pending\n";
-                host.record_shutdown_drain(signal_reason.empty() ? "quit" : signal_reason,
-                                           waiting && std::chrono::steady_clock::now() >= drain.deadline);
+                const bool timed_out = waiting && std::chrono::steady_clock::now() >= drain.deadline;
+                host.record_shutdown_drain(signal_reason.empty() ? "quit" : signal_reason, timed_out);
+                drain_failed = timed_out || host.has_pending_cancellations() || host.has_working_orders();
                 break;
             }
             const auto error = host.stop();
@@ -396,7 +416,7 @@ int main(int argc, char** argv) {
                 std::cerr << error.message << '\n';
                 return 7;
             }
-            return 0;
+            return drain_failed ? 8 : 0;
         }
         ConnectorHost host(request.config);
         ScopeExit shutdown([&] { (void)host.stop(); });

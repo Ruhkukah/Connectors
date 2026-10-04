@@ -580,7 +580,7 @@ int main(int argc, char** argv) {
         test::require(status.find("\"ext_id\":100,") != std::string::npos,
                       "CLI Add did not start at its assigned ext_id range");
         remote_command(executable, log, "quit --force");
-        test::require(owner.wait() == 0, "scoped CLI failed to stop");
+        test::require(owner.wait() == 8, "forced shutdown with outstanding scoped order exited successfully");
         std::ifstream journal(log), errors(root / "identity-scope.err");
         const std::string contents((std::istreambuf_iterator<char>(journal)), {});
         const std::string diagnostics((std::istreambuf_iterator<char>(errors)), {});
@@ -875,7 +875,7 @@ int main(int argc, char** argv) {
         test::require(reply(owner).find("\"ok\":false") != std::string::npos && owner.alive(),
                       "quit stopped a host with Working orders without --force");
         owner.send("quit --force\n");
-        test::require(owner.wait() == 0, "forced quit did not stop host");
+        test::require(owner.wait() == 8, "forced quit reported success with outstanding work");
         std::ifstream journal(log);
         std::string record;
         unsigned incomplete{};
@@ -892,7 +892,7 @@ int main(int argc, char** argv) {
         Child owner(arguments, root / "quit-drain.err");
         make_working(owner);
         owner.send("cancel-all 1001\nquit --force\nplace during_shutdown 1001 buy 1 102500 day\nkill off\n");
-        test::require(owner.wait() == 0, "cancel/quit drain did not stop host");
+        test::require(owner.wait() == 8, "cancel/quit reported success without native terminal proof");
         cancelled_before_stop(log);
         std::ifstream input(log);
         const std::string contents((std::istreambuf_iterator<char>(input)), {});
@@ -909,7 +909,7 @@ int main(int argc, char** argv) {
         owner.send("cancel-all 1001\n");
         owner.signal(SIGTERM);
         owner.signal(SIGCONT);
-        test::require(owner.wait() == 0, "signal drain did not stop host");
+        test::require(owner.wait() == 8, "signal drain reported success without native terminal proof");
         cancelled_before_stop(log);
     });
     scenario("signals cancel every configured instrument before draining", [&] {
@@ -924,7 +924,7 @@ int main(int argc, char** argv) {
             make_working(owner);
             const auto start = std::chrono::steady_clock::now();
             owner.signal(signal);
-            test::require(owner.wait() == 0, "signal cancellation did not stop the host");
+            const auto result = owner.wait();
             const auto elapsed = std::chrono::steady_clock::now() - start;
             test::require(elapsed < 12s, "signal cancellation exceeded its bounded drain");
             std::ifstream journal(log);
@@ -945,12 +945,53 @@ int main(int argc, char** argv) {
                           "signal did not cancel each configured instrument once and process its acknowledgement");
             test::require(field(drain, "reason") == reason, "signal drain outcome was not journaled");
             const bool timed_out = field(drain, "outcome") == "timed_out";
+            test::require(result == (field(drain, "outcome") == "completed" ? 0 : 8),
+                          "signal exit status hid an incomplete or timed-out drain");
             test::require(timed_out ? elapsed >= 9500ms
                                     : field(drain, "outcome") == "completed" &&
                                           drain.find("\"pending_cancellations\":false") != std::string::npos &&
                                           drain.find("\"working_orders\":false") != std::string::npos,
                           "signal exited after an acknowledgement without terminal proof or a mature deadline");
         }
+    });
+    scenario("signal gets a fresh drain after an operator quit", [&] {
+        const auto log = root / "fresh-signal-drain.ndjson";
+        auto arguments = run_arguments(executable, fixture, log, "cli_fresh_signal");
+        arguments.push_back("--allow-orders");
+        Child owner(arguments, root / "fresh-signal-drain.err");
+        make_working(owner);
+        owner.send("cancel rel7_working\nquit --force\n");
+        while (reply(owner).find("\"draining\":true") == std::string::npos) {
+        }
+        std::this_thread::sleep_for(2s);
+        test::require(owner.alive(), "operator cancellation did not remain in its drain");
+        const auto start = std::chrono::steady_clock::now();
+        owner.signal(SIGTERM);
+        const auto result = owner.wait();
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        test::require(elapsed >= 9500ms && elapsed < 12s,
+                      "signal cancellation inherited the earlier operator drain deadline");
+        test::require(result == 8, "timed-out fresh signal drain exited successfully");
+    });
+    scenario("second signal interrupts the drain and reports outstanding work", [&] {
+        const auto log = root / "second-signal.ndjson";
+        auto arguments = run_arguments(executable, fixture, log, "cli_second_signal");
+        arguments.push_back("--allow-orders");
+        Child owner(arguments, root / "second-signal.err");
+        make_working(owner);
+        owner.signal(SIGTERM);
+        (void)remote_command(executable, log, "status"); // First signal has reached the owner loop.
+        const auto start = std::chrono::steady_clock::now();
+        owner.signal(SIGINT);
+        const auto result = owner.wait();
+        test::require(std::chrono::steady_clock::now() - start < 1s, "second signal continued draining");
+        test::require(result == 8, "second signal concealed outstanding orders");
+        std::ifstream diagnostics(root / "second-signal.err"), journal(log);
+        const std::string errors((std::istreambuf_iterator<char>(diagnostics)), {});
+        const std::string records((std::istreambuf_iterator<char>(journal)), {});
+        test::require(errors.find("rel7_working") != std::string::npos &&
+                          records.find("\"outcome\":\"incomplete\"") != std::string::npos,
+                      "second signal omitted the outstanding report or incomplete drain audit");
     });
     scenario("storage failure keeps command owner alive", [&] {
         const auto log = root / "storage.ndjson", state = root / "storage.state";
@@ -982,7 +1023,7 @@ int main(int argc, char** argv) {
                 std::string::npos,
             "storage recovery silently disabled the kill switch");
         owner.signal(SIGTERM);
-        test::require(owner.wait() == 0, "recovered CLI shutdown retained its storage error");
+        test::require(owner.wait() == 8, "recovered CLI reported successful shutdown with working orders");
         std::ifstream journal(log);
         const std::string contents((std::istreambuf_iterator<char>(journal)), {});
         test::require(contents.find("\"event\":\"storage_recovered\"") != std::string::npos,
