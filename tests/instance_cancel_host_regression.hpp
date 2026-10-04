@@ -82,7 +82,10 @@ inline void instance_cancel_host_regression(TradingHostConfig config, const plaz
     assert_status_ownership(81003, false); // Own login but outside this instance's range.
     assert_status_ownership(81004, false); // Manual order has no ext_id.
     const auto before = control.commands().size();
-    test::require(host.cancel_all(isin).empty(), "instance cancel-all refused");
+    test::require(
+        host.cancel_all(isin) ==
+            R"(cancel-all incomplete; skipped client_order_ids=["recovered:321:81002","recovered:321:81003","recovered:321:81004"])",
+        "instance cancel-all did not report untouched foreign/manual orders");
     const auto commands = control.commands();
     test::require(commands.size() == before + 1 && commands.back().name == "DelOrder",
                   "instance cancel-all sent a broad or foreign cancellation");

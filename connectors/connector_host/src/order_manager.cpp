@@ -834,11 +834,21 @@ std::string OrderManager::cancel_all(std::int32_t isin) {
     if (isin <= 0)
         return "cancel-all requires an instrument id";
     if (!config_.sole_instance) {
-        for (auto& [key, order] : orders_)
-            if (order.instance_owned && order.request.isin_id == isin && !terminal(order.state) &&
-                (order.order_id > 0 || !order.operator_action_required))
-                (void)cancel(key);
-        return {};
+        std::string skipped;
+        for (auto& [key, order] : orders_) {
+            if (order.request.isin_id != isin || terminal(order.state))
+                continue;
+            if (order.instance_owned && (order.order_id > 0 || !order.operator_action_required) && cancel(key).empty())
+                continue;
+            if (!skipped.empty())
+                skipped += ',';
+            skipped += json_string(key);
+        }
+        if (skipped.empty())
+            return {};
+        skipped = '[' + skipped + ']';
+        emit("cancel_all_skipped", "{\"isin_id\":" + std::to_string(isin) + ",\"client_order_ids\":" + skipped + "}");
+        return "cancel-all incomplete; skipped client_order_ids=" + skipped;
     }
     tr::DelUserOrdersRequest request;
     request.broker_code = config_.broker_code;

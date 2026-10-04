@@ -63,7 +63,13 @@ template <class Fixture> void instance_cancel_regression() {
               !manager.orders().at("recovered:100:99007").instance_owned &&
               !manager.orders().at("recovered:100:99008").instance_owned,
           "native instance ownership did not require the configured login and ext-ID range");
-    check(manager.cancel_all(42).empty(), "instance cancel-all refused");
+    const std::string skipped =
+        R"(["conflict","recovered:100:99006","recovered:100:99007","recovered:100:99008","recovered:100:99009"])";
+    check(manager.cancel_all(42) == "cancel-all incomplete; skipped client_order_ids=" + skipped,
+          "instance cancel-all hid orders outside its cancellation scope");
+    check(std::find(fixture.log.begin(), fixture.log.end(),
+                    "cancel_all_skipped{\"isin_id\":42,\"client_order_ids\":" + skipped + "}") != fixture.log.end(),
+          "instance cancel-all did not journal the skipped order IDs");
     fixture.poll(manager, 101);
     bool known_cancelled{}, recovered_cancelled{}, unresolved_scoped{};
     for (const auto& sent : fixture.sent) {
@@ -132,7 +138,8 @@ template <class Fixture> void instance_cancel_regression() {
     check(relisted.orders().at("recovered:100:99100").instance_owned &&
               !relisted.orders().at("recovered:100:99101").instance_owned,
           "day relist changed archived logical instance ownership");
-    check(relisted.cancel_all(42).empty(), "relisted instance cancellation refused");
+    check(relisted.cancel_all(42) == R"(cancel-all incomplete; skipped client_order_ids=["recovered:100:99101"])",
+          "relisted instance cancellation hid the foreign descendant");
     retention.poll(relisted, 0);
     check(retention.sent.size() == 1 && retention.sent.front().kind == tr::Plaza2TradeCommandKind::DelOrder,
           "day relist cancelled the foreign ancestor's descendant");

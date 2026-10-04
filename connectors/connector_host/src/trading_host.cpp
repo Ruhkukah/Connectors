@@ -763,7 +763,8 @@ std::string CgateTradingHost::move(std::string_view key, std::string price, std:
 std::string CgateTradingHost::cancel_all(std::int32_t isin) {
     assert_owner();
     auto error = orders_->cancel_all(isin);
-    if (error.empty())
+    // A partial refusal still queues the safe instance-owned cancellations.
+    if (isin > 0)
         dispatch_commands();
     return error;
 }
