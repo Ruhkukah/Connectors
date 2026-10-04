@@ -114,6 +114,11 @@ add_test(NAME plaza2_full_order_log_test COMMAND plaza2_full_order_log_test)
 
 moex_runtime_test(plaza2_full_order_log_session_test plaza2_cgate/plaza2_full_order_log_session_test.cpp moex_plaza2_trade_session moex_plaza2_cgate_full_order_log)
 
+moex_test_target(full_order_log_live_probe plaza2_cgate/full_order_log_live_probe.cpp moex_connector_host)
+moex_test(full_order_log_live_probe_test plaza2_cgate/full_order_log_live_probe_test.cpp moex_connector_host)
+add_test(NAME full_order_log_live_metrics_test COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/full_order_log_live_metrics_test.py")
+
 # Opt-in performance gate; the executable is available in every test build.
 moex_test_target(plaza2_full_order_log_benchmark plaza2_cgate/plaza2_full_order_log_benchmark.cpp
     plaza2_runtime_test_support moex_connector_host)
