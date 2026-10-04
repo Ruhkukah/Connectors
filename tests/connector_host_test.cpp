@@ -51,6 +51,37 @@ int main(int argc, char** argv) {
         fake.set(moex::plaza2::test::fake::Option::ClientCode, "BRK1C01");
         fake.set(moex::plaza2::test::fake::Option::AggrSnapshotReadyOnly, "1");
         {
+            ::setenv("MOEX_TEST_ROUTER_PASS", "offline-password", 1);
+            Plaza2HostConfigInputs inputs;
+            inputs.read_only_market_data = true;
+            inputs.runtime_root = fixture.root;
+            inputs.library_path = fixture.library_path;
+            inputs.scheme_dir = fixture.scheme_dir;
+            inputs.config_dir = fixture.config_dir;
+            inputs.env_open_settings = "ini=config/t1.ini;key=00000000";
+            inputs.software_key_env_var = "MOEX_PLAZA2_CGATE_SOFTWARE_KEY";
+            inputs.router = "localhost:4102";
+            inputs.local_pass_env_var = "MOEX_TEST_ROUTER_PASS";
+            inputs.isin_ids = {1001};
+            ConnectorHost host(build_plaza2_host_config(inputs));
+            warm(host);
+            test::require(fake.connection_settings().find("p2tcp://localhost:4102;") == 0 &&
+                              fake.connection_settings().find(";local_pass=offline-password") != std::string::npos,
+                          "router port and local password reach native cg_conn_new");
+            test::require(!host.stop(), "password-configured host stops");
+            for (const char* value : {"bad;app_name=injected", "bad\npassword", ""}) {
+                ::setenv("MOEX_TEST_ROUTER_PASS", value, 1);
+                bool refused = false;
+                try {
+                    (void)build_plaza2_host_config(inputs);
+                } catch (const std::invalid_argument&) {
+                    refused = true;
+                }
+                test::require(refused, "missing or delimiter-containing router password must fail before connection");
+            }
+            ::unsetenv("MOEX_TEST_ROUTER_PASS");
+        }
+        {
             ::unsetenv("MOEX_PLAZA2_TEST_CREDENTIALS");
             ConnectorHost host(config(fixture));
             const auto started = host.start();

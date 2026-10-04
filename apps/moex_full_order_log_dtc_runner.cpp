@@ -1,13 +1,9 @@
-#include "moex/connector_host/full_order_log_dtc.hpp"
-#include "moex/connector_host/dtc_read_only_server.hpp"
+#include "full_order_log_dtc_loop.hpp"
 #include "moex/connector_host/operator_config.hpp"
 #include <atomic>
 #include <charconv>
 #include <csignal>
-#include <fstream>
 #include <iostream>
-#include <memory>
-#include <thread>
 
 namespace {
 namespace dtc = moex::connector_host::dtc;
@@ -29,7 +25,8 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--help") {
             std::cout << "moex_full_order_log_dtc_runner plaza2 qualify [read-only runtime options]\n"
                          "  --dtc-port N (default 11300, consecutive loopback ports for configured ISINs)\n"
-                         "  --entitlement-confirmation FILE --owner-approved-live\n"
+                         "  --live --trading-instance-id NAME (MOEX/broker entitlement is the owner responsibility)\n"
+                         "  --router HOST:PORT (default 127.0.0.1:4102; separate order-log router/login)\n"
                          "  --offline-fake --run-ms N (offline tests; no live authorization inferred)\n"
                          "  --dtc-depth N (default 20; up to 20000 per side; NumLevels=0 uses that cap)\n"
                          "Each port serves one configured ISIN from the full anonymous book.\n"
@@ -37,22 +34,22 @@ int main(int argc, char** argv) {
                       << moex::connector_host::operator_help();
             return 0;
         }
-        bool offline = false, approved = false, instance = false;
-        std::string entitlement;
+        bool offline = false, live = false, instance = false, router = false;
+        std::string trading_instance;
         std::uint32_t base_port = 11300, run_ms = 0, depth_levels = 20;
         std::vector<std::string_view> arguments;
         for (int i = 1; i < argc; ++i) {
             const std::string_view key = argv[i];
             if (key == "--offline-fake")
                 offline = true;
-            else if (key == "--owner-approved-live")
-                approved = true;
-            else if (key == "--entitlement-confirmation" || key == "--dtc-port" || key == "--run-ms" ||
+            else if (key == "--live")
+                live = true;
+            else if (key == "--trading-instance-id" || key == "--dtc-port" || key == "--run-ms" ||
                      key == "--dtc-depth") {
                 if (++i == argc)
                     throw std::invalid_argument("missing runner option value");
-                if (key == "--entitlement-confirmation")
-                    entitlement = argv[i];
+                if (key == "--trading-instance-id")
+                    trading_instance = argv[i];
                 else if (key == "--dtc-port")
                     base_port = integer(argv[i]);
                 else if (key == "--dtc-depth")
@@ -61,14 +58,17 @@ int main(int argc, char** argv) {
                     run_ms = integer(argv[i]);
             } else {
                 instance |= key == "--instance-id";
+                router |= key == "--router";
                 arguments.push_back(key);
             }
         }
-        if (!offline) {
-            std::ifstream confirmation(entitlement);
-            if (!approved || !confirmation || confirmation.peek() == std::ifstream::traits_type::eof())
-                throw std::invalid_argument("live FullOrderLog requires written MOEX/broker entitlement confirmation "
-                                            "FILE and --owner-approved-live");
+        if (offline == live)
+            throw std::invalid_argument("select --live or --offline-fake");
+        if (live && trading_instance.empty())
+            throw std::invalid_argument("--live requires the trading process --trading-instance-id");
+        if (!router) {
+            arguments.push_back("--router");
+            arguments.push_back("127.0.0.1:4102");
         }
         arguments.push_back("--read-only-market-data");
         if (!instance) {
@@ -76,6 +76,10 @@ int main(int argc, char** argv) {
             arguments.push_back("moex_full_order_log");
         }
         auto request = moex::connector_host::parse_operator_arguments(arguments);
+        const auto app_name = request.config.transport.host.connection_settings.substr(
+            request.config.transport.host.connection_settings.find(";app_name=") + 10);
+        if (app_name.substr(0, app_name.find(';')) == (trading_instance.empty() ? "moex_connector" : trading_instance))
+            throw std::invalid_argument("order-log and trading instance IDs must differ");
         if (request.command != "qualify")
             throw std::invalid_argument("FullOrderLog runner requires plaza2 qualify");
         if (request.config.isin_ids.size() > 64 || depth_levels > 20000 || base_port > UINT16_MAX ||
@@ -107,67 +111,59 @@ int main(int argc, char** argv) {
                 (event.kind == Kind::StreamData && event.message_name == "sys_events"))
                 std::cerr << "FullOrderLog listener event " << static_cast<unsigned>(event.kind)
                           << " life=" << event.unsigned_value << " revision=" << event.signed_value
-                          << " table=" << event.message_name << '\n';
+                          << " table=" << (event.message_name.empty() ? "unspecified" : event.message_name) << '\n';
         };
         moex::connector_host::ConnectorHost host(std::move(request.config));
-        std::vector<std::unique_ptr<dtc::DtcFullOrderLogSource>> sources;
-        std::vector<std::unique_ptr<dtc::DtcReadOnlyServer>> servers;
-        for (std::size_t i = 0; i < ids.size(); ++i) {
-            sources.push_back(std::make_unique<dtc::DtcFullOrderLogSource>(book, ids[i], dtc::DtcMarketDataSnapshot{},
-                                                                           depth_levels * 2));
-            dtc::DtcReadOnlyServerConfig config;
-            config.port = static_cast<std::uint16_t>(base_port + i);
-            config.symbol_id = static_cast<std::uint32_t>(i + 1);
-            config.source_mode = offline ? dtc::DtcSourceMode::Replay : dtc::DtcSourceMode::LiveTest;
-            config.max_depth_levels = depth_levels;
-            config.max_queued_bytes = 4 * 1024 * 1024;
-            servers.push_back(std::make_unique<dtc::DtcReadOnlyServer>(*sources.back(), config));
-        }
-        struct CallbackLifetime {
-            cg::Plaza2FullOrderLog& book;
-            ~CallbackLifetime() {
-                book.on_commit = {};
-                book.on_invalidate = {};
-            }
-        } callback_lifetime{book};
-        book.on_commit = [&](const auto&) {
-            for (std::size_t i = 0; i < sources.size(); ++i) {
-                sources[i]->committed();
-                servers[i]->publish_depth_commit();
-            }
+        moex::connector_host::FullOrderLogDtcLoop loop(host, book, static_cast<std::uint16_t>(base_port), depth_levels,
+                                                       offline ? dtc::DtcSourceMode::Replay
+                                                               : dtc::DtcSourceMode::LiveTest);
+        book.on_crossed = [](std::int32_t isin, bool crossed) {
+            std::cerr << "FullOrderLog crossed isin=" << isin << " crossed=" << crossed << '\n';
         };
-        book.on_invalidate = [&] {
-            for (auto& server : servers)
-                server->publish_depth_commit();
+        std::uint64_t logged_info_life = UINT64_MAX;
+        loop.on_queued_commit = [&] {
+            const auto life = book.life_state();
+            if (life.info_available && logged_info_life != life.info_trades_lifenum) {
+                logged_info_life = life.info_trades_lifenum;
+                std::cerr << "FullOrderLog committed info.trades_lifenum=" << logged_info_life << '\n';
+            }
         };
         std::signal(SIGINT, stop_signal);
         std::signal(SIGTERM, stop_signal);
-        if (const auto error = host.start(); error)
-            throw std::runtime_error(error.message);
-        for (std::size_t i = 0; i < servers.size(); ++i) {
-            std::string error;
-            if (!servers[i]->start(error))
-                throw std::runtime_error(error);
-            std::cout << "isin=" << ids[i] << " dtc_port=" << servers[i]->port() << " symbol_id=" << i + 1
-                      << " source_mode=" << (offline ? "offline_fake" : "live_test") << '\n';
-        }
+        loop.start();
+        for (std::size_t i = 0; i < ids.size(); ++i)
+            std::cout << "isin=" << book.instruments()[i] << " dtc_port=" << loop.server(i).port()
+                      << " symbol_id=" << i + 1 << " source_mode=" << (offline ? "offline_fake" : "live_test") << '\n';
         std::cout << "book_memory_bytes=" << book.memory_bytes()
                   << " max_queue_bytes_per_isin=4194304 dtc_depth_per_side=" << depth_levels << '\n'
                   << std::flush;
         const auto start = std::chrono::steady_clock::now();
+        auto rate_at = start;
+        std::uint64_t rows_at = book.metrics().rows_total;
         while (!stop_requested.load(std::memory_order_relaxed) &&
                (!run_ms || std::chrono::steady_clock::now() - start < std::chrono::milliseconds(run_ms))) {
-            if (const auto error = host.poll(); error)
-                throw std::runtime_error(error.message);
-            for (std::size_t i = 0; i < sources.size(); ++i) {
-                sources[i]->update_metadata(dtc::make_dtc_market_data_snapshot(host.market_data_snapshot(ids[i])));
-                servers[i]->poll();
+            loop.poll();
+            const auto now = std::chrono::steady_clock::now();
+            if (now - rate_at >= std::chrono::seconds(30)) {
+                const auto m = book.metrics();
+                std::cout << "rows_per_second="
+                          << (m.rows_total - rows_at) / std::chrono::duration<double>(now - rate_at).count()
+                          << " lag_samples=" << m.lag_samples << " lag_last_ns=" << m.lag_last_ns
+                          << " lag_max_ns=" << m.lag_max_ns << '\n'
+                          << std::flush;
+                rate_at = now;
+                rows_at = m.rows_total;
             }
         }
-        for (auto& server : servers)
-            server->stop();
-        if (const auto error = host.stop(); error)
-            throw std::runtime_error(error.message);
+        const auto metrics = book.metrics();
+        const auto life = book.life_state();
+        std::cout << "rows_total=" << metrics.rows_total << " ignored_executions=" << metrics.ignored_executions
+                  << " excluded_adds=" << metrics.excluded_adds << " lag_samples=" << metrics.lag_samples
+                  << " lag_last_ns=" << metrics.lag_last_ns << " lag_max_ns=" << metrics.lag_max_ns
+                  << " lag_sum_ns=" << metrics.lag_sum_ns << " crossed_transitions=" << metrics.crossed_transitions
+                  << " native_life=" << life.last_lifenum << " info_trades_lifenum=" << life.info_trades_lifenum
+                  << " metadata_refreshes=" << loop.metadata_refreshes << " polls=" << loop.polls << '\n';
+        loop.stop();
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
