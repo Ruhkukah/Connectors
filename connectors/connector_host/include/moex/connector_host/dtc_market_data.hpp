@@ -122,11 +122,14 @@ struct DtcMarketDataLevel {
     std::uint64_t source_sequence{0};
     std::uint64_t exchange_moment_ns{0};
     std::string price;
+    std::uint32_t depth_level{0}; // optional positional DTC update index
 
     friend bool operator==(const DtcMarketDataLevel&, const DtcMarketDataLevel&) = default;
 };
 
 struct DtcMarketDataSnapshot {
+    bool full_order_log{false};
+    std::chrono::steady_clock::time_point committed_at{};
     std::uint64_t connector_generation{0};
     std::uint64_t market_data_authority_epoch{0};
     std::uint64_t stream_epoch{0};
@@ -278,6 +281,17 @@ class DtcMarketDataSource {
     virtual ~DtcMarketDataSource() = default;
     [[nodiscard]] virtual DtcMarketDataSnapshot snapshot() const = 0;
     [[nodiscard]] virtual DtcReadOnlyCapabilities capabilities() const noexcept = 0;
+    // Sparse committed depth sources avoid copying the universe on each poll.
+    [[nodiscard]] virtual DtcMarketDataSnapshot status_snapshot() const {
+        return snapshot();
+    }
+    [[nodiscard]] virtual bool incremental_depth() const noexcept {
+        return false;
+    }
+    virtual void configure_depth_limit(std::size_t) {}
+    [[nodiscard]] virtual std::span<const DtcMarketDataLevel> depth_changes() const noexcept {
+        return {};
+    }
     // Public trades are a distinct committed event stream. Sources which do
     // not publish that stream remain depth-only by default.
     [[nodiscard]] virtual plaza2::cgate::Plaza2PublicDealsSnapshot

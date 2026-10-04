@@ -45,7 +45,7 @@ struct DtcReadOnlyServerConfig {
     std::size_t max_queued_bytes{65536};
     // Hard ceiling is 4096; injectable for deterministic backpressure tests.
     std::size_t max_write_bytes_per_poll{4096};
-    std::size_t max_depth_levels{20}; // per side; hard ceiling 20 (AGGR20)
+    std::size_t max_depth_levels{20}; // per side; FullOrderLog may opt into up to 20000
     std::chrono::milliseconds idle_timeout{30000};
     std::chrono::milliseconds write_timeout{5000};
     // Metadata absent from DtcMarketDataSource must be explicitly supplied by
@@ -82,6 +82,9 @@ class DtcReadOnlyServer final {
 
     bool start(std::string& error);
     void poll();
+    // Invoke synchronously at TN_COMMIT on the owner thread.
+    void publish_depth_commit();
+    [[nodiscard]] std::uint64_t last_commit_to_queue_ns() const noexcept;
     void stop() noexcept;
     [[nodiscard]] std::uint16_t port() const noexcept;
     [[nodiscard]] std::uint32_t symbol_id() const noexcept;
