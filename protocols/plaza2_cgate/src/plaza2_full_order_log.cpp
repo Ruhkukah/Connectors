@@ -1,7 +1,6 @@
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
 #include "moex/plaza2/cgate/plaza2_decimal.hpp"
 #include <algorithm>
-#include <array>
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
@@ -9,8 +8,7 @@
 
 namespace moex::plaza2::cgate {
 namespace {
-// Fixed node blocks are returned on erase and reused on the next insertion.
-// Only the unordered-map's constructor-time bucket allocation uses large_.
+// Fixed nodes are reused on erase; large_ holds both construction-time hash bucket arrays.
 class BookArena final : public std::pmr::memory_resource {
     struct alignas(std::max_align_t) Block {
         std::byte bytes[128];
@@ -332,9 +330,6 @@ struct Plaza2FullOrderLog::Impl {
         if (online && pending_info && have_info && pending_log_life != info_log_life)
             throw std::invalid_argument("Full Order Log snapshot log life changed; fresh snapshot required");
         changes.clear();
-        const auto utc =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count();
         for (std::size_t n = 0; n < books.size(); ++n) {
             auto& b = books[n];
             bool changed = false;
@@ -368,6 +363,21 @@ struct Plaza2FullOrderLog::Impl {
                     owner.on_crossed(isins[n], cross);
             }
             b.committed_moment = b.moment;
+        }
+        if (pending_info) {
+            info_log_life = pending_log_life;
+            have_info = true;
+            pending_info = false;
+        }
+        dirty_levels = 0;
+        committed_count = orders.size();
+        transaction = false;
+        committed_at = Clock::now();
+        valid = online && !waiting_snapshot;
+        const auto utc =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        for (auto& b : books) {
             if (online && b.touched && b.moment) {
                 const auto now = static_cast<std::uint64_t>(utc);
                 if (b.moment > now)
@@ -380,16 +390,6 @@ struct Plaza2FullOrderLog::Impl {
             }
             b.touched = false;
         }
-        if (pending_info) {
-            info_log_life = pending_log_life;
-            have_info = true;
-            pending_info = false;
-        }
-        dirty_levels = 0;
-        committed_count = orders.size();
-        transaction = false;
-        committed_at = Clock::now();
-        valid = online && !waiting_snapshot;
     }
 };
 
