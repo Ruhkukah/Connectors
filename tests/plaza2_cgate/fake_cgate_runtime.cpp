@@ -71,10 +71,10 @@ fixture::Scenario scenario;
 std::deque<fixture::Event> queued_events;
 std::vector<fixture::PostedCommand> posted_commands;
 std::unordered_map<StreamCode, std::uint64_t> listener_opens;
-std::string last_trade_open_settings;
+std::string last_trade_open_settings, last_connection_settings;
 std::unordered_map<StreamCode, std::string> last_listener_open_settings;
 constexpr StreamCode kFullOrderLogStreamCode = static_cast<StreamCode>(0xF0110001u);
-std::uint64_t process_calls{};
+std::uint64_t process_calls{}, full_refdata_count{1};
 std::uint32_t last_process_timeout{};
 const char* option(Option option) {
     const auto& value = scenario.options[static_cast<std::size_t>(option)];
@@ -1043,6 +1043,20 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                         {.field_code = kFortsRefdataReplFutVcbCurr, .kind = Text, .text = "RUB"},
                         {.field_code = kFortsRefdataReplFutVcbBoardMd, .kind = Text, .text = "RFUD"}}});
     }
+    if (stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::FullOrderLogRefdata) &&
+        full_refdata_count > 1) {
+        const auto first = *std::find_if(script.begin(), script.end(), [](const auto& row) {
+            return row.table_code == TableCode::kFortsRefdataReplFutSessContents;
+        });
+        for (std::uint64_t i = 1; i < full_refdata_count; ++i) {
+            auto row = first;
+            row.rev += i;
+            find_field(row, FieldCode::kFortsRefdataReplFutSessContentsReplId)->signed_value = 100000 + i;
+            find_field(row, FieldCode::kFortsRefdataReplFutSessContentsReplRev)->signed_value = row.rev;
+            find_field(row, FieldCode::kFortsRefdataReplFutSessContentsIsinId)->signed_value = 1001 + i;
+            script.push_back(std::move(row));
+        }
+    }
     if (stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::FullOrderLogMultiMatching)) {
         using enum FieldCode;
         using enum FakeValueKind;
@@ -1059,7 +1073,9 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
              .fields = {{.field_code = kFortsRefdataReplFutVcbReplId, .signed_value = 5},
                         {.field_code = kFortsRefdataReplFutVcbReplRev, .signed_value = 5},
                         {.field_code = kFortsRefdataReplFutVcbBaseContractId, .signed_value = 501},
-                        {.field_code = kFortsRefdataReplFutVcbBaseContractCode, .kind = Text, .text = "MX"}}});
+                        {.field_code = kFortsRefdataReplFutVcbBaseContractCode, .kind = Text, .text = "MX"},
+                        {.field_code = kFortsRefdataReplFutVcbCurr, .kind = Text, .text = "RUB"},
+                        {.field_code = kFortsRefdataReplFutVcbBoardMd, .kind = Text, .text = "RFUD"}}});
         script.push_back(
             {.table_code = TableCode::kFortsRefdataReplInstr2matchingMap,
              .rev = 5,
@@ -2069,6 +2085,7 @@ std::uint32_t cg_conn_new(const char* settings, void** connptr) {
     }
     auto* connection = new FakeConnection{};
     connection->settings = settings;
+    last_connection_settings = settings;
     g_cancel_after_cleanup = false;
     g_persistent_order_epoch = 0;
     ++g_conn_new_count;
@@ -3214,9 +3231,17 @@ extern "C" std::uint64_t moex_fake_connection_new_count() {
 
 extern "C" void moex_fake_scenario(const fixture::Scenario* value) {
     scenario = value ? *value : fixture::Scenario{};
+    full_refdata_count = 1;
+}
+extern "C" void moex_fake_refdata_count(std::uint64_t count) {
+    full_refdata_count = std::clamp<std::uint64_t>(count, 1, 100000);
 }
 extern "C" void moex_fake_option(Option key, const char* value) {
     scenario.options[static_cast<std::size_t>(key)] = value ? value : "";
+}
+extern "C" void moex_fake_connection_settings(std::string* out) {
+    if (out)
+        *out = last_connection_settings;
 }
 extern "C" void moex_fake_listener_open_settings(StreamCode stream, std::string* out) {
     if (out)

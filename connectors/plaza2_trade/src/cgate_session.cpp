@@ -175,161 +175,6 @@ std::string_view plaza2_recovery_wait_state_name(Plaza2RecoveryWaitState state) 
     }
     return "None";
 }
-// Matching collection is confined to the optional public profile. The retained
-// private projector deliberately does not consume instr2matching_map.
-struct FullLogRefdata final : cg::Plaza2ListenerEventHandler {
-    cg::Plaza2PrivateStateBridge& bridge;
-    struct Match {
-        std::int64_t rev;
-        std::int32_t base;
-        std::int8_t id;
-    };
-    struct Contract {
-        std::int64_t rev;
-        std::int32_t isin, session;
-        std::string code;
-    };
-    std::map<std::int64_t, Match> matches, pending_matches;
-    std::map<std::int64_t, Contract> contracts, pending_contracts;
-    bool transaction{false};
-    std::optional<std::uint64_t> life;
-    explicit FullLogRefdata(cg::Plaza2PrivateStateBridge& b) : bridge(b) {}
-    static const cg::Plaza2RawFieldBinding* field(const cg::Plaza2RawTableBinding& t, std::string_view name) {
-        const auto i = std::find_if(t.fields.begin(), t.fields.end(), [=](const auto& f) { return f.name == name; });
-        return i == t.fields.end() ? nullptr : &*i;
-    }
-    static std::int64_t integer(const cg::Plaza2ListenerEvent& e, std::string_view name) {
-        const auto* f = field(*e.raw_table, name);
-        if (!f || f->offset > e.raw_payload.size() || f->size > e.raw_payload.size() - f->offset ||
-            (!e.raw_nulls.empty() && (f->index >= e.raw_nulls.size() || e.raw_nulls[f->index])))
-            throw std::runtime_error("full order log REFDATA missing/null field: " + std::string(name));
-        const auto* p = e.raw_payload.data() + f->offset;
-        std::int64_t v = 0;
-        if (f->size == 1) {
-            std::int8_t n;
-            std::memcpy(&n, p, 1);
-            v = n;
-        } else if (f->size == 4) {
-            std::int32_t n;
-            std::memcpy(&n, p, 4);
-            v = n;
-        } else if (f->size == 8)
-            std::memcpy(&v, p, 8);
-        else
-            throw std::runtime_error("full order log REFDATA integer width mismatch");
-        return v;
-    }
-    void reset() {
-        matches.clear();
-        contracts.clear();
-        pending_matches.clear();
-        pending_contracts.clear();
-        transaction = false;
-    }
-    bool wants_raw_replication_table(std::string_view name) const noexcept override {
-        return name == "instr2matching_map";
-    }
-    cg::Plaza2Error on_plaza2_listener_event(const cg::Plaza2ListenerEvent& e) override {
-        using enum cg::Plaza2ListenerEventKind;
-        if (e.kind == Open) {
-            reset();
-            const auto t = std::find_if(e.raw_tables.begin(), e.raw_tables.end(),
-                                        [](const auto& t) { return t.name == "instr2matching_map"; });
-            if (t == e.raw_tables.end())
-                return {.code = Plaza2ErrorCode::IncompatibleScheme,
-                        .message = "FullOrderLog requires REFDATA.instr2matching_map"};
-            for (const auto name : {"replID", "replRev", "replAct", "base_contract_id", "matching_id"}) {
-                const auto* f = field(*t, name);
-                const std::size_t size = std::string_view(name) == "matching_id"        ? 1
-                                         : std::string_view(name) == "base_contract_id" ? 4
-                                                                                        : 8;
-                if (!f || f->size != size || f->type_token != "i" + std::to_string(size) || f->offset > t->row_size ||
-                    f->size > t->row_size - f->offset)
-                    return {.code = Plaza2ErrorCode::IncompatibleScheme,
-                            .message =
-                                "FullOrderLog incompatible REFDATA.instr2matching_map field: " + std::string(name)};
-            }
-            const auto terms = std::find_if(e.raw_tables.begin(), e.raw_tables.end(),
-                                            [](const auto& t) { return t.name == "fut_sess_contents"; });
-            if (terms == e.raw_tables.end())
-                return {.code = Plaza2ErrorCode::IncompatibleScheme,
-                        .message = "FullOrderLog requires REFDATA.fut_sess_contents"};
-            for (const auto name : {"replID", "replRev", "replAct", "isin_id", "sess_id", "base_contract_code"}) {
-                const auto* f = field(*terms, name);
-                const auto type = std::string_view(name) == "base_contract_code"                                 ? "c25"
-                                  : (std::string_view(name) == "isin_id" || std::string_view(name) == "sess_id") ? "i4"
-                                                                                                                 : "i8";
-                const std::size_t size = std::string_view(type) == "c25" ? 26 : std::string_view(type) == "i4" ? 4 : 8;
-                if (!f || f->type_token != type || f->size != size || f->offset > terms->row_size ||
-                    f->size > terms->row_size - f->offset)
-                    return {.code = Plaza2ErrorCode::IncompatibleScheme,
-                            .message =
-                                "FullOrderLog incompatible REFDATA.fut_sess_contents field: " + std::string(name)};
-            }
-        } else if (e.kind == Close) {
-            reset();
-            life.reset();
-        } else if (e.kind == LifeNum) {
-            if (life && *life != e.unsigned_value)
-                reset();
-            life = e.unsigned_value;
-        } else if (e.kind == TransactionBegin) {
-            pending_matches = matches;
-            pending_contracts = contracts;
-            transaction = true;
-        } else if (e.kind == TransactionCommit) {
-            if (transaction) {
-                matches.swap(pending_matches);
-                contracts.swap(pending_contracts);
-                transaction = false;
-            }
-        } else if (e.kind == ClearDeleted && e.raw_table) {
-            const auto clear = [&](auto& rows) {
-                std::erase_if(rows, [&](const auto& row) {
-                    return e.signed_value == INT64_MAX || row.second.rev < e.signed_value;
-                });
-            };
-            if (e.raw_table->name == "instr2matching_map") {
-                clear(matches);
-                clear(pending_matches);
-            }
-            if (e.raw_table->name == "fut_sess_contents") {
-                clear(contracts);
-                clear(pending_contracts);
-            }
-        } else if (e.kind == StreamData && e.raw_table &&
-                   (e.raw_table->name == "instr2matching_map" || e.raw_table->name == "fut_sess_contents")) {
-            try {
-                if (!transaction)
-                    return {.code = Plaza2ErrorCode::DecodeFailed,
-                            .message = "FullOrderLog REFDATA row outside transaction"};
-                const auto id = integer(e, "replID"), rev = integer(e, "replRev"), act = integer(e, "replAct");
-                if (e.raw_table->name == "instr2matching_map") {
-                    if (act)
-                        pending_matches.erase(id);
-                    else
-                        pending_matches[id] = {rev, static_cast<std::int32_t>(integer(e, "base_contract_id")),
-                                               static_cast<std::int8_t>(integer(e, "matching_id"))};
-                } else if (act)
-                    pending_contracts.erase(id);
-                else {
-                    const auto* f = field(*e.raw_table, "base_contract_code");
-                    if (!f || f->offset > e.raw_payload.size() || f->size > e.raw_payload.size() - f->offset ||
-                        (!e.raw_nulls.empty() && (f->index >= e.raw_nulls.size() || e.raw_nulls[f->index])))
-                        throw std::runtime_error("FullOrderLog missing/null fut_sess_contents.base_contract_code");
-                    const auto* code = reinterpret_cast<const char*>(e.raw_payload.data() + f->offset);
-                    const auto* end = static_cast<const char*>(std::memchr(code, 0, f->size));
-                    pending_contracts[id] = {rev, static_cast<std::int32_t>(integer(e, "isin_id")),
-                                             static_cast<std::int32_t>(integer(e, "sess_id")),
-                                             std::string(code, end ? end - code : f->size)};
-                }
-            } catch (const std::exception& error) {
-                return {.code = Plaza2ErrorCode::DecodeFailed, .message = error.what()};
-            }
-        }
-        return bridge.on_plaza2_listener_event(e);
-    }
-};
 struct CgateSession::Impl {
     struct Listener {
         CgateStreamConfig config;
@@ -346,7 +191,8 @@ struct CgateSession::Impl {
     cg::Plaza2Publisher publisher;
     moex::plaza2::private_state::Plaza2PrivateStateProjector projection;
     cg::Plaza2PrivateStateBridge bridge{projection};
-    FullLogRefdata full_refdata{bridge};
+    std::optional<std::uint64_t> matching_refdata_revision;
+    std::int32_t matching_session{};
     std::optional<std::int8_t> matching_id;
     cg::Plaza2Aggr20BookProjector book;
     cg::Plaza2Aggr20ListenerBridge aggr{book, 0};
@@ -574,6 +420,7 @@ struct CgateSession::Impl {
             codes.push_back(s.stream_code);
         if (auto error = bridge.reset(codes); error)
             return error;
+        bridge.require_full_order_log_refdata(config.full_order_log_handler != nullptr);
         if (auto error = bridge.begin_run(); error)
             return error;
         listeners.reserve(streams.size() + 3);
@@ -582,10 +429,7 @@ struct CgateSession::Impl {
                 deferred_trade = stream;
                 continue;
             }
-            auto& handler = stream.stream_code == StreamCode::kFortsRefdataRepl && config.full_order_log_handler
-                                ? static_cast<cg::Plaza2ListenerEventHandler&>(full_refdata)
-                                : static_cast<cg::Plaza2ListenerEventHandler&>(bridge);
-            if (auto error = add_listener(stream, handler); error)
+            if (auto error = add_listener(stream, bridge); error)
                 return error;
         }
         if (!config.aggr20_stream.settings.empty())
@@ -611,49 +455,54 @@ struct CgateSession::Impl {
         if (!config.full_order_log_handler || config.full_order_log_stream.settings.empty())
             return {};
         const auto fence = [&] {
+            if (!matching_id)
+                return;
             for (auto& l : listeners)
                 if (l.config.stream_code == cg::kFullOrderLogStreamCode && l.object.is_created())
                     invalidate(l);
-        };
-        const auto fail_full = [&](std::string message) {
-            fence();
             matching_id.reset();
-            return invalid(std::move(message));
         };
         if (!stream_online(StreamCode::kFortsRefdataRepl)) {
             fence();
-            matching_id.reset();
+            matching_refdata_revision.reset();
             return {};
         }
+        const auto revision = projection.refdata_revision();
+        const auto day = projection.current_session_id();
+        if (matching_refdata_revision == revision && matching_session == day)
+            return {};
+        matching_refdata_revision = revision;
+        matching_session = day;
+        const auto waiting = [&](std::string reason) {
+            fence();
+            log("full_order_log_matching_wait", "{\"reason\":" + json_quote(reason) + "}");
+            return Plaza2Error{};
+        };
+        const auto fail_full = [&](std::string reason) {
+            fence();
+            return invalid(std::move(reason));
+        };
         std::optional<std::int8_t> resolved;
         for (auto isin : config.market_data_isin_ids) {
-            const FullLogRefdata::Contract* contract = nullptr;
-            for (const auto& [_, row] : full_refdata.contracts)
-                if (row.isin == isin && row.session == projection.current_session_id()) {
-                    if (contract)
-                        return fail_full("FullOrderLog ambiguous fut_sess_contents for ISIN " + std::to_string(isin));
-                    contract = &row;
-                }
-            if (!contract)
-                return fail_full("FullOrderLog missing committed fut_sess_contents for ISIN " + std::to_string(isin));
-            const plaza2::private_state::FutureVcbSnapshot* vcb = nullptr;
-            for (const auto& row : projection.future_vcb())
-                if (row.base_contract_code == contract->code) {
-                    if (vcb)
-                        return fail_full("FullOrderLog ambiguous fut_vcb for " + contract->code);
-                    vcb = &row;
-                }
-            if (!vcb)
-                return fail_full("FullOrderLog missing committed fut_vcb for " + contract->code);
+            const auto rows = projection.instruments();
+            const auto contract = std::lower_bound(rows.begin(), rows.end(), isin,
+                                                   [](const auto& row, auto id) { return row.isin_id < id; });
+            if (!day || contract == rows.end() || contract->isin_id != isin || contract->sess_id != day ||
+                !contract->current_session_member || !contract->future_session_terms)
+                return waiting("missing current committed fut_sess_contents for ISIN " + std::to_string(isin));
+            if (contract->future_vcb_join_status == plaza2::private_state::FutureVcbJoinStatus::Ambiguous)
+                return fail_full("FullOrderLog ambiguous fut_vcb for " + contract->base_contract_code);
+            if (contract->future_vcb_join_status != plaza2::private_state::FutureVcbJoinStatus::Resolved)
+                return waiting("missing committed fut_vcb for " + contract->base_contract_code);
             std::optional<std::int8_t> id;
-            for (const auto& [_, row] : full_refdata.matches)
-                if (row.base == vcb->base_contract_id) {
-                    if (id && *id != row.id)
-                        return fail_full("FullOrderLog multiple matching IDs for " + contract->code);
-                    id = row.id;
+            for (const auto& row : projection.matching_map())
+                if (row.base_contract_id == contract->base_contract_id) {
+                    if (id && *id != row.matching_id)
+                        return fail_full("FullOrderLog multiple matching IDs for " + contract->base_contract_code);
+                    id = row.matching_id;
                 }
             if (!id)
-                return fail_full("FullOrderLog missing instr2matching_map for " + contract->code);
+                return waiting("missing instr2matching_map for " + contract->base_contract_code);
             if (resolved && *resolved != *id)
                 return fail_full("FullOrderLog configured instruments span more than one matching ID; multi-matching "
                                  "is unsupported");
@@ -824,7 +673,7 @@ struct CgateSession::Impl {
             if (listener.config.stream_code == StreamCode::kFortsTradeRepl && deferred_trade && !pos_anchor_health())
                 return;
             // Each new snapshot replaces only its own stream's pending/committed domain.
-            if (listener.handler == &bridge || listener.handler == &full_refdata)
+            if (listener.handler == &bridge)
                 projection.reset_stream_snapshot(listener.config.stream_code);
             if (listener.handler == &aggr)
                 aggr.reset();
@@ -978,7 +827,7 @@ struct CgateSession::Impl {
                 for (const auto& l : listeners) {
                     const auto& error = l.object.last_callback_error();
                     if (error.code == Plaza2ErrorCode::IncompatibleScheme &&
-                        (l.handler == &full_refdata || l.handler == config.full_order_log_handler)) {
+                        (l.handler == &bridge || l.handler == config.full_order_log_handler)) {
                         recovery.operation = Plaza2SessionOperation::Failed;
                         recovery.cause = error;
                         return error;
@@ -1096,7 +945,7 @@ struct CgateSession::Impl {
         streams_created = false;
         anchor.reset();
         matching_id.reset();
-        full_refdata.reset();
+        matching_refdata_revision.reset();
         deferred_trade.reset();
         replies.pending.clear();
         recovery.operation = Plaza2SessionOperation::Stopped;
@@ -1155,6 +1004,9 @@ const cg::Plaza2Aggr20BookProjector& CgateSession::aggr20_projector() const noex
 }
 cg::Plaza2PublicDealsSnapshot CgateSession::public_deals_snapshot(std::uint64_t after) const {
     return impl_->deals.snapshot(after);
+}
+std::uint64_t CgateSession::market_data_metadata_revision() const noexcept {
+    return impl_->projection.metadata_revision();
 }
 std::optional<std::int8_t> CgateSession::full_order_log_matching_id() const noexcept {
     return impl_->matching_id;

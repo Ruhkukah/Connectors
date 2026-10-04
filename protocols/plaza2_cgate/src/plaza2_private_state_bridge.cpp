@@ -116,7 +116,21 @@ Plaza2Error Plaza2PrivateStateBridge::on_plaza2_listener_event(const Plaza2Liste
     }
 }
 
+void Plaza2PrivateStateBridge::require_full_order_log_refdata(bool required) {
+    require_matching_ = required;
+    projector_.enable_matching_map(required);
+}
+
 Plaza2Error Plaza2PrivateStateBridge::handle_event(const Plaza2ListenerEvent& event) {
+    if (require_matching_ && event.kind == Plaza2ListenerEventKind::Open &&
+        event.stream_code == StreamCode::kFortsRefdataRepl) {
+        for (const auto table : {"instr2matching_map", "fut_sess_contents", "fut_vcb"}) {
+            const auto binding = std::ranges::find_if(event.raw_tables, [=](const auto& t) { return t.name == table; });
+            if (binding == event.raw_tables.end())
+                return {.code = Plaza2ErrorCode::IncompatibleScheme,
+                        .message = "FullOrderLog requires REFDATA." + std::string(table)};
+        }
+    }
     switch (event.kind) {
     case Plaza2ListenerEventKind::Open:
     case Plaza2ListenerEventKind::Timeout:
@@ -243,6 +257,15 @@ Plaza2Error Plaza2PrivateStateBridge::handle_stream_data(const Plaza2ListenerEve
                                   .stream_code = event.stream_code,
                                   .table_code = event.table_code,
                                   .signed_value = event.signed_value}};
+    if (require_matching_ && event.table_code == generated::TableCode::kFortsRefdataReplInstr2matchingMap) {
+        const auto act = std::ranges::find_if(event.fields, [](const auto& f) {
+            return f.field_code == generated::FieldCode::kFortsRefdataReplInstr2matchingMapReplAct;
+        });
+        for (const auto& required : replication_fields(event.table_code))
+            if ((required.service_field || act == event.fields.end() || act->signed_value == 0) &&
+                std::ranges::none_of(event.fields, [&](const auto& f) { return f.field_code == required.field_code; }))
+                return ordering_error("matching row missing/null field: " + std::string(required.field_name));
+    }
     operation.fields.reserve(event.fields.size());
     for (const auto& field : event.fields) {
         OwnedField owned{.value = {.field_code = field.field_code}};

@@ -172,6 +172,7 @@ class CgateSession final {
     [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;
     [[nodiscard]] std::optional<std::int8_t> full_order_log_matching_id() const noexcept;
+    [[nodiscard]] std::uint64_t market_data_metadata_revision() const noexcept;
     [[nodiscard]] bool aggr_online() const noexcept;
     [[nodiscard]] bool aggr_snapshot_complete() const noexcept;
     [[nodiscard]] bool aggr_session_data_ready() const noexcept;

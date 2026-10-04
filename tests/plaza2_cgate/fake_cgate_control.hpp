@@ -215,6 +215,14 @@ class Control {
     void configure(const Scenario& scenario) const {
         call<void (*)(const Scenario*)>("moex_fake_scenario")(&scenario);
     }
+    std::string connection_settings() const {
+        std::string result;
+        call<void (*)(std::string*)>("moex_fake_connection_settings")(&result);
+        return result;
+    }
+    void configure_refdata_count(std::uint64_t count) const {
+        call<void (*)(std::uint64_t)>("moex_fake_refdata_count")(count);
+    }
     void set(Option option, std::string_view value = "1") const {
         const std::string owned(value);
         call<void (*)(Option, const char*)>("moex_fake_option")(option, owned.c_str());

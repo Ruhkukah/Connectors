@@ -189,7 +189,7 @@ std::int32_t select_session(std::span<const TradingSessionSnapshot> sessions, st
     return in_window ? in_window : (trading ? trading : known);
 }
 using FutureVcbMap = std::unordered_map<std::string, FutureVcbSnapshot>;
-using MatchingMap = std::unordered_map<std::int32_t, MatchingMapSnapshot>;
+using MatchingMap = std::unordered_map<std::int64_t, MatchingMapSnapshot>;
 using SystemMessageMap = std::unordered_map<std::int64_t, SystemMessageSnapshot>;
 using LimitMap = std::unordered_map<LimitKey, LimitSnapshot, LimitKeyHash>;
 using PositionMap = std::unordered_map<PositionKey, PositionSnapshot, PositionKeyHash>;
@@ -644,7 +644,7 @@ void reset_stream_watermarks(StreamHealthSnapshot& health) {
     health.periodic_snapshot_consistent = false;
 }
 
-bool consumed_private_table(TableCode table) {
+bool consumed_private_table(TableCode table, bool matching_enabled) {
     using enum TableCode;
     switch (table) {
     case kFortsTradeReplMultilegOrdersLog:
@@ -658,8 +658,9 @@ bool consumed_private_table(TableCode table) {
     case kFortsPartReplPartSa:
     case kFortsRefdataReplOptSessContents:
     case kFortsRefdataReplMultilegDict:
-    case kFortsRefdataReplInstr2matchingMap:
         return false;
+    case kFortsRefdataReplInstr2matchingMap:
+        return matching_enabled;
     default:
         return true;
     }
@@ -686,7 +687,7 @@ struct Plaza2PrivateStateProjector::Impl {
     InstrumentMap instruments_by_isin;
     FutureSessionMap future_sessions;
     FutureVcbMap future_vcb_by_row;
-    MatchingMap matching_by_base_contract;
+    MatchingMap matching_by_row;
     SystemMessageMap system_messages_by_id;
     LimitMap limits_by_key;
     std::unordered_map<std::string, LimitLookup> limit_index;
@@ -715,6 +716,15 @@ struct Plaza2PrivateStateProjector::Impl {
 
     StagedState staged;
     bool native_commit_phase{false};
+    bool matching_enabled{false};
+    std::uint64_t refdata_revision{}, metadata_revision{};
+    void metadata_changed(StreamCode code) {
+        if (code == StreamCode::kFortsRefdataRepl || code == projection::kNoStreamCode)
+            ++refdata_revision;
+        if (code == StreamCode::kFortsRefdataRepl || code == StreamCode::kFortsSessionstateRepl ||
+            code == StreamCode::kFortsInstrumentstateRepl || code == projection::kNoStreamCode)
+            ++metadata_revision;
+    }
     std::uint64_t status_binding_generation{0};
 
     void rebind_limit_index() {
@@ -739,6 +749,7 @@ struct Plaza2PrivateStateProjector::Impl {
 
     void reset() {
         ++status_binding_generation;
+        metadata_changed(projection::kNoStreamCode);
         connector_health = {};
         resume_markers = {};
         stream_health.clear();
@@ -746,7 +757,7 @@ struct Plaza2PrivateStateProjector::Impl {
         instruments_by_isin.clear();
         future_sessions.clear();
         future_vcb_by_row.clear();
-        matching_by_base_contract.clear();
+        matching_by_row.clear();
         system_messages_by_id.clear();
         limits_by_key.clear();
         limit_index.clear();
@@ -972,6 +983,8 @@ struct Plaza2PrivateStateProjector::Impl {
                                  std::to_string(row.i32(FieldCode::kFortsRefdataReplFutSessContentsSessId))});
         case TableCode::kFortsRefdataReplFutVcb:
             return future_vcb_row_key(row);
+        case TableCode::kFortsRefdataReplInstr2matchingMap:
+            return revision_key(row.i64(FieldCode::kFortsRefdataReplInstr2matchingMapReplId));
         case TableCode::kFortsRefdataReplSysMessages:
             return revision_key(row.i64(FieldCode::kFortsRefdataReplSysMessagesReplId));
         case TableCode::kFortsSessionstateReplSessionState:
@@ -1085,7 +1098,7 @@ struct Plaza2PrivateStateProjector::Impl {
 
     void rebuild_matching_map() {
         matching_snapshots = sorted_values<MatchingMapSnapshot>(
-            matching_by_base_contract, [](const MatchingMapSnapshot& lhs, const MatchingMapSnapshot& rhs) {
+            matching_by_row, [](const MatchingMapSnapshot& lhs, const MatchingMapSnapshot& rhs) {
                 return lhs.base_contract_id < rhs.base_contract_id;
             });
     }
@@ -1501,6 +1514,9 @@ struct Plaza2PrivateStateProjector::Impl {
             }
             break;
         }
+        case kFortsRefdataReplInstr2matchingMap:
+            ensure_staged_matching_map().erase(key_number(key));
+            break;
         case kFortsRefdataReplFutVcb:
             ensure_staged_future_vcb().erase(std::string(key));
             break;
@@ -1548,7 +1564,7 @@ struct Plaza2PrivateStateProjector::Impl {
 
     void clear_table_owned_state(TableCode table_code, std::int64_t clear_revision) {
         using enum TableCode;
-        if (!consumed_private_table(table_code)) {
+        if (!consumed_private_table(table_code, matching_enabled)) {
             // Retain broad multileg loss diagnostics without retaining rows
             // or invalidating the declared regular-order execution baseline.
             if (table_code == kFortsTradeReplMultilegOrdersLog || table_code == kFortsTradeReplUserMultilegDeal) {
@@ -1631,6 +1647,7 @@ struct Plaza2PrivateStateProjector::Impl {
             case TableCode::kFortsRefdataReplFutInstruments:
             case TableCode::kFortsRefdataReplFutSessContents:
             case TableCode::kFortsRefdataReplSysMessages:
+            case TableCode::kFortsRefdataReplInstr2matchingMap:
                 return StreamCode::kFortsRefdataRepl;
             case TableCode::kFortsSessionstateReplSessionState:
                 return StreamCode::kFortsSessionstateRepl;
@@ -1837,6 +1854,18 @@ struct Plaza2PrivateStateProjector::Impl {
             }
             break;
         }
+        case TableCode::kFortsRefdataReplInstr2matchingMap: {
+            auto& rows = staged.active ? ensure_staged_matching_map() : matching_by_row;
+            for (auto it = rows.begin(); it != rows.end();) {
+                const auto key = revision_key(it->first);
+                if (source_row_is_stale(table_code, key, clear_revision)) {
+                    erase_source_row(table_code, key);
+                    it = rows.erase(it);
+                } else
+                    ++it;
+            }
+            break;
+        }
         case TableCode::kFortsRefdataReplFutVcb:
             for (auto it = future_vcb.begin(); it != future_vcb.end();) {
                 if (source_row_is_stale(table_code, it->first, clear_revision)) {
@@ -1965,7 +1994,7 @@ struct Plaza2PrivateStateProjector::Impl {
             std::erase_if(instruments_by_isin, [](const auto& item) { return !item.second.has_current_status; });
         }
             future_vcb_by_row.clear();
-            matching_by_base_contract.clear();
+            matching_by_row.clear();
             system_messages_by_id.clear();
             rebuild_sessions();
             rebuild_future_vcb();
@@ -2042,7 +2071,7 @@ struct Plaza2PrivateStateProjector::Impl {
             std::erase_if(instruments, [](const auto& item) { return !item.second.has_current_status; });
             ensure_stage_copy(staged.future_vcb, future_vcb_by_row, native_commit_phase).clear();
         }
-            ensure_stage_copy(staged.matching_map, matching_by_base_contract, native_commit_phase).clear();
+            ensure_stage_copy(staged.matching_map, matching_by_row, native_commit_phase).clear();
             ensure_stage_copy(staged.system_messages, system_messages_by_id, native_commit_phase).clear();
             staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
             break;
@@ -2094,7 +2123,7 @@ struct Plaza2PrivateStateProjector::Impl {
 
     MatchingMap& ensure_staged_matching_map() {
         staged.touched_streams.insert(StreamCode::kFortsRefdataRepl);
-        return ensure_stage_copy(staged.matching_map, matching_by_base_contract, native_commit_phase);
+        return ensure_stage_copy(staged.matching_map, matching_by_row, native_commit_phase);
     }
 
     SystemMessageMap& ensure_staged_system_messages() {
@@ -2503,11 +2532,11 @@ struct Plaza2PrivateStateProjector::Impl {
     }
 
     void apply_row(const projection::EventSpec& event, const RowReader& row) {
-        if (!consumed_private_table(event.table_code)) {
+        if (!consumed_private_table(event.table_code, matching_enabled)) {
             staged.touched_streams.insert(event.stream_code);
             return;
         }
-        const auto service = generated::FieldsForTable(event.table_code);
+        const auto service = generated::FieldsForTable(event.table_code, matching_enabled);
         if (service.size() < 3)
             return;
         const auto repl_id = row.i64(service[0].field_code);
@@ -2580,6 +2609,11 @@ struct Plaza2PrivateStateProjector::Impl {
             break;
         case TableCode::kFortsRefdataReplFutVcb:
             apply_future_vcb_row(event, row);
+            break;
+        case TableCode::kFortsRefdataReplInstr2matchingMap:
+            ensure_staged_matching_map()[row.i64(FieldCode::kFortsRefdataReplInstr2matchingMapReplId)] = {
+                row.i32(FieldCode::kFortsRefdataReplInstr2matchingMapBaseContractId),
+                row.i8(FieldCode::kFortsRefdataReplInstr2matchingMapMatchingId)};
             break;
         case TableCode::kFortsRefdataReplFutSessContents:
             apply_future_session_contents_row(event, row);
@@ -2714,7 +2748,7 @@ struct Plaza2PrivateStateProjector::Impl {
             }
         }
         if (staged.matching_map.has_value()) {
-            matching_by_base_contract = std::move(*staged.matching_map);
+            matching_by_row = std::move(*staged.matching_map);
             rebuild_matching_map();
         }
         if (staged.system_messages.has_value()) {
@@ -3038,6 +3072,7 @@ std::uint64_t Plaza2PrivateStateProjector::status_binding_generation() const {
 void Plaza2PrivateStateProjector::reset_stream_snapshot(generated::StreamCode stream_code) {
     impl_->invalidate_stream_domain(stream_code);
     impl_->invalidate_closed_stream(stream_code);
+    impl_->metadata_changed(stream_code);
 }
 
 void Plaza2PrivateStateProjector::reset_status_snapshot(generated::StreamCode stream_code) {
@@ -3045,6 +3080,7 @@ void Plaza2PrivateStateProjector::reset_status_snapshot(generated::StreamCode st
         return;
     impl_->invalidate_stream_domain(stream_code);
     impl_->invalidate_closed_stream(stream_code);
+    impl_->metadata_changed(stream_code);
 }
 
 void Plaza2PrivateStateProjector::invalidate_periodic_snapshot(generated::StreamCode stream_code,
@@ -3054,6 +3090,9 @@ void Plaza2PrivateStateProjector::invalidate_periodic_snapshot(generated::Stream
 
 void Plaza2PrivateStateProjector::on_event(const projection::ScenarioSpec&, const projection::EventSpec& event,
                                            const projection::EngineState& state) {
+    if (event.kind == projection::EventKind::kOpen || event.kind == projection::EventKind::kClose ||
+        event.kind == projection::EventKind::kLifeNum || event.kind == projection::EventKind::kOnline)
+        impl_->metadata_changed(event.stream_code);
     switch (event.kind) {
     case projection::EventKind::kOpen:
         impl_->sync_base_health(state);
@@ -3131,9 +3170,21 @@ void Plaza2PrivateStateProjector::on_stream_row(const projection::ScenarioSpec&,
     impl_->apply_row(event, RowReader{fields});
 }
 
-void Plaza2PrivateStateProjector::on_transaction_commit(const projection::ScenarioSpec&, const projection::EventSpec&,
+void Plaza2PrivateStateProjector::on_transaction_commit(const projection::ScenarioSpec&,
+                                                        const projection::EventSpec& event,
                                                         const projection::EngineState& state) {
     impl_->commit_transaction(state);
+    impl_->metadata_changed(event.stream_code);
+}
+
+void Plaza2PrivateStateProjector::enable_matching_map(bool enabled) {
+    impl_->matching_enabled = enabled;
+}
+std::uint64_t Plaza2PrivateStateProjector::refdata_revision() const noexcept {
+    return impl_->refdata_revision;
+}
+std::uint64_t Plaza2PrivateStateProjector::metadata_revision() const noexcept {
+    return impl_->metadata_revision;
 }
 
 } // namespace moex::plaza2::private_state

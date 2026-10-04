@@ -399,6 +399,9 @@ class Plaza2PrivateStateProjector final : public projection::CommitListener {
     [[nodiscard]] Plaza2PrivateStateProjector clone() const;
 
     void reset();
+    void enable_matching_map(bool enabled);
+    [[nodiscard]] std::uint64_t refdata_revision() const noexcept;
+    [[nodiscard]] std::uint64_t metadata_revision() const noexcept;
 
     [[nodiscard]] const ConnectorHealthSnapshot& connector_health() const;
     [[nodiscard]] const ResumeMarkersSnapshot& resume_markers() const;

@@ -209,17 +209,17 @@ class Plaza2ListenerEventHandler {
   public:
     virtual ~Plaza2ListenerEventHandler() = default;
     virtual void on_plaza2_listener_error(const Plaza2Error&) noexcept {}
-    // Opt in only for an exact, completely qualified public wire scheme.
-    [[nodiscard]] virtual bool wants_raw_replication() const noexcept {
+    // Empty table name requests negotiated descriptors at OPEN; named tables
+    // request borrowed raw payloads. The consumer validates its named schema.
+    [[nodiscard]] virtual bool wants_raw_replication(std::string_view) const noexcept {
         return false;
     }
-    // Consumer validates its required named fields at OPEN. Additional tables
-    // and fields are exposed without decoding or imposing product metadata.
-    [[nodiscard]] virtual bool wants_negotiated_raw_replication() const noexcept {
-        return false;
+    [[nodiscard]] virtual std::span<const generated::FieldDescriptor>
+    replication_fields(generated::TableCode table) const noexcept {
+        return generated::FieldsForTable(table);
     }
-    [[nodiscard]] virtual bool wants_raw_replication_table(std::string_view) const noexcept {
-        return false;
+    [[nodiscard]] virtual bool should_log_listener_event(const Plaza2ListenerEvent&) const noexcept {
+        return true;
     }
     [[nodiscard]] virtual Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) = 0;
 };

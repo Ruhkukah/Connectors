@@ -38,6 +38,7 @@ int main(int argc, char** argv) {
         scenario.options[static_cast<std::size_t>(f::Option::DisablePublisher)] = "1";
         scenario.options[static_cast<std::size_t>(f::Option::DisableReplyListener)] = "1";
         fake.configure(scenario);
+        fake.configure_refdata_count(5000);
         CgateSession session(config);
         require(!session.start(), "full order log start");
         const auto pump = [&](int n = 3) {
@@ -48,6 +49,11 @@ int main(int argc, char** argv) {
         };
         pump();
         require(session.full_order_log_matching_id() == 3, "REFDATA matching join must resolve matching 3");
+        require(session.private_state().instruments().size() == 5000, "realistic REFDATA bootstrap size");
+        const auto metadata_revision = session.market_data_metadata_revision();
+        pump(100);
+        require(session.market_data_metadata_revision() == metadata_revision,
+                "idle polls must preserve committed metadata token");
         require(book.valid() && book.order_count() == 2, "composite snapshot must publish on first online commit");
         require(book.levels(1001, true).at(10250000000LL) == 7 && book.levels(1001, false).at(10260000000LL) == 9,
                 "composite snapshot must retain exact d16.5 levels");
@@ -74,7 +80,7 @@ int main(int argc, char** argv) {
                 generated::TableCode::kFortsUserorderbookReplOrders);
         enqueue(f::EventKind::Commit);
         pump();
-        require(book.valid() && book.order_count() == 0, "ClearDeleted MAX must erase all rows");
+        require(!book.valid() && book.order_count() == 0, "ClearDeleted MAX must fence until a fresh snapshot");
         auto opens = fake.opens(cgate::kFullOrderLogStreamCode);
         enqueue(f::EventKind::ListenerError);
         pump(2);
@@ -102,8 +108,14 @@ int main(int argc, char** argv) {
                   .signed_value = 500},
                  {.field_code = generated::FieldCode::kFortsRefdataReplInstr2matchingMapMatchingId,
                   .signed_value = 4}}});
+        const auto before_remap = session.market_data_metadata_revision();
+        pump();
+        require(book.valid() && session.full_order_log_matching_id() == 3 &&
+                    session.market_data_metadata_revision() == before_remap,
+                "uncommitted REFDATA remap must preserve matching/book/metadata");
         fake.enqueue({.kind = f::EventKind::Commit, .stream_code = generated::StreamCode::kFortsRefdataRepl});
         pump();
+        require(session.market_data_metadata_revision() != before_remap, "metadata token changes at commit");
         require(session.full_order_log_matching_id() == 4 && !book.valid(),
                 "matching remap must fence the old public book");
         now += std::chrono::seconds(1);
@@ -122,6 +134,43 @@ int main(int argc, char** argv) {
         pump();
         require(book.valid() && session.full_order_log_matching_id() == 3,
                 "unchanged REFDATA LifeNum must preserve matching");
+        // SESSIONSTATE may commit a new day before REFDATA has its contract.
+        using enum generated::FieldCode;
+        const auto status_stream = generated::StreamCode::kFortsSessionstateRepl;
+        fake.enqueue({.kind = f::EventKind::Begin, .stream_code = status_stream});
+        fake.enqueue({.kind = f::EventKind::Row,
+                      .stream_code = status_stream,
+                      .table_code = generated::TableCode::kFortsSessionstateReplSessionState,
+                      .revision = 50,
+                      .fields = {{.field_code = kFortsSessionstateReplSessionStateReplId, .signed_value = 30003},
+                                 {.field_code = kFortsSessionstateReplSessionStateSessId, .signed_value = 322},
+                                 {.field_code = kFortsSessionstateReplSessionStatePublicState, .signed_value = 1}}});
+        fake.enqueue({.kind = f::EventKind::Commit, .stream_code = status_stream});
+        pump();
+        require(session.private_state().current_session_id() == 322 && !session.full_order_log_matching_id() &&
+                    !book.valid(),
+                "rollover missing REFDATA must wait and fence without exiting");
+        const auto rollover_opens = fake.opens(cgate::kFullOrderLogStreamCode);
+        now += std::chrono::seconds(2);
+        pump(20);
+        require(fake.opens(cgate::kFullOrderLogStreamCode) == rollover_opens,
+                "missing rollover mapping must not cause a reopen storm");
+        const auto ref_stream = generated::StreamCode::kFortsRefdataRepl;
+        fake.enqueue({.kind = f::EventKind::Begin, .stream_code = ref_stream});
+        fake.enqueue({.kind = f::EventKind::Row,
+                      .stream_code = ref_stream,
+                      .table_code = generated::TableCode::kFortsRefdataReplFutSessContents,
+                      .revision = 51,
+                      .fields = {{.field_code = kFortsRefdataReplFutSessContentsReplId, .signed_value = 50003},
+                                 {.field_code = kFortsRefdataReplFutSessContentsIsinId, .signed_value = 1001},
+                                 {.field_code = kFortsRefdataReplFutSessContentsSessId, .signed_value = 322},
+                                 {.field_code = kFortsRefdataReplFutSessContentsBaseContractCode,
+                                  .kind = f::FieldKind::Text,
+                                  .text = "RTS"}}});
+        fake.enqueue({.kind = f::EventKind::Commit, .stream_code = ref_stream});
+        pump();
+        require(session.full_order_log_matching_id() == 3 && book.valid(),
+                "new committed rollover terms resume the composite snapshot");
         enqueue(f::EventKind::LifeNum, 0, cgate::kNoTableCode, 8);
         pump();
         require(!book.valid() && book.order_count() == 0, "LifeNum change must clear public book");
