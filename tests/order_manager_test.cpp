@@ -16,6 +16,7 @@
 #include "mismatched_recovery_cancel_regression.hpp"
 #include "instance_cancel_regression.hpp"
 #include "scoped_unresolved_admission_regression.hpp"
+#include "retired_command_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -897,6 +898,8 @@ void uncertain_cancels_preserve_identity_and_budget() {
     require(group.operator_action_required() && bulk.sent.size() == before &&
                 bulk.sent.back().kind == tr::Plaza2TradeCommandKind::DelUserOrders,
             "late system100 restarted an exhausted bulk uncertain-outcome budget");
+    require(group.cancel_all(42).empty(), "exhausted bulk confirmation renewal refused");
+    bulk.poll(group, now + 2000);
     const auto accepted_at = bulk.ms;
     const auto sent_before_confirmation = bulk.sent.size();
     group.on_reply(bulk.sent.back().id, {.msgid = 186, .num_orders = 1},
@@ -2065,6 +2068,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::retired_command_regression<Fixture>();
         moex::connector_host::scoped_unresolved_admission_regression<Fixture>();
         moex::connector_host::instance_cancel_regression<Fixture>();
         moex::connector_host::mismatched_recovery_cancel_regression<Fixture>();

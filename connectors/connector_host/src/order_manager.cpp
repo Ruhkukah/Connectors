@@ -731,12 +731,6 @@ void OrderManager::recovery_cancel(ManagedOrder& order, bool explicit_retry) {
     if ((order.operator_action_required && !explicit_retry) || bulk_cancellations_.contains(order.request.isin_id))
         return;
     const auto& key = order.request.client_order_id;
-    if (explicit_retry)
-        std::erase_if(pending_, [&](const auto& entry) {
-            const auto& command = entry.second;
-            return command.key == key && command.encoded.command_kind == Kind::DelUserOrders &&
-                   command.uncertain_outcomes >= kDuoUncertainOutcomeLimit && !command.acknowledged;
-        });
     const auto same = [&](const Command& cmd) {
         return cmd.key == key && cmd.encoded.command_kind == Kind::DelUserOrders;
     };
@@ -913,11 +907,9 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
                         alert(key, order);
             } else if (found != orders_.end())
                 alert(found->first, found->second);
-            command.deadline = Clock::time_point::max();
             emit("unresolved", "{\"client_order_id\":" + json_string(command.key) +
                                    ",\"user_id\":" + std::to_string(command.user_id) +
                                    ",\"uncertain_outcomes\":3,\"operator_action_required\":true}");
-            pending_.emplace(command.user_id, std::move(command));
             return;
         }
     }
@@ -989,12 +981,8 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now, bool bus
         !(command.encoded.command_kind == Kind::DelOrder &&
           bulk_cancellations_.at(found->second.request.isin_id).uncertain_exhausted))
         return; // The mass request superseded this outstanding individual cancel.
-    if (command.encoded.command_kind == Kind::DelUserOrders &&
-        command.uncertain_outcomes >= kDuoUncertainOutcomeLimit) {
-        command.deadline = Clock::time_point::max();
-        pending_.emplace(command.user_id, std::move(command));
+    if (command.encoded.command_kind == Kind::DelUserOrders && command.uncertain_outcomes >= kDuoUncertainOutcomeLimit)
         return; // Only a deliberate new cancellation can renew this bounded scope.
-    }
     if (business_rejection)
         ++command.business_failures;
     if (command.business_failures >= config_.max_cancel_attempts) {
@@ -1277,12 +1265,6 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
         } else {
             // A flood penalty says the exchange did not process this command.
             // It does not spend the bounded business-rejection retry budget.
-            if (command.encoded.command_kind == Kind::DelUserOrders &&
-                command.uncertain_outcomes >= kDuoUncertainOutcomeLimit) {
-                command.deadline = Clock::time_point::max();
-                pending_.emplace(command.user_id, std::move(command));
-                return;
-            }
             command.user_id = reserve_user_id();
             command.acknowledged = false;
             command.not_before = now + std::chrono::milliseconds(std::max(1, reply.penalty_remain.value_or(0)));
@@ -1871,7 +1853,9 @@ bool OrderManager::cancellations_pending() const noexcept {
 void OrderManager::prove_absence(std::int64_t server_time, bool online) {
     if (!online)
         return;
-    for (auto& [id, command] : pending_) {
+    for (auto it = pending_.begin(); it != pending_.end();) {
+        const auto current = it++;
+        auto& [id, command] = *current;
         if (command.encoded.command_kind != Kind::MoveOrder || command.acknowledged ||
             command.deadline != Clock::time_point::max() || command.sent_utc_seconds <= 0 ||
             server_time <= command.sent_utc_seconds ||
@@ -1892,12 +1876,12 @@ void OrderManager::prove_absence(std::int64_t server_time, bool online) {
         if (linked)
             continue;
         move_reservations_.erase(command.key);
-        command.acknowledged = true; // Retain UID to diagnose a contradictory delayed176.
         order.state = settled_state(order);
         order.last_error = "Move not applied after committed TRADE watermark";
         emit("move_not_applied", "{\"client_order_id\":" + json_string(command.key) + ",\"user_id\":" +
                                      std::to_string(id) + ",\"order_id\":" + std::to_string(order.order_id) + "}");
         changed(command.key);
+        pending_.erase(current);
     }
     for (auto it = unknown_orders_.begin(); it != unknown_orders_.end();) {
         const auto key = *it++;

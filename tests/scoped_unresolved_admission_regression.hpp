@@ -86,8 +86,14 @@ template <class Fixture> void scoped_unresolved_admission_regression() {
         fixture.poll(manager, 3301);
         check(fixture.sent.back().kind == tr::Plaza2TradeCommandKind::AddOrder && manager.operator_action_required(),
               "unaffected bulk admission cleared its unresolved warning");
+        manager.on_reply(fixture.sent.back().id, {.msgid = 179, .order_id = 99243}, time(3301));
         manager.on_reply(exhausted_id, {.msgid = 186, .num_orders = 0}, time(3301), 1);
         manager.observe_trade_commit(2);
+        check(manager.operator_action_required(), "retired exhausted reply cleared the instrument gate");
+        check(manager.cancel_all(42).empty(), "explicit exhausted bulk renewal refused");
+        fixture.poll(manager, 4301);
+        manager.on_reply(fixture.sent.back().id, {.msgid = 186, .num_orders = 0}, time(4301), 2);
+        manager.observe_trade_commit(3);
         check(!manager.operator_action_required() &&
                   manager.place({.client_order_id = "bulk-resolved", .isin_id = 42, .price = "100", .quantity = 1})
                       .empty(),

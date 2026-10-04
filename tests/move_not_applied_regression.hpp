@@ -59,8 +59,8 @@ template <class Fixture> void move_not_applied_regression() {
         events += line.starts_with("move_not_applied");
     check(events == 1 && fixture.sent.size() == 2, "unapplied Move was retried/cancelled or lacked one audit event");
     manager.on_reply(move, {.msgid = 176, .order_id1 = 95009}, OrderManager::Clock::time_point{});
-    check(manager.orders().at("move-unapplied").order_id == 95001 && manager.operator_action_required(),
-          "contradictory delayed176 rebound a proved-unapplied Move");
+    check(manager.orders().at("move-unapplied").order_id == 95001 && !manager.operator_action_required(),
+          "retired delayed176 altered a proved-unapplied Move");
 
     for (const bool replacement_seen : {false, true}) {
         Fixture pending;

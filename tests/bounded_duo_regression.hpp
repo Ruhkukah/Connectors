@@ -165,8 +165,14 @@ template <class Fixture> void bounded_duo_regression() {
               "exhausted bulk DUO resumed sends or admitted new risk");
         manager.on_reply(f.sent.back().id, {.msgid = 186, .num_orders = 0}, time(f.ms), 1);
         manager.observe_trade_commit(2);
+        check(manager.operator_action_required() && manager.cancellations_pending(),
+              "retired exhausted DUO reply cleared unresolved bulk intent");
+        check(manager.cancel_all(42).empty(), "retired exhausted bulk renewal refused");
+        f.poll(manager, f.ms + 1000);
+        manager.on_reply(f.sent.back().id, {.msgid = 186, .num_orders = 0}, time(f.ms), 2);
+        manager.observe_trade_commit(3);
         check(!manager.operator_action_required() && !manager.cancellations_pending(),
-              "late accepted186 and complete empty TRADE view did not settle stopped bulk scope");
+              "fresh accepted186 and complete empty TRADE view did not settle stopped bulk scope");
         check(std::count_if(f.log.begin(), f.log.end(),
                             [](const auto& value) { return value.starts_with("timeout{"); }) == 3,
               "DUO uncertain outcomes lost correlated timeout audit records");
@@ -240,9 +246,16 @@ template <class Fixture> void bounded_duo_regression() {
                 check(f.sent.size() == 4, "foreign matching ext_id evidence introduced an automatic cancellation");
                 continue;
             }
+            check(manager.orders().at("bounded-recovery").state == OrderState::Unknown &&
+                      manager.operator_action_required(),
+                  "retired exhausted scoped186 supplied false absence proof");
+            check(manager.cancel("bounded-recovery").empty(), "retired scoped recovery renewal refused");
+            f.poll(manager, 10000);
+            manager.on_reply(f.sent.back().id, {.msgid = 186, .num_orders = 0}, time(f.ms));
+            manager.prove_absence(1700000061, true);
             check(manager.orders().at("bounded-recovery").state == OrderState::Cancelled &&
                       !manager.operator_action_required() && !manager.cancellations_pending(),
-                  "late scoped186zero and mature TRADE proof did not settle exhausted recovery");
+                  "renewed scoped186zero and mature TRADE proof did not settle exhausted recovery");
             continue;
         }
         check(manager.cancel("bounded-recovery").empty(), "explicit scoped DUO renewal refused");
@@ -311,8 +324,14 @@ template <class Fixture> void bounded_duo_regression() {
         manager.on_reply(last_uid, {.msgid = 186, .num_orders = 1}, time(f.ms), 1);
         check(manager.operator_action_required(), "late broad186 bypassed post-reply TRADE reconciliation");
         manager.observe_trade_commit(2);
+        check(manager.operator_action_required() && manager.cancellations_pending(),
+              "retired broad186 settled earlier unconfirmed cancellation");
+        check(manager.cancel_all(42).empty(), "terminal exhausted bulk renewal refused");
+        f.poll(manager, f.ms + 1000);
+        manager.on_reply(f.sent.back().id, {.msgid = 186, .num_orders = 0}, time(f.ms), 2);
+        manager.observe_trade_commit(3);
         check(!manager.operator_action_required() && !manager.cancellations_pending(),
-              "late broad186 with committed terminal view did not settle retained bulk uncertainty");
+              "renewed broad186 with committed terminal view did not settle retained bulk uncertainty");
     }
 }
 } // namespace moex::connector_host
