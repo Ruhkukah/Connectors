@@ -2,6 +2,7 @@
 #include "moex/connector_host/full_order_log_dtc.hpp"
 #include "moex/connector_host/dtc_read_only_server.hpp"
 #include <memory>
+#include <tuple>
 
 namespace moex::connector_host {
 // The standalone process and offline benchmark share the same owner loop.
@@ -49,11 +50,10 @@ class FullOrderLogDtcLoop {
     void start() {
         if (const auto e = host_.start(); e)
             throw std::runtime_error(e.message);
-        for (auto& server : servers_) {
-            std::string error;
+        std::string error;
+        for (auto& server : servers_)
             if (!server->start(error))
                 throw std::runtime_error(error);
-        }
     }
     void poll() {
         if (const auto e = host_.poll(); e)
@@ -83,17 +83,14 @@ class FullOrderLogDtcLoop {
     plaza2::cgate::Plaza2FullOrderLog& book_;
     std::vector<std::unique_ptr<dtc::DtcFullOrderLogSource>> sources_;
     std::vector<std::unique_ptr<dtc::DtcReadOnlyServer>> servers_;
-    std::uint64_t metadata_revision_{UINT64_MAX}, epoch_{UINT64_MAX};
-    bool valid_{};
+    std::tuple<std::uint64_t, std::uint64_t, bool> metadata_key_{UINT64_MAX, UINT64_MAX, false};
     std::chrono::steady_clock::time_point refresh_at_{};
     void refresh_metadata() {
-        const auto revision = host_.market_data_metadata_revision(), epoch = book_.epoch();
+        const auto key = std::tuple{host_.market_data_metadata_revision(), book_.epoch(), book_.valid()};
         const auto now = std::chrono::steady_clock::now();
-        if (revision == metadata_revision_ && epoch == epoch_ && book_.valid() == valid_ && now < refresh_at_)
+        if (key == metadata_key_ && now < refresh_at_)
             return;
-        metadata_revision_ = revision;
-        epoch_ = epoch;
-        valid_ = book_.valid();
+        metadata_key_ = key;
         refresh_at_ = now + std::chrono::seconds(1);
         for (std::size_t i = 0; i < sources_.size(); ++i)
             sources_[i]->update_metadata(

@@ -9,13 +9,6 @@
 
 namespace moex::plaza2::cgate {
 
-struct FullOrderLogLevelChange {
-    std::int32_t isin_id{};
-    bool bid{};
-    std::int64_t price{}, quantity{}; // signed d16.5 price units, contracts
-    std::uint64_t exchange_moment_ns{};
-};
-
 struct FullOrderLogMetrics {
     std::uint64_t rows_total{}, rows_filtered{}, excluded_adds{}, excluded_ids{}, excluded_evictions{};
     std::uint64_t ignored_executions{}, excluded_executions{}, retired_rows_ignored{};
@@ -55,7 +48,6 @@ class Plaza2FullOrderLog final : public Plaza2ListenerEventHandler {
     [[nodiscard]] Clock::time_point committed_at() const noexcept;
     [[nodiscard]] std::span<const std::int32_t> instruments() const noexcept;
     [[nodiscard]] const LevelMap& levels(std::int32_t isin, bool bid) const;
-    [[nodiscard]] std::span<const FullOrderLogLevelChange> changes() const noexcept;
     [[nodiscard]] std::size_t memory_bytes() const noexcept;
     [[nodiscard]] std::size_t order_count() const noexcept;
     std::function<void(const Plaza2FullOrderLog&)> on_commit;

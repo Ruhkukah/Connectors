@@ -1856,14 +1856,13 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         case TableCode::kFortsRefdataReplInstr2matchingMap: {
             auto& rows = staged.active ? ensure_staged_matching_map() : matching_by_row;
-            for (auto it = rows.begin(); it != rows.end();) {
-                const auto key = revision_key(it->first);
-                if (source_row_is_stale(table_code, key, clear_revision)) {
+            std::erase_if(rows, [&](const auto& row) {
+                const auto key = revision_key(row.first);
+                const auto stale = source_row_is_stale(table_code, key, clear_revision);
+                if (stale)
                     erase_source_row(table_code, key);
-                    it = rows.erase(it);
-                } else
-                    ++it;
-            }
+                return stale;
+            });
             break;
         }
         case TableCode::kFortsRefdataReplFutVcb:
@@ -2611,7 +2610,7 @@ struct Plaza2PrivateStateProjector::Impl {
             apply_future_vcb_row(event, row);
             break;
         case TableCode::kFortsRefdataReplInstr2matchingMap:
-            ensure_staged_matching_map()[row.i64(FieldCode::kFortsRefdataReplInstr2matchingMapReplId)] = {
+            ensure_staged_matching_map()[repl_id] = {
                 row.i32(FieldCode::kFortsRefdataReplInstr2matchingMapBaseContractId),
                 row.i8(FieldCode::kFortsRefdataReplInstr2matchingMapMatchingId)};
             break;

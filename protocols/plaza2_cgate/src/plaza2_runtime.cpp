@@ -781,13 +781,12 @@ struct Plaza2ListenerCallbackState {
             continue;
         }
         Plaza2RawTableBinding binding{.name = message_name, .index = msg_index, .row_size = message->size};
-        std::size_t raw_index = 0;
-        for (auto* f = message->fields; f; f = f->next, ++raw_index)
+        for (auto* f = message->fields; f; f = f->next)
             binding.fields.push_back({.name = f->name ? f->name : "",
                                       .type_token = f->type ? f->type : "",
                                       .offset = f->offset,
                                       .size = f->size,
-                                      .index = raw_index});
+                                      .index = binding.fields.size()});
         state.raw_tables.push_back(std::move(binding));
         RuntimeMessagePlan plan;
         plan.table_code = table ? table->table_code : kNoTableCode;
@@ -882,13 +881,9 @@ struct Plaza2ListenerCallbackState {
         };
     }
 
-    if (raw) {
-        state.scheme_loaded = true;
-        return {};
-    }
     std::vector<std::string_view> required_tables;
     using enum generated::StreamCode;
-    switch (state.stream_code) {
+    switch (raw ? kNoStreamCode : state.stream_code) {
     case kFortsTradeRepl:
         required_tables = {"orders_log", "user_deal", "heartbeat"};
         break;

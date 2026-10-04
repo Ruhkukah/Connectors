@@ -124,9 +124,8 @@ void Plaza2PrivateStateBridge::require_full_order_log_refdata(bool required) {
 Plaza2Error Plaza2PrivateStateBridge::handle_event(const Plaza2ListenerEvent& event) {
     if (require_matching_ && event.kind == Plaza2ListenerEventKind::Open &&
         event.stream_code == StreamCode::kFortsRefdataRepl) {
-        for (const auto table : {"instr2matching_map", "fut_sess_contents", "fut_vcb"}) {
-            const auto binding = std::ranges::find_if(event.raw_tables, [=](const auto& t) { return t.name == table; });
-            if (binding == event.raw_tables.end())
+        for (const auto table : {"instr2matching_map", "fut_vcb"}) {
+            if (std::ranges::none_of(event.raw_tables, [=](const auto& t) { return t.name == table; }))
                 return {.code = Plaza2ErrorCode::IncompatibleScheme,
                         .message = "FullOrderLog requires REFDATA." + std::string(table)};
         }

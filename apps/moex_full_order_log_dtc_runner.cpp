@@ -4,6 +4,8 @@
 #include <charconv>
 #include <csignal>
 #include <iostream>
+#include <map>
+#include <algorithm>
 
 namespace {
 namespace dtc = moex::connector_host::dtc;
@@ -34,9 +36,11 @@ int main(int argc, char** argv) {
                       << moex::connector_host::operator_help();
             return 0;
         }
-        bool offline = false, live = false, instance = false, router = false;
+        bool offline = false, live = false;
         std::string trading_instance;
         std::uint32_t base_port = 11300, run_ms = 0, depth_levels = 20;
+        const std::map<std::string_view, std::uint32_t*> numeric_options{
+            {"--dtc-port", &base_port}, {"--dtc-depth", &depth_levels}, {"--run-ms", &run_ms}};
         std::vector<std::string_view> arguments;
         for (int i = 1; i < argc; ++i) {
             const std::string_view key = argv[i];
@@ -44,37 +48,25 @@ int main(int argc, char** argv) {
                 offline = true;
             else if (key == "--live")
                 live = true;
-            else if (key == "--trading-instance-id" || key == "--dtc-port" || key == "--run-ms" ||
-                     key == "--dtc-depth") {
+            else if (key == "--trading-instance-id" || numeric_options.contains(key)) {
                 if (++i == argc)
                     throw std::invalid_argument("missing runner option value");
                 if (key == "--trading-instance-id")
                     trading_instance = argv[i];
-                else if (key == "--dtc-port")
-                    base_port = integer(argv[i]);
-                else if (key == "--dtc-depth")
-                    depth_levels = integer(argv[i]);
                 else
-                    run_ms = integer(argv[i]);
-            } else {
-                instance |= key == "--instance-id";
-                router |= key == "--router";
+                    *numeric_options.at(key) = integer(argv[i]);
+            } else
                 arguments.push_back(key);
-            }
         }
         if (offline == live)
             throw std::invalid_argument("select --live or --offline-fake");
         if (live && trading_instance.empty())
             throw std::invalid_argument("--live requires the trading process --trading-instance-id");
-        if (!router) {
-            arguments.push_back("--router");
-            arguments.push_back("127.0.0.1:4102");
-        }
+        for (const auto& [key, value] :
+             {std::pair{"--router", "127.0.0.1:4102"}, std::pair{"--instance-id", "moex_full_order_log"}})
+            if (std::ranges::find(arguments, key) == arguments.end())
+                arguments.insert(arguments.end(), {key, value});
         arguments.push_back("--read-only-market-data");
-        if (!instance) {
-            arguments.push_back("--instance-id");
-            arguments.push_back("moex_full_order_log");
-        }
         auto request = moex::connector_host::parse_operator_arguments(arguments);
         const auto app_name = request.config.transport.host.connection_settings.substr(
             request.config.transport.host.connection_settings.find(";app_name=") + 10);
@@ -85,9 +77,7 @@ int main(int argc, char** argv) {
         if (request.config.isin_ids.size() > 64 || depth_levels > 20000 || base_port > UINT16_MAX ||
             request.config.isin_ids.size() - 1 > UINT16_MAX - base_port)
             throw std::invalid_argument("invalid bounded ISIN universe or DTC port range");
-        std::vector<std::int32_t> ids;
-        for (const auto isin : request.config.isin_ids)
-            ids.push_back(static_cast<std::int32_t>(isin));
+        std::vector<std::int32_t> ids(request.config.isin_ids.begin(), request.config.isin_ids.end());
         cg::Plaza2FullOrderLog book(ids);
         auto& transport = request.config.transport.host;
         transport.mode =
@@ -96,19 +86,15 @@ int main(int argc, char** argv) {
         transport.public_deals_stream = {};
         transport.process_timeout_ms = 1;
         transport.full_order_log_stream = {.stream_code = cg::kFullOrderLogStreamCode,
-                                           .settings = "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL",
-                                           .open_settings = ""};
+                                           .settings = "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL"};
         transport.full_order_log_handler = &book;
         transport.event_log = [](std::string_view event, std::string_view detail) {
             std::cerr << event << ' ' << detail << '\n';
         };
         transport.listener_event_log = [](const cg::Plaza2ListenerEvent& event) {
-            if (event.stream_code != cg::kFullOrderLogStreamCode)
-                return;
             using Kind = cg::Plaza2ListenerEventKind;
-            if (event.kind == Kind::Open || event.kind == Kind::Close || event.kind == Kind::Online ||
-                event.kind == Kind::LifeNum || event.kind == Kind::ClearDeleted ||
-                (event.kind == Kind::StreamData && event.message_name == "sys_events"))
+            if (event.stream_code == cg::kFullOrderLogStreamCode && event.kind != Kind::TransactionBegin &&
+                event.kind != Kind::TransactionCommit && event.kind != Kind::ReplState && event.kind != Kind::Timeout)
                 std::cerr << "FullOrderLog listener event " << static_cast<unsigned>(event.kind)
                           << " life=" << event.unsigned_value << " revision=" << event.signed_value
                           << " table=" << (event.message_name.empty() ? "unspecified" : event.message_name) << '\n';
@@ -156,12 +142,10 @@ int main(int argc, char** argv) {
             }
         }
         const auto metrics = book.metrics();
-        const auto life = book.life_state();
         std::cout << "rows_total=" << metrics.rows_total << " ignored_executions=" << metrics.ignored_executions
                   << " excluded_adds=" << metrics.excluded_adds << " lag_samples=" << metrics.lag_samples
                   << " lag_last_ns=" << metrics.lag_last_ns << " lag_max_ns=" << metrics.lag_max_ns
                   << " lag_sum_ns=" << metrics.lag_sum_ns << " crossed_transitions=" << metrics.crossed_transitions
-                  << " native_life=" << life.last_lifenum << " info_trades_lifenum=" << life.info_trades_lifenum
                   << " metadata_refreshes=" << loop.metadata_refreshes << " polls=" << loop.polls << '\n';
         loop.stop();
         return 0;

@@ -40,13 +40,13 @@ static void semantics() {
     h.commit();
     require(h.book.valid() && commits == 1 && h.book.levels(11, true).at(1234567) == 10,
             "online commit publishes snapshot");
-    const auto other_revision = h.book.revision(22);
+    const auto other_revision = h.book.revision(22), own_revision = h.book.revision(11);
     h.begin();
     h.add(1, 11, 1234567, 6, 2, 2);
     require(h.book.levels(11, true).at(1234567) == 10, "uncommitted remainder is invisible");
     h.commit();
     require(h.book.levels(11, true).at(1234567) == 6, "partial trade replaces direct remainder");
-    require(h.book.changes().size() == 1 && h.book.changes()[0].quantity == 6, "one incremental level change");
+    require(h.book.revision(11) == own_revision + 1, "one committed instrument revision");
     require(h.book.revision(22) == other_revision, "revision is per instrument");
     h.begin();
     h.add(1, 11, 1234567, 0, 2, 3);
@@ -329,9 +329,8 @@ static void life_time_and_cross() {
     trade.set("moment_ns", static_cast<std::uint64_t>(utc - 2000000));
     h.apply(trade);
     h.commit();
-    require(h.book.exchange_moment_ns(11) == static_cast<std::uint64_t>(utc - 2000000) &&
-                h.book.changes()[0].exchange_moment_ns == h.book.exchange_moment_ns(11),
-            "exact source ns reaches committed changes");
+    require(h.book.exchange_moment_ns(11) == static_cast<std::uint64_t>(utc - 2000000),
+            "exact source ns reaches committed book");
     require(h.book.metrics().lag_samples == 1 && h.book.metrics().lag_last_ns >= 2000000,
             "UTC exchange-to-commit lag is aggregated");
     std::size_t transitions{};
