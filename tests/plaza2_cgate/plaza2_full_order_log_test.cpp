@@ -6,6 +6,7 @@
 #include <map>
 #include <new>
 #include <random>
+#include <thread>
 
 static std::atomic<std::size_t> allocations{};
 static bool count_allocations{};
@@ -365,6 +366,38 @@ static void life_time_and_cross() {
                 !changed_info.book.valid(),
             "changed authoritative info log life requests a fresh bootstrap");
 }
+static void publication_lag() {
+    const auto utc_now_ns = [] {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    };
+    Harness h;
+    h.online();
+    h.begin();
+    h.add(1, 11, 100000, 2);
+    h.commit();
+    std::size_t callbacks{};
+    std::uint64_t publication_finished_ns{};
+    h.book.on_crossed = [&](auto isin, bool crossed) {
+        require(isin == 11 && crossed, "lag fixture crosses only its target instrument");
+        ++callbacks;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        publication_finished_ns = utc_now_ns();
+    };
+    h.begin();
+    auto ask = row(h.schema[2], 2, 11, 90000, 3, 1, 2, 1, 2);
+    const auto exchange_ns = utc_now_ns();
+    ask.set("moment_ns", exchange_ns);
+    h.apply(ask);
+    h.commit();
+    const auto metrics = h.book.metrics();
+    require(callbacks == 1 && h.book.crossed(11) && metrics.lag_samples == 1,
+            "delayed publication contributes one committed lag sample");
+    require(publication_finished_ns >= exchange_ns + 10000000 &&
+                metrics.lag_last_ns >= publication_finished_ns - exchange_ns,
+            "exchange-to-commit lag includes publication and its delayed crossed callback");
+}
 int main() {
     try {
         semantics();
@@ -373,6 +406,7 @@ int main() {
         allocation_reuse();
         review_semantics();
         life_time_and_cross();
+        publication_lag();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
         return 1;
