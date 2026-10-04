@@ -544,7 +544,8 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
         return "kill switch enabled";
     if (bulk_cancellations_.contains(request.isin_id))
         return "instrument mass cancellation is awaiting definitive reconciliation";
-    if (operator_action_required())
+    if (std::any_of(operator_orders_.begin(), operator_orders_.end(),
+                    [&](const auto& key) { return orders_.at(key).request.isin_id == request.isin_id; }))
         return "unresolved order or cancellation requires operator action";
     if (!ready_(request.isin_id))
         return "order entry not ready";

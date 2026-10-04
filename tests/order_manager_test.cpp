@@ -15,6 +15,7 @@
 #include "manual_entry_regression.hpp"
 #include "mismatched_recovery_cancel_regression.hpp"
 #include "instance_cancel_regression.hpp"
+#include "scoped_unresolved_admission_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -2064,6 +2065,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::scoped_unresolved_admission_regression<Fixture>();
         moex::connector_host::instance_cancel_regression<Fixture>();
         moex::connector_host::mismatched_recovery_cancel_regression<Fixture>();
         moex::connector_host::manual_entry_regression<Fixture>();
