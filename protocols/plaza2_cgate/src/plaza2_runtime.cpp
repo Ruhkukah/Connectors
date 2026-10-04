@@ -730,6 +730,7 @@ struct Plaza2ListenerCallbackState {
     void* listener_handle{nullptr};
     bool scheme_loaded{false};
     std::vector<RuntimeMessagePlan> message_plans;
+    std::vector<Plaza2RawTableBinding> raw_tables;
     std::vector<Plaza2DecodedFieldValue> decoded_fields;
     std::vector<std::string> text_storage;
     Plaza2Error last_error;
@@ -770,19 +771,33 @@ struct Plaza2ListenerCallbackState {
     }
 
     state.message_plans.clear();
+    state.raw_tables.clear();
+    const bool raw = state.handler && state.handler->wants_negotiated_raw_replication();
     std::size_t msg_index = 0;
     for (auto* message = scheme->messages; message != nullptr; message = message->next, ++msg_index) {
         const auto message_name = message->name == nullptr ? std::string{} : std::string(message->name);
         const auto* table = find_table_descriptor_for_stream(state.stream_code, message_name);
-        if (table == nullptr) {
+        if (table == nullptr && !raw) {
             continue;
         }
-
+        Plaza2RawTableBinding binding{.name = message_name, .index = msg_index, .row_size = message->size};
+        std::size_t raw_index = 0;
+        for (auto* f = message->fields; f; f = f->next, ++raw_index)
+            binding.fields.push_back({.name = f->name ? f->name : "",
+                                      .type_token = f->type ? f->type : "",
+                                      .offset = f->offset,
+                                      .size = f->size,
+                                      .index = raw_index});
+        state.raw_tables.push_back(std::move(binding));
         RuntimeMessagePlan plan;
-        plan.table_code = table->table_code;
+        plan.table_code = table ? table->table_code : kNoTableCode;
         plan.msg_index = msg_index;
         plan.msg_name = message_name;
 
+        if (raw) {
+            state.message_plans.push_back(std::move(plan));
+            continue;
+        }
         auto* field = message->fields;
         std::size_t ordinal = 0;
         while (field != nullptr) {
@@ -867,6 +882,10 @@ struct Plaza2ListenerCallbackState {
         };
     }
 
+    if (raw) {
+        state.scheme_loaded = true;
+        return {};
+    }
     std::vector<std::string_view> required_tables;
     using enum generated::StreamCode;
     switch (state.stream_code) {
@@ -911,7 +930,9 @@ struct Plaza2ListenerCallbackState {
     if (state.handler == nullptr) {
         return {};
     }
-    if (state.shared->settings.listener_event_log)
+    if (state.shared->settings.listener_event_log &&
+        !(state.stream_code == kFullOrderLogStreamCode && event.kind == Plaza2ListenerEventKind::StreamData &&
+          event.message_name != "sys_events"))
         state.shared->settings.listener_event_log(event);
     const auto error = state.handler->on_plaza2_listener_event(event);
     return error;
@@ -954,6 +975,7 @@ struct Plaza2ListenerCallbackState {
                                                    })
                                   ? "REFDATA sys_messages table unavailable; exchange messages cannot be shown"
                                   : "",
+                .raw_tables = state->raw_tables,
             };
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
@@ -1044,6 +1066,7 @@ struct Plaza2ListenerCallbackState {
                 .signed_value = payload.table_rev,
                 .clear_deleted_flags = payload.flags,
                 .table_index = payload.table_idx,
+                .raw_table = &state->raw_tables[static_cast<std::size_t>(plan - state->message_plans.data())],
             };
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
@@ -1120,7 +1143,9 @@ struct Plaza2ListenerCallbackState {
                 return kCgErrOk;
             }
 
-            if (state->handler && state->handler->wants_raw_replication()) {
+            if (state->handler &&
+                (state->handler->wants_raw_replication() || state->handler->wants_negotiated_raw_replication() ||
+                 state->handler->wants_raw_replication_table(plan->msg_name))) {
                 // No per-record strings, heap allocation, timestamp rounding or decimal formatting.
                 if (plan->msg_index != payload->msg_index || !payload->data ||
                     (payload->num_nulls && !payload->nulls)) {
@@ -1136,6 +1161,7 @@ struct Plaza2ListenerCallbackState {
                     .signed_value = payload->rev,
                     .raw_nulls = {payload->nulls, payload->num_nulls},
                     .table_index = payload->msg_index,
+                    .raw_table = &state->raw_tables[static_cast<std::size_t>(plan - state->message_plans.data())],
                 };
                 if (const auto error = dispatch_listener_event(*state, event); error)
                     return fail(error);
@@ -1235,6 +1261,7 @@ struct Plaza2ListenerCallbackState {
                 .signed_value = payload->rev,
                 .raw_nulls = {payload->nulls, payload->num_nulls},
                 .table_index = payload->msg_index,
+                .raw_table = &state->raw_tables[static_cast<std::size_t>(plan - state->message_plans.data())],
             };
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);

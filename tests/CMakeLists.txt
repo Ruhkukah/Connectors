@@ -107,3 +107,7 @@ moex_test(plaza2_private_state_transaction_perf_test plaza2_cgate/plaza2_private
     moex_plaza2_cgate_bridge)
 target_compile_definitions(plaza2_private_state_transaction_perf_test PRIVATE
     MOEX_RELEASE_PERFORMANCE_ACCEPTANCE=$<CONFIG:Release>)
+
+add_executable(plaza2_full_order_log_test plaza2_cgate/plaza2_full_order_log_test.cpp)
+target_link_libraries(plaza2_full_order_log_test PRIVATE moex_plaza2_cgate_full_order_log)
+add_test(NAME plaza2_full_order_log_test COMMAND plaza2_full_order_log_test)
