@@ -511,9 +511,6 @@ enum class FieldCode : std::uint32_t {
     kFortsRefdataReplSessionBegin = 0xA78B39E0u,
     kFortsRefdataReplSessionEnd = 0xE936392Cu,
     kFortsRefdataReplSessionState = 0xDCAECBD0u,
-    kFortsRefdataReplSessionInterClBegin = 0xD352771Du,
-    kFortsRefdataReplSessionInterClEnd = 0x8B11BA2Du,
-    kFortsRefdataReplSessionInterClState = 0x5CD8AB6Du,
     kFortsRefdataReplSessionEveOn = 0xD2363021u,
     kFortsRefdataReplSessionEveBegin = 0xBBF577ADu,
     kFortsRefdataReplSessionEveEnd = 0xD1ABE1FDu,
@@ -574,7 +571,7 @@ struct FieldDescriptor {
 inline constexpr std::size_t kTypeCount = 18;
 inline constexpr std::size_t kStreamCount = 9;
 inline constexpr std::size_t kTableCount = 34;
-inline constexpr std::size_t kFieldCount = 273;
+inline constexpr std::size_t kFieldCount = 270;
 
 std::span<const TypeDescriptor> TypeDescriptors();
 std::span<const StreamDescriptor> StreamDescriptors();

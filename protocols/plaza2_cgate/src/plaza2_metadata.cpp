@@ -75,10 +75,10 @@ constexpr std::array<TableDescriptor, kTableCount> kTableDescriptors{{
     {TableCode::kFortsRefdataReplOptSessContents, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "opt_sess_contents", 242, 0},
     {TableCode::kFortsRefdataReplMultilegDict, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "multileg_dict", 242, 0},
     {TableCode::kFortsRefdataReplInstr2matchingMap, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "instr2matching_map", 242, 0},
-    {TableCode::kFortsRefdataReplSession, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "session", 242, 21},
-    {TableCode::kFortsSessionstateReplSessionState, 0x4C6EE2C3u, "FORTS_SESSIONSTATE_REPL", "session_state", 263, 5},
+    {TableCode::kFortsRefdataReplSession, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "session", 242, 18},
+    {TableCode::kFortsSessionstateReplSessionState, 0x4C6EE2C3u, "FORTS_SESSIONSTATE_REPL", "session_state", 260, 5},
     {TableCode::kFortsInstrumentstateReplInstrumentState, 0x53AD8B6Au, "FORTS_INSTRUMENTSTATE_REPL", "instrument_state",
-     268, 5},
+     265, 5},
 }};
 
 constexpr std::array<FieldDescriptor, kFieldCount> kFieldDescriptors{{
@@ -385,10 +385,6 @@ constexpr std::array<FieldDescriptor, kFieldCount> kFieldDescriptors{{
     {FieldCode::kFortsRefdataReplSessionBegin, "begin", "t", ValueClass::kTimestamp, 0, 0, 0, false},
     {FieldCode::kFortsRefdataReplSessionEnd, "end", "t", ValueClass::kTimestamp, 0, 0, 0, false},
     {FieldCode::kFortsRefdataReplSessionState, "state", "i4", ValueClass::kSignedInteger, 4, 0, 0, false},
-    {FieldCode::kFortsRefdataReplSessionInterClBegin, "inter_cl_begin", "t", ValueClass::kTimestamp, 0, 0, 0, false},
-    {FieldCode::kFortsRefdataReplSessionInterClEnd, "inter_cl_end", "t", ValueClass::kTimestamp, 0, 0, 0, false},
-    {FieldCode::kFortsRefdataReplSessionInterClState, "inter_cl_state", "i4", ValueClass::kSignedInteger, 4, 0, 0,
-     false},
     {FieldCode::kFortsRefdataReplSessionEveOn, "eve_on", "i1", ValueClass::kSignedInteger, 1, 0, 0, false},
     {FieldCode::kFortsRefdataReplSessionEveBegin, "eve_begin", "t", ValueClass::kTimestamp, 0, 0, 0, false},
     {FieldCode::kFortsRefdataReplSessionEveEnd, "eve_end", "t", ValueClass::kTimestamp, 0, 0, 0, false},

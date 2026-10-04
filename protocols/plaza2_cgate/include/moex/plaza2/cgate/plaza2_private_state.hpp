@@ -113,11 +113,6 @@ struct TradingSessionSnapshot {
     std::int32_t state{0};
     bool has_current_status{false};
     std::int32_t current_status{0};
-    // SPECTRA93 compatibility shadows. SPECTRA9.9 removed these fields;
-    // readiness, session terms and order gates never consume them.
-    std::int64_t inter_cl_begin{0};
-    std::int64_t inter_cl_end{0};
-    std::int32_t inter_cl_state{0};
     bool eve_on{false};
     std::int64_t eve_begin{0};
     std::int64_t eve_end{0};

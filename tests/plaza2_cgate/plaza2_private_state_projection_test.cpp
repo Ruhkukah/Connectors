@@ -129,6 +129,10 @@ int main() {
         require(session->state == 2, "session state should be projected");
         require(session->eve_on, "session eve flag should be projected");
         require(!session->mon_on, "session mon flag should be projected");
+        require(session->begin == 1700000000 && session->end == 1700003600 && session->clr_sess_begin == 1700002400 &&
+                    session->settl_sess_begin == 1700003000 && session->settl_price_calc_time == 1700003200 &&
+                    session->settl_sess_t1_begin == 1700003300 && session->margin_call_fix_schedule == 1700003400,
+                "session without removed compatibility fields lost retained schedule timestamps");
 
         const auto instruments = projector.instruments();
         require(instruments.size() == 1, "declared futures projection should omit option and multileg instruments");

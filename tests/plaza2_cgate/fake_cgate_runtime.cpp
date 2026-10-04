@@ -1588,12 +1588,16 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
                 fake_flag(Option::SchemeRetypePrice))
                 owned_field->type_token = "i8";
             owned_field->desc.type = owned_field->type_token.data();
-            owned_field->desc.size = size_for_value_class(field->value_class, field->type_token);
+            const bool captured = field->native_offset != std::numeric_limits<std::size_t>::max();
+            owned_field->desc.size =
+                captured ? field->storage_size_bytes : size_for_value_class(field->value_class, field->type_token);
             if (message_script.table_code == TableCode::kFortsDealsReplDeal && field->storage_size_bytes != 0)
                 owned_field->desc.size = field->storage_size_bytes;
             if (message_script.table_code == TableCode::kFortsDealsReplDeal &&
                 field->field_code == FieldCode::kFortsDealsReplDealMomentNs && fake_flag(Option::DealsBadScheme))
                 ++owned_field->desc.size;
+            if (captured)
+                offset = field->native_offset;
             owned_field->desc.offset = offset;
 
             plan.fields.push_back({
@@ -1608,6 +1612,7 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             message->fields.push_back(std::move(owned_field));
         }
 
+        offset = std::max(offset, moex::plaza2::test::server_schema_row_size(message_script.table_code));
         if (fake_flag(Option::SchemeExtraTable)) {
             auto field = std::make_unique<OwnedField>();
             field->name = "future_field";

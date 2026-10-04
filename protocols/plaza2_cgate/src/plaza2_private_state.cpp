@@ -2270,9 +2270,6 @@ struct Plaza2PrivateStateProjector::Impl {
         session.begin = row.i64(FieldCode::kFortsRefdataReplSessionBegin);
         session.end = row.i64(FieldCode::kFortsRefdataReplSessionEnd);
         session.state = row.i32(FieldCode::kFortsRefdataReplSessionState);
-        session.inter_cl_begin = row.i64(FieldCode::kFortsRefdataReplSessionInterClBegin);
-        session.inter_cl_end = row.i64(FieldCode::kFortsRefdataReplSessionInterClEnd);
-        session.inter_cl_state = row.i32(FieldCode::kFortsRefdataReplSessionInterClState);
         session.eve_on = row.boolean(FieldCode::kFortsRefdataReplSessionEveOn);
         session.eve_begin = row.i64(FieldCode::kFortsRefdataReplSessionEveBegin);
         session.eve_end = row.i64(FieldCode::kFortsRefdataReplSessionEveEnd);

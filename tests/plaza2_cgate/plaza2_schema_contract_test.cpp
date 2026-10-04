@@ -2,6 +2,7 @@
 #include "fake_cgate_control.hpp"
 #include "fixtures/server_schema.hpp"
 
+#include <algorithm>
 #include <iostream>
 
 using namespace moex::plaza2;
@@ -13,9 +14,66 @@ struct IgnoreRows final : Plaza2ListenerEventHandler {
     }
 };
 
+static std::size_t require_captured_schema_subset() {
+    const auto streams = test::captured_server_streams();
+    require(streams.size() == 8, "native schema fixture must identify all eight captured product streams");
+    for (const auto stream :
+         {generated::StreamCode::kFortsTradeRepl, generated::StreamCode::kFortsUserorderbookRepl,
+          generated::StreamCode::kFortsPosRepl, generated::StreamCode::kFortsPartRepl,
+          generated::StreamCode::kFortsRefdataRepl, generated::StreamCode::kFortsAggrRepl,
+          generated::StreamCode::kFortsSessionstateRepl, generated::StreamCode::kFortsInstrumentstateRepl})
+        require(std::count(streams.begin(), streams.end(), stream) == 1,
+                "native schema fixture missing or duplicating a captured product stream");
+    const auto tables = test::captured_server_tables();
+    const auto require_table = [&](generated::TableCode table) {
+        const auto* descriptor = generated::FindTableByCode(table);
+        require(std::count(tables.begin(), tables.end(), table) == 1,
+                "required table not present in native capture: " + std::string(descriptor->stream_name) + "." +
+                    std::string(descriptor->table_name));
+    };
+    const auto session = test::server_schema_fields(generated::TableCode::kFortsRefdataReplSession);
+    require(!session.empty(), "captured CGate 9.9 REFDATA session table missing");
+    for (const auto obsolete : {"inter_cl_begin", "inter_cl_end", "inter_cl_state"})
+        require(std::none_of(session.begin(), session.end(),
+                             [&](const auto& field) { return field.field_name == obsolete; }),
+                "captured CGate 9.9 session fixture contains obsolete field: " + std::string(obsolete));
+    // PART.part is required at OPEN even though its rows are not projected.
+    require_table(generated::TableCode::kFortsPartReplPart);
+    require(!test::server_schema_fields(generated::TableCode::kFortsPartReplPart).empty(),
+            "captured CGate 9.9 required PART part table missing");
+    std::size_t checked{};
+    for (const auto& table : generated::TableDescriptors()) {
+        if (table.stream_id == static_cast<std::uint32_t>(generated::StreamCode::kFortsDealsRepl))
+            continue; // Public DEALS qualification is deferred.
+        const auto required = generated::FieldsForTable(table.table_code);
+        if (required.empty())
+            continue; // Ignored server tables do not add required fields.
+        require_table(table.table_code);
+        const auto captured = test::server_schema_fields(table.table_code);
+        require(!captured.empty(), "required table absent from captured CGate 9.9 schema: " +
+                                       std::string(table.stream_name) + "." + std::string(table.table_name));
+        for (const auto& field : required) {
+            const auto label = std::string(table.stream_name) + "." + std::string(table.table_name) + "." +
+                               std::string(field.field_name);
+            const auto actual = std::find_if(captured.begin(), captured.end(), [&](const auto& candidate) {
+                return candidate.field_name == field.field_name;
+            });
+            require(actual != captured.end(), "required field absent from captured CGate 9.9 schema: " + label);
+            require(std::count_if(captured.begin(), captured.end(),
+                                  [&](const auto& candidate) { return candidate.field_name == field.field_name; }) ==
+                            1 &&
+                        actual->field_code == field.field_code && actual->type_token == field.type_token,
+                    "required field incompatible with captured CGate 9.9 schema: " + label);
+            ++checked;
+        }
+    }
+    return checked;
+}
+
 int main(int argc, char** argv) {
     try {
         require(argc == 2, "fake runtime path required");
+        const auto captured_fields = require_captured_schema_subset();
         const auto root = test::make_temp_directory("schema-contract");
         const auto fixture =
             test::materialize_runtime_fixture(root, argv[1], Plaza2Environment::Test,
@@ -99,7 +157,8 @@ int main(int argc, char** argv) {
             }
         }
         fake.configure({});
-        std::cout << "validated " << checked << " missing/retyped field cases\n";
+        std::cout << "validated " << captured_fields << " captured fields and " << checked
+                  << " missing/retyped field cases\n";
         test::remove_tree(root);
         return 0;
     } catch (const std::exception& error) {
