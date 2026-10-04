@@ -64,6 +64,23 @@ inline void instance_cancel_host_regression(TradingHostConfig config, const plaz
     control.enqueue(order(81004, 0, "owner-login", 1, 81004));
     control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
     test::require(!host.poll() && host.has_working_orders(), "instance own order not visible to shutdown");
+    const auto assert_status_ownership = [&](std::int64_t id, bool owned) {
+        const auto status = host.status();
+        const auto at = status.find("\"order_id\":" + std::to_string(id) + ',');
+        test::require(at != std::string::npos, "instance ownership status omitted native order");
+        const auto begin = status.rfind('{', at);
+        const auto end = status.find('}', at);
+        test::require(begin != std::string::npos && end != std::string::npos,
+                      "instance ownership status order object incomplete");
+        const auto object = std::string_view(status).substr(begin, end - begin + 1);
+        test::require(object.find(owned ? "\"instance_owned\":true" : "\"instance_owned\":false") !=
+                          std::string_view::npos,
+                      "native status did not expose the order's instance cancellation ownership");
+    };
+    assert_status_ownership(81001, true);  // Matching login and reserved ext_id range.
+    assert_status_ownership(81002, false); // Another login on the same account.
+    assert_status_ownership(81003, false); // Own login but outside this instance's range.
+    assert_status_ownership(81004, false); // Manual order has no ext_id.
     const auto before = control.commands().size();
     test::require(host.cancel_all(isin).empty(), "instance cancel-all refused");
     const auto commands = control.commands();
@@ -78,6 +95,7 @@ inline void instance_cancel_host_regression(TradingHostConfig config, const plaz
     control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
     test::require(!host.poll(), "instance cancellation terminal proof");
     test::require(!host.has_working_orders(), "other instances/manual orders prevented this instance shutdown");
+    assert_status_ownership(81001, true); // Ownership remains visible after terminal confirmation.
     std::ostringstream report;
     host.report_outstanding_orders(report);
     test::require(report.str().empty(), "instance shutdown reported untouched other-instance orders as its own");

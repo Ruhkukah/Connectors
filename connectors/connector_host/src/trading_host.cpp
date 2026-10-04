@@ -900,6 +900,7 @@ std::string CgateTradingHost::status() const {
             result += ',';
         first = false;
         result += "{\"client_order_id\":" + json_string(key) + ",\"order_id\":" + std::to_string(order.order_id) +
+                  ",\"instance_owned\":" + (order.instance_owned ? "true" : "false") +
                   ",\"ext_id\":" + std::to_string(order.ext_id) + ",\"sess_id\":" + std::to_string(order.sess_id) +
                   ",\"isin_id\":" + std::to_string(order.request.isin_id) +
                   ",\"state\":" + json_string(order_state_name(order.state)) +
