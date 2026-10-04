@@ -1537,7 +1537,13 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
                         candidate.duo_exhaustion_alert = false;
                         candidate.last_error =
                             "lost Add ext_id evidence does not match login/client/session/ISIN/side/price/quantity";
-                        std::erase_if(cancels_, [&](const auto& command) { return command.key == ext->second; });
+                        const auto recovery_for_ext = [&](const Command& command) {
+                            const auto owner = orders_.find(command.key);
+                            return command.encoded.command_kind == Kind::DelUserOrders && owner != orders_.end() &&
+                                   owner->second.ext_id == row.ext_id;
+                        };
+                        std::erase_if(cancels_, recovery_for_ext);
+                        std::erase_if(pending_, [&](const auto& entry) { return recovery_for_ext(entry.second); });
                         emit("add_identity_conflict", "{\"client_order_id\":" + json_string(ext->second) +
                                                           ",\"message\":" + json_string(candidate.last_error) + "}");
                         changed(ext->second);

@@ -13,6 +13,7 @@
 #include "position_lag_regression.hpp"
 #include "bounded_duo_regression.hpp"
 #include "manual_entry_regression.hpp"
+#include "mismatched_recovery_cancel_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -2048,6 +2049,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::mismatched_recovery_cancel_regression<Fixture>();
         moex::connector_host::manual_entry_regression<Fixture>();
         moex::connector_host::bounded_duo_regression<Fixture>();
         moex::connector_host::strict_lost_add_regression<Fixture>();
