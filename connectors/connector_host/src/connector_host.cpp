@@ -134,6 +134,9 @@ cg::Plaza2PublicDealsSnapshot ConnectorHost::public_deals_snapshot(std::uint64_t
 bool ConnectorHost::order_entry_ready(std::int64_t isin_id) const {
     return !impl_->config.read_only_market_data && moex::connector_host::order_entry_ready(impl_->host, isin_id);
 }
+std::uint64_t ConnectorHost::market_data_metadata_revision() const noexcept {
+    return impl_->host.market_data_metadata_revision();
+}
 ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
     return market_data_snapshot(impl_->config.transport.target_isin_id);
 }

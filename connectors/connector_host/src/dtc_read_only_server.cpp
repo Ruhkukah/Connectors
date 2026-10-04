@@ -373,18 +373,31 @@ struct DtcReadOnlyServer::Impl {
                 ";order_entry_allowed=false;accounts=false;positions=false;orders=false");
         queue(701, p);
     }
-    bool authority(const DtcMarketDataSnapshot& s) {
+    bool authority(const DtcMarketDataSnapshot& s, std::uint64_t empty_batch = 0) {
         Bytes p;
         auto boolean = [](bool value) { return value ? "true" : "false"; };
         const auto name = session_ready_witness_kind_name(s.session_ready_witness_kind);
-        str(p, 1,
-            std::string("moex.source_authority.v1 {\"symbol_id\":") + std::to_string(symbol_id) +
-                ",\"source_mode\":\"" + std::string(dtc_source_mode_name(config.source_mode)) +
-                "\",\"stream_epoch\":" + std::to_string(s.stream_epoch) + ",\"aggr_online\":" + boolean(s.aggr_online) +
-                ",\"book_snapshot_current\":" + boolean(s.book_snapshot_current) +
-                ",\"session_ready_witness_kind\":\"" + plaza2::cgate::text::json_escape_utf8(name) +
-                "\",\"market_data_display_allowed\":" + boolean(s.market_data_display_allowed) +
-                ",\"order_entry_allowed\":false,\"exchange_confirmed\":false}");
+        auto json = std::string("moex.source_authority.v1 {\"symbol_id\":") + std::to_string(symbol_id) +
+                    ",\"source_mode\":\"" + std::string(dtc_source_mode_name(config.source_mode)) +
+                    "\",\"stream_epoch\":" + std::to_string(s.stream_epoch) +
+                    ",\"aggr_online\":" + boolean(s.aggr_online) +
+                    ",\"book_snapshot_current\":" + boolean(s.book_snapshot_current) +
+                    ",\"session_ready_witness_kind\":\"" + plaza2::cgate::text::json_escape_utf8(name) +
+                    "\",\"market_data_display_allowed\":" + boolean(s.market_data_display_allowed) +
+                    ",\"order_entry_allowed\":false,\"exchange_confirmed\":false";
+        if (s.full_order_log)
+            json += std::string(",\"source_kind\":\"full_order_log\",\"book_state\":\"") +
+                    (s.crossed_book                   ? "crossed"
+                     : !s.market_data_display_allowed ? "unavailable"
+                     : empty_batch || s.empty_book    ? "empty"
+                                                      : "nonempty") +
+                    "\"";
+        if (empty_batch)
+            json += ",\"depth_snapshot\":{\"empty\":true,\"dtc_batch_sequence\":" + std::to_string(empty_batch) +
+                    ",\"source_snapshot_version\":" + std::to_string(s.source_snapshot_version) +
+                    ",\"snapshot_watermark\":" + std::to_string(s.snapshot_watermark) +
+                    ",\"level_count\":0,\"exchange_moment_ns\":" + std::to_string(s.exchange_moment_ns) + "}";
+        str(p, 1, json + "}");
         integer(p, 2, 0);
         return queue(kDtcSourceAuthorityMessage, p);
     }
@@ -429,26 +442,8 @@ struct DtcReadOnlyServer::Impl {
             reject("source metadata changed; fresh definition required");
             return;
         }
-        if (s.full_order_log && s.levels.empty()) {
-            error = "FullOrderLog initial book is empty; reconnect for a fresh nonempty snapshot";
-            Bytes unavailable;
-            integer(unavailable, 1, 1);
-            if (!queue(100, unavailable))
-                return;
-            unavailable.clear();
-            integer(unavailable, 1, symbol_id);
-            integer(unavailable, 2, 1);
-            if (!queue(116, unavailable))
-                return;
-            Bytes logoff;
-            str(logoff, 1, error);
-            integer(logoff, 2, 0);
-            if (queue(5, logoff))
-                closing = true;
-            return;
-        }
-        if (s.levels.empty() || s.levels.size() > config.max_depth_levels * 2 || !s.stream_epoch ||
-            !s.source_snapshot_version) {
+        if ((!s.full_order_log && s.levels.empty()) || s.levels.size() > config.max_depth_levels * 2 ||
+            !s.stream_epoch || !s.source_snapshot_version) {
             reject(source_error("invalid depth snapshot"));
             return;
         }
@@ -531,7 +526,7 @@ struct DtcReadOnlyServer::Impl {
         available.clear();
         integer(available, 1, symbol_id);
         integer(available, 2, 2);
-        if (!queue(116, available) || !authority(s))
+        if (!queue(116, available) || !authority(s, rows.empty() ? next_batch : 0))
             return;
         if (staged.size() > config.max_queued_bytes - output.size()) {
             error = "DTC snapshot backpressure";

@@ -65,6 +65,7 @@ void DtcFullOrderLogSource::committed() {
             changes_.push_back({.price_scaled = level.first,
                                 .volume = level.second,
                                 .side = side == 0 ? DtcDepthSide::Bid : DtcDepthSide::Ask,
+                                .exchange_moment_ns = book_.exchange_moment_ns(isin_),
                                 .depth_level = static_cast<std::uint32_t>(i + 1)});
         }
         before.swap(scratch_[side]);
@@ -77,9 +78,13 @@ DtcMarketDataSnapshot DtcFullOrderLogSource::status_snapshot() const {
     out.stream_epoch = out.market_data_authority_epoch = book_.epoch();
     out.source_snapshot_version = out.snapshot_watermark = book_.revision(isin_);
     out.committed_at = book_.committed_at();
-    out.source_online = out.aggr_online = out.snapshot_complete = out.book_snapshot_current = book_.valid();
-    out.market_data_display_allowed =
-        out.transport_active && out.refdata_metadata_current && book_.valid() && wire_prices_valid_;
+    out.exchange_moment_ns = book_.exchange_moment_ns(isin_);
+    out.crossed_book = book_.crossed(isin_);
+    out.empty_book = book_.levels(isin_, true).empty() && book_.levels(isin_, false).empty();
+    out.source_online = out.aggr_online = out.snapshot_complete = book_.valid();
+    out.book_snapshot_current = book_.valid() && !out.crossed_book;
+    out.market_data_display_allowed = out.transport_active && out.refdata_metadata_current && book_.valid() &&
+                                      !out.crossed_book && wire_prices_valid_;
     out.source_consistent = out.target_authoritative = out.valid = out.market_data_display_allowed;
     out.source_snapshot_hash = 0;
     out.order_entry_allowed = false;
@@ -92,8 +97,10 @@ DtcMarketDataSnapshot DtcFullOrderLogSource::snapshot() const {
         std::vector<Level> rows;
         load_top(bid, rows);
         for (const auto& [price, quantity] : rows)
-            out.levels.push_back(
-                {.price_scaled = price, .volume = quantity, .side = bid ? DtcDepthSide::Bid : DtcDepthSide::Ask});
+            out.levels.push_back({.price_scaled = price,
+                                  .volume = quantity,
+                                  .side = bid ? DtcDepthSide::Bid : DtcDepthSide::Ask,
+                                  .exchange_moment_ns = out.exchange_moment_ns});
     }
     out.snapshot_level_count = out.levels.size();
     return out;

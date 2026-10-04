@@ -12,6 +12,10 @@ namespace moex::connector_host::dtc {
 // IsPopupMessage=0. Sent after final 507/feed+symbol availability and before
 // every complete snapshot. It carries the actual source flags and stream
 // epoch; order_entry_allowed and exchange_confirmed are always false.
+// FullOrderLog identifies source_kind="full_order_log" and book_state. An
+// empty complete snapshot uses depth_snapshot {empty:true,dtc_batch_sequence,
+// source_snapshot_version,snapshot_watermark,level_count:0,exchange_moment_ns}
+// in this control envelope; it emits no invented zero-price depth row.
 inline constexpr std::uint16_t kDtcSourceAuthorityMessage = 700;
 
 // The exact numeric capability fields from the most recently fully written

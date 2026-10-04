@@ -27,10 +27,16 @@ int main() {
                     snapshot.levels[0].source_row_id == 0,
                 "anonymous aggregation creates no provenance identities");
         h.begin();
-        h.add(4, 11, 10500000, 8);
+        auto timestamped = full_order_log_test::row(h.schema[2], 4, 11, 10500000, 8);
+        timestamped.set("moment_ns", std::uint64_t{1759651234567890123});
+        h.apply(timestamped);
         require(source.snapshot().levels[0].price_scaled == 10000000, "pending rows are invisible to DTC");
         h.commit();
         auto updates = source.depth_changes();
+        require(source.status_snapshot().exchange_moment_ns == 1759651234567890123ULL &&
+                    source.snapshot().levels[0].exchange_moment_ns == 1759651234567890123ULL &&
+                    updates[0].exchange_moment_ns == 1759651234567890123ULL,
+                "committed exchange nanoseconds reach status, snapshot and position updates");
         require(updates.size() == 2 && updates[0].depth_level == 1 && updates[0].price_scaled == 10500000 &&
                     updates[1].depth_level == 2 && updates[1].price_scaled == 10000000,
                 "better price shifts every changed visible position atomically");
@@ -76,6 +82,30 @@ int main() {
         require(!source.status_snapshot().market_data_display_allowed, "float32 price collision fences publication");
         h.control(Plaza2ListenerEventKind::Close);
         require(!source.status_snapshot().book_snapshot_current, "recovery invalidates DTC authority immediately");
+        full_order_log_test::Harness crossed;
+        crossed.online();
+        crossed.begin();
+        crossed.commit();
+        DtcFullOrderLogSource cross_source(crossed.book, 11, metadata, 32);
+        cross_source.configure_depth_limit(2);
+        crossed.book.on_commit = [&](const auto&) { cross_source.committed(); };
+        require(cross_source.status_snapshot().valid && cross_source.status_snapshot().empty_book &&
+                    cross_source.status_snapshot().source_snapshot_version > 0,
+                "empty ONLINE commit is a valid initialized book");
+        crossed.begin();
+        crossed.add(1, 11, 10100000, 1);
+        crossed.add(2, 11, 10000000, 1, 1, 1, 1, 2);
+        crossed.commit();
+        require(cross_source.status_snapshot().crossed_book &&
+                    !cross_source.status_snapshot().market_data_display_allowed,
+                "crossed committed prices withdraw display authority");
+        crossed.begin();
+        crossed.add(1, 11, 10100000, 1, 0);
+        crossed.add(3, 11, 9900000, 1);
+        crossed.commit();
+        require(!cross_source.status_snapshot().crossed_book &&
+                    cross_source.status_snapshot().market_data_display_allowed,
+                "uncrossed committed state restores display authority for a fresh snapshot");
         full_order_log_test::Harness recovery;
         recovery.online();
         recovery.begin();

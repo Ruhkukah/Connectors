@@ -106,9 +106,9 @@ enum class DtcDepthSide : std::int32_t {
 };
 
 // The connector-side market-data contract is source-shaped, not a UI model.
-// It carries only the target AGGR20 state that is already owned by
-// ConnectorHost.  AGGR20 is depth, not a public trade tape; no trade events
-// are inferred here.
+// It carries committed AGGR20 or FullOrderLog depth owned by the source.
+// Aggregated FullOrderLog levels have no single source-row identity; no
+// trade events are inferred from either depth representation.
 struct DtcMarketDataLevel {
     std::int64_t price_scaled{0};
     std::int64_t volume{0};
@@ -129,6 +129,7 @@ struct DtcMarketDataLevel {
 
 struct DtcMarketDataSnapshot {
     bool full_order_log{false};
+    bool empty_book{false}, crossed_book{false};
     std::chrono::steady_clock::time_point committed_at{};
     std::uint64_t connector_generation{0};
     std::uint64_t market_data_authority_epoch{0};
