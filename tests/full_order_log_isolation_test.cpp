@@ -271,11 +271,21 @@ int main(int argc, char** argv) {
         trader.send("quit\n");
         trader.close_input();
         test::require(trader.wait() == 0, "trader stops normally");
-        // The same production main refuses a native live start before missing entitlement/owner approval.
+        // The production main requires explicit live mode before opening native CGate.
         md_args.erase(std::find(md_args.begin(), md_args.end(), "--offline-fake"));
         Child gated(md_args, root / "gate.err");
         gated.close_input();
         test::require(gated.wait() == 2, "live start is gated before any native CGate connection");
+        md_args.push_back("--live");
+        md_args.insert(md_args.end(), {"--trading-instance-id", "offline_isolation_md"});
+        Child same_id(md_args, root / "same-instance.err");
+        same_id.close_input();
+        test::require(same_id.wait() == 2, "same trading and MD instance IDs fail before native startup");
+        std::ifstream same_id_log(root / "same-instance.err");
+        const std::string refused((std::istreambuf_iterator<char>(same_id_log)), {});
+        test::require(refused.find("instance IDs must differ") != std::string::npos,
+                      "same-instance refusal must precede logging/runtime validation");
+        md_args.resize(md_args.size() - 3);
         md_args.push_back("--offline-fake");
         // A DTC bind failure after host startup must unwind cleanly.
         const auto occupied_port = ::socket(AF_INET, SOCK_STREAM, 0);

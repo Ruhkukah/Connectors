@@ -14,7 +14,7 @@ struct Plaza2HostConfigInputs {
     bool read_only_market_data{false}, public_deals{false}, allow_orders{false};
     plaza2::cgate::Plaza2Environment environment{plaza2::cgate::Plaza2Environment::Test};
     std::filesystem::path runtime_root, library_path, scheme_dir, config_dir;
-    std::string env_open_settings, credentials_env_var, software_key_env_var;
+    std::string env_open_settings, credentials_env_var, software_key_env_var, local_pass_env_var;
     std::string expected_spectra_release{"SPECTRA9.9.0"}, expected_scheme_sha256;
     std::string broker_code, client_code;
     std::string router{"127.0.0.1:4101"};
