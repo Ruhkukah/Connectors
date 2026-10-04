@@ -1,7 +1,6 @@
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
 #include "moex/plaza2/cgate/plaza2_decimal.hpp"
 #include <algorithm>
-#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -48,7 +47,7 @@ class BookArena final : public std::pmr::memory_resource {
 
   public:
     BookArena(std::size_t orders, std::size_t levels)
-        : nodes_(orders * 2 + levels * 5 + 32), large_(orders * 48 + 4096) {}
+        : nodes_(orders * 2 + levels * 4 + 32), large_(orders * 48 + 4096) {}
     std::size_t bytes() const {
         return nodes_.size() * sizeof(Block) + large_.size();
     }
@@ -57,9 +56,11 @@ constexpr std::uint64_t kNonQuote = 0x4, kIoc = 0x80002, kMultileg = 0x8000000;
 Plaza2Error failure(std::string_view message) {
     return {.code = Plaza2ErrorCode::DecodeFailed, .message = std::string(message)};
 }
-struct BoundField {
-    std::size_t offset{}, size{}, index{};
-};
+using BoundField = Plaza2RawFieldBinding;
+void require(bool condition, std::string_view message) {
+    if (!condition)
+        throw std::invalid_argument("Full Order Log " + std::string(message));
+}
 struct Binding {
     std::size_t index{}, row_size{};
     BoundField isin, order, row, rev, act, price, rest, status, dir, action, moment;
@@ -70,7 +71,7 @@ BoundField field(const Plaza2RawTableBinding& table, std::string_view name, std:
     if (i == table.fields.end() || i->type_token != type || i->size != size || i->offset > table.row_size ||
         size > table.row_size - i->offset)
         throw std::invalid_argument("Full Order Log missing or incompatible field: " + std::string(name));
-    return {i->offset, i->size, i->index};
+    return *i;
 }
 Binding bind(const Plaza2RawTableBinding& t, bool log) {
     Binding b{.index = t.index, .row_size = t.row_size};
@@ -98,11 +99,11 @@ template <class T> T read(const Plaza2ListenerEvent& e, const BoundField& f) {
 
 struct Plaza2FullOrderLog::Impl {
     struct Instrument {
-        LevelMap working[2], published[2], dirty[2];
+        LevelMap published[2], dirty[2];
         std::uint64_t revision{}, moment{}, committed_moment{};
         bool touched{}, crossed{};
         explicit Instrument(std::pmr::memory_resource* r)
-            : working{LevelMap(r), LevelMap(r)}, published{LevelMap(r), LevelMap(r)}, dirty{LevelMap(r), LevelMap(r)} {}
+            : published{LevelMap(r), LevelMap(r)}, dirty{LevelMap(r), LevelMap(r)} {}
     };
     struct Source {
         std::int64_t row{}, revision{};
@@ -119,7 +120,6 @@ struct Plaza2FullOrderLog::Impl {
     std::pmr::unordered_set<std::int64_t> excluded;
     std::vector<std::int32_t> isins;
     std::vector<Instrument> books;
-    std::vector<FullOrderLogLevelChange> changes;
     std::size_t order_capacity, level_capacity, active_levels{}, dirty_levels{}, committed_count{};
     Binding log, snapshot;
     BoundField info_life, info_publication;
@@ -132,22 +132,18 @@ struct Plaza2FullOrderLog::Impl {
     Impl(std::span<const std::int32_t> ids, std::size_t oc, std::size_t lc)
         : arena(oc, lc), orders(&arena), excluded(&arena), isins(ids.begin(), ids.end()), order_capacity(oc),
           level_capacity(lc) {
-        if (!oc || !lc || ids.empty())
-            throw std::invalid_argument("Full Order Log requires instruments and capacities");
+        require(oc && lc && !ids.empty(), "requires instruments and capacities");
         std::sort(isins.begin(), isins.end());
-        if (std::adjacent_find(isins.begin(), isins.end()) != isins.end())
-            throw std::invalid_argument("Full Order Log duplicate instrument");
+        require(std::adjacent_find(isins.begin(), isins.end()) == isins.end(), "duplicate instrument");
         orders.max_load_factor(0.7f);
         orders.reserve(oc);
         excluded.max_load_factor(0.7f);
         excluded.reserve(oc);
         books.reserve(isins.size());
         for (auto id : isins) {
-            if (id <= 0)
-                throw std::invalid_argument("invalid Full Order Log isin");
+            require(id > 0, "invalid isin");
             books.emplace_back(&arena);
         }
-        changes.reserve(lc * 2);
     }
     std::size_t instrument(std::int32_t id) const {
         const auto i = std::lower_bound(isins.begin(), isins.end(), id);
@@ -156,11 +152,9 @@ struct Plaza2FullOrderLog::Impl {
     void clear() {
         orders.clear();
         excluded.clear();
-        changes.clear();
         active_levels = dirty_levels = committed_count = 0;
         for (auto& b : books) {
             for (auto side : {0, 1}) {
-                b.working[side].clear();
                 b.published[side].clear();
                 b.dirty[side].clear();
             }
@@ -183,32 +177,19 @@ struct Plaza2FullOrderLog::Impl {
     void adjust(const Order& o, std::int64_t delta) {
         auto& book = books[o.instrument];
         const auto side = o.bid ? 0 : 1;
-        auto& levels = book.working[side];
-        auto i = levels.find(o.price);
-        const auto old = i == levels.end() ? 0 : i->second;
-        if ((delta > 0 && old > std::numeric_limits<std::int64_t>::max() - delta) || delta < -old)
-            throw std::invalid_argument("Full Order Log aggregate quantity overflow");
+        const auto& levels = book.dirty[side].contains(o.price) ? book.dirty[side] : book.published[side];
+        const auto current = levels.find(o.price);
+        const auto old = current == levels.end() ? 0 : current->second;
+        require(delta >= -old && (delta <= 0 || old <= INT64_MAX - delta), "aggregate quantity overflow");
         const auto quantity = old + delta;
-        if (quantity && i == levels.end()) {
+        if (quantity && !old) {
             if (active_levels == level_capacity)
                 throw std::bad_alloc();
-            levels.emplace(o.price, quantity);
             ++active_levels;
-        } else if (quantity)
-            i->second = quantity;
-        else if (i != levels.end()) {
-            levels.erase(i);
+        } else if (!quantity && old)
             --active_levels;
-        }
-        auto& dirty = book.dirty[side];
-        auto d = dirty.find(o.price);
-        if (d == dirty.end()) {
-            if (dirty_levels == level_capacity * 2)
-                throw std::bad_alloc();
-            dirty.emplace(o.price, quantity);
-            ++dirty_levels;
-        } else
-            d->second = quantity;
+        if (book.dirty[side].insert_or_assign(o.price, quantity).second && ++dirty_levels > level_capacity * 2)
+            throw std::bad_alloc();
     }
     void touch(std::size_t index, const Plaza2ListenerEvent& e, const Binding& b) {
         auto& book = books[index];
@@ -220,15 +201,12 @@ struct Plaza2FullOrderLog::Impl {
         orders.erase(i);
     }
     void row(const Plaza2ListenerEvent& e) {
-        if (!e.raw_table)
-            throw std::invalid_argument("Full Order Log missing row binding");
+        require(e.raw_table != nullptr, "missing row binding");
         if (e.raw_table->name == "info") {
-            if (!transaction || e.table_index != info_index)
-                throw std::invalid_argument("Full Order Log invalid info delivery");
+            require(transaction && e.table_index == info_index, "invalid info delivery");
             const auto publication = read<std::int8_t>(e, info_publication);
             const auto value = read<std::int64_t>(e, info_life);
-            if (publication < 0 || publication > 1 || value < 0)
-                throw std::invalid_argument("Full Order Log invalid snapshot info");
+            require(publication >= 0 && publication <= 1 && value >= 0, "invalid snapshot info");
             if (publication == 1) {
                 pending_log_life = value;
                 pending_info = true;
@@ -241,8 +219,7 @@ struct Plaza2FullOrderLog::Impl {
             return;
         ++metrics.rows_total;
         const auto& b = is_log ? log : snapshot;
-        if (!bound || e.table_index != b.index)
-            throw std::invalid_argument("Full Order Log unknown table index");
+        require(bound && e.table_index == b.index, "unknown table index");
         if (!is_log)
             snapshot_seen = true;
         const auto index = instrument(read<std::int32_t>(e, b.isin));
@@ -250,17 +227,14 @@ struct Plaza2FullOrderLog::Impl {
             ++metrics.rows_filtered;
             return;
         }
-        if (!transaction || e.raw_payload.size() < b.row_size)
-            throw std::invalid_argument("Full Order Log invalid row transaction or size");
+        require(transaction && e.raw_payload.size() >= b.row_size, "invalid row transaction or size");
         const auto id = read<std::int64_t>(e, b.order), rev = read<std::int64_t>(e, b.rev),
                    row_id = read<std::int64_t>(e, b.row);
         const auto act = read<std::int64_t>(e, b.act);
         const unsigned source = is_log ? 1 : 0;
         auto i = orders.find(id);
-        if (id <= 0 || rev < 0)
-            throw std::invalid_argument("Full Order Log invalid identity or revision");
-        if (i != orders.end() && i->second.instrument != index)
-            throw std::invalid_argument("Full Order Log order identity contradicts instrument");
+        require(id > 0 && rev >= 0, "invalid identity or revision");
+        require(i == orders.end() || i->second.instrument == index, "order identity contradicts instrument");
         if (act) {
             if (i != orders.end() && i->second.current == source && i->second.source[source].row == row_id &&
                 rev >= i->second.source[source].revision) {
@@ -275,8 +249,7 @@ struct Plaza2FullOrderLog::Impl {
             return;
         }
         const auto action = is_log ? read<std::int8_t>(e, b.action) : 1;
-        if (action < 0 || action > 2)
-            throw std::invalid_argument("Full Order Log unknown action");
+        require(action >= 0 && action <= 2, "unknown action");
         if (action == 0) {
             if (i != orders.end()) {
                 touch(index, e, b);
@@ -299,15 +272,12 @@ struct Plaza2FullOrderLog::Impl {
         const auto quantity = read<std::int64_t>(e, b.rest);
         const auto dir = read<std::int8_t>(e, b.dir);
         const auto price = public_wire::decimal_scaled(read<public_wire::Bcd16_5>(e, b.price));
-        if (!price || quantity < 0 || (dir != 1 && dir != 2))
-            throw std::invalid_argument("Full Order Log invalid price, remainder, or direction");
+        require(price && quantity >= 0 && (dir == 1 || dir == 2), "invalid price, remainder, or direction");
         touch(index, e, b);
         if (i != orders.end()) {
             auto& o = i->second;
-            if (o.price != *price || o.bid != (dir == 1))
-                throw std::invalid_argument("Full Order Log order attributes changed");
-            if (action == 2 && quantity > o.quantity)
-                throw std::invalid_argument("Full Order Log execution increases remainder");
+            require(o.price == *price && o.bid == (dir == 1), "order attributes changed");
+            require(action != 2 || quantity <= o.quantity, "execution increases remainder");
             if (!quantity) {
                 erase(i);
                 return;
@@ -329,7 +299,6 @@ struct Plaza2FullOrderLog::Impl {
     void commit(Plaza2FullOrderLog& owner) {
         if (online && pending_info && have_info && pending_log_life != info_log_life)
             throw std::invalid_argument("Full Order Log snapshot log life changed; fresh snapshot required");
-        changes.clear();
         for (std::size_t n = 0; n < books.size(); ++n) {
             auto& b = books[n];
             bool changed = false;
@@ -341,14 +310,10 @@ struct Plaza2FullOrderLog::Impl {
                     if (old == quantity)
                         continue;
                     changed = true;
-                    changes.push_back({isins[n], side == 0, price, quantity, b.moment});
-                    if (!quantity) {
-                        if (i != levels.end())
-                            levels.erase(i);
-                    } else if (i == levels.end())
-                        levels.emplace(price, quantity);
+                    if (!quantity)
+                        levels.erase(i);
                     else
-                        i->second = quantity;
+                        levels.insert_or_assign(price, quantity);
                 }
                 b.dirty[side].clear();
             }
@@ -418,38 +383,31 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
             p.bound = false;
             p.have_life = false;
             p.life = p.initial_life = 0;
-            bool log = false, snapshot = false, info = false;
-            for (const auto& t : e.raw_tables) {
-                if (t.name == "orders_log") {
-                    p.log = bind(t, true);
-                    log = true;
-                } else if (t.name == "orders") {
-                    p.snapshot = bind(t, false);
-                    snapshot = true;
-                } else if (t.name == "info") {
-                    field(t, "trades_rev", "i8", 8);
-                    p.info_life = field(t, "trades_lifenum", "i8", 8);
-                    p.info_publication = field(t, "publication_state", "i1", 1);
-                    p.info_index = t.index;
-                    info = true;
-                }
-            }
-            if (!log || !snapshot || !info)
-                throw std::invalid_argument("Full Order Log requires orders_log, orders and info");
+            const auto table = [&](std::string_view name) -> const Plaza2RawTableBinding& {
+                const auto i = std::find_if(e.raw_tables.begin(), e.raw_tables.end(),
+                                            [&](const auto& t) { return t.name == name; });
+                require(i != e.raw_tables.end(), "requires orders_log, orders and info");
+                return *i;
+            };
+            p.log = bind(table("orders_log"), true);
+            p.snapshot = bind(table("orders"), false);
+            const auto& info = table("info");
+            field(info, "trades_rev", "i8", 8);
+            p.info_life = field(info, "trades_lifenum", "i8", 8);
+            p.info_publication = field(info, "publication_state", "i1", 1);
+            p.info_index = info.index;
             p.bound = true;
             break;
         }
         case Kind::TransactionBegin:
-            if (p.transaction || !p.bound)
-                throw std::invalid_argument("Full Order Log invalid transaction begin");
+            require(!p.transaction && p.bound, "invalid transaction begin");
             p.transaction = true;
             break;
         case Kind::StreamData:
             p.row(e);
             break;
         case Kind::TransactionCommit:
-            if (!p.transaction)
-                throw std::invalid_argument("Full Order Log commit without begin");
+            require(p.transaction, "commit without begin");
             p.commit(*this);
             if (p.valid && on_commit)
                 on_commit(*this);
@@ -475,9 +433,8 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
         case Kind::ClearDeleted: {
             if (!e.raw_table || (e.raw_table->name != "orders_log" && e.raw_table->name != "orders"))
                 break;
-            if (e.raw_table->index != e.table_index)
-                throw std::invalid_argument("Full Order Log ClearDeleted index mismatch");
-            if (e.signed_value == std::numeric_limits<std::int64_t>::max()) {
+            require(e.raw_table->index == e.table_index, "ClearDeleted index mismatch");
+            if (e.signed_value == INT64_MAX) {
                 const bool transaction = p.transaction;
                 reset();
                 p.waiting_snapshot = true;
@@ -555,13 +512,9 @@ const Plaza2FullOrderLog::LevelMap& Plaza2FullOrderLog::levels(std::int32_t isin
         throw std::out_of_range("Full Order Log instrument not configured");
     return impl_->books[n].published[bid ? 0 : 1];
 }
-std::span<const FullOrderLogLevelChange> Plaza2FullOrderLog::changes() const noexcept {
-    return impl_->changes;
-}
 std::size_t Plaza2FullOrderLog::memory_bytes() const noexcept {
-    return impl_->arena.bytes() + impl_->changes.capacity() * sizeof(FullOrderLogLevelChange) +
-           impl_->books.capacity() * sizeof(Impl::Instrument) + impl_->isins.capacity() * sizeof(std::int32_t) +
-           sizeof(Impl);
+    return impl_->arena.bytes() + impl_->books.capacity() * sizeof(Impl::Instrument) +
+           impl_->isins.capacity() * sizeof(std::int32_t) + sizeof(Impl);
 }
 std::size_t Plaza2FullOrderLog::order_count() const noexcept {
     return impl_->committed_count;

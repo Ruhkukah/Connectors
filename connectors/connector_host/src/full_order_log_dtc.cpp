@@ -39,13 +39,13 @@ void DtcFullOrderLogSource::configure_depth_limit(std::size_t depth) {
     changes_.clear();
     load_top(true, published_[0]);
     load_top(false, published_[1]);
-    published_revision_ = book_.revision(isin_);
-    published_epoch_ = book_.epoch();
+    published_key_ = {book_.epoch(), book_.revision(isin_)};
     wire_prices_valid_ = true;
 }
 void DtcFullOrderLogSource::committed() {
     changes_.clear();
-    if (!configured_ || (published_revision_ == book_.revision(isin_) && published_epoch_ == book_.epoch()))
+    const auto key = std::pair{book_.epoch(), book_.revision(isin_)};
+    if (!configured_ || published_key_ == key)
         return;
     wire_prices_valid_ = true;
     const auto wire = [](std::int64_t price) { return static_cast<float>(static_cast<double>(price) / 100000.0); };
@@ -70,8 +70,7 @@ void DtcFullOrderLogSource::committed() {
         }
         before.swap(scratch_[side]);
     }
-    published_revision_ = book_.revision(isin_);
-    published_epoch_ = book_.epoch();
+    published_key_ = key;
 }
 DtcMarketDataSnapshot DtcFullOrderLogSource::status_snapshot() const {
     auto out = metadata_;
@@ -87,7 +86,6 @@ DtcMarketDataSnapshot DtcFullOrderLogSource::status_snapshot() const {
                                       !out.crossed_book && wire_prices_valid_;
     out.source_consistent = out.target_authoritative = out.valid = out.market_data_display_allowed;
     out.source_snapshot_hash = 0;
-    out.order_entry_allowed = false;
     out.session_ready_witness_kind = SessionReadyWitnessKind::None;
     return out;
 }
@@ -104,8 +102,5 @@ DtcMarketDataSnapshot DtcFullOrderLogSource::snapshot() const {
     }
     out.snapshot_level_count = out.levels.size();
     return out;
-}
-DtcReadOnlyCapabilities DtcFullOrderLogSource::capabilities() const noexcept {
-    return {.market_depth = true, .security_definitions = true};
 }
 } // namespace moex::connector_host::dtc

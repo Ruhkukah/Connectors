@@ -14,7 +14,9 @@ class DtcFullOrderLogSource final : public DtcMarketDataSource {
     void committed(); // before server.publish_depth_commit(), on the CGate owner
     [[nodiscard]] DtcMarketDataSnapshot snapshot() const override;
     [[nodiscard]] DtcMarketDataSnapshot status_snapshot() const override;
-    [[nodiscard]] DtcReadOnlyCapabilities capabilities() const noexcept override;
+    [[nodiscard]] DtcReadOnlyCapabilities capabilities() const noexcept override {
+        return {.market_depth = true, .security_definitions = true};
+    }
     [[nodiscard]] bool incremental_depth() const noexcept override {
         return true;
     }
@@ -30,7 +32,7 @@ class DtcFullOrderLogSource final : public DtcMarketDataSource {
     using Level = std::pair<std::int64_t, std::int64_t>;
     std::array<std::vector<Level>, 2> published_, scratch_;
     std::size_t depth_{20};
-    std::uint64_t published_revision_{0}, published_epoch_{0};
+    std::pair<std::uint64_t, std::uint64_t> published_key_{};
     bool configured_{false}, wire_prices_valid_{true};
     void load_top(bool bid, std::vector<Level>& into) const;
 };
