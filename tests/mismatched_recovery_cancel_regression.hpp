@@ -66,6 +66,14 @@ template <class Fixture> void mismatched_recovery_cancel_regression() {
             check(collision.order_id == 0 && collision.state == OrderState::Unknown &&
                       collision.operator_action_required,
                   "mismatched recovery identity did not remain unresolved");
+            const auto queued_before_cancel = manager.queued();
+            const auto cancel_requested_before = collision.cancel_requested;
+            const auto remaining_before = collision.remaining;
+            check(manager.cancel("collision") == "identity conflict: resolve via broker/exchange, order_id unknown",
+                  "explicit cancel accepted a conflicting ext-ID identity");
+            check(manager.queued() == queued_before_cancel && collision.cancel_requested == cancel_requested_before &&
+                      collision.operator_action_required && collision.remaining == remaining_before,
+                  "refused conflict cancel mutated cancellation intent or exposure");
             if (posted) {
                 manager.on_reply(collision_duo, {.msgid = late_msgid, .penalty_remain = 1, .num_orders = 0}, now);
                 manager.on_timeout(collision_duo, now);

@@ -47,7 +47,7 @@ struct ManagedOrder {
     bool operator_action_required{}, confirmed_by_replication{};
     bool add_unconfirmed{}, transport_retry_warned{};
     bool snapshot_missing{};
-    bool instance_owned{};
+    bool instance_owned{}, ext_id_conflict{};
     bool execution_baseline_known{true};
     std::int64_t sent_utc_seconds{};
     std::set<std::int64_t> order_ids;

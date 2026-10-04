@@ -766,6 +766,8 @@ std::string OrderManager::cancel(std::string_view client_id) {
     auto& order = found->second;
     if (terminal(order.state))
         return {};
+    if (order.order_id <= 0 && order.ext_id_conflict)
+        return "identity conflict: resolve via broker/exchange, order_id unknown";
     // A deliberate retry preserves the warning until native terminal proof.
     order.cancel_requested = true;
     const auto unsent_move = [&](const Command& cmd) {
@@ -1540,6 +1542,7 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
                         const bool new_conflict =
                             !candidate.operator_action_required || candidate.last_error != message;
                         candidate.operator_action_required = true;
+                        candidate.ext_id_conflict = true;
                         discard_recovery_cancel(candidate);
                         candidate.last_error = message;
                         if (new_conflict) {
