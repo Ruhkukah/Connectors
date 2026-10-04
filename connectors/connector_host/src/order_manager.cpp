@@ -146,7 +146,6 @@ void OrderManager::refresh_exposure(const std::string& key) {
     auto& order = orders_.at(key);
     if (terminal(order.state)) {
         order.operator_action_required = false;
-        order.duo_exhaustion_alert = false;
         order.snapshot_missing = false;
         move_reservations_.erase(key);
     }
@@ -377,7 +376,7 @@ OrderManager::RecoveredAdoption OrderManager::adopt_recovered_order(const std::s
     const auto conflict = [&](std::string message) {
         original.state = OrderState::Unknown;
         original.operator_action_required = true;
-        original.duo_exhaustion_alert = false;
+        discard_recovery_cancel(original);
         original.last_error = std::move(message);
         emit("add_identity_conflict", "{\"client_order_id\":" + json_string(key) +
                                           ",\"official_order_id\":" + std::to_string(official_id) +
@@ -412,9 +411,6 @@ OrderManager::RecoveredAdoption OrderManager::adopt_recovered_order(const std::s
     original.executed += transferred_fills;
     original.request.price = recovered.request.price;
     original.confirmed_by_replication = recovered.confirmed_by_replication;
-    original.duo_exhaustion_alert = (original.duo_exhaustion_alert || recovered.duo_exhaustion_alert) &&
-                                    (!original.operator_action_required || original.duo_exhaustion_alert) &&
-                                    (!recovered.operator_action_required || recovered.duo_exhaustion_alert);
     original.operator_action_required = original.operator_action_required || recovered.operator_action_required;
     original.transport_retry_warned = original.transport_retry_warned || recovered.transport_retry_warned;
     original.cancel_requested = original.cancel_requested || recovered.cancel_requested;
@@ -701,6 +697,16 @@ std::string OrderManager::place(OrderRequest request) {
         return error.what();
     }
 }
+void OrderManager::discard_recovery_cancel(ManagedOrder& order) {
+    order.absence_reply = false;
+    const auto recovery_for_ext = [&](const Command& command) {
+        const auto owner = orders_.find(command.key);
+        return command.encoded.command_kind == Kind::DelUserOrders && owner != orders_.end() &&
+               owner->second.ext_id == order.ext_id;
+    };
+    std::erase_if(cancels_, recovery_for_ext);
+    std::erase_if(pending_, [&](const auto& entry) { return recovery_for_ext(entry.second); });
+}
 void OrderManager::enqueue_cancel(ManagedOrder& order, bool explicit_retry) {
     if ((order.operator_action_required && !explicit_retry) ||
         (bulk_cancellations_.contains(order.request.isin_id) &&
@@ -892,10 +898,9 @@ void OrderManager::complete_timeout(Command command, Clock::time_point now) {
             ++command.uncertain_outcomes;
         if (command.uncertain_outcomes >= kDuoUncertainOutcomeLimit) {
             const auto alert = [&](const std::string& key, ManagedOrder& order) {
-                order.duo_exhaustion_alert = !order.operator_action_required || order.duo_exhaustion_alert;
-                order.operator_action_required = true;
-                if (order.duo_exhaustion_alert)
+                if (!order.operator_action_required)
                     order.last_error = "UNRESOLVED: three uncertain DelUserOrders outcomes; operator action required";
+                order.operator_action_required = true;
                 changed(key);
             };
             if (is_bulk_cancel(command)) {
@@ -1006,7 +1011,7 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now, bool bus
                     if (order.request.isin_id == isin && order.cancel_requested && !terminal(order.state) &&
                         (command.uncertain_outcomes == 0 || order.order_id > 0)) {
                         order.operator_action_required = true;
-                        order.duo_exhaustion_alert = false;
+                        order.absence_reply = false;
                         changed(key);
                         enqueue_cancel(order, true);
                     }
@@ -1016,7 +1021,7 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now, bool bus
         }
         if (found != orders_.end()) {
             found->second.operator_action_required = true;
-            found->second.duo_exhaustion_alert = false;
+            discard_recovery_cancel(found->second);
             found->second.state = OrderState::Unknown;
             found->second.last_error =
                 "UNRESOLVED: cancellation business-rejection limit reached; operator action required";
@@ -1210,7 +1215,7 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             auto& order = orders_.at(pending->second.key);
             order.state = OrderState::Unknown;
             order.operator_action_required = true;
-            order.duo_exhaustion_alert = false;
+            discard_recovery_cancel(order);
             order.last_error = "late Move confirmation conflicts with replicated replacement";
             config_.risk.kill_switch = true;
             emit("move_identity_conflict", "{\"user_id\":" + std::to_string(id) +
@@ -1284,7 +1289,7 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
                 if (reply.num_orders && *reply.num_orders == 0)
                     for (auto& [key, order] : orders_)
                         if (order.request.isin_id == *command.encoded.isin_id && order.cancel_requested &&
-                            order.order_id == 0)
+                            order.order_id == 0 && !order.operator_action_required)
                             order.absence_reply = true;
                 // Acceptance completes this command. Keep only the bulk gate
                 // until a later committed TRADE view; never resend an accepted
@@ -1335,7 +1340,7 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
         if (order.confirmed_by_replication && order.order_id > 0) {
             order.state = OrderState::Unknown;
             order.operator_action_required = true;
-            order.duo_exhaustion_alert = false;
+            discard_recovery_cancel(order);
             order.last_error = "late Add confirmation conflicts with timeout recovery";
             config_.risk.kill_switch = true;
             emit("add_identity_conflict", "{\"client_order_id\":" + json_string(key) +
@@ -1522,24 +1527,22 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             const auto ext = ext_index_.find(row.ext_id);
             if (ext != ext_index_.end()) {
                 auto& candidate = orders_.at(ext->second);
-                if (candidate.add_unconfirmed && candidate.order_id == 0 &&
-                    (!candidate.operator_action_required || candidate.duo_exhaustion_alert)) {
+                if (candidate.add_unconfirmed && candidate.order_id == 0) {
                     deferred_orders_[{row.sess_id, id}] = row;
                     if (candidate.state == OrderState::Unknown && !matches_lost_add(row, candidate)) {
-                        candidate.operator_action_required = true;
-                        candidate.duo_exhaustion_alert = false;
-                        candidate.last_error =
+                        constexpr auto message =
                             "lost Add ext_id evidence does not match login/client/session/ISIN/side/price/quantity";
-                        const auto recovery_for_ext = [&](const Command& command) {
-                            const auto owner = orders_.find(command.key);
-                            return command.encoded.command_kind == Kind::DelUserOrders && owner != orders_.end() &&
-                                   owner->second.ext_id == row.ext_id;
-                        };
-                        std::erase_if(cancels_, recovery_for_ext);
-                        std::erase_if(pending_, [&](const auto& entry) { return recovery_for_ext(entry.second); });
-                        emit("add_identity_conflict", "{\"client_order_id\":" + json_string(ext->second) +
-                                                          ",\"message\":" + json_string(candidate.last_error) + "}");
-                        changed(ext->second);
+                        const bool new_conflict =
+                            !candidate.operator_action_required || candidate.last_error != message;
+                        candidate.operator_action_required = true;
+                        discard_recovery_cancel(candidate);
+                        candidate.last_error = message;
+                        if (new_conflict) {
+                            emit("add_identity_conflict", "{\"client_order_id\":" + json_string(ext->second) +
+                                                              ",\"message\":" + json_string(candidate.last_error) +
+                                                              "}");
+                            changed(ext->second);
+                        }
                     }
                 }
             }
@@ -1598,8 +1601,7 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             auto& candidate = orders_.at(ext_index_.at(row.ext_id));
             const bool contract = row.isin_id == candidate.request.isin_id && row.sess_id == candidate.sess_id &&
                                   row.dir == static_cast<std::int8_t>(candidate.request.side);
-            if (matches_lost_add(row, candidate) && candidate.add_unconfirmed && candidate.order_id == 0 &&
-                (!candidate.operator_action_required || candidate.duo_exhaustion_alert)) {
+            if (matches_lost_add(row, candidate) && candidate.add_unconfirmed && candidate.order_id == 0) {
                 deferred_orders_[{row.sess_id, id}] = row;
                 if (candidate.state == OrderState::Unknown) {
                     key = candidate.request.client_order_id;
@@ -1802,10 +1804,10 @@ void OrderManager::observe_trades(std::span<const plaza2::private_state::OwnTrad
                 const auto owner = order_index_.find(id);
                 if (owner != order_index_.end()) {
                     auto& order = orders_.at(owner->second);
+                    discard_recovery_cancel(order);
                     if (!order.operator_action_required) {
                         order.state = OrderState::Unknown;
                         order.operator_action_required = true;
-                        order.duo_exhaustion_alert = false;
                         order.last_error = "contradictory own trade quantity or instrument";
                         changed(owner->second);
                     }
@@ -1891,8 +1893,8 @@ void OrderManager::prove_absence(std::int64_t server_time, bool online) {
             // committed watermark starts the same conservative safety margin.
             order.sent_utc_seconds = server_time;
         }
-        if ((order.operator_action_required && !(order.duo_exhaustion_alert && order.absence_reply)) ||
-            order.sent_utc_seconds <= 0 || server_time <= order.sent_utc_seconds ||
+        if ((order.operator_action_required && !order.absence_reply) || order.sent_utc_seconds <= 0 ||
+            server_time <= order.sent_utc_seconds ||
             server_time - order.sent_utc_seconds <= config_.absence_margin.count())
             continue;
         if ((order.order_id == 0 || order.snapshot_missing) && order.absence_reply) {
@@ -1908,7 +1910,7 @@ void OrderManager::prove_absence(std::int64_t server_time, bool online) {
                 order.state = OrderState::Unknown;
                 order.last_error = "missing reloaded order requires explicit identity reconciliation";
                 order.operator_action_required = true;
-                order.duo_exhaustion_alert = false;
+                discard_recovery_cancel(order);
                 changed(key);
             } else {
                 const bool first_proof = order.state != OrderState::Unknown || !order.cancel_requested;

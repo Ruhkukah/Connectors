@@ -17,6 +17,7 @@
 #include "instance_cancel_regression.hpp"
 #include "scoped_unresolved_admission_regression.hpp"
 #include "retired_command_regression.hpp"
+#include "single_operator_alert_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -2068,6 +2069,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::single_operator_alert_regression<Fixture>();
         moex::connector_host::retired_command_regression<Fixture>();
         moex::connector_host::scoped_unresolved_admission_regression<Fixture>();
         moex::connector_host::instance_cancel_regression<Fixture>();

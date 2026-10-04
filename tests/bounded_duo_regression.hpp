@@ -239,8 +239,7 @@ template <class Fixture> void bounded_duo_regression() {
             manager.prove_absence(1700000061, true);
             if (resolution == 2) {
                 check(manager.orders().at("bounded-recovery").state == OrderState::Unknown &&
-                          manager.operator_action_required() &&
-                          !manager.orders().at("bounded-recovery").duo_exhaustion_alert,
+                          manager.operator_action_required() && !manager.orders().at("bounded-recovery").absence_reply,
                       "late scoped186 cleared an unrelated lost-Add identity warning");
                 f.poll(manager, 10000);
                 check(f.sent.size() == 4, "foreign matching ext_id evidence introduced an automatic cancellation");

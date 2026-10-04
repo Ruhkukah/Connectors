@@ -45,7 +45,7 @@ struct ManagedOrder {
     std::int64_t order_id{}, remaining{}, executed{};
     bool cancel_requested{}, absence_reply{};
     bool operator_action_required{}, confirmed_by_replication{};
-    bool add_unconfirmed{}, transport_retry_warned{}, duo_exhaustion_alert{};
+    bool add_unconfirmed{}, transport_retry_warned{};
     bool snapshot_missing{};
     bool instance_owned{};
     bool execution_baseline_known{true};
@@ -230,6 +230,7 @@ class OrderManager {
     [[nodiscard]] std::uint32_t reserve_user_id();
     [[nodiscard]] bool has_outstanding_command(std::string_view key, plaza2_trade::Plaza2TradeCommandKind kind) const;
     void recovery_cancel(ManagedOrder& order, bool explicit_retry = false);
+    void discard_recovery_cancel(ManagedOrder& order);
     void enqueue_cancel(ManagedOrder& order, bool explicit_retry = false);
     void complete_timeout(Command command, Clock::time_point now);
     void retry_cancel(Command command, Clock::time_point now, bool business_rejection = false);
