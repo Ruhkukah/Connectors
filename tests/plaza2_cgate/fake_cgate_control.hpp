@@ -66,6 +66,8 @@ enum class Option : std::uint32_t {
     ForceTradeTerminal,
     FreshPosAnchor,
     FullFill,
+    FullOrderLogRefdata,
+    FullOrderLogMultiMatching,
     IdentityConflict,
     ListenerOpenNoService,
     ListenerOpenResult,
@@ -176,7 +178,8 @@ enum class EventKind : std::uint8_t {
     ClearDeleted,
     Close,
     Reply,
-    ConnectionError
+    ConnectionError,
+    ListenerError
 };
 struct Event {
     EventKind kind{EventKind::Row};
@@ -240,6 +243,11 @@ class Control {
     }
     std::uint64_t opens(generated::StreamCode stream) const {
         return call<std::uint64_t (*)(generated::StreamCode)>("moex_fake_listener_opens")(stream);
+    }
+    std::string listener_open_settings(generated::StreamCode stream) const {
+        std::string result;
+        call<void (*)(generated::StreamCode, std::string*)>("moex_fake_listener_open_settings")(stream, &result);
+        return result;
     }
     std::string trade_open_settings() const {
         std::string result;

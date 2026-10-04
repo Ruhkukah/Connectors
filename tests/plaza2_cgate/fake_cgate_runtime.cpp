@@ -72,6 +72,8 @@ std::deque<fixture::Event> queued_events;
 std::vector<fixture::PostedCommand> posted_commands;
 std::unordered_map<StreamCode, std::uint64_t> listener_opens;
 std::string last_trade_open_settings;
+std::unordered_map<StreamCode, std::string> last_listener_open_settings;
+constexpr StreamCode kFullOrderLogStreamCode = static_cast<StreamCode>(0xF0110001u);
 std::uint64_t process_calls{};
 std::uint32_t last_process_timeout{};
 const char* option(Option option) {
@@ -998,6 +1000,74 @@ bool persistent_order_session() {
 
 std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     auto script = base_script_for_stream(stream_code);
+    if (stream_code == kFullOrderLogStreamCode) {
+        using enum FieldCode;
+        using enum FakeValueKind;
+        script = {{.table_code = TableCode::kFortsTradeReplOrdersLog}};
+        for (std::int64_t side = 1; side <= 2; ++side)
+            script.push_back(
+                {.table_code = TableCode::kFortsUserorderbookReplOrders,
+                 .rev = 20 + side,
+                 .fields = {
+                     {.field_code = kFortsUserorderbookReplOrdersReplId, .signed_value = 9000 + side},
+                     {.field_code = kFortsUserorderbookReplOrdersReplRev, .signed_value = 20 + side},
+                     {.field_code = kFortsUserorderbookReplOrdersPublicOrderId, .signed_value = 9000 + side},
+                     {.field_code = kFortsUserorderbookReplOrdersIsinId, .signed_value = 1001},
+                     {.field_code = kFortsUserorderbookReplOrdersPublicAmountRest, .signed_value = side == 1 ? 7 : 9},
+                     {.field_code = kFortsUserorderbookReplOrdersDir, .signed_value = side},
+                     {.field_code = kFortsUserorderbookReplOrdersPrice,
+                      .kind = Text,
+                      .text = side == 1 ? "102500" : "102600"}}});
+        script.push_back({.table_code = TableCode::kFortsUserorderbookReplInfo,
+                          .rev = 22,
+                          .fields = {{.field_code = kFortsUserorderbookReplInfoTradesRev, .signed_value = 22},
+                                     {.field_code = kFortsUserorderbookReplInfoTradesLifenum, .signed_value = 7},
+                                     {.field_code = kFortsUserorderbookReplInfoPublicationState, .signed_value = 1}}});
+        return script;
+    }
+    if (stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::FullOrderLogRefdata)) {
+        using enum FieldCode;
+        using enum FakeValueKind;
+        for (auto& row : script)
+            if (row.table_code == TableCode::kFortsRefdataReplInstr2matchingMap) {
+                row.fields.push_back({.field_code = kFortsRefdataReplInstr2matchingMapReplId, .signed_value = 3});
+                row.fields.push_back({.field_code = kFortsRefdataReplInstr2matchingMapReplRev, .signed_value = 3});
+            }
+        script.push_back(
+            {.table_code = TableCode::kFortsRefdataReplFutVcb,
+             .rev = 4,
+             .fields = {{.field_code = kFortsRefdataReplFutVcbReplId, .signed_value = 4},
+                        {.field_code = kFortsRefdataReplFutVcbReplRev, .signed_value = 4},
+                        {.field_code = kFortsRefdataReplFutVcbBaseContractId, .signed_value = 500},
+                        {.field_code = kFortsRefdataReplFutVcbBaseContractCode, .kind = Text, .text = "RTS"},
+                        {.field_code = kFortsRefdataReplFutVcbCurr, .kind = Text, .text = "RUB"},
+                        {.field_code = kFortsRefdataReplFutVcbBoardMd, .kind = Text, .text = "RFUD"}}});
+    }
+    if (stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::FullOrderLogMultiMatching)) {
+        using enum FieldCode;
+        using enum FakeValueKind;
+        auto second = *std::find_if(script.begin(), script.end(), [](const auto& row) {
+            return row.table_code == TableCode::kFortsRefdataReplFutSessContents;
+        });
+        find_field(second, kFortsRefdataReplFutSessContentsReplId)->signed_value = 3102;
+        find_field(second, kFortsRefdataReplFutSessContentsIsinId)->signed_value = 2002;
+        find_field(second, kFortsRefdataReplFutSessContentsBaseContractCode)->text = "MX";
+        script.push_back(std::move(second));
+        script.push_back(
+            {.table_code = TableCode::kFortsRefdataReplFutVcb,
+             .rev = 5,
+             .fields = {{.field_code = kFortsRefdataReplFutVcbReplId, .signed_value = 5},
+                        {.field_code = kFortsRefdataReplFutVcbReplRev, .signed_value = 5},
+                        {.field_code = kFortsRefdataReplFutVcbBaseContractId, .signed_value = 501},
+                        {.field_code = kFortsRefdataReplFutVcbBaseContractCode, .kind = Text, .text = "MX"}}});
+        script.push_back(
+            {.table_code = TableCode::kFortsRefdataReplInstr2matchingMap,
+             .rev = 5,
+             .fields = {{.field_code = kFortsRefdataReplInstr2matchingMapReplId, .signed_value = 5},
+                        {.field_code = kFortsRefdataReplInstr2matchingMapReplRev, .signed_value = 5},
+                        {.field_code = kFortsRefdataReplInstr2matchingMapBaseContractId, .signed_value = 501},
+                        {.field_code = kFortsRefdataReplInstr2matchingMapMatchingId, .signed_value = 4}}});
+    }
     if (stream_code == StreamCode::kFortsRefdataRepl) {
         script.push_back({.table_code = TableCode::kFortsRefdataReplSysMessages,
                           .rev = 24,
@@ -1485,6 +1555,8 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
 }
 
 StreamCode stream_code_from_settings(std::string_view settings) {
+    if (settings.starts_with("p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL"))
+        return kFullOrderLogStreamCode;
     if (settings.find(std::string_view{"FORTS_AGGR5_REPL"}) != std::string_view::npos ||
         settings.find(std::string_view{"FORTS_AGGR20_REPL"}) != std::string_view::npos ||
         settings.find(std::string_view{"FORTS_AGGR50_REPL"}) != std::string_view::npos) {
@@ -1525,10 +1597,19 @@ make_clear_deleted_payload(std::uint32_t table_idx, std::int64_t table_rev, std:
 }
 
 std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMessageScript>& script,
-                                                       std::vector<MessagePlan>* plans) {
+                                                       std::vector<MessagePlan>* plans, bool native_widths = false) {
     auto scheme = std::make_unique<OwnedScheme>();
     plans->clear();
     auto schema_messages = script;
+    if (native_widths) {
+        std::vector<TableCode> seen;
+        std::erase_if(schema_messages, [&](const auto& row) {
+            if (std::find(seen.begin(), seen.end(), row.table_code) != seen.end())
+                return true;
+            seen.push_back(row.table_code);
+            return false;
+        });
+    }
     if (!script.empty()) {
         const auto* first = FindTableByCode(script.front().table_code);
         for (const auto& table : TablesForStream(static_cast<StreamCode>(first->stream_id)))
@@ -1591,7 +1672,8 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             const bool captured = field->native_offset != std::numeric_limits<std::size_t>::max();
             owned_field->desc.size =
                 captured ? field->storage_size_bytes : size_for_value_class(field->value_class, field->type_token);
-            if (message_script.table_code == TableCode::kFortsDealsReplDeal && field->storage_size_bytes != 0)
+            if ((native_widths || message_script.table_code == TableCode::kFortsDealsReplDeal) &&
+                field->storage_size_bytes != 0)
                 owned_field->desc.size = field->storage_size_bytes;
             if (message_script.table_code == TableCode::kFortsDealsReplDeal &&
                 field->field_code == FieldCode::kFortsDealsReplDealMomentNs && fake_flag(Option::DealsBadScheme))
@@ -1855,6 +1937,12 @@ std::uint32_t emit_script(FakeListener& listener) {
     if (const auto result = emit_simple_message(listener, kCgMsgP2replOnline); result != kCgErrOk) {
         return result;
     }
+    if (listener.stream_code == kFullOrderLogStreamCode) {
+        if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk)
+            return result;
+        if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk)
+            return result;
+    }
     if (listener.stream_code == StreamCode::kFortsDealsRepl) {
         // The snapshot trade above is historical. Only these later committed
         // rows may become live ticks at the DTC boundary.
@@ -1933,6 +2021,9 @@ void detach_listener(FakeConnection* connection, FakeListener* listener) {
 }
 
 } // namespace
+
+#include <chrono>
+#include "full_order_log_replay.hpp"
 
 extern "C" {
 const char* cg_err_getstr(std::uint32_t code) {
@@ -2464,6 +2555,8 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
             connection->next_session_prepublished = true;
         return kCgErrOk;
     }
+    if (full_order_log_replay.remaining)
+        return full_order_log_replay.emit(*connection);
     if (!queued_events.empty()) {
         const auto& event = queued_events.front();
         if (event.kind == fixture::EventKind::ConnectionError) {
@@ -2512,6 +2605,9 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
                                                        owned.flags);
                 return emit_simple_message(listener, kCgMsgP2replClearDeleted, data.data(), data.size());
             }
+            case fixture::EventKind::ListenerError:
+                listener.state = kStateError;
+                return kCgErrOk;
             case fixture::EventKind::ConnectionError:
                 break;
             }
@@ -2695,13 +2791,16 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
         return kCgErrOk;
     }
     listener->stream_code = stream_code_from_settings(listener->settings);
-    if (FindStreamByCode(listener->stream_code) == nullptr) {
+    if (listener->stream_code != kFullOrderLogStreamCode && FindStreamByCode(listener->stream_code) == nullptr) {
         delete listener;
         return kCgErrInvalidArgument;
     }
 
     const auto script = script_for_stream(listener->stream_code);
-    listener->scheme = build_scheme_for_messages(script, &listener->message_plans);
+    listener->scheme = build_scheme_for_messages(
+        script, &listener->message_plans,
+        listener->stream_code == kFullOrderLogStreamCode ||
+            (listener->stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::FullOrderLogRefdata)));
     if (!listener->scheme) {
         delete listener;
         return kCgErrIncorrectState;
@@ -2744,6 +2843,7 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
         return kCgErrInvalidArgument;
     }
     typed->open_settings = settings ? settings : "";
+    last_listener_open_settings[typed->stream_code] = typed->open_settings;
     if (typed->stream_code == StreamCode::kFortsTradeRepl)
         last_trade_open_settings = typed->open_settings;
     if (typed->stream_code == StreamCode::kFortsSessionstateRepl ||
@@ -3118,6 +3218,11 @@ extern "C" void moex_fake_scenario(const fixture::Scenario* value) {
 extern "C" void moex_fake_option(Option key, const char* value) {
     scenario.options[static_cast<std::size_t>(key)] = value ? value : "";
 }
+extern "C" void moex_fake_listener_open_settings(StreamCode stream, std::string* out) {
+    if (out)
+        *out = last_listener_open_settings[stream];
+}
+
 extern "C" void moex_fake_enqueue(const fixture::Event* value) {
     if (value)
         queued_events.push_back(*value);
