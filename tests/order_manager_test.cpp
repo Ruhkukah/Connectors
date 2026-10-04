@@ -11,6 +11,7 @@
 #include "strict_lost_add_regression.hpp"
 #include "move_not_applied_regression.hpp"
 #include "position_lag_regression.hpp"
+#include "pos_cutoff_regression.hpp"
 #include "bounded_duo_regression.hpp"
 #include "manual_entry_regression.hpp"
 #include "mismatched_recovery_cancel_regression.hpp"
@@ -2080,6 +2081,7 @@ int main() {
         moex::connector_host::move_not_applied_regression<Fixture>();
         moex::connector_host::regression::risk_limits::run();
         moex::connector_host::position_lag_regression();
+        moex::connector_host::pos_cutoff_regression();
         reload_missing_order_regression<Fixture>();
         moex::connector_host::cancel_session_retry_regression<Fixture>();
         moex::connector_host::move_replication_recovery_regression<Fixture>();

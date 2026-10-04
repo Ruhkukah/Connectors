@@ -81,6 +81,8 @@ the environment file. Router login credentials belong in the router configuratio
 
 Run the qualifying dry run and full-day rehearsal on a regular weekday T1 session. Complete the exchange-action safety fixes before further TEST orders and the remaining reliability fixes before the full-day rehearsal. Resolve ALRS-12.26 and CNY-12.26 IDs from fresh committed REFDATA. Before the first order, confirm own POS is flat and no working/unresolved orders exist, then print the effective configuration. Compute each quote-notional cap from the REF current price at no more than two contracts; the global five-open-order cap also bounds each instrument.
 
+Observe the read-only run for at least 30 minutes: all listeners ONLINE, first TRADE replay revisions against the committed anchors, journal growth per hour, CPU, owner-thread stall p99, USERORDERBOOK republish timing and the earlier key-check failure's cause. Preserve committed POS.info `trades_rev`/`trades_lifenum` changes alongside own POS `xpos`, side and day-open quantities, `last_deal_id`, and own user_deal source revisions. Continue this trace across an authorized weekday fill before declaring position coverage verified. A cutoff change alone does not release reservations; committed position quantities and exact trade evidence must prove coverage. Keep the native trace on the TEST host and report the conclusion in the PR.
+
 Build Release on the actual Linux deployment host, then run the exact build with the provisioned TEST account. Preserve default router/client logging. Set the instance name, router, instrument list, rate and risk limits explicitly. Example configuration (environment variables carry local settings and account values):
 
 ```sh

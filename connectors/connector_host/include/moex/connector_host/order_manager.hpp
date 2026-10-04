@@ -179,10 +179,6 @@ class OrderManager {
             low += value;
             high += low < previous;
         }
-        void add(const ExposureSum& value) {
-            add(value.low);
-            high += value.high;
-        }
         void subtract(std::uint64_t value) {
             high -= low < value;
             low -= value;
@@ -193,10 +189,10 @@ class OrderManager {
     };
     struct InstrumentExposure {
         ExposureSum notional, buys, sells;
-        ExposureSum filled_buys, filled_sells, covered_buys, covered_sells, calendar_buys, calendar_sells;
+        ExposureSum filled_buys, filled_sells;
         std::optional<PositionProof> position_proof;
         std::optional<std::int64_t> position_last_revision;
-        bool fills_dirty{}, fill_proof_valid{true}, fill_conflict{};
+        bool fills_dirty{}, fill_proof_valid{true};
     };
     using DealKey = std::tuple<std::int64_t, std::int32_t, bool>; // deal ID, session, buy
     struct DealRecord {
@@ -206,6 +202,10 @@ class OrderManager {
         bool credited{}, conflicted{};
     };
     using PositionFillKey = std::tuple<std::int32_t, std::uint64_t, std::int64_t, DealKey>;
+    struct PositionFill {
+        std::int64_t amount{};
+        bool covered{}, conflicted{}, unproven{};
+    };
     struct MoveReservation {
         std::uint64_t price_units{};
         std::int32_t quantity{};
@@ -222,7 +222,6 @@ class OrderManager {
     };
     [[nodiscard]] std::string check_risk(const OrderRequest& request, std::size_t extra_orders,
                                          std::string_view exclude_key = {});
-    [[nodiscard]] static PositionFillKey position_fill_key(const DealKey& key, const DealRecord& record);
     void reserve_position_fill(const DealKey& key, DealRecord& record,
                                const plaza2::private_state::OwnTradeSnapshot& row, bool first);
     [[nodiscard]] bool reconcile_position_fills(std::int32_t isin, const PositionProof& proof);
@@ -274,7 +273,7 @@ class OrderManager {
     std::unordered_map<std::int64_t, std::string> order_index_;
     std::unordered_map<std::int32_t, std::string> ext_index_;
     std::map<DealKey, DealRecord> deals_;
-    std::map<PositionFillKey, std::int64_t> position_fills_;
+    std::map<PositionFillKey, PositionFill> position_fills_;
     std::unordered_map<std::int64_t, std::int64_t> filled_by_id_;
     std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnOrderSnapshot> deferred_orders_;
     std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnTradeSnapshot> deferred_trades_;
