@@ -66,6 +66,9 @@ struct CgateSessionConfig {
     // An empty URL preserves the existing four-listener read-only profile.
     CgateStreamConfig public_deals_stream;
     std::int64_t public_deals_target_isin_id{0};
+    // An externally owned consumer runs on this session's CGate owner thread.
+    CgateStreamConfig full_order_log_stream;
+    plaza2::cgate::Plaza2ListenerEventHandler* full_order_log_handler{nullptr};
     // Optional exact AGGR20 sys_events session identity. Zero accepts a
     // non-zero current session id and is suitable only before refdata
     // negotiation has supplied the target session.
@@ -105,7 +108,7 @@ struct CgateSessionConfig {
 };
 
 struct Plaza2TransportHealth {
-    std::uint32_t connection{0}, publisher{0}, reply{0}, aggr{0}, public_deals{0};
+    std::uint32_t connection{0}, publisher{0}, reply{0}, aggr{0}, public_deals{0}, full_order_log{0};
     std::array<std::uint32_t, 8> private_states{};
     std::array<plaza2::generated::StreamCode, 8> private_streams{};
     std::size_t private_count{0};
@@ -168,6 +171,8 @@ class CgateSession final {
     [[nodiscard]] const plaza2::cgate::Plaza2Aggr20BookProjector& aggr20_projector() const noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;
+    [[nodiscard]] std::optional<std::int8_t> full_order_log_matching_id() const noexcept;
+    [[nodiscard]] std::uint64_t market_data_metadata_revision() const noexcept;
     [[nodiscard]] bool aggr_online() const noexcept;
     [[nodiscard]] bool aggr_snapshot_complete() const noexcept;
     [[nodiscard]] bool aggr_session_data_ready() const noexcept;

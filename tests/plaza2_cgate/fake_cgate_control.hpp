@@ -66,6 +66,8 @@ enum class Option : std::uint32_t {
     ForceTradeTerminal,
     FreshPosAnchor,
     FullFill,
+    FullOrderLogRefdata,
+    FullOrderLogMultiMatching,
     IdentityConflict,
     ListenerOpenNoService,
     ListenerOpenResult,
@@ -176,7 +178,8 @@ enum class EventKind : std::uint8_t {
     ClearDeleted,
     Close,
     Reply,
-    ConnectionError
+    ConnectionError,
+    ListenerError
 };
 struct Event {
     EventKind kind{EventKind::Row};
@@ -212,6 +215,14 @@ class Control {
     void configure(const Scenario& scenario) const {
         call<void (*)(const Scenario*)>("moex_fake_scenario")(&scenario);
     }
+    std::string connection_settings() const {
+        std::string result;
+        call<void (*)(std::string*)>("moex_fake_connection_settings")(&result);
+        return result;
+    }
+    void configure_refdata_count(std::uint64_t count) const {
+        call<void (*)(std::uint64_t)>("moex_fake_refdata_count")(count);
+    }
     void set(Option option, std::string_view value = "1") const {
         const std::string owned(value);
         call<void (*)(Option, const char*)>("moex_fake_option")(option, owned.c_str());
@@ -240,6 +251,11 @@ class Control {
     }
     std::uint64_t opens(generated::StreamCode stream) const {
         return call<std::uint64_t (*)(generated::StreamCode)>("moex_fake_listener_opens")(stream);
+    }
+    std::string listener_open_settings(generated::StreamCode stream) const {
+        std::string result;
+        call<void (*)(generated::StreamCode, std::string*)>("moex_fake_listener_open_settings")(stream, &result);
+        return result;
     }
     std::string trade_open_settings() const {
         std::string result;

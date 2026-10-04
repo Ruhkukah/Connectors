@@ -12,6 +12,10 @@ namespace moex::connector_host::dtc {
 // IsPopupMessage=0. Sent after final 507/feed+symbol availability and before
 // every complete snapshot. It carries the actual source flags and stream
 // epoch; order_entry_allowed and exchange_confirmed are always false.
+// FullOrderLog identifies source_kind="full_order_log" and book_state. An
+// empty complete snapshot uses depth_snapshot {empty:true,dtc_batch_sequence,
+// source_snapshot_version,snapshot_watermark,level_count:0,exchange_moment_ns}
+// in this control envelope; it emits no invented zero-price depth row.
 inline constexpr std::uint16_t kDtcSourceAuthorityMessage = 700;
 
 // The exact numeric capability fields from the most recently fully written
@@ -45,7 +49,7 @@ struct DtcReadOnlyServerConfig {
     std::size_t max_queued_bytes{65536};
     // Hard ceiling is 4096; injectable for deterministic backpressure tests.
     std::size_t max_write_bytes_per_poll{4096};
-    std::size_t max_depth_levels{20}; // per side; hard ceiling 20 (AGGR20)
+    std::size_t max_depth_levels{20}; // per side; FullOrderLog may opt into up to 20000
     std::chrono::milliseconds idle_timeout{30000};
     std::chrono::milliseconds write_timeout{5000};
     // Metadata absent from DtcMarketDataSource must be explicitly supplied by
@@ -82,6 +86,9 @@ class DtcReadOnlyServer final {
 
     bool start(std::string& error);
     void poll();
+    // Invoke synchronously at TN_COMMIT on the owner thread.
+    void publish_depth_commit();
+    [[nodiscard]] std::uint64_t last_commit_to_queue_ns() const noexcept;
     void stop() noexcept;
     [[nodiscard]] std::uint16_t port() const noexcept;
     [[nodiscard]] std::uint32_t symbol_id() const noexcept;

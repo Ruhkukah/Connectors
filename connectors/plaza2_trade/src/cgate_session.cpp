@@ -180,6 +180,7 @@ struct CgateSession::Impl {
         cg::Plaza2Listener object;
         cg::Plaza2ListenerEventHandler* handler{};
         std::chrono::steady_clock::time_point retry{};
+        std::optional<std::chrono::steady_clock::time_point> snapshot_wait;
         bool scheme_incompatible{};
         std::optional<std::uint32_t> observed_state;
     };
@@ -190,6 +191,8 @@ struct CgateSession::Impl {
     cg::Plaza2Publisher publisher;
     moex::plaza2::private_state::Plaza2PrivateStateProjector projection;
     cg::Plaza2PrivateStateBridge bridge{projection};
+    std::optional<std::pair<std::uint64_t, std::int32_t>> matching_refdata;
+    std::optional<std::int8_t> matching_id;
     cg::Plaza2Aggr20BookProjector book;
     cg::Plaza2Aggr20ListenerBridge aggr{book, 0};
     cg::Plaza2PublicDealsBridge deals;
@@ -341,6 +344,12 @@ struct CgateSession::Impl {
             return invalid("read-only CGate session cannot configure order entry");
         if (config.connection_settings.empty() || config.runtime.runtime_root.empty())
             return invalid("CGate runtime and connection are required");
+        if (!config.full_order_log_stream.settings.empty() &&
+            (!config.read_only_market_data || !config.full_order_log_handler || config.market_data_isin_ids.empty() ||
+             config.full_order_log_stream.stream_code != cg::kFullOrderLogStreamCode ||
+             config.full_order_log_stream.settings != "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL" ||
+             config.full_order_log_stream.open_settings.find("replstate") != std::string::npos))
+            return invalid("FullOrderLog requires read-only composite listener, configured ISINs and no replstate");
         if (config.private_streams.empty())
             return invalid("at least one private replication stream is required");
         if (!config.read_only_market_data && config.publisher_settings.empty())
@@ -410,6 +419,7 @@ struct CgateSession::Impl {
             codes.push_back(s.stream_code);
         if (auto error = bridge.reset(codes); error)
             return error;
+        bridge.require_full_order_log_refdata(config.full_order_log_handler != nullptr);
         if (auto error = bridge.begin_run(); error)
             return error;
         listeners.reserve(streams.size() + 3);
@@ -438,6 +448,69 @@ struct CgateSession::Impl {
                 return error;
         }
         streams_created = true;
+        return {};
+    }
+    Plaza2Error resolve_full_order_log() {
+        if (!config.full_order_log_handler || config.full_order_log_stream.settings.empty())
+            return {};
+        const auto fence = [&] {
+            if (!matching_id)
+                return;
+            for (auto& l : listeners)
+                if (l.config.stream_code == cg::kFullOrderLogStreamCode && l.object.is_created())
+                    invalidate(l);
+            matching_id.reset();
+        };
+        if (!stream_online(StreamCode::kFortsRefdataRepl)) {
+            fence();
+            matching_refdata.reset();
+            return {};
+        }
+        const auto day = projection.current_session_id();
+        const auto token = std::pair{projection.refdata_revision(), day};
+        if (matching_refdata == token)
+            return {};
+        matching_refdata = token;
+        const auto waiting = [&](std::string reason) {
+            fence();
+            log("full_order_log_matching_wait", "{\"reason\":" + json_quote(reason) + "}");
+            return Plaza2Error{};
+        };
+        const auto fail_full = [&](std::string reason) {
+            fence();
+            return invalid(std::move(reason));
+        };
+        std::optional<std::int8_t> resolved;
+        for (auto isin : config.market_data_isin_ids) {
+            const auto rows = projection.instruments();
+            const auto contract = std::lower_bound(rows.begin(), rows.end(), isin,
+                                                   [](const auto& row, auto id) { return row.isin_id < id; });
+            if (!day || contract == rows.end() || contract->isin_id != isin || contract->sess_id != day ||
+                !contract->current_session_member || !contract->future_session_terms)
+                return waiting("missing current committed fut_sess_contents for ISIN " + std::to_string(isin));
+            if (contract->future_vcb_join_status == plaza2::private_state::FutureVcbJoinStatus::Ambiguous)
+                return fail_full("FullOrderLog ambiguous fut_vcb for " + contract->base_contract_code);
+            if (contract->future_vcb_join_status != plaza2::private_state::FutureVcbJoinStatus::Resolved)
+                return waiting("missing committed fut_vcb for " + contract->base_contract_code);
+            const auto matches =
+                std::ranges::equal_range(projection.matching_map(), contract->base_contract_id, {},
+                                         &plaza2::private_state::MatchingMapSnapshot::base_contract_id);
+            if (matches.empty())
+                return waiting("missing instr2matching_map for " + contract->base_contract_code);
+            for (const auto& row : matches) {
+                if (resolved && *resolved != row.matching_id)
+                    return fail_full("FullOrderLog instruments span more than one matching ID");
+                resolved = row.matching_id;
+            }
+        }
+        if (matching_id && matching_id != resolved)
+            fence();
+        if (matching_id != resolved)
+            log("full_order_log_matching", "{\"matching_id\":" + std::to_string(*resolved) + "}");
+        matching_id = resolved;
+        if (std::none_of(listeners.begin(), listeners.end(),
+                         [](const auto& l) { return l.config.stream_code == cg::kFullOrderLogStreamCode; }))
+            return add_listener(config.full_order_log_stream, *config.full_order_log_handler);
         return {};
     }
     bool trading_ready(const Plaza2TradeEncodedCommand& command) const {
@@ -543,19 +616,35 @@ struct CgateSession::Impl {
         return {};
     }
     void invalidate(Listener& listener) {
+        listener.snapshot_wait.reset();
         static_cast<void>(listener.handler->on_plaza2_listener_event(
             {.kind = cg::Plaza2ListenerEventKind::Close, .stream_code = listener.config.stream_code}));
         close_listener(listener);
+        if (listener.config.stream_code == cg::kFullOrderLogStreamCode && !listener.scheme_incompatible)
+            static_cast<void>(listener.object.destroy());
         // A pinned schema failure must remain visible until the connection
         // resets it; this listener deliberately does not retry that schema.
         if (!listener.scheme_incompatible)
             listener.object.clear_callback_error();
-        listener.retry = now() + config.recovery_retry_interval;
+        listener.retry =
+            now() + (listener.config.stream_code == cg::kFullOrderLogStreamCode ? std::chrono::milliseconds(1000)
+                                                                                : config.recovery_retry_interval);
     }
     void supervise_listener(Listener& listener) {
         std::uint32_t state = Closed;
         if (listener.scheme_incompatible)
             return;
+        if (!listener.object.is_created() && listener.config.stream_code == cg::kFullOrderLogStreamCode) {
+            if (!matching_id || now() < listener.retry)
+                return;
+            if (const auto error = listener.object.create(connection, listener.config.stream_code,
+                                                          render(listener.config.settings), listener.handler);
+                error) {
+                last_error = error.message;
+                listener.retry = now() + std::chrono::seconds(1);
+                return;
+            }
+        }
         const auto error = listener.object.state(state);
         if (!error)
             observe(listener.observed_state, state, "listener", listener.config.stream_code);
@@ -574,7 +663,20 @@ struct CgateSession::Impl {
             invalidate(listener);
             return;
         }
+        if (listener.config.stream_code == cg::kFullOrderLogStreamCode && state == Active) {
+            if (!listener.handler->needs_fresh_snapshot())
+                listener.snapshot_wait.reset();
+            else if (!listener.snapshot_wait)
+                listener.snapshot_wait = now();
+            else if (now() - *listener.snapshot_wait > std::chrono::seconds(30)) {
+                log("full_order_log_snapshot_watchdog", "{\"reason\":\"fresh snapshot absent for over 30 seconds\"}");
+                invalidate(listener);
+                return;
+            }
+        }
         if (state == Closed && now() >= listener.retry) {
+            if (listener.config.stream_code == cg::kFullOrderLogStreamCode && !matching_id)
+                return;
             if (listener.config.stream_code == StreamCode::kFortsTradeRepl && deferred_trade && !pos_anchor_health())
                 return;
             // Each new snapshot replaces only its own stream's pending/committed domain.
@@ -588,7 +690,9 @@ struct CgateSession::Impl {
             operation("listener", "open", e, listener.config.stream_code);
             if (e) {
                 last_error = e.message;
-                listener.retry = now() + config.recovery_retry_interval;
+                listener.retry = now() + (listener.config.stream_code == cg::kFullOrderLogStreamCode
+                                              ? std::chrono::milliseconds(1000)
+                                              : config.recovery_retry_interval);
             } else {
                 ++recovery.attempts;
             }
@@ -615,6 +719,8 @@ struct CgateSession::Impl {
                 out.aggr = state;
             else if (code == StreamCode::kFortsDealsRepl)
                 out.public_deals = state;
+            else if (code == cg::kFullOrderLogStreamCode)
+                out.full_order_log = state;
             else {
                 if (out.private_count >= out.private_states.size()) {
                     out.valid = false;
@@ -717,8 +823,16 @@ struct CgateSession::Impl {
             }
             if (auto error = open_anchored_trade(); error)
                 last_error = error.message;
-            for (auto& l : listeners)
+            for (auto& l : listeners) {
                 supervise_listener(l);
+                if (config.full_order_log_handler &&
+                    l.object.last_callback_error().code == Plaza2ErrorCode::IncompatibleScheme &&
+                    (l.handler == &bridge || l.handler == config.full_order_log_handler)) {
+                    recovery.operation = Plaza2SessionOperation::Failed;
+                    recovery.cause = l.object.last_callback_error();
+                    return recovery.cause;
+                }
+            }
             if (!config.read_only_market_data) {
                 std::uint32_t pub_state = Closed;
                 auto error = publisher.state(pub_state);
@@ -786,6 +900,11 @@ struct CgateSession::Impl {
                 break;
             }
         }
+        if (auto error = resolve_full_order_log(); error) {
+            recovery.operation = Plaza2SessionOperation::Failed;
+            recovery.cause = error;
+            return error;
+        }
         auto h = health();
         recovery.health = h;
         std::int32_t current_session = config.aggr20_target_session_id;
@@ -825,6 +944,8 @@ struct CgateSession::Impl {
         initialized = false;
         streams_created = false;
         anchor.reset();
+        matching_id.reset();
+        matching_refdata.reset();
         deferred_trade.reset();
         replies.pending.clear();
         recovery.operation = Plaza2SessionOperation::Stopped;
@@ -883,6 +1004,12 @@ const cg::Plaza2Aggr20BookProjector& CgateSession::aggr20_projector() const noex
 }
 cg::Plaza2PublicDealsSnapshot CgateSession::public_deals_snapshot(std::uint64_t after) const {
     return impl_->deals.snapshot(after);
+}
+std::uint64_t CgateSession::market_data_metadata_revision() const noexcept {
+    return impl_->projection.metadata_revision();
+}
+std::optional<std::int8_t> CgateSession::full_order_log_matching_id() const noexcept {
+    return impl_->matching_id;
 }
 bool CgateSession::aggr_online() const noexcept {
     return impl_->aggr.online();

@@ -107,3 +107,37 @@ moex_test(plaza2_private_state_transaction_perf_test plaza2_cgate/plaza2_private
     moex_plaza2_cgate_bridge)
 target_compile_definitions(plaza2_private_state_transaction_perf_test PRIVATE
     MOEX_RELEASE_PERFORMANCE_ACCEPTANCE=$<CONFIG:Release>)
+
+add_executable(plaza2_full_order_log_test plaza2_cgate/plaza2_full_order_log_test.cpp)
+target_link_libraries(plaza2_full_order_log_test PRIVATE moex_plaza2_cgate_full_order_log)
+add_test(NAME plaza2_full_order_log_test COMMAND plaza2_full_order_log_test)
+
+moex_runtime_test(plaza2_full_order_log_session_test plaza2_cgate/plaza2_full_order_log_session_test.cpp moex_plaza2_trade_session moex_plaza2_cgate_full_order_log)
+
+moex_test_target(full_order_log_live_probe plaza2_cgate/full_order_log_live_probe.cpp moex_connector_host)
+moex_test(full_order_log_live_probe_test plaza2_cgate/full_order_log_live_probe_test.cpp moex_connector_host)
+add_test(NAME full_order_log_live_metrics_test COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/full_order_log_live_metrics_test.py")
+
+# Opt-in performance gate; the executable is available in every test build.
+moex_test_target(plaza2_full_order_log_benchmark plaza2_cgate/plaza2_full_order_log_benchmark.cpp
+    plaza2_runtime_test_support moex_connector_host)
+add_dependencies(plaza2_full_order_log_benchmark plaza2_fake_cgate_runtime)
+option(MOEX_ENABLE_PERF_TESTS "Include sustained Full Order Log perf acceptance in CTest" OFF)
+if(MOEX_ENABLE_PERF_TESTS)
+    add_test(NAME plaza2_full_order_log_perf COMMAND plaza2_full_order_log_benchmark
+        "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+    set_tests_properties(plaza2_full_order_log_perf PROPERTIES LABELS "perf;plaza2" TIMEOUT 120)
+endif()
+
+if(MOEX_BUILD_APPS)
+    moex_test_target(full_order_log_runner_test_driver full_order_log_runner_test_driver.cpp moex_connector_host)
+    moex_test_target(full_order_log_isolation_test full_order_log_isolation_test.cpp plaza2_runtime_test_support moex_connector_host)
+    add_dependencies(full_order_log_isolation_test moexctl full_order_log_runner_test_driver plaza2_fake_cgate_runtime)
+    add_test(NAME full_order_log_isolation_test COMMAND full_order_log_isolation_test
+        "$<TARGET_FILE:moexctl>" "$<TARGET_FILE:full_order_log_runner_test_driver>"
+        "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+    set_tests_properties(full_order_log_isolation_test PROPERTIES LABELS "integration;plaza2;sanitizer" TIMEOUT 30)
+endif()
+
+moex_test(full_order_log_dtc_source_test full_order_log_dtc_source_test.cpp moex_connector_host)

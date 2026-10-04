@@ -173,6 +173,18 @@ struct Plaza2DecodedFieldValue {
     std::uint64_t timestamp_ns{0};
 };
 
+// OPEN-owned negotiated descriptors; callbacks borrow them until the next OPEN.
+struct Plaza2RawFieldBinding {
+    std::string name, type_token;
+    std::size_t offset{0}, size{0}, index{0};
+};
+struct Plaza2RawTableBinding {
+    std::string name;
+    std::vector<Plaza2RawFieldBinding> fields;
+    std::size_t index{0}, row_size{0};
+};
+inline constexpr generated::StreamCode kFullOrderLogStreamCode = static_cast<generated::StreamCode>(0xF0110001u);
+
 struct Plaza2ListenerEvent {
     Plaza2ListenerEventKind kind{Plaza2ListenerEventKind::Open};
     generated::StreamCode stream_code{kNoStreamCode};
@@ -189,14 +201,27 @@ struct Plaza2ListenerEvent {
     std::uint32_t close_reason{0};
     std::span<const std::uint8_t> raw_nulls{};
     std::size_t table_index{0};
+    std::span<const Plaza2RawTableBinding> raw_tables{};
+    const Plaza2RawTableBinding* raw_table{nullptr};
 };
 
 class Plaza2ListenerEventHandler {
   public:
     virtual ~Plaza2ListenerEventHandler() = default;
     virtual void on_plaza2_listener_error(const Plaza2Error&) noexcept {}
-    // Opt in only for an exact, completely qualified public wire scheme.
-    [[nodiscard]] virtual bool wants_raw_replication() const noexcept {
+    // Empty table name requests negotiated descriptors at OPEN; named tables
+    // request borrowed raw payloads. The consumer validates its named schema.
+    [[nodiscard]] virtual bool wants_raw_replication(std::string_view) const noexcept {
+        return false;
+    }
+    [[nodiscard]] virtual std::span<const generated::FieldDescriptor>
+    replication_fields(generated::TableCode table) const noexcept {
+        return generated::FieldsForTable(table);
+    }
+    [[nodiscard]] virtual bool should_log_listener_event(const Plaza2ListenerEvent&) const noexcept {
+        return true;
+    }
+    [[nodiscard]] virtual bool needs_fresh_snapshot() const noexcept {
         return false;
     }
     [[nodiscard]] virtual Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) = 0;

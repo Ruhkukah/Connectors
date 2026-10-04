@@ -583,6 +583,6 @@ const StreamDescriptor* FindStreamByCode(StreamCode stream_code);
 const TableDescriptor* FindTableByCode(TableCode table_code);
 const FieldDescriptor* FindFieldByCode(FieldCode field_code);
 std::span<const TableDescriptor> TablesForStream(StreamCode stream_code);
-std::span<const FieldDescriptor> FieldsForTable(TableCode table_code);
+std::span<const FieldDescriptor> FieldsForTable(TableCode table_code, bool include_matching = false);
 
 } // namespace moex::plaza2::generated

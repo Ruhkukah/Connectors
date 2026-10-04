@@ -165,6 +165,7 @@ class ConnectorHost final {
     [[nodiscard]] ConnectorHostSnapshot snapshot() const;
     [[nodiscard]] bool has_publisher_or_reply_handles() const noexcept;
     [[nodiscard]] ConnectorHostMarketDataSnapshot market_data_snapshot() const;
+    [[nodiscard]] std::uint64_t market_data_metadata_revision() const noexcept;
     [[nodiscard]] bool public_deals_enabled() const noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;
