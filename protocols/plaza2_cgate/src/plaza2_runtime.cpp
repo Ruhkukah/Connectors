@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <ctime>
 #include <cstdio>
 #include <cstring>
@@ -1870,7 +1871,8 @@ Plaza2Error Plaza2Publisher::open(std::string_view settings) {
 
 Plaza2PublisherMessageResult Plaza2Publisher::post_by_message_name(std::string_view message_name,
                                                                    std::span<const std::byte> payload,
-                                                                   std::uint32_t user_id, bool need_reply) {
+                                                                   std::uint32_t user_id, bool need_reply,
+                                                                   bool measure_timing) {
     Plaza2PublisherMessageResult outcome;
     if (!shared_ || !shared_->api || handle_ == nullptr) {
         outcome.validation_error = {
@@ -1917,7 +1919,24 @@ Plaza2PublisherMessageResult Plaza2Publisher::post_by_message_name(std::string_v
         msg->user_id = user_id;
         outcome.post_invoked = true;
         ++call_counts_.post;
+        if (measure_timing) {
+            outcome.post_started_utc_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::system_clock::now().time_since_epoch())
+                                              .count();
+            outcome.post_started_steady_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 std::chrono::steady_clock::now().time_since_epoch())
+                                                 .count();
+        }
         const auto post_result = shared_->api->pub_post(handle_, raw_msg, need_reply ? kCgPubNeedReply : 0U);
+        if (measure_timing) {
+            outcome.post_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           std::chrono::steady_clock::now().time_since_epoch())
+                                           .count() -
+                                       outcome.post_started_steady_ns;
+            outcome.post_finished_utc_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                               std::chrono::system_clock::now().time_since_epoch())
+                                               .count();
+        }
         outcome.post_error = translate_plaza2_result("cg_pub_post", post_result);
         outcome.certainty = post_result == kCgErrOk ? Plaza2SubmissionCertainty::Posted
                             : (post_result == kCgErrIncorrectState || post_result == kCgErrInvalidArgument)

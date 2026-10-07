@@ -97,6 +97,14 @@ struct PositionProof {
     bool operator==(const PositionProof&) const = default;
 };
 
+// Read-only cached risk evidence. A status query does not reconcile new POS rows.
+struct PendingFillReservationSnapshot {
+    std::uint64_t buy_quantity{}, sell_quantity{};
+    bool buy_overflow{}, sell_overflow{};
+    bool proof_valid{true}, cached_proof_dirty{};
+    std::optional<PositionProof> cached_position_proof;
+};
+
 // The owner loop calls every method on one thread. Commands remain queued across
 // outages; Add is submitted at most once after an uncertain submission.
 class OrderManager {
@@ -140,6 +148,7 @@ class OrderManager {
     }
     [[nodiscard]] bool operator_action_required() const noexcept;
     [[nodiscard]] bool cancellations_pending() const noexcept;
+    [[nodiscard]] PendingFillReservationSnapshot pending_fill_reservations(std::int32_t isin) const noexcept;
 
   private:
     struct Command {

@@ -183,10 +183,15 @@ int main(int argc, char** argv) {
         RiskLimits risk;
         bool command_rate_configured{};
         bool sole_instance{};
+        bool measure_timings{};
         std::uint32_t reply_timeout{60000};
         std::optional<std::int64_t> clock_offset;
         for (int i = 1; i < argc; ++i) {
             const std::string_view arg(argv[i]);
+            if (arg == "--measure-timings") {
+                measure_timings = true;
+                continue;
+            }
             if (arg == "--sole-instance") {
                 sole_instance = true;
                 continue;
@@ -264,23 +269,24 @@ int main(int argc, char** argv) {
         }
         const auto request = parse_operator_arguments(arguments);
         if (request.help) {
-            std::cout << operator_help()
-                      << "\nrun options: --log FILE --state FILE --max-quantity N "
-                         "--max-notional ISIN=QUOTE_CAP "
-                         "--max-position ISIN=CONTRACTS --max-open-orders N "
-                         "--reply-timeout-ms N --clock-offset-us N --command-socket PATH --sole-instance\n"
-                      << "required with --allow-orders: --max-commands-per-second N "
-                         "--login-env NAME --ext-id-range MIN:MAX "
-                         "(deployment-assigned, nonoverlapping)\n"
-                      << "run commands: place ID ISIN buy|sell QTY PRICE [day|ioc]; cancel "
-                         "ID; move ID QTY PRICE; "
-                         "cancel-all ISIN; kill on|off; storage ok; status; quit [--force]\n"
-                      << "reconnect: moexctl plaza2 cmd [--log FILE | --command-socket "
-                         "PATH] \"COMMAND\"\n"
-                      << "command socket defaults to LOGFILE.sock; restricted to its "
-                         "owner\n"
-                      << "cancel-all and signals cancel this instance's orders; --sole-instance "
-                         "enables instrument-wide cancellation\n";
+            std::cout
+                << operator_help()
+                << "\nrun options: --log FILE --state FILE --max-quantity N "
+                   "--max-notional ISIN=QUOTE_CAP "
+                   "--max-position ISIN=CONTRACTS --max-open-orders N "
+                   "--reply-timeout-ms N --clock-offset-us N --command-socket PATH --sole-instance --measure-timings\n"
+                << "required with --allow-orders: --max-commands-per-second N "
+                   "--login-env NAME --ext-id-range MIN:MAX "
+                   "(deployment-assigned, nonoverlapping)\n"
+                << "run commands: place ID ISIN buy|sell QTY PRICE [day|ioc]; cancel "
+                   "ID; move ID QTY PRICE; "
+                   "cancel-all ISIN; kill on|off; storage ok; status; quit [--force]\n"
+                << "reconnect: moexctl plaza2 cmd [--log FILE | --command-socket "
+                   "PATH] \"COMMAND\"\n"
+                << "command socket defaults to LOGFILE.sock; restricted to its "
+                   "owner\n"
+                << "cancel-all and signals cancel this instance's orders; --sole-instance "
+                   "enables instrument-wide cancellation\n";
             return 0;
         }
         if (request.command == "run") {
@@ -290,6 +296,7 @@ int main(int argc, char** argv) {
             if (request.config.transport.host.allow_orders && !command_rate_configured)
                 throw std::invalid_argument("--allow-orders requires --max-commands-per-second");
             config.orders.command_rate_configured = command_rate_configured;
+            config.measure_timings = measure_timings;
             config.orders.sole_instance = sole_instance;
             if (!login_env.empty()) {
                 const auto* login = std::getenv(login_env.c_str());

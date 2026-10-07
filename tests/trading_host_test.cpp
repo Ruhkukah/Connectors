@@ -10,6 +10,8 @@
 #include "lost_add_rebuild_host_regression.hpp"
 #include "add_conflict_host_regression.hpp"
 #include "immediate_dispatch_host_regression.hpp"
+#include "status_observability_host_regression.hpp"
+#include "host_timing_regression.hpp"
 #include "storage_guard_regression.hpp"
 #include "storage_recovery_regression.hpp"
 #include "storage_halt_cancel_regression.hpp"
@@ -217,6 +219,8 @@ int main(int argc, char** argv) {
         moex::connector_host::regression::storage_capacity_guard(config, fake, root, false);
         moex::connector_host::regression::storage_capacity_guard(config, fake, root, true);
         moex::connector_host::regression::storage_durable_cancel_guard(config, fake, root);
+        moex::connector_host::regression::status_observability_host_regression(config, fake, root);
+        moex::connector_host::regression::host_timing_regression(config, fake, root);
         named_journal_regression(config, fake, root);
         fake.configure(test::fake::Scenario{.client_code = "BRK1C01"});
         fake.set(moex::plaza2::test::fake::Option::AggrWrongSession, "1");

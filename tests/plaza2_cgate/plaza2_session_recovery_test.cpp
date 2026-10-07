@@ -9,10 +9,96 @@
 #include <dlfcn.h>
 #include <iostream>
 #include <sstream>
+#include <thread>
 using namespace moex::plaza2_trade;
 using namespace moex::plaza2;
 using test::require;
 namespace {
+void poll_metrics_regression(CgateSessionConfig config, const test::fake::Control& fake) {
+    using enum generated::StreamCode;
+    using enum generated::TableCode;
+    using enum generated::FieldCode;
+    config.collect_poll_metrics = true;
+    config.publisher_rate_owner = PublisherRateOwner::External;
+    config.event_log = {};
+    bool slow_observer = false;
+    config.listener_event_log = [&](const auto& event) {
+        if (slow_observer && event.stream_code == kFortsTradeRepl &&
+            event.kind == cgate::Plaza2ListenerEventKind::TransactionCommit)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    };
+    fake.configure({});
+    CgateSession session(config);
+    require(!session.start(), "poll metrics regression startup");
+    for (int i = 0; i < 10; ++i)
+        require(!session.poll(false), "poll metrics regression bootstrap");
+    slow_observer = true;
+    fake.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = kFortsTradeRepl});
+    fake.enqueue({.stream_code = kFortsTradeRepl,
+                  .table_code = kFortsTradeReplHeartbeat,
+                  .revision = 100901,
+                  .fields = {{.field_code = kFortsTradeReplHeartbeatReplId, .signed_value = 100901},
+                             {.field_code = kFortsTradeReplHeartbeatReplRev, .signed_value = 100901},
+                             {.field_code = kFortsTradeReplHeartbeatServerTime,
+                              .kind = test::fake::FieldKind::Timestamp,
+                              .unsigned_value = 1700000045}}});
+    constexpr std::uint64_t moment_ns = 1699989345123456789ULL;
+    fake.enqueue({.stream_code = kFortsTradeRepl,
+                  .table_code = kFortsTradeReplOrdersLog,
+                  .revision = 100902,
+                  .fields = {{.field_code = kFortsTradeReplOrdersLogReplId, .signed_value = 100902},
+                             {.field_code = kFortsTradeReplOrdersLogReplRev, .signed_value = 100902},
+                             {.field_code = kFortsTradeReplOrdersLogMoment,
+                              .kind = test::fake::FieldKind::Timestamp,
+                              .unsigned_value = 1700000045},
+                             {.field_code = kFortsTradeReplOrdersLogMomentNs,
+                              .kind = test::fake::FieldKind::UnsignedInteger,
+                              .unsigned_value = moment_ns}}});
+    fake.enqueue({.kind = test::fake::EventKind::Commit, .stream_code = kFortsTradeRepl});
+    const auto processes = fake.process_count();
+    const auto sequence = session.last_poll_metrics().sequence;
+    require(!session.poll(false), "measured callback poll");
+    const auto& metrics = session.last_poll_metrics();
+    require(metrics.sequence == sequence + 1 && metrics.process_calls == fake.process_count() - processes &&
+                metrics.process_calls >= 3 && metrics.total_ns >= metrics.process_ns &&
+                metrics.process_ns >= metrics.observer_ns && metrics.observer_ns >= 1000000 &&
+                metrics.blocking_process_ns == 0 && metrics.started_utc_ns > 0 &&
+                metrics.finished_utc_ns >= metrics.started_utc_ns,
+            "slow observer was not attributed to the measured CGate drain");
+    const auto event = [&](cgate::Plaza2ListenerEventKind kind, generated::TableCode table) {
+        return std::find_if(metrics.events.begin(), metrics.events.end(), [&](const auto& row) {
+            return row.stream_code == kFortsTradeRepl && row.table_code == table && row.kind == kind;
+        });
+    };
+    const auto heartbeat = event(cgate::Plaza2ListenerEventKind::StreamData, kFortsTradeReplHeartbeat);
+    const auto begin = event(cgate::Plaza2ListenerEventKind::TransactionBegin, cgate::kNoTableCode);
+    const auto commit = event(cgate::Plaza2ListenerEventKind::TransactionCommit, cgate::kNoTableCode);
+    require(heartbeat != metrics.events.end() && heartbeat->count == 1 && begin != metrics.events.end() &&
+                begin->count == 1 && commit != metrics.events.end() && commit->count == 1 &&
+                heartbeat->last_receipt_utc_ns >= metrics.started_utc_ns &&
+                heartbeat->last_receipt_utc_ns <= metrics.finished_utc_ns &&
+                heartbeat->timestamp_field == kFortsTradeReplHeartbeatServerTime &&
+                heartbeat->exchange_timestamp_ns == 1699989245000000000ULL && metrics.unattributed_events == 0,
+            "poll metrics lost stream/table/transaction attribution or nanosecond UTC clock evidence");
+    const auto order = event(cgate::Plaza2ListenerEventKind::StreamData, kFortsTradeReplOrdersLog);
+    require(order != metrics.events.end() && order->count == 1 &&
+                order->timestamp_field == kFortsTradeReplOrdersLogMomentNs && order->exchange_timestamp_ns == moment_ns,
+            "poll clock evidence preferred the rounded moment timestamp over native UTC moment_ns");
+    auto request = test_support::make_add_order();
+    request.isin_id = 1001;
+    const auto result = session.post_command(Plaza2TradeCodec{}.encode(request), 880001);
+    require(result.certainty == cgate::Plaza2SubmissionCertainty::Posted && result.post_invoked &&
+                result.post_started_steady_ns > 0 && result.post_started_utc_ns > 0 &&
+                result.post_finished_utc_ns >= result.post_started_utc_ns && result.post_duration_ns > 0,
+            "measured publisher invocation lacks exact cg_pub_post boundary timestamps");
+    slow_observer = false;
+    require(!session.poll(false), "poll metrics reply pump");
+    require(std::none_of(session.last_poll_metrics().events.begin(), session.last_poll_metrics().events.end(),
+                         [](const auto& row) { return row.table_code == kFortsTradeReplHeartbeat; }),
+            "poll metrics accumulated prior-poll rows");
+    require(!session.stop(), "poll metrics regression stop");
+    fake.configure({});
+}
 void private_trade_replay_regression(CgateSessionConfig config, const test::fake::Control& fake) {
     using enum generated::StreamCode;
     using enum generated::TableCode;
@@ -484,6 +570,7 @@ int main(int argc, char** argv) {
         }
         private_trade_replay_regression(config, fake);
         requested_trade_epoch_regression(config, fake);
+        poll_metrics_regression(config, fake);
         test::private_pos_anchor_regression(config, fake);
         reset();
         flag(moex::plaza2::test::fake::Option::ConnHoldOpening, true);

@@ -336,7 +336,20 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
                     .certainty = cg::Plaza2SubmissionCertainty::DefinitelyNotSent,
                     .validation_error = {.code = cg::Plaza2ErrorCode::RuntimeCallFailed,
                                          .message = "storage failure or command ID not durably reserved"}};
-            return session_.post_command(command, id);
+            const auto result = session_.post_command(command, id);
+            if (config_.measure_timings && result.post_invoked) {
+                std::string fields = "{\"user_id\":" + std::to_string(id) +
+                                     ",\"command\":" + json_string(command.command_name) +
+                                     ",\"post_started_utc_ns\":" + std::to_string(result.post_started_utc_ns) +
+                                     ",\"post_finished_utc_ns\":" + std::to_string(result.post_finished_utc_ns) +
+                                     ",\"cg_pub_post_ns\":" + std::to_string(result.post_duration_ns);
+                if (immediate_place_timing_ && command.command_kind == tr::Plaza2TradeCommandKind::AddOrder)
+                    fields += ",\"client_order_id\":" + json_string(immediate_place_timing_->first) +
+                              ",\"immediate_place_to_post_ns\":" +
+                              std::to_string(result.post_started_steady_ns - immediate_place_timing_->second);
+                log_event("command_timing", fields + "}");
+            }
+            return result;
         },
         [this](auto isin) {
             // Clearing-rejected cancels share this exchange readiness check.
@@ -401,6 +414,7 @@ void CgateTradingHost::assert_owner() const {
 }
 tr::CgateSessionConfig CgateTradingHost::session_config() {
     auto result = config_.session;
+    result.collect_poll_metrics = config_.measure_timings;
     result.publisher_rate_owner = tr::PublisherRateOwner::External;
     result.event_log = [this](auto kind, auto fields) { log_event(kind, fields); };
     result.listener_event_log = [this](const auto& event) { log_listener_event(event); };
@@ -444,6 +458,11 @@ void CgateTradingHost::observe_link(const tr::Plaza2TransportHealth& health) {
 }
 void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) noexcept {
     try {
+        if (config_.measure_timings && event.stream_code == gen::StreamCode::kFortsAggrRepl &&
+            event.kind == cg::Plaza2ListenerEventKind::StreamData)
+            last_aggr_receipt_utc_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            std::chrono::system_clock::now().time_since_epoch())
+                                            .count();
         if (event.stream_code == gen::StreamCode::kFortsRefdataRepl) {
             // The callback precedes projection. Drain the preceding committed
             // message updates before another transaction or listener reset.
@@ -622,12 +641,18 @@ cg::Plaza2Error CgateTradingHost::start() {
 }
 cg::Plaza2Error CgateTradingHost::poll() {
     assert_owner();
+    const auto stamp = [&] {
+        return config_.measure_timings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    };
+    const auto started = stamp();
     const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
     if (log_error_.empty() && now >= next_space_check_)
         if (const auto error = check_storage_space(); !error.empty())
             storage_failure(error, false);
     dispatch_commands();
+    const auto before_session = stamp();
     const auto error = session_.poll(orders_->queued() == 0);
+    const auto after_session = stamp();
     observe_exchange_messages();
     try {
         observe_link(session_.runtime_health());
@@ -698,6 +723,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
         orders_->prove_absence(server_time, trade_online);
     // ID blocks are already durable. Sync interaction records on the owner
     // loop's 250ms schedule, outside append and transport submission.
+    const auto before_flush = stamp();
     if (!journal_failed_) {
         try {
             journal_.flush_if_due();
@@ -705,7 +731,45 @@ cg::Plaza2Error CgateTradingHost::poll() {
             storage_failure(storage_error.what());
         }
     }
+    const auto after_flush = stamp();
     dispatch_commands();
+    if (config_.measure_timings) {
+        const auto finished = stamp();
+        const auto ns = [](auto begin, auto end) {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+        };
+        const auto& metrics = session_.last_poll_metrics();
+        // A blocking native call can also process rows; its duration is not a
+        // pure idle-wait estimate. Keep slow eventful turns or slow owner work.
+        const auto owner_work = ns(started, before_session) + ns(after_session, finished);
+        if (ns(started, finished) >= 1000000 && (!metrics.events.empty() || owner_work >= 1000000)) {
+            std::string fields = "{\"sequence\":" + std::to_string(metrics.sequence) +
+                                 ",\"online\":" + (rebuilding_ ? "false" : "true") +
+                                 ",\"total_ns\":" + std::to_string(ns(started, finished)) +
+                                 ",\"before_session_ns\":" + std::to_string(ns(started, before_session)) +
+                                 ",\"session_ns\":" + std::to_string(ns(before_session, after_session)) +
+                                 ",\"process_ns\":" + std::to_string(metrics.process_ns) +
+                                 ",\"blocking_process_ns\":" + std::to_string(metrics.blocking_process_ns) +
+                                 ",\"observer_ns\":" + std::to_string(metrics.observer_ns) +
+                                 ",\"order_state_ns\":" + std::to_string(ns(after_session, before_flush)) +
+                                 ",\"journal_flush_ns\":" + std::to_string(ns(before_flush, after_flush)) +
+                                 ",\"dispatch_ns\":" + std::to_string(ns(after_flush, finished)) +
+                                 ",\"unattributed_events\":" + std::to_string(metrics.unattributed_events) +
+                                 ",\"events\":[";
+            bool first = true;
+            for (const auto& event : metrics.events) {
+                if (!first)
+                    fields += ',';
+                first = false;
+                const auto* table = gen::FindTableByCode(event.table_code);
+                fields += "{\"stream\":" + json_string(stream_name(event.stream_code)) +
+                          ",\"table\":" + json_string(table ? table->table_name : std::string_view{}) +
+                          ",\"kind\":" + json_string(event_kind(event.kind)) +
+                          ",\"count\":" + std::to_string(event.count) + "}";
+            }
+            log_event("slow_owner_poll", fields + "]}");
+        }
+    }
     return error;
 }
 cg::Plaza2Error CgateTradingHost::stop() {
@@ -732,13 +796,22 @@ cg::Plaza2Error CgateTradingHost::stop() {
 }
 std::string CgateTradingHost::place(OrderRequest request) {
     assert_owner();
-    if (!log_error_.empty())
+    if (config_.measure_timings && orders_->queued() == 0)
+        immediate_place_timing_ = {{request.client_order_id, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                                 std::chrono::steady_clock::now().time_since_epoch())
+                                                                 .count()}};
+    if (!log_error_.empty()) {
+        immediate_place_timing_.reset();
         return "storage failure; cancel-only mode blocks Add";
+    }
+    std::string error;
     if (request.type == tr::Plaza2TradeOrderType::Ioc && !order_entry_ready(session_, request.isin_id))
-        return "IOC requires continuous trading; opening-auction IOC is prohibited";
-    auto error = orders_->place(std::move(request));
+        error = "IOC requires continuous trading; opening-auction IOC is prohibited";
+    else
+        error = orders_->place(std::move(request));
     if (error.empty())
         dispatch_commands();
+    immediate_place_timing_.reset();
     return error;
 }
 std::string CgateTradingHost::cancel(std::string_view key) {
@@ -854,26 +927,104 @@ void CgateTradingHost::report_outstanding_orders(std::ostream& output) const {
 std::string CgateTradingHost::status() const {
     assert_owner();
     const auto& data = session_.private_state();
-    std::string result =
-        "{\"version\":\"1.0.0\",\"queued\":" + std::to_string(orders_->queued()) +
-        ",\"reconstructing\":" + (rebuilding_ ? "true" : "false") +
-        ",\"cgate_key_check_failed\":" + (session_.recovery_status().key_check_failed ? "true" : "false") +
-        ",\"sess_id\":" + std::to_string(current_session_id(data)) + ",\"log_error\":" + json_string(log_error_) +
-        ",\"journal_failed\":" + (journal_failed_ ? "true" : "false") +
-        ",\"cancel_only\":" + (log_error_.empty() ? "false" : "true") +
-        ",\"operator_action_required\":" + (orders_->operator_action_required() ? "true" : "false") +
-        ",\"transport\":" + transport_fields(session_, config_.session) +
-        ",\"configuration\":{\"allow_orders\":" + (config_.session.allow_orders ? "true" : "false") +
-        ",\"sole_instance\":" + (config_.orders.sole_instance ? "true" : "false") +
-        ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
-        ",\"risk\":" + configured_risk_fields(config_) + "}" + ",\"instruments\":[";
+    const auto sess = current_session_id(data);
+    const auto boolean = [](bool value) { return value ? "true" : "false"; };
+    const auto decimal = [](const auto& value) { return value ? std::to_string(value->units) : "null"; };
+    const auto proof_fields = [](const PositionProof& proof) {
+        return "{\"trade_lifenum\":" + std::to_string(proof.trade_lifenum) +
+               ",\"calendar_revision\":" + std::to_string(proof.calendar_revision) +
+               ",\"last_deal_id\":" + std::to_string(proof.last_deal_id) + ",\"buys\":" + std::to_string(proof.bought) +
+               ",\"sells\":" + std::to_string(proof.sold) +
+               ",\"day_open_buys\":" + std::to_string(proof.day_open_bought) +
+               ",\"day_open_sells\":" + std::to_string(proof.day_open_sold) + "}";
+    };
+    const auto level_fields = [](const auto& level) {
+        return level ? "{\"price_scaled\":" + std::to_string(level->price_scaled) +
+                           ",\"quantity\":" + std::to_string(level->volume) + "}"
+                     : "null";
+    };
+    std::string result = "{\"version\":\"1.0.0\",\"queued\":" + std::to_string(orders_->queued()) +
+                         ",\"reconstructing\":" + boolean(rebuilding_) +
+                         ",\"cgate_key_check_failed\":" + boolean(session_.recovery_status().key_check_failed) +
+                         ",\"sess_id\":" + std::to_string(sess) + ",\"log_error\":" + json_string(log_error_) +
+                         ",\"journal_failed\":" + boolean(journal_failed_) +
+                         ",\"cancel_only\":" + boolean(!log_error_.empty()) +
+                         ",\"operator_action_required\":" + boolean(orders_->operator_action_required()) +
+                         ",\"transport\":" + transport_fields(session_, config_.session) +
+                         ",\"configuration\":{\"allow_orders\":" + boolean(config_.session.allow_orders) +
+                         ",\"sole_instance\":" + boolean(config_.orders.sole_instance) +
+                         ",\"login_configured\":" + boolean(!config_.orders.login_from.empty()) +
+                         ",\"ext_id_begin\":" + std::to_string(config_.orders.ext_id_begin) +
+                         ",\"ext_id_end\":" + std::to_string(config_.orders.ext_id_end) +
+                         ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
+                         ",\"measure_timings\":" + boolean(config_.measure_timings) +
+                         ",\"risk\":" + configured_risk_fields(config_) + "}";
+    const auto anchor = session_.trade_replay_anchor_used();
+    const auto life = data.stream_lifenum(gen::StreamCode::kFortsTradeRepl);
+    result += ",\"trade_replay\":{\"anchor_ready\":" + std::string(boolean(session_.trade_replay_anchor_ready())) +
+              ",\"accepted_lifenum\":" + (life ? std::to_string(*life) : "null") +
+              ",\"order_book_startup_barrier_ready\":" + boolean(session_.order_book_snapshot_ready()) +
+              ",\"used_anchor\":" +
+              (anchor ? "{\"trades_rev\":" + std::to_string(anchor->trades_rev) +
+                            ",\"trades_lifenum\":" + std::to_string(anchor->trades_lifenum) +
+                            ",\"server_time\":" + std::to_string(anchor->server_time) +
+                            ",\"orders_rev\":" + std::to_string(anchor->orders_rev) + "}"
+                      : "null") +
+              "},\"pos_anchor\":";
+    const auto pos = std::find_if(data.stream_health().begin(), data.stream_health().end(),
+                                  [](const auto& row) { return row.stream_code == gen::StreamCode::kFortsPosRepl; });
+    result += pos == data.stream_health().end()
+                  ? "null"
+                  : "{\"online\":" + std::string(boolean(pos->online)) +
+                        ",\"snapshot_complete\":" + boolean(pos->snapshot_complete) +
+                        ",\"trades_rev\":" + std::to_string(pos->last_trades_rev) +
+                        ",\"trades_lifenum\":" + std::to_string(pos->last_trades_lifenum) +
+                        ",\"server_time\":" + std::to_string(pos->last_server_time) + "}";
+    result += ",\"instruments\":[";
     bool first = true;
+    const auto aggr = session_.aggr_status();
     for (const auto isin : config_.isin_ids) {
         if (!first)
             result += ',';
         first = false;
-        result += "{\"isin_id\":" + std::to_string(isin) + ",\"order_entry_ready\":" +
-                  (!rebuilding_ && log_error_.empty() && order_entry_ready(session_, isin) ? "true" : "false") + "}";
+        const auto instrument = std::find_if(data.instruments().begin(), data.instruments().end(),
+                                             [&](const auto& row) { return row.isin_id == isin; });
+        const auto ref_life = data.refdata_lifenum();
+        const auto terms = ref_life && sess ? data.find_future_session_terms(isin, sess, *ref_life) : std::nullopt;
+        const auto fills = orders_->pending_fill_reservations(isin);
+        const auto book = session_.aggr20_projector().snapshot_for_isin(isin);
+        const bool book_valid = aggr.valid && aggr.ready_event && aggr.ready_event->sess_id == sess && book &&
+                                instrument != data.instruments().end() && instrument->current_session_member;
+        result +=
+            "{\"isin_id\":" + std::to_string(isin) +
+            ",\"symbol\":" + (instrument == data.instruments().end() ? "null" : json_string(instrument->isin)) +
+            ",\"order_entry_ready\":" +
+            boolean(!rebuilding_ && log_error_.empty() && order_entry_ready(session_, isin)) + ",\"session_terms\":" +
+            (terms ? "{\"sess_id\":" + std::to_string(terms->sess_id) +
+                         ",\"refdata_lifenum\":" + std::to_string(terms->source.lifenum) +
+                         ",\"reference_price_scaled\":" + decimal(terms->settlement_price) + ",\"min_step_scaled\":" +
+                         decimal(terms->min_step) + ",\"lower_price_scaled\":" + decimal(terms->bounds.lower) +
+                         ",\"upper_price_scaled\":" + decimal(terms->bounds.upper) +
+                         ",\"interval_valid\":" + boolean(terms->bounds.interval_valid) + "}"
+                   : "null") +
+            ",\"pending_fill_reservations\":{\"buy_quantity\":" + std::to_string(fills.buy_quantity) +
+            ",\"sell_quantity\":" + std::to_string(fills.sell_quantity) +
+            ",\"buy_overflow\":" + boolean(fills.buy_overflow) + ",\"sell_overflow\":" + boolean(fills.sell_overflow) +
+            ",\"proof_valid\":" + boolean(fills.proof_valid) +
+            ",\"cached_proof_dirty\":" + boolean(fills.cached_proof_dirty) + ",\"cached_position_proof\":" +
+            (fills.cached_position_proof ? proof_fields(*fills.cached_position_proof) : "null") +
+            "},\"book\":{\"valid\":" + boolean(book_valid) +
+            ",\"stream_last_callback_utc_ns\":" + std::to_string(last_aggr_receipt_utc_ns_) +
+            ",\"best_bid\":" + (book_valid ? level_fields(book->top_bid) : "null") +
+            ",\"best_ask\":" + (book_valid ? level_fields(book->top_ask) : "null");
+        if (book_valid)
+            result += ",\"source_snapshot_version\":" + std::to_string(book->source_snapshot_version) +
+                      ",\"last_repl_rev\":" + std::to_string(book->last_repl_rev) + ",\"book_commit_monotonic_ns\":" +
+                      std::to_string(
+                          std::chrono::duration_cast<std::chrono::nanoseconds>(book->committed_at.time_since_epoch())
+                              .count()) +
+                      ",\"exchange_moment_ns\":" + std::to_string(book->exchange_moment_ns);
+        result += "}}";
     }
     result += "],\"positions\":[";
     first = true;
@@ -883,8 +1034,13 @@ std::string CgateTradingHost::status() const {
         if (!first)
             result += ',';
         first = false;
-        result +=
-            "{\"isin_id\":" + std::to_string(position.isin_id) + ",\"xpos\":" + std::to_string(position.xpos) + "}";
+        result += "{\"isin_id\":" + std::to_string(position.isin_id) + ",\"xpos\":" + std::to_string(position.xpos) +
+                  ",\"account_type\":" + std::to_string(position.account_type) +
+                  ",\"last_deal_id\":" + std::to_string(position.last_deal_id) +
+                  ",\"buys\":" + std::to_string(position.xbuys_qty) +
+                  ",\"sells\":" + std::to_string(position.xsells_qty) +
+                  ",\"day_open_buys\":" + std::to_string(position.xday_open_buys_qty) +
+                  ",\"day_open_sells\":" + std::to_string(position.xday_open_sells_qty) + "}";
     }
     result += "],\"exchange_messages\":[";
     first = true;
@@ -900,17 +1056,20 @@ std::string CgateTradingHost::status() const {
         if (!first)
             result += ',';
         first = false;
-        result += "{\"client_order_id\":" + json_string(key) + ",\"order_id\":" + std::to_string(order.order_id) +
-                  ",\"instance_owned\":" + (order.instance_owned ? "true" : "false") +
-                  ",\"ext_id\":" + std::to_string(order.ext_id) + ",\"sess_id\":" + std::to_string(order.sess_id) +
-                  ",\"isin_id\":" + std::to_string(order.request.isin_id) +
-                  ",\"state\":" + json_string(order_state_name(order.state)) +
-                  ",\"remaining\":" + std::to_string(order.remaining) +
-                  ",\"executed\":" + std::to_string(order.executed) +
-                  ",\"execution_baseline_known\":" + (order.execution_baseline_known ? "true" : "false") +
-                  ",\"operator_action_required\":" + (order.operator_action_required ? "true" : "false") +
-                  ",\"last_error\":" + json_string(order.last_error) + "}";
+        result +=
+            "{\"client_order_id\":" + json_string(key) + ",\"order_id\":" + std::to_string(order.order_id) +
+            ",\"instance_owned\":" + boolean(order.instance_owned) + ",\"ext_id\":" + std::to_string(order.ext_id) +
+            ",\"sess_id\":" + std::to_string(order.sess_id) + ",\"isin_id\":" + std::to_string(order.request.isin_id) +
+            ",\"side\":" + json_string(order.request.side == tr::Plaza2TradeSide::Buy ? "buy" : "sell") +
+            ",\"price\":" + json_string(order.request.price) +
+            ",\"quantity\":" + std::to_string(order.request.quantity) +
+            ",\"state\":" + json_string(order_state_name(order.state)) +
+            ",\"remaining\":" + std::to_string(order.remaining) + ",\"executed\":" + std::to_string(order.executed) +
+            ",\"execution_baseline_known\":" + boolean(order.execution_baseline_known) +
+            ",\"operator_action_required\":" + boolean(order.operator_action_required) +
+            ",\"last_error\":" + json_string(order.last_error) + "}";
     }
     return result + "]}";
 }
+
 } // namespace moex::connector_host

@@ -102,6 +102,25 @@ struct CgateSessionConfig {
     std::function<void(std::string_view, std::string_view)> event_log;
     std::function<void(const plaza2::cgate::Plaza2ListenerEvent&)> listener_event_log;
     std::function<std::uint64_t()> publisher_now_ms; // Empty uses steady_clock; injectable for offline boundary tests.
+    // Owner-side diagnostics only; collecting metrics does not emit journal rows.
+    bool collect_poll_metrics{false};
+};
+
+struct CgatePollEventMetrics {
+    plaza2::generated::StreamCode stream_code{plaza2::cgate::kNoStreamCode};
+    plaza2::generated::TableCode table_code{plaza2::cgate::kNoTableCode};
+    plaza2::cgate::Plaza2ListenerEventKind kind{};
+    std::uint64_t count{0}, last_receipt_utc_ns{0};
+    plaza2::generated::FieldCode timestamp_field{plaza2::cgate::kNoFieldCode};
+    std::uint64_t exchange_timestamp_ns{0};
+};
+
+struct CgatePollMetrics {
+    std::uint64_t sequence{0}, started_utc_ns{0}, finished_utc_ns{0};
+    std::uint64_t total_ns{0}, process_ns{0}, blocking_process_ns{0}, observer_ns{0}, process_calls{0};
+    std::uint64_t unattributed_events{0};
+    // At most 128 stream/table/kind groups; storage is reused between polls.
+    std::vector<CgatePollEventMetrics> events;
 };
 
 struct Plaza2TransportHealth {
@@ -156,6 +175,7 @@ class CgateSession final {
     [[nodiscard]] plaza2::cgate::Plaza2Error start();
     // Queued owner commands skip the native idle wait; outage recovery remains paced.
     [[nodiscard]] plaza2::cgate::Plaza2Error poll(bool wait_for_data = true);
+    [[nodiscard]] const CgatePollMetrics& last_poll_metrics() const noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] bool started() const noexcept;
     [[nodiscard]] bool recovering() const noexcept;

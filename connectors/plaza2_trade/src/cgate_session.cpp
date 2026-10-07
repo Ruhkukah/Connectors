@@ -86,6 +86,10 @@ std::string json_quote(std::string_view value) {
 std::uint64_t ns(std::chrono::steady_clock::time_point value) {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(value.time_since_epoch()).count();
 }
+std::uint64_t utc_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
 class Replies final : public cg::Plaza2ListenerEventHandler {
   public:
     struct Pending {
@@ -229,6 +233,8 @@ struct CgateSession::Impl {
     std::optional<std::chrono::steady_clock::time_point> key_check_warning_time;
     std::string app_name, last_error, credentials, software_key;
     bool initialized{}, streams_created{}, connection_was_active{};
+    CgatePollMetrics poll_metrics;
+    bool collecting_poll{};
     std::optional<CgateStreamConfig> deferred_trade;
     std::optional<Plaza2TradeReplayAnchor> anchor;
     std::optional<std::uint32_t> observed_connection, observed_publisher;
@@ -242,6 +248,56 @@ struct CgateSession::Impl {
         };
         replies.log = config.event_log;
         replies.external_owner = config.publisher_rate_owner == PublisherRateOwner::External;
+        if (config.collect_poll_metrics)
+            poll_metrics.events.reserve(128);
+    }
+    void observe_event(const cg::Plaza2ListenerEvent& event) {
+        if (!collecting_poll)
+            return;
+        auto found = std::find_if(poll_metrics.events.begin(), poll_metrics.events.end(), [&](const auto& entry) {
+            return entry.stream_code == event.stream_code && entry.table_code == event.table_code &&
+                   entry.kind == event.kind;
+        });
+        if (found == poll_metrics.events.end()) {
+            if (poll_metrics.events.size() == 128) {
+                ++poll_metrics.unattributed_events;
+                return;
+            }
+            poll_metrics.events.push_back(
+                {.stream_code = event.stream_code, .table_code = event.table_code, .kind = event.kind});
+            found = std::prev(poll_metrics.events.end());
+        }
+        ++found->count;
+        found->last_receipt_utc_ns = utc_ns();
+        found->timestamp_field = cg::kNoFieldCode;
+        found->exchange_timestamp_ns = 0;
+        for (const auto& field : event.fields)
+            if (field.kind == cg::Plaza2DecodedValueKind::UnsignedInteger) {
+                const auto* descriptor = plaza2::generated::FindFieldByCode(field.field_code);
+                if (descriptor && descriptor->field_name == "moment_ns") {
+                    found->timestamp_field = field.field_code;
+                    found->exchange_timestamp_ns = field.unsigned_value;
+                    return;
+                }
+            }
+        for (const auto& field : event.fields)
+            if (field.kind == cg::Plaza2DecodedValueKind::Timestamp) {
+                found->timestamp_field = field.field_code;
+                found->exchange_timestamp_ns = field.timestamp_ns;
+                break;
+            }
+    }
+    Plaza2Error process(std::uint32_t timeout_ms, std::uint32_t* result) {
+        if (!collecting_poll)
+            return connection.process(timeout_ms, result);
+        ++poll_metrics.process_calls;
+        const auto before = std::chrono::steady_clock::now();
+        const auto error = connection.process(timeout_ms, result);
+        const auto elapsed = ns(std::chrono::steady_clock::now()) - ns(before);
+        poll_metrics.process_ns += elapsed;
+        if (timeout_ms)
+            poll_metrics.blocking_process_ns += elapsed;
+        return error;
     }
     auto now() const {
         return config.recovery_now ? config.recovery_now() : std::chrono::steady_clock::now();
@@ -387,6 +443,24 @@ struct CgateSession::Impl {
         software_key = *k;
         auto runtime = config.runtime;
         runtime.listener_event_log = config.listener_event_log;
+        if (config.collect_poll_metrics)
+            runtime.listener_event_log = [this](const auto& event) {
+                observe_event(event);
+                if (!config.listener_event_log)
+                    return;
+                if (!collecting_poll) {
+                    config.listener_event_log(event);
+                    return;
+                }
+                const auto before = std::chrono::steady_clock::now();
+                try {
+                    config.listener_event_log(event);
+                } catch (...) {
+                    poll_metrics.observer_ns += ns(std::chrono::steady_clock::now()) - ns(before);
+                    throw;
+                }
+                poll_metrics.observer_ns += ns(std::chrono::steady_clock::now()) - ns(before);
+            };
         runtime.env_open_settings = render(runtime.env_open_settings);
         if (config.mode == CgateSessionMode::Live)
             try {
@@ -663,6 +737,28 @@ struct CgateSession::Impl {
         return out;
     }
     Plaza2Error poll(bool wait_for_data) {
+        const auto before =
+            config.collect_poll_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        collecting_poll = config.collect_poll_metrics;
+        if (collecting_poll) {
+            ++poll_metrics.sequence;
+            poll_metrics.started_utc_ns = utc_ns();
+            poll_metrics.finished_utc_ns = poll_metrics.total_ns = poll_metrics.process_ns =
+                poll_metrics.blocking_process_ns = poll_metrics.observer_ns = poll_metrics.process_calls =
+                    poll_metrics.unattributed_events = 0;
+            poll_metrics.events.clear();
+        }
+        struct FinishMetrics {
+            Impl& owner;
+            std::chrono::steady_clock::time_point before;
+            ~FinishMetrics() {
+                if (owner.collecting_poll) {
+                    owner.poll_metrics.total_ns = ns(std::chrono::steady_clock::now()) - ns(before);
+                    owner.poll_metrics.finished_utc_ns = utc_ns();
+                    owner.collecting_poll = false;
+                }
+            }
+        } finish{*this, before};
         if (!initialized)
             return invalid("CGate session is not started");
         if (recovery.operation == Plaza2SessionOperation::Failed)
@@ -777,7 +873,7 @@ struct CgateSession::Impl {
         for (std::size_t processed = 0; processed < 100; ++processed) {
             if (processed && std::chrono::steady_clock::now() >= drain_deadline)
                 break;
-            auto error = connection.process(0, &result);
+            auto error = process(0, &result);
             if (error) {
                 operation("connection", "process", error);
                 std::uint32_t error_state = Closed;
@@ -796,7 +892,7 @@ struct CgateSession::Impl {
             }
             if (result == Timeout) {
                 if (wait_for_data && config.process_timeout_ms) {
-                    error = connection.process(config.process_timeout_ms, &result);
+                    error = process(config.process_timeout_ms, &result);
                     if (error) {
                         operation("connection", "process", error);
                         std::uint32_t error_state = Closed;
@@ -882,6 +978,9 @@ Plaza2Error CgateSession::start() {
 }
 Plaza2Error CgateSession::poll(bool wait_for_data) {
     return impl_->poll(wait_for_data);
+}
+const CgatePollMetrics& CgateSession::last_poll_metrics() const noexcept {
+    return impl_->poll_metrics;
 }
 Plaza2Error CgateSession::stop() {
     return impl_->stop();
@@ -1024,7 +1123,7 @@ cg::Plaza2PublisherMessageResult CgateSession::post_validated(std::string_view n
                                       : Plaza2TradeCommandKind::DelUserOrders;
     impl_->replies.pending.emplace(
         user_id, Replies::Pending{kind, impl_->now() + std::chrono::milliseconds(impl_->config.reply_timeout_ms)});
-    out = impl_->publisher.post_by_message_name(name, payload, user_id, need_reply);
+    out = impl_->publisher.post_by_message_name(name, payload, user_id, need_reply, impl_->config.collect_poll_metrics);
     if (out.certainty == cg::Plaza2SubmissionCertainty::DefinitelyNotSent)
         impl_->replies.pending.erase(user_id);
     return out;

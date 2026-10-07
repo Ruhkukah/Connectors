@@ -313,6 +313,9 @@ struct Plaza2PublisherMessageResult {
     Plaza2Error free_error;
     std::size_t runtime_payload_size{0};
     bool post_invoked{false};
+    // Optional diagnostic timestamps surround the actual vendor call, excluding
+    // allocation/free. Steady time is used for local latency differences.
+    std::int64_t post_started_steady_ns{}, post_started_utc_ns{}, post_finished_utc_ns{}, post_duration_ns{};
 };
 
 struct Plaza2PublisherCallCounts {
@@ -335,7 +338,8 @@ class Plaza2Publisher {
     [[nodiscard]] Plaza2Error open(std::string_view settings);
     [[nodiscard]] Plaza2PublisherMessageResult post_by_message_name(std::string_view message_name,
                                                                     std::span<const std::byte> payload,
-                                                                    std::uint32_t user_id, bool need_reply);
+                                                                    std::uint32_t user_id, bool need_reply,
+                                                                    bool measure_timing = false);
     [[nodiscard]] Plaza2PublisherCallCounts call_counts() const noexcept {
         return call_counts_;
     }

@@ -15,6 +15,7 @@ struct TradingHostConfig {
     std::filesystem::path journal_path;
     std::filesystem::path identity_state_path;
     std::optional<std::int64_t> clock_offset_us;
+    bool measure_timings{};
     std::function<std::int64_t()> utc_now;
     std::function<std::uintmax_t(const std::filesystem::path&)> storage_space_probe;
     std::string source_git_sha{"unknown"}, binary_sha256{"unknown"};
@@ -69,5 +70,7 @@ class CgateTradingHost {
     std::uint64_t exchange_message_commit_{};
     std::unordered_map<std::int64_t, std::pair<std::uint64_t, std::int64_t>> exchange_message_revisions_;
     std::vector<plaza2::private_state::SystemMessageSnapshot> exchange_messages_;
+    std::optional<std::pair<std::string, std::int64_t>> immediate_place_timing_;
+    std::int64_t last_aggr_receipt_utc_ns_{};
 };
 } // namespace moex::connector_host

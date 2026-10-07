@@ -540,6 +540,20 @@ bool OrderManager::operator_action_required() const noexcept {
                                                     [](const auto& entry) { return entry.second.uncertain_exhausted; });
 }
 
+PendingFillReservationSnapshot OrderManager::pending_fill_reservations(std::int32_t isin) const noexcept {
+    const auto found = instrument_exposure_.find(isin);
+    if (found == instrument_exposure_.end())
+        return {};
+    const auto& exposure = found->second;
+    return {.buy_quantity = exposure.filled_buys.low,
+            .sell_quantity = exposure.filled_sells.low,
+            .buy_overflow = exposure.filled_buys.high != 0,
+            .sell_overflow = exposure.filled_sells.high != 0,
+            .proof_valid = exposure.fill_proof_valid,
+            .cached_proof_dirty = exposure.fills_dirty,
+            .cached_position_proof = exposure.position_proof};
+}
+
 std::string OrderManager::check_risk(const OrderRequest& request, std::size_t extra, std::string_view exclude_key) {
     if (config_.risk.kill_switch)
         return "kill switch enabled";
