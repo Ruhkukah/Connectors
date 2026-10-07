@@ -163,6 +163,7 @@ struct FakeConnection {
     bool first_order_bbo_shift_emitted{false};
     bool unrelated_aggr_update_emitted{false};
     bool trade_open_error_seen{false};
+    std::uint32_t trade_lifenum{7};
 };
 
 struct FakePublisher {
@@ -1740,6 +1741,11 @@ std::uint32_t emit_stream_message(FakeListener& listener, const FakeMessageScrip
         return kCgErrIncorrectState;
     }
 
+    if (message.table_code == TableCode::kFortsPosReplInfo && listener.connection)
+        for (const auto& field : message.fields)
+            if (field.field_code == FieldCode::kFortsPosReplInfoTradesLifenum && field.signed_value > 0)
+                listener.connection->trade_lifenum = static_cast<std::uint32_t>(field.signed_value);
+
     auto payload = encode_message_payload(*plan, message);
     CgMsgStreamData stream_data{
         .type = kCgMsgStreamData,
@@ -1801,21 +1807,11 @@ std::uint32_t emit_script(FakeListener& listener) {
                            : 7u,
         .flags = 0,
     };
-    if (listener.stream_code == StreamCode::kFortsTradeRepl) {
-        const auto marker = listener.open_settings.find("lifenum=");
-        if (marker != std::string::npos) {
-            const auto start = marker + 8;
-            const auto end = listener.open_settings.find(';', start);
-            const auto value = std::string_view(listener.open_settings).substr(start, end - start);
-            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), lifenum.life_number);
-            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
-                return kCgErrInvalidArgument;
-        }
-    }
-    if (const auto result = emit_simple_message(listener, kCgMsgP2replLifenum, &lifenum, sizeof(lifenum));
-        result != kCgErrOk) {
-        return result;
-    }
+    // TRADE negotiates LifeNum before OPEN; an equal requested epoch emits no notification.
+    if (listener.stream_code != StreamCode::kFortsTradeRepl)
+        if (const auto result = emit_simple_message(listener, kCgMsgP2replLifenum, &lifenum, sizeof(lifenum));
+            result != kCgErrOk)
+            return result;
 
     if (listener.stream_code == StreamCode::kFortsAggrRepl && fake_flag(Option::AggrClearOnBootstrap)) {
         for (const auto& plan : listener.message_plans) {
@@ -2808,6 +2804,32 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
         return kCgErrOk;
     }
     typed->state = kStateActive;
+    if (typed->stream_code == StreamCode::kFortsTradeRepl) {
+        const auto server =
+            scenario.trade_server_lifenum ? scenario.trade_server_lifenum : typed->connection->trade_lifenum;
+        std::optional<std::uint32_t> requested;
+        const auto marker = typed->open_settings.find("lifenum=");
+        if (marker != std::string::npos) {
+            const auto start = marker + 8;
+            const auto value =
+                std::string_view(typed->open_settings).substr(start, typed->open_settings.find(';', start) - start);
+            std::uint32_t parsed_life{};
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), parsed_life);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+                return kCgErrInvalidArgument;
+            requested = parsed_life;
+        }
+        if (requested && *requested > server) {
+            typed->state = kStateError;
+            return kCgErrOk;
+        }
+        if (!requested || *requested != server) {
+            CgDataLifeNum life{.life_number = server, .flags = 0};
+            if (const auto result = emit_simple_message(*typed, kCgMsgP2replLifenum, &life, sizeof(life));
+                result != kCgErrOk)
+                return result;
+        }
+    }
     return emit_simple_message(*typed, kCgMsgOpen);
 }
 

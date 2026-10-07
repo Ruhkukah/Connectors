@@ -158,6 +158,33 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
         return {};
     }
 };
+class AnchoredTradeEvents final : public cg::Plaza2ListenerEventHandler {
+  public:
+    explicit AnchoredTradeEvents(cg::Plaza2PrivateStateBridge& bridge) : bridge_(bridge) {}
+    void opening(std::uint64_t requested_lifenum) {
+        requested_lifenum_ = requested_lifenum;
+        explicit_lifenum_ = false;
+    }
+    Plaza2Error on_plaza2_listener_event(const cg::Plaza2ListenerEvent& event) override {
+        if (event.kind == cg::Plaza2ListenerEventKind::LifeNum)
+            explicit_lifenum_ = true;
+        if (event.kind == cg::Plaza2ListenerEventKind::Open && !explicit_lifenum_) {
+            // CGate omits LifeNum when the supplied epoch is current. OPEN
+            // confirms that request; an earlier server LifeNum takes precedence.
+            if (const auto error = bridge_.on_plaza2_listener_event({.kind = cg::Plaza2ListenerEventKind::LifeNum,
+                                                                     .stream_code = event.stream_code,
+                                                                     .unsigned_value = requested_lifenum_});
+                error)
+                return error;
+        }
+        return bridge_.on_plaza2_listener_event(event);
+    }
+
+  private:
+    cg::Plaza2PrivateStateBridge& bridge_;
+    std::uint64_t requested_lifenum_{};
+    bool explicit_lifenum_{};
+};
 } // namespace
 std::string_view plaza2_recovery_wait_state_name(Plaza2RecoveryWaitState state) noexcept {
     switch (state) {
@@ -190,6 +217,7 @@ struct CgateSession::Impl {
     cg::Plaza2Publisher publisher;
     moex::plaza2::private_state::Plaza2PrivateStateProjector projection;
     cg::Plaza2PrivateStateBridge bridge{projection};
+    AnchoredTradeEvents anchored_trade_events{bridge};
     cg::Plaza2Aggr20BookProjector book;
     cg::Plaza2Aggr20ListenerBridge aggr{book, 0};
     cg::Plaza2PublicDealsBridge deals;
@@ -481,7 +509,10 @@ struct CgateSession::Impl {
     bool anchored_trade_ready() const {
         const auto* pos = pos_anchor_health();
         return anchor && pos && anchor->trades_rev == pos->last_trades_rev &&
-               anchor->trades_lifenum == pos->last_trades_lifenum && stream_online(StreamCode::kFortsTradeRepl);
+               anchor->trades_lifenum == pos->last_trades_lifenum &&
+               projection.stream_lifenum(StreamCode::kFortsTradeRepl) ==
+                   static_cast<std::uint64_t>(anchor->trades_lifenum) &&
+               stream_online(StreamCode::kFortsTradeRepl);
     }
     const plaza2::private_state::StreamHealthSnapshot* userbook_anchor_health() const {
         const auto health = projection.stream_health();
@@ -537,7 +568,7 @@ struct CgateSession::Impl {
         trade.open_settings += ";rev.orders_log=" + std::to_string(target.orders_rev) +
                                ";rev.deal=" + std::to_string(target.trades_rev) +
                                ";rev.heart_beat=" + std::to_string(target.trades_rev);
-        if (auto error = add_listener(std::move(trade), bridge); error)
+        if (auto error = add_listener(std::move(trade), anchored_trade_events); error)
             return error;
         anchor = target;
         return {};
@@ -578,12 +609,14 @@ struct CgateSession::Impl {
             if (listener.config.stream_code == StreamCode::kFortsTradeRepl && deferred_trade && !pos_anchor_health())
                 return;
             // Each new snapshot replaces only its own stream's pending/committed domain.
-            if (listener.handler == &bridge)
+            if (listener.handler == &bridge || listener.handler == &anchored_trade_events)
                 projection.reset_stream_snapshot(listener.config.stream_code);
             if (listener.handler == &aggr)
                 aggr.reset();
             if (listener.handler == &deals)
                 deals.reset();
+            if (listener.handler == &anchored_trade_events)
+                anchored_trade_events.opening(static_cast<std::uint64_t>(anchor->trades_lifenum));
             const auto e = listener.object.open(render(listener.config.open_settings));
             operation("listener", "open", e, listener.config.stream_code);
             if (e) {

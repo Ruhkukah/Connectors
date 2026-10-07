@@ -12,6 +12,128 @@
 using namespace moex::plaza2_trade;
 using namespace moex::plaza2;
 using test::require;
+namespace {
+void requested_trade_epoch_regression(CgateSessionConfig config, const test::fake::Control& fake) {
+    using enum generated::StreamCode;
+    using enum generated::TableCode;
+    using enum generated::FieldCode;
+    auto now = std::chrono::steady_clock::time_point(std::chrono::hours(1));
+    config.recovery_now = [&] { return now; };
+    config.trade_replay_from_pos_anchor = true;
+    config.read_only_market_data = true;
+    config.allow_orders = false;
+    config.publisher_settings.clear();
+    config.p2mqreply_settings.clear();
+    config.event_log = {};
+    std::vector<cgate::Plaza2ListenerEventKind> bootstrap_events;
+    std::size_t native_lifenum_count = 0;
+    config.listener_event_log = [&](const auto& event) {
+        if (event.stream_code != kFortsTradeRepl)
+            return;
+        if (event.kind == cgate::Plaza2ListenerEventKind::LifeNum) {
+            ++native_lifenum_count;
+            bootstrap_events.push_back(event.kind);
+        } else if (event.kind == cgate::Plaza2ListenerEventKind::Open) {
+            bootstrap_events.push_back(event.kind);
+        }
+    };
+    const auto poll = [&](CgateSession& session) {
+        now += std::chrono::seconds(1);
+        require(!session.poll(), "requested TRADE epoch regression poll");
+    };
+    const auto warm = [&](CgateSession& session) {
+        for (int i = 0; i < 20; ++i)
+            poll(session);
+    };
+    const auto deal = [&] {
+        fake.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = kFortsTradeRepl});
+        fake.enqueue(
+            {.stream_code = kFortsTradeRepl,
+             .table_code = kFortsTradeReplUserDeal,
+             .revision = 100901,
+             .fields = {
+                 {.field_code = kFortsTradeReplUserDealReplId, .signed_value = 100901},
+                 {.field_code = kFortsTradeReplUserDealReplRev, .signed_value = 100901},
+                 {.field_code = kFortsTradeReplUserDealIdDeal, .signed_value = 600901},
+                 {.field_code = kFortsTradeReplUserDealSessId, .signed_value = 321},
+                 {.field_code = kFortsTradeReplUserDealIsinId, .signed_value = 1001},
+                 {.field_code = kFortsTradeReplUserDealPrice, .kind = test::fake::FieldKind::Text, .text = "102500"},
+                 {.field_code = kFortsTradeReplUserDealXamount, .signed_value = 2},
+                 {.field_code = kFortsTradeReplUserDealPrivateOrderIdBuy, .signed_value = 500901},
+                 {.field_code = kFortsTradeReplUserDealCodeBuy,
+                  .kind = test::fake::FieldKind::Text,
+                  .text = "BRK1C01"}}});
+        fake.enqueue({.kind = test::fake::EventKind::Commit, .stream_code = kFortsTradeRepl});
+    };
+    fake.configure({});
+    {
+        CgateSession session(config);
+        require(!session.start(), "requested TRADE epoch regression start");
+        warm(session);
+        require(native_lifenum_count == 0, "equal requested/server TRADE epoch unexpectedly emitted LifeNum");
+        require(session.private_state().stream_lifenum(kFortsTradeRepl) == 7 && session.order_book_snapshot_ready(),
+                "OPEN without LifeNum did not adopt the supplied TRADE epoch");
+        deal();
+        poll(session);
+        const auto trades = session.private_state().own_trades();
+        const auto found =
+            std::find_if(trades.begin(), trades.end(), [](const auto& row) { return row.id_deal == 600901; });
+        require(found != trades.end() && found->repl_rev == 100901 && found->trade_lifenum == 7,
+                "first committed own fill lacks the supplied TRADE epoch provenance");
+        static_cast<void>(session.take_private_row_changes());
+        const auto opens = fake.opens(kFortsTradeRepl);
+        fake.enqueue({.kind = test::fake::EventKind::Close, .stream_code = kFortsTradeRepl});
+        poll(session);
+        require(!session.order_book_snapshot_ready(), "TRADE CLOSE retained reconstruction readiness");
+        warm(session);
+        require(fake.opens(kFortsTradeRepl) == opens + 1 && native_lifenum_count == 0 &&
+                    session.private_state().stream_lifenum(kFortsTradeRepl) == 7 && session.order_book_snapshot_ready(),
+                "same-epoch TRADE reopen required a LifeNum callback");
+        const auto reopened = session.take_private_row_changes();
+        require(!reopened.trade_history_truncated && !reopened.regular_trade_history_truncated &&
+                    !reopened.regular_trade_history_reloaded,
+                "same-epoch OPEN fallback manufactured a history loss");
+        deal();
+        poll(session);
+        static_cast<void>(session.take_private_row_changes());
+        fake.enqueue({.kind = test::fake::EventKind::LifeNum, .stream_code = kFortsTradeRepl, .value = 8});
+        poll(session);
+        const auto changed = session.take_private_row_changes();
+        require(session.private_state().stream_lifenum(kFortsTradeRepl) == 8 &&
+                    session.private_state().own_trades().empty() && !session.order_book_snapshot_ready() &&
+                    changed.regular_trade_history_truncated && changed.regular_trade_history_reloaded,
+                "explicit changed TRADE LifeNum did not supersede supplied epoch and clear history");
+        require(!session.stop(), "requested TRADE epoch regression stop");
+    }
+    bootstrap_events.clear();
+    native_lifenum_count = 0;
+    fake.configure({.trade_server_lifenum = 8});
+    {
+        CgateSession changed(config);
+        require(!changed.start(), "server TRADE epoch regression start");
+        warm(changed);
+        require(bootstrap_events.size() >= 2 && bootstrap_events[0] == cgate::Plaza2ListenerEventKind::LifeNum &&
+                    bootstrap_events[1] == cgate::Plaza2ListenerEventKind::Open,
+                "different server TRADE LifeNum must precede OPEN");
+        require(changed.private_state().stream_lifenum(kFortsTradeRepl) == 8 && !changed.order_book_snapshot_ready(),
+                "OPEN fallback overwrote explicit server TRADE epoch with stale requested epoch");
+        require(!changed.stop(), "server TRADE epoch regression stop");
+    }
+    bootstrap_events.clear();
+    fake.configure({.trade_server_lifenum = 6});
+    {
+        CgateSession newer_request(config);
+        require(!newer_request.start(), "newer requested TRADE epoch regression start");
+        warm(newer_request);
+        require(bootstrap_events.empty() && !newer_request.private_state().stream_lifenum(kFortsTradeRepl) &&
+                    !newer_request.order_book_snapshot_ready(),
+                "rejected future TRADE epoch was adopted without OPEN");
+        require(!newer_request.stop(), "newer requested TRADE epoch regression stop");
+    }
+    require(fake.commands().empty(), "read-only epoch regression posted a command");
+    fake.configure({});
+}
+} // namespace
 int main(int argc, char** argv) {
     try {
         require(argc == 2, "fake runtime path required");
@@ -269,6 +391,7 @@ int main(int argc, char** argv) {
             fake.clear(test::fake::Option::ConnectionOpenResult);
             reset();
         }
+        requested_trade_epoch_regression(config, fake);
         test::private_pos_anchor_regression(config, fake);
         reset();
         flag(moex::plaza2::test::fake::Option::ConnHoldOpening, true);
