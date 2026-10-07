@@ -13,6 +13,97 @@ using namespace moex::plaza2_trade;
 using namespace moex::plaza2;
 using test::require;
 namespace {
+void private_trade_replay_regression(CgateSessionConfig config, const test::fake::Control& fake) {
+    using enum generated::StreamCode;
+    using enum generated::TableCode;
+    using enum generated::FieldCode;
+    auto now = std::chrono::steady_clock::time_point(std::chrono::hours(1));
+    config.recovery_now = [&] { return now; };
+    config.trade_replay_from_pos_anchor = true;
+    config.read_only_market_data = true;
+    config.allow_orders = false;
+    config.publisher_settings.clear();
+    config.p2mqreply_settings.clear();
+    config.event_log = {};
+    std::vector<std::int64_t> deal_revisions, heartbeat_revisions;
+    bool retained_old_order = false;
+    config.listener_event_log = [&](const auto& event) {
+        if (event.kind != cgate::Plaza2ListenerEventKind::StreamData || event.stream_code != kFortsTradeRepl)
+            return;
+        if (event.table_code == kFortsTradeReplUserDeal)
+            deal_revisions.push_back(event.signed_value);
+        else if (event.table_code == kFortsTradeReplHeartbeat)
+            heartbeat_revisions.push_back(event.signed_value);
+        else if (event.table_code == kFortsTradeReplOrdersLog && event.signed_value == 9)
+            retained_old_order = true;
+    };
+    fake.configure({});
+    CgateSession session(config);
+    require(!session.start(), "private TRADE replay regression start");
+    const auto poll = [&] {
+        now += std::chrono::seconds(1);
+        require(!session.poll(), "private TRADE replay regression poll");
+    };
+    for (int i = 0; i < 20; ++i)
+        poll();
+    const auto anchor = session.trade_replay_anchor_used();
+    require(anchor && anchor->trades_rev == 44 && anchor->orders_rev == 1001 && session.order_book_snapshot_ready(),
+            "actual private-table revision keys did not open the anchored TRADE listener");
+    require(deal_revisions.empty() && heartbeat_revisions.empty() && session.private_state().own_trades().empty(),
+            "TRADE bootstrap delivered deal/heartbeat rows below the requested POS replay revision");
+    const auto orders = session.private_state().own_orders();
+    require(retained_old_order &&
+                std::any_of(orders.begin(), orders.end(),
+                            [](const auto& row) { return row.from_trade_repl && row.private_order_id == 20003; }),
+            "order revision filter discarded current-LifeNum order history needed for reconstruction");
+    fake.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = kFortsTradeRepl});
+    for (const std::int64_t revision : {43, 45}) {
+        fake.enqueue(
+            {.stream_code = kFortsTradeRepl,
+             .table_code = kFortsTradeReplUserDeal,
+             .revision = revision,
+             .fields = {
+                 {.field_code = kFortsTradeReplUserDealReplId, .signed_value = revision},
+                 {.field_code = kFortsTradeReplUserDealReplRev, .signed_value = revision},
+                 {.field_code = kFortsTradeReplUserDealIdDeal, .signed_value = 600000 + revision},
+                 {.field_code = kFortsTradeReplUserDealSessId, .signed_value = 321},
+                 {.field_code = kFortsTradeReplUserDealIsinId, .signed_value = 1001},
+                 {.field_code = kFortsTradeReplUserDealPrice, .kind = test::fake::FieldKind::Text, .text = "102500"},
+                 {.field_code = kFortsTradeReplUserDealXamount, .signed_value = 2},
+                 {.field_code = kFortsTradeReplUserDealCodeBuy,
+                  .kind = test::fake::FieldKind::Text,
+                  .text = "BRK1C01"}}});
+        fake.enqueue({.stream_code = kFortsTradeRepl,
+                      .table_code = kFortsTradeReplHeartbeat,
+                      .revision = revision,
+                      .fields = {{.field_code = kFortsTradeReplHeartbeatReplId, .signed_value = revision},
+                                 {.field_code = kFortsTradeReplHeartbeatReplRev, .signed_value = revision},
+                                 {.field_code = kFortsTradeReplHeartbeatServerTime,
+                                  .kind = test::fake::FieldKind::Timestamp,
+                                  .unsigned_value = static_cast<std::uint64_t>(1700000000 + revision)}}});
+    }
+    fake.enqueue({.kind = test::fake::EventKind::Commit, .stream_code = kFortsTradeRepl});
+    poll();
+    require(deal_revisions == std::vector<std::int64_t>{45} && heartbeat_revisions == std::vector<std::int64_t>{45},
+            "native callbacks did not enforce both actual private-table replay floors");
+    const auto trades = session.private_state().own_trades();
+    const auto health = session.private_state().stream_health();
+    const auto trade_health =
+        std::find_if(health.begin(), health.end(), [](const auto& row) { return row.stream_code == kFortsTradeRepl; });
+    require(trades.size() == 1,
+            "private projection did not retain exactly one above-floor fill: " + std::to_string(trades.size()));
+    require(trades.front().id_deal == 600045 && trades.front().repl_rev == 45 && trades.front().trade_lifenum == 7,
+            "above-floor fill lost native identity, revision or epoch provenance");
+    require(trade_health != health.end(), "private projection omitted TRADE health");
+    // The fake encodes this value as CGate Moscow wall time; the projector stores UTC.
+    require(trade_health->last_server_time == 1700000045 - 3 * 60 * 60,
+            "private projection lost above-floor heartbeat time: " + std::to_string(trade_health->last_server_time));
+    const auto native = session.publisher_call_counts();
+    require(native.msgnew == 0 && native.post == 0 && fake.commands().empty(),
+            "read-only private TRADE replay regression invoked a publisher");
+    require(!session.stop(), "private TRADE replay regression stop");
+    fake.configure({});
+}
 void requested_trade_epoch_regression(CgateSessionConfig config, const test::fake::Control& fake) {
     using enum generated::StreamCode;
     using enum generated::TableCode;
@@ -391,6 +482,7 @@ int main(int argc, char** argv) {
             fake.clear(test::fake::Option::ConnectionOpenResult);
             reset();
         }
+        private_trade_replay_regression(config, fake);
         requested_trade_epoch_regression(config, fake);
         test::private_pos_anchor_regression(config, fake);
         reset();

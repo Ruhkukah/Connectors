@@ -33,8 +33,8 @@ struct CgateStreamConfig {
     std::string open_settings;
 };
 
-// POS.info selects deal/heartbeat replay; completed USERORDERBOOK.info selects
-// orders_log replay. ONLINE then proves catch-up even for an empty own account.
+// POS.info selects user_deal/heartbeat replay. Completed USERORDERBOOK.info is a
+// reconstruction barrier; orders_log replays the full current-life history.
 struct Plaza2TradeReplayAnchor {
     std::int64_t trades_rev{0};
     std::int64_t trades_lifenum{0};

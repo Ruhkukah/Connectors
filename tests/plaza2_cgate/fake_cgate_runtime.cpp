@@ -119,6 +119,7 @@ struct MessagePlan {
     std::string message_name;
     std::vector<FieldPlan> fields;
     std::size_t row_size{0};
+    std::optional<std::int64_t> revision_floor{};
 };
 
 struct FakeConnection;
@@ -1740,6 +1741,8 @@ std::uint32_t emit_stream_message(FakeListener& listener, const FakeMessageScrip
     if (plan == nullptr) {
         return kCgErrIncorrectState;
     }
+    if (plan->revision_floor && message.rev < *plan->revision_floor)
+        return kCgErrOk;
 
     if (message.table_code == TableCode::kFortsPosReplInfo && listener.connection)
         for (const auto& field : message.fields)
@@ -2740,6 +2743,34 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
         return kCgErrInvalidArgument;
     }
     typed->open_settings = settings ? settings : "";
+    for (auto& plan : typed->message_plans)
+        plan.revision_floor.reset();
+    auto parameters = std::string_view(typed->open_settings);
+    while (!parameters.empty()) {
+        const auto end = parameters.find(';');
+        const auto parameter = parameters.substr(0, end);
+        if (parameter.starts_with("rev.")) {
+            const auto equals = parameter.find('=');
+            if (equals == std::string_view::npos)
+                return kCgErrInvalidArgument;
+            const auto table = parameter.substr(4, equals - 4);
+            auto plan = std::ranges::find_if(typed->message_plans,
+                                             [table](const auto& row) { return row.message_name == table; });
+            if (plan == typed->message_plans.end() || plan->revision_floor)
+                return kCgErrInvalidArgument;
+            const auto value = parameter.substr(equals + 1);
+            std::int64_t revision{};
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), revision);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || revision < 0 ||
+                typed->open_settings.find("lifenum=") == std::string::npos ||
+                typed->open_settings.find("replstate=") != std::string::npos)
+                return kCgErrInvalidArgument;
+            plan->revision_floor = revision;
+        }
+        if (end == std::string_view::npos)
+            break;
+        parameters.remove_prefix(end + 1);
+    }
     if (typed->stream_code == StreamCode::kFortsTradeRepl)
         last_trade_open_settings = typed->open_settings;
     if (typed->stream_code == StreamCode::kFortsSessionstateRepl ||
@@ -2824,6 +2855,9 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
             return kCgErrOk;
         }
         if (!requested || *requested != server) {
+            // Revisions from an older epoch cannot trim the replacement history.
+            for (auto& plan : typed->message_plans)
+                plan.revision_floor.reset();
             CgDataLifeNum life{.life_number = server, .flags = 0};
             if (const auto result = emit_simple_message(*typed, kCgMsgP2replLifenum, &life, sizeof(life));
                 result != kCgErrOk)

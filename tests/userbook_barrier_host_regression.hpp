@@ -51,8 +51,8 @@ inline void userbook_barrier_host_regression(TradingHostConfig config, const pla
     require(host.status().find("\"reconstructing\":false") != std::string::npos &&
                 host.status().find("\"order_entry_ready\":true") != std::string::npos &&
                 control.opens(kFortsTradeRepl) == before + 1 &&
-                control.trade_open_settings().find(";rev.orders_log=2000;") != std::string::npos &&
-                control.trade_open_settings().find(";rev.deal=44;") != std::string::npos,
+                control.trade_open_settings().find(";rev.user_deal=44;rev.heartbeat=44") != std::string::npos &&
+                control.trade_open_settings().find("rev.orders_log=") == std::string::npos,
             "empty account failed catch-up from the completed order-book revision and independent POS anchor");
     publication(1, 4000);
     poll();
@@ -72,7 +72,8 @@ inline void userbook_barrier_host_regression(TradingHostConfig config, const pla
     poll();
     require(host.status().find("\"reconstructing\":false") != std::string::npos &&
                 control.opens(kFortsTradeRepl) == before + 2 &&
-                control.trade_open_settings().find(";rev.orders_log=6000;") != std::string::npos,
+                control.trade_open_settings().find(";rev.user_deal=44;rev.heartbeat=44") != std::string::npos &&
+                control.trade_open_settings().find("rev.orders_log=") == std::string::npos,
             "reconstruction failed to catch up exactly once from the newer completed order-book revision");
     require(!host.stop(), "USERORDERBOOK publication barrier stop");
 }

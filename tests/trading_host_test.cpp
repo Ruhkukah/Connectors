@@ -93,6 +93,19 @@ void named_journal_regression(TradingHostConfig config, const test::fake::Contro
     test::require(!host.start(), "named journal fixture start");
     for (int i = 0; i < 30; ++i)
         test::require(!host.poll(), "named journal bootstrap");
+    // The anchored listener excludes the old bootstrap heartbeat (revision 11).
+    control.enqueue(
+        {.kind = test::fake::EventKind::Begin, .stream_code = moex::plaza2::generated::StreamCode::kFortsTradeRepl});
+    control.enqueue(
+        {.stream_code = moex::plaza2::generated::StreamCode::kFortsTradeRepl,
+         .table_code = moex::plaza2::generated::TableCode::kFortsTradeReplHeartbeat,
+         .revision = 45,
+         .fields = {
+             {.field_code = moex::plaza2::generated::FieldCode::kFortsTradeReplHeartbeatReplId, .signed_value = 45},
+             {.field_code = moex::plaza2::generated::FieldCode::kFortsTradeReplHeartbeatReplRev, .signed_value = 45}}});
+    control.enqueue(
+        {.kind = test::fake::EventKind::Commit, .stream_code = moex::plaza2::generated::StreamCode::kFortsTradeRepl});
+    test::require(!host.poll(), "named journal current-life heartbeat");
     const std::string refused_line = "place refused 1001 buy 0 103000 day";
     host.record_operator_input(refused_line, "command_socket");
     const auto refusal = host.place({.client_order_id = "refused", .isin_id = 1001, .price = "103000", .quantity = 0});

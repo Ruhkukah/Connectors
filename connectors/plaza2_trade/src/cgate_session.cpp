@@ -565,9 +565,8 @@ struct CgateSession::Impl {
             trade.open_settings = "mode=snapshot+online";
         if (!set_lifenum(trade.open_settings, target.trades_lifenum))
             return invalid("TRADE open settings contain duplicate lifenum keys");
-        trade.open_settings += ";rev.orders_log=" + std::to_string(target.orders_rev) +
-                               ";rev.deal=" + std::to_string(target.trades_rev) +
-                               ";rev.heart_beat=" + std::to_string(target.trades_rev);
+        trade.open_settings += ";rev.user_deal=" + std::to_string(target.trades_rev) +
+                               ";rev.heartbeat=" + std::to_string(target.trades_rev);
         if (auto error = add_listener(std::move(trade), anchored_trade_events); error)
             return error;
         anchor = target;
