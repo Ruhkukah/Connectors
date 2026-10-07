@@ -126,8 +126,25 @@ inline void late_move_host_regression(TradingHostConfig config, const plaza2::te
             "uncertain Move sent an unrequested cancel or resubmitted its replacement");
     require(host.cancel("late-move").empty(), "explicit replacement cancellation refused");
     poll();
-    order(control, 63002, 65001, 5, 0, isin, account);
+    // A transaction may remain queued after the Session's 100-callback drain budget.
+    control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsTradeRepl});
+    for (std::int64_t i = 0; i < 101; ++i)
+        control.enqueue(
+            {.stream_code = gen::StreamCode::kFortsTradeRepl,
+             .table_code = gen::TableCode::kFortsTradeReplHeartbeat,
+             .revision = 66000 + i,
+             .fields = {{.field_code = gen::FieldCode::kFortsTradeReplHeartbeatReplId, .signed_value = 66000 + i},
+                        {.field_code = gen::FieldCode::kFortsTradeReplHeartbeatServerTime,
+                         .kind = fake::FieldKind::Timestamp,
+                         .unsigned_value = 1700000005}}});
+    control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsTradeRepl});
+    order(control, 63002, 67001, 5, 0, isin, account);
     poll();
+    require(logical_order(host, "late-move").find("\"state\":\"Cancelled\"") == std::string::npos,
+            "native termination fixture did not span the bounded callback drain");
+    for (int i = 0; i < 30 && logical_order(host, "late-move").find("\"state\":\"Cancelled\"") == std::string::npos;
+         ++i)
+        poll();
     require(logical_order(host, "late-move").find("\"state\":\"Cancelled\"") != std::string::npos,
             "native replacement termination did not settle the logical order");
     require(host.place({.client_order_id = "after-native-terminal", .isin_id = isin, .price = "103000", .quantity = 1})
