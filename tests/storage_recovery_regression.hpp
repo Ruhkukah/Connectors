@@ -43,15 +43,16 @@ inline void storage_recovery_regression(TradingHostConfig config, const plaza2::
             "storage recovery silently disabled kill switch");
     host.set_kill_switch(false);
     // A true writer failure stays protected until checkpoint writes succeed.
-    std::filesystem::remove(config.identity_state_path);
-    std::filesystem::create_directory(config.identity_state_path);
+    const auto writer_boundary = config.identity_state_path.string() + ".journal";
+    std::filesystem::remove(writer_boundary);
+    std::filesystem::create_directory(writer_boundary);
     host.record_operator_input("before_writer_failure");
     std::this_thread::sleep_for(std::chrono::milliseconds(270));
     require(!host.poll() && host.status().find("\"cancel_only\":true") != std::string::npos,
             "writer failure did not restore protection");
     require(!host.storage_ok().empty(), "storage ok accepted an unrepaired writer");
-    std::filesystem::remove(config.identity_state_path);
-    require(host.storage_ok().empty(), "repaired checkpoint writer remained blocked");
+    std::filesystem::remove(writer_boundary);
+    recover_storage(host);
     require(!host.stop(), "recovered storage shutdown failed");
 }
 } // namespace moex::connector_host::regression

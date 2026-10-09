@@ -77,13 +77,12 @@ inline void journal_id_block_regression(const std::filesystem::path& root) {
                                               ",\"next_user_id\":" + std::to_string(i + 50) + "}");
         std::this_thread::sleep_for(std::chrono::milliseconds(270));
         journal.append("reservation", "{\"next_ext_id\":102,\"next_user_id\":152}");
-        check(::stat(state.c_str(), &after) == 0 && before.st_ino == after.st_ino && file_text(state) == saved &&
-                  std::filesystem::file_size(path) == 0,
-              "within-block reservation performed a checkpoint or time-triggered journal write");
-        // _exit deliberately bypasses the destructor and any group flush.
+        check(::stat(state.c_str(), &after) == 0 && before.st_ino == after.st_ino && file_text(state) == saved,
+              "within-block reservation rewrote its durable ID ceiling");
+        // _exit bypasses shutdown; ID safety is independent of how much the
+        // asynchronous writer managed to persist before the crash.
         ::_exit(0);
     });
-    check(std::filesystem::file_size(path) == 0, "crash fixture ran a journal destructor flush");
     {
         EventJournal recovered(path, state);
         check(recovered.reservations().next_ext_id == 1001 && recovered.reservations().next_user_id == 1001,
@@ -95,6 +94,9 @@ inline void journal_id_block_regression(const std::filesystem::path& root) {
     crash_child([&] {
         EventJournal journal(rollover_path, rollover_state);
         journal.append("large_record", "{\"message\":\"" + std::string(65536, 'x') + "\"}");
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+        while (std::filesystem::file_size(rollover_path) == 0 && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         check(std::filesystem::file_size(rollover_path) > 0,
               "rollover fixture did not write an unsynced journal prefix");
         journal.append("reservation", "{\"next_ext_id\":1002,\"next_user_id\":2}");
@@ -107,9 +109,10 @@ inline void journal_id_block_regression(const std::filesystem::path& root) {
               "user-ID rollover lost the existing ext-ID block or changed its durable journal boundary");
         ::_exit(0);
     });
-    // Emulate loss of the unsynced prefix: the durable checkpoint must still
-    // describe a valid boundary and preserve the newly reserved ID block.
-    std::filesystem::resize_file(rollover_path, 0);
+    // Discard only an unsynced prefix. A scheduler delay may have allowed the
+    // asynchronous group sync to make it durable already.
+    if (checkpoint(rollover_state.string() + ".journal").offset == 0)
+        std::filesystem::resize_file(rollover_path, 0);
     {
         EventJournal recovered(rollover_path, rollover_state);
         check(recovered.reservations().next_ext_id == 2002 && recovered.reservations().next_user_id == 2002,
@@ -128,13 +131,15 @@ inline void journal_id_block_regression(const std::filesystem::path& root) {
         } catch (const std::runtime_error&) {
             refused = true;
         }
-        check(refused && journal.reservations().next_ext_id == 2 && journal.reservations().next_user_id == 2 &&
-                  std::filesystem::file_size(failed_path) == 0,
+        check(refused && journal.reservations().next_ext_id == 2 && journal.reservations().next_user_id == 2,
               "failed block extension handed out or recorded an unreserved ID");
         check(!journal.user_id_reserved(0) && journal.user_id_reserved(1000) && !journal.user_id_reserved(1001),
               "failed extension changed the durable cancellation ceiling");
         std::filesystem::remove(failed_state);
         std::filesystem::rename(backup, failed_state);
+        journal.flush();
+        check(file_text(failed_path).find("1002") == std::string::npos,
+              "failed block extension queued an unreserved ID");
         ::_exit(0);
     });
     EventJournal recovered(failed_path, failed_state);

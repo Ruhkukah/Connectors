@@ -49,13 +49,17 @@ inline void journal_write_failure_regression(const std::filesystem::path& root) 
                   "journal did not exercise a partial write followed by file-size failure");
             check(::setrlimit(RLIMIT_FSIZE, &original) == 0, "lift child file-size limit");
             journal.flush();
-            std::ifstream checkpoint(state);
+            std::ifstream checkpoint(state.string() + ".journal");
             std::string magic;
             std::uint64_t device{}, inode{}, offset{}, ext{}, user{}, boundary{}, checksum{};
             check(static_cast<bool>(checkpoint >> magic >> device >> inode >> offset >> ext >> user >> boundary >>
                                     checksum) &&
-                      magic == "MOEXJ2" && offset == std::filesystem::file_size(path) && ext == 1001 && user == 1001,
-                  "retry did not immediately checkpoint the complete bytes and reserved identifiers");
+                      magic == "MOEXJ2" && offset == std::filesystem::file_size(path),
+                  "retry did not immediately checkpoint the complete bytes");
+            std::ifstream ids(state);
+            check(static_cast<bool>(ids >> magic >> device >> inode >> offset >> ext >> user >> boundary >> checksum) &&
+                      ext == 1001 && user == 1001,
+                  "writer retry replaced the owner's reserved identifiers");
             // Bypass all destructors: restart must depend on the explicit
             // group flush, rather than a successful destructor retry.
             ::_exit(0);

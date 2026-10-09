@@ -1075,8 +1075,9 @@ int main(int argc, char** argv) {
         arguments.insert(arguments.end(), {"--allow-orders", "--state", state.string()});
         Child owner(arguments, root / "storage.err");
         make_working(owner);
-        test::require(std::filesystem::remove(state), "remove CLI identity checkpoint");
-        std::filesystem::create_directory(state);
+        const auto writer_boundary = state.string() + ".journal";
+        test::require(std::filesystem::remove(writer_boundary), "remove CLI writer boundary checkpoint");
+        std::filesystem::create_directory(writer_boundary);
         std::this_thread::sleep_for(350ms);
         test::require(owner.alive(), "storage failure exited the CLI with a working order");
         const auto status = remote_command(executable, log, "status");
@@ -1088,9 +1089,20 @@ int main(int argc, char** argv) {
                       "storage-failed CLI admitted another Add");
         test::require(remote_command(executable, log, "cancel rel7_working").find("\"ok\":true") != std::string::npos,
                       "storage-failed CLI refused durable-ID cancellation");
-        test::require(std::filesystem::remove(state), "repair CLI identity checkpoint directory");
-        test::require(remote_command(executable, log, "storage ok").find("\"ok\":true") != std::string::npos,
-                      "CLI did not admit an explicit storage recovery check");
+        test::require(std::filesystem::remove(writer_boundary), "repair CLI writer boundary checkpoint directory");
+        const auto recovery_deadline = std::chrono::steady_clock::now() + 2s;
+        bool recovery_complete{};
+        do {
+            const auto reply = remote_command(executable, log, "storage ok");
+            if (reply.find("\"ok\":true") != std::string::npos) {
+                recovery_complete = true;
+                break;
+            }
+            test::require(reply.find("journal recovery pending") != std::string::npos,
+                          "CLI storage recovery failed instead of requesting a writer drain");
+            std::this_thread::sleep_for(5ms);
+        } while (std::chrono::steady_clock::now() < recovery_deadline);
+        test::require(recovery_complete, "CLI did not finish an explicit asynchronous storage recovery check");
         const auto recovered = remote_command(executable, log, "status");
         test::require(recovered.find("\"cancel_only\":false") != std::string::npos,
                       "storage recovery failed to clear cancel-only mode");

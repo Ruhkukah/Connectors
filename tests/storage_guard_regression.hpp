@@ -65,6 +65,9 @@ inline void storage_durable_cancel_guard(TradingHostConfig config, const plaza2:
     transaction(row);
     std::filesystem::remove(config.identity_state_path);
     std::filesystem::create_directory(config.identity_state_path);
+    const auto writer_boundary = config.identity_state_path.string() + ".journal";
+    std::filesystem::remove(writer_boundary);
+    std::filesystem::create_directory(writer_boundary);
     std::this_thread::sleep_for(std::chrono::milliseconds(270));
     require(!host.poll() && host.status().find("\"cancel_only\":true") != std::string::npos,
             "durable cancellation fixture did not enter storage protection");
@@ -91,7 +94,8 @@ inline void storage_durable_cancel_guard(TradingHostConfig config, const plaza2:
     require(!host.poll() && control.commands().size() == posted + 1 && host.has_pending_cancellations(),
             "storage protection posted an unreserved retry ID beyond the durable ceiling");
     std::filesystem::remove(config.identity_state_path);
-    require(host.storage_ok().empty(), "repaired durable cancel storage remained protected");
+    std::filesystem::remove(writer_boundary);
+    recover_storage(host);
     now += std::chrono::seconds(2);
     require(!host.poll() && control.commands().size() == posted + 2 && control.commands().back().user_id == 1001,
             "storage recovery failed to durably reserve and dispatch the queued cancellation retry");

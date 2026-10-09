@@ -66,6 +66,7 @@ class CgateTradingHost {
     std::string log_error_;
     std::string identifier_reservation_;
     bool journal_failed_{};
+    bool storage_recovery_requested_{};
     OrderManager::Clock::time_point next_space_check_{};
     std::uint64_t exchange_message_commit_{};
     std::unordered_map<std::int64_t, std::pair<std::uint64_t, std::int64_t>> exchange_message_revisions_;

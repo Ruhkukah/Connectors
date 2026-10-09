@@ -366,8 +366,9 @@ int main(int argc, char** argv) {
             test::require(host.status().find("\"order_id\":62001") != std::string::npos,
                           "storage-failure fixture lacks an established working order");
             const auto posts = fake.commands().size();
-            test::require(std::filesystem::remove(broken_storage.identity_state_path), "remove identity checkpoint");
-            std::filesystem::create_directory(broken_storage.identity_state_path);
+            const auto writer_boundary = broken_storage.identity_state_path.string() + ".journal";
+            test::require(std::filesystem::remove(writer_boundary), "remove writer boundary checkpoint");
+            std::filesystem::create_directory(writer_boundary);
             // A time-based checkpoint failure blocks entry while the native
             // owner remains available for reconciliation and durable-ID cancels.
             std::this_thread::sleep_for(std::chrono::milliseconds(270));

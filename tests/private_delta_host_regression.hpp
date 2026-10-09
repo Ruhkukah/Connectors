@@ -9,6 +9,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <thread>
 
 namespace moex::connector_host {
 namespace private_delta_host_detail {
@@ -65,6 +66,16 @@ inline void bootstrap(CgateTradingHost& host) {
 }
 inline OrderRequest add(std::string key, std::int32_t isin) {
     return {.client_order_id = std::move(key), .isin_id = isin, .price = "103000", .quantity = 1};
+}
+
+inline void recover_storage(CgateTradingHost& host) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (host.storage_ok().empty())
+            return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    throw std::runtime_error("repaired journal did not finish asynchronous recovery");
 }
 
 inline void terminal_trade_stale_userbook(TradingHostConfig config, const fake::Control& control,
@@ -228,7 +239,7 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
             const auto error = host.poll();
             require(!error, "bounded private-delta overflow was treated as lost history: " + error.message);
         }
-        const auto status = host.status();
+        auto status = host.status();
         require(
             status.find("\"client_order_id\":\"recovered:321:" + std::to_string(first) + "\"") != std::string::npos &&
                 status.find("\"client_order_id\":\"recovered:321:" + std::to_string(last) + "\"") != std::string::npos,
@@ -240,6 +251,14 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
             position += marker.size();
         }
         require(recovered == count, "overflow reconciliation retained only part of the committed snapshot");
+        if (status.find("\"cancel_only\":true") != std::string::npos) {
+            require(status.find("\"journal_failed\":true") != std::string::npos &&
+                        !host.place(add("blocked-while-writer-overflowed", isin)).empty(),
+                    "bounded journal overflow did not protect Add while replication continued");
+            recover_storage(host);
+            host.set_kill_switch(false);
+            status = host.status();
+        }
         require(status.find("\"order_entry_ready\":true") != std::string::npos,
                 "lossless overflow did not restore order entry");
         const auto before = control.commands().size();

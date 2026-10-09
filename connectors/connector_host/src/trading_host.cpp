@@ -328,6 +328,12 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     orders_ = std::make_unique<OrderManager>(
         std::move(orders),
         [this](const auto& command, auto id) {
+            if (!journal_failed_)
+                try {
+                    journal_.flush_if_due();
+                } catch (const std::exception& error) {
+                    storage_failure(error.what());
+                }
             const bool cancel = command.command_kind == tr::Plaza2TradeCommandKind::DelOrder ||
                                 command.command_kind == tr::Plaza2TradeCommandKind::DelUserOrders;
             if (!journal_.user_id_reserved(id) || (!log_error_.empty() && !cancel))
@@ -685,6 +691,12 @@ cg::Plaza2Error CgateTradingHost::poll() {
     };
     const auto started = stamp();
     const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
+    if (!journal_failed_)
+        try {
+            journal_.flush_if_due();
+        } catch (const std::exception& storage_error) {
+            storage_failure(storage_error.what());
+        }
     if (log_error_.empty() && now >= next_space_check_)
         if (const auto error = check_storage_space(); !error.empty())
             storage_failure(error, false);
@@ -760,8 +772,8 @@ cg::Plaza2Error CgateTradingHost::poll() {
     orders_->observe_trade_commit(trade_commit_sequence);
     if (!rebuilding_)
         orders_->prove_absence(server_time, trade_online);
-    // ID blocks are already durable. Sync interaction records on the owner
-    // loop's 250ms schedule, outside append and transport submission.
+    // ID blocks are already durable. Ordinary I/O is writer-owned; this only
+    // observes its failure state without waiting for a write or disk sync.
     const auto before_flush = stamp();
     if (!journal_failed_) {
         try {
@@ -903,16 +915,26 @@ std::string CgateTradingHost::storage_ok() {
     if (log_error_.empty())
         return {};
     try {
-        journal_.flush();
+        if (journal_failed_) {
+            if (!storage_recovery_requested_) {
+                journal_.request_recovery();
+                storage_recovery_requested_ = true;
+                return "journal recovery pending; repeat storage ok after writer drain";
+            }
+            if (journal_.recovery_pending())
+                return "journal recovery pending; repeat storage ok after writer drain";
+        }
+        journal_.flush_if_due();
         if (!identifier_reservation_.empty())
             journal_.append("reservation", identifier_reservation_);
         journal_.append("storage_recovered", "{\"kill_switch\":true}");
-        journal_.flush();
     } catch (const std::exception& error) {
+        storage_recovery_requested_ = false;
         storage_failure(error.what());
         return error.what();
     }
     journal_failed_ = false;
+    storage_recovery_requested_ = false;
     log_error_.clear();
     orders_->set_kill_switch(true);
     return {};
