@@ -993,8 +993,8 @@ std::string CgateTradingHost::status() const {
         const auto terms = ref_life && sess ? data.find_future_session_terms(isin, sess, *ref_life) : std::nullopt;
         const auto fills = orders_->pending_fill_reservations(isin);
         const auto book = session_.aggr20_projector().snapshot_for_isin(isin);
-        const bool book_valid = aggr.valid && aggr.ready_event && aggr.ready_event->sess_id == sess && book &&
-                                instrument != data.instruments().end() && instrument->current_session_member;
+        const bool book_valid =
+            aggr.valid && book && instrument != data.instruments().end() && instrument->current_session_member;
         result +=
             "{\"isin_id\":" + std::to_string(isin) +
             ",\"symbol\":" + (instrument == data.instruments().end() ? "null" : json_string(instrument->isin)) +

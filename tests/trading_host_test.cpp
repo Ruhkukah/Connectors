@@ -33,6 +33,7 @@
 #include <dlfcn.h>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <thread>
 #include <sstream>
 
@@ -163,6 +164,35 @@ void named_journal_regression(TradingHostConfig config, const test::fake::Contro
                   "journal omitted/doubled connection or ACTIVE-connection publisher loss/restoration");
     test::require(inputs == 1 && refusals == 1, "journal lost the operator input or its local refusal");
 }
+void aggr_snapshot_status_regression(TradingHostConfig config, const test::fake::Control& control,
+                                     const std::filesystem::path& root) {
+    namespace gen = moex::plaza2::generated;
+    control.configure(
+        {.suppress_initial_orders = true, .zero_position = true, .client_code = "BRK1C01", .session_id = 321});
+    config.journal_path = root / "aggr-snapshot-status.ndjson";
+    config.identity_state_path = root / "aggr-snapshot-status.state";
+    CgateTradingHost host(config);
+    test::require(!host.start(), "AGGR snapshot status host starts");
+    for (int i = 0; i < 30; ++i)
+        test::require(!host.poll(), "AGGR snapshot status bootstrap");
+    test::require(host.status().find("\"book\":{\"valid\":true") != std::string::npos,
+                  "AGGR snapshot status lacks initial synchronized book");
+    control.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsAggrRepl});
+    control.enqueue({.kind = test::fake::EventKind::ClearDeleted,
+                     .stream_code = gen::StreamCode::kFortsAggrRepl,
+                     .table_code = gen::TableCode::kFortsAggrReplSysEvents,
+                     .revision = std::numeric_limits<std::int64_t>::max()});
+    control.enqueue({.kind = test::fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsAggrRepl});
+    for (int i = 0; i < 5; ++i)
+        test::require(!host.poll(), "AGGR ready annotation pruning polls");
+    const auto status = host.status();
+    test::require(status.find("\"book\":{\"valid\":true") != std::string::npos &&
+                      status.find("\"best_bid\":{\"price_scaled\":10250000000,\"quantity\":7}") != std::string::npos &&
+                      status.find("\"best_ask\":{\"price_scaled\":10275000000,\"quantity\":5}") != std::string::npos,
+                  "status must retain synchronized book validity without a ready annotation");
+    test::require(control.commands().empty(), "AGGR status observation posted a command");
+    test::require(!host.stop(), "AGGR snapshot status host stops");
+}
 } // namespace
 int main(int argc, char** argv) {
     try {
@@ -201,6 +231,7 @@ int main(int argc, char** argv) {
         config.isin_ids = {1001};
         config.journal_path = root / "events.ndjson";
         moex::connector_host::regression::explicit_test_risk(config);
+        aggr_snapshot_status_regression(config, fake, root);
         moex::connector_host::regression::instance_cancel_host_regression(config, fake, root);
         moex::connector_host::inflight_rebuild_host_regression(config, fake, root);
         moex::connector_host::regression::storage_recovery_regression(config, fake, root);

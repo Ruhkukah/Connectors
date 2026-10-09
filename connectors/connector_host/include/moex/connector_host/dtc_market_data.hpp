@@ -175,9 +175,9 @@ struct DtcMarketDataSnapshot {
     plaza2::private_state::SourceRowProvenance future_sess_contents_provenance;
     plaza2::private_state::SourceRowProvenance session_provenance;
     plaza2::private_state::SourceRowProvenance future_vcb_provenance;
-    // These are deliberately separate: a live CGate transport, an ONLINE
-    // snapshot, current session_data_ready, and a target-authoritative book
-    // are different states at the DTC boundary.
+    // A fresh snapshot followed by ONLINE is the AGGR synchronization barrier.
+    // session_data_ready is a retained event annotation; transport and target
+    // authority still require their independent current-source checks.
     bool transport_active{false};
     bool source_online{false};
     bool snapshot_complete{false};

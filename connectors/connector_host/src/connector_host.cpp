@@ -303,7 +303,7 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
     out.session_tradable = identity_current && session_status == std::optional<std::int32_t>{1};
     out.instrument_tradable = identity_current && instrument_status == std::optional<std::int32_t>{1};
     out.source_consistent = healthy && identity_current && out.transport_active && out.snapshot_complete &&
-                            out.aggr_online && matching_ready && status.valid && scoped.has_value();
+                            out.aggr_online && status.valid && scoped.has_value();
     out.target_authoritative = out.source_consistent && out.refdata_metadata_current;
     out.book_snapshot_current = out.source_consistent;
     out.market_data_display_allowed = out.target_authoritative;
@@ -323,8 +323,6 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
         out.invalid_reason = "AGGR20 snapshot is incomplete";
     else if (!identity_current)
         out.invalid_reason = "current session identity/status/refdata corroboration is missing or expired";
-    else if (!out.session_data_ready)
-        out.invalid_reason = "AGGR20 current session_data_ready synchronization is missing";
     else if (!scoped.has_value())
         out.invalid_reason = "target AGGR20 snapshot is absent";
     else if (!status.valid)

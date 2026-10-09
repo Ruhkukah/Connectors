@@ -172,22 +172,34 @@ int main(int argc, char** argv) {
             }
             test::require(host.order_entry_ready(1001),
                           "ONLINE private streams allow orders with existing position and working orders");
-            test::require(host.market_data_snapshot().valid,
-                          "snapshot event_type1 matching current session validates late join");
+            test::require(host.market_data_snapshot().valid, "fresh snapshot plus ONLINE validates late join");
             const auto version = host.market_data_snapshot().source_snapshot_version;
             for (int i = 0; i < 10; ++i)
                 test::require(!host.poll(), "quiet stream polls");
             test::require(host.market_data_snapshot().valid &&
                               host.market_data_snapshot().source_snapshot_version == version,
                           "quiet unchanged book stays valid without price-change freshness gate");
+            fake.enqueue({.kind = test::fake::EventKind::Begin,
+                          .stream_code = moex::plaza2::generated::StreamCode::kFortsAggrRepl});
+            fake.enqueue({.kind = test::fake::EventKind::ClearDeleted,
+                          .stream_code = moex::plaza2::generated::StreamCode::kFortsAggrRepl,
+                          .table_code = moex::plaza2::generated::TableCode::kFortsAggrReplSysEvents,
+                          .revision = std::numeric_limits<std::int64_t>::max()});
+            fake.enqueue({.kind = test::fake::EventKind::Commit,
+                          .stream_code = moex::plaza2::generated::StreamCode::kFortsAggrRepl});
+            for (int i = 0; i < 5; ++i)
+                test::require(!host.poll(), "ready annotation pruning polls");
+            test::require(host.market_data_snapshot().valid && !host.market_data_snapshot().session_data_ready &&
+                              !host.market_data_snapshot().session_ready_event,
+                          "host keeps synchronized snapshot authoritative without a retained ready annotation");
             test::require(!host.stop(), "host stops without serial epoch machinery");
         }
         {
             fake.set(moex::plaza2::test::fake::Option::AggrWrongSession, "1");
             ConnectorHost host(config(fixture));
             warm(host);
-            test::require(!host.market_data_snapshot().valid,
-                          "previous session ready event does not validate market data");
+            test::require(host.market_data_snapshot().valid && !host.market_data_snapshot().session_data_ready,
+                          "fresh snapshot ONLINE remains authoritative despite archived previous-session ready row");
             test::require(host.order_entry_ready(1001), "AGGR readiness does not gate private order entry");
             test::require(!host.stop(), "wrong AGGR day host stops");
             fake.clear(moex::plaza2::test::fake::Option::AggrWrongSession);

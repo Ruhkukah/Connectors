@@ -27,6 +27,76 @@ int main() {
                                                       .fields = fields}),
                     "sys event decoded");
         };
+        const auto book_row = [&] {
+            const std::array fields{integer(F::kFortsAggrReplOrdersAggrReplId, 1),
+                                    integer(F::kFortsAggrReplOrdersAggrReplRev, 1),
+                                    integer(F::kFortsAggrReplOrdersAggrIsinId, 1001),
+                                    integer(F::kFortsAggrReplOrdersAggrVolume, 2),
+                                    integer(F::kFortsAggrReplOrdersAggrDir, 1),
+                                    Plaza2DecodedFieldValue{.field_code = F::kFortsAggrReplOrdersAggrPrice,
+                                                            .kind = Plaza2DecodedValueKind::Decimal,
+                                                            .text_value = "100.00000"}};
+            require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                                      .table_code = T::kFortsAggrReplOrdersAggr,
+                                                      .fields = fields}),
+                    "fresh snapshot book row decoded");
+        };
+        event(Plaza2ListenerEventKind::Open);
+        event(Plaza2ListenerEventKind::TransactionBegin);
+        book_row();
+        event(Plaza2ListenerEventKind::Online);
+        require(!bridge.valid() && !bridge.snapshot_complete(), "ONLINE cannot authorize an open snapshot transaction");
+        event(Plaza2ListenerEventKind::TransactionCommit);
+        require(!bridge.valid(), "committed snapshot still requires ONLINE");
+        event(Plaza2ListenerEventKind::Online);
+        require(bridge.valid() && !bridge.session_data_ready() && !bridge.status().ready_event &&
+                    projector.snapshot_for_isin(1001)->row_count == 1,
+                "fresh committed snapshot plus ONLINE authorizes late start without session_data_ready");
+        event(Plaza2ListenerEventKind::TransactionBegin);
+        sys(321, 5, 2);
+        event(Plaza2ListenerEventKind::TransactionCommit);
+        require(!bridge.valid(), "clearing revokes snapshot authority even when no ready event was received");
+        event(Plaza2ListenerEventKind::Online);
+        require(!bridge.valid(), "duplicate ONLINE cannot undo a subsequent online clearing event");
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                                  .table_code = T::kFortsAggrReplSysEvents,
+                                                  .signed_value = std::numeric_limits<std::int64_t>::max()}),
+                "clearing annotation can be pruned");
+        require(!bridge.valid(), "pruning sys_events cannot undo explicit clearing revocation");
+        event(Plaza2ListenerEventKind::Close);
+        require(!bridge.valid() && !bridge.snapshot_complete() && !projector.snapshot_for_isin(1001),
+                "CLOSE discards the prior generation snapshot");
+        event(Plaza2ListenerEventKind::Online);
+        require(!bridge.valid(), "ONLINE before reopen cannot reuse the prior snapshot");
+        event(Plaza2ListenerEventKind::Open);
+        event(Plaza2ListenerEventKind::TransactionBegin);
+        book_row();
+        sys(320, 5, 1);
+        sys(321, 5, 2);
+        event(Plaza2ListenerEventKind::TransactionCommit);
+        require(!bridge.valid(), "fresh reconnect snapshot remains blocked before ONLINE");
+        event(Plaza2ListenerEventKind::Online);
+        require(bridge.valid() && !bridge.session_data_ready(),
+                "fresh reconnect ONLINE supersedes archived clearing history without session_data_ready");
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 99}),
+                "new no-ready replication life succeeds");
+        require(!bridge.valid() && !bridge.snapshot_complete() && !projector.snapshot_for_isin(1001),
+                "LifeNum change discards a no-ready synchronized snapshot");
+        event(Plaza2ListenerEventKind::TransactionBegin);
+        book_row();
+        event(Plaza2ListenerEventKind::TransactionCommit);
+        event(Plaza2ListenerEventKind::Online);
+        require(bridge.valid() && !bridge.session_data_ready(),
+                "new LifeNum fresh snapshot plus ONLINE needs no ready event");
+        event(Plaza2ListenerEventKind::TransactionBegin);
+        sys(320, 5, 2);
+        event(Plaza2ListenerEventKind::TransactionCommit);
+        require(bridge.valid(), "online clearing for a known different session does not revoke the current book");
+        event(Plaza2ListenerEventKind::TransactionBegin);
+        sys(0, 5, 3);
+        event(Plaza2ListenerEventKind::TransactionCommit);
+        require(!bridge.valid(), "online clearing with unknown session fails closed without a ready event");
+        event(Plaza2ListenerEventKind::Close);
         event(Plaza2ListenerEventKind::Open);
         event(Plaza2ListenerEventKind::TransactionBegin);
         sys(321, 1, 1);
@@ -54,14 +124,15 @@ int main() {
         sys(321, 1, 1);
         event(Plaza2ListenerEventKind::TransactionCommit);
         event(Plaza2ListenerEventKind::Online);
-        require(!bridge.valid(), "snapshot row delivery order cannot undo chronological clearing");
+        require(bridge.valid(), "fresh snapshot ONLINE supersedes historical clearing regardless of row order");
         event(Plaza2ListenerEventKind::Close);
         event(Plaza2ListenerEventKind::Open);
         event(Plaza2ListenerEventKind::TransactionBegin);
         sys(320, 1, 3);
         event(Plaza2ListenerEventKind::TransactionCommit);
         event(Plaza2ListenerEventKind::Online);
-        require(!bridge.valid(), "previous trading day cannot validate a reconnect");
+        require(bridge.valid() && !bridge.session_data_ready(),
+                "fresh snapshot ONLINE authorizes reconnect despite an archived previous-day ready row");
         event(Plaza2ListenerEventKind::TransactionBegin);
         sys(321, 1, 4);
         event(Plaza2ListenerEventKind::TransactionCommit);
@@ -87,7 +158,8 @@ int main() {
                                                   .table_code = T::kFortsAggrReplSysEvents,
                                                   .signed_value = std::numeric_limits<std::int64_t>::max()}),
                 "sys_events MAX ClearDeleted succeeds without listener teardown");
-        require(!bridge.valid() && bridge.online(), "sys_events MAX drops ready evidence while keeping stream ONLINE");
+        require(bridge.valid() && bridge.online() && !bridge.session_data_ready(),
+                "sys_events MAX drops ready annotation without revoking the synchronized snapshot");
         event(Plaza2ListenerEventKind::TransactionBegin);
         sys(322, 1, 1);
         event(Plaza2ListenerEventKind::TransactionCommit);

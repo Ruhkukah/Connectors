@@ -96,8 +96,13 @@ const Plaza2DecodedFieldValue* find_decoded_field(std::span<const Plaza2DecodedF
 void Plaza2Aggr20ListenerBridge::refresh_ready() noexcept {
     session_data_ready_ = ready_event_ && ready_event_->source_repl_act == 0 &&
                           accepts_session(ready_event_->sess_id) && !clearing_started_;
+    // A fresh snapshot followed by ONLINE proves synchronization. Retained
+    // snapshot sys_events are history; only an online ready row can contradict
+    // the selected source session.
+    const bool session_matches =
+        !ready_event_ || ready_event_->seen_during_snapshot || accepts_session(ready_event_->sess_id);
     valid_ = transport_active_ && online_ && snapshot_complete_ && !projector_.transaction_open() && !recovering() &&
-             session_data_ready_;
+             !clearing_started_ && session_matches;
 }
 void Plaza2Aggr20ListenerBridge::set_session_id(std::int32_t id) noexcept {
     expected_session_id_ = id;
@@ -109,7 +114,6 @@ void Plaza2Aggr20ListenerBridge::clear_sys_events(std::int64_t revision) noexcep
         ready_event_.reset();
     if (reset || (last_sys_event_ && last_sys_event_->source_repl_rev < revision)) {
         last_sys_event_.reset();
-        clearing_started_ = false;
     }
     refresh_ready();
 }
@@ -211,10 +215,11 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
             if (value.source_repl_act != 0)
                 continue;
             if (value.event_type == 1) {
-                // Snapshot and online rows have the same committed meaning.
                 ready_event_ = value;
-                clearing_started_ = false;
-            } else if (value.event_type == 5 && ready_event_ && value.sess_id == ready_event_->sess_id) {
+                if (accepts_session(value.sess_id))
+                    clearing_started_ = false;
+            } else if (value.event_type == 5 &&
+                       (expected_session_id_ == 0 || value.sess_id <= 0 || accepts_session(value.sess_id))) {
                 clearing_started_ = true;
             }
         }
@@ -250,8 +255,12 @@ Plaza2Error Plaza2Aggr20ListenerBridge::on_plaza2_listener_event(const Plaza2Lis
         }
         break;
     case Plaza2ListenerEventKind::Online:
-        if (!reopen_required_ && !projector_.transaction_open()) {
+        if (!reopen_required_ && !projector_.transaction_open() && !online_) {
             transport_active_ = online_ = snapshot_complete_ = true;
+            // Historical clearing rows cannot invalidate the completed fresh
+            // snapshot. Subsequent online clearing remains latched until a
+            // current ready event or a fresh snapshot restores synchronization.
+            clearing_started_ = false;
             refresh_ready();
         }
         break;
