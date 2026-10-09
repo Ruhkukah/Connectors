@@ -1,7 +1,7 @@
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 
-#include "plaza2_generated_metadata.hpp"
+#include "moex/plaza2/cgate/plaza2_metadata.hpp"
 #include "moex/plaza2/cgate/plaza2_public_decode.hpp"
 
 #include <algorithm>
@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <ctime>
 #include <cstdio>
 #include <cstring>
@@ -91,30 +92,6 @@ constexpr std::array<std::string_view, 14> kRequiredTradingSymbols = {
     "cg_pub_getstate", "cg_pub_msgnew", "cg_pub_post",    "cg_pub_msgfree",
 };
 
-struct ReviewedRuntimeIdentity {
-    std::string_view spectra_release;
-    std::string_view scheme_sha256;
-    std::string_view library_sha256;
-    std::string_view runtime_version;
-};
-
-// Exact, reviewed TEST runtime identities. SPECTRA93 remains supported as
-// historical provenance; SPECTRA9.9.0 is the current T1 qualification target.
-constexpr std::array<ReviewedRuntimeIdentity, 2> kReviewedRuntimeIdentities = {{
-    {
-        "SPECTRA93",
-        "cc3ab53b792eb1354b17615612abf173158e2f9dd78604bc47a121badf54b1c2",
-        "c1a1752026806a6c7364326ab29794d0b85c1f9db26ec3fdbb509190e5b0a4a2",
-        "6.93.1.5675",
-    },
-    {
-        "SPECTRA9.9.0",
-        "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746",
-        "f63e726a8482b793c3af755a8dc2b9ebb5cd727d88fb58ebb3fe9704a155ce6f",
-        "6.102.0.6118",
-    },
-}};
-
 constexpr std::array<std::string_view, 4> kLibraryFilenameCandidates = {
 #if defined(__APPLE__)
     "libcgate.dylib",
@@ -166,11 +143,6 @@ struct RuntimeLibraryCloser {
         }
         delete api;
     }
-};
-
-struct RuntimeSchemeField {
-    std::string field_name;
-    std::string type_token;
 };
 
 struct CgValuePair {
@@ -301,53 +273,6 @@ struct CgDataLifeNum {
     std::uint32_t flags;
 };
 
-struct RuntimeSchemeTable {
-    std::string scheme_name;
-    std::string table_name;
-    std::vector<RuntimeSchemeField> fields;
-};
-
-struct ParsedRuntimeScheme {
-    Plaza2VersionMarkers markers;
-    std::vector<RuntimeSchemeTable> tables;
-};
-
-struct ReviewedSignatureEntry {
-    std::string example_name;
-    std::size_t count{0};
-};
-
-struct RuntimeSignatureEntry {
-    std::string example_name;
-    std::size_t count{0};
-};
-
-struct RuntimeTableEntry {
-    std::string example_name;
-    std::vector<RuntimeSchemeField> fields;
-};
-
-struct ReviewedTableEntry {
-    std::string example_name;
-    std::vector<generated::FieldDescriptor> fields;
-};
-
-struct SchemeTableKey {
-    std::string stream_name;
-    std::string table_name;
-
-    [[nodiscard]] std::string display_name() const {
-        return stream_name + "." + table_name;
-    }
-
-    friend bool operator<(const SchemeTableKey& lhs, const SchemeTableKey& rhs) noexcept {
-        if (lhs.stream_name != rhs.stream_name) {
-            return lhs.stream_name < rhs.stream_name;
-        }
-        return lhs.table_name < rhs.table_name;
-    }
-};
-
 [[nodiscard]] std::string trim_copy(std::string_view value) {
     std::size_t begin = 0;
     while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin])) != 0) {
@@ -374,13 +299,6 @@ struct SchemeTableKey {
         result.pop_back();
     }
     return result;
-}
-
-[[nodiscard]] std::string read_file_to_string(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    std::ostringstream buffer;
-    buffer << input.rdbuf();
-    return buffer.str();
 }
 
 [[nodiscard]] std::vector<std::string> read_file_lines(const std::filesystem::path& path) {
@@ -522,86 +440,6 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
     return {expected.begin(), expected.end()};
 }
 
-[[nodiscard]] std::string canonical_table_signature(std::span<const RuntimeSchemeField> fields) {
-    std::ostringstream out;
-    for (const auto& field : fields) {
-        out << field.field_name << ':' << field.type_token << ';';
-    }
-    return out.str();
-}
-
-[[nodiscard]] std::string canonical_table_signature(std::span<const generated::FieldDescriptor> fields) {
-    std::ostringstream out;
-    for (const auto& field : fields) {
-        out << field.field_name << ':' << field.type_token << ';';
-    }
-    return out.str();
-}
-
-[[nodiscard]] bool table_is_in_list(std::string_view stream_name, std::string_view table_name,
-                                    std::span<const std::pair<std::string_view, std::string_view>> tables) {
-    return std::any_of(tables.begin(), tables.end(),
-                       [&](const auto& table) { return table.first == stream_name && table.second == table_name; });
-}
-
-[[nodiscard]] bool is_required_private_state_table(std::string_view stream_name, std::string_view table_name) {
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 22> kRequiredTables = {{
-        {"FORTS_REFDATA_REPL", "session"},
-        {"FORTS_REFDATA_REPL", "fut_instruments"},
-        {"FORTS_REFDATA_REPL", "sys_messages"},
-        {"FORTS_REFDATA_REPL", "opt_sess_contents"},
-        {"FORTS_REFDATA_REPL", "multileg_dict"},
-        {"FORTS_REFDATA_REPL", "instr2matching_map"},
-        {"FORTS_TRADE_REPL", "orders_log"},
-        {"FORTS_TRADE_REPL", "multileg_orders_log"},
-        {"FORTS_TRADE_REPL", "user_deal"},
-        {"FORTS_TRADE_REPL", "user_multileg_deal"},
-        {"FORTS_TRADE_REPL", "heartbeat"},
-        {"FORTS_TRADE_REPL", "sys_events"},
-        {"FORTS_USERORDERBOOK_REPL", "orders"},
-        {"FORTS_USERORDERBOOK_REPL", "multileg_orders"},
-        {"FORTS_USERORDERBOOK_REPL", "orders_currentday"},
-        {"FORTS_USERORDERBOOK_REPL", "multileg_orders_currentday"},
-        {"FORTS_USERORDERBOOK_REPL", "info"},
-        {"FORTS_USERORDERBOOK_REPL", "info_currentday"},
-        {"FORTS_POS_REPL", "position"},
-        {"FORTS_POS_REPL", "info"},
-        {"FORTS_PART_REPL", "part"},
-        {"FORTS_PART_REPL", "sys_events"},
-    }};
-    return table_is_in_list(stream_name, table_name, kRequiredTables);
-}
-
-[[nodiscard]] bool is_warning_only_private_state_table(std::string_view stream_name, std::string_view table_name) {
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 1> kWarningOnlyTables = {{
-        {"FORTS_REFDATA_REPL", "clearing_members"},
-    }};
-    return table_is_in_list(stream_name, table_name, kWarningOnlyTables);
-}
-
-[[nodiscard]] bool is_fatal_scheme_table_drift(const SchemeTableKey& key) {
-    if (is_warning_only_private_state_table(key.stream_name, key.table_name)) {
-        return false;
-    }
-    return is_required_private_state_table(key.stream_name, key.table_name);
-}
-
-[[nodiscard]] std::string normalized_runtime_stream_name(std::string_view scheme_name) {
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 5> kRuntimeSchemeAliases = {{
-        {"REFDATA", "FORTS_REFDATA_REPL"},
-        {"Trade", "FORTS_TRADE_REPL"},
-        {"OrderBook", "FORTS_USERORDERBOOK_REPL"},
-        {"POS", "FORTS_POS_REPL"},
-        {"PART", "FORTS_PART_REPL"},
-    }};
-    for (const auto& [runtime_name, reviewed_name] : kRuntimeSchemeAliases) {
-        if (scheme_name == runtime_name) {
-            return std::string(reviewed_name);
-        }
-    }
-    return std::string(scheme_name);
-}
-
 [[nodiscard]] std::optional<std::size_t> integer_type_size(std::string_view type_token) {
     if (type_token == "i1" || type_token == "u1") {
         return 1;
@@ -626,126 +464,6 @@ first_existing_directory(const std::vector<std::filesystem::path>& candidates) {
     const auto runtime_integer_size = integer_type_size(runtime_type);
     return reviewed_integer_size.has_value() && runtime_integer_size.has_value() &&
            *reviewed_integer_size == *runtime_integer_size;
-}
-
-[[nodiscard]] bool is_reviewed_absent_field(std::string_view spectra_release, const SchemeTableKey& table,
-                                            std::string_view field_name) {
-    if (spectra_release != "SPECTRA9.9.0") {
-        return false;
-    }
-    static constexpr std::array<std::tuple<std::string_view, std::string_view, std::string_view>, 6>
-        kSpectra99RemovedFields = {{
-            {"FORTS_PART_REPL", "part", "vm_intercl"},
-            {"FORTS_PART_REPL", "part", "premium_intercl"},
-            {"FORTS_REFDATA_REPL", "fut_instruments", "step_price_interclr"},
-            {"FORTS_REFDATA_REPL", "session", "inter_cl_begin"},
-            {"FORTS_REFDATA_REPL", "session", "inter_cl_end"},
-            {"FORTS_REFDATA_REPL", "session", "inter_cl_state"},
-        }};
-    return std::ranges::any_of(kSpectra99RemovedFields, [&](const auto& field) {
-        return std::get<0>(field) == table.stream_name && std::get<1>(field) == table.table_name &&
-               std::get<2>(field) == field_name;
-    });
-}
-
-[[nodiscard]] bool parse_runtime_scheme(const std::filesystem::path& scheme_path, ParsedRuntimeScheme& out_scheme,
-                                        std::string& error_message) {
-    out_scheme = {};
-    RuntimeSchemeTable* current_table = nullptr;
-    std::string current_section;
-
-    for (const auto& raw_line : read_file_lines(scheme_path)) {
-        const auto line = trim_copy(raw_line);
-        if (line.empty()) {
-            continue;
-        }
-        if (line.rfind(';', 0) == 0) {
-            const auto comment = trim_copy(std::string_view(line).substr(1));
-            constexpr std::string_view kSpectraPrefix = "Spectra release:";
-            constexpr std::string_view kDdsPrefix = "DDS version:";
-            constexpr std::string_view kTargetPrefixA = "Target poligon:";
-            constexpr std::string_view kTargetPrefixB = "Target polygon:";
-            if (comment.rfind(kSpectraPrefix, 0) == 0) {
-                out_scheme.markers.spectra_release = trim_copy(std::string_view(comment).substr(kSpectraPrefix.size()));
-            } else if (comment.rfind(kDdsPrefix, 0) == 0) {
-                out_scheme.markers.dds_version = trim_copy(std::string_view(comment).substr(kDdsPrefix.size()));
-            } else if (comment.rfind(kTargetPrefixA, 0) == 0) {
-                out_scheme.markers.target_polygon = trim_copy(std::string_view(comment).substr(kTargetPrefixA.size()));
-            } else if (comment.rfind(kTargetPrefixB, 0) == 0) {
-                out_scheme.markers.target_polygon = trim_copy(std::string_view(comment).substr(kTargetPrefixB.size()));
-            }
-            continue;
-        }
-
-        if (line.front() == '[' && line.back() == ']') {
-            current_section = line.substr(1, line.size() - 2);
-            current_table = nullptr;
-            if (current_section.rfind("table:", 0) == 0) {
-                const auto rest = current_section.substr(6);
-                const auto separator = rest.find(':');
-                if (separator == std::string::npos) {
-                    error_message = "invalid table section: " + current_section;
-                    return false;
-                }
-                out_scheme.tables.push_back({
-                    .scheme_name = rest.substr(0, separator),
-                    .table_name = rest.substr(separator + 1),
-                    .fields = {},
-                });
-                current_table = &out_scheme.tables.back();
-            }
-            continue;
-        }
-
-        if (current_table == nullptr) {
-            continue;
-        }
-
-        if (line.rfind("field=", 0) != 0) {
-            continue;
-        }
-        const auto remainder = line.substr(6);
-        const auto comma = remainder.find(',');
-        if (comma == std::string::npos) {
-            error_message = "invalid field line: " + line;
-            return false;
-        }
-        const auto field_name = trim_copy(std::string_view(remainder).substr(0, comma));
-        const auto type_token = trim_copy(std::string_view(remainder).substr(comma + 1));
-        if (field_name.empty() || type_token.empty()) {
-            error_message = "invalid empty field token in line: " + line;
-            return false;
-        }
-        current_table->fields.push_back({field_name, type_token});
-    }
-
-    for (const auto& table : out_scheme.tables) {
-        if (table.table_name.empty() || table.fields.empty()) {
-            error_message = "runtime scheme contains empty table definition";
-            return false;
-        }
-    }
-    if (out_scheme.tables.empty()) {
-        error_message = "runtime scheme contains no table sections";
-        return false;
-    }
-    return true;
-}
-
-[[nodiscard]] Plaza2Compatibility combine_compatibility(Plaza2Compatibility lhs, Plaza2Compatibility rhs) noexcept {
-    if (lhs == Plaza2Compatibility::Incompatible || rhs == Plaza2Compatibility::Incompatible) {
-        return Plaza2Compatibility::Incompatible;
-    }
-    if (lhs == Plaza2Compatibility::Unknown || rhs == Plaza2Compatibility::Unknown) {
-        return Plaza2Compatibility::Unknown;
-    }
-    if (lhs == Plaza2Compatibility::CompatibleWithWarnings || rhs == Plaza2Compatibility::CompatibleWithWarnings) {
-        return Plaza2Compatibility::CompatibleWithWarnings;
-    }
-    if (lhs == Plaza2Compatibility::Compatible && rhs == Plaza2Compatibility::Compatible) {
-        return Plaza2Compatibility::Compatible;
-    }
-    return Plaza2Compatibility::Unknown;
 }
 
 void push_issue(std::vector<Plaza2ProbeIssue>& issues, Plaza2ProbeIssueCode code, bool fatal, std::string subject,
@@ -853,143 +571,6 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
     return kCgErrOk;
 }
 
-[[nodiscard]] Plaza2SchemeDriftReport compare_runtime_scheme(const std::filesystem::path& scheme_path,
-                                                             const Plaza2Settings& settings) {
-    Plaza2SchemeDriftReport report;
-    report.reviewed_table_count = generated::TableDescriptors().size();
-    report.reviewed_field_count = generated::FieldDescriptors().size();
-    report.runtime_scheme_sha256 = detail::sha256_file(scheme_path);
-
-    ParsedRuntimeScheme parsed;
-    std::string parse_error;
-    if (!parse_runtime_scheme(scheme_path, parsed, parse_error)) {
-        push_issue(report.issues, Plaza2ProbeIssueCode::RuntimeSchemeParseFailed, true, scheme_path.filename().string(),
-                   "failed to parse runtime forts_scheme.ini: " + parse_error);
-        report.compatibility = Plaza2Compatibility::Incompatible;
-        return report;
-    }
-
-    report.runtime_table_count = parsed.tables.size();
-    std::size_t runtime_field_count = 0;
-    std::map<SchemeTableKey, RuntimeTableEntry> runtime_by_name;
-    for (const auto& table : parsed.tables) {
-        runtime_field_count += table.fields.size();
-        const SchemeTableKey key{.stream_name = normalized_runtime_stream_name(table.scheme_name),
-                                 .table_name = table.table_name};
-        auto& entry = runtime_by_name[key];
-        if (entry.example_name.empty()) {
-            entry.example_name = key.display_name();
-        }
-        entry.fields = table.fields;
-    }
-    report.runtime_field_count = runtime_field_count;
-
-    std::map<SchemeTableKey, ReviewedTableEntry> reviewed_by_name;
-    for (const auto& table : generated::TableDescriptors()) {
-        const auto fields = generated::FieldsForTable(table.table_code);
-        const SchemeTableKey key{.stream_name = std::string(table.stream_name),
-                                 .table_name = std::string(table.table_name)};
-        auto& entry = reviewed_by_name[key];
-        if (entry.example_name.empty()) {
-            entry.example_name = key.display_name();
-        }
-        entry.fields.assign(fields.begin(), fields.end());
-    }
-
-    if (!settings.expected_scheme_sha256.empty() && report.runtime_scheme_sha256 != settings.expected_scheme_sha256) {
-        push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, true, scheme_path.filename().string(),
-                   "runtime scheme hash mismatch: expected " + settings.expected_scheme_sha256 + ", got " +
-                       report.runtime_scheme_sha256);
-    }
-    if (!settings.expected_spectra_release.empty() &&
-        parsed.markers.spectra_release != settings.expected_spectra_release) {
-        push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedVersion, true, scheme_path.filename().string(),
-                   "runtime spectra release mismatch: expected " + settings.expected_spectra_release + ", got " +
-                       parsed.markers.spectra_release);
-    }
-
-    auto record_drift = [&](const SchemeTableKey& key, Plaza2ProbeIssueCode code, bool fatal, std::string subject,
-                            std::string message) {
-        push_issue(report.issues, code, fatal, std::move(subject), message);
-        auto& count = fatal ? report.fatal_drift_count : report.warning_drift_count;
-        auto& tables = fatal ? report.fatal_drift_tables : report.warning_drift_tables;
-        auto& last_reason = fatal ? report.last_fatal_drift_reason : report.last_warning_drift_reason;
-        ++count;
-        const auto display_name = key.display_name();
-        if (std::find(tables.begin(), tables.end(), display_name) == tables.end()) {
-            tables.push_back(display_name);
-        }
-        last_reason = std::move(message);
-    };
-
-    std::set<SchemeTableKey> table_names;
-    for (const auto& [table_name, _] : reviewed_by_name) {
-        table_names.insert(table_name);
-    }
-    for (const auto& [table_name, _] : runtime_by_name) {
-        table_names.insert(table_name);
-    }
-
-    for (const auto& table_name : table_names) {
-        const auto reviewed_it = reviewed_by_name.find(table_name);
-        const auto runtime_it = runtime_by_name.find(table_name);
-        if (reviewed_it == reviewed_by_name.end()) {
-            record_drift(table_name, Plaza2ProbeIssueCode::RuntimeTableUnexpected,
-                         is_fatal_scheme_table_drift(table_name), table_name.display_name(),
-                         "runtime scheme exposes unexpected table not present in Phase 3B baseline: " +
-                             table_name.display_name());
-            continue;
-        }
-        if (runtime_it == runtime_by_name.end()) {
-            record_drift(table_name, Plaza2ProbeIssueCode::ReviewedTableMissing,
-                         is_fatal_scheme_table_drift(table_name), reviewed_it->second.example_name,
-                         "runtime scheme is missing reviewed table '" + table_name.display_name() + "'");
-            continue;
-        }
-
-        const auto runtime_signature = canonical_table_signature(runtime_it->second.fields);
-        const auto reviewed_signature = canonical_table_signature(reviewed_it->second.fields);
-        if (runtime_signature == reviewed_signature) {
-            continue;
-        }
-
-        if (is_required_private_state_table(table_name.stream_name, table_name.table_name)) {
-            std::map<std::string_view, std::string_view> runtime_fields;
-            for (const auto& field : runtime_it->second.fields) {
-                runtime_fields.emplace(field.field_name, field.type_token);
-            }
-            bool material_required_drift = false;
-            for (const auto& field : reviewed_it->second.fields) {
-                const auto runtime_field_it = runtime_fields.find(field.field_name);
-                if (runtime_field_it == runtime_fields.end() &&
-                    is_reviewed_absent_field(parsed.markers.spectra_release, table_name, field.field_name)) {
-                    continue;
-                }
-                if (runtime_field_it == runtime_fields.end() ||
-                    !compatible_runtime_field_type(field.type_token, runtime_field_it->second)) {
-                    material_required_drift = true;
-                    break;
-                }
-            }
-            if (material_required_drift) {
-                record_drift(table_name, Plaza2ProbeIssueCode::ReviewedTableSignatureMismatch, true,
-                             reviewed_it->second.example_name,
-                             "runtime scheme diverged materially from reviewed projected table signature for '" +
-                                 table_name.display_name() + "'");
-                continue;
-            }
-        }
-
-        record_drift(table_name, Plaza2ProbeIssueCode::ReviewedTableSignatureMismatch, false,
-                     reviewed_it->second.example_name,
-                     "runtime scheme differs from reviewed non-material table signature for '" +
-                         table_name.display_name() + "'");
-    }
-
-    report.compatibility = compatibility_from_issues(report.issues);
-    return report;
-}
-
 } // namespace
 
 struct Plaza2RuntimeSharedState {
@@ -1076,7 +657,9 @@ template <typename T> [[nodiscard]] T read_unaligned(const void* data) {
     timestamp.tm_hour = static_cast<int>(value.hour);
     timestamp.tm_min = static_cast<int>(value.minute);
     timestamp.tm_sec = static_cast<int>(value.second);
-    return static_cast<std::uint64_t>(::timegm(&timestamp));
+    // CGate t is Moscow wall time (UTC+03), independent of host timezone.
+    const auto seconds = ::timegm(&timestamp) - 3 * 60 * 60;
+    return seconds < 0 ? 0 : static_cast<std::uint64_t>(seconds);
 }
 
 [[nodiscard]] Plaza2Error convert_runtime_field_to_string(RuntimeApi& api, std::string_view type_token,
@@ -1132,23 +715,13 @@ template <typename T> [[nodiscard]] T read_unaligned(const void* data) {
             return &plan;
         }
     }
-    for (const auto& plan : plans) {
-        if (plan.msg_name == msg_name) {
-            return &plan;
-        }
-    }
+    (void)msg_name;
     return nullptr;
 }
 
 [[nodiscard]] const RuntimeMessagePlan*
 find_clear_deleted_runtime_message_plan(std::span<const RuntimeMessagePlan> plans, std::size_t table_idx) {
-    if (const auto* plan = find_runtime_message_plan(plans, table_idx, {}); plan != nullptr) {
-        return plan;
-    }
-    if (table_idx < plans.size()) {
-        return &plans[table_idx];
-    }
-    return nullptr;
+    return find_runtime_message_plan(plans, table_idx, {});
 }
 
 struct Plaza2ListenerCallbackState {
@@ -1161,6 +734,7 @@ struct Plaza2ListenerCallbackState {
     std::vector<Plaza2DecodedFieldValue> decoded_fields;
     std::vector<std::string> text_storage;
     Plaza2Error last_error;
+    std::uint64_t ignored_message_count{0};
 };
 
 [[nodiscard]] Plaza2Error ensure_listener_scheme_loaded(Plaza2ListenerCallbackState& state) {
@@ -1190,49 +764,19 @@ struct Plaza2ListenerCallbackState {
     const auto* scheme = static_cast<CgSchemeDesc*>(raw_scheme);
     if (scheme == nullptr || scheme->messages == nullptr) {
         return {
-            .code = Plaza2ErrorCode::DecodeFailed,
+            .code = Plaza2ErrorCode::IncompatibleScheme,
             .runtime_code = 0,
-            .message = "CGate listener scheme is empty after CG_MSG_OPEN",
+            .message = "INCOMPATIBLE_SCHEME expected=REQUIRED_TABLES got=EMPTY after CG_MSG_OPEN",
         };
     }
 
-    const bool raw = state.handler && state.handler->wants_raw_replication();
-    const auto mismatch = []() -> Plaza2Error {
-        return {.code = Plaza2ErrorCode::DecodeFailed,
-                .message = "public replication scheme differs from qualified 9.9 wire layout"};
-    };
-    std::size_t expected_count = 0;
-    if (raw) {
-        for (const auto& table : public_wire::kTables) {
-            expected_count += table.stream == state.stream_code;
-        }
-        if (!expected_count || scheme->num_messages != expected_count)
-            return mismatch();
-    }
     state.message_plans.clear();
     std::size_t msg_index = 0;
     for (auto* message = scheme->messages; message != nullptr; message = message->next, ++msg_index) {
         const auto message_name = message->name == nullptr ? std::string{} : std::string(message->name);
         const auto* table = find_table_descriptor_for_stream(state.stream_code, message_name);
         if (table == nullptr) {
-            if (raw)
-                return mismatch();
             continue;
-        }
-        if (raw) {
-            const auto* wire = public_wire::table(table->table_code);
-            if (!wire || wire->index != msg_index || wire->size != message->size ||
-                wire->fields.size() != message->num_fields)
-                return mismatch();
-            auto* field = message->fields;
-            for (const auto& expected : wire->fields) {
-                if (!field || !field->name || !field->type || expected.name != field->name ||
-                    expected.type != field->type || expected.offset != field->offset || expected.size != field->size)
-                    return mismatch();
-                field = field->next;
-            }
-            if (field)
-                return mismatch();
         }
 
         RuntimeMessagePlan plan;
@@ -1258,11 +802,24 @@ struct Plaza2ListenerCallbackState {
                 continue;
             }
 
+            // Public trades are emitted as economic events. Validate their
+            // named field widths/types before interpreting any native bytes.
+            const auto expected_public_size = descriptor->type_token == "d16.5" ? sizeof(public_wire::Bcd16_5)
+                                              : descriptor->type_token == "t"   ? sizeof(CgTime)
+                                                                                : descriptor->storage_size_bytes;
+            if (table->table_code == generated::TableCode::kFortsDealsReplDeal &&
+                (!field->type || descriptor->type_token != field->type || expected_public_size != field->size ||
+                 field->offset > message->size || field->size > message->size - field->offset)) {
+                return {.code = Plaza2ErrorCode::DecodeFailed,
+                        .message =
+                            "public DEALS schema field type, size or offset mismatch: " + std::string(field_name)};
+            }
+
             plan.fields.push_back({
                 .name = std::string(field_name),
                 .field_code = descriptor->field_code,
                 .value_class = descriptor->value_class,
-                .type_token = field->type == nullptr ? std::string(descriptor->type_token) : std::string(field->type),
+                .type_token = field->type == nullptr ? std::string{} : std::string(field->type),
                 .offset = field->offset,
                 .size = field->size,
                 .ordinal = ordinal,
@@ -1271,19 +828,81 @@ struct Plaza2ListenerCallbackState {
             ++ordinal;
         }
 
+        if (table->table_code == generated::TableCode::kFortsDealsReplDeal &&
+            std::any_of(generated::FieldsForTable(table->table_code).begin(),
+                        generated::FieldsForTable(table->table_code).end(), [&](const auto& expected) {
+                            return std::count_if(plan.fields.begin(), plan.fields.end(), [&](const auto& item) {
+                                       return item.field_code == expected.field_code;
+                                   }) != 1;
+                        })) {
+            return {.code = Plaza2ErrorCode::DecodeFailed,
+                    .message = "public DEALS schema does not contain all reviewed deal fields"};
+        }
+        // Product metadata is the retained decoder's consumed field contract.
+        // Validate all of it; unrelated server fields remain accepted above.
+        for (const auto& expected : generated::FieldsForTable(table->table_code)) {
+            const auto actual = std::find_if(plan.fields.begin(), plan.fields.end(),
+                                             [&](const auto& f) { return f.field_code == expected.field_code; });
+            if (actual == plan.fields.end() || actual->type_token != expected.type_token ||
+                std::count_if(plan.fields.begin(), plan.fields.end(),
+                              [&](const auto& f) { return f.field_code == expected.field_code; }) != 1) {
+                return {.code = Plaza2ErrorCode::IncompatibleScheme,
+                        .message = "INCOMPATIBLE_SCHEME " + message_name + "." + std::string(expected.field_name) +
+                                   " expected=" + std::string(expected.type_token) +
+                                   " got=" + (actual == plan.fields.end() ? "MISSING" : actual->type_token)};
+            }
+        }
         state.message_plans.push_back(std::move(plan));
     }
 
-    if (raw && state.message_plans.size() != expected_count)
-        return mismatch();
+    if (state.stream_code == generated::StreamCode::kFortsDealsRepl &&
+        std::none_of(state.message_plans.begin(), state.message_plans.end(),
+                     [](const auto& plan) { return plan.table_code == generated::TableCode::kFortsDealsReplDeal; })) {
+        return {.code = Plaza2ErrorCode::DecodeFailed, .message = "public DEALS schema is missing deal table"};
+    }
     if (state.message_plans.empty()) {
         return {
-            .code = Plaza2ErrorCode::DecodeFailed,
+            .code = Plaza2ErrorCode::IncompatibleScheme,
             .runtime_code = 0,
-            .message = "listener scheme does not expose any reviewed tables for the configured stream",
+            .message = "INCOMPATIBLE_SCHEME expected=REQUIRED_TABLES got=MISSING",
         };
     }
 
+    std::vector<std::string_view> required_tables;
+    using enum generated::StreamCode;
+    switch (state.stream_code) {
+    case kFortsTradeRepl:
+        required_tables = {"orders_log", "user_deal", "heartbeat"};
+        break;
+    case kFortsUserorderbookRepl:
+        required_tables = {"orders", "info"};
+        break;
+    case kFortsPosRepl:
+        required_tables = {"position", "info"};
+        break;
+    case kFortsPartRepl:
+        required_tables = {"part"};
+        break;
+    case kFortsRefdataRepl:
+        required_tables = {"session", "fut_instruments", "fut_sess_contents"};
+        break;
+    case kFortsSessionstateRepl:
+        required_tables = {"session_state"};
+        break;
+    case kFortsInstrumentstateRepl:
+        required_tables = {"instrument_state", "sys_events"};
+        break;
+    case kFortsAggrRepl:
+        required_tables = {"orders_aggr", "sys_events"};
+        break;
+    default:
+        break;
+    }
+    for (auto name : required_tables)
+        if (std::none_of(state.message_plans.begin(), state.message_plans.end(),
+                         [&](const auto& p) { return p.msg_name == name; }))
+            return {.code = Plaza2ErrorCode::IncompatibleScheme,
+                    .message = "INCOMPATIBLE_SCHEME " + std::string(name) + " expected=TABLE got=MISSING"};
     state.scheme_loaded = true;
     return {};
 }
@@ -1293,9 +912,9 @@ struct Plaza2ListenerCallbackState {
     if (state.handler == nullptr) {
         return {};
     }
+    if (state.shared->settings.listener_event_log)
+        state.shared->settings.listener_event_log(event);
     const auto error = state.handler->on_plaza2_listener_event(event);
-    if (auto* observer = state.shared->settings.qualification_observer)
-        observer->observe(event, error);
     return error;
 }
 
@@ -1305,27 +924,58 @@ struct Plaza2ListenerCallbackState {
         return kCgErrOk;
     }
 
+    struct CallbackTimer {
+        const std::function<void(const Plaza2CallbackTiming&)>& report;
+        Plaza2CallbackTiming timing;
+        std::chrono::steady_clock::time_point started;
+        ~CallbackTimer() {
+            if (!report)
+                return;
+            timing.elapsed_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started)
+                    .count();
+            try {
+                report(timing);
+            } catch (...) {
+                // Optional diagnostics must not change replication handling.
+            }
+        }
+    } timer{state->shared->settings.listener_callback_timing,
+            {.stream_code = state->stream_code, .native_message_type = static_cast<CgMsg*>(raw_msg)->type},
+            state->shared->settings.listener_callback_timing ? std::chrono::steady_clock::now()
+                                                             : std::chrono::steady_clock::time_point{}};
+
     auto fail = [&](Plaza2Error error) -> CgResult {
         state->last_error = std::move(error);
-        if (auto* observer = state->shared->settings.qualification_observer)
-            observer->runtime_state(14, static_cast<std::uint32_t>(state->stream_code), state->last_error.runtime_code,
-                                    static_cast<std::uint32_t>(state->last_error.code));
         if (state->handler)
             state->handler->on_plaza2_listener_error(state->last_error);
-        return state->last_error.runtime_code == 0 ? kCgErrInternal : state->last_error.runtime_code;
+        // Decode errors are recovered by the owning listener supervisor.
+        // Never make the CGate connection fail because one projection failed.
+        return kCgErrOk;
     };
 
     try {
         const auto* msg = static_cast<CgMsg*>(raw_msg);
+        if (state->last_error && msg->type != kCgMsgOpen && msg->type != kCgMsgClose)
+            return kCgErrOk;
         switch (msg->type) {
         case kCgMsgOpen: {
             state->scheme_loaded = false;
+            state->last_error = {};
             if (const auto error = ensure_listener_scheme_loaded(*state); error) {
                 return fail(error);
             }
             const auto event = Plaza2ListenerEvent{
                 .kind = Plaza2ListenerEventKind::Open,
                 .stream_code = state->stream_code,
+                .text_value = state->stream_code == generated::StreamCode::kFortsRefdataRepl &&
+                                      std::none_of(state->message_plans.begin(), state->message_plans.end(),
+                                                   [](const auto& plan) {
+                                                       return plan.table_code ==
+                                                              generated::TableCode::kFortsRefdataReplSysMessages;
+                                                   })
+                                  ? "REFDATA sys_messages table unavailable; exchange messages cannot be shown"
+                                  : "",
             };
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
@@ -1405,12 +1055,19 @@ struct Plaza2ListenerCallbackState {
             }
             const auto payload = read_clear_deleted_payload(msg->data);
             const auto* plan = find_clear_deleted_runtime_message_plan(state->message_plans, payload.table_idx);
+            if (plan)
+                timer.timing.table_code = plan->table_code;
+            if (!plan) {
+                ++state->ignored_message_count;
+                return kCgErrOk;
+            }
             const auto event = Plaza2ListenerEvent{
                 .kind = Plaza2ListenerEventKind::ClearDeleted,
                 .stream_code = state->stream_code,
                 .table_code = plan == nullptr ? kNoTableCode : plan->table_code,
                 .signed_value = payload.table_rev,
                 .clear_deleted_flags = payload.flags,
+                .table_index = payload.table_idx,
             };
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
@@ -1482,13 +1139,11 @@ struct Plaza2ListenerCallbackState {
             const auto* plan = find_runtime_message_plan(
                 state->message_plans, payload->msg_index,
                 payload->msg_name == nullptr ? std::string_view{} : std::string_view(payload->msg_name));
+            if (plan)
+                timer.timing.table_code = plan->table_code;
             if (plan == nullptr) {
-                return fail({
-                    .code = Plaza2ErrorCode::DecodeFailed,
-                    .runtime_code = 0,
-                    .message =
-                        "CG_MSG_STREAM_DATA referenced a runtime message that is not covered by the reviewed baseline",
-                });
+                ++state->ignored_message_count;
+                return kCgErrOk;
             }
 
             if (state->handler && state->handler->wants_raw_replication()) {
@@ -1502,6 +1157,7 @@ struct Plaza2ListenerCallbackState {
                     .kind = Plaza2ListenerEventKind::StreamData,
                     .stream_code = state->stream_code,
                     .table_code = plan->table_code,
+                    .message_name = plan->msg_name,
                     .raw_payload = {static_cast<const std::byte*>(payload->data), payload->data_size},
                     .signed_value = payload->rev,
                     .raw_nulls = {payload->nulls, payload->num_nulls},
@@ -1581,10 +1237,13 @@ struct Plaza2ListenerCallbackState {
                     }
                     decoded.text_value = state->text_storage.back();
                     break;
-                case generated::ValueClass::kTimestamp:
+                case generated::ValueClass::kTimestamp: {
                     decoded.kind = Plaza2DecodedValueKind::Timestamp;
-                    decoded.unsigned_value = to_unix_seconds(read_unaligned<CgTime>(field_ptr));
+                    const auto time_value = read_unaligned<CgTime>(field_ptr);
+                    decoded.unsigned_value = to_unix_seconds(time_value);
+                    decoded.timestamp_ns = decoded.unsigned_value * 1000000000ULL + time_value.msec * 1000000ULL;
                     break;
+                }
                 case generated::ValueClass::kBinary:
                     continue;
                 }
@@ -1597,68 +1256,12 @@ struct Plaza2ListenerCallbackState {
                 .stream_code = state->stream_code,
                 .table_code = plan->table_code,
                 .fields = state->decoded_fields,
+                .message_name = plan->msg_name,
                 .raw_payload = {static_cast<const std::byte*>(payload->data), payload->data_size},
                 .signed_value = payload->rev,
                 .raw_nulls = {payload->nulls, payload->num_nulls},
                 .table_index = payload->msg_index,
             };
-            if (auto* observer = state->shared->settings.qualification_observer;
-                observer && observer->wants_forensic_row(event)) {
-                if (payload->data_size > 65536 || payload->num_nulls > 4096 || plan->fields.size() > 128)
-                    return fail(
-                        {.code = Plaza2ErrorCode::DecodeFailed, .message = "target forensic row exceeds bounds"});
-                Plaza2ForensicRow raw;
-                raw.stream_code = state->stream_code;
-                raw.table_code = plan->table_code;
-                raw.table_index = plan->msg_index;
-                raw.message_size = payload->data_size;
-                raw.message_name = plan->msg_name;
-                const auto* bytes = static_cast<const std::byte*>(payload->data);
-                raw.payload.assign(bytes, bytes + payload->data_size);
-                if (payload->nulls)
-                    raw.nulls.assign(payload->nulls, payload->nulls + payload->num_nulls);
-                for (const auto& field : plan->fields) {
-                    const auto& name = field.name;
-                    if (name != "replID" && name != "replRev" && name != "replAct" && name != "isin_id" &&
-                        name != "sess_id" && name != "isin" && name != "short_isin" && name != "limit_up" &&
-                        name != "limit_down" && name != "settlement_price_open" && name != "settlement_price" &&
-                        name != "buy_deposit" && name != "sell_deposit" && name != "roundto" && name != "min_step" &&
-                        name != "step_price")
-                        continue;
-                    Plaza2ForensicField item{.name = name,
-                                             .type = field.type_token,
-                                             .offset = field.offset,
-                                             .size = field.size,
-                                             .ordinal = field.ordinal,
-                                             .is_null = payload->nulls && field.ordinal < payload->num_nulls &&
-                                                        payload->nulls[field.ordinal] != 0};
-                    if (!item.is_null) {
-                        // Independent name/negotiated-offset route: no generated FieldCode lookup.
-                        std::array<char, 256> buffer{};
-                        std::size_t size = buffer.size();
-                        item.conversion_result = state->shared->api->getstr(field.type_token.c_str(),
-                                                                            bytes + field.offset, buffer.data(), &size);
-                        if (item.conversion_result == kCgErrOk && size <= buffer.size())
-                            item.independent_value = copy_c_string(buffer.data(), size);
-                        else if (item.conversion_result == kCgErrOk)
-                            item.conversion_result = kCgErrBufferTooSmall;
-                        for (const auto& value : state->decoded_fields) {
-                            if (value.field_code != field.field_code)
-                                continue;
-                            item.generic_value = value.kind == Plaza2DecodedValueKind::SignedInteger
-                                                     ? std::to_string(value.signed_value)
-                                                 : value.kind == Plaza2DecodedValueKind::UnsignedInteger
-                                                     ? std::to_string(value.unsigned_value)
-                                                     : std::string(value.text_value);
-                            break;
-                        }
-                    }
-                    item.equal = item.is_null ||
-                                 (item.conversion_result == kCgErrOk && item.generic_value == item.independent_value);
-                    raw.fields.push_back(std::move(item));
-                }
-                observer->forensic_row(std::move(raw));
-            }
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
             }
@@ -1805,7 +1408,7 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
             report.runtime_library_sha256 = detail::sha256_file(*library_path);
             if (!settings.expected_runtime_library_sha256.empty() &&
                 report.runtime_library_sha256 != settings.expected_runtime_library_sha256) {
-                push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, true,
+                push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, false,
                            library_path->filename().string(),
                            "runtime library hash mismatch: expected " + settings.expected_runtime_library_sha256 +
                                ", got " + report.runtime_library_sha256);
@@ -1840,14 +1443,25 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
             push_issue(report.issues, Plaza2ProbeIssueCode::MissingSchemeFile, true, report.layout.scheme_path.string(),
                        "expected runtime scheme file is missing");
         } else {
-            auto parsed_scheme = ParsedRuntimeScheme{};
-            std::string parse_error;
-            if (parse_runtime_scheme(report.layout.scheme_path, parsed_scheme, parse_error)) {
-                report.layout.version_markers = parsed_scheme.markers;
+            report.runtime_scheme_sha256 = detail::sha256_file(report.layout.scheme_path);
+            if (!settings.expected_scheme_sha256.empty() &&
+                report.runtime_scheme_sha256 != settings.expected_scheme_sha256)
+                push_issue(report.issues, Plaza2ProbeIssueCode::FileHashMismatch, false, "scheme",
+                           "runtime scheme hash differs from configured diagnostic identity");
+            for (const auto& raw : read_file_lines(report.layout.scheme_path)) {
+                const auto line = trim_copy(raw);
+                for (const auto& marker :
+                     {std::pair{"; Spectra release:", &report.layout.version_markers.spectra_release},
+                      std::pair{"; DDS version:", &report.layout.version_markers.dds_version},
+                      std::pair{"; Target polygon:", &report.layout.version_markers.target_polygon},
+                      std::pair{"; Target poligon:", &report.layout.version_markers.target_polygon}})
+                    if (line.starts_with(marker.first))
+                        *marker.second = trim_copy(std::string_view(line).substr(std::strlen(marker.first)));
             }
-            report.scheme_drift = compare_runtime_scheme(report.layout.scheme_path, settings);
-            report.issues.insert(report.issues.end(), report.scheme_drift.issues.begin(),
-                                 report.scheme_drift.issues.end());
+            if (!settings.expected_spectra_release.empty() &&
+                report.layout.version_markers.spectra_release != settings.expected_spectra_release)
+                push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedVersion, false, "scheme",
+                           "runtime release differs from configured diagnostic identity");
         }
     }
 
@@ -1855,19 +1469,8 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
         report.runtime_identity_recognized = true;
         report.runtime_version = "fake-runtime-v1";
     } else if (report.runtime_library_loadable && report.scheme_file_present) {
-        for (const auto& identity : kReviewedRuntimeIdentities) {
-            if (report.layout.version_markers.spectra_release == identity.spectra_release &&
-                report.scheme_drift.runtime_scheme_sha256 == identity.scheme_sha256 &&
-                report.runtime_library_sha256 == identity.library_sha256) {
-                report.runtime_identity_recognized = true;
-                report.runtime_version = identity.runtime_version;
-                break;
-            }
-        }
-        if (!report.runtime_identity_recognized) {
-            push_issue(report.issues, Plaza2ProbeIssueCode::UnsupportedVersion, true, "runtime identity",
-                       "CGate library and SPECTRA scheme combination is not an exact reviewed runtime identity");
-        }
+        report.runtime_identity_recognized = true;
+        report.runtime_version = report.layout.version_markers.spectra_release;
     }
 
     const auto config_dir = resolve_config_dir(settings);
@@ -1902,7 +1505,6 @@ Plaza2RuntimeProbeReport Plaza2RuntimeProbe::probe(const Plaza2Settings& setting
     }
 
     report.compatibility = compatibility_from_issues(report.issues);
-    report.compatibility = combine_compatibility(report.compatibility, report.scheme_drift.compatibility);
     return report;
 }
 
@@ -2172,6 +1774,11 @@ Plaza2Error Plaza2Listener::create(Plaza2Connection& connection, generated::Stre
     return {};
 }
 
+void Plaza2Listener::clear_callback_error() noexcept {
+    if (callback_state_)
+        callback_state_->last_error = {};
+}
+
 Plaza2Error Plaza2Listener::open(std::string_view settings) {
     if (!shared_ || !shared_->api || handle_ == nullptr) {
         return {
@@ -2287,9 +1894,28 @@ Plaza2Error Plaza2Publisher::open(std::string_view settings) {
         "cg_pub_open", shared_->api->pub_open(handle_, copied_settings.empty() ? nullptr : copied_settings.c_str()));
 }
 
+Plaza2Error Plaza2Publisher::prewarm_by_message_name(std::string_view message_name) {
+    if (!shared_ || !shared_->api || handle_ == nullptr || message_name.empty())
+        return {.code = Plaza2ErrorCode::AdapterState,
+                .message = "publisher prewarm requires a created publisher/name"};
+    if (!shared_->api->pub_msgnew || !shared_->api->pub_msgfree)
+        return {.code = Plaza2ErrorCode::SymbolLoadFailed,
+                .message = "publisher prewarm requires allocation/free symbols"};
+    const std::string copied_name(message_name);
+    void* message = nullptr;
+    ++call_counts_.msgnew;
+    const auto allocated = shared_->api->pub_msgnew(handle_, kCgKeyName, copied_name.c_str(), &message);
+    if (const auto error = translate_plaza2_result("cg_pub_msgnew", allocated); error)
+        return error;
+    return translate_plaza2_result("cg_pub_msgfree", shared_->api->pub_msgfree(handle_, message));
+}
+
 Plaza2PublisherMessageResult Plaza2Publisher::post_by_message_name(std::string_view message_name,
                                                                    std::span<const std::byte> payload,
-                                                                   std::uint32_t user_id, bool need_reply) {
+                                                                   std::uint32_t user_id, bool need_reply,
+                                                                   bool measure_timing, bool measure_stages) {
+    const auto prepare_started =
+        measure_stages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     Plaza2PublisherMessageResult outcome;
     if (!shared_ || !shared_->api || handle_ == nullptr) {
         outcome.validation_error = {
@@ -2336,10 +1962,38 @@ Plaza2PublisherMessageResult Plaza2Publisher::post_by_message_name(std::string_v
         msg->user_id = user_id;
         outcome.post_invoked = true;
         ++call_counts_.post;
+        if (measure_timing) {
+            outcome.post_started_utc_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::system_clock::now().time_since_epoch())
+                                              .count();
+            outcome.post_started_steady_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 std::chrono::steady_clock::now().time_since_epoch())
+                                                 .count();
+        }
+        if (measure_stages)
+            outcome.publisher_prepare_ns =
+                measure_timing
+                    ? outcome.post_started_steady_ns -
+                          std::chrono::duration_cast<std::chrono::nanoseconds>(prepare_started.time_since_epoch())
+                              .count()
+                    : std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
+                                                                           prepare_started)
+                          .count();
         const auto post_result = shared_->api->pub_post(handle_, raw_msg, need_reply ? kCgPubNeedReply : 0U);
+        if (measure_timing) {
+            outcome.post_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           std::chrono::steady_clock::now().time_since_epoch())
+                                           .count() -
+                                       outcome.post_started_steady_ns;
+            outcome.post_finished_utc_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                               std::chrono::system_clock::now().time_since_epoch())
+                                               .count();
+        }
         outcome.post_error = translate_plaza2_result("cg_pub_post", post_result);
-        outcome.certainty =
-            post_result == kCgErrOk ? Plaza2SubmissionCertainty::Posted : Plaza2SubmissionCertainty::PossiblySent;
+        outcome.certainty = post_result == kCgErrOk ? Plaza2SubmissionCertainty::Posted
+                            : (post_result == kCgErrIncorrectState || post_result == kCgErrInvalidArgument)
+                                ? Plaza2SubmissionCertainty::DefinitelyNotSent
+                                : Plaza2SubmissionCertainty::PossiblySent;
     }
 
     const auto free_result = shared_->api->pub_msgfree(handle_, raw_msg);

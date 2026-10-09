@@ -24,7 +24,6 @@ struct Plaza2TradeDecodedReply {
     std::optional<std::int32_t> amount;
     std::optional<std::int32_t> num_orders;
     std::optional<std::int64_t> order_id;
-    std::optional<std::int64_t> iceberg_order_id;
     std::optional<std::int64_t> order_id1;
     std::optional<std::int64_t> order_id2;
     std::string message;

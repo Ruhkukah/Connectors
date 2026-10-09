@@ -32,9 +32,6 @@ events:
         begin: 1700200000
         end: 1700203600
         state: 1
-        inter_cl_begin: 1700201800
-        inter_cl_end: 1700202100
-        inter_cl_state: 1
         eve_on: 0
         eve_begin: 0
         eve_end: 0
