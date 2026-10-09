@@ -3,6 +3,7 @@
 #include "fake_cgate_control.hpp"
 #include "plaza2_trade_test_support.hpp"
 #include "private_pos_anchor_regression.hpp"
+#include "publisher_prewarm_regression.hpp"
 #include "fixtures/cgate99_messages.hpp"
 #include <cstdlib>
 #include <cstring>
@@ -636,6 +637,7 @@ int main(int argc, char** argv) {
         requested_trade_epoch_regression(config, fake);
         poll_metrics_regression(config, fake);
         instrument_session_post_regression(config, fake);
+        test::publisher_prewarm_regression(config, fake, fixture.library_path);
         test::private_pos_anchor_regression(config, fake);
         reset();
         flag(moex::plaza2::test::fake::Option::ConnHoldOpening, true);

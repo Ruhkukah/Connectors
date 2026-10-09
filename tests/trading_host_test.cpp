@@ -12,6 +12,7 @@
 #include "immediate_dispatch_host_regression.hpp"
 #include "status_observability_host_regression.hpp"
 #include "host_timing_regression.hpp"
+#include "startup_id_block_host_regression.hpp"
 #include "storage_guard_regression.hpp"
 #include "storage_recovery_regression.hpp"
 #include "storage_halt_cancel_regression.hpp"
@@ -237,6 +238,7 @@ int main(int argc, char** argv) {
         moex::connector_host::regression::explicit_test_risk(config);
         moex::connector_host::regression::heartbeat_journal_regression(config, fake, root);
         aggr_snapshot_status_regression(config, fake, root);
+        moex::connector_host::regression::startup_id_block_host_regression(config, fake, root);
         moex::connector_host::regression::instance_cancel_host_regression(config, fake, root);
         moex::connector_host::inflight_rebuild_host_regression(config, fake, root);
         moex::connector_host::regression::storage_recovery_regression(config, fake, root);

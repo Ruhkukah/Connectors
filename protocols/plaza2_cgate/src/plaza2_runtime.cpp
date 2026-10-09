@@ -1869,6 +1869,22 @@ Plaza2Error Plaza2Publisher::open(std::string_view settings) {
         "cg_pub_open", shared_->api->pub_open(handle_, copied_settings.empty() ? nullptr : copied_settings.c_str()));
 }
 
+Plaza2Error Plaza2Publisher::prewarm_by_message_name(std::string_view message_name) {
+    if (!shared_ || !shared_->api || handle_ == nullptr || message_name.empty())
+        return {.code = Plaza2ErrorCode::AdapterState,
+                .message = "publisher prewarm requires a created publisher/name"};
+    if (!shared_->api->pub_msgnew || !shared_->api->pub_msgfree)
+        return {.code = Plaza2ErrorCode::SymbolLoadFailed,
+                .message = "publisher prewarm requires allocation/free symbols"};
+    const std::string copied_name(message_name);
+    void* message = nullptr;
+    ++call_counts_.msgnew;
+    const auto allocated = shared_->api->pub_msgnew(handle_, kCgKeyName, copied_name.c_str(), &message);
+    if (const auto error = translate_plaza2_result("cg_pub_msgnew", allocated); error)
+        return error;
+    return translate_plaza2_result("cg_pub_msgfree", shared_->api->pub_msgfree(handle_, message));
+}
+
 Plaza2PublisherMessageResult Plaza2Publisher::post_by_message_name(std::string_view message_name,
                                                                    std::span<const std::byte> payload,
                                                                    std::uint32_t user_id, bool need_reply,

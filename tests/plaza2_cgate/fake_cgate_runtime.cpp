@@ -187,6 +187,7 @@ bool g_cancel_after_cleanup = false;
 std::uint32_t g_persistent_order_epoch = 0;
 std::uint64_t g_pub_msgnew_calls = 0;
 std::uint64_t g_pub_post_calls = 0;
+std::uint64_t g_pub_msgfree_calls = 0;
 std::uint64_t g_env_open_count = 0;
 std::uint64_t g_status_open_count = 0;
 std::uint64_t g_conn_new_count = 0;
@@ -3159,6 +3160,7 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
 }
 
 std::uint32_t cg_pub_msgfree(void*, void* message) {
+    ++g_pub_msgfree_calls;
     if (message == nullptr) {
         return kCgErrInvalidArgument;
     }
@@ -3220,11 +3222,12 @@ std::uint32_t cg_getstr(const char* type, const void* data, char* buffer, std::s
 extern "C" void moex_fake_reset_publisher_counts() {
     g_pub_msgnew_calls = 0;
     g_pub_post_calls = 0;
+    g_pub_msgfree_calls = 0;
     g_env_open_count = 0;
     g_conn_new_count = 0;
 }
 extern "C" std::uint64_t moex_fake_publisher_count(std::uint32_t which) {
-    return which == 0 ? g_pub_msgnew_calls : g_pub_post_calls;
+    return which == 0 ? g_pub_msgnew_calls : which == 1 ? g_pub_post_calls : g_pub_msgfree_calls;
 }
 extern "C" std::uint64_t moex_fake_environment_open_count() {
     return g_env_open_count;

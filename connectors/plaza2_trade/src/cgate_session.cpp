@@ -232,7 +232,7 @@ struct CgateSession::Impl {
     std::chrono::steady_clock::time_point connection_retry{}, publisher_retry{};
     std::optional<std::chrono::steady_clock::time_point> key_check_warning_time;
     std::string app_name, last_error, credentials, software_key;
-    bool initialized{}, streams_created{}, connection_was_active{};
+    bool initialized{}, streams_created{}, connection_was_active{}, publisher_warmed{};
     CgatePollMetrics poll_metrics;
     bool collecting_poll{};
     std::optional<CgateStreamConfig> deferred_trade;
@@ -364,6 +364,7 @@ struct CgateSession::Impl {
             observe(observed_connection, Closed, "connection");
     }
     void close_publisher() {
+        publisher_warmed = false;
         if (!publisher.is_created())
             return;
         const auto error = publisher.close();
@@ -860,11 +861,28 @@ struct CgateSession::Impl {
                     close_publisher();
                     publisher_retry = now() + config.recovery_retry_interval;
                 } else if (pub_state == Closed && now() >= publisher_retry) {
+                    publisher_warmed = false;
                     const auto e = publisher.open(config.publisher_open_settings);
                     operation("publisher", "open", e);
                     if (e) {
                         last_error = e.message;
                         publisher_retry = now() + config.recovery_retry_interval;
+                    } else if (const auto state_error = publisher.state(pub_state); state_error) {
+                        operation("publisher", "getstate", state_error);
+                        close_publisher();
+                        publisher_retry = now() + config.recovery_retry_interval;
+                        pub_state = Closed;
+                    }
+                }
+                if (pub_state == Active && !publisher_warmed) {
+                    const auto e = publisher.prewarm_by_message_name("AddOrder");
+                    operation("publisher", "prewarm", e);
+                    if (e) {
+                        last_error = e.message;
+                        close_publisher();
+                        publisher_retry = now() + config.recovery_retry_interval;
+                    } else {
+                        publisher_warmed = true;
                     }
                 }
             }
@@ -1038,6 +1056,9 @@ bool CgateSession::p2mqreply_open() const noexcept {
 bool CgateSession::publisher_open() const noexcept {
     return runtime_health().publisher == Active;
 }
+bool CgateSession::publisher_prepared() const noexcept {
+    return impl_->publisher_warmed;
+}
 const std::string& CgateSession::connection_app_name() const noexcept {
     return impl_->app_name;
 }
@@ -1101,7 +1122,7 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
     }
     if (impl_->recovery.operation == Plaza2SessionOperation::Failed || !impl_->config.allow_orders ||
         impl_->config.read_only_market_data || !command.validation.ok() || !user_id || h.connection != Active ||
-        h.publisher != Active || h.reply != Active || !required_private) {
+        h.publisher != Active || !impl_->publisher_warmed || h.reply != Active || !required_private) {
         out.validation_error = invalid("order entry requires allow_orders, valid command and ONLINE private streams");
         return out;
     }

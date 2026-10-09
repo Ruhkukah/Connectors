@@ -41,6 +41,38 @@ void test_deterministic_repeated_encoding() {
     require(first.msgid == 474, "AddOrder msgid must match official CGate");
 }
 
+void test_post_send_wire_journal_fields() {
+    using moex::plaza2_trade::command_fields_json;
+    const Plaza2TradeCodec codec;
+    const auto has = [](const auto& json, std::string_view field) { return json.find(field) != std::string::npos; };
+    const auto add = command_fields_json(codec.encode(make_add_order()));
+    require(has(add, "\"isin_id\":123456") && has(add, "\"amount\":10") && has(add, "\"price\":\"101.25\"") &&
+                has(add, "\"ext_id\":501") && has(add, "\"comment\":\"offline\"") && has(add, "\"dont_check_money\":0"),
+            "post-send Add journal lost actual packed values/defaults");
+    const auto del = command_fields_json(codec.encode(make_del_order()));
+    require(has(del, "\"order_id\":9001") && has(del, "\"client_code\":\"C01\"") && has(del, "\"isin_id\":123456"),
+            "post-send cancel journal lost ownership or official order identity");
+    auto move_request = make_move_order();
+    move_request.regime = 3;
+    const auto move = command_fields_json(codec.encode(move_request));
+    require(has(move, "\"regime\":3") && has(move, "\"order_id1\":9001") && has(move, "\"order_id2\":9002") &&
+                has(move, "\"amount1\":5") && has(move, "\"price2\":\"103.00\"") && has(move, "\"ext_id2\":602"),
+            "post-send Move journal lost packed regime/replacement values");
+    const auto mass = command_fields_json(codec.encode(make_del_user_orders()));
+    require(has(mass, "\"buy_sell\":3") && has(mass, "\"code\":\"C01\"") && has(mass, "\"ext_id\":777") &&
+                has(mass, "\"instrument_mask\":1"),
+            "post-send mass-cancel journal lost packed scope");
+    auto truncated = codec.encode(make_add_order());
+    truncated.payload.resize(8);
+    bool rejected{};
+    try {
+        (void)command_fields_json(truncated);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    require(rejected, "command journal read past a truncated payload");
+}
+
 void test_all_official_command_layouts() {
     using namespace moex::plaza2_trade::test_support;
     const Plaza2TradeCodec codec;
@@ -63,6 +95,7 @@ int main() {
     try {
         test_golden_encodings();
         test_deterministic_repeated_encoding();
+        test_post_send_wire_journal_fields();
         test_all_official_command_layouts();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

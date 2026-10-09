@@ -41,7 +41,6 @@ struct Plaza2TradeEncodedCommand {
     Plaza2TradeValidationResult validation;
     std::optional<std::int32_t> isin_id;
     std::optional<Plaza2TradeOrderType> order_type;
-    std::string fields_json{"{}"};
 };
 
 class Plaza2TradeCodec {
@@ -53,6 +52,8 @@ class Plaza2TradeCodec {
 };
 
 [[nodiscard]] std::string bytes_to_hex(std::span<const std::byte> bytes);
+// Format the actual wire values only after publication; encoding does no JSON work.
+[[nodiscard]] std::string command_fields_json(const Plaza2TradeEncodedCommand& command);
 [[nodiscard]] std::vector<std::byte> bytes_from_hex(std::string_view hex);
 
 } // namespace moex::plaza2_trade

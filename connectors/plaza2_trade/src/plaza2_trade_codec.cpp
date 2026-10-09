@@ -9,6 +9,7 @@
 #include <cstring>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <type_traits>
 
 namespace moex::plaza2_trade {
@@ -511,57 +512,6 @@ Plaza2TradeEncodedCommand Plaza2TradeCodec::encode(const Plaza2TradeCommandReque
                 encoded.isin_id = value.isin_id;
             if constexpr (std::is_same_v<std::decay_t<decltype(value)>, AddOrderRequest>)
                 encoded.order_type = value.type;
-            std::string fields{"{"};
-            const auto field = [&](std::string_view name, const auto& optional) {
-                if (!optional)
-                    return;
-                if (fields.size() > 1)
-                    fields += ',';
-                fields += plaza2::cgate::text::json_quote_utf8(name) + ":";
-                using T = std::decay_t<decltype(*optional)>;
-                if constexpr (std::is_same_v<T, std::string>)
-                    fields += plaza2::cgate::text::json_quote_utf8(*optional);
-                else if constexpr (std::is_enum_v<T>)
-                    fields += std::to_string(static_cast<std::underlying_type_t<T>>(*optional));
-                else
-                    fields += std::to_string(*optional);
-            };
-#define COMMAND_FIELD(name)                                                                                            \
-    if constexpr (requires { value.name; })                                                                            \
-    field(#name, value.name)
-            COMMAND_FIELD(broker_code);
-            COMMAND_FIELD(client_code);
-            COMMAND_FIELD(isin_id);
-            COMMAND_FIELD(dir);
-            COMMAND_FIELD(type);
-            COMMAND_FIELD(amount);
-            COMMAND_FIELD(price);
-            COMMAND_FIELD(comment);
-            COMMAND_FIELD(broker_to);
-            COMMAND_FIELD(ext_id);
-            COMMAND_FIELD(is_check_limit);
-            COMMAND_FIELD(date_exp);
-            COMMAND_FIELD(dont_check_money);
-            COMMAND_FIELD(match_ref);
-            COMMAND_FIELD(ncc_request);
-            COMMAND_FIELD(compliance_id);
-            COMMAND_FIELD(order_id);
-            COMMAND_FIELD(regime);
-            COMMAND_FIELD(order_id1);
-            COMMAND_FIELD(amount1);
-            COMMAND_FIELD(price1);
-            COMMAND_FIELD(ext_id1);
-            COMMAND_FIELD(order_id2);
-            COMMAND_FIELD(amount2);
-            COMMAND_FIELD(price2);
-            COMMAND_FIELD(ext_id2);
-            COMMAND_FIELD(buy_sell);
-            COMMAND_FIELD(non_system);
-            COMMAND_FIELD(code);
-            COMMAND_FIELD(base_contract_code);
-            COMMAND_FIELD(instrument_mask);
-#undef COMMAND_FIELD
-            encoded.fields_json = fields + "}";
         },
         request);
     encoded.payload = std::visit(
@@ -580,6 +530,87 @@ Plaza2TradeEncodedCommand Plaza2TradeCodec::encode(const Plaza2TradeCommandReque
         request);
     align_payload(encoded.payload, 4);
     return encoded;
+}
+
+std::string command_fields_json(const Plaza2TradeEncodedCommand& command) {
+    std::string fields{"{"};
+    std::size_t offset{};
+    const auto field = [&](std::string_view name, std::string value) {
+        if (fields.size() > 1)
+            fields += ',';
+        fields += plaza2::cgate::text::json_quote_utf8(name) + ":" + value;
+    };
+    const auto text = [&](std::string_view name, std::size_t width) {
+        if (offset + width + 1 > command.payload.size())
+            throw std::invalid_argument("truncated command journal string");
+        field(name, plaza2::cgate::text::json_quote_utf8(read_string(command.payload, offset, width + 1)));
+    };
+    const auto integer = [&]<typename T>(std::string_view name) {
+        const auto value = load_le<T>(command.payload, offset);
+        if (!value)
+            throw std::invalid_argument("truncated command journal integer");
+        field(name, std::to_string(*value));
+    };
+#define TEXT(name, width) text(#name, width)
+#define I4(name) integer.operator()<std::int32_t>(#name)
+#define I8(name) integer.operator()<std::int64_t>(#name)
+#define I1(name) integer.operator()<std::int8_t>(#name)
+    TEXT(broker_code, 4);
+    switch (command.command_kind) {
+    case Plaza2TradeCommandKind::AddOrder:
+        I4(isin_id);
+        TEXT(client_code, 3);
+        I4(dir);
+        I4(type);
+        I4(amount);
+        TEXT(price, 17);
+        TEXT(comment, 20);
+        TEXT(broker_to, 20);
+        I4(ext_id);
+        I4(is_check_limit);
+        TEXT(date_exp, 8);
+        I4(dont_check_money);
+        TEXT(match_ref, 10);
+        I1(ncc_request);
+        TEXT(compliance_id, 1);
+        break;
+    case Plaza2TradeCommandKind::DelOrder:
+        I8(order_id);
+        I1(ncc_request);
+        TEXT(client_code, 3);
+        I4(isin_id);
+        break;
+    case Plaza2TradeCommandKind::MoveOrder:
+        I4(regime);
+        I8(order_id1);
+        I4(amount1);
+        TEXT(price1, 17);
+        I4(ext_id1);
+        I8(order_id2);
+        I4(amount2);
+        TEXT(price2, 17);
+        I4(ext_id2);
+        I4(is_check_limit);
+        I1(ncc_request);
+        TEXT(client_code, 3);
+        I4(isin_id);
+        TEXT(compliance_id, 1);
+        break;
+    case Plaza2TradeCommandKind::DelUserOrders:
+        I4(buy_sell);
+        I4(non_system);
+        TEXT(code, 3);
+        TEXT(base_contract_code, 25);
+        I4(ext_id);
+        I4(isin_id);
+        I1(instrument_mask);
+        break;
+    }
+#undef TEXT
+#undef I4
+#undef I8
+#undef I1
+    return fields + "}";
 }
 
 Plaza2TradeDecodedReply Plaza2TradeCodec::decode_reply(std::int32_t msgid, std::span<const std::byte> payload,

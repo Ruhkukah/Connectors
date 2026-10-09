@@ -75,7 +75,8 @@ void test_exchange_command_enums() {
         request.buy_sell = value;
         const auto encoded = codec.encode(request);
         require(encoded.validation.ok() && encoded.isin_id == 123456, "valid DelUserOrders direction rejected");
-        require(encoded.fields_json.find("\"buy_sell\":" + std::to_string(value)) != std::string::npos,
+        require(moex::plaza2_trade::command_fields_json(encoded).find("\"buy_sell\":" + std::to_string(value)) !=
+                    std::string::npos,
                 "decoded command log omits direction");
     }
     auto move = make_move_order();

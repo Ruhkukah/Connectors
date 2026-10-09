@@ -1140,21 +1140,32 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
         if (throttled_)
             emit("throttle", "{\"active\":false,\"queued\":" + std::to_string(queued()) + "}");
         throttled_ = false;
-        const auto command_fields = "{\"user_id\":" + std::to_string(command.user_id) +
-                                    ",\"name\":" + json_string(command.encoded.command_name) +
-                                    ",\"client_order_id\":" + json_string(command.key) +
-                                    ",\"fields\":" + command.encoded.fields_json +
-                                    ",\"payload_hex\":" + json_string(tr::bytes_to_hex(command.encoded.payload)) + "}";
         if (logging_failed_ && add_or_move)
             break;
         const auto result = send_(command.encoded, command.user_id);
-        const auto result_fields =
-            "{\"user_id\":" + std::to_string(command.user_id) +
-            ",\"certainty\":" + std::to_string(static_cast<int>(result.certainty)) + ",\"error\":" +
-            json_string(result.validation_error.message + result.allocation_error.message + result.post_error.message) +
-            ",\"post_invoked\":" + (result.post_invoked ? "true}" : "false}");
+        // The durable ID reservation and native reply correlation precede
+        // post. JSON/hex construction starts only after the vendor returns.
+        const auto audit = [&](const Command& submitted) noexcept {
+            try {
+                if (result.post_invoked)
+                    emit("command",
+                         "{\"user_id\":" + std::to_string(submitted.user_id) +
+                             ",\"name\":" + json_string(submitted.encoded.command_name) + ",\"client_order_id\":" +
+                             json_string(submitted.key) + ",\"fields\":" + tr::command_fields_json(submitted.encoded) +
+                             ",\"payload_hex\":" + json_string(tr::bytes_to_hex(submitted.encoded.payload)) + "}");
+                emit("command_result", "{\"user_id\":" + std::to_string(submitted.user_id) + ",\"certainty\":" +
+                                           std::to_string(static_cast<int>(result.certainty)) + ",\"error\":" +
+                                           json_string(result.validation_error.message +
+                                                       result.allocation_error.message + result.post_error.message) +
+                                           ",\"post_invoked\":" + (result.post_invoked ? "true}" : "false}"));
+            } catch (...) {
+                logging_failed_ = true;
+                config_.risk.kill_switch = true;
+            }
+        };
         if (result.certainty == cg::Plaza2SubmissionCertainty::DefinitelyNotSent) {
             command.not_before = now + std::chrono::seconds(1);
+            audit(command);
             // Definitive local validation failures cannot become an ambiguous Add.
             if (add_or_move && result.validation_error.code == cg::Plaza2ErrorCode::InvalidConfiguration) {
                 if (found != orders_.end()) {
@@ -1167,9 +1178,6 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
                 }
                 queue.erase(selected);
             }
-            if (result.post_invoked)
-                emit("command", command_fields);
-            emit("command_result", result_fields);
             break;
         }
         const auto sent_kind = command.encoded.command_kind;
@@ -1183,11 +1191,10 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
             sent.submitted_session = found->second.sess_id;
         if (sent_kind == Kind::AddOrder)
             found->second.add_unconfirmed = true;
-        pending_.emplace(sent.user_id, std::move(sent));
-        // Commit submission bookkeeping before a user-supplied log callback.
-        if (result.post_invoked)
-            emit("command", command_fields);
-        emit("command_result", result_fields);
+        const auto submitted = pending_.emplace(sent.user_id, std::move(sent)).first;
+        // Preserve submission state before either record construction or a
+        // user-supplied log callback can fail.
+        audit(submitted->second);
         if (result.certainty == cg::Plaza2SubmissionCertainty::PossiblySent &&
             (sent_kind == Kind::AddOrder || sent_kind == Kind::MoveOrder)) {
             // Add or replacement identity is uncertain. A DelOrder still

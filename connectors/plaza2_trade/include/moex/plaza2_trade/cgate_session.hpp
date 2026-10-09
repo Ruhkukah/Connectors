@@ -198,6 +198,7 @@ class CgateSession final {
     [[nodiscard]] plaza2::cgate::Plaza2Aggr20Status aggr_status() const;
     [[nodiscard]] bool p2mqreply_open() const noexcept;
     [[nodiscard]] bool publisher_open() const noexcept;
+    [[nodiscard]] bool publisher_prepared() const noexcept;
     // Sanitized connection instance identity used for operator/certification
     // evidence.  This is the CGate app_name value, never a credential.
     [[nodiscard]] const std::string& connection_app_name() const noexcept;

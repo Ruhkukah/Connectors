@@ -336,6 +336,8 @@ class Plaza2Publisher {
 
     [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, std::string_view settings);
     [[nodiscard]] Plaza2Error open(std::string_view settings);
+    // Allocate/free only: no payload, ID, reply registration or exchange post.
+    [[nodiscard]] Plaza2Error prewarm_by_message_name(std::string_view message_name);
     [[nodiscard]] Plaza2PublisherMessageResult post_by_message_name(std::string_view message_name,
                                                                     std::span<const std::byte> payload,
                                                                     std::uint32_t user_id, bool need_reply,

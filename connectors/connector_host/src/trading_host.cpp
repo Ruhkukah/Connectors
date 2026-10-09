@@ -325,6 +325,14 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     const auto reservations = journal_.reservations();
     orders.next_ext_id = std::max({orders.next_ext_id, orders.ext_id_begin, reservations.next_ext_id});
     orders.next_user_id = std::max(orders.next_user_id, reservations.next_user_id);
+    if (config_.session.allow_orders) {
+        if (orders.next_ext_id == INT32_MAX || orders.next_user_id == UINT32_MAX)
+            throw std::invalid_argument("command ID namespace exhausted before startup");
+        // Warm the configured namespace before CGate login. The manager keeps
+        // its current IDs; +1 also covers an ID exactly at an exclusive ceiling.
+        journal_.append("reservation", "{\"next_ext_id\":" + std::to_string(orders.next_ext_id + 1) +
+                                           ",\"next_user_id\":" + std::to_string(orders.next_user_id + 1) + "}");
+    }
     orders_ = std::make_unique<OrderManager>(
         std::move(orders),
         [this](const auto& command, auto id) {
