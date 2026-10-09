@@ -149,6 +149,7 @@ struct Scenario {
     bool suppress_auto_replies{false};
     bool suppress_initial_orders{false};
     bool zero_position{false};
+    std::uint32_t heartbeat_replay_rows{0};
     // Zero follows the fake server's POS epoch; a positive value models an independent TRADE rollover.
     std::uint32_t trade_server_lifenum{0};
     std::uint32_t listener_create_result{0}, publisher_create_result{0};

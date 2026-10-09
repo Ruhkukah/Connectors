@@ -1880,6 +1880,21 @@ std::uint32_t emit_script(FakeListener& listener) {
             return result;
         }
     }
+    if (listener.stream_code == StreamCode::kFortsTradeRepl) {
+        for (std::uint32_t i = 0; i < scenario.heartbeat_replay_rows; ++i) {
+            const auto revision = std::int64_t{10000} + i;
+            FakeMessageScript heartbeat{
+                .table_code = TableCode::kFortsTradeReplHeartbeat,
+                .rev = revision,
+                .fields = {{.field_code = FieldCode::kFortsTradeReplHeartbeatReplId, .signed_value = revision},
+                           {.field_code = FieldCode::kFortsTradeReplHeartbeatReplRev, .signed_value = revision},
+                           {.field_code = FieldCode::kFortsTradeReplHeartbeatServerTime,
+                            .kind = FakeValueKind::UnsignedInteger,
+                            .unsigned_value = std::uint64_t{1700000000} + i}}};
+            if (const auto result = emit_stream_message(listener, heartbeat); result != kCgErrOk)
+                return result;
+        }
+    }
     if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk) {
         return result;
     }

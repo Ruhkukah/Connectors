@@ -18,6 +18,7 @@
 #include "exchange_message_regression.hpp"
 #include "transport_status_regression.hpp"
 #include "replication_journal_regression.hpp"
+#include "heartbeat_journal_regression.hpp"
 #include "reload_missing_host_regression.hpp"
 #include "inflight_rebuild_host_regression.hpp"
 #include "opening_auction_host_regression.hpp"
@@ -105,7 +106,10 @@ void named_journal_regression(TradingHostConfig config, const test::fake::Contro
          .revision = 45,
          .fields = {
              {.field_code = moex::plaza2::generated::FieldCode::kFortsTradeReplHeartbeatReplId, .signed_value = 45},
-             {.field_code = moex::plaza2::generated::FieldCode::kFortsTradeReplHeartbeatReplRev, .signed_value = 45}}});
+             {.field_code = moex::plaza2::generated::FieldCode::kFortsTradeReplHeartbeatReplRev, .signed_value = 45},
+             {.field_code = moex::plaza2::generated::FieldCode::kFortsTradeReplHeartbeatServerTime,
+              .kind = test::fake::FieldKind::Timestamp,
+              .unsigned_value = 1700000005}}});
     control.enqueue(
         {.kind = test::fake::EventKind::Commit, .stream_code = moex::plaza2::generated::StreamCode::kFortsTradeRepl});
     test::require(!host.poll(), "named journal current-life heartbeat");
@@ -148,7 +152,7 @@ void named_journal_regression(TradingHostConfig config, const test::fake::Contro
                           "startup journal exposed a CGate setting secret");
         }
         named_row |= line.find("\"stream\":\"FORTS_TRADE_REPL\"") != std::string::npos &&
-                     line.find("\"table\":\"heartbeat\"") != std::string::npos;
+                     line.find("\"event\":\"trade_server_time\"") != std::string::npos;
         if (line.find("\"event\":\"link_lost\"") != std::string::npos) {
             ++lost;
             publisher_loss |= line.find("\"connection_state\":3,\"publisher_state\":0") != std::string::npos;
@@ -231,6 +235,7 @@ int main(int argc, char** argv) {
         config.isin_ids = {1001};
         config.journal_path = root / "events.ndjson";
         moex::connector_host::regression::explicit_test_risk(config);
+        moex::connector_host::regression::heartbeat_journal_regression(config, fake, root);
         aggr_snapshot_status_regression(config, fake, root);
         moex::connector_host::regression::instance_cancel_host_regression(config, fake, root);
         moex::connector_host::inflight_rebuild_host_regression(config, fake, root);

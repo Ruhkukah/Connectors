@@ -72,5 +72,7 @@ class CgateTradingHost {
     std::vector<plaza2::private_state::SystemMessageSnapshot> exchange_messages_;
     std::optional<std::pair<std::string, std::int64_t>> immediate_place_timing_;
     std::int64_t last_aggr_receipt_utc_ns_{};
+    std::int64_t last_trade_server_time_{}, last_trade_heartbeat_revision_{};
+    OrderManager::Clock::time_point next_trade_time_sample_{};
 };
 } // namespace moex::connector_host

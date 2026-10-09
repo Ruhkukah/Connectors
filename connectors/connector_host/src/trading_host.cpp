@@ -250,7 +250,6 @@ bool journal_replication_row(const cg::Plaza2ListenerEvent& event, const Trading
         return target(kFortsRefdataReplFutSessContentsIsinId, kFortsRefdataReplFutSessContentsReplAct);
     case kFortsRefdataReplFutInstruments:
         return target(kFortsRefdataReplFutInstrumentsIsinId, kFortsRefdataReplFutInstrumentsReplAct);
-    case kFortsTradeReplHeartbeat:
     case kFortsPosReplInfo:
     case kFortsUserorderbookReplInfo:
     case kFortsRefdataReplSession:
@@ -477,6 +476,46 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
         }
         if (journal_failed_)
             return;
+        if (event.stream_code == gen::StreamCode::kFortsTradeRepl) {
+            const bool heartbeat = event.kind == cg::Plaza2ListenerEventKind::StreamData &&
+                                   event.table_code == gen::TableCode::kFortsTradeReplHeartbeat;
+            const auto sample_time = [&](std::string_view reason) {
+                if (last_trade_server_time_ > 0)
+                    journal_.append(
+                        "trade_server_time",
+                        "{\"stream\":\"FORTS_TRADE_REPL\",\"server_time\":" + std::to_string(last_trade_server_time_) +
+                            ",\"repl_rev\":" + std::to_string(last_trade_heartbeat_revision_) +
+                            ",\"reason\":" + json_string(reason) + "}");
+            };
+            if (heartbeat) {
+                // Projection/replay still receives every row. Only this
+                // interaction-log observer samples by receipt time, so a
+                // historical replay cannot fill the journal minute by minute.
+                for (const auto& value : event.fields)
+                    if (value.field_code == gen::FieldCode::kFortsTradeReplHeartbeatServerTime)
+                        last_trade_server_time_ = static_cast<std::int64_t>(value.unsigned_value);
+                last_trade_heartbeat_revision_ = event.signed_value;
+                const auto now =
+                    config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
+                if (now >= next_trade_time_sample_ && last_trade_server_time_ > 0) {
+                    sample_time("minute");
+                    next_trade_time_sample_ = now + std::chrono::minutes(1);
+                }
+                return;
+            }
+            if (event.kind == cg::Plaza2ListenerEventKind::Open || event.kind == cg::Plaza2ListenerEventKind::Close ||
+                event.kind == cg::Plaza2ListenerEventKind::Online ||
+                event.kind == cg::Plaza2ListenerEventKind::LifeNum ||
+                event.kind == cg::Plaza2ListenerEventKind::ClearDeleted ||
+                (event.kind == cg::Plaza2ListenerEventKind::StreamData &&
+                 event.table_code == gen::TableCode::kFortsTradeReplSysEvents))
+                sample_time(event_kind(event.kind));
+            if (event.kind == cg::Plaza2ListenerEventKind::Open || event.kind == cg::Plaza2ListenerEventKind::Close ||
+                event.kind == cg::Plaza2ListenerEventKind::LifeNum) {
+                last_trade_server_time_ = last_trade_heartbeat_revision_ = 0;
+                next_trade_time_sample_ = {};
+            }
+        }
         const bool replication = event.stream_code != cg::kNoStreamCode;
         if (replication && event.kind == cg::Plaza2ListenerEventKind::StreamData &&
             !journal_replication_row(event, config_))
