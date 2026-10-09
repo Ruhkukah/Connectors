@@ -64,6 +64,7 @@ bool order_entry_ready(const CgateSession& host, std::int64_t isin_id, std::int3
     const auto instrument = std::find_if(data.instruments().begin(), data.instruments().end(), [=](const auto& row) {
         return row.kind == ps::InstrumentKind::kFuture && !row.is_spread && row.isin_id == isin_id &&
                row.sess_id == session_id && row.current_session_member && row.has_current_status &&
+               row.current_status_refdata_bound &&
                (row.current_status == 1 || (allow_opening_auction && row.current_status == 6));
     });
     return instrument != data.instruments().end();
@@ -256,7 +257,8 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
     std::optional<std::int32_t> session_status;
     std::optional<std::int32_t> instrument_status;
     for (const auto& instrument : host.private_state().instruments()) {
-        if (instrument.isin_id == out.target_isin_id && instrument.has_current_status)
+        if (instrument.isin_id == out.target_isin_id && instrument.has_current_status &&
+            instrument.current_status_refdata_bound)
             instrument_status = instrument.current_status;
     }
     for (const auto& session : host.private_state().sessions()) {

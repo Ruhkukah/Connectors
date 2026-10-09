@@ -36,7 +36,7 @@ constexpr std::array<StreamDescriptor, kStreamCount> kStreamDescriptors{{
     {StreamCode::kFortsPartRepl, "FORTS_PART_REPL", 21, 3},
     {StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL", 24, 8},
     {StreamCode::kFortsSessionstateRepl, "FORTS_SESSIONSTATE_REPL", 32, 1},
-    {StreamCode::kFortsInstrumentstateRepl, "FORTS_INSTRUMENTSTATE_REPL", 33, 1},
+    {StreamCode::kFortsInstrumentstateRepl, "FORTS_INSTRUMENTSTATE_REPL", 33, 2},
 }};
 
 constexpr std::array<TableDescriptor, kTableCount> kTableDescriptors{{
@@ -79,6 +79,7 @@ constexpr std::array<TableDescriptor, kTableCount> kTableDescriptors{{
     {TableCode::kFortsSessionstateReplSessionState, 0x4C6EE2C3u, "FORTS_SESSIONSTATE_REPL", "session_state", 260, 5},
     {TableCode::kFortsInstrumentstateReplInstrumentState, 0x53AD8B6Au, "FORTS_INSTRUMENTSTATE_REPL", "instrument_state",
      265, 5},
+    {TableCode::kFortsInstrumentstateReplSysEvents, 0x53AD8B6Au, "FORTS_INSTRUMENTSTATE_REPL", "sys_events", 270, 8},
 }};
 
 constexpr std::array<FieldDescriptor, kFieldCount> kFieldDescriptors{{
@@ -416,6 +417,17 @@ constexpr std::array<FieldDescriptor, kFieldCount> kFieldDescriptors{{
      false},
     {FieldCode::kFortsInstrumentstateReplInstrumentStatePublicState, "public_state", "i4", ValueClass::kSignedInteger,
      4, 0, 0, false},
+    {FieldCode::kFortsInstrumentstateReplSysEventsReplId, "replID", "i8", ValueClass::kSignedInteger, 8, 0, 0, true},
+    {FieldCode::kFortsInstrumentstateReplSysEventsReplRev, "replRev", "i8", ValueClass::kSignedInteger, 8, 0, 0, true},
+    {FieldCode::kFortsInstrumentstateReplSysEventsReplAct, "replAct", "i8", ValueClass::kSignedInteger, 8, 0, 0, true},
+    {FieldCode::kFortsInstrumentstateReplSysEventsEventId, "event_id", "i8", ValueClass::kSignedInteger, 8, 0, 0,
+     false},
+    {FieldCode::kFortsInstrumentstateReplSysEventsSessId, "sess_id", "i4", ValueClass::kSignedInteger, 4, 0, 0, false},
+    {FieldCode::kFortsInstrumentstateReplSysEventsEventType, "event_type", "i4", ValueClass::kSignedInteger, 4, 0, 0,
+     false},
+    {FieldCode::kFortsInstrumentstateReplSysEventsMessage, "message", "c64", ValueClass::kFixedString, 65, 0, 0, false},
+    {FieldCode::kFortsInstrumentstateReplSysEventsServerTime, "server_time", "t", ValueClass::kTimestamp, 0, 0, 0,
+     false},
 }};
 
 } // namespace

@@ -57,6 +57,11 @@ struct StreamHealthSnapshot {
     std::int64_t last_event_id{0};
     std::int32_t last_event_type{0};
     std::string last_message;
+    // INSTRUMENTSTATE.instrument_state has no sess_id. Its current trading
+    // day is established by a committed sys_events row from the same stream.
+    std::int32_t instrument_status_session_id{0};
+    std::uint64_t instrument_status_session_epoch{1};
+    std::int64_t instrument_status_session_revision{0};
     // USERORDERBOOK periodic consistency is distinct from initial ONLINE.
     // It is established only by a committed regular info publication_state=1 row.
     bool periodic_snapshot_consistent{false};
@@ -182,10 +187,10 @@ struct InstrumentSnapshot {
     std::int32_t current_session_state{0};
     bool has_current_status{false};
     std::int32_t current_status{0};
-    // A status row was independently received after the current REFDATA
-    // membership was established. Reset on membership/generation invalidation.
-    // Raw has_current_status remains available to legacy private consumers.
+    // The status row and committed INSTRUMENTSTATE.sys_events session belong
+    // to the same epoch and match the current REFDATA membership.
     bool current_status_refdata_bound{false};
+    std::uint64_t current_status_session_epoch{0};
     std::int32_t signs{0};
     bool put{false};
     bool is_spread{false};

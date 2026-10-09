@@ -8,12 +8,76 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <thread>
 using namespace moex::plaza2_trade;
 using namespace moex::plaza2;
 using test::require;
 namespace {
+void instrument_session_post_regression(CgateSessionConfig config, const test::fake::Control& fake) {
+    using enum generated::StreamCode;
+    using enum generated::TableCode;
+    using enum generated::FieldCode;
+    config.publisher_rate_owner = PublisherRateOwner::External;
+    config.event_log = {};
+    config.listener_event_log = {};
+    fake.configure({});
+    CgateSession session(config);
+    require(!session.start(), "instrument session post regression start");
+    for (int i = 0; i < 10; ++i)
+        require(!session.poll(false), "instrument session post regression bootstrap");
+    auto add = test_support::make_add_order();
+    add.isin_id = 1001;
+    auto move = test_support::make_move_order();
+    move.isin_id = 1001;
+    const auto add_command = Plaza2TradeCodec{}.encode(add);
+    const auto move_command = Plaza2TradeCodec{}.encode(move);
+    require(add_command.validation.ok() && move_command.validation.ok(), "session post commands must be valid");
+    const auto rejected = [&](std::uint32_t id, const char* message) {
+        const auto before = session.publisher_call_counts();
+        const auto result = session.post_command(add_command, id);
+        require(result.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !result.post_invoked,
+                message);
+        const auto moved = session.post_command(move_command, id + 1);
+        require(moved.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !moved.post_invoked,
+                "direct Move ignored an unbound instrument session");
+        const auto after = session.publisher_call_counts();
+        require(after.msgnew == before.msgnew && after.post == before.post,
+                "unbound direct session post reached native allocation or publication");
+    };
+    fake.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = kFortsInstrumentstateRepl});
+    fake.enqueue({.kind = test::fake::EventKind::ClearDeleted,
+                  .stream_code = kFortsInstrumentstateRepl,
+                  .table_code = kFortsInstrumentstateReplSysEvents,
+                  .revision = std::numeric_limits<std::int64_t>::max()});
+    fake.enqueue({.kind = test::fake::EventKind::Commit, .stream_code = kFortsInstrumentstateRepl});
+    require(!session.poll(false), "missing instrument session proof pump");
+    rejected(880101, "direct Add accepted status without committed instrument session proof");
+    const auto publish = [&](std::int32_t day, std::int64_t revision) {
+        fake.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = kFortsInstrumentstateRepl});
+        fake.enqueue({.stream_code = kFortsInstrumentstateRepl,
+                      .table_code = kFortsInstrumentstateReplSysEvents,
+                      .revision = revision,
+                      .fields = {{.field_code = kFortsInstrumentstateReplSysEventsReplId, .signed_value = revision},
+                                 {.field_code = kFortsInstrumentstateReplSysEventsSessId, .signed_value = day}}});
+        fake.enqueue(
+            {.stream_code = kFortsInstrumentstateRepl,
+             .table_code = kFortsInstrumentstateReplInstrumentState,
+             .revision = revision + 1,
+             .fields = {{.field_code = kFortsInstrumentstateReplInstrumentStateIsinId, .signed_value = 1001},
+                        {.field_code = kFortsInstrumentstateReplInstrumentStatePublicState, .signed_value = 1}}});
+        fake.enqueue({.kind = test::fake::EventKind::Commit, .stream_code = kFortsInstrumentstateRepl});
+        require(!session.poll(false), "instrument session proof publication pump");
+    };
+    publish(322, 100);
+    rejected(880103, "direct Add accepted status from a different instrument stream session");
+    publish(321, 102);
+    require(session.post_command(add_command, 880105).certainty == cgate::Plaza2SubmissionCertainty::Posted,
+            "matching committed session and fresh status did not restore direct Add");
+    require(!session.stop(), "instrument session post regression stop");
+    fake.configure({});
+}
 void poll_metrics_regression(CgateSessionConfig config, const test::fake::Control& fake) {
     using enum generated::StreamCode;
     using enum generated::TableCode;
@@ -571,6 +635,7 @@ int main(int argc, char** argv) {
         private_trade_replay_regression(config, fake);
         requested_trade_epoch_regression(config, fake);
         poll_metrics_regression(config, fake);
+        instrument_session_post_regression(config, fake);
         test::private_pos_anchor_regression(config, fake);
         reset();
         flag(moex::plaza2::test::fake::Option::ConnHoldOpening, true);

@@ -3,6 +3,7 @@
 
 #include "plaza2_fake_scenarios.hpp"
 #include "private_state_deletion_regression.hpp"
+#include "private_state_instrument_session_regression.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -133,6 +134,7 @@ void clear_userbook_table(Plaza2PrivateStateProjector& projector, EngineState& s
 int main() {
     try {
         moex::plaza2::test::deletion::run();
+        moex::plaza2::test::instrument_session::run();
         Plaza2PrivateStateProjector clear_deleted_projector;
         run_or_throw("private_state_clear_deleted", &clear_deleted_projector);
 

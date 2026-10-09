@@ -683,6 +683,37 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .signed_value = 1},
                     },
             },
+            {
+                .table_code = kFortsInstrumentstateReplSysEvents,
+                .rev = 2,
+                .fields =
+                    {
+                        {.field_code = FieldCode::kFortsInstrumentstateReplSysEventsReplId,
+                         .kind = SignedInteger,
+                         .signed_value = 4202},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplSysEventsReplRev,
+                         .kind = SignedInteger,
+                         .signed_value = 2},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplSysEventsReplAct,
+                         .kind = SignedInteger,
+                         .signed_value = 0},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplSysEventsEventId,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplSysEventsSessId,
+                         .kind = SignedInteger,
+                         .signed_value = 321},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplSysEventsEventType,
+                         .kind = SignedInteger,
+                         .signed_value = 1},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplSysEventsMessage,
+                         .kind = Text,
+                         .text = "session"},
+                        {.field_code = FieldCode::kFortsInstrumentstateReplSysEventsServerTime,
+                         .kind = SignedInteger,
+                         .signed_value = 1700000000},
+                    },
+            },
         };
     case kFortsPartRepl:
         return {
@@ -1461,7 +1492,8 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
         const auto day = std::strtoll(value, nullptr, 10);
         constexpr std::array session_fields{
             FieldCode::kFortsRefdataReplSessionSessId, FieldCode::kFortsRefdataReplFutSessContentsSessId,
-            FieldCode::kFortsSessionstateReplSessionStateSessId, FieldCode::kFortsAggrReplSysEventsSessId};
+            FieldCode::kFortsSessionstateReplSessionStateSessId, FieldCode::kFortsInstrumentstateReplSysEventsSessId,
+            FieldCode::kFortsAggrReplSysEventsSessId};
         for (auto& message : script)
             for (const auto field : session_fields)
                 if (auto* decoded = find_field(message, field))
@@ -2443,7 +2475,18 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
                 }
                 rows.insert(rows.end(), next.begin(), next.end());
             } else if (switching && listener->stream_code == StreamCode::kFortsInstrumentstateRepl) {
-                // Independent status publication after selection of the new membership.
+                // Establish the new stream session before independently publishing
+                // its instrument statuses; old-epoch rows must not be relabelled.
+                std::stable_sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+                    return a.table_code == TableCode::kFortsInstrumentstateReplSysEvents &&
+                           b.table_code != TableCode::kFortsInstrumentstateReplSysEvents;
+                });
+                for (auto& row : rows) {
+                    if (auto* session = find_field(row, FieldCode::kFortsInstrumentstateReplSysEventsSessId))
+                        ++session->signed_value;
+                    if (auto* event = find_field(row, FieldCode::kFortsInstrumentstateReplSysEventsEventId))
+                        event->signed_value += 100;
+                }
             } else if (switching && listener->stream_code == StreamCode::kFortsAggrRepl) {
                 std::erase_if(rows,
                               [](const auto& row) { return row.table_code != TableCode::kFortsAggrReplSysEvents; });

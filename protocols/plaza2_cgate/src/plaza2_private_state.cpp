@@ -599,6 +599,7 @@ void clear_user_book_source(OrderMap& orders) {
 
 struct StagedState {
     bool status_bindings_invalidated{false};
+    bool instrument_status_session_changed{false};
     bool active{false};
     std::optional<SessionMap> sessions;
     std::optional<InstrumentMap> instruments;
@@ -737,6 +738,24 @@ struct Plaza2PrivateStateProjector::Impl {
             ++status_binding_generation;
     }
 
+    void refresh_instrument_status_binding(InstrumentSnapshot& instrument) const {
+        const auto& health = staged.stream_health ? *staged.stream_health : stream_health;
+        const auto index = find_stream_index(health, StreamCode::kFortsInstrumentstateRepl);
+        instrument.current_status_refdata_bound =
+            index != health.size() && instrument.has_current_status && instrument.current_session_member &&
+            instrument.sess_id > 0 && instrument.sess_id == health[index].instrument_status_session_id &&
+            instrument.current_status_session_epoch == health[index].instrument_status_session_epoch;
+    }
+
+    void reset_instrument_status_session(StreamHealthSnapshot& health, bool new_generation = false) {
+        health.instrument_status_session_id = 0;
+        if (new_generation)
+            health.instrument_status_session_revision = 0;
+        ++health.instrument_status_session_epoch;
+        staged.instrument_status_session_changed = true;
+        invalidate_status_bindings();
+    }
+
     void reset() {
         ++status_binding_generation;
         connector_health = {};
@@ -829,18 +848,23 @@ struct Plaza2PrivateStateProjector::Impl {
                            .regular_trade_history_truncated = regular_trade_history_truncated,
                            .regular_trade_history_reloaded = regular_trade_history_reloaded};
         }
-        const auto invalidate = [](StreamHealthSnapshot& health) {
+        const auto invalidate = [this](StreamHealthSnapshot& health) {
             health.online = false;
             health.snapshot_complete = false;
             health.periodic_snapshot_consistent = false;
+            if (health.stream_code == StreamCode::kFortsInstrumentstateRepl)
+                reset_instrument_status_session(health, true);
         };
         if (stream_code == projection::kNoStreamCode) {
             for (auto& health : stream_health) {
                 invalidate(health);
             }
+            rebuild_instruments();
             return;
         }
         invalidate(ensure_stream_health(stream_health, stream_code));
+        if (stream_code == StreamCode::kFortsInstrumentstateRepl)
+            rebuild_instruments();
     }
 
     std::vector<StreamHealthSnapshot>& ensure_staged_stream_health() {
@@ -1060,6 +1084,8 @@ struct Plaza2PrivateStateProjector::Impl {
 
     void rebuild_instruments() {
         join_future_vcb_into_instruments();
+        for (auto& [unused_isin_id, instrument] : instruments_by_isin)
+            refresh_instrument_status_binding(instrument);
         instrument_snapshots = sorted_values<InstrumentSnapshot>(
             instruments_by_isin,
             [](const InstrumentSnapshot& lhs, const InstrumentSnapshot& rhs) { return lhs.isin_id < rhs.isin_id; });
@@ -1075,9 +1101,11 @@ struct Plaza2PrivateStateProjector::Impl {
                 continue;
             const auto has_status = instrument.has_current_status;
             const auto status = instrument.current_status;
+            const auto status_epoch = instrument.current_status_session_epoch;
             instrument = selected->second;
             instrument.has_current_status = has_status;
             instrument.current_status = status;
+            instrument.current_status_session_epoch = status_epoch;
             instrument.current_status_refdata_bound = false;
             invalidate_status_bindings();
         }
@@ -1481,6 +1509,7 @@ struct Plaza2PrivateStateProjector::Impl {
                 found->second.has_current_status = false;
                 found->second.current_status = 0;
                 found->second.current_status_refdata_bound = false;
+                found->second.current_status_session_epoch = 0;
             } else if (found->second.definition_source_provenance.table_code == table) {
                 const auto candidate =
                     staged.future_sessions
@@ -1493,10 +1522,12 @@ struct Plaza2PrivateStateProjector::Impl {
                     found->second.has_current_status = status.has_current_status;
                     found->second.current_status = status.current_status;
                     found->second.current_status_refdata_bound = status.current_status_refdata_bound;
+                    found->second.current_status_session_epoch = status.current_status_session_epoch;
                 } else {
                     found->second = {.isin_id = integer,
                                      .has_current_status = found->second.has_current_status,
-                                     .current_status = found->second.current_status};
+                                     .current_status = found->second.current_status,
+                                     .current_status_session_epoch = found->second.current_status_session_epoch};
                 }
             }
             break;
@@ -1510,16 +1541,20 @@ struct Plaza2PrivateStateProjector::Impl {
         case kFortsTradeReplHeartbeat:
         case kFortsTradeReplSysEvents:
         case kFortsPartReplSysEvents:
+        case kFortsInstrumentstateReplSysEvents:
         case kFortsPosReplInfo:
         case kFortsUserorderbookReplInfo: {
             if (!latest_marker)
                 break;
             const auto code = static_cast<StreamCode>(generated::FindTableByCode(table)->stream_id);
             auto& health = ensure_stream_health(ensure_staged_stream_health(), code);
-            if (table == kFortsTradeReplSysEvents || table == kFortsPartReplSysEvents) {
+            if (table == kFortsTradeReplSysEvents || table == kFortsPartReplSysEvents ||
+                table == kFortsInstrumentstateReplSysEvents) {
                 health.last_event_id = health.last_event_type = 0;
                 health.last_message.clear();
             }
+            if (table == kFortsInstrumentstateReplSysEvents)
+                reset_instrument_status_session(health);
             if (table == kFortsPosReplInfo || table == kFortsUserorderbookReplInfo) {
                 health.has_publication_state = false;
                 health.publication_state = 0;
@@ -1560,6 +1595,37 @@ struct Plaza2PrivateStateProjector::Impl {
                     floor = clear_revision;
                     mark_trade_history_truncated(false);
                 }
+            }
+            return;
+        }
+        if (table_code == kFortsInstrumentstateReplSysEvents) {
+            auto& revisions = active_source_revisions();
+            const auto source = revisions.find(table_code);
+            const bool clear_all = clear_revision == std::numeric_limits<std::int64_t>::max();
+            bool clears_latest = clear_all;
+            if (source != revisions.end()) {
+                const auto latest = source->second.latest_key;
+                clears_latest |= source_row_is_stale(table_code, latest, clear_revision);
+                std::vector<std::string> removed;
+                for (const auto& [key, value] : source->second)
+                    if (clear_all || value.revision < clear_revision)
+                        removed.push_back(key);
+                for (const auto& key : removed)
+                    erase_source_row(table_code, key);
+            }
+            if (clears_latest) {
+                auto& health =
+                    staged.active
+                        ? ensure_stream_health(ensure_staged_stream_health(), StreamCode::kFortsInstrumentstateRepl)
+                        : ensure_stream_health(stream_health, StreamCode::kFortsInstrumentstateRepl);
+                // MAX transfers the table to a new revision epoch within
+                // the same LifeNum; ordinary purges cannot revive history.
+                reset_instrument_status_session(health, clear_all);
+                health.last_event_id = health.last_event_type = 0;
+                health.last_message.clear();
+                health.last_server_time = 0;
+                if (!staged.active)
+                    rebuild_instruments();
             }
             return;
         }
@@ -1982,11 +2048,13 @@ struct Plaza2PrivateStateProjector::Impl {
             rebuild_sessions();
             break;
         case StreamCode::kFortsInstrumentstateRepl:
+            reset_instrument_status_session(ensure_stream_health(stream_health, stream_code), true);
             for (auto& [unused_id, instrument] : instruments_by_isin) {
                 static_cast<void>(unused_id);
                 instrument.has_current_status = false;
                 instrument.current_status = 0;
                 instrument.current_status_refdata_bound = false;
+                instrument.current_status_session_epoch = 0;
             }
             rebuild_instruments();
             break;
@@ -2055,12 +2123,14 @@ struct Plaza2PrivateStateProjector::Impl {
             staged.touched_streams.insert(StreamCode::kFortsSessionstateRepl);
             break;
         case StreamCode::kFortsInstrumentstateRepl:
+            reset_instrument_status_session(ensure_stream_health(ensure_staged_stream_health(), stream_code), true);
             for (auto& [unused_id, instrument] :
                  ensure_stage_copy(staged.instruments, instruments_by_isin, native_commit_phase)) {
                 static_cast<void>(unused_id);
                 instrument.has_current_status = false;
                 instrument.current_status = 0;
                 instrument.current_status_refdata_bound = false;
+                instrument.current_status_session_epoch = 0;
             }
             staged.touched_streams.insert(StreamCode::kFortsInstrumentstateRepl);
             break;
@@ -2341,11 +2411,7 @@ struct Plaza2PrivateStateProjector::Impl {
         auto instrument = instruments[isin_id];
         instrument.isin_id = isin_id;
         const auto sess_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsSessId);
-        if (instrument.sess_id != sess_id || !instrument.current_session_member) {
-            // Also handles status-before-membership at initial startup. Only
-            // a subsequent independent status row can re-establish currentness.
-            instrument.current_status_refdata_bound = false;
-        }
+        instrument.current_status_refdata_bound = false;
         instrument.sess_id = sess_id;
         instrument.kind = InstrumentKind::kFuture;
         instrument.isin = row.text(FieldCode::kFortsRefdataReplFutSessContentsIsin);
@@ -2432,7 +2498,31 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.isin_id = isin_id;
         instrument.has_current_status = true;
         instrument.current_status = row.i32(FieldCode::kFortsInstrumentstateReplInstrumentStatePublicState);
-        instrument.current_status_refdata_bound = instrument.sess_id > 0 && instrument.current_session_member;
+        instrument.current_status_session_epoch =
+            ensure_stream_health(ensure_staged_stream_health(), StreamCode::kFortsInstrumentstateRepl)
+                .instrument_status_session_epoch;
+        refresh_instrument_status_binding(instrument);
+    }
+
+    void apply_instrument_status_session_row(const projection::EventSpec& event, const RowReader& row) {
+        auto& health = ensure_stream_health(ensure_staged_stream_health(), StreamCode::kFortsInstrumentstateRepl);
+        const auto session = row.i32(FieldCode::kFortsInstrumentstateReplSysEventsSessId);
+        if (session != health.instrument_status_session_id) {
+            // A fresh snapshot is one status epoch, even when status rows
+            // precede several historical markers. After ONLINE, a changed
+            // session requires independently received status rows again.
+            if (health.instrument_status_session_id != 0 && (health.online || health.snapshot_complete))
+                ++health.instrument_status_session_epoch;
+            health.instrument_status_session_id = session;
+            staged.instrument_status_session_changed = true;
+            invalidate_status_bindings();
+        }
+        staged.touched_streams.insert(StreamCode::kFortsInstrumentstateRepl);
+        health.instrument_status_session_revision = event.signed_value;
+        health.last_event_id = row.i64(FieldCode::kFortsInstrumentstateReplSysEventsEventId);
+        health.last_event_type = row.i32(FieldCode::kFortsInstrumentstateReplSysEventsEventType);
+        health.last_message = row.text(FieldCode::kFortsInstrumentstateReplSysEventsMessage);
+        health.last_server_time = row.i64(FieldCode::kFortsInstrumentstateReplSysEventsServerTime);
     }
 
     void apply_system_message_row(const projection::EventSpec& event, const RowReader& row) {
@@ -2511,6 +2601,15 @@ struct Plaza2PrivateStateProjector::Impl {
         if (service.size() < 3)
             return;
         const auto repl_id = row.i64(service[0].field_code);
+        if (event.table_code == TableCode::kFortsInstrumentstateReplSysEvents) {
+            auto& health = ensure_stream_health(ensure_staged_stream_health(), StreamCode::kFortsInstrumentstateRepl);
+            // Native snapshot rows need not arrive in revision order. An
+            // older event cannot relabel status rows or replace the current
+            // source marker; its purge/deletion cannot affect that marker.
+            if (health.instrument_status_session_revision != 0 &&
+                event.signed_value <= health.instrument_status_session_revision)
+                return;
+        }
         auto& source = active_source_revisions();
         if (row.i64(service[2].field_code) != 0) {
             staged.touched_streams.insert(event.stream_code);
@@ -2526,6 +2625,9 @@ struct Plaza2PrivateStateProjector::Impl {
             } else
                 key = row_revision_key(event.table_code, row); // Legacy synthetic rows have no replID.
             const bool latest_marker = table->second.latest_key == key;
+            if (latest_marker && event.table_code == TableCode::kFortsInstrumentstateReplSysEvents)
+                ensure_stream_health(ensure_staged_stream_health(), StreamCode::kFortsInstrumentstateRepl)
+                    .instrument_status_session_revision = event.signed_value;
             erase_source_row(event.table_code, key);
             erase_owned_row(event.table_code, key, latest_marker, true, repl_id);
             return;
@@ -2589,6 +2691,9 @@ struct Plaza2PrivateStateProjector::Impl {
             break;
         case TableCode::kFortsInstrumentstateReplInstrumentState:
             apply_instrument_status_row(row);
+            break;
+        case TableCode::kFortsInstrumentstateReplSysEvents:
+            apply_instrument_status_session_row(event, row);
             break;
         case TableCode::kFortsRefdataReplSysMessages:
             apply_system_message_row(event, row);
@@ -2672,7 +2777,8 @@ struct Plaza2PrivateStateProjector::Impl {
             future_sessions = std::move(*staged.future_sessions);
         if (staged.future_vcb.has_value())
             future_vcb_by_row = std::move(*staged.future_vcb);
-        if (refdata_instruments_changed || refdata_vcb_changed || staged.sessions.has_value()) {
+        if (refdata_instruments_changed || refdata_vcb_changed || staged.sessions.has_value() ||
+            staged.instrument_status_session_changed) {
             const auto current_session = select_session(session_snapshots);
             const bool membership_stable =
                 std::all_of(staged.instrument_isins.begin(), staged.instrument_isins.end(), [&](auto isin) {
@@ -2698,6 +2804,7 @@ struct Plaza2PrivateStateProjector::Impl {
                         break;
                     }
                     auto& source = found->second;
+                    refresh_instrument_status_binding(source);
                     if (staged.touched_streams.contains(StreamCode::kFortsRefdataRepl))
                         join_future_vcb(source);
                     auto target = std::lower_bound(instrument_snapshots.begin(), instrument_snapshots.end(), isin,

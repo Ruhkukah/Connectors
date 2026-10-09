@@ -75,6 +75,14 @@ inline void private_refdata_update_regression() {
     membership("100", 200);
     event(Plaza2ListenerEventKind::TransactionCommit, kFortsRefdataRepl);
     event(Plaza2ListenerEventKind::TransactionBegin, kFortsInstrumentstateRepl);
+    const std::array status_session{number(kFortsInstrumentstateReplSysEventsReplId, 1),
+                                    number(kFortsInstrumentstateReplSysEventsSessId, 200)};
+    check(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                            .stream_code = kFortsInstrumentstateRepl,
+                                            .table_code = kFortsInstrumentstateReplSysEvents,
+                                            .fields = status_session,
+                                            .signed_value = 1}),
+          "REF status session");
     const std::array status{number(kFortsInstrumentstateReplInstrumentStateIsinId, 23000),
                             number(kFortsInstrumentstateReplInstrumentStatePublicState, 2)};
     check(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,

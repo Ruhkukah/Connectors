@@ -154,6 +154,55 @@ int main(int argc, char** argv) {
             test::require(!host.stop(), "POS anchor admission host stops");
         }
         {
+            ConnectorHost host(config(fixture));
+            warm(host);
+            using enum moex::plaza2::generated::StreamCode;
+            using enum moex::plaza2::generated::TableCode;
+            using enum moex::plaza2::generated::FieldCode;
+            test::require(host.order_entry_ready(1001), "instrument session proof baseline");
+            fake.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = kFortsInstrumentstateRepl});
+            fake.enqueue({.kind = test::fake::EventKind::ClearDeleted,
+                          .stream_code = kFortsInstrumentstateRepl,
+                          .table_code = kFortsInstrumentstateReplSysEvents,
+                          .revision = 1000});
+            fake.enqueue({.kind = test::fake::EventKind::Commit, .stream_code = kFortsInstrumentstateRepl});
+            for (int i = 0; i < 5; ++i)
+                test::require(!host.poll(), "instrument session proof loss polls");
+            test::require(host.snapshot().private_streams_ready && !host.order_entry_ready(1001) &&
+                              !host.market_data_snapshot().instrument_tradable,
+                          "live status without its stream session enabled trading");
+            const auto integer = [](auto code, std::int64_t value) {
+                return test::fake::Field{.field_code = code, .signed_value = value};
+            };
+            const auto publish = [&](std::int32_t session, std::int64_t revision) {
+                fake.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = kFortsInstrumentstateRepl});
+                fake.enqueue({.stream_code = kFortsInstrumentstateRepl,
+                              .table_code = kFortsInstrumentstateReplSysEvents,
+                              .revision = revision,
+                              .fields = {integer(kFortsInstrumentstateReplSysEventsReplId, 9001),
+                                         integer(kFortsInstrumentstateReplSysEventsReplRev, revision),
+                                         integer(kFortsInstrumentstateReplSysEventsSessId, session),
+                                         integer(kFortsInstrumentstateReplSysEventsEventId, revision),
+                                         integer(kFortsInstrumentstateReplSysEventsEventType, 1)}});
+                fake.enqueue({.stream_code = kFortsInstrumentstateRepl,
+                              .table_code = kFortsInstrumentstateReplInstrumentState,
+                              .revision = revision + 1,
+                              .fields = {integer(kFortsInstrumentstateReplInstrumentStateReplId, 1001),
+                                         integer(kFortsInstrumentstateReplInstrumentStateReplRev, revision + 1),
+                                         integer(kFortsInstrumentstateReplInstrumentStateIsinId, 1001),
+                                         integer(kFortsInstrumentstateReplInstrumentStatePublicState, 1)}});
+                fake.enqueue({.kind = test::fake::EventKind::Commit, .stream_code = kFortsInstrumentstateRepl});
+                for (int i = 0; i < 5; ++i)
+                    test::require(!host.poll(), "instrument stream session proof polls");
+            };
+            publish(322, 1001);
+            test::require(!host.order_entry_ready(1001), "other-session instrument status enabled trading");
+            publish(321, 2001);
+            test::require(host.order_entry_ready(1001) && host.market_data_snapshot().instrument_tradable,
+                          "fresh matching stream session and status did not restore trading");
+            test::require(!host.stop(), "instrument session proof host stops");
+        }
+        {
             const auto cfg = config(fixture);
             test::require(cfg.isin_ids.size() == 2 && cfg.transport.target_session_id == 0 &&
                               cfg.transport.host.connection_settings.starts_with("p2tcp://localhost:4102;"),

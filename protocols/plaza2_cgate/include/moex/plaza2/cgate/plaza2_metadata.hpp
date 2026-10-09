@@ -67,9 +67,19 @@ enum class TableCode : std::uint32_t {
     kFortsRefdataReplSession = 0xD83DB291u,
     kFortsSessionstateReplSessionState = 0xC76B56A7u,
     kFortsInstrumentstateReplInstrumentState = 0xED3612BBu,
+    kFortsInstrumentstateReplSysEvents = 0xFBFFE27Du,
 };
 
 enum class FieldCode : std::uint32_t {
+    kFortsInstrumentstateReplSysEventsReplId = 0x238D77B5u,
+    kFortsInstrumentstateReplSysEventsReplRev = 0xD288D2A4u,
+    kFortsInstrumentstateReplSysEventsReplAct = 0x96112BC4u,
+    kFortsInstrumentstateReplSysEventsEventId = 0x744B99A4u,
+    kFortsInstrumentstateReplSysEventsSessId = 0x2B37C451u,
+    kFortsInstrumentstateReplSysEventsEventType = 0x729A06CEu,
+    kFortsInstrumentstateReplSysEventsMessage = 0xE144F36Cu,
+    kFortsInstrumentstateReplSysEventsServerTime = 0xEEE85693u,
+
     kFortsTradeReplOrdersLogReplId = 0x9966AC1Cu,
     kFortsTradeReplOrdersLogReplRev = 0xC52EBF1Eu,
     kFortsTradeReplOrdersLogReplAct = 0x3CE6481Fu,
@@ -570,8 +580,8 @@ struct FieldDescriptor {
 
 inline constexpr std::size_t kTypeCount = 18;
 inline constexpr std::size_t kStreamCount = 9;
-inline constexpr std::size_t kTableCount = 34;
-inline constexpr std::size_t kFieldCount = 270;
+inline constexpr std::size_t kTableCount = 35;
+inline constexpr std::size_t kFieldCount = 278;
 
 std::span<const TypeDescriptor> TypeDescriptors();
 std::span<const StreamDescriptor> StreamDescriptors();

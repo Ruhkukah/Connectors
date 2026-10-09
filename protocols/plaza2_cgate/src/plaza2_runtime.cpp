@@ -890,7 +890,7 @@ struct Plaza2ListenerCallbackState {
         required_tables = {"session_state"};
         break;
     case kFortsInstrumentstateRepl:
-        required_tables = {"instrument_state"};
+        required_tables = {"instrument_state", "sys_events"};
         break;
     case kFortsAggrRepl:
         required_tables = {"orders_aggr", "sys_events"};

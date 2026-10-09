@@ -562,7 +562,8 @@ struct CgateSession::Impl {
                                          command.order_type == Plaza2TradeOrderType::Limit;
             return row.kind == plaza2::private_state::InstrumentKind::kFuture && !row.is_spread &&
                    row.isin_id == command.isin_id && row.sess_id == day && row.current_session_member &&
-                   row.has_current_status && (row.current_status == 1 || auction_day_add);
+                   row.has_current_status && row.current_status_refdata_bound &&
+                   (row.current_status == 1 || auction_day_add);
         });
     }
     bool stream_online(StreamCode code) const {

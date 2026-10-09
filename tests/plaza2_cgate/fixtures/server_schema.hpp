@@ -57,6 +57,7 @@ inline std::span<const generated::TableCode> captured_server_tables() {
         kFortsRefdataReplSession,
         kFortsSessionstateReplSessionState,
         kFortsInstrumentstateReplInstrumentState,
+        kFortsInstrumentstateReplSysEvents,
     };
     return tables;
 }
@@ -123,6 +124,8 @@ inline std::size_t server_schema_row_size(generated::TableCode table) {
         return 32;
     case kFortsInstrumentstateReplInstrumentState:
         return 32;
+    case kFortsInstrumentstateReplSysEvents:
+        return 116;
     default:
         return 0;
     }
@@ -845,6 +848,15 @@ inline std::span<const ServerSchemaField> server_schema_fields(generated::TableC
         {static_cast<FieldCode>(0x1ED83C78u), "replAct", "i8", ValueClass::kSignedInteger, 8, 16},
         {static_cast<FieldCode>(0x7EAE31C6u), "isin_id", "i4", ValueClass::kSignedInteger, 4, 24},
         {static_cast<FieldCode>(0x7C003BB6u), "public_state", "i4", ValueClass::kSignedInteger, 4, 28},
+        // FORTS_INSTRUMENTSTATE_REPL.sys_events (same captured scheme, table index 1)
+        {FieldCode::kFortsInstrumentstateReplSysEventsReplId, "replID", "i8", ValueClass::kSignedInteger, 8, 0},
+        {FieldCode::kFortsInstrumentstateReplSysEventsReplRev, "replRev", "i8", ValueClass::kSignedInteger, 8, 8},
+        {FieldCode::kFortsInstrumentstateReplSysEventsReplAct, "replAct", "i8", ValueClass::kSignedInteger, 8, 16},
+        {FieldCode::kFortsInstrumentstateReplSysEventsEventId, "event_id", "i8", ValueClass::kSignedInteger, 8, 24},
+        {FieldCode::kFortsInstrumentstateReplSysEventsSessId, "sess_id", "i4", ValueClass::kSignedInteger, 4, 32},
+        {FieldCode::kFortsInstrumentstateReplSysEventsEventType, "event_type", "i4", ValueClass::kSignedInteger, 4, 36},
+        {FieldCode::kFortsInstrumentstateReplSysEventsMessage, "message", "c64", ValueClass::kFixedString, 65, 40},
+        {FieldCode::kFortsInstrumentstateReplSysEventsServerTime, "server_time", "t", ValueClass::kTimestamp, 10, 106},
     };
     switch (table) {
     case TableCode::kFortsTradeReplOrdersLog:
@@ -915,6 +927,8 @@ inline std::span<const ServerSchemaField> server_schema_fields(generated::TableC
         return {fields + 671, 5};
     case TableCode::kFortsInstrumentstateReplInstrumentState:
         return {fields + 676, 5};
+    case TableCode::kFortsInstrumentstateReplSysEvents:
+        return {fields + 681, 8};
     }
     return {};
 }
