@@ -55,7 +55,8 @@ inline void immediate_dispatch_host_regression(TradingHostConfig config, const p
         check(!host.start(), "rate-held dispatch host start");
         for (int i = 0; i < 30; ++i)
             check(!host.poll(), "rate-held dispatch bootstrap");
-        check(control.last_process_timeout() == 50, "idle fixture did not use its configured native wait");
+        check(control.last_process_timeout() <= 2 && control.last_process_timeout() > 0,
+              "idle native wait can still delay commands by more than two milliseconds");
         const auto before = control.commands().size();
         control.set(plaza2::test::fake::Option::PubReplyOrderId, "66011");
         check(host.place({.client_order_id = "rate-first", .isin_id = 1001, .price = "103000", .quantity = 2}).empty(),

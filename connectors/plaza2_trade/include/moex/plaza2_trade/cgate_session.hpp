@@ -88,7 +88,9 @@ struct CgateSessionConfig {
     bool trade_replay_from_pos_anchor{false};
     plaza2::cgate::Plaza2CredentialConfig credentials{};
     plaza2::cgate::Plaza2CredentialConfig software_key{};
-    std::uint32_t process_timeout_ms{50};
+    // The owner also serves operator commands; even explicitly larger waits
+    // are capped at two milliseconds by the native pump.
+    std::uint32_t process_timeout_ms{2};
     std::chrono::milliseconds recovery_retry_interval{1000};
     // Recoverable external outages are operator-cancellable and do not have
     // an automatic terminal deadline. This threshold only raises the
@@ -104,6 +106,7 @@ struct CgateSessionConfig {
     std::function<std::uint64_t()> publisher_now_ms; // Empty uses steady_clock; injectable for offline boundary tests.
     // Owner-side diagnostics only; collecting metrics does not emit journal rows.
     bool collect_poll_metrics{false};
+    bool collect_post_metrics{false};
 };
 
 struct CgatePollEventMetrics {

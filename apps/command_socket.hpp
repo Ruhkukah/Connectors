@@ -13,6 +13,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -168,7 +169,8 @@ class CommandSocket {
     CommandSocket(const CommandSocket&) = delete;
     CommandSocket& operator=(const CommandSocket&) = delete;
 
-    template <typename Execute, typename Refuse> void poll(Execute execute, Refuse refuse) {
+    template <typename Execute, typename Refuse>
+    void poll(Execute execute, Refuse refuse, bool measure_receipt = false) {
         if (client_ < 0) {
             client_ = ::accept(fd_, nullptr, nullptr);
             if (client_ < 0)
@@ -227,6 +229,10 @@ class CommandSocket {
                 }
                 if (count < 0)
                     break;
+                if (measure_receipt && input_.empty())
+                    received_steady_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now().time_since_epoch())
+                                              .count();
                 input_.append(data.data(), static_cast<std::size_t>(count));
             }
             const auto newline = input_.find('\n');
@@ -245,7 +251,11 @@ class CommandSocket {
                 else {
                     const auto command = std::string(header->command.substr(0, header->command.size() - 1));
                     deadline_ = std::chrono::steady_clock::time_point(std::chrono::milliseconds(header->deadline));
-                    response_ = command_socket_detail::with_nonce(header->nonce, execute(command));
+                    if constexpr (std::is_invocable_v<Execute, std::string, std::int64_t>)
+                        response_ =
+                            command_socket_detail::with_nonce(header->nonce, execute(command, received_steady_ns_));
+                    else
+                        response_ = command_socket_detail::with_nonce(header->nonce, execute(command));
                 }
             } else
                 return;
@@ -274,6 +284,7 @@ class CommandSocket {
         input_.clear();
         response_.clear();
         sent_ = 0;
+        received_steady_ns_ = 0;
     }
     std::filesystem::path path_;
     int fd_{-1}, client_{-1};
@@ -281,6 +292,7 @@ class CommandSocket {
     std::chrono::steady_clock::time_point deadline_{};
     std::string input_, response_;
     std::size_t sent_{};
+    std::int64_t received_steady_ns_{};
 };
 
 inline std::string send_command(const std::filesystem::path& path, std::string command) {

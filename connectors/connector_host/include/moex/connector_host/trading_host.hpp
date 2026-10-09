@@ -16,6 +16,8 @@ struct TradingHostConfig {
     std::filesystem::path identity_state_path;
     std::optional<std::int64_t> clock_offset_us;
     bool measure_timings{};
+    // Command-only measurement avoids per-poll tracing during latency runs.
+    bool measure_command_latency{};
     std::function<std::int64_t()> utc_now;
     std::function<std::uintmax_t(const std::filesystem::path&)> storage_space_probe;
     std::string source_git_sha{"unknown"}, binary_sha256{"unknown"};
@@ -29,7 +31,7 @@ class CgateTradingHost {
     [[nodiscard]] plaza2::cgate::Plaza2Error start();
     [[nodiscard]] plaza2::cgate::Plaza2Error poll();
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
-    [[nodiscard]] std::string place(OrderRequest request);
+    [[nodiscard]] std::string place(OrderRequest request, std::int64_t socket_receipt_steady_ns = 0);
     [[nodiscard]] std::string cancel(std::string_view client_order_id);
     [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity);
     [[nodiscard]] std::string cancel_all(std::int32_t isin_id);
@@ -72,6 +74,7 @@ class CgateTradingHost {
     std::unordered_map<std::int64_t, std::pair<std::uint64_t, std::int64_t>> exchange_message_revisions_;
     std::vector<plaza2::private_state::SystemMessageSnapshot> exchange_messages_;
     std::optional<std::pair<std::string, std::int64_t>> immediate_place_timing_;
+    std::int64_t immediate_socket_receipt_ns_{};
     std::int64_t last_aggr_receipt_utc_ns_{};
     std::int64_t last_trade_server_time_{}, last_trade_heartbeat_revision_{};
     OrderManager::Clock::time_point next_trade_time_sample_{};

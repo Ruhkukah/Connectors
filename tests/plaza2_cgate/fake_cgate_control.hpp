@@ -150,6 +150,7 @@ struct Scenario {
     bool suppress_initial_orders{false};
     bool zero_position{false};
     std::uint32_t heartbeat_replay_rows{0};
+    bool simulate_idle_wait{false};
     // Zero follows the fake server's POS epoch; a positive value models an independent TRADE rollover.
     std::uint32_t trade_server_lifenum{0};
     std::uint32_t listener_create_result{0}, publisher_create_result{0};
@@ -240,6 +241,9 @@ class Control {
     }
     std::uint32_t last_process_timeout() const {
         return call<std::uint32_t (*)()>("moex_fake_last_process_timeout")();
+    }
+    std::int64_t last_post_started_steady_ns() const {
+        return call<std::int64_t (*)()>("moex_fake_last_post_started_steady_ns")();
     }
     std::uint64_t opens(generated::StreamCode stream) const {
         return call<std::uint64_t (*)(generated::StreamCode)>("moex_fake_listener_opens")(stream);

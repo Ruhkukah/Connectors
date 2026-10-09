@@ -308,7 +308,8 @@ struct CgateSession::Impl {
     void wait_for_recovery() const {
         // A zero process timeout suppresses CGate's wait, but a disconnected
         // owner must still yield between retries instead of consuming a core.
-        const auto delay = std::chrono::milliseconds(config.process_timeout_ms ? config.process_timeout_ms : 50);
+        const auto delay =
+            std::chrono::milliseconds(config.process_timeout_ms ? std::min(config.process_timeout_ms, 2u) : 2);
         std::this_thread::sleep_for(delay);
     }
     void log(std::string_view kind, std::string fields) {
@@ -893,7 +894,7 @@ struct CgateSession::Impl {
             }
             if (result == Timeout) {
                 if (wait_for_data && config.process_timeout_ms) {
-                    error = process(config.process_timeout_ms, &result);
+                    error = process(std::min(config.process_timeout_ms, 2u), &result);
                     if (error) {
                         operation("connection", "process", error);
                         std::uint32_t error_state = Closed;
@@ -1124,7 +1125,8 @@ cg::Plaza2PublisherMessageResult CgateSession::post_validated(std::string_view n
                                       : Plaza2TradeCommandKind::DelUserOrders;
     impl_->replies.pending.emplace(
         user_id, Replies::Pending{kind, impl_->now() + std::chrono::milliseconds(impl_->config.reply_timeout_ms)});
-    out = impl_->publisher.post_by_message_name(name, payload, user_id, need_reply, impl_->config.collect_poll_metrics);
+    out = impl_->publisher.post_by_message_name(
+        name, payload, user_id, need_reply, impl_->config.collect_post_metrics || impl_->config.collect_poll_metrics);
     if (out.certainty == cg::Plaza2SubmissionCertainty::DefinitelyNotSent)
         impl_->replies.pending.erase(user_id);
     return out;

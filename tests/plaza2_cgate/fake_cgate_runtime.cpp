@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -22,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -74,6 +76,7 @@ std::unordered_map<StreamCode, std::uint64_t> listener_opens;
 std::string last_trade_open_settings;
 std::uint64_t process_calls{};
 std::uint32_t last_process_timeout{};
+std::int64_t last_post_started_steady_ns{};
 const char* option(Option option) {
     const auto& value = scenario.options[static_cast<std::size_t>(option)];
     return value.empty() ? nullptr : value.c_str();
@@ -2601,6 +2604,8 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
     }
     if (connection->script_emitted && connection->pending_replies.empty()) {
         if (!pending_new_listener) {
+            if (scenario.simulate_idle_wait && timeout_ms)
+                std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
             return kCgErrTimeout;
         }
     }
@@ -2699,6 +2704,8 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
     }
 
     if (!emitted_any) {
+        if (scenario.simulate_idle_wait && timeout_ms)
+            std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
         return kCgErrTimeout;
     }
 
@@ -3033,6 +3040,9 @@ std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void
 }
 
 std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
+    last_post_started_steady_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
     ++g_pub_post_calls;
     if (fake_flag(Option::ExitAfterPost))
         ::_exit(73);
@@ -3249,6 +3259,9 @@ extern "C" void moex_fake_successful_closes(std::array<std::uint64_t, 4>* counts
 }
 extern "C" std::uint32_t moex_fake_last_process_timeout() {
     return last_process_timeout;
+}
+extern "C" std::int64_t moex_fake_last_post_started_steady_ns() {
+    return last_post_started_steady_ns;
 }
 extern "C" std::uint64_t moex_fake_listener_opens(StreamCode stream) {
     return listener_opens[stream];

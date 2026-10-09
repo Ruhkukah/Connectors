@@ -71,7 +71,7 @@ std::string refusal(moex::connector_host::CgateTradingHost& host, std::string_vi
     return "{\"ok\":false,\"error\":" + moex::connector_host::json_string(error) + "}";
 }
 std::string command(moex::connector_host::CgateTradingHost& host, ShutdownRequest& shutdown, std::string line,
-                    std::string_view channel) {
+                    std::string_view channel, std::int64_t socket_receipt_steady_ns = 0) {
     using namespace moex::connector_host;
     if (!line.empty())
         host.record_operator_input(line, channel);
@@ -119,7 +119,7 @@ std::string command(moex::connector_host::CgateTradingHost& host, ShutdownReques
                                                      : moex::plaza2_trade::Plaza2TradeOrderType::Limit;
                 }
                 if (error.empty())
-                    error = host.place(std::move(request));
+                    error = host.place(std::move(request), socket_receipt_steady_ns);
             }
         } else if (verb == "cancel") {
             if (!(input >> key))
@@ -184,12 +184,17 @@ int main(int argc, char** argv) {
         bool command_rate_configured{};
         bool sole_instance{};
         bool measure_timings{};
+        bool measure_command_latency{};
         std::uint32_t reply_timeout{60000};
         std::optional<std::int64_t> clock_offset;
         for (int i = 1; i < argc; ++i) {
             const std::string_view arg(argv[i]);
             if (arg == "--measure-timings") {
                 measure_timings = true;
+                continue;
+            }
+            if (arg == "--measure-command-latency") {
+                measure_command_latency = true;
                 continue;
             }
             if (arg == "--sole-instance") {
@@ -274,7 +279,8 @@ int main(int argc, char** argv) {
                 << "\nrun options: --log FILE --state FILE --max-quantity N "
                    "--max-notional ISIN=QUOTE_CAP "
                    "--max-position ISIN=CONTRACTS --max-open-orders N "
-                   "--reply-timeout-ms N --clock-offset-us N --command-socket PATH --sole-instance --measure-timings\n"
+                   "--reply-timeout-ms N --clock-offset-us N --command-socket PATH --sole-instance --measure-timings "
+                   "--measure-command-latency\n"
                 << "required with --allow-orders: --max-commands-per-second N "
                    "--login-env NAME --ext-id-range MIN:MAX "
                    "(deployment-assigned, nonoverlapping)\n"
@@ -297,6 +303,7 @@ int main(int argc, char** argv) {
                 throw std::invalid_argument("--allow-orders requires --max-commands-per-second");
             config.orders.command_rate_configured = command_rate_configured;
             config.measure_timings = measure_timings;
+            config.measure_command_latency = measure_command_latency;
             config.orders.sole_instance = sole_instance;
             if (!login_env.empty()) {
                 const auto* login = std::getenv(login_env.c_str());
@@ -372,12 +379,16 @@ int main(int argc, char** argv) {
                     std::cerr << error.message << '\n';
                     return 3;
                 }
-                socket.poll([&](std::string line) { return command(host, drain, std::move(line), "command_socket"); },
-                            [&](std::string_view line, std::string_view error) {
-                                if (!line.empty())
-                                    host.record_operator_input(line, "command_socket");
-                                return refusal(host, line, error, "command_socket");
-                            });
+                socket.poll(
+                    [&](std::string line, std::int64_t receipt) {
+                        return command(host, drain, std::move(line), "command_socket", receipt);
+                    },
+                    [&](std::string_view line, std::string_view error) {
+                        if (!line.empty())
+                            host.record_operator_input(line, "command_socket");
+                        return refusal(host, line, error, "command_socket");
+                    },
+                    measure_timings || measure_command_latency);
                 pollfd descriptor{.fd = STDIN_FILENO, .events = POLLIN};
                 if (std::chrono::steady_clock::now() >= input_retry && ::poll(&descriptor, 1, 0) > 0 &&
                     (descriptor.revents & (POLLIN | POLLHUP))) {

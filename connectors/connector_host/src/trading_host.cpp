@@ -342,16 +342,23 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
                     .validation_error = {.code = cg::Plaza2ErrorCode::RuntimeCallFailed,
                                          .message = "storage failure or command ID not durably reserved"}};
             const auto result = session_.post_command(command, id);
-            if (config_.measure_timings && result.post_invoked) {
+            if ((config_.measure_timings || config_.measure_command_latency) && result.post_invoked) {
                 std::string fields = "{\"user_id\":" + std::to_string(id) +
                                      ",\"command\":" + json_string(command.command_name) +
                                      ",\"post_started_utc_ns\":" + std::to_string(result.post_started_utc_ns) +
                                      ",\"post_finished_utc_ns\":" + std::to_string(result.post_finished_utc_ns) +
                                      ",\"cg_pub_post_ns\":" + std::to_string(result.post_duration_ns);
-                if (immediate_place_timing_ && command.command_kind == tr::Plaza2TradeCommandKind::AddOrder)
+                if (immediate_place_timing_ && command.command_kind == tr::Plaza2TradeCommandKind::AddOrder) {
                     fields += ",\"client_order_id\":" + json_string(immediate_place_timing_->first) +
                               ",\"immediate_place_to_post_ns\":" +
                               std::to_string(result.post_started_steady_ns - immediate_place_timing_->second);
+                    if (immediate_socket_receipt_ns_ > 0 &&
+                        immediate_socket_receipt_ns_ <= immediate_place_timing_->second)
+                        fields += ",\"socket_receipt_to_place_ns\":" +
+                                  std::to_string(immediate_place_timing_->second - immediate_socket_receipt_ns_) +
+                                  ",\"socket_receipt_to_post_ns\":" +
+                                  std::to_string(result.post_started_steady_ns - immediate_socket_receipt_ns_);
+                }
                 log_event("command_timing", fields + "}");
             }
             return result;
@@ -420,6 +427,7 @@ void CgateTradingHost::assert_owner() const {
 tr::CgateSessionConfig CgateTradingHost::session_config() {
     auto result = config_.session;
     result.collect_poll_metrics = config_.measure_timings;
+    result.collect_post_metrics = config_.measure_timings || config_.measure_command_latency;
     result.publisher_rate_owner = tr::PublisherRateOwner::External;
     result.event_log = [this](auto kind, auto fields) { log_event(kind, fields); };
     result.listener_event_log = [this](const auto& event) { log_listener_event(event); };
@@ -845,9 +853,10 @@ cg::Plaza2Error CgateTradingHost::stop() {
                                         .message = "journal storage failure during shutdown: " + log_error_};
     return stop_error_;
 }
-std::string CgateTradingHost::place(OrderRequest request) {
+std::string CgateTradingHost::place(OrderRequest request, std::int64_t socket_receipt_steady_ns) {
     assert_owner();
-    if (config_.measure_timings && orders_->queued() == 0)
+    immediate_socket_receipt_ns_ = socket_receipt_steady_ns;
+    if ((config_.measure_timings || config_.measure_command_latency) && orders_->queued() == 0)
         immediate_place_timing_ = {{request.client_order_id, std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                                  std::chrono::steady_clock::now().time_since_epoch())
                                                                  .count()}};

@@ -500,7 +500,7 @@ int main(int argc, char** argv) {
             const auto waiting_started = std::chrono::steady_clock::now();
             for (int i = 0; i < 4; ++i)
                 require(!closed_session.poll(), "CLOSED retry pump failed");
-            require(std::chrono::steady_clock::now() - waiting_started >= std::chrono::milliseconds(35),
+            require(std::chrono::steady_clock::now() - waiting_started >= std::chrono::milliseconds(7),
                     "CLOSED recovery polls busy-spin instead of waiting");
             require(closed_session.recovery_status().attempts == 0,
                     "CLOSED wait retried before the one-second recovery boundary");
@@ -515,7 +515,7 @@ int main(int argc, char** argv) {
             require(!nonblocking.start(), "nonblocking outage session start");
             const auto waiting_started = std::chrono::steady_clock::now();
             require(!nonblocking.poll(), "nonblocking outage poll failed");
-            require(std::chrono::steady_clock::now() - waiting_started >= std::chrono::milliseconds(45),
+            require(std::chrono::steady_clock::now() - waiting_started >= std::chrono::milliseconds(1),
                     "zero process timeout busy-spins during an outage");
             require(!nonblocking.stop(), "nonblocking outage session stop");
             fake.clear(test::fake::Option::ConnectionOpenResult);
@@ -537,7 +537,7 @@ int main(int argc, char** argv) {
                     require(!errored.poll(), "scheduled ERROR reconnect became terminal");
                 }
             }
-            require(error_wait >= std::chrono::milliseconds(35), "ERROR recovery polls busy-spin instead of waiting");
+            require(error_wait >= std::chrono::milliseconds(7), "ERROR recovery polls busy-spin instead of waiting");
             require(errored.recovery_status().attempts == 3, "ERROR pacing changed the one-second retry schedule");
             flag(test::fake::Option::ConnectionOpenFail, false);
             now += std::chrono::seconds(1);
@@ -552,7 +552,7 @@ int main(int argc, char** argv) {
             const auto query_started = std::chrono::steady_clock::now();
             for (int i = 0; i < 4; ++i)
                 require(!errored.poll(), "connection state-query error became terminal");
-            require(std::chrono::steady_clock::now() - query_started >= std::chrono::milliseconds(35),
+            require(std::chrono::steady_clock::now() - query_started >= std::chrono::milliseconds(7),
                     "failed connection state-query polls busy-spin instead of waiting");
             require(errored.recovery_status().attempts == retries, "state-query wait changed the retry schedule");
             flag(test::fake::Option::ConnGetstateInternal, false);
