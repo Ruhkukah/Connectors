@@ -118,12 +118,23 @@ struct CgatePollEventMetrics {
     std::uint64_t exchange_timestamp_ns{0};
 };
 
+struct CgatePollCallbackMetrics {
+    plaza2::generated::StreamCode stream_code{plaza2::cgate::kNoStreamCode};
+    plaza2::generated::TableCode table_code{plaza2::cgate::kNoTableCode};
+    std::uint32_t native_message_type{};
+    std::uint64_t count{}, total_ns{}, max_ns{};
+};
+
 struct CgatePollMetrics {
     std::uint64_t sequence{0}, started_utc_ns{0}, finished_utc_ns{0};
     std::uint64_t total_ns{0}, process_ns{0}, blocking_process_ns{0}, observer_ns{0}, process_calls{0};
     std::uint64_t unattributed_events{0};
+    std::uint64_t callback_ns{}, unattributed_callback_ns{}, unattributed_callbacks{};
     // At most 128 stream/table/kind groups; storage is reused between polls.
     std::vector<CgatePollEventMetrics> events;
+    // Callback time includes adapter decoding, observers and projection. The
+    // remainder of process_ns includes vendor work and timing aggregation.
+    std::vector<CgatePollCallbackMetrics> callbacks;
 };
 
 struct Plaza2TransportHealth {
@@ -228,7 +239,8 @@ class CgateSession final {
   private:
     [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult post_validated(std::string_view message_name,
                                                                              std::span<const std::byte> payload,
-                                                                             std::uint32_t user_id, bool need_reply);
+                                                                             std::uint32_t user_id, bool need_reply,
+                                                                             std::uint64_t admission_started = 0);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

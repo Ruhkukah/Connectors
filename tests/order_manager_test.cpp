@@ -2025,6 +2025,41 @@ void delayed_relisted_fill_survives_raw_candidate_pruning() {
                                            }) == 1,
             "delayed terminal child fill replay charged the same deal twice");
 }
+void add_path_profiling() {
+    for (const bool measured : {false, true}) {
+        Fixture fixture;
+        std::uint64_t clock_reads{}, tick{};
+        fixture.config.measure_add_path = measured;
+        fixture.config.stage_timing_now = [&] {
+            ++clock_reads;
+            return ++tick;
+        };
+        OrderManager* owner{};
+        std::optional<AddPathTiming> captured;
+        OrderManager manager(
+            fixture.config,
+            [&](const auto&, auto) {
+                if (const auto* timing = owner->active_add_path_timing())
+                    captured = *timing;
+                return cg::Plaza2PublisherMessageResult{.certainty = cg::Plaza2SubmissionCertainty::Posted,
+                                                        .post_invoked = true};
+            },
+            [&](auto isin) { return fixture.ready && !fixture.unavailable_isins.contains(isin); },
+            [&](auto isin) { return fixture.terms(isin); });
+        owner = &manager;
+        require(manager.place(request("profiled-add", 1)).empty(), "profiling changed valid Add admission");
+        manager.poll(OrderManager::Clock::time_point{}, 1700000000);
+        require(manager.active_add_path_timing() == nullptr, "Add profile leaked beyond synchronous sender");
+        if (measured) {
+            require(clock_reads > 0 && captured && captured->readiness_ns > 0 && captured->session_terms_ns > 0 &&
+                        captured->risk_ns > 0 && captured->encode_ns > 0 && captured->reservation_ns > 0 &&
+                        captured->queue_ns > 0 && captured->dispatch_ns > 0 && captured->manager_place_ns > 0,
+                    "Add profile omitted an actual admission/encode/queue stage");
+        } else {
+            require(clock_reads == 0 && !captured, "disabled Add profiling read its stage clock");
+        }
+    }
+}
 void manager_scale() {
     for (const std::size_t count : {1000U, 150000U}) {
         OrderManagerConfig config;
@@ -2070,6 +2105,7 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        add_path_profiling();
         moex::connector_host::single_operator_alert_regression<Fixture>();
         moex::connector_host::retired_command_regression<Fixture>();
         moex::connector_host::scoped_unresolved_admission_regression<Fixture>();

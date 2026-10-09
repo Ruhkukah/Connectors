@@ -322,6 +322,7 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     : config_(checked_config(std::move(config))), owner_(std::this_thread::get_id()),
       journal_(config_.journal_path, identity_path(config_)), session_(session_config()) {
     auto orders = config_.orders;
+    orders.measure_add_path = config_.measure_timings;
     const auto reservations = journal_.reservations();
     orders.next_ext_id = std::max({orders.next_ext_id, orders.ext_id_begin, reservations.next_ext_id});
     orders.next_user_id = std::max(orders.next_user_id, reservations.next_user_id);
@@ -360,6 +361,22 @@ CgateTradingHost::CgateTradingHost(TradingHostConfig config)
                     fields += ",\"client_order_id\":" + json_string(immediate_place_timing_->first) +
                               ",\"immediate_place_to_post_ns\":" +
                               std::to_string(result.post_started_steady_ns - immediate_place_timing_->second);
+                    if (config_.measure_timings) {
+                        fields +=
+                            ",\"session_admission_ns\":" + std::to_string(result.session_admission_ns) +
+                            ",\"session_instrument_proof_ns\":" + std::to_string(result.session_instrument_proof_ns) +
+                            ",\"publisher_prepare_ns\":" + std::to_string(result.publisher_prepare_ns);
+                        if (const auto* path = orders_->active_add_path_timing()) {
+                            fields += ",\"add_path\":{\"readiness_ns\":" + std::to_string(path->readiness_ns) +
+                                      ",\"session_terms_ns\":" + std::to_string(path->session_terms_ns) +
+                                      ",\"risk_ns\":" + std::to_string(path->risk_ns) +
+                                      ",\"encode_ns\":" + std::to_string(path->encode_ns) +
+                                      ",\"reservation_ns\":" + std::to_string(path->reservation_ns) +
+                                      ",\"queue_ns\":" + std::to_string(path->queue_ns) +
+                                      ",\"dispatch_ns\":" + std::to_string(path->dispatch_ns) +
+                                      ",\"manager_place_ns\":" + std::to_string(path->manager_place_ns) + "}";
+                        }
+                    }
                     if (immediate_socket_receipt_ns_ > 0 &&
                         immediate_socket_receipt_ns_ <= immediate_place_timing_->second)
                         fields += ",\"socket_receipt_to_place_ns\":" +
@@ -810,19 +827,24 @@ cg::Plaza2Error CgateTradingHost::poll() {
         // pure idle-wait estimate. Keep slow eventful turns or slow owner work.
         const auto owner_work = ns(started, before_session) + ns(after_session, finished);
         if (ns(started, finished) >= 1000000 && (!metrics.events.empty() || owner_work >= 1000000)) {
-            std::string fields = "{\"sequence\":" + std::to_string(metrics.sequence) +
-                                 ",\"online\":" + (rebuilding_ ? "false" : "true") +
-                                 ",\"total_ns\":" + std::to_string(ns(started, finished)) +
-                                 ",\"before_session_ns\":" + std::to_string(ns(started, before_session)) +
-                                 ",\"session_ns\":" + std::to_string(ns(before_session, after_session)) +
-                                 ",\"process_ns\":" + std::to_string(metrics.process_ns) +
-                                 ",\"blocking_process_ns\":" + std::to_string(metrics.blocking_process_ns) +
-                                 ",\"observer_ns\":" + std::to_string(metrics.observer_ns) +
-                                 ",\"order_state_ns\":" + std::to_string(ns(after_session, before_flush)) +
-                                 ",\"journal_flush_ns\":" + std::to_string(ns(before_flush, after_flush)) +
-                                 ",\"dispatch_ns\":" + std::to_string(ns(after_flush, finished)) +
-                                 ",\"unattributed_events\":" + std::to_string(metrics.unattributed_events) +
-                                 ",\"events\":[";
+            std::string fields =
+                "{\"sequence\":" + std::to_string(metrics.sequence) +
+                ",\"online\":" + (rebuilding_ ? "false" : "true") +
+                ",\"total_ns\":" + std::to_string(ns(started, finished)) +
+                ",\"before_session_ns\":" + std::to_string(ns(started, before_session)) +
+                ",\"session_ns\":" + std::to_string(ns(before_session, after_session)) +
+                ",\"process_ns\":" + std::to_string(metrics.process_ns) +
+                ",\"blocking_process_ns\":" + std::to_string(metrics.blocking_process_ns) +
+                ",\"callback_ns\":" + std::to_string(metrics.callback_ns) + ",\"outside_callbacks_ns\":" +
+                std::to_string(metrics.process_ns >= metrics.callback_ns ? metrics.process_ns - metrics.callback_ns
+                                                                         : 0) +
+                ",\"unattributed_callback_ns\":" + std::to_string(metrics.unattributed_callback_ns) +
+                ",\"unattributed_callbacks\":" + std::to_string(metrics.unattributed_callbacks) +
+                ",\"observer_ns\":" + std::to_string(metrics.observer_ns) +
+                ",\"order_state_ns\":" + std::to_string(ns(after_session, before_flush)) +
+                ",\"journal_flush_ns\":" + std::to_string(ns(before_flush, after_flush)) +
+                ",\"dispatch_ns\":" + std::to_string(ns(after_flush, finished)) +
+                ",\"unattributed_events\":" + std::to_string(metrics.unattributed_events) + ",\"events\":[";
             bool first = true;
             for (const auto& event : metrics.events) {
                 if (!first)
@@ -833,6 +855,20 @@ cg::Plaza2Error CgateTradingHost::poll() {
                           ",\"table\":" + json_string(table ? table->table_name : std::string_view{}) +
                           ",\"kind\":" + json_string(event_kind(event.kind)) +
                           ",\"count\":" + std::to_string(event.count) + "}";
+            }
+            fields += "],\"callbacks\":[";
+            first = true;
+            for (const auto& callback : metrics.callbacks) {
+                if (!first)
+                    fields += ',';
+                first = false;
+                const auto* table = gen::FindTableByCode(callback.table_code);
+                fields += "{\"stream\":" + json_string(stream_name(callback.stream_code)) +
+                          ",\"table\":" + json_string(table ? table->table_name : std::string_view{}) +
+                          ",\"native_message_type\":" + std::to_string(callback.native_message_type) +
+                          ",\"count\":" + std::to_string(callback.count) +
+                          ",\"total_ns\":" + std::to_string(callback.total_ns) +
+                          ",\"max_ns\":" + std::to_string(callback.max_ns) + "}";
             }
             log_event("slow_owner_poll", fields + "]}");
         }

@@ -79,6 +79,7 @@ struct Plaza2VersionMarkers {
 };
 
 struct Plaza2ListenerEvent;
+struct Plaza2CallbackTiming;
 
 struct Plaza2Settings {
     Plaza2Environment environment{Plaza2Environment::Test};
@@ -94,6 +95,9 @@ struct Plaza2Settings {
     std::string expected_runtime_library_sha256;
     std::string expected_scheme_sha256;
     std::function<void(const Plaza2ListenerEvent&)> listener_event_log;
+    // Opt-in whole adapter callback timing, including decoding and projection.
+    // The callback receives no account data or replication row values.
+    std::function<void(const Plaza2CallbackTiming&)> listener_callback_timing;
 };
 
 struct Plaza2RuntimeLayout {
@@ -155,6 +159,13 @@ enum class Plaza2ListenerEventKind : std::uint8_t {
 inline constexpr generated::StreamCode kNoStreamCode = static_cast<generated::StreamCode>(0);
 inline constexpr generated::TableCode kNoTableCode = static_cast<generated::TableCode>(0);
 inline constexpr generated::FieldCode kNoFieldCode = static_cast<generated::FieldCode>(0);
+
+struct Plaza2CallbackTiming {
+    generated::StreamCode stream_code{kNoStreamCode};
+    generated::TableCode table_code{kNoTableCode};
+    std::uint32_t native_message_type{};
+    std::uint64_t elapsed_ns{};
+};
 
 struct Plaza2DecodedFieldValue {
     generated::FieldCode field_code{kNoFieldCode};
@@ -316,6 +327,8 @@ struct Plaza2PublisherMessageResult {
     // Optional diagnostic timestamps surround the actual vendor call, excluding
     // allocation/free. Steady time is used for local latency differences.
     std::int64_t post_started_steady_ns{}, post_started_utc_ns{}, post_finished_utc_ns{}, post_duration_ns{};
+    // Substage profiling is separate from the command-only boundary timers.
+    std::uint64_t session_admission_ns{}, session_instrument_proof_ns{}, publisher_prepare_ns{};
 };
 
 struct Plaza2PublisherCallCounts {
@@ -338,10 +351,9 @@ class Plaza2Publisher {
     [[nodiscard]] Plaza2Error open(std::string_view settings);
     // Allocate/free only: no payload, ID, reply registration or exchange post.
     [[nodiscard]] Plaza2Error prewarm_by_message_name(std::string_view message_name);
-    [[nodiscard]] Plaza2PublisherMessageResult post_by_message_name(std::string_view message_name,
-                                                                    std::span<const std::byte> payload,
-                                                                    std::uint32_t user_id, bool need_reply,
-                                                                    bool measure_timing = false);
+    [[nodiscard]] Plaza2PublisherMessageResult
+    post_by_message_name(std::string_view message_name, std::span<const std::byte> payload, std::uint32_t user_id,
+                         bool need_reply, bool measure_timing = false, bool measure_stages = false);
     [[nodiscard]] Plaza2PublisherCallCounts call_counts() const noexcept {
         return call_counts_;
     }

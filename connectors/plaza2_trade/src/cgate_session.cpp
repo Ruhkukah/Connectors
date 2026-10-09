@@ -248,8 +248,33 @@ struct CgateSession::Impl {
         };
         replies.log = config.event_log;
         replies.external_owner = config.publisher_rate_owner == PublisherRateOwner::External;
-        if (config.collect_poll_metrics)
+        if (config.collect_poll_metrics) {
             poll_metrics.events.reserve(128);
+            poll_metrics.callbacks.reserve(128);
+        }
+    }
+    void observe_callback(const cg::Plaza2CallbackTiming& timing) {
+        if (!collecting_poll)
+            return;
+        poll_metrics.callback_ns += timing.elapsed_ns;
+        auto found = std::find_if(poll_metrics.callbacks.begin(), poll_metrics.callbacks.end(), [&](const auto& entry) {
+            return entry.stream_code == timing.stream_code && entry.table_code == timing.table_code &&
+                   entry.native_message_type == timing.native_message_type;
+        });
+        if (found == poll_metrics.callbacks.end()) {
+            if (poll_metrics.callbacks.size() == 128) {
+                ++poll_metrics.unattributed_callbacks;
+                poll_metrics.unattributed_callback_ns += timing.elapsed_ns;
+                return;
+            }
+            poll_metrics.callbacks.push_back({.stream_code = timing.stream_code,
+                                              .table_code = timing.table_code,
+                                              .native_message_type = timing.native_message_type});
+            found = std::prev(poll_metrics.callbacks.end());
+        }
+        ++found->count;
+        found->total_ns += timing.elapsed_ns;
+        found->max_ns = std::max(found->max_ns, timing.elapsed_ns);
     }
     void observe_event(const cg::Plaza2ListenerEvent& event) {
         if (!collecting_poll)
@@ -444,8 +469,10 @@ struct CgateSession::Impl {
         credentials = secret(config.credentials).value_or("");
         software_key = *k;
         auto runtime = config.runtime;
+        runtime.listener_callback_timing = {};
         runtime.listener_event_log = config.listener_event_log;
-        if (config.collect_poll_metrics)
+        if (config.collect_poll_metrics) {
+            runtime.listener_callback_timing = [this](const auto& timing) { observe_callback(timing); };
             runtime.listener_event_log = [this](const auto& event) {
                 observe_event(event);
                 if (!config.listener_event_log)
@@ -463,6 +490,7 @@ struct CgateSession::Impl {
                 }
                 poll_metrics.observer_ns += ns(std::chrono::steady_clock::now()) - ns(before);
             };
+        }
         runtime.env_open_settings = render(runtime.env_open_settings);
         if (config.mode == CgateSessionMode::Live)
             try {
@@ -748,8 +776,10 @@ struct CgateSession::Impl {
             poll_metrics.started_utc_ns = utc_ns();
             poll_metrics.finished_utc_ns = poll_metrics.total_ns = poll_metrics.process_ns =
                 poll_metrics.blocking_process_ns = poll_metrics.observer_ns = poll_metrics.process_calls =
-                    poll_metrics.unattributed_events = 0;
+                    poll_metrics.unattributed_events = poll_metrics.callback_ns =
+                        poll_metrics.unattributed_callback_ns = poll_metrics.unattributed_callbacks = 0;
             poll_metrics.events.clear();
+            poll_metrics.callbacks.clear();
         }
         struct FinishMetrics {
             Impl& owner;
@@ -1096,6 +1126,7 @@ const std::string& CgateSession::last_callback_error() const noexcept {
 }
 cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEncodedCommand& command,
                                                             std::uint32_t user_id) {
+    const auto admission_started = impl_->config.collect_poll_metrics ? ns(std::chrono::steady_clock::now()) : 0;
     auto h = runtime_health();
     cg::Plaza2PublisherMessageResult out;
     const auto expected_name = command.command_kind == Plaza2TradeCommandKind::AddOrder        ? "AddOrder"
@@ -1110,7 +1141,10 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
     bool required_private = true;
     if (command.command_kind == Plaza2TradeCommandKind::AddOrder ||
         command.command_kind == Plaza2TradeCommandKind::MoveOrder) {
+        const auto proof_started = impl_->config.collect_poll_metrics ? ns(std::chrono::steady_clock::now()) : 0;
         required_private = trade_replay_anchor_ready() && command.isin_id && impl_->trading_ready(command);
+        if (proof_started)
+            out.session_instrument_proof_ns = ns(std::chrono::steady_clock::now()) - proof_started;
         for (auto code : {StreamCode::kFortsTradeRepl, StreamCode::kFortsPosRepl, StreamCode::kFortsPartRepl,
                           StreamCode::kFortsRefdataRepl, StreamCode::kFortsSessionstateRepl,
                           StreamCode::kFortsInstrumentstateRepl}) {
@@ -1130,10 +1164,13 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
         out.validation_error = invalid("user_id already reserved by a command");
         return out;
     }
-    return post_validated(command.command_name, command.payload, user_id, true);
+    auto result = post_validated(command.command_name, command.payload, user_id, true, admission_started);
+    result.session_instrument_proof_ns = out.session_instrument_proof_ns;
+    return result;
 }
 cg::Plaza2PublisherMessageResult CgateSession::post_validated(std::string_view name, std::span<const std::byte> payload,
-                                                              std::uint32_t user_id, bool need_reply) {
+                                                              std::uint32_t user_id, bool need_reply,
+                                                              std::uint64_t admission_started) {
     cg::Plaza2PublisherMessageResult out;
     if (impl_->config.publisher_rate_owner == PublisherRateOwner::Session && !impl_->rate.admit(impl_->now_ms())) {
         impl_->log("throttle", "{\"user_id\":" + std::to_string(user_id) + "}");
@@ -1146,8 +1183,11 @@ cg::Plaza2PublisherMessageResult CgateSession::post_validated(std::string_view n
                                       : Plaza2TradeCommandKind::DelUserOrders;
     impl_->replies.pending.emplace(
         user_id, Replies::Pending{kind, impl_->now() + std::chrono::milliseconds(impl_->config.reply_timeout_ms)});
+    const auto admission_ns = admission_started ? ns(std::chrono::steady_clock::now()) - admission_started : 0;
     out = impl_->publisher.post_by_message_name(
-        name, payload, user_id, need_reply, impl_->config.collect_post_metrics || impl_->config.collect_poll_metrics);
+        name, payload, user_id, need_reply, impl_->config.collect_post_metrics || impl_->config.collect_poll_metrics,
+        impl_->config.collect_poll_metrics);
+    out.session_admission_ns = admission_ns;
     if (out.certainty == cg::Plaza2SubmissionCertainty::DefinitelyNotSent)
         impl_->replies.pending.erase(user_id);
     return out;

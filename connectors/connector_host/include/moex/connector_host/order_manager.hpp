@@ -87,6 +87,15 @@ struct OrderManagerConfig {
     RiskLimits risk;
     std::int32_t next_ext_id{1};
     std::uint32_t next_user_id{1};
+    bool measure_add_path{};
+    // Injectable only for offline assertions that disabled profiling never reads
+    // a clock. An empty hook uses steady_clock.
+    std::function<std::uint64_t()> stage_timing_now;
+};
+
+struct AddPathTiming {
+    std::uint64_t readiness_ns{}, session_terms_ns{}, risk_ns{}, encode_ns{}, reservation_ns{}, queue_ns{},
+        dispatch_ns{}, manager_place_ns{};
 };
 
 // POS.info identifies the calendar snapshot, not the last processed fill.
@@ -149,6 +158,9 @@ class OrderManager {
     [[nodiscard]] bool operator_action_required() const noexcept;
     [[nodiscard]] bool cancellations_pending() const noexcept;
     [[nodiscard]] PendingFillReservationSnapshot pending_fill_reservations(std::int32_t isin) const noexcept;
+    [[nodiscard]] const AddPathTiming* active_add_path_timing() const noexcept {
+        return active_add_path_;
+    }
 
   private:
     struct Command {
@@ -163,6 +175,7 @@ class OrderManager {
         bool acknowledged{}, transport_retry_warned{}, wait_for_trading{};
         std::uint32_t business_failures{}, uncertain_outcomes{};
         std::int32_t submitted_session{};
+        AddPathTiming add_path;
     };
     struct BulkCancellation {
         std::uint64_t after_commit_sequence{};
@@ -230,11 +243,16 @@ class OrderManager {
         bool cancel_requested{}, execution_baseline_known{}, transport_retry_warned{}, instance_owned{};
     };
     [[nodiscard]] std::string check_risk(const OrderRequest& request, std::size_t extra_orders,
-                                         std::string_view exclude_key = {});
+                                         std::string_view exclude_key = {}, AddPathTiming* timing = nullptr);
+    [[nodiscard]] std::uint64_t stage_now(const AddPathTiming* timing) const;
+    [[nodiscard]] bool ready(std::int32_t isin, AddPathTiming* timing);
+    [[nodiscard]] std::optional<plaza2::private_state::FutureSessionTerms> terms(std::int32_t isin,
+                                                                                 AddPathTiming* timing);
     void reserve_position_fill(const DealKey& key, DealRecord& record,
                                const plaza2::private_state::OwnTradeSnapshot& row, bool first);
     [[nodiscard]] bool reconcile_position_fills(std::int32_t isin, const PositionProof& proof);
-    [[nodiscard]] Command encode(plaza2_trade::Plaza2TradeCommandRequest request, std::string key);
+    [[nodiscard]] Command encode(plaza2_trade::Plaza2TradeCommandRequest request, std::string key,
+                                 AddPathTiming* timing = nullptr);
     [[nodiscard]] std::uint32_t reserve_user_id();
     [[nodiscard]] bool has_outstanding_command(std::string_view key, plaza2_trade::Plaza2TradeCommandKind kind) const;
     void recovery_cancel(ManagedOrder& order, bool explicit_retry = false);
@@ -292,6 +310,7 @@ class OrderManager {
     std::unordered_map<std::uint32_t, Command> pending_;
     Clock::time_point now_{};
     bool throttled_{}, logging_failed_{};
+    const AddPathTiming* active_add_path_{};
 };
 
 } // namespace moex::connector_host

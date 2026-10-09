@@ -924,6 +924,27 @@ struct Plaza2ListenerCallbackState {
         return kCgErrOk;
     }
 
+    struct CallbackTimer {
+        const std::function<void(const Plaza2CallbackTiming&)>& report;
+        Plaza2CallbackTiming timing;
+        std::chrono::steady_clock::time_point started;
+        ~CallbackTimer() {
+            if (!report)
+                return;
+            timing.elapsed_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started)
+                    .count();
+            try {
+                report(timing);
+            } catch (...) {
+                // Optional diagnostics must not change replication handling.
+            }
+        }
+    } timer{state->shared->settings.listener_callback_timing,
+            {.stream_code = state->stream_code, .native_message_type = static_cast<CgMsg*>(raw_msg)->type},
+            state->shared->settings.listener_callback_timing ? std::chrono::steady_clock::now()
+                                                             : std::chrono::steady_clock::time_point{}};
+
     auto fail = [&](Plaza2Error error) -> CgResult {
         state->last_error = std::move(error);
         if (state->handler)
@@ -1034,6 +1055,8 @@ struct Plaza2ListenerCallbackState {
             }
             const auto payload = read_clear_deleted_payload(msg->data);
             const auto* plan = find_clear_deleted_runtime_message_plan(state->message_plans, payload.table_idx);
+            if (plan)
+                timer.timing.table_code = plan->table_code;
             if (!plan) {
                 ++state->ignored_message_count;
                 return kCgErrOk;
@@ -1116,6 +1139,8 @@ struct Plaza2ListenerCallbackState {
             const auto* plan = find_runtime_message_plan(
                 state->message_plans, payload->msg_index,
                 payload->msg_name == nullptr ? std::string_view{} : std::string_view(payload->msg_name));
+            if (plan)
+                timer.timing.table_code = plan->table_code;
             if (plan == nullptr) {
                 ++state->ignored_message_count;
                 return kCgErrOk;
@@ -1888,7 +1913,9 @@ Plaza2Error Plaza2Publisher::prewarm_by_message_name(std::string_view message_na
 Plaza2PublisherMessageResult Plaza2Publisher::post_by_message_name(std::string_view message_name,
                                                                    std::span<const std::byte> payload,
                                                                    std::uint32_t user_id, bool need_reply,
-                                                                   bool measure_timing) {
+                                                                   bool measure_timing, bool measure_stages) {
+    const auto prepare_started =
+        measure_stages ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     Plaza2PublisherMessageResult outcome;
     if (!shared_ || !shared_->api || handle_ == nullptr) {
         outcome.validation_error = {
@@ -1943,6 +1970,15 @@ Plaza2PublisherMessageResult Plaza2Publisher::post_by_message_name(std::string_v
                                                  std::chrono::steady_clock::now().time_since_epoch())
                                                  .count();
         }
+        if (measure_stages)
+            outcome.publisher_prepare_ns =
+                measure_timing
+                    ? outcome.post_started_steady_ns -
+                          std::chrono::duration_cast<std::chrono::nanoseconds>(prepare_started.time_since_epoch())
+                              .count()
+                    : std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
+                                                                           prepare_started)
+                          .count();
         const auto post_result = shared_->api->pub_post(handle_, raw_msg, need_reply ? kCgPubNeedReply : 0U);
         if (measure_timing) {
             outcome.post_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(

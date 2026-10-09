@@ -554,7 +554,29 @@ PendingFillReservationSnapshot OrderManager::pending_fill_reservations(std::int3
             .cached_position_proof = exposure.position_proof};
 }
 
-std::string OrderManager::check_risk(const OrderRequest& request, std::size_t extra, std::string_view exclude_key) {
+std::uint64_t OrderManager::stage_now(const AddPathTiming* timing) const {
+    if (!timing)
+        return 0;
+    return config_.stage_timing_now
+               ? config_.stage_timing_now()
+               : std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+}
+bool OrderManager::ready(std::int32_t isin, AddPathTiming* timing) {
+    const auto started = stage_now(timing);
+    const auto result = ready_(isin);
+    if (timing)
+        timing->readiness_ns += stage_now(timing) - started;
+    return result;
+}
+std::optional<plaza2::private_state::FutureSessionTerms> OrderManager::terms(std::int32_t isin, AddPathTiming* timing) {
+    const auto started = stage_now(timing);
+    const auto result = terms_(isin);
+    if (timing)
+        timing->session_terms_ns += stage_now(timing) - started;
+    return result;
+}
+std::string OrderManager::check_risk(const OrderRequest& request, std::size_t extra, std::string_view exclude_key,
+                                     AddPathTiming* timing) {
     if (config_.risk.kill_switch)
         return "kill switch enabled";
     if (bulk_cancellations_.contains(request.isin_id))
@@ -562,7 +584,7 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
     if (std::any_of(operator_orders_.begin(), operator_orders_.end(),
                     [&](const auto& key) { return orders_.at(key).request.isin_id == request.isin_id; }))
         return "unresolved order or cancellation requires operator action";
-    if (!ready_(request.isin_id))
+    if (!ready(request.isin_id, timing))
         return "order entry not ready";
     if (request.quantity <= 0 || request.quantity > config_.risk.max_quantity)
         return "quantity exceeds configured limit";
@@ -573,13 +595,14 @@ std::string OrderManager::check_risk(const OrderRequest& request, std::size_t ex
     if (extra > config_.risk.max_open_orders || active_orders_ > config_.risk.max_open_orders - extra)
         return "open-order limit exceeded";
     const auto price = plaza2::private_state::parse_session_decimal(request.price);
-    const auto terms = terms_(request.isin_id);
-    if (!price || !terms || !terms->bounds.interval_valid || !terms->min_step || terms->min_step->units <= 0)
+    const auto session_terms = terms(request.isin_id, timing);
+    if (!price || !session_terms || !session_terms->bounds.interval_valid || !session_terms->min_step ||
+        session_terms->min_step->units <= 0)
         return "current session price terms unavailable";
-    if ((terms->bounds.lower && price->units < terms->bounds.lower->units) ||
-        (terms->bounds.upper && price->units > terms->bounds.upper->units))
+    if ((session_terms->bounds.lower && price->units < session_terms->bounds.lower->units) ||
+        (session_terms->bounds.upper && price->units > session_terms->bounds.upper->units))
         return "price outside exchange limits";
-    if (price->units % terms->min_step->units != 0)
+    if (price->units % session_terms->min_step->units != 0)
         return "price is not tick aligned";
     std::optional<std::int64_t> position;
     if (config_.risk.max_position_by_isin.contains(request.isin_id)) {
@@ -664,8 +687,13 @@ std::uint32_t OrderManager::reserve_user_id() {
                             ",\"next_user_id\":" + std::to_string(config_.next_user_id) + "}");
     return id;
 }
-OrderManager::Command OrderManager::encode(tr::Plaza2TradeCommandRequest request, std::string key) {
+OrderManager::Command OrderManager::encode(tr::Plaza2TradeCommandRequest request, std::string key,
+                                           AddPathTiming* timing) {
+    const auto started = stage_now(timing);
     Command result{.encoded = tr::Plaza2TradeCodec{}.encode(request), .key = std::move(key)};
+    const auto encoded = stage_now(timing);
+    if (timing)
+        timing->encode_ns += encoded - started;
     if (!result.encoded.validation.ok())
         throw std::invalid_argument(result.encoded.validation.field_name + ": " + result.encoded.validation.message);
     if (const auto* cancel = std::get_if<tr::DelOrderRequest>(&request))
@@ -675,14 +703,23 @@ OrderManager::Command OrderManager::encode(tr::Plaza2TradeCommandRequest request
     result.user_id = reserve_user_id();
     emit("reservation", "{\"next_ext_id\":" + std::to_string(config_.next_ext_id) +
                             ",\"next_user_id\":" + std::to_string(config_.next_user_id) + "}");
+    if (timing)
+        timing->reservation_ns += stage_now(timing) - encoded;
     return result;
 }
 std::string OrderManager::place(OrderRequest request) {
+    AddPathTiming add_path;
+    auto* timing = config_.measure_add_path ? &add_path : nullptr;
+    const auto started = stage_now(timing);
     if (request.client_order_id.starts_with("recovered:"))
         return "client order id prefix recovered: is reserved for native recovery";
     if (request.client_order_id.empty() || used_client_ids_.contains(request.client_order_id))
         return "client order id empty or already used";
-    if (auto error = check_risk(request, 1); !error.empty())
+    const auto risk_started = stage_now(timing);
+    const auto error = check_risk(request, 1, {}, timing);
+    if (timing)
+        timing->risk_ns += stage_now(timing) - risk_started - timing->readiness_ns - timing->session_terms_ns;
+    if (!error.empty())
         return error;
     if (config_.next_ext_id > config_.ext_id_end)
         return "instance ext_id range exhausted";
@@ -700,9 +737,11 @@ std::string OrderManager::place(OrderRequest request) {
     add.is_check_limit = 0;
     add.compliance_id = "M";
     try {
-        auto command = encode(add, request.client_order_id);
+        auto command = encode(add, request.client_order_id, timing);
+        const auto queue_started = stage_now(timing);
+        const auto terms_before = add_path.session_terms_ns;
         ManagedOrder order{.request = std::move(request), .ext_id = ext, .instance_owned = true};
-        order.sess_id = terms_(order.request.isin_id)->sess_id;
+        order.sess_id = terms(order.request.isin_id, timing)->sess_id;
         order.remaining = order.request.quantity;
         const auto key = order.request.client_order_id;
         orders_.emplace(key, std::move(order));
@@ -711,6 +750,11 @@ std::string OrderManager::place(OrderRequest request) {
         ext_index_[ext] = key;
         adds_.push_back(std::move(command));
         changed(key);
+        if (timing) {
+            timing->queue_ns += stage_now(timing) - queue_started - (timing->session_terms_ns - terms_before);
+            timing->manager_place_ns = stage_now(timing) - started;
+            adds_.back().add_path = add_path;
+        }
         return {};
     } catch (const std::invalid_argument& error) {
         return error.what();
@@ -1079,7 +1123,9 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
             expired.push_back(id);
     for (const auto id : expired)
         on_timeout(id, now);
+    auto dispatch_started = stage_now(config_.measure_add_path && !adds_.empty() ? &adds_.front().add_path : nullptr);
     while (!cancels_.empty() || !adds_.empty()) {
+        std::uint64_t selection_ready_ns{};
         auto* queue_pointer = &cancels_;
         auto selected = std::find_if(cancels_.begin(), cancels_.end(), [&](const auto& cmd) {
             return now >= cmd.not_before &&
@@ -1087,16 +1133,28 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
         });
         if (selected == cancels_.end()) {
             queue_pointer = &adds_;
-            selected = std::find_if(adds_.begin(), adds_.end(), [&](const auto& cmd) {
+            selected = std::find_if(adds_.begin(), adds_.end(), [&](auto& cmd) {
                 const auto order = orders_.find(cmd.key);
-                return now >= cmd.not_before && (order == orders_.end() || terminal(order->second.state) ||
-                                                 ready_(order->second.request.isin_id));
+                if (now < cmd.not_before)
+                    return false;
+                if (order == orders_.end() || terminal(order->second.state))
+                    return true;
+                auto* timing =
+                    config_.measure_add_path && cmd.encoded.command_kind == Kind::AddOrder ? &cmd.add_path : nullptr;
+                const auto before = timing ? timing->readiness_ns : 0;
+                const auto result = ready(order->second.request.isin_id, timing);
+                if (timing)
+                    selection_ready_ns += timing->readiness_ns - before;
+                return result;
             });
         }
         auto& queue = *queue_pointer;
         if (selected == queue.end())
             break;
         auto& command = *selected;
+        auto* timing =
+            config_.measure_add_path && command.encoded.command_kind == Kind::AddOrder ? &command.add_path : nullptr;
+        std::uint64_t dispatch_risk_ns{}, dispatch_terms_ns{};
         auto found = orders_.find(command.key);
         const bool add_or_move =
             command.encoded.command_kind == Kind::AddOrder || command.encoded.command_kind == Kind::MoveOrder;
@@ -1110,12 +1168,24 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
                 proposed.price = command.replacement_price;
                 proposed.quantity = command.replacement_quantity;
             }
+            const auto risk_started = stage_now(timing);
+            const auto readiness_before = timing ? timing->readiness_ns : 0;
+            const auto terms_before = timing ? timing->session_terms_ns : 0;
             const auto error =
                 command.encoded.command_kind == Kind::MoveOrder && !found->second.execution_baseline_known
                     ? std::string("recovered order has no complete fill baseline; cancel instead of moving")
-                    : check_risk(proposed, 0, command.key);
-            if (error.empty() && command.encoded.command_kind == Kind::AddOrder)
-                found->second.sess_id = terms_(proposed.isin_id)->sess_id;
+                    : check_risk(proposed, 0, command.key, timing);
+            if (timing) {
+                dispatch_risk_ns = stage_now(timing) - risk_started;
+                timing->risk_ns += dispatch_risk_ns - (timing->readiness_ns - readiness_before) -
+                                   (timing->session_terms_ns - terms_before);
+            }
+            if (error.empty() && command.encoded.command_kind == Kind::AddOrder) {
+                const auto before = timing ? timing->session_terms_ns : 0;
+                found->second.sess_id = terms(proposed.isin_id, timing)->sess_id;
+                if (timing)
+                    dispatch_terms_ns = timing->session_terms_ns - before;
+            }
             if (!error.empty()) {
                 if (!ready_(proposed.isin_id))
                     break; // Preserve queued work through an outage/clearing.
@@ -1142,7 +1212,20 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
         throttled_ = false;
         if (logging_failed_ && add_or_move)
             break;
-        const auto result = send_(command.encoded, command.user_id);
+        if (timing)
+            timing->dispatch_ns +=
+                stage_now(timing) - dispatch_started - selection_ready_ns - dispatch_risk_ns - dispatch_terms_ns;
+        active_add_path_ = timing;
+        const auto result = [&] {
+            struct ClearProfile {
+                const AddPathTiming*& active;
+                ~ClearProfile() {
+                    active = nullptr;
+                }
+            } clear{active_add_path_};
+            return send_(command.encoded, command.user_id);
+        }();
+        dispatch_started = stage_now(config_.measure_add_path && !adds_.empty() ? &adds_.front().add_path : nullptr);
         // The durable ID reservation and native reply correlation precede
         // post. JSON/hex construction starts only after the vendor returns.
         const auto audit = [&](const Command& submitted) noexcept {

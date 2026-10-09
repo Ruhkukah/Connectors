@@ -127,9 +127,29 @@ void poll_metrics_regression(CgateSessionConfig config, const test::fake::Contro
     require(metrics.sequence == sequence + 1 && metrics.process_calls == fake.process_count() - processes &&
                 metrics.process_calls >= 3 && metrics.total_ns >= metrics.process_ns &&
                 metrics.process_ns >= metrics.observer_ns && metrics.observer_ns >= 1000000 &&
+                metrics.process_ns >= metrics.callback_ns && metrics.callback_ns >= metrics.observer_ns &&
                 metrics.blocking_process_ns == 0 && metrics.started_utc_ns > 0 &&
                 metrics.finished_utc_ns >= metrics.started_utc_ns,
             "slow observer was not attributed to the measured CGate drain");
+    const auto slow_callback =
+        std::find_if(metrics.callbacks.begin(), metrics.callbacks.end(), [](const auto& callback) {
+            return callback.stream_code == kFortsTradeRepl && callback.table_code == cgate::kNoTableCode &&
+                   callback.native_message_type == 0x210;
+        });
+    const auto heartbeat_callback =
+        std::find_if(metrics.callbacks.begin(), metrics.callbacks.end(), [](const auto& callback) {
+            return callback.stream_code == kFortsTradeRepl && callback.table_code == kFortsTradeReplHeartbeat &&
+                   callback.native_message_type == 0x120;
+        });
+    std::uint64_t callback_total = metrics.unattributed_callback_ns;
+    for (const auto& callback : metrics.callbacks)
+        callback_total += callback.total_ns;
+    require(slow_callback != metrics.callbacks.end() && slow_callback->count == 1 &&
+                slow_callback->total_ns >= 1000000 && slow_callback->max_ns == slow_callback->total_ns &&
+                heartbeat_callback != metrics.callbacks.end() && heartbeat_callback->count == 1 &&
+                heartbeat_callback->total_ns > 0 && callback_total == metrics.callback_ns &&
+                metrics.unattributed_callbacks == 0,
+            "whole adapter callback timing did not attribute our slow callback by stream/table");
     const auto event = [&](cgate::Plaza2ListenerEventKind kind, generated::TableCode table) {
         return std::find_if(metrics.events.begin(), metrics.events.end(), [&](const auto& row) {
             return row.stream_code == kFortsTradeRepl && row.table_code == table && row.kind == kind;
@@ -154,14 +174,34 @@ void poll_metrics_regression(CgateSessionConfig config, const test::fake::Contro
     const auto result = session.post_command(Plaza2TradeCodec{}.encode(request), 880001);
     require(result.certainty == cgate::Plaza2SubmissionCertainty::Posted && result.post_invoked &&
                 result.post_started_steady_ns > 0 && result.post_started_utc_ns > 0 &&
-                result.post_finished_utc_ns >= result.post_started_utc_ns && result.post_duration_ns > 0,
+                result.post_finished_utc_ns >= result.post_started_utc_ns && result.post_duration_ns > 0 &&
+                result.session_admission_ns >= result.session_instrument_proof_ns &&
+                result.session_instrument_proof_ns > 0 && result.publisher_prepare_ns > 0,
             "measured publisher invocation lacks exact cg_pub_post boundary timestamps");
     slow_observer = false;
     require(!session.poll(false), "poll metrics reply pump");
     require(std::none_of(session.last_poll_metrics().events.begin(), session.last_poll_metrics().events.end(),
                          [](const auto& row) { return row.table_code == kFortsTradeReplHeartbeat; }),
             "poll metrics accumulated prior-poll rows");
+    require(std::none_of(session.last_poll_metrics().callbacks.begin(), session.last_poll_metrics().callbacks.end(),
+                         [](const auto& row) { return row.table_code == kFortsTradeReplHeartbeat; }),
+            "callback timing accumulated prior-poll rows");
     require(!session.stop(), "poll metrics regression stop");
+    config.collect_poll_metrics = false;
+    config.collect_post_metrics = true;
+    CgateSession unmeasured(config);
+    require(!unmeasured.start(), "unmeasured callback startup");
+    for (int i = 0; i < 10; ++i)
+        require(!unmeasured.poll(false), "unmeasured callback bootstrap");
+    require(unmeasured.last_poll_metrics().callbacks.empty() && unmeasured.last_poll_metrics().callback_ns == 0 &&
+                unmeasured.last_poll_metrics().sequence == 0,
+            "disabled poll tracing collected callback timing");
+    const auto command_only = unmeasured.post_command(Plaza2TradeCodec{}.encode(request), 880002);
+    require(command_only.post_invoked && command_only.post_started_steady_ns > 0 &&
+                command_only.session_admission_ns == 0 && command_only.session_instrument_proof_ns == 0 &&
+                command_only.publisher_prepare_ns == 0,
+            "command-only latency unexpectedly enabled native substage profiling");
+    require(!unmeasured.stop(), "unmeasured callback stop");
     fake.configure({});
 }
 void private_trade_replay_regression(CgateSessionConfig config, const test::fake::Control& fake) {
