@@ -3011,6 +3011,19 @@ std::span<const TradingSessionSnapshot> Plaza2PrivateStateProjector::sessions() 
     return impl_->session_snapshots;
 }
 
+const TradingSessionSnapshot* Plaza2PrivateStateProjector::find_session(std::int32_t sess_id) const {
+    // Native bridge replay moves maps into staging only during its synchronous
+    // commit. Direct projector callers still see the previous committed view.
+    if (impl_->native_commit_phase && impl_->staged.sessions) {
+        const auto& rows = impl_->session_snapshots;
+        const auto found = std::lower_bound(rows.begin(), rows.end(), sess_id,
+                                            [](const auto& row, auto id) { return row.sess_id < id; });
+        return found != rows.end() && found->sess_id == sess_id ? &*found : nullptr;
+    }
+    const auto found = impl_->sessions_by_id.find(sess_id);
+    return found == impl_->sessions_by_id.end() ? nullptr : &found->second;
+}
+
 std::int32_t Plaza2PrivateStateProjector::current_session_id(std::int64_t now_seconds) const {
     return select_session(sessions(), now_seconds);
 }
@@ -3035,6 +3048,17 @@ Plaza2PrivateStateProjector::find_future_session_terms(std::int32_t isin_id, std
 
 std::span<const InstrumentSnapshot> Plaza2PrivateStateProjector::instruments() const {
     return impl_->instrument_snapshots;
+}
+
+const InstrumentSnapshot* Plaza2PrivateStateProjector::find_instrument(std::int32_t isin_id) const {
+    if (impl_->native_commit_phase && impl_->staged.instruments) {
+        const auto& rows = impl_->instrument_snapshots;
+        const auto found = std::lower_bound(rows.begin(), rows.end(), isin_id,
+                                            [](const auto& row, auto id) { return row.isin_id < id; });
+        return found != rows.end() && found->isin_id == isin_id ? &*found : nullptr;
+    }
+    const auto found = impl_->instruments_by_isin.find(isin_id);
+    return found == impl_->instruments_by_isin.end() ? nullptr : &found->second;
 }
 
 std::span<const FutureVcbSnapshot> Plaza2PrivateStateProjector::future_vcb() const {

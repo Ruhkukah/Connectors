@@ -67,7 +67,14 @@ struct Harness {
     }
     bool bound() const {
         const auto rows = projector.instruments();
-        return !rows.empty() && rows.front().current_status_refdata_bound;
+        const auto* indexed = projector.find_instrument(1001);
+        if ((indexed != nullptr) != !rows.empty() ||
+            (indexed && (indexed->sess_id != rows.front().sess_id ||
+                         indexed->has_current_status != rows.front().has_current_status ||
+                         indexed->current_status != rows.front().current_status ||
+                         indexed->current_status_refdata_bound != rows.front().current_status_refdata_bound)))
+            throw std::runtime_error("indexed instrument disagrees with the committed view");
+        return indexed && indexed->current_status_refdata_bound;
     }
 };
 
@@ -78,6 +85,53 @@ inline void require(bool condition, const char* message) {
 
 inline void run() {
     for (const bool native : {false, true}) {
+        Harness indexed;
+        indexed.native = native;
+        require(!indexed.projector.find_instrument(1001) && !indexed.projector.find_session(321),
+                "indexed getters exposed missing rows");
+        indexed.begin(StreamCode::kFortsRefdataRepl);
+        indexed.row(TableCode::kFortsRefdataReplSession, 1,
+                    {integer(FieldCode::kFortsRefdataReplSessionReplId, 1),
+                     integer(FieldCode::kFortsRefdataReplSessionSessId, 321)});
+        indexed.row(TableCode::kFortsRefdataReplFutSessContents, 2,
+                    {integer(FieldCode::kFortsRefdataReplFutSessContentsReplId, 2),
+                     integer(FieldCode::kFortsRefdataReplFutSessContentsIsinId, 1001),
+                     integer(FieldCode::kFortsRefdataReplFutSessContentsSessId, 321)});
+        require(!indexed.projector.find_instrument(1001) && !indexed.projector.find_session(321),
+                "indexed getters published initial rows before commit");
+        indexed.commit(StreamCode::kFortsRefdataRepl);
+        indexed.begin(StreamCode::kFortsSessionstateRepl);
+        indexed.row(TableCode::kFortsSessionstateReplSessionState, 3,
+                    {integer(FieldCode::kFortsSessionstateReplSessionStateSessId, 321),
+                     integer(FieldCode::kFortsSessionstateReplSessionStatePublicState, 1)});
+        require(!indexed.projector.find_session(321)->has_current_status,
+                "indexed session published uncommitted status");
+        indexed.commit(StreamCode::kFortsSessionstateRepl);
+        auto clone = indexed.projector.clone();
+        require(clone.find_instrument(1001) != indexed.projector.find_instrument(1001) &&
+                    clone.find_session(321) != indexed.projector.find_session(321),
+                "indexed clone borrowed source map pointers");
+        indexed.begin(StreamCode::kFortsSessionstateRepl);
+        indexed.row(TableCode::kFortsSessionstateReplSessionState, 4,
+                    {integer(FieldCode::kFortsSessionstateReplSessionStateSessId, 321),
+                     integer(FieldCode::kFortsSessionstateReplSessionStatePublicState, 0)});
+        require(indexed.projector.find_session(321)->current_status == 1,
+                "indexed session did not retain committed status during native staging");
+        indexed.commit(StreamCode::kFortsSessionstateRepl);
+        require(indexed.projector.find_session(321)->current_status == 0 &&
+                    clone.find_session(321)->current_status == 1,
+                "indexed session commit changed an independent clone");
+        indexed.begin(StreamCode::kFortsRefdataRepl);
+        indexed.row(TableCode::kFortsRefdataReplFutSessContents, 5,
+                    {integer(FieldCode::kFortsRefdataReplFutSessContentsReplId, 2),
+                     integer(FieldCode::kFortsRefdataReplFutSessContentsReplAct, 1)});
+        require(indexed.projector.find_instrument(1001)->current_session_member,
+                "indexed instrument applied pending deletion");
+        indexed.commit(StreamCode::kFortsRefdataRepl);
+        require(!indexed.projector.find_instrument(1001), "indexed instrument retained deleted membership");
+        indexed.projector.reset();
+        require(!indexed.projector.find_session(321) && clone.find_instrument(1001)->current_session_member,
+                "indexed reset retained a row or invalidated the clone");
         Harness h;
         h.native = native;
         h.member(321);

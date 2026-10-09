@@ -116,6 +116,14 @@ inline void private_refdata_update_regression() {
                   views[22999].future_vcb_currency == "RUB" && views[22999].future_vcb_board_md == "RFUD" &&
                   views[22998].settlement_price.empty() && views[23000].settlement_price.empty(),
               "single REF update changed membership, VCB joins, status binding or unrelated instruments");
+        const auto* indexed = projector.find_instrument(23000);
+        check(indexed && indexed->sess_id == views[22999].sess_id &&
+                  indexed->settlement_price == views[22999].settlement_price &&
+                  indexed->current_session_member == views[22999].current_session_member &&
+                  indexed->current_status_refdata_bound == views[22999].current_status_refdata_bound &&
+                  indexed->future_vcb_currency == views[22999].future_vcb_currency &&
+                  indexed->future_vcb_join_status == views[22999].future_vcb_join_status,
+              "indexed instrument lost committed membership, VCB joins or current terms");
     }
     std::cout << "41k single-row REFDATA update worst: " << worst << " us\n";
 #if MOEX_RELEASE_PERFORMANCE_ACCEPTANCE
@@ -143,6 +151,8 @@ inline void private_refdata_update_regression() {
               views[22999].isin_id == 23001 && views[22999].settlement_price == "103" &&
               views[22998].isin_id == 23000 && views[22998].settlement_price == "102",
           "mixed sparse REF deletion and upsert retained a deleted sorted view slot");
+    check(!projector.find_instrument(42) && projector.find_instrument(23001)->settlement_price == "103",
+          "indexed mixed REF deletion and update disagreed with committed views");
     event(Plaza2ListenerEventKind::TransactionBegin, kFortsRefdataRepl);
     row(kFortsRefdataReplFutInstruments, 5,
         std::array{number(kFortsRefdataReplFutInstrumentsReplId, 43),

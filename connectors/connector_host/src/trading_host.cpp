@@ -1101,18 +1101,15 @@ std::string CgateTradingHost::status() const {
         if (!first)
             result += ',';
         first = false;
-        const auto instrument = std::find_if(data.instruments().begin(), data.instruments().end(),
-                                             [&](const auto& row) { return row.isin_id == isin; });
+        const auto* instrument = data.find_instrument(isin);
         const auto ref_life = data.refdata_lifenum();
         const auto terms = ref_life && sess ? data.find_future_session_terms(isin, sess, *ref_life) : std::nullopt;
         const auto fills = orders_->pending_fill_reservations(isin);
         const auto book = session_.aggr20_projector().snapshot_for_isin(isin);
-        const bool book_valid =
-            aggr.valid && book && instrument != data.instruments().end() && instrument->current_session_member;
+        const bool book_valid = aggr.valid && book && instrument && instrument->current_session_member;
         result +=
             "{\"isin_id\":" + std::to_string(isin) +
-            ",\"symbol\":" + (instrument == data.instruments().end() ? "null" : json_string(instrument->isin)) +
-            ",\"order_entry_ready\":" +
+            ",\"symbol\":" + (instrument ? json_string(instrument->isin) : "null") + ",\"order_entry_ready\":" +
             boolean(!rebuilding_ && log_error_.empty() && order_entry_ready(session_, isin)) + ",\"session_terms\":" +
             (terms ? "{\"sess_id\":" + std::to_string(terms->sess_id) +
                          ",\"refdata_lifenum\":" + std::to_string(terms->source.lifenum) +

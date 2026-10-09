@@ -2,6 +2,7 @@
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -43,6 +44,8 @@ std::int32_t current_session_id(const ps::Plaza2PrivateStateProjector& data, std
 
 bool order_entry_ready(const CgateSession& host, std::int64_t isin_id, std::int32_t session_id,
                        bool allow_opening_auction) {
+    if (isin_id <= 0 || isin_id > std::numeric_limits<std::int32_t>::max())
+        return false;
     const auto health = host.runtime_health();
     if (!host.started() || !health.valid || health.connection != 3 || health.publisher != 3 || health.reply != 3 ||
         !host.publisher_prepared() || !host.trade_replay_anchor_ready())
@@ -56,18 +59,14 @@ bool order_entry_ready(const CgateSession& host, std::int64_t isin_id, std::int3
             return false;
     if (session_id == 0)
         session_id = current_session_id(data);
-    const auto session = std::find_if(data.sessions().begin(), data.sessions().end(), [session_id](const auto& row) {
-        return row.sess_id == session_id && row.has_current_status && row.current_status == 1;
-    });
-    if (session == data.sessions().end())
+    const auto* session = data.find_session(session_id);
+    if (!session || !session->has_current_status || session->current_status != 1)
         return false;
-    const auto instrument = std::find_if(data.instruments().begin(), data.instruments().end(), [=](const auto& row) {
-        return row.kind == ps::InstrumentKind::kFuture && !row.is_spread && row.isin_id == isin_id &&
-               row.sess_id == session_id && row.current_session_member && row.has_current_status &&
-               row.current_status_refdata_bound &&
-               (row.current_status == 1 || (allow_opening_auction && row.current_status == 6));
-    });
-    return instrument != data.instruments().end();
+    const auto* instrument = data.find_instrument(static_cast<std::int32_t>(isin_id));
+    return instrument && instrument->kind == ps::InstrumentKind::kFuture && !instrument->is_spread &&
+           instrument->sess_id == session_id && instrument->current_session_member && instrument->has_current_status &&
+           instrument->current_status_refdata_bound &&
+           (instrument->current_status == 1 || (allow_opening_auction && instrument->current_status == 6));
 }
 
 std::string_view host_state_name(ConnectorHostState state) noexcept {
@@ -182,6 +181,7 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
     ConnectorHostMarketDataSnapshot out;
     const auto& host = impl_->host;
     const auto& config = impl_->config;
+    const auto& data = host.private_state();
     const auto& health = host.runtime_health();
     const auto status = host.aggr_status();
     out.connector_generation = host.recovery_status().generation;
@@ -206,9 +206,11 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
 
     bool target_instrument_refdata_current = false;
     bool operator_binding_conflict = false;
-    for (const auto& instrument : host.private_state().instruments()) {
-        if (instrument.isin_id != out.target_isin_id)
-            continue;
+    const auto* target = out.target_isin_id > 0 && out.target_isin_id <= std::numeric_limits<std::int32_t>::max()
+                             ? data.find_instrument(static_cast<std::int32_t>(out.target_isin_id))
+                             : nullptr;
+    if (target) {
+        const auto& instrument = *target;
         out.symbol = instrument.isin;
         out.min_step = instrument.min_step;
         out.description = instrument.name;
@@ -251,20 +253,14 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
             instrument.kind == ps::InstrumentKind::kFuture && instrument.current_session_member &&
             instrument.sess_id == out.target_session_id && instrument.trade_mode_id != 0 && !instrument.isin.empty() &&
             valid_current_min_step(instrument.min_step);
-        break;
     }
 
     std::optional<std::int32_t> session_status;
     std::optional<std::int32_t> instrument_status;
-    for (const auto& instrument : host.private_state().instruments()) {
-        if (instrument.isin_id == out.target_isin_id && instrument.has_current_status &&
-            instrument.current_status_refdata_bound)
-            instrument_status = instrument.current_status;
-    }
-    for (const auto& session : host.private_state().sessions()) {
-        if (session.sess_id == out.target_session_id && session.has_current_status)
-            session_status = session.current_status;
-    }
+    if (target && target->has_current_status && target->current_status_refdata_bound)
+        instrument_status = target->current_status;
+    if (const auto* session = data.find_session(out.target_session_id); session && session->has_current_status)
+        session_status = session->current_status;
 
     const auto scoped = host.aggr20_projector().snapshot_for_isin(out.target_isin_id);
     if (scoped.has_value()) {
@@ -290,7 +286,6 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
         }
     }
 
-    const auto& data = host.private_state();
     out.session_provenance =
         data.session_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplSession, out.target_session_id)
             .value_or(ps::SourceRowProvenance{});

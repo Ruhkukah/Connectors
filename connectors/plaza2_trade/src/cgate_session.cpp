@@ -580,21 +580,18 @@ struct CgateSession::Impl {
         const auto day = projection.current_session_id();
         if (!day)
             return false;
-        const auto sessions = projection.sessions();
-        if (std::none_of(sessions.begin(), sessions.end(), [day](const auto& row) {
-                return row.sess_id == day && row.has_current_status && row.current_status == 1;
-            }))
+        const auto* session = projection.find_session(day);
+        if (!session || !session->has_current_status || session->current_status != 1)
             return false;
-        const auto instruments = projection.instruments();
-        return std::any_of(instruments.begin(), instruments.end(), [=](const auto& row) {
-            const bool auction_day_add = row.current_status == 6 &&
-                                         command.command_kind == Plaza2TradeCommandKind::AddOrder &&
-                                         command.order_type == Plaza2TradeOrderType::Limit;
-            return row.kind == plaza2::private_state::InstrumentKind::kFuture && !row.is_spread &&
-                   row.isin_id == command.isin_id && row.sess_id == day && row.current_session_member &&
-                   row.has_current_status && row.current_status_refdata_bound &&
-                   (row.current_status == 1 || auction_day_add);
-        });
+        const auto* instrument = command.isin_id ? projection.find_instrument(*command.isin_id) : nullptr;
+        if (!instrument)
+            return false;
+        const bool auction_day_add = instrument->current_status == 6 &&
+                                     command.command_kind == Plaza2TradeCommandKind::AddOrder &&
+                                     command.order_type == Plaza2TradeOrderType::Limit;
+        return instrument->kind == plaza2::private_state::InstrumentKind::kFuture && !instrument->is_spread &&
+               instrument->sess_id == day && instrument->current_session_member && instrument->has_current_status &&
+               instrument->current_status_refdata_bound && (instrument->current_status == 1 || auction_day_add);
     }
     bool stream_online(StreamCode code) const {
         const auto health = projection.stream_health();

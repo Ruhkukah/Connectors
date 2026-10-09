@@ -141,6 +141,8 @@ int main(int argc, char** argv) {
             ConnectorHost host(cfg);
             warm(host);
             test::require(host.order_entry_ready(1001), "POS anchor admission baseline is ready");
+            test::require(!host.order_entry_ready((std::int64_t{1} << 32) + 1001),
+                          "wide ISIN wrapped into an indexed trading instrument");
             using enum moex::plaza2::generated::StreamCode;
             fake.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = kFortsPosRepl});
             fake.enqueue({.kind = test::fake::EventKind::ClearDeleted,

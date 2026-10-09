@@ -89,6 +89,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/trading_host_test.cpp")
 endif()
 moex_runtime_test(command_latency_test command_latency_test.cpp moex_connector_host)
 set_tests_properties(command_latency_test PROPERTIES TIMEOUT 60)
+moex_runtime_test(instrument_lookup_benchmark instrument_lookup_benchmark.cpp moex_connector_host)
+set_tests_properties(instrument_lookup_benchmark PROPERTIES TIMEOUT 60)
+target_compile_definitions(instrument_lookup_benchmark PRIVATE
+    MOEX_RELEASE_PERFORMANCE_ACCEPTANCE=$<CONFIG:Release>)
 moex_test_target(trading_day_test trading_day_test.cpp plaza2_runtime_test_support moex_connector_host)
 add_dependencies(trading_day_test plaza2_fake_cgate_runtime)
 add_test(NAME trading_day_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trading_day_test.py"

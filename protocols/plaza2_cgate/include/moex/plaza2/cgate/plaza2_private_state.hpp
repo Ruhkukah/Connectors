@@ -409,8 +409,11 @@ class Plaza2PrivateStateProjector final : public projection::CommitListener {
     [[nodiscard]] const ResumeMarkersSnapshot& resume_markers() const;
     [[nodiscard]] std::span<const StreamHealthSnapshot> stream_health() const;
     [[nodiscard]] std::span<const TradingSessionSnapshot> sessions() const;
+    // Borrowed committed rows; pointers are invalidated by the next mutation.
+    [[nodiscard]] const TradingSessionSnapshot* find_session(std::int32_t sess_id) const;
     [[nodiscard]] std::int32_t current_session_id(std::int64_t now_seconds = 0) const;
     [[nodiscard]] std::span<const InstrumentSnapshot> instruments() const;
+    [[nodiscard]] const InstrumentSnapshot* find_instrument(std::int32_t isin_id) const;
     [[nodiscard]] std::span<const FutureVcbSnapshot> future_vcb() const;
     [[nodiscard]] std::optional<FutureSessionTerms> find_future_session_terms(std::int32_t isin_id) const;
     // Current-session indexed view. Empty for other sessions, missing/deleted rows or
