@@ -1095,24 +1095,30 @@ struct Plaza2PrivateStateProjector::Impl {
             [](const InstrumentSnapshot& lhs, const InstrumentSnapshot& rhs) { return lhs.isin_id < rhs.isin_id; });
     }
 
-    void select_future_session_membership() {
+    bool select_future_session_membership() {
         const auto current = select_session(session_snapshots);
         if (!current)
-            return;
-        for (auto& [isin_id, instrument] : instruments_by_isin) {
-            const auto selected = future_sessions.find(future_session_key(isin_id, current));
-            if (selected == future_sessions.end() || instrument.sess_id == current)
+            return false;
+        bool changed = false;
+        for (const auto& [key, selected] : future_sessions) {
+            if (static_cast<std::uint32_t>(key) != static_cast<std::uint32_t>(current))
                 continue;
+            const auto found = instruments_by_isin.find(selected.isin_id);
+            if (found == instruments_by_isin.end() || found->second.sess_id == current)
+                continue;
+            auto& instrument = found->second;
             const auto has_status = instrument.has_current_status;
             const auto status = instrument.current_status;
             const auto status_epoch = instrument.current_status_session_epoch;
-            instrument = selected->second;
+            instrument = selected;
             instrument.has_current_status = has_status;
             instrument.current_status = status;
             instrument.current_status_session_epoch = status_epoch;
             instrument.current_status_refdata_bound = false;
             invalidate_status_bindings();
+            changed = true;
         }
+        return changed;
     }
 
     void rebuild_matching_map() {
@@ -2805,8 +2811,19 @@ struct Plaza2PrivateStateProjector::Impl {
             future_sessions = std::move(*staged.future_sessions);
         if (staged.future_vcb.has_value())
             future_vcb_by_row = std::move(*staged.future_vcb);
-        if (refdata_instruments_changed || refdata_vcb_changed || staged.sessions.has_value() ||
-            staged.instrument_status_session_changed) {
+        const bool session_update_only = native_commit_phase && staged.sessions && !refdata_instruments_changed &&
+                                         !refdata_vcb_changed && !staged.future_sessions && !staged.deleted_rows &&
+                                         !staged.status_bindings_invalidated &&
+                                         !staged.instrument_status_session_changed;
+        if (session_update_only) {
+            // Session schedules/status still publish. Only a changed selected
+            // membership needs the retained instrument joins and full view.
+            if (select_future_session_membership()) {
+                rebuild_future_vcb();
+                rebuild_instruments();
+            }
+        } else if (refdata_instruments_changed || refdata_vcb_changed || staged.sessions.has_value() ||
+                   staged.instrument_status_session_changed) {
             const auto current_session = select_session(session_snapshots);
             const bool membership_stable =
                 std::all_of(staged.instrument_isins.begin(), staged.instrument_isins.end(), [&](auto isin) {

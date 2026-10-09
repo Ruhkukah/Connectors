@@ -121,6 +121,41 @@ inline void private_refdata_update_regression() {
 #if MOEX_RELEASE_PERFORMANCE_ACCEPTANCE
     check(online_samples[1] < 1000000, "no-op REF ONLINE blocks the owner on retained reference views");
 #endif
+    const auto now =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    std::array<std::int64_t, 3> session_samples{};
+    same_publication = true;
+    for (int i = 0; i < static_cast<int>(session_samples.size()); ++i) {
+        const auto* published = projector.instruments().data();
+        const auto generation = projector.status_binding_generation();
+        event(Plaza2ListenerEventKind::TransactionBegin, kFortsRefdataRepl);
+        row(kFortsRefdataReplSession, 3 + i,
+            std::array{number(kFortsRefdataReplSessionSessId, 200), number(kFortsRefdataReplSessionState, 3 + i),
+                       number(kFortsRefdataReplSessionBegin, now - 60), number(kFortsRefdataReplSessionEnd, now + 3600),
+                       number(kFortsRefdataReplSessionMarginCallFixSchedule, now + 600 + i)});
+        check(projector.find_session(200)->state == (i ? 2 + i : 2) &&
+                  projector.session_source_provenance(kFortsRefdataReplSession, 200)->repl_rev == (i ? 2 + i : 1),
+              "session update or source revision leaked before commit");
+        const auto start = std::chrono::steady_clock::now();
+        event(Plaza2ListenerEventKind::TransactionCommit, kFortsRefdataRepl);
+        session_samples[i] =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+        same_publication &= projector.instruments().data() == published;
+        const auto* session = projector.find_session(200);
+        check(session && session->state == 3 + i && session->begin == now - 60 && session->end == now + 3600 &&
+                  session->margin_call_fix_schedule == now + 600 + i &&
+                  projector.session_source_provenance(kFortsRefdataReplSession, 200)->repl_rev == 3 + i &&
+                  projector.current_session_id(now) == 200 && projector.status_binding_generation() == generation &&
+                  projector.find_instrument(23000)->current_status_refdata_bound &&
+                  projector.connector_health().online && !projector.connector_health().transaction_open,
+              "stable-session commit lost schedules, revision, binding or health");
+    }
+    std::sort(session_samples.begin(), session_samples.end());
+    std::cout << "41k stable-session commit median of 3: " << session_samples[1] / 1000.0 << " us\n";
+    check(same_publication, "stable-session commit rematerialized all 41k committed instruments");
+#if MOEX_RELEASE_PERFORMANCE_ACCEPTANCE
+    check(session_samples[1] < 1000000, "stable-session commit blocks the owner on retained instrument views");
+#endif
     std::int64_t worst{};
     for (const int phase : {0, 1}) {
         const auto start = std::chrono::steady_clock::now();
@@ -163,6 +198,45 @@ inline void private_refdata_update_regression() {
     event(Plaza2ListenerEventKind::TransactionCommit, kFortsRefdataRepl);
     check(projector.instruments()[22999].sess_id == 200 && projector.instruments()[22999].settlement_price == "102",
           "future-session update replaced current selected terms");
+    const auto next_session = [&](auto revision, auto begin, auto end) {
+        row(kFortsRefdataReplSession, revision,
+            std::array{number(kFortsRefdataReplSessionSessId, 201), number(kFortsRefdataReplSessionState, 2),
+                       number(kFortsRefdataReplSessionBegin, begin), number(kFortsRefdataReplSessionEnd, end)});
+    };
+    event(Plaza2ListenerEventKind::TransactionBegin, kFortsRefdataRepl);
+    next_session(6, now + 7200, now + 10800);
+    event(Plaza2ListenerEventKind::TransactionCommit, kFortsRefdataRepl);
+    event(Plaza2ListenerEventKind::TransactionBegin, kFortsSessionstateRepl);
+    const std::array next_status{number(kFortsSessionstateReplSessionStateSessId, 201),
+                                 number(kFortsSessionstateReplSessionStatePublicState, 0)};
+    check(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                            .stream_code = kFortsSessionstateRepl,
+                                            .table_code = kFortsSessionstateReplSessionState,
+                                            .fields = next_status,
+                                            .signed_value = 3}),
+          "next session status");
+    event(Plaza2ListenerEventKind::TransactionCommit, kFortsSessionstateRepl);
+    const auto generation = projector.status_binding_generation();
+    event(Plaza2ListenerEventKind::TransactionBegin, kFortsRefdataRepl);
+    next_session(7, now - 60, now + 3600);
+    check(projector.current_session_id(now) == 200 && projector.find_instrument(23000)->sess_id == 200 &&
+              projector.find_session(201)->begin == now + 7200,
+          "selected session changed before its schedule committed");
+    event(Plaza2ListenerEventKind::TransactionCommit, kFortsRefdataRepl);
+    const auto* selected = projector.find_instrument(23000);
+    check(projector.current_session_id(now) == 201 && selected->sess_id == 201 && selected->settlement_price == "999" &&
+              selected->current_session_member && !selected->current_status_refdata_bound &&
+              projector.status_binding_generation() > generation &&
+              projector.instruments()[22999].settlement_price == "999" &&
+              !projector.instruments()[22999].current_status_refdata_bound,
+          "changed session schedule skipped selected terms or retained old status authority");
+    event(Plaza2ListenerEventKind::TransactionBegin, kFortsRefdataRepl);
+    next_session(8, now + 7200, now + 10800);
+    event(Plaza2ListenerEventKind::TransactionCommit, kFortsRefdataRepl);
+    check(projector.current_session_id(now) == 200 && projector.find_instrument(23000)->sess_id == 200 &&
+              projector.find_instrument(23000)->settlement_price == "102" &&
+              projector.find_instrument(23000)->current_status_refdata_bound,
+          "restored session selection lost independently committed terms/status");
     (void)projector.take_row_changes();
     event(Plaza2ListenerEventKind::TransactionBegin, kFortsRefdataRepl);
     row(kFortsRefdataReplFutInstruments, 4,
@@ -207,6 +281,15 @@ inline void private_refdata_update_regression() {
     check(projector.instruments().size() == 3 && projector.find_instrument(23000) && projector.find_instrument(23001) &&
               projector.find_instrument(42000) && !projector.find_instrument(44),
           "purge fast path ignored real older source rows");
+    event(Plaza2ListenerEventKind::TransactionBegin, kFortsRefdataRepl);
+    row(kFortsRefdataReplSession, 6,
+        std::array{number(kFortsRefdataReplSessionSessId, 200), number(kFortsRefdataReplSessionState, 6),
+                   number(kFortsRefdataReplSessionBegin, now - 60), number(kFortsRefdataReplSessionEnd, now + 3600)});
+    event(Plaza2ListenerEventKind::TransactionCommit, kFortsRefdataRepl);
+    check(projector.instruments().size() == 3 && !projector.find_instrument(42) && !projector.find_instrument(44) &&
+              projector.find_instrument(23000)->sess_id == 200 &&
+              projector.find_instrument(23000)->settlement_price == "102",
+          "session selection resurrected purged definitions or lost retained membership");
     check(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
                                             .stream_code = kFortsRefdataRepl,
                                             .table_code = kFortsRefdataReplFutInstruments,
