@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace moex::plaza2::cgate {
@@ -92,6 +93,34 @@ inline void private_refdata_update_regression() {
                                             .signed_value = 2}),
           "REF status");
     event(Plaza2ListenerEventKind::TransactionCommit, kFortsInstrumentstateRepl);
+    for (const auto stream : streams)
+        event(Plaza2ListenerEventKind::Online, stream);
+    std::array<std::int64_t, 3> online_samples{};
+    bool same_publication = true;
+    for (auto& sample : online_samples) {
+        const auto* published = projector.instruments().data();
+        for (const auto table : {kFortsRefdataReplSession, kFortsRefdataReplFutVcb, kFortsRefdataReplFutInstruments,
+                                 kFortsRefdataReplFutSessContents, kFortsRefdataReplSysMessages})
+            check(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                                    .stream_code = kFortsRefdataRepl,
+                                                    .table_code = table,
+                                                    .signed_value = table == kFortsRefdataReplFutSessContents ? 2 : 1}),
+                  "deferred no-op REF purge");
+        const auto start = std::chrono::steady_clock::now();
+        event(Plaza2ListenerEventKind::Online, kFortsRefdataRepl);
+        sample = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+        same_publication &= projector.instruments().data() == published;
+        check(projector.find_instrument(23000)->current_status_refdata_bound &&
+                  projector.find_instrument(23000)->settlement_price == "100" && projector.connector_health().online &&
+                  !projector.connector_health().transaction_open,
+              "no-op REF ONLINE changed committed definition, binding or health");
+    }
+    std::sort(online_samples.begin(), online_samples.end());
+    std::cout << "41k deferred no-op REFDATA ONLINE median of 3: " << online_samples[1] / 1000.0 << " us\n";
+    check(same_publication, "no-op deferred REF purge rematerialized all 41k committed instruments");
+#if MOEX_RELEASE_PERFORMANCE_ACCEPTANCE
+    check(online_samples[1] < 1000000, "no-op REF ONLINE blocks the owner on retained reference views");
+#endif
     std::int64_t worst{};
     for (const int phase : {0, 1}) {
         const auto start = std::chrono::steady_clock::now();
@@ -168,5 +197,30 @@ inline void private_refdata_update_regression() {
     check(!changes.resync_required && !changes.regular_trade_history_truncated && changes.orders.empty() &&
               changes.trades.empty(),
           "reference definition deletion/rekey invalidated regular private trading history");
+    check(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                            .stream_code = kFortsRefdataRepl,
+                                            .table_code = kFortsRefdataReplFutInstruments,
+                                            .signed_value = 2}),
+          "real deferred REF purge");
+    check(projector.instruments().size() == 40999, "deferred REF purge leaked ahead of ONLINE");
+    event(Plaza2ListenerEventKind::Online, kFortsRefdataRepl);
+    check(projector.instruments().size() == 3 && projector.find_instrument(23000) && projector.find_instrument(23001) &&
+              projector.find_instrument(42000) && !projector.find_instrument(44),
+          "purge fast path ignored real older source rows");
+    check(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                            .stream_code = kFortsRefdataRepl,
+                                            .table_code = kFortsRefdataReplFutInstruments,
+                                            .signed_value = std::numeric_limits<std::int64_t>::max()}),
+          "clear-all REF definitions");
+    event(Plaza2ListenerEventKind::Online, kFortsRefdataRepl);
+    check(projector.instruments().size() == 1 && projector.find_instrument(23000)->current_session_member &&
+              !projector.find_instrument(23001),
+          "clear-all REF skipped deletion or removed independent membership/status");
+    check(!bridge.on_plaza2_listener_event(
+              {.kind = Plaza2ListenerEventKind::LifeNum, .stream_code = kFortsRefdataRepl, .unsigned_value = 2}),
+          "REF life change after no-op purges");
+    check(projector.instruments().size() == 1 && !projector.find_instrument(23000)->current_session_member &&
+              !projector.find_instrument(23000)->current_status_refdata_bound && !projector.connector_health().online,
+          "no-op purge optimization retained reference authority across actual LifeNum loss");
 }
 } // namespace moex::plaza2::cgate

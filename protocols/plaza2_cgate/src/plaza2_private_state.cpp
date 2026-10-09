@@ -266,6 +266,9 @@ struct SourceTableRows : std::unordered_map<std::string, SourceRowRevision> {
     std::unordered_map<std::int64_t, std::string> replication_keys;
     std::string latest_key;
     std::int64_t server_time{};
+    // Conservative lower bound; deletion/replacement may leave it too low,
+    // never too high. A purge that needs a higher bound refreshes it once.
+    std::optional<std::int64_t> minimum_revision;
 };
 using SourceRevisionRows = std::unordered_map<TableCode, SourceTableRows, EnumClassHash>;
 using TradeClearFloors = std::array<std::int64_t, 4>;
@@ -955,6 +958,7 @@ struct Plaza2PrivateStateProjector::Impl {
         if (!inserted && record->second.repl_id != repl_id)
             rows.replication_keys.erase(record->second.repl_id);
         record->second = {revision, repl_id};
+        rows.minimum_revision = rows.minimum_revision ? std::min(*rows.minimum_revision, revision) : revision;
         if (repl_id)
             rows.replication_keys[repl_id] = record->first;
         rows.latest_key = record->first;
@@ -1352,6 +1356,22 @@ struct Plaza2PrivateStateProjector::Impl {
         return clear_revision == std::numeric_limits<std::int64_t>::max() || row_it->second.revision < clear_revision;
     }
 
+    bool table_has_stale_rows(TableCode table_code, std::int64_t clear_revision) {
+        auto& revisions = active_source_revisions();
+        const auto found = revisions.find(table_code);
+        if (found == revisions.end() || found->second.empty())
+            return false;
+        auto& rows = found->second;
+        if (clear_revision == std::numeric_limits<std::int64_t>::max())
+            return true;
+        if (rows.minimum_revision && clear_revision <= *rows.minimum_revision)
+            return false;
+        rows.minimum_revision = std::min_element(rows.begin(), rows.end(), [](const auto& lhs, const auto& rhs) {
+                                    return lhs.second.revision < rhs.second.revision;
+                                })->second.revision;
+        return *rows.minimum_revision < clear_revision;
+    }
+
     bool has_source_row(TableCode table_code, std::string_view key) const {
         const SourceRevisionRows* revisions = &source_revisions;
         if (staged.active) {
@@ -1659,27 +1679,7 @@ struct Plaza2PrivateStateProjector::Impl {
         }
         if (table_code == kFortsInstrumentstateReplInstrumentState)
             invalidate_status_bindings();
-        if (table_code == kFortsTradeReplOrdersLog || table_code == kFortsUserorderbookReplOrders)
-            staged.rebuild_order_view = true;
-        if (table_code == kFortsTradeReplUserDeal)
-            staged.rebuild_trade_view = true;
         static_cast<void>(active_source_revisions());
-        auto& sessions =
-            staged.active ? ensure_stage_copy(staged.sessions, sessions_by_id, native_commit_phase) : sessions_by_id;
-        auto& instruments = staged.active
-                                ? ensure_stage_copy(staged.instruments, instruments_by_isin, native_commit_phase)
-                                : instruments_by_isin;
-        auto& future_vcb = staged.active ? ensure_stage_copy(staged.future_vcb, future_vcb_by_row, native_commit_phase)
-                                         : future_vcb_by_row;
-        auto& system_messages =
-            staged.active ? ensure_stage_copy(staged.system_messages, system_messages_by_id, native_commit_phase)
-                          : system_messages_by_id;
-        auto& positions = staged.active ? ensure_stage_copy(staged.positions, positions_by_key, native_commit_phase)
-                                        : positions_by_key;
-        auto& orders =
-            staged.active ? ensure_stage_copy(staged.orders, orders_by_key, native_commit_phase) : orders_by_key;
-        auto& trades =
-            staged.active ? ensure_stage_copy(staged.trades, trades_by_key, native_commit_phase) : trades_by_key;
 
         const auto clear_stream_for_table = [&](TableCode code) {
             switch (code) {
@@ -1751,6 +1751,34 @@ struct Plaza2PrivateStateProjector::Impl {
                 }
             }
         };
+
+        // Repeated ONLINE drains deferred purges. Preserve their watermarks,
+        // history-loss floors and health, but do not copy/rejoin/sort every
+        // retained domain when the requested table has no row below its floor.
+        if (!table_has_stale_rows(table_code, clear_revision)) {
+            mark_touched();
+            return;
+        }
+        if (table_code == kFortsTradeReplOrdersLog || table_code == kFortsUserorderbookReplOrders)
+            staged.rebuild_order_view = true;
+        if (table_code == kFortsTradeReplUserDeal)
+            staged.rebuild_trade_view = true;
+        auto& sessions =
+            staged.active ? ensure_stage_copy(staged.sessions, sessions_by_id, native_commit_phase) : sessions_by_id;
+        auto& instruments = staged.active
+                                ? ensure_stage_copy(staged.instruments, instruments_by_isin, native_commit_phase)
+                                : instruments_by_isin;
+        auto& future_vcb = staged.active ? ensure_stage_copy(staged.future_vcb, future_vcb_by_row, native_commit_phase)
+                                         : future_vcb_by_row;
+        auto& system_messages =
+            staged.active ? ensure_stage_copy(staged.system_messages, system_messages_by_id, native_commit_phase)
+                          : system_messages_by_id;
+        auto& positions = staged.active ? ensure_stage_copy(staged.positions, positions_by_key, native_commit_phase)
+                                        : positions_by_key;
+        auto& orders =
+            staged.active ? ensure_stage_copy(staged.orders, orders_by_key, native_commit_phase) : orders_by_key;
+        auto& trades =
+            staged.active ? ensure_stage_copy(staged.trades, trades_by_key, native_commit_phase) : trades_by_key;
 
         const auto clear_orders = [&](bool trade_source) {
             const auto table_it = active_source_revisions().find(table_code);
