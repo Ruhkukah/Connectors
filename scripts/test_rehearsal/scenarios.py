@@ -137,7 +137,7 @@ def partial_move(seq, target, timeout_seconds=600):
     bid, ask = book.get('best_bid'), book.get('best_ask')
     if not step or not bid or not ask:
         return _outcome(seq, 'partial_move', 'NOT_OBSERVED', 'near_passive_quote_unavailable')
-    ceiling = min(terms['reference_price_scaled'], limit['max_quote_notional_scaled'] // 2)
+    ceiling = limit['max_quote_notional_scaled'] // 2
     price = min(bid['price_scaled'], ceiling // step * step)
     # A far price is not a credible partial-fill attempt; never exceed the approved cap.
     if price < bid['price_scaled'] - step or price >= ask['price_scaled']:
@@ -146,7 +146,7 @@ def partial_move(seq, target, timeout_seconds=600):
         seq.valid_price(state, target, price, 2)
         seq.valid_price(state, target, price - step, 2)
     except SequenceStop as error:
-        if error.code != 'price_outside_native_limits':
+        if error.code not in ('price_outside_native_limits', 'quote_cap_exceeded'):
             raise
         return _outcome(seq, 'partial_move', 'NOT_OBSERVED', 'passive_move_grid_or_bounds_unavailable')
     client, offset = seq.next_id(target), seq.journal.stat().st_size

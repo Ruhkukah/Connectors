@@ -4,7 +4,7 @@ import datetime,fcntl,json,os,signal,subprocess,sys,time,traceback
 sys.dont_write_bytecode=True;os.umask(0o077)
 from ops import *
 from deployment import load
-import sequence,scenarios
+import sequence,scenarios,price_caps
 
 deployment,work,cfg=load();client_isolation=deployment.client_isolation;setup=deployment.setup
 public=dict(state='scheduled',source_git_sha=HEAD,scheduled_msk='2026-10-12 06:45',orders_started=False,raw_evidence_on_test=True,qualification_result='INCOMPLETE',scenarios={})
@@ -143,6 +143,24 @@ try:
  resolved=json.loads((work/'resolve-private.json').read_text());targets=resolved['targets']
  if not resolved.get('ok') or {x['symbol'] for x in targets}!={'ALRS-12.26','CNY-12.26'} or len(targets)!=2:raise Stop('fresh_refdata_identity_failed')
  if stopping or (work/'stop-requested').exists():raise Stop('stop_requested_before_product')
+ # Resolve current-price caps without creating a trading publisher.
+ environment['inventory']()
+ quote_args=[str(environment['binary']),*environment['common'],'--read-only-market-data','--log',str(work/'quote-capture.ndjson'),'--command-socket',str(work/'cmd.sock')]
+ for t in targets:quote_args+=['--isin-id',str(t['isin_id'])]
+ quote_product=Product(work,environment['binary'],environment['env'],quote_args,targets,touch)
+ quote_product.start()
+ try:
+  quote_deadline=min(LATEST_START,time.time()+250)
+  while time.time()<quote_deadline:
+   guardian_ok();quote_state=quote_product.wait_status(quote_deadline)
+   if any(quote_state.get(k) for k in ('journal_failed','cancel_only','log_error','cgate_key_check_failed','operator_action_required')):raise Stop('quote_capture_safety_alert')
+   client_isolation(work,quote_product.child.pid)
+   if quote_state['configuration']['allow_orders'] or quote_state['transport']['publisher']['state']!=0:raise Stop('quote_capture_created_publisher')
+   try:targets=price_caps.bind_caps(quote_state,targets);break
+   except ValueError:time.sleep(.2)
+  else:raise Stop('current_price_capture_deadline')
+  atomic(work/'quote-cap-anchor-private.json',dict(targets=targets,status=quote_state))
+ finally:quote_product.close()
  environment['inventory']();args=[str(environment['binary']),*environment['common'],'--log',str(work/'interaction.ndjson'),'--state',str(environment['state']),'--command-socket',str(work/'cmd.sock'),'--allow-orders','--sole-instance','--login-env','MOEX_LOGIN','--ext-id-range',cfg['ext_id_range'],'--max-commands-per-second','5','--max-quantity','2','--max-open-orders','5','--clock-offset-us',str(public['clock_before']['offset_us']),'--measure-timings']
  for t in targets:
   cap=t['quote_cap_scaled'];args+=['--isin-id',str(t['isin_id']),'--max-notional',str(t['isin_id'])+'='+sequence._price(cap),'--max-position',str(t['isin_id'])+'=2']
@@ -152,7 +170,11 @@ try:
  # Target resolver provenance is independently corroborated by the real host.
  for t in targets:
   x=next(x for x in initial['instruments'] if x['isin_id']==t['isin_id']);terms=x['session_terms']
-  if x['symbol']!=t['symbol'] or terms['reference_price_scaled']!=t['reference_price_scaled'] or t['quote_cap_scaled']!=2*terms['reference_price_scaled']:raise Stop('fresh_cap_changed_before_first_order')
+  if x['symbol']!=t['symbol'] or terms['reference_price_scaled']!=t['reference_price_scaled'] or t['quote_cap_scaled']!=price_caps.approved_ceiling(t,terms):raise Stop('fresh_cap_changed_before_first_order')
+ # All-eight-stream gates corroborate the read-only quote anchor before entry.
+ for t in targets:
+  try:price_caps.current_reference(initial,t)
+  except ValueError as error:raise Stop(str(error)) from error
  reservations=[x['pending_fill_reservations'] for x in initial['instruments']]
  if any(x.get('buy_overflow',True) or x.get('sell_overflow',True) or not x.get('proof_valid',False) for x in reservations):raise Stop('initial_reservation_proof_invalid')
  if any(x['buy_quantity'] or x['sell_quantity'] for x in reservations):

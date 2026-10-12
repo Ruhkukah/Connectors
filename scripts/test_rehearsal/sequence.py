@@ -7,6 +7,7 @@ No function retries a place command. work holds only private host evidence.
 import json
 import time
 import uuid
+import price_caps
 from pathlib import Path
 
 TERMINAL = {"Filled", "Cancelled", "Rejected"}
@@ -131,8 +132,15 @@ class _Sequence:
         limits = next((x for x in state["configuration"]["risk"]["instruments"] if x["isin_id"] == target["isin_id"]), None)
         cap = limits["max_quote_notional_scaled"] if limits else None
         reference = terms["reference_price_scaled"]
-        if not limits or not 0 < limits["max_position"] <= 2 or reference is None or cap is None or not 0 < cap <= 2 * reference:
+        if not limits or not 0 < limits["max_position"] <= 2 or reference is None or cap is None or not 0 < cap <= price_caps.approved_ceiling(target, terms):
             raise SequenceStop("instrument_limits_outside_approved_scope")
+        if 'quote_reference_scaled' in target:
+            try:
+                current = price_caps.current_reference(state, target)
+            except ValueError as error:
+                raise SequenceStop(str(error)) from error
+            if quantity * units > min(cap, 2 * current):
+                raise SequenceStop("quote_cap_exceeded", target["symbol"])
         if not step or lower is None or upper is None or cap is None or units % step or not lower <= units <= upper or quantity * units > cap:
             raise SequenceStop("price_outside_native_limits", target["symbol"])
         return row

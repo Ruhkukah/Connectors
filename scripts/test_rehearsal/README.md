@@ -76,3 +76,18 @@ additional adapter tests verify fail-closed configuration selection. These
 checks require neither TEST access nor a publisher and make no certification
 claim. Linux is required for a real supervisor/guardian because process identity
 uses `/proc` and cleanup locking uses `flock`.
+
+Current-price cap correction: `session_terms.reference_price_scaled` is the
+REFDATA settlement price used for native price-band arithmetic. It must not
+stand in for an executable current price. Both it and AGGR prices use five
+fractional digits. The supervisor first captures a fresh two-sided AGGR book
+through the native read-only product, with no trading publisher, and validates
+identity, session, grid and bounds against committed REFDATA. The fixed quote
+cap is twice the best bid, the conservative side of that book. It records the
+settlement price and current quote anchor separately. All eight trading streams,
+flatness, reservations and effective configuration must then pass before entry.
+The cap is never increased during that session; each request also stays below
+twice the fresh best bid. A two-lot buy at the ask can therefore be refused even
+when a one-lot IOC is allowed. Quantity, position, rate and ownership limits are
+unchanged. These are outstanding-order quote units, not cash margin or converted
+contract currency value.

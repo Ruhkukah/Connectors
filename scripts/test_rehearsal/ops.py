@@ -1,4 +1,5 @@
 """Reviewable CLI orchestration only. No SDK, publisher or venue API imports."""
+import price_caps
 from pathlib import Path
 import datetime,fcntl,hashlib,json,os,signal,subprocess,time,urllib.request
 
@@ -208,7 +209,7 @@ def clean_product(product,until=None,final=True):
     if not level or not level['quantity']:raise Stop('cleanup_crossing_quote_unavailable')
     price=level['price_scaled'];cap=next(x['max_quote_notional_scaled'] for x in s['configuration']['risk']['instruments'] if x['isin_id']==t['isin_id'])
     qty=min(abs(pos),2,level['quantity'],cap//price if price>0 else 0)
-    if qty<=0 or qty*price>cap or cap>2*terms['reference_price_scaled'] or price%terms['min_step_scaled'] or not terms['lower_price_scaled']<=price<=terms['upper_price_scaled']:raise Stop('cleanup_quote_outside_caps')
+    if qty<=0 or qty*price>cap or cap>price_caps.approved_ceiling(t,terms) or price%terms['min_step_scaled'] or not terms['lower_price_scaled']<=price<=terms['upper_price_scaled']:raise Stop('cleanup_quote_outside_caps')
     # Cleanup bypasses only the scheduler's new-entry stop, never product risk.
     suffix=str(time.time_ns());cid='q-close-'+suffix;attempts+=1;before=rows[0];offset=(product.work/'interaction.ndjson').stat().st_size
     with lock(product.work/'command.lock'):
