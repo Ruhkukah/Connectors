@@ -145,7 +145,7 @@ try:
  if stopping or (work/'stop-requested').exists():raise Stop('stop_requested_before_product')
  # Resolve current-price caps without creating a trading publisher.
  environment['inventory']()
- quote_args=[str(environment['binary']),*environment['common'],'--read-only-market-data','--log',str(work/'quote-capture.ndjson'),'--command-socket',str(work/'cmd.sock')]
+ quote_args=[str(environment['binary']),*environment['common'],'--read-only-market-data','--log',str(work/'quote-capture.ndjson'),'--state',str(environment['state']),'--command-socket',str(work/'cmd.sock')]
  for t in targets:quote_args+=['--isin-id',str(t['isin_id'])]
  quote_product=Product(work,environment['binary'],environment['env'],quote_args,targets,touch)
  quote_product.start()
