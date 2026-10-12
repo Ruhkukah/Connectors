@@ -35,8 +35,8 @@ inline void spread_scope_host_regression(TradingHostConfig config, const plaza2:
              .empty(),
         "declared futures scope admitted calendar-spread Add");
     require(control.commands().size() == before, "excluded spread reached native publisher");
-    require(host.cancel_all(isin).empty() && control.commands().size() == before + 1,
-            "spread guard blocked risk-reducing cancel");
+    require(host.cancel_all(isin).empty() && control.commands().size() == before,
+            "verified empty spread scope posted an unnecessary cancel");
     require(!host.stop(), "spread scope stop");
 }
 } // namespace moex::connector_host

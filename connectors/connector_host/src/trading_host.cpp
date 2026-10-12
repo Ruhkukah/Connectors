@@ -939,6 +939,25 @@ std::string CgateTradingHost::move(std::string_view key, std::string price, std:
 }
 std::string CgateTradingHost::cancel_all(std::int32_t isin) {
     assert_owner();
+    // A completed, current private reconstruction proves an empty scope.
+    // In particular, shutdown after clearing must not create a mass-cancel
+    // retry that the closed session cannot acknowledge. Unknown history,
+    // pending commands and any nonterminal order still take the normal path.
+    const auto streams = session_.private_state().stream_health();
+    const auto online = [&](auto code) {
+        const auto row = std::find_if(streams.begin(), streams.end(),
+                                      [&](const auto& s) { return s.stream_code == code; });
+        return row != streams.end() && row->online && row->snapshot_complete;
+    };
+    if (isin > 0 && config_.orders.sole_instance && !rebuilding_ && !orders_->cancellations_pending(isin) &&
+        session_.runtime_health().connection == 3 && online(gen::StreamCode::kFortsTradeRepl) &&
+        online(gen::StreamCode::kFortsUserorderbookRepl) &&
+        std::none_of(orders_->orders().begin(), orders_->orders().end(), [&](const auto& entry) {
+            return entry.second.request.isin_id == isin && !terminal(entry.second.state);
+        })) {
+        log_event("cancel_all_empty", "{\"isin_id\":" + std::to_string(isin) + ",\"snapshot_confirmed\":true}");
+        return {};
+    }
     auto error = orders_->cancel_all(isin);
     // A partial refusal still queues the safe instance-owned cancellations.
     if (isin > 0)

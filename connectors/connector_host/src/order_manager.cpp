@@ -1967,11 +1967,18 @@ void OrderManager::observe_trades(std::span<const plaza2::private_state::OwnTrad
             deferred_trades_.erase({row.sess_id, row.id_deal});
     }
 }
-bool OrderManager::cancellations_pending() const noexcept {
-    return !cancels_.empty() || !bulk_cancellations_.empty() ||
-           std::any_of(pending_.begin(), pending_.end(), [](const auto& entry) {
+bool OrderManager::cancellations_pending(std::int32_t isin) const noexcept {
+    const auto matches = [&](const Command& command) {
+        if (!isin || command.encoded.isin_id == isin)
+            return true;
+        const auto order = orders_.find(command.key);
+        return order != orders_.end() ? order->second.request.isin_id == isin : command.encoded.isin_id == 0;
+    };
+    return (isin ? bulk_cancellations_.contains(isin) : !bulk_cancellations_.empty()) ||
+           std::any_of(cancels_.begin(), cancels_.end(), matches) ||
+           std::any_of(pending_.begin(), pending_.end(), [&](const auto& entry) {
                const auto kind = entry.second.encoded.command_kind;
-               return kind == Kind::DelOrder || kind == Kind::DelUserOrders;
+               return (kind == Kind::DelOrder || kind == Kind::DelUserOrders) && matches(entry.second);
            });
 }
 void OrderManager::prove_absence(std::int64_t server_time, bool online) {

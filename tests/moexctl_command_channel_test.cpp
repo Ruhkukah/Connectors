@@ -972,7 +972,7 @@ int main(int argc, char** argv) {
         test::require(owner.wait() == 8, "signal drain reported success without native terminal proof");
         cancelled_before_stop(log);
     });
-    scenario("sole-instance signals cancel every configured instrument before draining", [&] {
+    scenario("sole-instance signals cancel nonempty scopes before draining", [&] {
         for (const auto signal : {SIGINT, SIGTERM}) {
             const std::string reason = signal == SIGINT ? "SIGINT" : "SIGTERM";
             const auto label = "signal-cancel-" + reason;
@@ -1004,8 +1004,8 @@ int main(int argc, char** argv) {
                 if (record.find("\"event\":\"cancel_drain\"") != std::string::npos)
                     drain = record;
             }
-            test::require(sole_instance && first == 1 && second == 1 && acknowledgements == 2,
-                          "signal did not cancel each configured instrument once and process its acknowledgement");
+            test::require(sole_instance && first == 1 && second == 0 && acknowledgements == 1,
+                          "signal skipped a working scope or cancelled a verified empty instrument");
             test::require(field(drain, "reason") == reason, "signal drain outcome was not journaled");
             const bool timed_out = field(drain, "outcome") == "timed_out";
             test::require(result == (field(drain, "outcome") == "completed" ? 0 : 8),

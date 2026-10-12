@@ -175,6 +175,15 @@ class CleanupTest(unittest.TestCase):
         self.assertTrue(product.kill)
         self.assertEqual(sum(x["line"].startswith("place ") for x in product.cli_requests), 1)
 
+    def test_closed_session_flat_cleanup_does_not_repeat_mass_cancel(self):
+        product = FakeProduct(self.work, self.clock)
+        product.base['positions'][0]['xpos'] = 0
+        product.base['instruments'][0]['order_entry_ready'] = False
+        result = self.run_cleanup(product)
+        self.assertTrue(result['cancel_confirmed'] and result['flat'])
+        self.assertFalse(any(line.startswith('cancel-all ') for line in product.requests))
+        self.assertEqual(product.cli_requests, [])
+
     def test_duplicate_credit_never_authorizes_second_ioc(self):
         product = FakeProduct(self.work, self.clock, "duplicate_credit")
         with self.assertRaisesRegex(ops.Stop, "cleanup_fill_position_unconfirmed"):

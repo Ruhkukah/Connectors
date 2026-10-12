@@ -156,7 +156,7 @@ class OrderManager {
         return cancels_.size() + adds_.size();
     }
     [[nodiscard]] bool operator_action_required() const noexcept;
-    [[nodiscard]] bool cancellations_pending() const noexcept;
+    [[nodiscard]] bool cancellations_pending(std::int32_t isin = 0) const noexcept;
     [[nodiscard]] PendingFillReservationSnapshot pending_fill_reservations(std::int32_t isin) const noexcept;
     [[nodiscard]] const AddPathTiming* active_add_path_timing() const noexcept {
         return active_add_path_;

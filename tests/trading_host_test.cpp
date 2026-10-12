@@ -29,6 +29,7 @@
 #include "multileg_history_host_regression.hpp"
 #include "userbook_replacement_host_regression.hpp"
 #include "instance_cancel_host_regression.hpp"
+#include "closed_session_cancel_host_regression.hpp"
 #include "plaza2_cgate/field_read_contract.hpp"
 
 #include <cstdlib>
@@ -240,6 +241,7 @@ int main(int argc, char** argv) {
         aggr_snapshot_status_regression(config, fake, root);
         moex::connector_host::regression::startup_id_block_host_regression(config, fake, root);
         moex::connector_host::regression::instance_cancel_host_regression(config, fake, root);
+        moex::connector_host::regression::closed_session_cancel_host_regression(config, fake, root);
         moex::connector_host::inflight_rebuild_host_regression(config, fake, root);
         moex::connector_host::regression::storage_recovery_regression(config, fake, root);
         moex::connector_host::regression::multileg_history_host_regression(config, fake, root);

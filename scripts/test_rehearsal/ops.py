@@ -113,6 +113,7 @@ def ready(s,targets,entry=True):
 def flat(s):
  return s['queued']==0 and all(x['xpos']==0 for x in s['positions']) and all(x['state'] in TERMINAL and not x['operator_action_required'] for x in s['orders'])
 
+
 class Product:
  def __init__(self,work,binary,env,args,targets,touch=lambda:None):
   self.work=Path(work);self.binary=str(binary);self.env=env;self.args=args;self.targets=targets;self.touch=touch;self.child=None;self.expected_sha=sha(binary);self.isolation=None;self.risk_guard=None
@@ -195,9 +196,12 @@ def clean_product(product,until=None,final=True):
   if product.isolation:
    try:product.isolation()
    except BaseException:isolated=False
-  if isolated:
+  current=product.status()
+  empty_confirmed=(ready(current,product.targets,entry=False) and current['queued']==0
+                   and all(x['state'] in TERMINAL and not x['operator_action_required'] for x in current['orders']))
+  if isolated and not empty_confirmed:
    for t in product.targets:product.command('cancel-all '+str(t['isin_id']),permit_risk=False)
-  else:
+  elif not isolated:
    for o in product.status()['orders']:
     if o['instance_owned'] and o['state'] not in TERMINAL and o['order_id']>0:product.command('cancel '+o['client_order_id'],permit_risk=False)
   while time.time()<until:
