@@ -1,0 +1,40 @@
+"""Contract only: this file neither configures nor authorizes a live session.
+
+Keep the actual implementation and its settings in the protected TEST area.
+The public source has no bootstrap, SSH launcher, credentials or assigned IDs.
+"""
+
+
+def settings():
+    # Required keys: work_directory (absolute existing protected directory),
+    # binary_sha256, ext_id_range. Other privately validated setup inputs can
+    # be returned here. Do not put real settings into this example.
+    raise RuntimeError("protected_settings_not_configured")
+
+
+def setup(work, cfg):
+    # Verify exact production build, protected software key/INI/scheme paths,
+    # router identity/upstreams, zero competing clients and identifier budget.
+    # Return binary, env, common CLI arguments, state, inventory callable and
+    # router_faults receipt. All paths/writes must satisfy the owner's scope.
+    # inventory(expected_product_pid=None) must reject unexpected clients.
+    raise RuntimeError("protected_setup_not_implemented")
+
+
+def client_isolation(work, expected_product_pid):
+    # Independently verify the sole owned product client by PID/start identity,
+    # original router fingerprints and protected pristine upstream whitelist.
+    # Failure must raise; never assume isolation from a total socket count.
+    raise RuntimeError("protected_client_isolation_not_implemented")
+
+
+def prove_fill_coverage(initial, journal, work, status):
+    # Preserve the original fresh native POS/fill coverage proof and its
+    # negative control. Never clear a reservation or fabricate a watermark.
+    raise RuntimeError("protected_coverage_proof_not_implemented")
+
+
+def reconstruct_orders(work):
+    # Invoke the frozen private reconstruction reader; save protected output
+    # under work with a bounded deadline. Never send a product command here.
+    raise RuntimeError("protected_reconstruction_not_implemented")
