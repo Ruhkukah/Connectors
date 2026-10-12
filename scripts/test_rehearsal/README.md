@@ -10,8 +10,8 @@ belong in PR #68's description, not in repository evidence files.
 `worker.py` retains the original dated start/claim, session schedule, scenario
 ordering, refusal handling and shutdown escalation. Its original date is past
 after that run; this publication is not an armed job or permission to repeat it.
-The source deliberately retains the original failure-reporting and signal
-behavior for review rather than silently correcting the executed harness.
+The original deployed bundles remain unchanged. Subsequent corrections in this
+review copy are recorded separately in PR #68 with their regression evidence.
 `guardian.py` watches the owned supervisor and product identities and performs
 bounded product-mediated cleanup. Guardian completion alone proves no trading
 or certification success.
@@ -91,3 +91,11 @@ twice the fresh best bid. A two-lot buy at the ask can therefore be refused even
 when a one-lot IOC is allowed. Quantity, position, rate and ownership limits are
 unchanged. These are outstanding-order quote units, not cash margin or converted
 contract currency value.
+
+Closed-session closeout correction: a current reconstructed empty order scope
+needs no exchange cancellation. Missing history or pending cancellation still
+requires the normal risk-reduction path. Final cleanup publishes `closing`,
+with a fresh lease bounded by 240 seconds after the planned end. The guardian
+respects that lease and cleanup lock; a stale heartbeat or expired lease still
+triggers intervention. `complete` is published only with the terminal closeout
+receipt after cancellation/flatness, product exit and client inventory checks.

@@ -945,8 +945,8 @@ std::string CgateTradingHost::cancel_all(std::int32_t isin) {
     // pending commands and any nonterminal order still take the normal path.
     const auto streams = session_.private_state().stream_health();
     const auto online = [&](auto code) {
-        const auto row = std::find_if(streams.begin(), streams.end(),
-                                      [&](const auto& s) { return s.stream_code == code; });
+        const auto row =
+            std::find_if(streams.begin(), streams.end(), [&](const auto& s) { return s.stream_code == code; });
         return row != streams.end() && row->online && row->snapshot_complete;
     };
     if (isin > 0 && config_.orders.sole_instance && !rebuilding_ && !orders_->cancellations_pending(isin) &&
