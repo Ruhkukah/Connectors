@@ -12,6 +12,7 @@ TERMINAL={'Filled','Cancelled','Rejected'}
 REQUIRED={'FORTS_TRADE_REPL','FORTS_USERORDERBOOK_REPL','FORTS_POS_REPL','FORTS_PART_REPL','FORTS_REFDATA_REPL','FORTS_SESSIONSTATE_REPL','FORTS_INSTRUMENTSTATE_REPL','FORTS_AGGR20_REPL','p2mqreply'}
 
 class Stop(RuntimeError):pass
+class StatusSocketUnavailable(Stop):pass
 
 def atomic(path,value):
  path=Path(path);tmp=path.with_name(path.name+'.'+str(os.getpid())+'.tmp')
@@ -124,7 +125,10 @@ class Product:
    r=subprocess.run([self.binary,'plaza2','cmd','--command-socket',str(self.work/'cmd.sock'),line],cwd=self.work,env=self.env,capture_output=True,timeout=15)
    with (self.work/'operator-private.ndjson').open('a') as f:
     f.write(json.dumps(dict(utc_ns=time.time_ns(),line=line,exit=r.returncode,stdout=r.stdout.decode(errors='replace'),stderr=r.stderr.decode(errors='replace')))+'\n')
-   if r.returncode:raise Stop('product_command_refused_or_uncertain')
+   if r.returncode:
+    if line=='status' and not r.stdout and r.stderr.decode(errors='replace').strip().endswith('cannot connect to command socket'):
+     raise StatusSocketUnavailable('status_socket_not_ready')
+    raise Stop('product_command_refused_or_uncertain')
    data=json.loads(r.stdout)
    if line!='status' and not data.get('ok'):raise Stop('product_command_refused_or_uncertain')
    return data
@@ -132,13 +136,20 @@ class Product:
   s=self.command('status')
   with (self.work/'status-private.ndjson').open('a') as f:f.write(json.dumps(dict(utc_ns=time.time_ns(),status=s))+'\n')
   return s
+ def wait_status(self,until):
+  while time.time()<until:
+   self.touch()
+   if self.child is not None and self.child.poll() is not None:raise Stop('product_exited')
+   try:return self.status()
+   except StatusSocketUnavailable:time.sleep(.05)
+  raise Stop('status_socket_startup_deadline')
  def wait_ready(self,until,require_flat=False,entry=True):
   last=None
   while time.time()<until:
    self.touch()
    if self.child.poll() is not None:raise Stop('product_exited')
    if (self.work/'cmd.sock').exists():
-    last=self.status()
+    last=self.wait_status(until)
     if any(last.get(k) for k in ('journal_failed','cancel_only','log_error','cgate_key_check_failed','operator_action_required')):raise Stop('product_safety_alert')
     if ready(last,self.targets,entry) and (not require_flat or flat(last)):return last
    time.sleep(1)
@@ -161,6 +172,9 @@ def clean_product(product,until=None,final=True):
  with lock(product.work/'cleanup.lock',nonblocking=True):
   if final:(product.work/'stop-requested').touch()
   result=dict(cancel_confirmed=False,flat=False)
+  # A restarted process can exist while its old socket is still stale.
+  # Wait only on the idempotent status operation before cleanup commands.
+  if isinstance(product,Product):product.wait_status(min(until,time.time()+20))
   product.command('kill on',permit_risk=False)
   isolated=True
   if product.isolation:

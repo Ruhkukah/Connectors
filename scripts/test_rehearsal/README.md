@@ -50,6 +50,12 @@ paired socket ownership, reject competing clients, and use zero-client mode
 before startup/after shutdown. Historical deployed sources stay unchanged;
 using this corrected helper does not authorize a repeat session.
 
+The startup wait retries only a read-only status request whose CLI reports
+`cannot connect to command socket`, within the existing deadline and while the
+child is alive. It does not retry a trading command, a missing response,
+malformed JSON or a product safety alert. Cleanup also waits for a responsive
+status socket before sending its first command.
+
 Adapter selection requires both `MOEX_REHEARSAL_ADAPTER` (an absolute protected
 Python file) and `MOEX_REHEARSAL_ADAPTER_SHA256`. Adapter code is trusted executable
 code, so its hash must come from independently reviewed protected deployment
