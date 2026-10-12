@@ -45,7 +45,21 @@ def checked_signal(identity,sig):
 
 def inspect_router(probe,binary,binary_sha256,owner_pid=None):
  """An expected product is an owned client, not a zero-client preflight."""
- return probe.inspect(dict(environment='test',binary=str(binary),binary_sha256=binary_sha256),owner_pid=owner_pid)
+ identity=None
+ for attempt in range(3):
+  try:
+   result=probe.inspect(dict(environment='test',binary=str(binary),binary_sha256=binary_sha256),owner_pid=owner_pid)
+   if identity is not None and process_identity(owner_pid)!=identity:raise Stop('router_inventory_owner_changed')
+   return result
+  except FileNotFoundError:
+   # A process unrelated to the router can disappear during a /proc scan.
+   # Repeat the entire strict inspection; never treat a partial scan as proof.
+   if owner_pid:
+    current=process_identity(owner_pid)
+    if identity is not None and current!=identity:raise Stop('router_inventory_owner_changed')
+    identity=current
+   if attempt==2:raise Stop('router_inventory_unstable')
+   time.sleep(.02)
 
 def fetch(url):
  req=urllib.request.Request(url,headers={'User-Agent':'MOEX-TEST-qualification','Accept':'application/vnd.github+json'})
