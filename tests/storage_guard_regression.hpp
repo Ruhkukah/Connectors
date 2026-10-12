@@ -68,9 +68,19 @@ inline void storage_durable_cancel_guard(TradingHostConfig config, const plaza2:
     const auto writer_boundary = config.identity_state_path.string() + ".journal";
     std::filesystem::remove(writer_boundary);
     std::filesystem::create_directory(writer_boundary);
-    std::this_thread::sleep_for(std::chrono::milliseconds(270));
-    require(!host.poll() && host.status().find("\"cancel_only\":true") != std::string::npos,
-            "durable cancellation fixture did not enter storage protection");
+    // Make the asynchronous writer touch the now-invalid checkpoint path,
+    // then wait for its actual failure rather than a scheduling-dependent nap.
+    host.record_operator_input("durable-cancel-storage-fault");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    bool protected_entry{};
+    do {
+        require(!host.poll(), "storage fault propagation poll");
+        protected_entry = host.status().find("\"cancel_only\":true") != std::string::npos;
+        if (protected_entry)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } while (std::chrono::steady_clock::now() < deadline);
+    require(protected_entry, "durable cancellation fixture did not enter storage protection");
     bool kill_refused{};
     try {
         host.set_kill_switch(false);

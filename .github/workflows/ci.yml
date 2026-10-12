@@ -40,6 +40,10 @@ jobs:
         run: cmake --build build --parallel 2
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      - name: Rehearsal safeguard tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m unittest discover -s scripts/test_rehearsal -p 'test_*.py'
 
   component-sanitizers:
     runs-on: ubuntu-latest
@@ -66,3 +70,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --test-dir build-asan --output-on-failure
+      - name: Rehearsal safeguard tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m unittest discover -s scripts/test_rehearsal -p 'test_*.py'
