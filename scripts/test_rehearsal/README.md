@@ -42,6 +42,14 @@ replace the deployed assignment. Date, approved instruments, risk gates, CLI
 scenario logic and cleanup/guardian sequencing otherwise remain as prepared.
 These adapter changes have offline tests, not native equivalence qualification.
 
+Post-run correction: the protected inventory/isolation adapter must pass the
+expected product PID to `ops.inspect_router()`. A zero-client inspection after
+startup rejects the product's own socket and incorrectly selects the emergency
+SIGKILL shutdown path. The inspection must still verify the TEST binary and
+paired socket ownership, reject competing clients, and use zero-client mode
+before startup/after shutdown. Historical deployed sources stay unchanged;
+using this corrected helper does not authorize a repeat session.
+
 Adapter selection requires both `MOEX_REHEARSAL_ADAPTER` (an absolute protected
 Python file) and `MOEX_REHEARSAL_ADAPTER_SHA256`. Adapter code is trusted executable
 code, so its hash must come from independently reviewed protected deployment

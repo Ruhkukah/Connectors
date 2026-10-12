@@ -18,6 +18,8 @@ def setup(work, cfg):
     # Return binary, env, common CLI arguments, state, inventory callable and
     # router_faults receipt. All paths/writes must satisfy the owner's scope.
     # inventory(expected_product_pid=None) must reject unexpected clients.
+    # Use ops.inspect_router with that expected PID after product startup;
+    # omit it only for the zero-client checks before startup/after shutdown.
     raise RuntimeError("protected_setup_not_implemented")
 
 
@@ -25,6 +27,10 @@ def client_isolation(work, expected_product_pid):
     # Independently verify the sole owned product client by PID/start identity,
     # original router fingerprints and protected pristine upstream whitelist.
     # Failure must raise; never assume isolation from a total socket count.
+    # Call ops.inspect_router(probe, binary, binary_sha256, expected_product_pid).
+    # Passing no owner is correct only before startup/after shutdown, with zero
+    # clients. Probe.inspect itself must verify the owner's binary/TEST argv
+    # and paired socket inode; do not merely permit any single connection.
     raise RuntimeError("protected_client_isolation_not_implemented")
 
 

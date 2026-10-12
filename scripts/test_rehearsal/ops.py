@@ -41,6 +41,10 @@ def checked_signal(identity,sig):
  if actual!=identity:raise Stop('owned_process_identity_changed')
  os.kill(identity['pid'],sig);return True
 
+def inspect_router(probe,binary,binary_sha256,owner_pid=None):
+ """An expected product is an owned client, not a zero-client preflight."""
+ return probe.inspect(dict(environment='test',binary=str(binary),binary_sha256=binary_sha256),owner_pid=owner_pid)
+
 def fetch(url):
  req=urllib.request.Request(url,headers={'User-Agent':'MOEX-TEST-qualification','Accept':'application/vnd.github+json'})
  with urllib.request.urlopen(req,timeout=20) as r:
