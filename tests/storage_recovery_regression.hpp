@@ -47,9 +47,16 @@ inline void storage_recovery_regression(TradingHostConfig config, const plaza2::
     std::filesystem::remove(writer_boundary);
     std::filesystem::create_directory(writer_boundary);
     host.record_operator_input("before_writer_failure");
-    std::this_thread::sleep_for(std::chrono::milliseconds(270));
-    require(!host.poll() && host.status().find("\"cancel_only\":true") != std::string::npos,
-            "writer failure did not restore protection");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    bool protected_entry{};
+    do {
+        require(!host.poll(), "writer failure propagation poll");
+        protected_entry = host.status().find("\"cancel_only\":true") != std::string::npos;
+        if (protected_entry)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } while (std::chrono::steady_clock::now() < deadline);
+    require(protected_entry, "writer failure did not restore protection");
     require(!host.storage_ok().empty(), "storage ok accepted an unrepaired writer");
     std::filesystem::remove(writer_boundary);
     recover_storage(host);
