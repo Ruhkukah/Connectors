@@ -201,12 +201,13 @@ try:
   s=product.status()
   if not flat(s):raise Stop('exposure_after_cleanup')
   touch();time.sleep(5)
- public.update(state='complete',completed_utc_ns=time.time_ns(),**final_statistics())
+ # Completion is published only after cancellation, process exit and inventory.
 except BaseException as error:
  public.update(state='blocked',error_code=str(error) if isinstance(error,Stop) else getattr(error,'code','supervisor_failure'),error_class=type(error).__name__)
  (work/'error-private.txt').write_text(traceback.format_exc())
 finally:
  if product:
+  public.update(state='closing',closeout_from_phase=public.get('phase'),phase='final_cleanup',cleanup_deadline_utc=min(time.time()+220,END+240));touch()
   try:
    result=clean_product(product,until=min(time.time()+180,stamp(16,15)));public['closeout']=result
   except BaseException as e:public['closeout']=dict(flat=False,error_class=type(e).__name__)
@@ -217,6 +218,10 @@ finally:
    except BaseException as e:public['client_inventory_error']=type(e).__name__
   if not public.get('closeout',{}).get('flat') or not public['closeout'].get('cancel_confirmed') or public.get('product_exit')!=0 or public.get('product_shutdown_error') or public.get('client_inventory_error'):
    public.update(state='blocked',error_code='closeout_incomplete')
+  elif not public.get('error_code'):
+   public['state']='complete'
+  else:
+   public['state']='blocked'
   try:
    deployment.reconstruct_orders(work)
   except BaseException:public['reconstruction_error']=True

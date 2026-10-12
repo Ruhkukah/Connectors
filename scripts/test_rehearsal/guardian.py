@@ -31,8 +31,8 @@ while time.time()<END+900:
    except (FileNotFoundError,ProcessLookupError):pass
   break
  stale=time.time_ns()-state.get('updated_utc_ns',0)>120000000000
- normal_closeout=(state.get('phase') in ('cleanup','final_clearing_observation') and not stale and state.get('state')=='running')
- deadline=time.time()>=END+60 or (time.time()>=CLEANUP+600 and not normal_closeout)
+ normal_closeout=cleanup_owner_active(state,time.time())
+ deadline=(time.time()>=END+60 or time.time()>=CLEANUP+600) and not normal_closeout
  requested=(work/'stop-requested').exists() and not normal_closeout
  if time.time()>=START and (stale or deadline or requested):
   (work/'stop-requested').touch()
@@ -45,7 +45,7 @@ while time.time()<END+900:
     try:
      result=clean_product(p,until=min(time.time()+180,END+600));atomic(work/'guardian-public.json',dict(state='cleanup',**result))
     except BlockingIOError:
-     if stale or time.time()>=END+60:
+     if stale or deadline:
       safe_signal(owned);atomic(work/'guardian-public.json',dict(state='blocked',flat=False,reason='supervisor_cleanup_unresponsive'));break
      time.sleep(5);continue # Bounded healthy supervisor cleanup ownership.
     finally:

@@ -113,6 +113,14 @@ def ready(s,targets,entry=True):
 def flat(s):
  return s['queued']==0 and all(x['xpos']==0 for x in s['positions']) and all(x['state'] in TERMINAL and not x['operator_action_required'] for x in s['orders'])
 
+def cleanup_owner_active(state,now):
+ """A fresh, bounded closeout lease retains exclusive cleanup ownership."""
+ if now*1e9-state.get('updated_utc_ns',0)>120e9:return False
+ if state.get('state')=='running' and state.get('phase') in ('cleanup','final_clearing_observation'):
+  return now<END+60
+ deadline=state.get('cleanup_deadline_utc',0)
+ return (state.get('state')=='closing' and state.get('phase')=='final_cleanup'
+         and now<deadline<=END+240)
 
 class Product:
  def __init__(self,work,binary,env,args,targets,touch=lambda:None):
