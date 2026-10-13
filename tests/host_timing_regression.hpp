@@ -7,8 +7,40 @@
 #include <thread>
 
 namespace moex::connector_host::regression {
+inline void owner_poll_diagnostics_regression() {
+    const auto check = plaza2::test::require;
+    OwnerPollDiagnostics diagnostics;
+    const auto began = OwnerPollDiagnostics::Clock::time_point(std::chrono::seconds(100));
+    // A busy native stream previously wrote one large diagnostic for every
+    // slow turn. Retain its actual worst attribution and count, not 10k rows.
+    for (std::uint64_t sequence = 1; sequence <= 10000; ++sequence) {
+        const auto total = sequence == 25 ? 50000000 : 2000000;
+        if (diagnostics.observe(began + std::chrono::microseconds(sequence), sequence, total))
+            diagnostics.capture("{\"sequence\":" + std::to_string(sequence) + ",\"total_ns\":" + std::to_string(total) +
+                                ",\"events\":[{\"stream\":\"FORTS_TRADE_REPL\",\"kind\":\"commit\"}]}");
+    }
+    check(!diagnostics.due(began + std::chrono::milliseconds(999)) &&
+              diagnostics.due(began + std::chrono::seconds(1) + std::chrono::microseconds(1)),
+          "slow diagnostics did not retain the one-second window");
+    const auto summary = diagnostics.take();
+    check(summary.find("\"sequence\":25,") != std::string::npos &&
+              summary.find("\"sampled_polls\":10000") != std::string::npos &&
+              summary.find("\"first_sequence\":1,") != std::string::npos &&
+              summary.find("\"last_sequence\":10000,") != std::string::npos &&
+              summary.find("\"max_total_ns\":50000000,") != std::string::npos &&
+              summary.find("FORTS_TRADE_REPL") != std::string::npos && diagnostics.take().empty(),
+          "sampled diagnostics lost the population or actual worst native turn");
+    check(diagnostics.observe(began + std::chrono::seconds(2), 10001, 3000000),
+          "new diagnostic window retained the previous maximum");
+    diagnostics.capture("{\"sequence\":10001,\"total_ns\":3000000,\"callbacks\":[]}");
+    const auto final = diagnostics.take(); // Shutdown must flush a partial window too.
+    check(final.find("\"sampled_polls\":1,") != std::string::npos &&
+              final.find("\"max_total_ns\":3000000,") != std::string::npos && diagnostics.take().empty(),
+          "last slow turn was lost or duplicated at shutdown");
+}
 inline void host_timing_regression(TradingHostConfig config, const plaza2::test::fake::Control& control,
                                    const std::filesystem::path& root) {
+    owner_poll_diagnostics_regression();
     const auto check = plaza2::test::require;
     control.configure({.suppress_initial_orders = true, .zero_position = true, .client_code = "BRK1C01"});
     config.measure_timings = true;
@@ -69,6 +101,9 @@ inline void host_timing_regression(TradingHostConfig config, const plaza2::test:
             slow |= line.find("\"before_session_ns\":") != std::string::npos &&
                     line.find("\"journal_flush_ns\":") != std::string::npos &&
                     line.find("\"process_ns\":") != std::string::npos && line.find("\"events\":[") != std::string::npos;
+            check(line.find("\"sampled_polls\":") != std::string::npos &&
+                      line.find("\"max_total_ns\":") != std::string::npos,
+                  "host still emitted unbounded per-turn diagnostics");
         }
         if (line.find("\"event\":\"command_timing\"") != std::string::npos) {
             check(line.find("\"post_started_utc_ns\":0") == std::string::npos,

@@ -884,10 +884,13 @@ cg::Plaza2Error CgateTradingHost::poll() {
             return std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
         };
         const auto& metrics = session_.last_poll_metrics();
+        if (owner_poll_diagnostics_.due(now))
+            flush_owner_poll_diagnostics();
         // A blocking native call can also process rows; its duration is not a
         // pure idle-wait estimate. Keep slow eventful turns or slow owner work.
         const auto owner_work = ns(started, before_session) + ns(after_session, finished);
-        if (ns(started, finished) >= 1000000 && (!metrics.events.empty() || owner_work >= 1000000)) {
+        if (ns(started, finished) >= 1000000 && (!metrics.events.empty() || owner_work >= 1000000) &&
+            owner_poll_diagnostics_.observe(now, metrics.sequence, ns(started, finished))) {
             std::string fields =
                 "{\"sequence\":" + std::to_string(metrics.sequence) +
                 ",\"online\":" + (rebuilding_ ? "false" : "true") +
@@ -931,16 +934,21 @@ cg::Plaza2Error CgateTradingHost::poll() {
                           ",\"total_ns\":" + std::to_string(callback.total_ns) +
                           ",\"max_ns\":" + std::to_string(callback.max_ns) + "}";
             }
-            log_event("slow_owner_poll", fields + "]}");
+            owner_poll_diagnostics_.capture(fields + "]}");
         }
     }
     return error;
+}
+void CgateTradingHost::flush_owner_poll_diagnostics() {
+    if (const auto fields = owner_poll_diagnostics_.take(); !fields.empty())
+        log_event("slow_owner_poll", fields);
 }
 cg::Plaza2Error CgateTradingHost::stop() {
     assert_owner();
     if (stopped_)
         return stop_error_;
     stopped_ = true;
+    flush_owner_poll_diagnostics();
     orders_->set_kill_switch(true);
     log_event("shutdown", "{\"pending_cancellations\":" + std::string(has_pending_cancellations() ? "true" : "false") +
                               ",\"working_orders\":" + (has_working_orders() ? "true" : "false") + "}");

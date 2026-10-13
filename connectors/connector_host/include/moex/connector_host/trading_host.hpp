@@ -2,6 +2,7 @@
 #include "moex/connector_host/connector_host.hpp"
 #include "moex/connector_host/event_journal.hpp"
 #include "moex/connector_host/order_manager.hpp"
+#include "moex/connector_host/owner_poll_diagnostics.hpp"
 
 #include <thread>
 #include <iosfwd>
@@ -63,6 +64,7 @@ class CgateTradingHost {
     void log_listener_event(const plaza2::cgate::Plaza2ListenerEvent& event) noexcept;
     void observe_link(const plaza2_trade::Plaza2TransportHealth& health);
     void observe_exchange_messages();
+    void flush_owner_poll_diagnostics();
     TradingHostConfig config_;
     std::thread::id owner_;
     EventJournal journal_;
@@ -88,6 +90,7 @@ class CgateTradingHost {
     std::int64_t last_aggr_receipt_utc_ns_{};
     std::int64_t last_trade_server_time_{}, last_trade_heartbeat_revision_{};
     OrderManager::Clock::time_point next_trade_time_sample_{};
+    OwnerPollDiagnostics owner_poll_diagnostics_;
     // Diagnostic receipt times only; these never participate in reconciliation.
     std::vector<std::int64_t> pending_trade_timing_ids_;
     std::unordered_map<std::int64_t, std::uint64_t> trade_commit_receipts_;
