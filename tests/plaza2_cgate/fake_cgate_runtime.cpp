@@ -321,7 +321,9 @@ std::vector<std::byte> make_trade_reply(std::string_view message_name) {
     const auto* code_text = option(Option::PubReplyCode);
     const auto command_rejected = (message_name == "DelOrder" && fake_flag(Option::PubReplyRejectDel)) ||
                                   (message_name == "DelUserOrders" && fake_flag(Option::PubReplyRejectRecovery));
-    const auto code = command_rejected || (code_text != nullptr && std::string_view(code_text) == "reject") ? 1 : 0;
+    const auto code = command_rejected || (code_text != nullptr && std::string_view(code_text) == "reject") ? 1
+                      : code_text ? static_cast<std::int32_t>(std::strtol(code_text, nullptr, 10))
+                                  : 0;
     write_reply_scalar(payload, 0, static_cast<std::int32_t>(code));
     const std::string message = code == 0 ? "OK" : "REJECTED";
     std::memcpy(payload.data() + 4, message.data(), std::min<std::size_t>(message.size(), 254));

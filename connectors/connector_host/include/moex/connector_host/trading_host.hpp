@@ -56,6 +56,7 @@ class CgateTradingHost {
     void assert_owner() const;
     void dispatch_commands();
     [[nodiscard]] bool cancellation_snapshot_ready() const;
+    [[nodiscard]] bool cancellation_flat_snapshot(std::int32_t isin) const;
     void service_shutdown_cancellations();
     void storage_failure(std::string_view error, bool writer_failed = true);
     [[nodiscard]] std::string check_storage_space();

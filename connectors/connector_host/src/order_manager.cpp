@@ -960,6 +960,9 @@ void OrderManager::set_kill_switch(bool enabled) {
 }
 
 void OrderManager::complete_timeout(Command command, Clock::time_point now) {
+    if (is_bulk_cancel(command))
+        if (auto bulk = bulk_cancellations_.find(*command.encoded.isin_id); bulk != bulk_cancellations_.end())
+            bulk->second.refused_session_closed = false;
     emit("timeout", "{\"user_id\":" + std::to_string(command.user_id) + "}");
     const auto found = orders_.find(command.key);
     if (command.encoded.command_kind == Kind::DelUserOrders && command.acknowledged) {
@@ -1348,8 +1351,17 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
     auto command = std::move(pending->second);
     pending_.erase(pending);
     const auto found = orders_.find(command.key);
+    if (is_bulk_cancel(command))
+        if (auto bulk = bulk_cancellations_.find(*command.encoded.isin_id); bulk != bulk_cancellations_.end())
+            bulk->second.refused_session_closed =
+                reply.msgid == 186 && reply.code == 3 && command.uncertain_outcomes == 0;
     if ((kind == Kind::DelOrder || kind == Kind::DelUserOrders) && reply.msgid != 99 && reply.msgid != 100 &&
         cancellation_state_rejection(reply.code)) {
+        if (reply.code == 3)
+            emit("refused_session_closed", "{\"user_id\":" + std::to_string(id) +
+                                               ",\"isin_id\":" + std::to_string(command.encoded.isin_id.value_or(0)) +
+                                               ",\"code\":3,\"acknowledged\":false,\"uncertain_outcomes\":" +
+                                               std::to_string(command.uncertain_outcomes) + "}");
         command.wait_for_trading = true;
         if (found != orders_.end()) {
             found->second.last_error = reply.message;
@@ -1980,6 +1992,40 @@ bool OrderManager::cancellations_pending(std::int32_t isin) const noexcept {
                const auto kind = entry.second.encoded.command_kind;
                return (kind == Kind::DelOrder || kind == Kind::DelUserOrders) && matches(entry.second);
            });
+}
+bool OrderManager::retire_closed_session_refusal(std::int32_t isin) {
+    const auto bulk = bulk_cancellations_.find(isin);
+    if (!config_.sole_instance || bulk == bulk_cancellations_.end() || !bulk->second.refused_session_closed ||
+        bulk->second.uncertain_exhausted || !adds_.empty() || operator_action_required())
+        return false;
+    if (std::any_of(orders_.begin(), orders_.end(), [&](const auto& entry) {
+            return entry.second.request.isin_id == isin && !terminal(entry.second.state);
+        }))
+        return false;
+    const auto matches = [&](const Command& command) {
+        const auto order = orders_.find(command.key);
+        return command.encoded.isin_id == isin || (order != orders_.end() && order->second.request.isin_id == isin);
+    };
+    // Even a currently empty snapshot cannot retire an unresolved Add/Move or
+    // an earlier uncertain cancellation. The one refused queued request is the
+    // only intent released by this proof; code-0 acceptance keeps its gate.
+    if (std::any_of(pending_.begin(), pending_.end(),
+                    [&](const auto& entry) {
+                        return matches(entry.second) || entry.second.encoded.command_kind == Kind::AddOrder ||
+                               entry.second.encoded.command_kind == Kind::MoveOrder;
+                    }) ||
+        std::any_of(cancels_.begin(), cancels_.end(), [&](const auto& command) {
+            return matches(command) &&
+                   (!is_bulk_cancel(command) || !command.wait_for_trading || command.uncertain_outcomes != 0);
+        }))
+        return false;
+    const auto removed = std::erase_if(cancels_, [&](const auto& command) { return matches(command); });
+    if (removed == 0)
+        return false;
+    bulk_cancellations_.erase(bulk);
+    emit("cancel_complete_snapshot_after_refusal",
+         "{\"isin_id\":" + std::to_string(isin) + ",\"snapshot_confirmed\":true,\"flat\":true,\"acknowledged\":false}");
+    return true;
 }
 void OrderManager::prove_absence(std::int64_t server_time, bool online) {
     if (!online)

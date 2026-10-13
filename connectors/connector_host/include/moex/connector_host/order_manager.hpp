@@ -157,6 +157,9 @@ class OrderManager {
     }
     [[nodiscard]] bool operator_action_required() const noexcept;
     [[nodiscard]] bool cancellations_pending(std::int32_t isin = 0) const noexcept;
+    // Only the host's current complete native empty-order/flat-position proof
+    // may invoke this. A code-3 refusal is never an exchange acknowledgement.
+    [[nodiscard]] bool retire_closed_session_refusal(std::int32_t isin);
     [[nodiscard]] PendingFillReservationSnapshot pending_fill_reservations(std::int32_t isin) const noexcept;
     [[nodiscard]] const AddPathTiming* active_add_path_timing() const noexcept {
         return active_add_path_;
@@ -179,7 +182,7 @@ class OrderManager {
     };
     struct BulkCancellation {
         std::uint64_t after_commit_sequence{};
-        bool awaiting_reply{true}, uncertain_exhausted{};
+        bool awaiting_reply{true}, uncertain_exhausted{}, refused_session_closed{};
     };
     [[nodiscard]] static bool is_bulk_cancel(const Command& command) {
         return command.key.empty() &&

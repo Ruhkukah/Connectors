@@ -2120,6 +2120,7 @@ int main() {
         moex::connector_host::pos_cutoff_regression();
         reload_missing_order_regression<Fixture>();
         moex::connector_host::cancel_session_retry_regression<Fixture>();
+        moex::connector_host::closed_session_refusal_retirement_regression<Fixture>();
         moex::connector_host::move_replication_recovery_regression<Fixture>();
         moex::connector_host::move_no_replacement_regression<Fixture>();
         moex::connector_host::lost_add_recovery_regression<Fixture>();

@@ -473,10 +473,10 @@ void CgateTradingHost::log_event(std::string_view kind, std::string_view fields)
                     const auto credited = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                               std::chrono::steady_clock::now().time_since_epoch())
                                               .count();
-                    journal_.append("trade_timing", "{\"deal_id\":" + std::to_string(deal) +
-                                                       ",\"commit_to_credit_ns\":" +
-                                                       std::to_string(credited - found->second) +
-                                                       ",\"reconstructing\":" + (rebuilding_ ? "true" : "false") + "}");
+                    journal_.append("trade_timing",
+                                    "{\"deal_id\":" + std::to_string(deal) +
+                                        ",\"commit_to_credit_ns\":" + std::to_string(credited - found->second) +
+                                        ",\"reconstructing\":" + (rebuilding_ ? "true" : "false") + "}");
                     trade_commit_receipts_.erase(found);
                 }
             }
@@ -534,8 +534,8 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
                 });
                 if (own)
                     for (const auto& field : event.fields)
-                        if (field.field_code == gen::FieldCode::kFortsTradeReplUserDealIdDeal && field.signed_value > 0 &&
-                            pending_trade_timing_ids_.size() < 512)
+                        if (field.field_code == gen::FieldCode::kFortsTradeReplUserDealIdDeal &&
+                            field.signed_value > 0 && pending_trade_timing_ids_.size() < 512)
                             pending_trade_timing_ids_.push_back(field.signed_value);
             } else if (event.kind == cg::Plaza2ListenerEventKind::TransactionCommit) {
                 const auto receipt = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -823,9 +823,8 @@ cg::Plaza2Error CgateTradingHost::poll() {
                 const auto applied = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                          std::chrono::steady_clock::now().time_since_epoch())
                                          .count();
-                log_event("reply_timing", "{\"user_id\":" + std::to_string(event.user_id) +
-                                              ",\"message_id\":" + std::to_string(event.message_id) +
-                                              ",\"callback_to_on_reply_ns\":" +
+                log_event("reply_timing", "{\"user_id\":" + std::to_string(event.user_id) + ",\"message_id\":" +
+                                              std::to_string(event.message_id) + ",\"callback_to_on_reply_ns\":" +
                                               std::to_string(applied - event.callback_receipt_steady_ns) + "}");
             }
         } else {
@@ -867,6 +866,10 @@ cg::Plaza2Error CgateTradingHost::poll() {
         orders_->prove_absence(server_time, trade_online);
     // ID blocks are already durable. Ordinary I/O is writer-owned; this only
     // observes its failure state without waiting for a write or disk sync.
+    if (config_.orders.sole_instance)
+        for (const auto isin : config_.isin_ids)
+            if (cancellation_flat_snapshot(isin))
+                (void)orders_->retire_closed_session_refusal(isin);
     service_shutdown_cancellations();
     const auto before_flush = stamp();
     if (!journal_failed_) {
@@ -1035,6 +1038,31 @@ bool CgateTradingHost::cancellation_snapshot_ready() const {
     };
     return !rebuilding_ && session_.runtime_health().connection == 3 && online(gen::StreamCode::kFortsTradeRepl) &&
            online(gen::StreamCode::kFortsUserorderbookRepl);
+}
+bool CgateTradingHost::cancellation_flat_snapshot(std::int32_t isin) const {
+    if (!cancellation_snapshot_ready())
+        return false;
+    const auto& data = session_.private_state();
+    const auto transport = session_.runtime_health();
+    const auto streams = data.stream_health();
+    const auto pos = std::find_if(streams.begin(), streams.end(),
+                                  [](const auto& s) { return s.stream_code == gen::StreamCode::kFortsPosRepl; });
+    const auto life = data.stream_lifenum(gen::StreamCode::kFortsTradeRepl);
+    if (data.connector_health().transaction_open || !transport.valid || !transport.private_active ||
+        transport.publisher != 3 || transport.reply != 3 || pos == streams.end() || !pos->online ||
+        !pos->snapshot_complete || !life || pos->last_trades_lifenum <= 0 ||
+        static_cast<std::uint64_t>(pos->last_trades_lifenum) != *life || pos->last_trades_rev < 0)
+        return false;
+    const auto account = config_.orders.broker_code + config_.orders.client_code;
+    if (std::any_of(data.own_orders().begin(), data.own_orders().end(), [&](const auto& row) {
+            return row.isin_id == isin && row.client_code == account &&
+                   (row.private_amount_rest > 0 || row.public_amount_rest > 0 || row.identity_conflict);
+        }))
+        return false;
+    const auto* position = data.find_position(account, isin, config_.orders.client_code.empty() ? 1 : 2);
+    const auto fills = orders_->pending_fill_reservations(isin);
+    return (!position || position->xpos == 0) && fills.proof_valid && !fills.buy_overflow && !fills.sell_overflow &&
+           fills.buy_quantity == 0 && fills.sell_quantity == 0;
 }
 void CgateTradingHost::request_shutdown_cancellation(std::int32_t isin) {
     assert_owner();
