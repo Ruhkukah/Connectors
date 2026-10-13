@@ -4,9 +4,6 @@
 #include "command_socket.hpp"
 #include "scope_exit.hpp"
 #include "shutdown_signals.hpp"
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-#include "../qualification/shutdown_reconnect/harness.hpp"
-#endif
 
 #include <array>
 #include <charconv>
@@ -108,14 +105,6 @@ std::string command(moex::connector_host::CgateTradingHost& host, ShutdownReques
             shutdown.begin(force, line, channel);
             return "{\"ok\":true,\"draining\":true,\"error\":\"\"}";
         }
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-        if (verb == "qualification-loss") {
-            if (!(input >> key) || (key != "recover" && key != "hold"))
-                return refusal(host, line, "usage: qualification-loss recover|hold", channel);
-            const auto error = ShutdownReconnectHarness::cli_owned_loss(host, key == "hold");
-            return error.empty() ? "{\"ok\":true,\"error\":\"\"}" : refusal(host, line, error, channel);
-        }
-#endif
         if (verb == "status")
             return host.status();
         if (verb == "place") {
@@ -157,10 +146,6 @@ std::string command(moex::connector_host::CgateTradingHost& host, ShutdownReques
         } else if (verb == "kill") {
             if (!(input >> key) || (key != "on" && key != "off"))
                 error = "usage: kill on|off";
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-            else if (key == "off")
-                error = "isolated CLI keeps kill switch on";
-#endif
             else if (shutdown.requested && key == "off")
                 error = "shutdown is draining cancellations";
             else
@@ -192,9 +177,6 @@ int main(int argc, char** argv) {
         std::string login_env;
         std::optional<std::array<std::int32_t, 2>> ext_id_range;
         RiskLimits risk;
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-        bool qualification_no_post_test{};
-#endif
         bool command_rate_configured{};
         bool sole_instance{};
         bool measure_timings{};
@@ -203,14 +185,6 @@ int main(int argc, char** argv) {
         std::optional<std::int64_t> clock_offset;
         for (int i = 1; i < argc; ++i) {
             const std::string_view arg(argv[i]);
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-            if (arg == "--qualification-no-post-test") {
-                if (qualification_no_post_test)
-                    throw std::invalid_argument("duplicate qualification flag");
-                qualification_no_post_test = true;
-                continue;
-            }
-#endif
             if (arg == "--measure-timings") {
                 measure_timings = true;
                 continue;
@@ -354,20 +328,11 @@ int main(int argc, char** argv) {
                     throw std::invalid_argument("isin id outside CGate i4 range");
                 config.isin_ids.push_back(static_cast<std::int32_t>(isin));
             }
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-            if (!qualification_no_post_test || !ShutdownReconnectHarness::valid_profile(config))
-                throw std::invalid_argument("isolated CLI requires explicit no-post TEST profile");
-            config.orders.risk.kill_switch = true;
-#endif
             validate_trading_host_config(config);
             config.binary_sha256 = binary_sha256(argv[0]);
             const auto signal_isins = config.isin_ids;
             const bool allow_orders = config.session.allow_orders;
             CgateTradingHost host(std::move(config));
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-            if (!ShutdownReconnectHarness::remaining_capacity(host))
-                throw std::invalid_argument("isolated CLI requires 7000 remaining IDs");
-#endif
             ScopeExit report([&] { host.report_outstanding_orders(std::cerr); });
             ScopeExit shutdown([&] { (void)host.stop(); });
             CommandSocket socket(socket_path);

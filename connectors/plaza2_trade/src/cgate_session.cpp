@@ -218,9 +218,6 @@ struct CgateSession::Impl {
         bool scheme_incompatible{};
         std::optional<std::uint32_t> observed_state;
     };
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-    bool qualification_hold_reopen{};
-#endif
     CgateSessionConfig config;
     cg::Plaza2RuntimeProbeReport probe;
     cg::Plaza2Env env;
@@ -368,10 +365,6 @@ struct CgateSession::Impl {
                                    ",\"error\":" + json_quote(error.message) + "}");
     }
     Plaza2Error open_connection() {
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-        if (qualification_hold_reopen)
-            return {.code = Plaza2ErrorCode::AdapterState, .message = "isolated qualification holds owned reconnect"};
-#endif
         const auto error = connection.open(config.connection_open_settings);
         operation("connection", "open", error);
         if (error.runtime_code == Unsupported) {
@@ -1037,19 +1030,6 @@ Plaza2Error CgateSession::start() {
     }
     return e;
 }
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-Plaza2Error CgateSession::qualification_close_owned_connection(bool hold_reopen) {
-    if (impl_->config.runtime.environment != cg::Plaza2Environment::Test)
-        return {.code = Plaza2ErrorCode::InvalidConfiguration, .message = "isolated qualification requires TEST"};
-    impl_->qualification_hold_reopen = hold_reopen;
-    // Only this session's connection is closed. Normal poll recovery owns
-    // listener invalidation and reconstruction; no router/upstream mutation.
-    return impl_->connection.close();
-}
-void CgateSession::qualification_allow_reopen() {
-    impl_->qualification_hold_reopen = false;
-}
-#endif
 Plaza2Error CgateSession::poll(bool wait_for_data) {
     return impl_->poll(wait_for_data);
 }
@@ -1153,11 +1133,6 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
     const auto admission_started = impl_->config.collect_poll_metrics ? ns(std::chrono::steady_clock::now()) : 0;
     auto h = runtime_health();
     cg::Plaza2PublisherMessageResult out;
-#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
-    out.validation_error = {.code = Plaza2ErrorCode::SendDisabledPreSendPhase,
-                            .message = "isolated shutdown harness prohibits every publisher post"};
-    return out;
-#endif
     const auto expected_name = command.command_kind == Plaza2TradeCommandKind::AddOrder        ? "AddOrder"
                                : command.command_kind == Plaza2TradeCommandKind::DelOrder      ? "DelOrder"
                                : command.command_kind == Plaza2TradeCommandKind::DelUserOrders ? "DelUserOrders"
