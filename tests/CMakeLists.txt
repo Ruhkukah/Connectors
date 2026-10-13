@@ -122,6 +122,10 @@ endif()
 if(MOEX_BUILD_SHUTDOWN_HARNESS AND MOEX_BUILD_APPS)
     add_test(NAME shutdown_harness_boundary_test COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/shutdown_harness_boundary_test.py"
-        "$<TARGET_FILE:moex_shutdown_reconnect_harness>" "$<TARGET_FILE:moexctl>")
+        "$<TARGET_FILE:moex_shutdown_reconnect_harness>" "$<TARGET_FILE:moexctl>" "$<TARGET_FILE:moexctl_no_post>")
     set_tests_properties(shutdown_harness_boundary_test PROPERTIES LABELS "integration;plaza2;sanitizer" TIMEOUT 30)
+endif()
+if(MOEX_BUILD_SHUTDOWN_HARNESS)
+    moex_runtime_test(cli_no_post_sigterm_test cli_no_post_sigterm_test.cpp moex_connector_host_shutdown_harness)
+    set_tests_properties(cli_no_post_sigterm_test PROPERTIES TIMEOUT 45)
 endif()

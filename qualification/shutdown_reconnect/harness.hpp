@@ -23,21 +23,44 @@ class ShutdownReconnectHarness {
   public:
     using Clock = std::chrono::steady_clock;
     using Now = std::function<Clock::time_point()>;
+    static bool valid_profile(const TradingHostConfig& config) {
+        return config.session.connection_settings.starts_with("p2tcp://127.0.0.1:4101;") &&
+               config.session.runtime.environment == plaza2::cgate::Plaza2Environment::Test &&
+               config.session.allow_orders && !config.session.read_only_market_data && config.orders.sole_instance &&
+               config.session.private_streams.size() == 5 && config.session.status_streams.size() == 2 &&
+               config.session.trade_replay_from_pos_anchor && !config.isin_ids.empty() &&
+               config.orders.ext_id_end - static_cast<std::int64_t>(config.orders.ext_id_begin) + 1 >= 7000 &&
+               config.orders.risk.max_quantity <= 2 && config.orders.risk.max_open_orders <= 5 &&
+               config.orders.max_commands_per_second <= 5 &&
+               std::none_of(config.orders.risk.max_position_by_isin.begin(),
+                            config.orders.risk.max_position_by_isin.end(),
+                            [](const auto& cap) { return cap.second > 2; });
+    }
+    static bool remaining_capacity(const CgateTradingHost& host) {
+        const auto next = std::max({host.config_.orders.ext_id_begin, host.config_.orders.next_ext_id,
+                                    host.journal_.reservations().next_ext_id});
+        return static_cast<std::int64_t>(host.config_.orders.ext_id_end) - next + 1 >= 7000;
+    }
+    static std::string cli_owned_loss(CgateTradingHost& host, bool hold_reopen) {
+        if (!valid_profile(host.config_) || !remaining_capacity(host) || !fresh_flat(host))
+            return "isolated loss requires fresh complete flat TEST profile";
+        if (host.qualification_loss_injected_)
+            return "isolated loss already injected";
+        host.qualification_loss_injected_ = true;
+        if (host.session_.qualification_close_owned_connection(hold_reopen) || host.poll())
+            return "isolated owned connection close failed";
+        if (host.cancellation_snapshot_ready())
+            return "isolated owned loss not observed";
+        host.log_event("qualification_owned_loss", hold_reopen ? "{\"hold_reopen\":true}" : "{\"hold_reopen\":false}");
+        return {};
+    }
     static ShutdownHarnessResult run(
         TradingHostConfig config, ShutdownCase scenario, Now now = [] { return Clock::now(); },
         std::function<void()> step = [] { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }) {
         ShutdownHarnessResult result;
         // Fail before opening files/runtime. The caller cannot use this tool for
         // another venue, partial ownership, missing private reconstruction or entry.
-        if (config.session.runtime.environment != plaza2::cgate::Plaza2Environment::Test ||
-            !config.session.allow_orders || config.session.read_only_market_data || !config.orders.sole_instance ||
-            config.session.private_streams.size() != 5 || config.session.status_streams.size() != 2 ||
-            !config.session.trade_replay_from_pos_anchor || config.isin_ids.empty() ||
-            config.orders.ext_id_end - static_cast<std::int64_t>(config.orders.ext_id_begin) + 1 < 7000 ||
-            config.orders.risk.max_quantity > 2 || config.orders.risk.max_open_orders > 5 ||
-            config.orders.max_commands_per_second > 5 ||
-            std::any_of(config.orders.risk.max_position_by_isin.begin(), config.orders.risk.max_position_by_isin.end(),
-                        [](const auto& cap) { return cap.second > 2; })) {
+        if (!valid_profile(config)) {
             result.failure = "invalid_isolated_test_profile";
             return result;
         }

@@ -76,3 +76,33 @@ receipts separate. Stop success is not an external zero-client inventory proof.
 No working-order fault case is admitted; fake tests retain those safety controls.
 Neither a PASS here nor a normal healthy CLI exit supplies genuine partial fill,
 full-day, auction, interruption or MOEX-coordinated certification evidence.
+
+## Actual CLI signal validation
+
+`moexctl_no_post` compiles the real `apps/moexctl.cpp` main, signal handlers,
+command socket and drain loop against the separate hard no-post session archives.
+It requires `--qualification-no-post-test` with the ordinary explicit TEST run
+inputs, sole instance, original risk ceilings and at least 7,000 remaining IDs.
+Kill switch starts on and cannot be released in this variant. Normal `moexctl`
+rejects the qualification flag and contains no `qualification-loss` command.
+
+After independently proving flatness and complete native admission, the operator
+may send `qualification-loss recover` or `qualification-loss hold` through the
+owned command socket. The command closes only this process's connection, polls
+native invalidation, and audits the loss. Each process accepts at most one loss.
+A real OS SIGTERM is then delivered while reconstruction is pending. The normal
+signal handler, cancellation requests, ten-second deadline, second-signal branch,
+drain audit and process exit are used without a modeled outcome substitution.
+`recover` permits normal reopening; `hold` refuses reopening until process exit.
+No router/upstream/network or other client is modified.
+
+Acceptance cases: healthy SIGTERM exits0; SIGTERM after recoverable owned loss
+exits0 with current native empty-scope evidence; SIGTERM with held loss exits8
+at the ten-second drain; a second real SIGTERM during held recovery interrupts
+promptly and exits8 with incomplete reconciliation. Negative exits8 are required
+refusals, not normal execution closeout. Verify strict owned PID/start/binary
+identity before signals, zero posts, process absence and independent zero clients
+and fresh account flatness after each. Do not retry an uncertain control command.
+Regression tests deliver real signals through the actual CLI entry point against
+an inherited local fake SDK. Native acceptance must use the separately sealed
+`moexctl_no_post` binary, preserve all receipts and keep the timer paused.

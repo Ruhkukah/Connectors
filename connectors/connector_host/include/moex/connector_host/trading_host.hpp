@@ -50,6 +50,7 @@ class CgateTradingHost {
   private:
 #ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
     friend class ShutdownReconnectHarness;
+    bool qualification_loss_injected_{};
 #endif
     void assert_owner() const;
     void dispatch_commands();

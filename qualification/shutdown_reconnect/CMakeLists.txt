@@ -18,3 +18,8 @@ add_executable(moex_shutdown_reconnect_harness main.cpp)
 target_link_libraries(moex_shutdown_reconnect_harness PRIVATE moex_connector_host_shutdown_harness)
 target_compile_definitions(moex_shutdown_reconnect_harness PRIVATE MOEX_SOURCE_GIT_SHA="${MOEX_SOURCE_GIT_SHA}")
 set_target_properties(moex_shutdown_reconnect_harness PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/qualification")
+# Actual CLI main/sigaction/drain loop, separately linked to the hard no-post session.
+add_executable(moexctl_no_post "${MOEX_SOURCE_ROOT}/apps/moexctl.cpp")
+target_link_libraries(moexctl_no_post PRIVATE moex_connector_host_shutdown_harness)
+target_compile_definitions(moexctl_no_post PRIVATE MOEX_SOURCE_GIT_SHA="${MOEX_SOURCE_GIT_SHA}")
+set_target_properties(moexctl_no_post PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${MOEX_BUILD_ROOT}/qualification")
