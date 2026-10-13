@@ -166,7 +166,7 @@ try:
   cap=t['quote_cap_scaled'];args+=['--isin-id',str(t['isin_id']),'--max-notional',str(t['isin_id'])+'='+sequence._price(cap),'--max-position',str(t['isin_id'])+'=2']
  atomic(work/'argv-private.json',args);atomic(work/'targets-private.json',targets)
  product=Product(work,environment['binary'],environment['env'],args,targets,touch);product.start();product.isolation=lambda:client_isolation(work,product.child.pid);product.risk_guard=guardian_ok
- initial=product.wait_ready(stamp(7,10),require_flat=True);environment['inventory'](product.child.pid)
+ initial=product.wait_ready(stamp(7,10),require_flat=True,require_current_quotes=True);environment['inventory'](product.child.pid)
  # Target resolver provenance is independently corroborated by the real host.
  for t in targets:
   x=next(x for x in initial['instruments'] if x['isin_id']==t['isin_id']);terms=x['session_terms']
@@ -204,6 +204,7 @@ try:
  # Completion is published only after cancellation, process exit and inventory.
 except BaseException as error:
  public.update(state='blocked',error_code=str(error) if isinstance(error,Stop) else getattr(error,'code','supervisor_failure'),error_class=type(error).__name__)
+ public['initiating_failure']=dict(error_code=public['error_code'],error_class=public['error_class'],phase=public.get('phase'))
  (work/'error-private.txt').write_text(traceback.format_exc())
 finally:
  if product:

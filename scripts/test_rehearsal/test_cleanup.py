@@ -150,6 +150,23 @@ class CleanupTest(unittest.TestCase):
         self.assertTrue(product.kill)
         self.assertEqual([x["line"] for x in product.cli_requests], ["kill off", "kill on"])
 
+    def test_complete_empty_pos_snapshot_is_flat_without_orders(self):
+        product = FakeProduct(self.work, self.clock)
+        product.base['positions'] = []
+        result = self.run_cleanup(product)
+        self.assertTrue(result['cancel_confirmed'])
+        self.assertTrue(result['flat'])
+        self.assertEqual(product.requests, ['kill on'])
+        self.assertEqual(product.cli_requests, [])
+
+    def test_missing_pos_row_with_incomplete_snapshot_is_not_flat(self):
+        product = FakeProduct(self.work, self.clock)
+        product.base['positions'] = []
+        product.base['pos_anchor']['snapshot_complete'] = False
+        with self.assertRaisesRegex(ops.Stop, 'cleanup_current_proof_unavailable'):
+            self.run_cleanup(product)
+        self.assertEqual(product.cli_requests, [])
+
     def test_uncertain_place_restores_kill_and_does_not_retry(self):
         product = FakeProduct(self.work, self.clock, "uncertain_place")
         with self.assertRaises(ops.Stop):

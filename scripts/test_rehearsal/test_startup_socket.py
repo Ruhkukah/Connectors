@@ -66,6 +66,22 @@ class StartupSocket(unittest.TestCase):
         with self.assertRaisesRegex(ops.Stop, 'product_safety_alert'):
             self.run_sequence([self.unavailable(), subprocess.CompletedProcess([], 0, b'{"journal_failed":true}', b'')])
 
+    def test_two_sided_quote_wait_is_status_only_and_bounded(self):
+        self.p.targets = [dict(isin_id=1)]
+        with patch.object(ops.time, 'time', side_effect=lambda:self.now), patch.object(ops.time, 'sleep', side_effect=self.sleep), patch.object(self.p, 'status', return_value={'queued':0}) as status, patch.object(ops, 'ready', return_value=True), patch.object(ops.price_caps, 'current_reference', side_effect=[ValueError('current_price_two_sided_book_unproved'), 100]):
+            self.p.wait_ready(self.now+3, require_current_quotes=True)
+            self.assertEqual(status.call_count,2)
+        with patch.object(ops.time, 'time', side_effect=lambda:self.now), patch.object(ops.time, 'sleep', side_effect=self.sleep), patch.object(self.p, 'status', return_value={'queued':0}), patch.object(ops, 'ready', return_value=True), patch.object(ops.price_caps, 'current_reference', side_effect=ValueError('current_price_two_sided_book_unproved')):
+            with self.assertRaisesRegex(ops.Stop,'readiness_or_flatness_deadline'):
+                self.p.wait_ready(self.now+2, require_current_quotes=True)
+
+    def test_quote_identity_failure_is_not_retried(self):
+        self.p.targets = [dict(isin_id=1)]
+        with patch.object(ops.time, 'time', return_value=self.now), patch.object(self.p, 'status', return_value={'queued':0}) as status, patch.object(ops, 'ready', return_value=True), patch.object(ops.price_caps, 'current_reference', side_effect=ValueError('current_price_identity_unproved')):
+            with self.assertRaisesRegex(ops.Stop,'current_price_identity_unproved'):
+                self.p.wait_ready(self.now+3, require_current_quotes=True)
+            self.assertEqual(status.call_count,1)
+
 
 if __name__ == '__main__':
     unittest.main()

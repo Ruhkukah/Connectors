@@ -69,14 +69,19 @@ def fetch(url):
   return data
 
 def verify_public_ci(work):
+ ci_head=os.environ.get('MOEX_REHEARSAL_CI_HEAD',HEAD)
  pr=json.loads(fetch('https://api.github.com/repos/Ruhkukah/Connectors/pulls/68'))
- if pr['head']['sha']!=HEAD or not pr['draft'] or pr['state']!='open':raise Stop('published_frozen_head_changed')
- checks=json.loads(fetch('https://api.github.com/repos/Ruhkukah/Connectors/commits/'+HEAD+'/check-runs'))['check_runs']
+ if pr['head']['sha']!=ci_head or not pr['draft'] or pr['state']!='open':raise Stop('published_frozen_head_changed')
+ if ci_head!=HEAD:
+  comparison=json.loads(fetch('https://api.github.com/repos/Ruhkukah/Connectors/compare/'+HEAD+'...'+ci_head))
+  files=comparison.get('files',[])
+  if comparison.get('status')!='ahead' or not files or len(files)>=300 or any(not x['filename'].startswith('scripts/test_rehearsal/') for x in files):raise Stop('production_source_changed')
+ checks=json.loads(fetch('https://api.github.com/repos/Ruhkukah/Connectors/commits/'+ci_head+'/check-runs'))['check_runs']
  latest={}
  for c in checks:
   if c['name'] in ('connector-validation','component-sanitizers') and c['name'] not in latest:latest[c['name']]=c
  if len(latest)!=2 or any(c['status']!='completed' or c['conclusion']!='success' for c in latest.values()):raise Stop('frozen_ci_not_green')
- atomic(Path(work)/'ci-public.json',dict(head=HEAD,checks={k:v['conclusion'] for k,v in latest.items()},checked_utc_ns=time.time_ns()))
+ atomic(Path(work)/'ci-public.json',dict(head=ci_head,production_head=HEAD,checks={k:v['conclusion'] for k,v in latest.items()},checked_utc_ns=time.time_ns()))
  schedule=fetch('https://www.moex.com/s438').decode('utf-8')
  if not all(x in schedule for x in ('07:00:00','10:40:00','11:00:00','16:00:00')):raise Stop('official_schedule_not_verified')
  (Path(work)/'schedule-private.html').write_text(schedule)
@@ -167,7 +172,7 @@ class Product:
    try:return self.status()
    except StatusSocketUnavailable:time.sleep(.05)
   raise Stop('status_socket_startup_deadline')
- def wait_ready(self,until,require_flat=False,entry=True):
+ def wait_ready(self,until,require_flat=False,entry=True,require_current_quotes=False):
   last=None
   while time.time()<until:
    self.touch()
@@ -175,7 +180,15 @@ class Product:
    if (self.work/'cmd.sock').exists():
     last=self.wait_status(until)
     if any(last.get(k) for k in ('journal_failed','cancel_only','log_error','cgate_key_check_failed','operator_action_required')):raise Stop('product_safety_alert')
-    if ready(last,self.targets,entry) and (not require_flat or flat(last)):return last
+    if ready(last,self.targets,entry) and (not require_flat or flat(last)):
+     quotes_ready=True
+     if require_current_quotes:
+      for target in self.targets:
+       try:price_caps.current_reference(last,target)
+       except ValueError as error:
+        if str(error) not in ('current_price_book_unproved','current_price_book_stale','current_price_two_sided_book_unproved'):raise Stop(str(error)) from error
+        quotes_ready=False;break
+     if quotes_ready:return last
    time.sleep(1)
   raise Stop('readiness_or_flatness_deadline')
  def crash(self):
@@ -225,6 +238,11 @@ def clean_product(product,until=None,final=True):
    for n in range(4):
     if time.time()>=until or attempts>=4:break
     s=product.status();rows=[p for p in s['positions'] if p['isin_id']==t['isin_id']]
+    if not rows:
+     # Complete native POS reconstruction represents absent rows as zero.
+     # Incomplete snapshots must never turn absence into a flatness proof.
+     if not ready(s,product.targets,entry=False):raise Stop('cleanup_current_proof_unavailable')
+     break
     if len(rows)!=1:raise Stop('cleanup_position_ambiguous')
     pos=rows[0]['xpos']
     if pos==0:break
