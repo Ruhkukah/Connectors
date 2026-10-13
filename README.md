@@ -29,3 +29,16 @@ ctest --test-dir build -L sanitizer --output-on-failure
 Use `moex_connector_host_dtc_runner --help` and `moexctl --help` for operator arguments. Vendor installation helpers remain under `scripts/vps/`.
 
 License: MIT. See [LICENSE](LICENSE). See [SECURITY.md](SECURITY.md) for the credential and private-data policy.
+
+### Signal shutdown during private reconnect
+
+The trading CLI keeps its bounded ten-second signal drain. When private history
+is incomplete and no working order is known for an instrument, it defers that
+shutdown cancellation until the current TRADE and USERORDERBOOK reconstruction
+is complete. A fresh proven-empty scope uses the existing strict no-op; known
+working orders still enter the normal cancellation path immediately. Reconnect
+never converts a rejected or uncertain cancellation into an acknowledgement.
+Incomplete reconstruction, pending acknowledgements, or working orders produce
+an incomplete drain and exit 8, including on a second signal. A later link loss
+invalidates the reconstruction proof. This source change does not qualify or
+retroactively change any previously executed native run.

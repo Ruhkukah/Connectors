@@ -35,6 +35,8 @@ class CgateTradingHost {
     [[nodiscard]] std::string cancel(std::string_view client_order_id);
     [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity);
     [[nodiscard]] std::string cancel_all(std::int32_t isin_id);
+    void request_shutdown_cancellation(std::int32_t isin_id);
+    [[nodiscard]] bool shutdown_reconciliation_pending() const;
     void set_kill_switch(bool enabled);
     [[nodiscard]] std::string storage_ok();
     void record_shutdown_drain(std::string_view reason, bool timed_out);
@@ -48,6 +50,8 @@ class CgateTradingHost {
   private:
     void assert_owner() const;
     void dispatch_commands();
+    [[nodiscard]] bool cancellation_snapshot_ready() const;
+    void service_shutdown_cancellations();
     void storage_failure(std::string_view error, bool writer_failed = true);
     [[nodiscard]] std::string check_storage_space();
     plaza2_trade::CgateSessionConfig session_config();
@@ -61,6 +65,8 @@ class CgateTradingHost {
     plaza2_trade::CgateSession session_;
     std::unique_ptr<OrderManager> orders_;
     bool rebuilding_{true};
+    bool shutdown_cancellation_requested_{};
+    std::vector<std::int32_t> shutdown_scopes_;
     bool reconcile_reload_{};
     bool stopped_{};
     bool link_was_active_{}, link_lost_{};

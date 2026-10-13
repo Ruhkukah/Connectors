@@ -357,12 +357,8 @@ int main(int argc, char** argv) {
                 drain = {}; // The signal gets its own deadline, even after an operator quit.
                 drain.begin(true);
                 if (allow_orders)
-                    for (const auto isin : signal_isins) {
-                        const auto line = "cancel-all " + std::to_string(isin);
-                        host.record_operator_input(line, "signal");
-                        if (const auto error = host.cancel_all(isin); !error.empty())
-                            host.record_local_refusal(line, error, "signal");
-                    }
+                    for (const auto isin : signal_isins)
+                        host.request_shutdown_cancellation(isin);
             };
             auto input_retry = std::chrono::steady_clock::now();
             for (;;) {
@@ -370,7 +366,8 @@ int main(int argc, char** argv) {
                 if (second_signal) {
                     host.record_operator_input("second signal", "signal");
                     host.record_shutdown_drain(signal_reason, false);
-                    drain_failed = host.has_pending_cancellations() || host.has_working_orders();
+                    drain_failed = host.has_pending_cancellations() || host.has_working_orders() ||
+                                   host.shutdown_reconciliation_pending();
                     break;
                 }
                 if (const auto error = host.poll()) {
@@ -414,7 +411,8 @@ int main(int argc, char** argv) {
                 }
                 signal_shutdown();
                 const bool waiting = host.has_pending_cancellations() ||
-                                     (!signal_reason.empty() && allow_orders && host.has_working_orders());
+                                     (!signal_reason.empty() && allow_orders &&
+                                      (host.has_working_orders() || host.shutdown_reconciliation_pending()));
                 if (!drain.requested || (waiting && std::chrono::steady_clock::now() < drain.deadline))
                     continue;
                 if (!drain.force && (host.has_pending_cancellations() || host.has_working_orders())) {
@@ -431,9 +429,13 @@ int main(int argc, char** argv) {
                 if (host.has_pending_cancellations())
                     std::cerr << "moexctl: cancellation drain reached its 10-second deadline; acknowledgements remain "
                                  "pending\n";
+                if (host.shutdown_reconciliation_pending())
+                    std::cerr
+                        << "moexctl: shutdown private reconstruction remains incomplete; cached absence is not proof\n";
                 const bool timed_out = waiting && std::chrono::steady_clock::now() >= drain.deadline;
                 host.record_shutdown_drain(signal_reason.empty() ? "quit" : signal_reason, timed_out);
-                drain_failed = timed_out || host.has_pending_cancellations() || host.has_working_orders();
+                drain_failed = timed_out || host.has_pending_cancellations() || host.has_working_orders() ||
+                               host.shutdown_reconciliation_pending();
                 break;
             }
             const auto error = host.stop();

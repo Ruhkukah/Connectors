@@ -807,6 +807,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
         orders_->prove_absence(server_time, trade_online);
     // ID blocks are already durable. Ordinary I/O is writer-owned; this only
     // observes its failure state without waiting for a write or disk sync.
+    service_shutdown_cancellations();
     const auto before_flush = stamp();
     if (!journal_failed_) {
         try {
@@ -943,15 +944,8 @@ std::string CgateTradingHost::cancel_all(std::int32_t isin) {
     // In particular, shutdown after clearing must not create a mass-cancel
     // retry that the closed session cannot acknowledge. Unknown history,
     // pending commands and any nonterminal order still take the normal path.
-    const auto streams = session_.private_state().stream_health();
-    const auto online = [&](auto code) {
-        const auto row =
-            std::find_if(streams.begin(), streams.end(), [&](const auto& s) { return s.stream_code == code; });
-        return row != streams.end() && row->online && row->snapshot_complete;
-    };
-    if (isin > 0 && config_.orders.sole_instance && !rebuilding_ && !orders_->cancellations_pending(isin) &&
-        session_.runtime_health().connection == 3 && online(gen::StreamCode::kFortsTradeRepl) &&
-        online(gen::StreamCode::kFortsUserorderbookRepl) &&
+    if (isin > 0 && config_.orders.sole_instance && cancellation_snapshot_ready() &&
+        !orders_->cancellations_pending(isin) &&
         std::none_of(orders_->orders().begin(), orders_->orders().end(), [&](const auto& entry) {
             return entry.second.request.isin_id == isin && !terminal(entry.second.state);
         })) {
@@ -963,6 +957,47 @@ std::string CgateTradingHost::cancel_all(std::int32_t isin) {
     if (isin > 0)
         dispatch_commands();
     return error;
+}
+bool CgateTradingHost::cancellation_snapshot_ready() const {
+    const auto streams = session_.private_state().stream_health();
+    const auto online = [&](auto code) {
+        const auto row =
+            std::find_if(streams.begin(), streams.end(), [&](const auto& s) { return s.stream_code == code; });
+        return row != streams.end() && row->online && row->snapshot_complete;
+    };
+    return !rebuilding_ && session_.runtime_health().connection == 3 && online(gen::StreamCode::kFortsTradeRepl) &&
+           online(gen::StreamCode::kFortsUserorderbookRepl);
+}
+void CgateTradingHost::request_shutdown_cancellation(std::int32_t isin) {
+    assert_owner();
+    shutdown_cancellation_requested_ = true;
+    shutdown_scopes_.push_back(isin);
+    service_shutdown_cancellations();
+}
+void CgateTradingHost::service_shutdown_cancellations() {
+    // Cached absence during reconnect is not proof. Known exposure still takes
+    // the existing risk-reducing cancellation path immediately.
+    auto scopes = std::move(shutdown_scopes_);
+    shutdown_scopes_.clear();
+    for (const auto isin : scopes) {
+        const bool known_working =
+            std::any_of(orders_->orders().begin(), orders_->orders().end(), [&](const auto& entry) {
+                return entry.second.request.isin_id == isin && !terminal(entry.second.state) &&
+                       (config_.orders.sole_instance || entry.second.instance_owned);
+            });
+        if (!cancellation_snapshot_ready() && !known_working) {
+            shutdown_scopes_.push_back(isin);
+            continue;
+        }
+        const auto line = "cancel-all " + std::to_string(isin);
+        record_operator_input(line, "signal");
+        if (const auto error = cancel_all(isin); !error.empty())
+            record_local_refusal(line, error, "signal");
+    }
+}
+bool CgateTradingHost::shutdown_reconciliation_pending() const {
+    assert_owner();
+    return shutdown_cancellation_requested_ && (!shutdown_scopes_.empty() || !cancellation_snapshot_ready());
 }
 void CgateTradingHost::dispatch_commands() {
     const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
@@ -1013,12 +1048,16 @@ std::string CgateTradingHost::storage_ok() {
 }
 void CgateTradingHost::record_shutdown_drain(std::string_view reason, bool timed_out) {
     assert_owner();
-    log_event("cancel_drain", "{\"reason\":" + json_string(reason) + ",\"outcome\":" +
-                                  json_string(timed_out                                               ? "timed_out"
-                                              : (has_pending_cancellations() || has_working_orders()) ? "incomplete"
-                                                                                                      : "completed") +
-                                  ",\"pending_cancellations\":" + (has_pending_cancellations() ? "true" : "false") +
-                                  ",\"working_orders\":" + (has_working_orders() ? "true" : "false") + "}");
+    log_event(
+        "cancel_drain",
+        "{\"reason\":" + json_string(reason) + ",\"outcome\":" +
+            json_string(timed_out ? "timed_out"
+                        : (has_pending_cancellations() || has_working_orders() || shutdown_reconciliation_pending())
+                            ? "incomplete"
+                            : "completed") +
+            ",\"pending_cancellations\":" + (has_pending_cancellations() ? "true" : "false") +
+            ",\"reconciliation_pending\":" + (shutdown_reconciliation_pending() ? "true" : "false") +
+            ",\"working_orders\":" + (has_working_orders() ? "true" : "false") + "}");
 }
 void CgateTradingHost::record_operator_input(std::string_view line, std::string_view channel) {
     assert_owner();
