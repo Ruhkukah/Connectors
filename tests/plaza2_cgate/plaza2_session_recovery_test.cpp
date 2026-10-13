@@ -204,6 +204,26 @@ void poll_metrics_regression(CgateSessionConfig config, const test::fake::Contro
     require(!unmeasured.stop(), "unmeasured callback stop");
     fake.configure({});
 }
+void eventful_poll_return_regression(CgateSessionConfig config, const test::fake::Control& fake) {
+    config.collect_poll_metrics = true;
+    config.process_timeout_ms = 10;
+    config.event_log = {};
+    config.listener_event_log = {};
+    fake.configure({});
+    CgateSession session(config);
+    require(!session.start(), "eventful poll regression startup");
+    for (int i = 0; i < 10; ++i)
+        require(!session.poll(false), "eventful poll regression bootstrap");
+    fake.enqueue({.kind = test::fake::EventKind::Begin, .stream_code = generated::StreamCode::kFortsTradeRepl});
+    fake.enqueue({.kind = test::fake::EventKind::Commit, .stream_code = generated::StreamCode::kFortsTradeRepl});
+    require(!session.poll(true), "eventful poll regression transaction");
+    require(fake.last_process_timeout() == 0 && session.last_poll_metrics().blocking_process_ns == 0,
+            "eventful poll waited after draining a committed transaction");
+    require(!session.poll(true) && fake.last_process_timeout() == 2, "idle poll lost the bounded native wait");
+    require(!session.poll(false) && fake.last_process_timeout() == 0, "nonblocking idle poll unexpectedly waited");
+    require(!session.stop(), "eventful poll regression stop");
+    fake.configure({});
+}
 void private_trade_replay_regression(CgateSessionConfig config, const test::fake::Control& fake) {
     using enum generated::StreamCode;
     using enum generated::TableCode;
@@ -676,6 +696,7 @@ int main(int argc, char** argv) {
         private_trade_replay_regression(config, fake);
         requested_trade_epoch_regression(config, fake);
         poll_metrics_regression(config, fake);
+        eventful_poll_return_regression(config, fake);
         instrument_session_post_regression(config, fake);
         test::publisher_prewarm_regression(config, fake, fixture.library_path);
         test::private_pos_anchor_regression(config, fake);

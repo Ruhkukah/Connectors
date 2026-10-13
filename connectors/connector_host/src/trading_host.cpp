@@ -460,6 +460,27 @@ tr::CgateSessionConfig CgateTradingHost::session_config() {
 }
 void CgateTradingHost::log_event(std::string_view kind, std::string_view fields) noexcept {
     try {
+        if (config_.measure_timings && !journal_failed_ && kind == "trade") {
+            // This event is emitted exactly when the manager credits an own
+            // execution, including a deal deferred until its reply arrives.
+            const auto marker = fields.find("\"deal_id\":");
+            std::int64_t deal{};
+            if (marker != std::string_view::npos) {
+                const auto begin = fields.data() + marker + std::string_view("\"deal_id\":").size();
+                const auto parsed = std::from_chars(begin, fields.data() + fields.size(), deal);
+                const auto found = trade_commit_receipts_.find(deal);
+                if (parsed.ec == std::errc{} && found != trade_commit_receipts_.end()) {
+                    const auto credited = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now().time_since_epoch())
+                                              .count();
+                    journal_.append("trade_timing", "{\"deal_id\":" + std::to_string(deal) +
+                                                       ",\"commit_to_credit_ns\":" +
+                                                       std::to_string(credited - found->second) +
+                                                       ",\"reconstructing\":" + (rebuilding_ ? "true" : "false") + "}");
+                    trade_commit_receipts_.erase(found);
+                }
+            }
+        }
         // Preserve only the latest ID cursor while a failed writer cannot log.
         if (kind == "reservation")
             identifier_reservation_ = fields;
@@ -496,6 +517,36 @@ void CgateTradingHost::observe_link(const tr::Plaza2TransportHealth& health) {
 }
 void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) noexcept {
     try {
+        if (config_.measure_timings && event.stream_code == gen::StreamCode::kFortsTradeRepl) {
+            if (event.kind == cg::Plaza2ListenerEventKind::TransactionBegin ||
+                event.kind == cg::Plaza2ListenerEventKind::Open || event.kind == cg::Plaza2ListenerEventKind::Close ||
+                event.kind == cg::Plaza2ListenerEventKind::LifeNum) {
+                pending_trade_timing_ids_.clear();
+                if (event.kind != cg::Plaza2ListenerEventKind::TransactionBegin)
+                    trade_commit_receipts_.clear();
+            } else if (event.kind == cg::Plaza2ListenerEventKind::StreamData &&
+                       event.table_code == gen::TableCode::kFortsTradeReplUserDeal) {
+                const auto account = config_.orders.broker_code + config_.orders.client_code;
+                const bool own = std::any_of(event.fields.begin(), event.fields.end(), [&](const auto& field) {
+                    return (field.field_code == gen::FieldCode::kFortsTradeReplUserDealCodeBuy ||
+                            field.field_code == gen::FieldCode::kFortsTradeReplUserDealCodeSell) &&
+                           field.text_value == account;
+                });
+                if (own)
+                    for (const auto& field : event.fields)
+                        if (field.field_code == gen::FieldCode::kFortsTradeReplUserDealIdDeal && field.signed_value > 0 &&
+                            pending_trade_timing_ids_.size() < 512)
+                            pending_trade_timing_ids_.push_back(field.signed_value);
+            } else if (event.kind == cg::Plaza2ListenerEventKind::TransactionCommit) {
+                const auto receipt = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now().time_since_epoch())
+                                         .count();
+                for (const auto id : pending_trade_timing_ids_)
+                    if (trade_commit_receipts_.size() < 512)
+                        trade_commit_receipts_.try_emplace(id, receipt);
+                pending_trade_timing_ids_.clear();
+            }
+        }
         if (config_.measure_timings && event.stream_code == gen::StreamCode::kFortsAggrRepl &&
             event.kind == cg::Plaza2ListenerEventKind::StreamData)
             last_aggr_receipt_utc_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -766,9 +817,18 @@ cg::Plaza2Error CgateTradingHost::poll() {
         plaza2_trade::Plaza2TradeValidationResult validation;
         const auto reply =
             plaza2_trade::Plaza2TradeCodec{}.decode_reply(event.message_id, event.raw_payload, validation);
-        if (validation.ok())
+        if (validation.ok()) {
             orders_->on_reply(event.user_id, reply, now, trade_commit_sequence);
-        else {
+            if (config_.measure_timings && event.callback_receipt_steady_ns) {
+                const auto applied = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now().time_since_epoch())
+                                         .count();
+                log_event("reply_timing", "{\"user_id\":" + std::to_string(event.user_id) +
+                                              ",\"message_id\":" + std::to_string(event.message_id) +
+                                              ",\"callback_to_on_reply_ns\":" +
+                                              std::to_string(applied - event.callback_receipt_steady_ns) + "}");
+            }
+        } else {
             log_event("malformed_reply", "{\"user_id\":" + std::to_string(event.user_id) +
                                              ",\"error\":" + json_string(validation.message) + "}");
             orders_->on_timeout(event.user_id, now);

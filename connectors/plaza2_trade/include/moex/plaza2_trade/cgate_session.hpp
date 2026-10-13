@@ -228,6 +228,8 @@ class CgateSession final {
         Plaza2TradeCommandKind command_kind{Plaza2TradeCommandKind::AddOrder};
         bool timed_out{false};
         std::vector<std::byte> raw_payload;
+        // Monotonic receipt, collected only when poll diagnostics are enabled.
+        std::uint64_t callback_receipt_steady_ns{};
     };
 
     [[nodiscard]] std::vector<ReplyEvent> take_reply_events();

@@ -110,6 +110,7 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
     }
     std::vector<CgateSession::ReplyEvent> events;
     bool external_owner{};
+    bool measure_timings{};
     std::function<void(std::uint32_t)> penalty;
     std::function<void(std::string_view, std::string_view)> log;
     Plaza2Error flood_reply(std::span<const std::byte> payload) {
@@ -124,6 +125,7 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
     Plaza2Error on_plaza2_listener_event(const cg::Plaza2ListenerEvent& event) override {
         if (event.kind != cg::Plaza2ListenerEventKind::StreamData && event.kind != cg::Plaza2ListenerEventKind::Timeout)
             return {};
+        const auto receipt = measure_timings ? ns(std::chrono::steady_clock::now()) : 0;
         auto found = pending.find(event.user_id);
         if (found == pending.end()) {
             if (log)
@@ -137,7 +139,8 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
                         return error;
                 events.push_back({.user_id = event.user_id,
                                   .message_id = event.message_id,
-                                  .raw_payload = {event.raw_payload.begin(), event.raw_payload.end()}});
+                                  .raw_payload = {event.raw_payload.begin(), event.raw_payload.end()},
+                                  .callback_receipt_steady_ns = receipt});
             }
             return {};
         }
@@ -145,7 +148,8 @@ class Replies final : public cg::Plaza2ListenerEventHandler {
                           .message_id = event.message_id,
                           .command_kind = found->second.kind,
                           .timed_out = event.kind == cg::Plaza2ListenerEventKind::Timeout,
-                          .raw_payload = {event.raw_payload.begin(), event.raw_payload.end()}});
+                          .raw_payload = {event.raw_payload.begin(), event.raw_payload.end()},
+                          .callback_receipt_steady_ns = receipt});
         const auto kind = found->second.kind;
         if (event.message_id == 99) {
             pending.erase(found);
@@ -251,6 +255,7 @@ struct CgateSession::Impl {
         };
         replies.log = config.event_log;
         replies.external_owner = config.publisher_rate_owner == PublisherRateOwner::External;
+        replies.measure_timings = config.collect_poll_metrics;
         if (config.collect_poll_metrics) {
             poll_metrics.events.reserve(128);
             poll_metrics.callbacks.reserve(128);
@@ -945,7 +950,9 @@ struct CgateSession::Impl {
                 break;
             }
             if (result == Timeout) {
-                if (wait_for_data && config.process_timeout_ms) {
+                // A drained eventful call must return its replies/commits to
+                // the owner immediately; block only on a wholly idle call.
+                if (processed == 0 && wait_for_data && config.process_timeout_ms) {
                     error = process(std::min(config.process_timeout_ms, 2u), &result);
                     if (error) {
                         operation("connection", "process", error);

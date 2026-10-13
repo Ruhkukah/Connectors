@@ -2,6 +2,7 @@
 #include "moex/connector_host/trading_host.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
+#include "private_delta_host_regression.hpp"
 #include <fstream>
 #include <thread>
 
@@ -40,10 +41,29 @@ inline void host_timing_regression(TradingHostConfig config, const plaza2::test:
     now += std::chrono::seconds(1);
     control.set(plaza2::test::fake::Option::PubReplyOrderId, "67002");
     check(!host.poll(), "timed rate-released Add");
+    check(!host.poll(), "timed rate-released reply");
+    using enum plaza2::generated::StreamCode;
+    using private_delta_host_detail::own_trade;
+    // A row without its native commit must never produce a credit/timing.
+    control.enqueue({.kind = plaza2::test::fake::EventKind::Begin, .stream_code = kFortsTradeRepl});
+    control.enqueue(own_trade(97001, 1001, "BRK1C01", 67001));
+    check(!host.poll(), "timed uncommitted own deal");
+    check(host.status().find("\"executed\":1") == std::string::npos, "uncommitted deal credited");
+    control.enqueue({.kind = plaza2::test::fake::EventKind::Commit, .stream_code = kFortsTradeRepl});
+    control.enqueue({.kind = plaza2::test::fake::EventKind::Begin, .stream_code = kFortsTradeRepl});
+    control.enqueue(own_trade(97002, 1001, "BRK1C01", 67002));
+    control.enqueue({.kind = plaza2::test::fake::EventKind::Commit, .stream_code = kFortsTradeRepl});
+    check(!host.poll(), "timed distinct committed own deals");
+    // Native replay of the same deal is not a second execution or sample.
+    control.enqueue({.kind = plaza2::test::fake::EventKind::Begin, .stream_code = kFortsTradeRepl});
+    control.enqueue(own_trade(97001, 1001, "BRK1C01", 67001));
+    control.enqueue({.kind = plaza2::test::fake::EventKind::Commit, .stream_code = kFortsTradeRepl});
+    check(!host.poll(), "timed duplicate committed own deal");
     check(!host.stop(), "timed host stop");
     std::ifstream journal(config.journal_path);
     std::string line;
     bool slow{}, immediate{}, held{};
+    unsigned reply_timings{}, trade_timings{}, trade_credits{};
     while (std::getline(journal, line)) {
         if (line.find("\"event\":\"slow_owner_poll\"") != std::string::npos) {
             slow |= line.find("\"before_session_ns\":") != std::string::npos &&
@@ -61,8 +81,24 @@ inline void host_timing_regression(TradingHostConfig config, const plaza2::test:
                       "rate-held Add falsely labelled immediate place latency");
             }
         }
+        if (line.find("\"event\":\"reply_timing\"") != std::string::npos) {
+            ++reply_timings;
+            check(line.find("\"callback_to_on_reply_ns\":") != std::string::npos &&
+                      line.find("\"callback_to_on_reply_ns\":0") == std::string::npos,
+                  "actual on_reply lacks positive callback latency");
+        }
+        if (line.find("\"event\":\"trade\"") != std::string::npos)
+            ++trade_credits;
+        if (line.find("\"event\":\"trade_timing\"") != std::string::npos) {
+            ++trade_timings;
+            check(line.find("\"commit_to_credit_ns\":") != std::string::npos &&
+                      line.find("\"commit_to_credit_ns\":0") == std::string::npos,
+                  "actual own execution lacks positive native commit latency");
+        }
     }
     check(slow && immediate && held, "missing attributed slow poll or actual publisher timing");
+    check(reply_timings == 2 && trade_timings == 2 && trade_credits == 2,
+          "reply/credit timing omitted actual application or counted duplicate/uncommitted deals");
     control.configure({.suppress_initial_orders = true, .zero_position = true, .client_code = "BRK1C01"});
 }
 } // namespace moex::connector_host::regression

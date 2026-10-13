@@ -88,5 +88,8 @@ class CgateTradingHost {
     std::int64_t last_aggr_receipt_utc_ns_{};
     std::int64_t last_trade_server_time_{}, last_trade_heartbeat_revision_{};
     OrderManager::Clock::time_point next_trade_time_sample_{};
+    // Diagnostic receipt times only; these never participate in reconciliation.
+    std::vector<std::int64_t> pending_trade_timing_ids_;
+    std::unordered_map<std::int64_t, std::uint64_t> trade_commit_receipts_;
 };
 } // namespace moex::connector_host
