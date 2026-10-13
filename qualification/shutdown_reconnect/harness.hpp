@@ -91,9 +91,10 @@ class ShutdownReconnectHarness {
             while (now() < drain_end) {
                 if (host.poll())
                     throw HarnessFailure{"drain_poll_failed"};
-                if (!host.shutdown_reconciliation_pending()) {
-                    if (!fresh_flat(host))
-                        throw HarnessFailure{"recovered_flatness_unproven"};
+                // Private cancellation proof can arrive before reply/AGGR/status
+                // recovery. Keep all fresh-flat gates, but give them the original
+                // drain budget instead of treating their transient delay as failure.
+                if (!host.shutdown_reconciliation_pending() && fresh_flat(host)) {
                     result.recovered = scenario != ShutdownCase::Healthy;
                     if (scenario == ShutdownCase::SecondLoss && !result.second_loss_observed) {
                         if (host.session_.qualification_close_owned_connection(true) || host.poll())
@@ -105,6 +106,10 @@ class ShutdownReconnectHarness {
                         break;
                 }
                 step();
+            }
+            if (!host.shutdown_reconciliation_pending() && !fresh_flat(host)) {
+                result.timed_out = now() >= drain_end;
+                throw HarnessFailure{"recovered_flatness_unproven"};
             }
             result.reconciliation_pending = host.shutdown_reconciliation_pending();
             result.pending_cancellations = host.has_pending_cancellations();

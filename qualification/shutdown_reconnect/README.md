@@ -48,7 +48,7 @@ streams, ACTIVE native transport/listeners/AGGR/reply, matching POS/TRADE epoch,
 zero queued/working/pending orders, zero account positions and no host safety/storage
 error. Complete empty POS is allowed; incomplete absence is not. Admission failure
 performs no connection injection. Fresh reconstruction also precedes positive
-shutdown completion.
+shutdown completion. TRADE/USERORDERBOOK can complete before the reply, AGGR or status listeners; the harness waits for the full fresh-flat gate within the same ten-second budget. If that broader reconstruction never completes, it refuses positive acceptance.
 
 - `healthy`: complete empty native state, production shutdown request, expected
   shutdown outcome 0; no connection interruption.

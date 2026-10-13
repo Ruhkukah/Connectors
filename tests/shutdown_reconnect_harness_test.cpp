@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
         config.session.mode = tr::CgateSessionMode::OfflineFake;
         config.session.process_timeout_ms = 0;
         config.session.trade_replay_from_pos_anchor = true;
+        config.session.event_log = {};
         config.isin_ids = {1001};
         config.orders.broker_code = "BRK1";
         config.orders.client_code = "C01";
@@ -84,6 +85,36 @@ int main(int argc, char** argv) {
                               "controlled close did not exercise defer");
             if (kind == ShutdownCase::SecondLoss)
                 test::require(result.recovered && result.second_loss_observed, "second loss proof not exercised");
+        }
+        // Native reproduction: TRADE/UOB recover before another transport component.
+        // Preserve the complete-state gate and wait inside the same drain budget.
+        for (const bool release_reply : {true, false}) {
+            configure();
+            auto candidate = config;
+            candidate.journal_path = root / (release_reply ? "late-reply.ndjson" : "missing-reply.ndjson");
+            candidate.identity_state_path = root / (release_reply ? "late-reply.state" : "missing-reply.state");
+            auto current = ShutdownReconnectHarness::Clock::time_point{};
+            bool held{};
+            const auto initial_closes = fake.successful_closes()[1];
+            const auto result = ShutdownReconnectHarness::run(
+                candidate, ShutdownCase::RecoveredEmpty, [&] { return current; },
+                [&] {
+                    current += std::chrono::milliseconds(10);
+                    if (fake.successful_closes()[1] > initial_closes && !held) {
+                        fake.set(test::fake::Option::PublisherClosed, "1");
+                        held = true;
+                    }
+                    if (release_reply && current.time_since_epoch() >= std::chrono::seconds(6))
+                        fake.clear(test::fake::Option::PublisherClosed);
+                });
+            test::require(held && fake.commands().empty() && result.stop_ok, "late reply control not exercised");
+            if (release_reply)
+                test::require(result.failure.empty() && result.recovered && result.shutdown_exit == 0,
+                              "late reply reconstruction prematurely failed: " + result.failure);
+            else
+                test::require((result.failure == "recovered_flatness_unproven" || result.reconciliation_pending) &&
+                                  result.timed_out && result.shutdown_exit != 0,
+                              "incomplete full reconstruction falsely passed");
         }
         for (const auto option : {test::fake::Option::DelayUserorderbook}) {
             configure();
