@@ -7,6 +7,7 @@ import json
 import time
 
 from sequence import SequenceStop, TERMINAL, WORKING, _price, _units
+from native_evidence import CommittedDealObserver, EvidenceError
 
 
 def _outcome(seq, name, status, reason, **values):
@@ -27,43 +28,16 @@ def _events(seq, offset):
 
 def _credited_native(seq, offset, client_id, order_ids, isin_id, executed):
     """Require credited-once trades backed by committed native user_deal rows."""
-    credited, pending, committed = [], [], {}
-    begun = False
-    for event in _events(seq, offset):
-        data = event.get('data', {})
-        name = event.get('event')
-        if data.get('stream') == 'FORTS_TRADE_REPL':
-            if name == 'transaction_begin':
-                pending.clear()  # A new begin discards an aborted transaction.
-                begun = True
-            elif name in ('listener_open', 'listener_close', 'lifenum', 'clear_deleted'):
-                pending.clear()
-                begun = False
-                if name in ('lifenum', 'clear_deleted'):
-                    committed.clear()  # Do not carry native history proof across a reset.
-            elif name == 'stream_row' and data.get('table') == 'user_deal' and begun:
-                fields = {f['name']: f.get('signed', f.get('unsigned')) for f in data.get('fields', [])}
-                if fields.get('replAct', 0) == 0 and fields.get('isin_id') == isin_id:
-                    ids = {fields.get('public_order_id_buy'), fields.get('private_order_id_buy')}
-                    if ids.intersection(order_ids):
-                        pending.append(fields)
-            elif name == 'transaction_commit':
-                if begun:
-                    for row in pending:
-                        committed[(row.get('id_deal'), row.get('xamount'))] = row
-                pending.clear()
-                begun = False
-        elif name == 'trade' and data.get('client_order_id') == client_id:
-            credited.append(data)
-    keys = [(x.get('deal_id'), x.get('order_id')) for x in credited]
-    if len(keys) != len(set(keys)):
-        raise SequenceStop('fill_credit_not_once', client_id)
-    if any(x.get('quantity', 0) <= 0 or x.get('order_id') not in order_ids for x in credited):
-        raise SequenceStop('credited_trade_identity_invalid', client_id)
-    total = sum(x['quantity'] for x in credited)
-    if total > executed or total > 2:
-        raise SequenceStop('fill_accounting_exceeds_execution', client_id)
-    return total == executed and all((x['deal_id'], x['quantity']) in committed for x in credited)
+    observer = CommittedDealObserver(seq.journal, offset, client_id, order_ids, isin_id)
+    return _observe(observer, executed)
+
+
+def _observe(observer, executed):
+    try:
+        observer.update()
+        return observer.proved(executed)
+    except EvidenceError as error:
+        raise SequenceStop(str(error)) from error
 
 
 def _native_move(seq, offset, old_order_id, new_order_id):
@@ -156,17 +130,30 @@ def partial_move(seq, target, timeout_seconds=600):
         placed = True
         deadline = time.monotonic() + timeout_seconds
         prefilled = None
+        state = seq.snapshot()
+        current = seq.order(state, client)
+        if not current or current['order_id'] <= 0:
+            current = seq.accepted_order(target, client)
+        observer = CommittedDealObserver(seq.journal, offset, client, {current['order_id']}, target['isin_id'])
+        next_status = 0
         while time.monotonic() < deadline:
-            state = seq.snapshot()
+            # Read appended complete events every 20 ms. Refresh CLI status at
+            # 200 ms, or immediately on a committed/credited one-lot trigger.
+            triggered = _observe(observer, 1)
+            if triggered or time.monotonic() >= next_status:
+                state = seq.snapshot()
+                next_status = time.monotonic() + 0.2
             current = seq.order(state, client)
+            if current and current['order_id'] > 0:
+                observer.order_ids.add(current['order_id'])
             if current and current['state'] == 'Rejected':
                 return _outcome(seq, 'partial_move', 'NOT_OBSERVED', 'two_lot_add_rejected')
             if current and current['executed'] == 2:
                 return _outcome(seq, 'partial_move', 'NOT_OBSERVED', 'fully_filled_before_move', executed=2)
-            if current and current['state'] in WORKING and current['executed'] == 1 and current['remaining'] == 1 and current['order_id'] > 0 and _credited_native(seq, offset, client, {current['order_id']}, target['isin_id'], 1):
+            if current and current['state'] in WORKING and current['executed'] == 1 and current['remaining'] == 1 and current['order_id'] > 0 and _observe(observer, 1):
                 prefilled = current
                 break
-            time.sleep(0.2)
+            time.sleep(0.02)
         if not prefilled:
             return _outcome(seq, 'partial_move', 'NOT_OBSERVED', 'committed_partial_fill_not_observed')
         # Refresh immediately before Move; the market may have finished the original order.
@@ -174,6 +161,8 @@ def partial_move(seq, target, timeout_seconds=600):
         current = seq.order(state, client)
         if not current or current['state'] not in WORKING or current['executed'] != 1 or current['remaining'] != 1:
             return _outcome(seq, 'partial_move', 'NOT_OBSERVED', 'partial_disappeared_before_move')
+        if not _observe(observer, 1):
+            return _outcome(seq, 'partial_move', 'NOT_OBSERVED', 'partial_credit_changed_before_move')
         row = seq.target(state, target, require_ready=False)
         if state.get('reconstructing') or not row['order_entry_ready']:
             return _outcome(seq, 'partial_move', 'NOT_OBSERVED', 'move_authority_unavailable')
@@ -194,8 +183,9 @@ def partial_move(seq, target, timeout_seconds=600):
         _, result = seq.wait(moved, 'partial_move_replacement_not_proven')
         if result['executed'] != 1 or result['remaining'] != 1 or result['state'] not in WORKING:
             return _outcome(seq, 'partial_move', 'NOT_OBSERVED', 'replacement_raced_full_fill', executed=result['executed'])
+        observer.order_ids.add(result['order_id'])
         terminal = seq.cancel(client, allowed_fill=2)
-        seq.wait(lambda now: _credited_native(seq, offset, client, {old_id, result['order_id']}, target['isin_id'], seq.order(now, client)['executed']), 'partial_move_fill_accounting_not_proven', timeout=10)
+        seq.wait(lambda now: _observe(observer, seq.order(now, client)['executed']), 'partial_move_fill_accounting_not_proven', timeout=10)
         return _outcome(seq, 'partial_move', 'PASS', 'real_partial_before_regime_three_move', partial_before_move=True, native_regime=3, executed=terminal['executed'])
     finally:
         if placed:

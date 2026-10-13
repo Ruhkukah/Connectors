@@ -65,8 +65,8 @@ def fills_restart():
  result=sequence.fills(product.command,product.status,work,product.targets)
  product.close();environment['inventory']();product.start();product.wait_ready(min(CLEANUP,time.time()+250),require_flat=False)
  result.update(sequence.post_restart(product.command,product.status,work,product.targets))
- # Heartbeat rows are deliberately not journaled. Missing raw replay rows stay
- # missing evidence; compact server time is not re-labelled as a revision.
+ # New review bundles use committed native compact repl_rev evidence.
+ # The raw-row result remains separately recorded; executed bundles are unchanged.
  return dict(status='PASS' if result['restart_replay_floor_proven'] else 'INCOMPLETE',**result)
 def partial(target):
  value=scenarios.partial_move(seq('partial'),target,timeout_seconds=600)

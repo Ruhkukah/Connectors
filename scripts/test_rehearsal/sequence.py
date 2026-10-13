@@ -8,6 +8,7 @@ import json
 import time
 import uuid
 import price_caps
+from native_evidence import CompactReplayVerifier, EvidenceError
 from pathlib import Path
 
 TERMINAL = {"Filled", "Cancelled", "Rejected"}
@@ -341,11 +342,21 @@ def post_restart(cmd, status, work, expected_targets):
         return True
     state, _ = seq.wait(matches, "restart_state_not_reconstructed")
     terminal_omitted = sum(not any(x["isin_id"] == old["isin_id"] and x["instance_owned"] and (x["client_order_id"] == old["client_order_id"] or x["order_id"] == old["order_id"] or x["ext_id"] == old["ext_id"]) for x in state["orders"]) for old in expected["records"])
+    verifier = CompactReplayVerifier(seq.journal, expected['journal_offset'])
+    def compact_proof(state):
+        try:
+            verifier.update()
+            return verifier.result(state, expected['trade_replay']['used_anchor'])
+        except EvidenceError as error:
+            raise SequenceStop(str(error)) from error
     first_replay = replay_floors(state)
+    compact = compact_proof(state)
     deadline = time.monotonic() + 10
-    while len(first_replay) < 2 and time.monotonic() < deadline:
+    while not compact['proven'] and time.monotonic() < deadline:
         time.sleep(0.5)
-        first_replay = replay_floors(seq.snapshot())
+        state = seq.snapshot()
+        first_replay = replay_floors(state)
+        compact = compact_proof(state)
     # An empty table after an advanced POS floor is missing evidence, not a defect.
     missing_replay = sorted({"user_deal", "heartbeat"} - set(first_replay))
     # Reserved fill cache is const in status and releases on the next risk admission.
@@ -353,7 +364,7 @@ def post_restart(cmd, status, work, expected_targets):
     for target in seq.targets:
         seq.ioc(target, "sell", 1, 0)
     seq.assert_flat(seq.snapshot())
-    return {"restart_positions_match": True, "restart_present_orders_execution_match": True, "restart_terminal_orders_omitted": terminal_omitted, "restart_replay_floor_proven": not missing_replay, "restart_first_replay": first_replay, "restart_missing_replay_tables": missing_replay, "restart_flatten_fills": len(seq.targets)}
+    return {"restart_positions_match": True, "restart_present_orders_execution_match": True, "restart_terminal_orders_omitted": terminal_omitted, "restart_replay_floor_proven": compact["proven"], "restart_legacy_replay_floor_proven": not missing_replay, "restart_compact_replay": compact, "restart_first_replay": first_replay, "restart_missing_replay_tables": missing_replay, "restart_flatten_fills": len(seq.targets)}
 
 
 def move_and_finish(cmd, status, work, expected_targets):

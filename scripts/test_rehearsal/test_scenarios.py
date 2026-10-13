@@ -45,7 +45,7 @@ class FakeSequence:
                 row.update(executed=quantity, remaining=2-quantity, state='Filled' if quantity == 2 else 'PartFilled' if quantity else 'Working')
                 if quantity:
                     self.fill_recorded = True
-                    fields = dict(isin_id=1, replAct=0, public_order_id_buy=row['order_id'], private_order_id_buy=0, id_deal=901, xamount=quantity)
+                    fields = dict(isin_id=1, replAct=0, replRev=101, public_order_id_buy=row['order_id'], private_order_id_buy=0, id_deal=901, xamount=quantity)
                     self.event('transaction_begin', dict(stream='FORTS_TRADE_REPL'))
                     self.event('stream_row', dict(stream='FORTS_TRADE_REPL', table='user_deal', fields=[dict(name=k, signed=v) for k, v in fields.items()]))
                     if self.commit:
@@ -170,9 +170,64 @@ class ScenariosTest(unittest.TestCase):
         self.assertFalse(any(x.startswith('move ') for x in seq.commands))
         self.assertEqual(next(iter(seq.rows.values()))['state'], 'Cancelled')
 
+    def test_second_fill_on_pre_move_refresh_prevents_move(self):
+        seq = self.make()
+        original = seq.snapshot
+        partial_snapshots = 0
+        def snapshot():
+            nonlocal partial_snapshots
+            value = original()
+            if any(r['executed'] == 1 for r in seq.rows.values()):
+                partial_snapshots += 1
+                if partial_snapshots == 3:
+                    for r in seq.rows.values():
+                        r.update(executed=2, remaining=0, state='Filled')
+                    value = original()
+            return value
+        seq.snapshot = snapshot
+        self.assertEqual(self.partial(seq)['reason'], 'partial_disappeared_before_move')
+        self.assertFalse(any(x.startswith('move ') for x in seq.commands))
+
+    def test_uncertain_move_is_never_retried_and_known_remainder_cancelled(self):
+        seq = self.make()
+        send = seq.send
+        def uncertain(line):
+            if line.startswith('move '):
+                seq.commands.append(line)
+                raise sequence.SequenceStop('command_uncertain')
+            return send(line)
+        seq.send = uncertain
+        with self.assertRaisesRegex(sequence.SequenceStop, 'command_uncertain'):
+            self.partial(seq)
+        self.assertEqual(sum(x.startswith('move ') for x in seq.commands), 1)
+        self.assertEqual(sum(x.startswith('place ') for x in seq.commands), 1)
+        self.assertEqual(next(iter(seq.rows.values()))['state'], 'Cancelled')
+
+    def test_new_committed_credit_refreshes_status_before_periodic_poll(self):
+        seq=self.make('none');clock=[0.0];snapshot_times=[];original=seq.snapshot
+        def snapshot():
+            snapshot_times.append(clock[0]);return original()
+        seq.snapshot=snapshot
+        injected=[False]
+        def sleep(delay):
+            clock[0]+=delay
+            if not injected[0] and seq.rows:
+                injected[0]=True;seq.fill_recorded=True
+                row=next(iter(seq.rows.values()));row.update(executed=1,remaining=1,state='PartFilled')
+                seq.event('transaction_begin',dict(stream='FORTS_TRADE_REPL'))
+                fields=dict(isin_id=1,replAct=0,replRev=101,public_order_id_buy=row['order_id'],private_order_id_buy=0,id_deal=901,xamount=1)
+                seq.event('stream_row',dict(stream='FORTS_TRADE_REPL',table='user_deal',fields=[dict(name=k,signed=v) for k,v in fields.items()]))
+                seq.event('transaction_commit',dict(stream='FORTS_TRADE_REPL'))
+                seq.event('trade',dict(client_order_id=row['client_order_id'],order_id=row['order_id'],deal_id=901,quantity=1))
+        with patch.object(scenarios.time,'sleep',side_effect=sleep),patch.object(scenarios.time,'monotonic',side_effect=lambda:clock[0]):
+            result=scenarios.partial_move(seq,seq.targets[0],timeout_seconds=1)
+        self.assertEqual(result['status'],'PASS')
+        self.assertIn(0.02,snapshot_times)
+        self.assertEqual(sum(x.startswith('move ') for x in seq.commands),1)
+
     def native_proof(self, names):
         seq = self.make('none')
-        fields = dict(isin_id=1, replAct=0, public_order_id_buy=101, private_order_id_buy=0, id_deal=901, xamount=1)
+        fields = dict(isin_id=1, replAct=0, replRev=101, public_order_id_buy=101, private_order_id_buy=0, id_deal=901, xamount=1)
         for name in names:
             if name == 'row':
                 seq.event('stream_row', dict(stream='FORTS_TRADE_REPL', table='user_deal', fields=[dict(name=k, signed=v) for k, v in fields.items()]))

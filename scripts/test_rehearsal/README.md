@@ -99,3 +99,37 @@ with a fresh lease bounded by 240 seconds after the planned end. The guardian
 respects that lease and cleanup lock; a stale heartbeat or expired lease still
 triggers intervention. `complete` is published only with the terminal closeout
 receipt after cancellation/flatness, product exit and client inventory checks.
+
+## Compact replay and committed-deal evidence in new review bundles
+
+`native_evidence.py` reads complete appended journal records with a persistent
+cursor. Partial buffered lines wait; malformed complete records, truncation and
+file replacement refuse. The restart verifier accepts native
+`trade_server_time.repl_rev` minute samples within a new TRADE listener epoch
+and committed transaction. Server time is never used as a revision. Both the
+first deal and heartbeat revisions must meet the saved/current POS replay
+floor, with matching accepted/POS/anchor lifenum, complete current replication
+and an online listener. Lifecycle samples cannot substitute for fresh rows.
+Ordinary table-scoped ClearDeleted purges invalidate evidence below their
+native signed revision floor; unknown/full resets invalidate the proof.
+
+New `post_restart` results use this committed proof for
+`restart_replay_floor_proven`, while separately retaining
+`restart_legacy_replay_floor_proven` and the raw missing-table list. This changes
+future review bundles only: old sealed receipts and their INCOMPLETE verdicts
+must not be rewritten or reinterpreted as results of the new checker.
+
+The partial-fill scenario uses an incremental committed-deal observer. It joins
+native deal identities/quantities to once-only execution credits, polls journal
+availability every 20 ms, and refreshes CLI status immediately on a committed
+one-lot trigger (otherwise every 200 ms). It still requires a current owned
+working order with exactly one executed and one remaining contract and repeats
+the proof/status check before a single regime-3 Move. Two-lot deals, two one-lot
+deals in one commit, missing/duplicate credits, reset history and a second-fill
+race cannot authorize that Move. An uncertain Move is never retried. These
+intervals are harness scheduling targets, not guaranteed receipt/response
+latencies: journal buffering, CLI and the host scheduler add delay. The observer
+does not create liquidity or guarantee a natural partial fill.
+
+Publishing these helpers does not install them, modify any running TEST bundle,
+change its production/CI pins, or authorize another session.
