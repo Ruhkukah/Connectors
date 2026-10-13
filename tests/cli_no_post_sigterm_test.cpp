@@ -89,7 +89,6 @@ int main(int argc, char** argv) {
                 for (auto& a : args)
                     raw.push_back(a.data());
                 raw.push_back(nullptr);
-                stopping = second_signal = 0;
                 const int result = moexctl_embedded_main(static_cast<int>(args.size()), raw.data());
                 ::_Exit(result);
             }

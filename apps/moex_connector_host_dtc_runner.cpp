@@ -3,8 +3,8 @@
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
+#include "shutdown_signals.hpp"
 
-#include <atomic>
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -61,12 +61,6 @@ constexpr std::uint32_t kDefaultStartupWaitMs = 10000;
 constexpr std::string_view kDefaultInstanceId = "moex_connector_dtc";
 constexpr std::string_view kDefaultDtcUsernameEnv = "MOEX_PLAZA_DTC_USERNAME";
 constexpr std::string_view kDefaultDtcPasswordEnv = "MOEX_PLAZA_DTC_PASSWORD";
-
-std::atomic_bool stop_requested{false};
-
-void signal_handler(int) noexcept {
-    stop_requested.store(true, std::memory_order_relaxed);
-}
 
 template <class T> T positive_integer(std::string_view value, std::string_view option, T maximum) {
     T out{};
@@ -453,8 +447,7 @@ void print_public_deals_receipt(const ConnectorHost& host) {
 
 int main(int argc, char** argv) {
     try {
-        std::signal(SIGINT, signal_handler);
-        std::signal(SIGTERM, signal_handler);
+        moex::connector_host::ShutdownSignals signals;
         if (argc == 2 && std::string_view(argv[1]) == "--help") {
             print_help();
             return 0;
@@ -523,7 +516,7 @@ int main(int argc, char** argv) {
         const auto warmup_deadline =
             std::chrono::steady_clock::now() + std::chrono::milliseconds(options.startup_wait_ms);
         int result = 0;
-        while (!stop_requested.load(std::memory_order_relaxed) && std::chrono::steady_clock::now() < warmup_deadline) {
+        while (!signals.requested() && std::chrono::steady_clock::now() < warmup_deadline) {
             // The ownership order is intentional and fixed: ConnectorHost
             // poll, one target snapshot, then DTC poll.
             const auto host_error = host.poll();
@@ -554,7 +547,7 @@ int main(int argc, char** argv) {
             std::cout << "{\"event\":\"observer_started\",\"dtc_enabled\":false}\n" << std::flush;
         print_public_deals_receipt(host);
 
-        while (result == 0 && !stop_requested.load(std::memory_order_relaxed)) {
+        while (result == 0 && !signals.requested()) {
             // Keep ConnectorHost and DTC polling on the same owner thread;
             // the server takes its committed source view when a client needs it.
             const auto host_error = host.poll();

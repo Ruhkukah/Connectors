@@ -3,6 +3,7 @@
 #include "command_input.hpp"
 #include "command_socket.hpp"
 #include "scope_exit.hpp"
+#include "shutdown_signals.hpp"
 #ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
 #include "../qualification/shutdown_reconnect/harness.hpp"
 #endif
@@ -40,13 +41,6 @@ std::string binary_sha256(const char* argv0) {
     }
 }
 
-volatile std::sig_atomic_t stopping{}, second_signal{};
-void stop(int signal) {
-    if (stopping)
-        second_signal = 1;
-    else
-        stopping = signal;
-}
 struct ShutdownRequest {
     bool requested{}, force{};
     std::chrono::steady_clock::time_point deadline;
@@ -61,6 +55,21 @@ struct ShutdownRequest {
         force |= forced;
     }
 };
+void observe_shutdown_signal(moex::connector_host::ShutdownSignals& signals,
+                             moex::connector_host::CgateTradingHost& host, ShutdownRequest& drain, std::string& reason,
+                             const std::vector<std::int32_t>& isins, bool allow_orders) {
+    signals.poll();
+    if (!signals.first() || !reason.empty())
+        return;
+    reason = signals.first() == SIGINT ? "SIGINT" : "SIGTERM";
+    host.record_operator_input(reason, "signal");
+    host.set_kill_switch(true);
+    drain = {}; // The signal gets its own deadline, even after an operator quit.
+    drain.begin(true);
+    if (allow_orders)
+        for (const auto isin : isins)
+            host.request_shutdown_cancellation(isin);
+}
 template <typename T> T integer(std::string_view text) {
     T out{};
     auto result = std::from_chars(text.data(), text.data() + text.size(), out);
@@ -78,10 +87,6 @@ std::string command(moex::connector_host::CgateTradingHost& host, ShutdownReques
     using namespace moex::connector_host;
     if (!line.empty())
         host.record_operator_input(line, channel);
-    if (stopping && !shutdown.force) {
-        host.set_kill_switch(true);
-        shutdown.begin(true);
-    }
     std::istringstream input(line);
     std::string verb, key, price, side, type, error;
     try {
@@ -178,17 +183,8 @@ int main(int argc, char** argv) {
     using namespace moex::connector_host;
     std::signal(SIGHUP, SIG_IGN);
     std::signal(SIGPIPE, SIG_IGN);
-    struct sigaction action {};
-    action.sa_handler = stop;
-    action.sa_flags = SA_RESTART;
-    (void)sigemptyset(&action.sa_mask);
-    (void)sigaddset(&action.sa_mask, SIGINT);
-    (void)sigaddset(&action.sa_mask, SIGTERM);
-    if (::sigaction(SIGINT, &action, nullptr) < 0 || ::sigaction(SIGTERM, &action, nullptr) < 0) {
-        std::cerr << "cannot configure shutdown signals\n";
-        return 2;
-    }
     try {
+        ShutdownSignals signals;
         std::vector<std::string_view> arguments;
         std::filesystem::path log_path{"logs/moex_connector.ndjson"};
         std::filesystem::path state_path;
@@ -384,21 +380,12 @@ int main(int argc, char** argv) {
             std::string signal_reason;
             bool drain_failed{};
             const auto signal_shutdown = [&] {
-                if (!stopping || !signal_reason.empty())
-                    return;
-                signal_reason = stopping == SIGINT ? "SIGINT" : "SIGTERM";
-                host.record_operator_input(signal_reason, "signal");
-                host.set_kill_switch(true);
-                drain = {}; // The signal gets its own deadline, even after an operator quit.
-                drain.begin(true);
-                if (allow_orders)
-                    for (const auto isin : signal_isins)
-                        host.request_shutdown_cancellation(isin);
+                observe_shutdown_signal(signals, host, drain, signal_reason, signal_isins, allow_orders);
             };
             auto input_retry = std::chrono::steady_clock::now();
             for (;;) {
                 signal_shutdown();
-                if (second_signal) {
+                if (signals.second()) {
                     host.record_operator_input("second signal", "signal");
                     host.record_shutdown_drain(signal_reason, false);
                     drain_failed = host.has_pending_cancellations() || host.has_working_orders() ||
@@ -411,8 +398,12 @@ int main(int argc, char** argv) {
                     std::cerr << error.message << '\n';
                     return 3;
                 }
+                // A signal received during CGate polling is consumed before
+                // another operator command can enter the host.
+                signal_shutdown();
                 socket.poll(
                     [&](std::string line, std::int64_t receipt) {
+                        signal_shutdown();
                         return command(host, drain, std::move(line), "command_socket", receipt);
                     },
                     [&](std::string_view line, std::string_view error) {
@@ -437,6 +428,7 @@ int main(int argc, char** argv) {
                         input.feed(
                             std::string_view(data.data(), static_cast<std::size_t>(count)),
                             [&](const std::string& line) {
+                                signal_shutdown();
                                 std::cout << command(host, drain, line, "stdin") << '\n' << std::flush;
                             },
                             [&](std::string_view error) {
@@ -489,6 +481,8 @@ int main(int argc, char** argv) {
         }
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(request.wait_ms);
         do {
+            if (signals.requested())
+                break;
             if (host.poll())
                 break;
             if (host.snapshot().observation_ready)
