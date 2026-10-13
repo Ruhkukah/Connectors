@@ -236,6 +236,11 @@ class CgateSession final {
                                                                            std::uint32_t user_id);
     [[nodiscard]] const std::string& last_callback_error() const noexcept;
 
+#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
+    // Only the separately linked, no-post qualification binary has these controls.
+    [[nodiscard]] plaza2::cgate::Plaza2Error qualification_close_owned_connection(bool hold_reopen);
+    void qualification_allow_reopen();
+#endif
   private:
     [[nodiscard]] plaza2::cgate::Plaza2PublisherMessageResult post_validated(std::string_view message_name,
                                                                              std::span<const std::byte> payload,

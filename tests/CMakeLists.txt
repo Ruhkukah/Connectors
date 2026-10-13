@@ -113,3 +113,15 @@ moex_test(plaza2_private_state_transaction_perf_test plaza2_cgate/plaza2_private
     moex_plaza2_cgate_bridge)
 target_compile_definitions(plaza2_private_state_transaction_perf_test PRIVATE
     MOEX_RELEASE_PERFORMANCE_ACCEPTANCE=$<CONFIG:Release>)
+
+if(MOEX_BUILD_SHUTDOWN_HARNESS)
+    moex_runtime_test(shutdown_reconnect_harness_test shutdown_reconnect_harness_test.cpp moex_connector_host_shutdown_harness)
+    target_include_directories(shutdown_reconnect_harness_test PRIVATE "${MOEX_SOURCE_ROOT}/qualification/shutdown_reconnect")
+    set_tests_properties(shutdown_reconnect_harness_test PROPERTIES TIMEOUT 30)
+endif()
+if(MOEX_BUILD_SHUTDOWN_HARNESS AND MOEX_BUILD_APPS)
+    add_test(NAME shutdown_harness_boundary_test COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shutdown_harness_boundary_test.py"
+        "$<TARGET_FILE:moex_shutdown_reconnect_harness>" "$<TARGET_FILE:moexctl>")
+    set_tests_properties(shutdown_harness_boundary_test PROPERTIES LABELS "integration;plaza2;sanitizer" TIMEOUT 30)
+endif()

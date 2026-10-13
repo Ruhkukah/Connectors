@@ -48,6 +48,9 @@ class CgateTradingHost {
     void report_outstanding_orders(std::ostream& output) const;
 
   private:
+#ifdef MOEX_ISOLATED_SHUTDOWN_HARNESS
+    friend class ShutdownReconnectHarness;
+#endif
     void assert_owner() const;
     void dispatch_commands();
     [[nodiscard]] bool cancellation_snapshot_ready() const;
