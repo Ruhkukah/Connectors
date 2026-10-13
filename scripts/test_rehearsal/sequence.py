@@ -217,7 +217,14 @@ class _Sequence:
                     except json.JSONDecodeError:
                         break
                     data = event.get("data", {})
-                    if event["event"] == "command" and data.get("name") == "DelUserOrders" and data.get("fields", {}).get("isin_id") == target["isin_id"]:
+                    if event["event"] == "cancel_all_empty" and data.get("isin_id") == target["isin_id"] and data.get("snapshot_confirmed") is True:
+                        # A fresh native proven-empty scope sends no exchange
+                        # command, so there can be no corresponding reply.
+                        # Keep current reconstruction gates as corroboration.
+                        from ops import ready
+                        if ready(state, self.targets, entry=False):
+                            return True
+                    elif event["event"] == "command" and data.get("name") == "DelUserOrders" and data.get("fields", {}).get("isin_id") == target["isin_id"]:
                         commands.add(data["user_id"])
                     elif event["event"] == "reply" and data.get("user_id") in commands and data.get("msgid") == 186 and data.get("code") == 0:
                         acknowledged = True
