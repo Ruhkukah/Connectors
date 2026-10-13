@@ -31,6 +31,7 @@
 #include "instance_cancel_host_regression.hpp"
 #include "closed_session_cancel_host_regression.hpp"
 #include "plaza2_cgate/field_read_contract.hpp"
+#include "async_storage_fault_fixture.hpp"
 
 #include <cstdlib>
 #include <dlfcn.h>
@@ -371,12 +372,35 @@ int main(int argc, char** argv) {
                           "storage-failure fixture lacks an established working order");
             const auto posts = fake.commands().size();
             const auto writer_boundary = broken_storage.identity_state_path.string() + ".journal";
+            moex::connector_host::storage_fixture::held_boundary_path = writer_boundary.c_str();
+            moex::connector_host::storage_fixture::boundary_publish_entered = false;
+            moex::connector_host::storage_fixture::hold_boundary_publish.store(true, std::memory_order_release);
+            ScopeExit release_writer([&] { moex::connector_host::storage_fixture::hold_boundary_publish = false; });
             test::require(std::filesystem::remove(writer_boundary), "remove writer boundary checkpoint");
             std::filesystem::create_directory(writer_boundary);
             // A time-based checkpoint failure blocks entry while the native
             // owner remains available for reconciliation and durable-ID cancels.
+            const auto entered_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!moex::connector_host::storage_fixture::boundary_publish_entered &&
+                   std::chrono::steady_clock::now() < entered_deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            test::require(moex::connector_host::storage_fixture::boundary_publish_entered,
+                          "asynchronous checkpoint writer never reached the held publication");
+            // The old fixed 270 ms sleep cannot prove a writer has reported its
+            // error: a delayed writer can still be inside rename/fsync.
             std::this_thread::sleep_for(std::chrono::milliseconds(270));
-            const auto poll_error = host.poll();
+            test::require(!host.poll() && fake.commands().size() == posts &&
+                              host.status().find("\"cancel_only\":false") != std::string::npos,
+                          "owner invented a storage fault before the held writer reported it");
+            moex::connector_host::storage_fixture::hold_boundary_publish = false;
+            const auto reported_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            cg::Plaza2Error poll_error;
+            while (host.status().find("\"cancel_only\":true") == std::string::npos &&
+                   std::chrono::steady_clock::now() < reported_deadline) {
+                poll_error = host.poll();
+                test::require(!poll_error, "asynchronous checkpoint error escaped the native owner");
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
             test::require(!poll_error && fake.commands().size() == posts &&
                               host.status().find("\"cancel_only\":true") != std::string::npos,
                           "journal checkpoint failure stopped the native owner instead of entering cancel-only mode");
