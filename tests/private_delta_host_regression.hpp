@@ -513,6 +513,14 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
         const std::string records{std::istreambuf_iterator<char>(journal), std::istreambuf_iterator<char>()};
         require(records.find("\"event\":\"private_history_gap\"") != std::string::npos,
                 "private resync did not record its recovery gap");
+        require(records.find("\"resync_required\":") != std::string::npos &&
+                    records.find("\"trade_history_truncated\":") != std::string::npos &&
+                    records.find("\"trade_offline\":") != std::string::npos &&
+                    records.find("\"userorderbook_offline\":") != std::string::npos,
+                "private gap journal omitted its triggering predicate diagnostics");
+        require(records.find(close ? "\"trade_offline\":true" : "\"trade_history_truncated\":true") !=
+                    std::string::npos,
+                "private gap diagnostics lost the actual close or truncation predicate");
     }
 }
 } // namespace moex::connector_host

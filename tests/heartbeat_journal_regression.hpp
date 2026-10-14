@@ -76,15 +76,17 @@ inline void heartbeat_journal_regression(TradingHostConfig config, const plaza2:
     control.enqueue({.kind = fake::EventKind::LifeNum, .stream_code = gen::StreamCode::kFortsTradeRepl, .value = 8});
     require(!sampled.poll(), "heartbeat LifeNum transition");
     row(100004, base_time + 3603);
-    control.enqueue({.kind = fake::EventKind::Close, .stream_code = gen::StreamCode::kFortsTradeRepl});
+    control.enqueue({.kind = fake::EventKind::Close, .stream_code = gen::StreamCode::kFortsTradeRepl, .value = 4660});
     require(!sampled.poll(), "heartbeat CLOSE transition");
     require(!sampled.stop(), "heartbeat sampling stop");
     std::ifstream sampled_journal(config.journal_path);
     std::size_t minute_samples{}, lifenum_samples{}, close_samples{};
-    bool unsampled_row{}, transition_latest{}, close_latest{};
+    bool unsampled_row{}, transition_latest{}, close_latest{}, native_close_reason{};
     while (std::getline(sampled_journal, line)) {
         raw_rows += line.find("\"event\":\"stream_row\"") != std::string::npos &&
                     line.find("\"table\":\"heartbeat\"") != std::string::npos;
+        native_close_reason |= line.find("\"event\":\"listener_close\"") != std::string::npos &&
+                               line.find("\"close_reason\":4660") != std::string::npos;
         if (line.find("\"event\":\"trade_server_time\"") == std::string::npos)
             continue;
         minute_samples += line.find("\"reason\":\"minute\"") != std::string::npos;
@@ -102,5 +104,6 @@ inline void heartbeat_journal_regression(TradingHostConfig config, const plaza2:
                 transition_latest && close_latest,
             "heartbeat sampling did not enforce one receipt-time minute plus the latest time at an epoch transition");
     require(control.commands().empty(), "heartbeat journal test posted an exchange command");
+    require(native_close_reason, "listener_close journal omitted the actual CGate close reason");
 }
 } // namespace moex::connector_host::regression

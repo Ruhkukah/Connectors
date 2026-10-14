@@ -2560,9 +2560,11 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
                 return emit_simple_message(listener, kCgMsgTnCommit);
             case fixture::EventKind::Online:
                 return emit_simple_message(listener, kCgMsgP2replOnline);
-            case fixture::EventKind::Close:
+            case fixture::EventKind::Close: {
                 listener.state = kStateClosed;
-                return emit_simple_message(listener, kCgMsgClose);
+                auto reason = static_cast<std::uint32_t>(owned.value);
+                return emit_simple_message(listener, kCgMsgClose, &reason, sizeof(reason));
+            }
             case fixture::EventKind::LifeNum: {
                 CgDataLifeNum data{.life_number = static_cast<std::uint32_t>(owned.value), .flags = owned.flags};
                 return emit_simple_message(listener, kCgMsgP2replLifenum, &data, sizeof(data));

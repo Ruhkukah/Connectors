@@ -637,6 +637,8 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
             ",\"table_index\":" + std::to_string(event.table_index) +
             ",\"clear_deleted_flags\":" + std::to_string(event.clear_deleted_flags) +
             ",\"text\":" + json_string(event.text_value);
+        if (event.kind == cg::Plaza2ListenerEventKind::Close)
+            fields += ",\"close_reason\":" + std::to_string(event.close_reason);
         if (!replication)
             fields += ",\"payload_hex\":" + json_string(tr::bytes_to_hex(event.raw_payload));
         fields += ",\"fields\":[";
@@ -840,7 +842,12 @@ cg::Plaza2Error CgateTradingHost::poll() {
     if (!rebuilding_ &&
         (changes.resync_required || changes.regular_trade_history_truncated || !trade_online || !user_book_online)) {
         rebuilding_ = true;
-        log_event("private_history_gap", "{\"recovering\":true}");
+        log_event(
+            "private_history_gap",
+            "{\"recovering\":true,\"resync_required\":" + std::string(changes.resync_required ? "true" : "false") +
+                ",\"trade_history_truncated\":" + (changes.regular_trade_history_truncated ? "true" : "false") +
+                ",\"trade_offline\":" + (!trade_online ? "true" : "false") +
+                ",\"userorderbook_offline\":" + (!user_book_online ? "true" : "false") + "}");
     }
     if (rebuilding_) {
         // The bootstrap barrier reconciles full committed snapshots. Delta
