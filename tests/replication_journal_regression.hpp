@@ -86,28 +86,6 @@ inline void replication_journal_regression(TradingHostConfig config, const plaza
                  .revision = 76001,
                  .fields = {integer(kFortsAggrReplSysEventsReplId, 76001), integer(kFortsAggrReplSysEventsSessId, 321),
                             integer(kFortsAggrReplSysEventsEventType, 1)}});
-    transaction({.stream_code = gen::StreamCode::kFortsInstrumentstateRepl,
-                 .table_code = gen::TableCode::kFortsInstrumentstateReplSysEvents,
-                 .revision = 76002,
-                 .fields = {integer(kFortsInstrumentstateReplSysEventsReplId, 76002),
-                            integer(kFortsInstrumentstateReplSysEventsReplRev, 76002),
-                            integer(kFortsInstrumentstateReplSysEventsEventId, 76002),
-                            integer(kFortsInstrumentstateReplSysEventsSessId, 321),
-                            integer(kFortsInstrumentstateReplSysEventsEventType, 1),
-                            text(kFortsInstrumentstateReplSysEventsMessage, "SPD5_INSTRUMENT_SESSION")}});
-    control.enqueue({.kind = fake::EventKind::Begin, .stream_code = gen::StreamCode::kFortsAggrRepl});
-    for (std::size_t i = 0; i < foreign_rows; ++i) {
-        const auto revision = 80000 + static_cast<std::int64_t>(i);
-        control.enqueue(
-            {.stream_code = gen::StreamCode::kFortsAggrRepl,
-             .table_code = gen::TableCode::kFortsAggrReplOrdersAggr,
-             .revision = revision,
-             .fields = {integer(kFortsAggrReplOrdersAggrReplId, revision),
-                        integer(kFortsAggrReplOrdersAggrReplRev, revision),
-                        integer(kFortsAggrReplOrdersAggrIsinId, isin), integer(kFortsAggrReplOrdersAggrVolume, 1),
-                        integer(kFortsAggrReplOrdersAggrDir, 1), text(kFortsAggrReplOrdersAggrPrice, "103000")}});
-    }
-    control.enqueue({.kind = fake::EventKind::Commit, .stream_code = gen::StreamCode::kFortsAggrRepl});
     transaction({.stream_code = gen::StreamCode::kFortsRefdataRepl,
                  .table_code = gen::TableCode::kFortsRefdataReplSysMessages,
                  .revision = 77001,
@@ -152,17 +130,12 @@ inline void replication_journal_regression(TradingHostConfig config, const plaza
     const auto has = [&](std::int64_t id) {
         return rows.find("\"signed\":" + std::to_string(id)) != std::string::npos;
     };
-    for (const auto id : {71001, 71002, 71003, 72001, 72002, 73001, 74001, 75001, 76001, 76002, 77001, 79001})
+    for (const auto id : {71001, 71002, 71003, 72001, 72002, 73001, 74001, 75001, 76001, 77001, 79001})
         require(has(id), "journal dropped required own/state/announcement row " + std::to_string(id));
     for (const auto id : {71004, 72003, 73002, 73003, 73004, 74002, 79002})
         require(!has(id), "journal retained unconfigured/foreign row " + std::to_string(id));
     require(!duplicate_hex, "replication journal duplicated decoded fields as raw hex");
     require(raw_reply && lifecycle && begin && commit, "journal lost reply bytes or recovery/transaction evidence");
     require(rows.find("SPD5_EXCHANGE_MESSAGE") != std::string::npos, "journal lost exchange announcement");
-    require(rows.find("SPD5_INSTRUMENT_SESSION") != std::string::npos,
-            "journal lost same-stream instrument session evidence");
-    require(rows.find("\"table\":\"orders_aggr\"") == std::string::npos &&
-                rows.find("\"table\":\"heartbeat\"") == std::string::npos,
-            "retaining instrument session evidence resumed high-volume quote/heartbeat journaling");
 }
 } // namespace moex::connector_host::regression

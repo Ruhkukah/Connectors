@@ -23,22 +23,6 @@ separate SDK publisher, retry an uncertain Add or force a partial-fill result.
 The worker intentionally excludes router/upstream fault injection and marks
 MOEX-coordinated scenarios unobserved.
 
-`native_admission.py` observes committed SESSIONSTATE and INSTRUMENTSTATE
-authority from complete native journal records. A protected driver uses
-`CommittedAdmissionObserver.native_open(sess_id, isin_ids)` alongside its
-existing reconstruction, ownership, reservation and fresh quote checks. The
-same-stream instrument-session marker must survive native journal filtering;
-REFDATA's schedule alone cannot supply that authority. Stale markers,
-matching deletion/purge and source epoch changes revoke the relevant proof.
-Native state zero never authorizes ordinary trading.
-
-`native_admission_journal_test` in CTest exercises the actual native host's
-CGate callback, production journal filter and Python observer together, using
-the offline fake runtime. It also checks that raw heartbeat and AGGR book rows
-remain suppressed. Both CI jobs run this test and the Python observer
-regressions. These changes are review sources, not a deployed or armed bundle;
-already executed and running private bundles remain unchanged.
-
 ## Protected deployment boundary
 
 Private bootstrap/coverage/reconstruction implementations, SSH launchers,
