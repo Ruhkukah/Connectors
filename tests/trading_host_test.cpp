@@ -19,6 +19,7 @@
 #include "exchange_message_regression.hpp"
 #include "transport_status_regression.hpp"
 #include "replication_journal_regression.hpp"
+#include "native_admission_journal_fixture.hpp"
 #include "heartbeat_journal_regression.hpp"
 #include "reload_missing_host_regression.hpp"
 #include "inflight_rebuild_host_regression.hpp"
@@ -204,7 +205,8 @@ void aggr_snapshot_status_regression(TradingHostConfig config, const test::fake:
 int main(int argc, char** argv) {
     try {
         moex::plaza2::test::FieldReadContract field_reads;
-        test::require(argc == 2, "fake runtime path required");
+        const bool emit_admission = argc == 4 && std::string_view(argv[2]) == "--emit-admission-journal";
+        test::require(argc == 2 || emit_admission, "fake runtime path and optional admission journal output required");
         scope_exit_regression();
         const auto root = test::make_temp_directory("trading-host");
         const auto fixture =
@@ -238,6 +240,11 @@ int main(int argc, char** argv) {
         config.isin_ids = {1001};
         config.journal_path = root / "events.ndjson";
         moex::connector_host::regression::explicit_test_risk(config);
+        if (emit_admission) {
+            moex::connector_host::regression::emit_native_admission_journal(config, fake, root, argv[3]);
+            test::remove_tree(root);
+            return 0;
+        }
         moex::connector_host::regression::heartbeat_journal_regression(config, fake, root);
         aggr_snapshot_status_regression(config, fake, root);
         moex::connector_host::regression::startup_id_block_host_regression(config, fake, root);

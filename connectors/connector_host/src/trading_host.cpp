@@ -258,6 +258,7 @@ bool journal_replication_row(const cg::Plaza2ListenerEvent& event, const Trading
     case kFortsDealsReplSysEvents:
     case kFortsPartReplSysEvents:
     case kFortsAggrReplSysEvents:
+    case kFortsInstrumentstateReplSysEvents:
     case kFortsRefdataReplSysMessages:
         return true;
     default:

@@ -86,6 +86,12 @@ foreach(name IN ITEMS order_manager_test event_journal_test)
 endforeach()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/trading_host_test.cpp")
     moex_runtime_test(trading_host_test trading_host_test.cpp moex_connector_host)
+    add_test(NAME native_admission_journal_test COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/native_admission_journal_test.py"
+        "$<TARGET_FILE:trading_host_test>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>"
+        "${MOEX_SOURCE_ROOT}/scripts/test_rehearsal")
+    set_tests_properties(native_admission_journal_test PROPERTIES
+        LABELS "integration;plaza2;sanitizer" TIMEOUT 60)
 endif()
 moex_runtime_test(command_latency_test command_latency_test.cpp moex_connector_host)
 set_tests_properties(command_latency_test PROPERTIES TIMEOUT 60)
