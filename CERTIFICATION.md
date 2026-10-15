@@ -64,6 +64,19 @@ An in-place verification of the immutable 13 October native journal found eight 
 
 [MOEX's 2023 certification procedure](https://www.moex.com/files/4xgv6e2x1paqr1zkn2fmq093cj), section 3, requires a full SPECTRA TEST day including intermediate clearing, main clearing and the evening session, using every command type declared in the questionnaire. Appendix 1 requires router/network recovery and correct listener/publisher reopening. A partial fill before Move, opening-auction coverage and raw heartbeat journal rows are additional internal exercises, rather than explicit generic CGate requirements in that appendix; exchange-specific questionnaire requirements still apply. Historical `INCOMPLETE` and `NOT_OBSERVED` receipts remain unchanged.
 
+## Certification submission and remaining evidence
+
+The optional partial-fill exercise does not prevent opening the certification request. Follow [MOEX's short instruction](https://www.moex.com/files/4g7e6cqq45kxdzfebvqvrqj643): prepare the Policy Appendix 3 request for `help@moex.com`, obtain the additional CGate questionnaire and agree a test date with the specialist. The request covers the product/developer, affiliations, other venue use, intended market/users, data versus transaction functionality, unusual functions and market-data purpose. The owner supplies these answers and authorizes submission separately.
+
+Before claiming qualification complete:
+
+1. Bind the completed questionnaire, release version, source/binary hashes, URLs, threading and rate declarations to the actual candidate. Keep credentials and private deployment values outside public evidence.
+2. Provide the agreed full TEST day with intermediate clearing, final clearing, evening trading and every declared command type. A late-start continuation proves only its observed interval unless MOEX accepts that coverage explicitly. Preserve cancellation, complete native flatness, normal exit, zero clients and independent guardian results separately from scenario verdicts.
+3. Complete the agreed recovery/rate demonstrations, including commands refused during loss and working-order reconciliation. Arrange exchange-controlled schema, LifeNum/ClearDeleted, TCS/reload and reserve-switch cases with MOEX; local regressions support these checks without replacing their acceptance.
+4. Archive the application journal, actual CGate client log and router log before rotation. Include clock evidence and the administration/emergency instructions.
+
+`scripts/test_rehearsal/partial_test` is a separate review-only internal exercise for quantity up to 10. Its immutable TEST scope supplies all risk guards; it does not change the ordinary quantity-2 rehearsal, deploy a launcher, or authorize a new session. A genuine partial requires a committed own deal, exactly-once execution credit and a currently remaining quantity before Move. No fill or a complete fill remains `NOT_OBSERVED` for this optional scenario.
+
 ## Operator emergency procedure
 
 Keep an owner-managed deployment card beside the terminal containing the broker desk's telephone and authenticated emergency channel, the TEST login and section, broker/client identity, instance ID, router endpoint, dated interaction journal, identity file, absolute CGate `[p2syslog] logfile` and router log location. Fill these private values before the rehearsal; keep them outside Git. MOEX TEST technical support is [help@moex.com and +7 495 363-32-32](https://www.moex.com/s3439).
@@ -119,7 +132,7 @@ Measure clock offset with the host's time service; pass `--clock-offset-us` with
 
 1. Leave the connector idle for five minutes.
 2. Stop/start the router; interrupt/restore its upstream connection. Verify commands stop during loss, the process waits, and private streams/commands resume after ONLINE.
-3. Place at least three simultaneous orders. Partially fill one; cancel another; move one. Exercise DelUserOrders through `cancel-all ISIN` as well as DelOrder.
+3. Place at least three simultaneous orders; cancel and move orders. Exercise DelUserOrders through `cancel-all ISIN` as well as DelOrder. Partial-fill-before-Move is an optional additional robustness exercise, using its separately reviewed scope and authorization.
 4. Restart the process with two working orders. Use `status` to obtain their recovered client IDs, cancel one, and place a new order. Verify remaining quantities against TRADE.
 5. Submit a burst above the selected rate. Verify all queued commands eventually send and every rolling one-second window respects the cap; exercise a flood penalty and cancel retry.
 6. Continue through intermediate clearing, main clearing and the evening session without restarting. Verify the new `sess_id` is followed automatically and repeat every declared command.
