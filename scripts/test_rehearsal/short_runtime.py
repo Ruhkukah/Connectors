@@ -4,6 +4,7 @@ The deployed package supplies frozen_runtime.py; imports do not start anything.
 Native provenance and review/CI provenance deliberately have separate pins.
 """
 from pathlib import Path
+import http.client
 import json
 import re
 import time
@@ -89,7 +90,8 @@ def preflight_deadline(cfg, now=None):
 def transient_network(error):
     if isinstance(error, urllib.error.HTTPError):
         return error.code == 429 or 500 <= error.code <= 599
-    return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError))
+    return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError,
+                              http.client.IncompleteRead))
 
 
 def verify_ci(root, cfg, tick=None):

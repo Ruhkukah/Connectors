@@ -2,6 +2,7 @@
 import copy
 import datetime as dt
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import types
@@ -179,6 +180,52 @@ class CITests(unittest.TestCase):
                 runtime.verify_ci(Path("test-root"),self.cfg)
             self.data["pulls/68"]=original
         self.assertEqual(self.writes,[])
+
+    def test_truncated_http_payload_retries_and_rechecks_all_exact_ci_gates(self):
+        self.fetch.stop()
+        calls=[];truncated=[False]
+        class Response:
+            def __init__(response,suffix):response.suffix=suffix
+            def __enter__(response):return response
+            def __exit__(response,*args):return False
+            def read(response):
+                if response.suffix=='pulls/68' and not truncated[0]:
+                    truncated[0]=True
+                    raise runtime.http.client.IncompleteRead(b'{"state":',100)
+                return json.dumps(self.data[response.suffix]).encode()
+        def open_response(request,timeout):
+            suffix=request.full_url.split('/repos/Ruhkukah/Connectors/',1)[1]
+            calls.append(suffix)
+            return Response(suffix)
+        with patch.object(runtime.urllib.request,'urlopen',side_effect=open_response),patch.object(runtime.time,'sleep'),patch.object(runtime.time,'time',return_value=supervisor.epoch(9)):
+            runtime.verify_ci(Path('no-native'),self.cfg)
+        native='actions/runs/'+str(runtime.CI_RUN_ID)
+        self.assertEqual(calls[:3],[native,'actions/runs/123','pulls/68'])
+        self.assertEqual(calls[3:],[native,'actions/runs/123','pulls/68',
+                         'compare/'+runtime.HEAD+'...'+self.cfg['review_git_sha'],
+                         'commits/'+self.cfg['review_git_sha']+'/check-runs'])
+        self.assertEqual(len(self.writes),1)
+        self.assertTrue(self.writes[0][1]['scripts_and_documentation_only'])
+        self.assertEqual(self.writes[0][1]['review_git_sha'],self.cfg['review_git_sha'])
+
+    def test_complete_but_malformed_json_is_not_transport_retry(self):
+        self.fetch.stop()
+        class Response:
+            def __enter__(response):return response
+            def __exit__(response,*args):return False
+            def read(response):return b'{"complete_but_invalid_json":'
+        with patch.object(runtime.urllib.request,'urlopen',return_value=Response()) as opened,patch.object(runtime.time,'sleep') as slept:
+            with self.assertRaises(json.JSONDecodeError):runtime.verify_ci(Path('no-native'),self.cfg)
+        self.assertEqual(opened.call_count,1);slept.assert_not_called()
+        self.assertEqual(self.writes,[])
+
+    def test_completed_payload_with_wrong_exact_pin_stays_fatal_no_retry(self):
+        self.data['actions/runs/'+str(runtime.CI_RUN_ID)]['head_sha']='f'*40
+        with patch.object(runtime.time,'sleep') as slept:
+            with self.assertRaisesRegex(Refused,'native_exact_ci'):
+                runtime.verify_ci(Path('no-native'),self.cfg)
+        self.assertEqual(self.calls,['actions/runs/'+str(runtime.CI_RUN_ID)])
+        slept.assert_not_called();self.assertEqual(self.writes,[])
 
 
 class CleanupOrderingTests(unittest.TestCase):
