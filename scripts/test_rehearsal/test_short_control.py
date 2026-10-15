@@ -446,6 +446,23 @@ class PreintentTests(unittest.TestCase):
             with patch.object(supervisor.time,'time',return_value=supervisor.epoch(10)):
                 with self.assertRaisesRegex(Refused,'router_restoration'):
                     runner.safe_case_failure(runner.product,RuntimeError('scenario_evidence_missing'),'case')
+    def test_uncertain_or_unrestored_cleanup_epoch_never_clears_request_latches(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for confirmed,upstreams in ((False,4),(True,3)):
+                runner=self.runner([]);runner.root=Path(folder);runner.meta={}
+                runner.product=types.SimpleNamespace(status=lambda:dict(complete=True,flat=True))
+                runner.ops.flat=lambda state:state['flat']
+                runner._wait_fault_restoration=lambda:None
+                runner.rt.verify_owner=lambda meta,n=upstreams:dict(client_count=1,upstreams=n)
+                runner.rt.atomic=lambda *a:self.fail('unconfirmed cleanup cannot archive/rearm')
+                runner.flatten=lambda *a,**k:dict(cancel_confirmed=True,flat=True)
+                attempts={1:dict(confirmed=confirmed,command_outcome='UNCERTAIN_NEVER_RETRIED')}
+                runner.emergency_cancel_attempts=attempts
+                with patch.object(supervisor.time,'time',return_value=supervisor.epoch(10)):
+                    with self.assertRaises(Refused):runner.safe_case_failure(runner.product,RuntimeError('case'),'case')
+                self.assertIs(runner.emergency_cancel_attempts,attempts)
+                self.assertFalse((runner.root/'emergency-cleanup-epoch-0-public.json').exists())
+
     def test_uncertain_case_failure_never_executes_a_new_case(self):
         runner=self.runner([]);runner._wait_fault_restoration=lambda:None
         runner.flatten=lambda *a,**k:self.fail('uncertain case cannot qualify for continuation')
@@ -492,6 +509,25 @@ class EmergencyCleanupTests(unittest.TestCase):
             self.assertEqual(proof['attempts'][0]['command_outcome'],'UNCERTAIN_NEVER_RETRIED')
             self.assertTrue(repeat['no_new_native_process']);self.assertEqual(runner.public[-1]['state'],'BLOCKED')
             self.assertFalse(runner.public[-1]['terminal'])
+            # A new case may place new orders only after strict cancellation,
+            # flatness, complete reconstruction and router/client reconciliation.
+            runner.meta={};runner.closing=False
+            product.status=lambda:dict(native='complete-flat')
+            runner._wait_fault_restoration=lambda:None
+            runner.verify_owner=lambda p:dict(client_count=1,upstreams=4)
+            runner.rt.verify_owner=lambda meta:dict(client_count=1,upstreams=4)
+            runner.flatten=lambda *a,**k:dict(cancel_confirmed=True,flat=True)
+            with patch.object(supervisor.time,'time',return_value=supervisor.epoch(10)):
+                runner.safe_case_failure(product,RuntimeError('recoverable_case_evidence_missing'),'first-case')
+            self.assertEqual(runner.emergency_cancel_attempts,{})
+            archived=json.loads((runner.root/'emergency-cleanup-epoch-0-public.json').read_text())
+            self.assertEqual(archived['state'],'CLOSED_CONFIRMED_SAFE')
+            self.assertEqual(len(archived['attempts']),2)
+            self.assertTrue(all(row['confirmed'] for row in archived['attempts']))
+            with patch.object(supervisor.subprocess,'run',side_effect=actual_cli),patch.object(supervisor.time,'time',return_value=supervisor.epoch(10)):
+                later=runner.emergency_cancel()
+            self.assertTrue(later['cancel_confirmed'])
+            self.assertEqual(calls.count('cancel-all 1'),2);self.assertEqual(calls.count('cancel-all 2'),2)
     def test_foreign_cleanup_lock_prevents_duplicate_cancel_and_keeps_unknown(self):
         with tempfile.TemporaryDirectory() as folder:
             runner=supervisor.Supervisor();runner.work=runner.root=Path(folder);runner.public=[];runner.publish=runner.public.append

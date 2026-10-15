@@ -430,6 +430,21 @@ class Supervisor(base.Supervisor):
         inventory = self.rt.verify_owner(self.meta)
         base.require(inventory['client_count'] == 1 and inventory['upstreams'] == 4,
                      'short_case_failure_router_restoration_unproved')
+        attempts=getattr(self,'emergency_cancel_attempts',{})
+        if attempts:
+            # Only a fully reconciled, confirmed cleanup may close its request
+            # epoch. Later cases can create new orders on the same ISINs.
+            base.require(set(attempts) == {target['isin_id'] for target in self.targets}
+                         and len(attempts) == 2 and all(row.get('confirmed') is True for row in attempts.values()),
+                         'short_emergency_cleanup_epoch_unconfirmed')
+            epoch=getattr(self,'emergency_cleanup_epoch',0)
+            receipt=self.root/('emergency-cleanup-epoch-'+str(epoch)+'-public.json')
+            base.require(not receipt.exists(),'short_emergency_cleanup_epoch_receipt_exists')
+            self.rt.atomic(receipt,dict(state='CLOSED_CONFIRMED_SAFE',epoch=epoch,
+                failed_case=name,attempts=list(attempts.values()),cancel_confirmed=True,flat=True,
+                complete_reconstruction=True,client_count=1,upstreams=4,closed_utc_ns=time.time_ns()))
+            self.emergency_cancel_attempts={}
+            self.emergency_cleanup_epoch=epoch+1
         return dict(cancel_confirmed=True, flat=True, restored=True, upstreams=4,
                     client_count=1, complete_reconstruction=True, failed_case=name)
 
