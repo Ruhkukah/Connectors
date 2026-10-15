@@ -11,11 +11,39 @@ ops, sequence, price_caps = base.ops, base.sequence, base.price_caps
 
 TRANSIENT_PRICE_REASONS = frozenset(("current_price_book_unproved", "current_price_book_stale",
     "current_price_two_sided_book_unproved", "passive_quote_unavailable",
-    "passive_price_not_far_enough", "mass_three_lower_band_not_safely_passive"))
+    "passive_price_not_far_enough", "mass_three_lower_band_not_safely_passive", "instrument_not_ready"))
 
 
 class PreIntentNotSent(base.DayStop):
     not_sent = True
+
+
+class RateCheckFailed(base.DayStop):
+    rate_only = True
+
+    def __init__(self, metrics):
+        self.metrics = metrics
+        super().__init__("short_burst_native_five_per_second_limit_exceeded")
+
+
+def burst_rate_metrics(posts):
+    """Report strict wall-clock density separately from native-ms-compatible density.
+
+    Native admission truncates steady time to ms. Allowing exactly 1 ms at
+    the measurement boundary avoids treating sub-ms quantization as a new
+    connector regression; the strict ns count is still reported unchanged.
+    """
+    def maximum(window):
+        left = result = 0
+        for right, stamp in enumerate(posts):
+            while stamp - posts[left] >= window:
+                left += 1
+            result = max(result, right - left + 1)
+        return result
+    return dict(max_posts_per_rolling_second=maximum(999_000_000),
+                max_posts_per_strict_ns_second=maximum(1_000_000_000),
+                rate_window_slack_ns=1_000_000,
+                rate_semantics="native_millisecond_admission_with_1ms_measurement_slack")
 
 
 def inventory_signature(state):
@@ -113,6 +141,7 @@ class ShortDriver(base.DayDriver):
                                              end=self.window["hard_entry_deadline_utc"])])
         self.gate_passed = True  # No opening/latency gate belongs to this short session.
         retain_throttle_records(self.timeline)
+        self.dispatch_count = 0
         self.admission_complete = False
         self.pre_admission_window = [self.window["scheduled_start_utc"], float("inf")]
         self.timeline.restart_windows.append(self.pre_admission_window)
@@ -197,7 +226,21 @@ class ShortDriver(base.DayDriver):
                 self.sleep(.1)
             else:
                 raise PreIntentNotSent("short_pre_intent_entry_deadline")
-        return self.product.command(line)
+        return self.dispatch_once(line)
+
+    def dispatch_once(self, line):
+        """Count actual attempts; a proven pre-intent refusal adds no dispatch."""
+        try:
+            result = self.product.command(line)
+        except Exception as error:
+            if not getattr(error, "not_sent", False):
+                self.dispatch_count += 1
+                raise base.DayStop("short_command_dispatch_outcome_uncertain") from error
+            raise
+        self.dispatch_count += 1
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise base.DayStop("short_command_dispatch_outcome_uncertain")
+        return result
 
     def seq(self, stage):
         seq = base.sequence._Sequence(self.command, self.status, self.work, self.targets, stage)
@@ -352,15 +395,29 @@ class ShortDriver(base.DayDriver):
 
     def burst_snapshot(self, queued_observations):
         """Queued is expected inside the bounded burst, never flatness proof."""
-        if self.env.get("tick"):
-            self.env["tick"]()
-        self.timeline.update()
-        state = self.product.status()
-        if (not base.ops.ready(state, self.targets, entry=False)
-                or any(state.get(key) for key in ("journal_failed", "log_error", "cancel_only", "operator_action_required"))
-                or type(state.get("queued")) is not int or state["queued"] < 0
+        deadline = min(self.wall() + 30, self.window["hard_entry_deadline_utc"])
+        while True:
+            if self.env.get("tick"):
+                self.env["tick"]()
+            self.timeline.update()
+            try:
+                state = self.product.status()
+            except Exception as error:
+                if getattr(self, "dispatch_count", 0) > getattr(self, "burst_dispatch_begin", 0):
+                    raise base.DayStop("short_burst_command_confirmation_uncertain") from error
+                raise
+            if any(state.get(key) for key in ("journal_failed", "log_error", "cancel_only", "operator_action_required")):
+                raise base.DayStop("short_burst_native_safety_alert")
+            if base.ops.ready(state, self.targets, entry=False):
+                break
+            if self.wall() >= deadline:
+                if getattr(self, "dispatch_count", 0) > getattr(self, "burst_dispatch_begin", 0):
+                    raise base.DayStop("short_burst_command_confirmation_uncertain_readiness_timeout")
+                raise PreIntentNotSent("short_burst_readonly_readiness_deadline_not_sent")
+            self.sleep(min(.1, max(0, deadline - self.wall())))
+        if (type(state.get("queued")) is not int or state["queued"] < 0
                 or any(row.get("xpos") != 0 for row in state.get("positions", []))):
-            raise base.DayStop("short_burst_native_reconstruction_or_position_mismatch")
+            raise base.DayStop("short_burst_native_queue_or_position_mismatch")
         for row in state.get("orders", []):
             if row.get("client_order_id") in getattr(self, "burst_clients", set()) and row.get("executed") != 0:
                 raise base.DayStop("short_burst_owned_passive_execution_mismatch")
@@ -380,10 +437,15 @@ class ShortDriver(base.DayDriver):
         if state["queued"]:
             queued_observations.append(dict(queued=state["queued"], observed_utc=self.wall(),
                                             journal_offset=self.timeline.cursor.offset))
+        if state["queued"] == 0:
+            # Recovery signatures forbid queued commands. Refresh only a
+            # current complete drained baseline, never an incomplete snapshot.
+            self.last_complete_state = state
         return state
 
     def burst(self):
         self.case_budget(120)
+        self.burst_dispatch_begin = self.dispatch_count
         self.command("kill off")
         self.timeline.update()
         begin = self.timeline.cursor.offset
@@ -427,7 +489,7 @@ class ShortDriver(base.DayDriver):
                     raise PreIntentNotSent("short_burst_dispatch_deadline")
                 for target, client in wave:
                     seq.record("command_requested", dict(client_order_id=client, kind="AddOrder"))
-                    result = self.product.command(f"place {client} {target['isin_id']} buy 1 {base.sequence._price(prices[target['isin_id']])} day")
+                    result = self.dispatch_once(f"place {client} {target['isin_id']} buy 1 {base.sequence._price(prices[target['isin_id']])} day")
                     if not isinstance(result, dict) or result.get("ok") is not True:
                         raise base.DayStop("short_burst_command_outcome_uncertain")
                 while True:
@@ -438,10 +500,10 @@ class ShortDriver(base.DayDriver):
                     if all(row and row.get("state") == "Working" and row.get("order_id", 0) > 0 for row in orders) and state["queued"] == 0:
                         break
                     if self.wall() >= deadline:
-                        raise base.DayStop("short_burst_queued_Add_confirmation_timeout")
+                        raise base.DayStop("short_burst_queued_Add_confirmation_uncertain_timeout")
                     self.sleep(.02)
                 for _, client in wave:
-                    result = self.product.command("cancel " + client)
+                    result = self.dispatch_once("cancel " + client)
                     if not isinstance(result, dict) or result.get("ok") is not True:
                         raise base.DayStop("short_burst_command_outcome_uncertain")
                     # Do not call frozen status(): its recovery signature
@@ -452,7 +514,7 @@ class ShortDriver(base.DayDriver):
                     if base.ops.flat(state):
                         break
                     if self.wall() >= deadline:
-                        raise base.DayStop("short_burst_cancel_confirmation_timeout")
+                        raise base.DayStop("short_burst_cancel_confirmation_uncertain_timeout")
                     self.sleep(.02)
                 waves.append(dict(adds=count, dels=count, complete_flat=True))
         while True:
@@ -461,8 +523,10 @@ class ShortDriver(base.DayDriver):
                 proof = burst_reply_proof(self.timeline.between(begin))
                 break
             except base.DayStop as error:
-                if str(error) not in ("short_burst_matching_code0_reply_pending", "short_burst_later_trade_commit_unproved") or self.wall() >= deadline:
+                if str(error) not in ("short_burst_matching_code0_reply_pending", "short_burst_later_trade_commit_unproved"):
                     raise
+                if self.wall() >= deadline:
+                    raise base.DayStop("short_burst_native_reply_or_commit_confirmation_uncertain") from error
                 self.status()
                 self.sleep(.05)
         rows = self.timeline.between(begin)
@@ -474,20 +538,17 @@ class ShortDriver(base.DayDriver):
         if (len(posts) != 30 or len(set(timing_users)) != 30 or set(timing_users) != expected_users
                 or any(type(stamp) is not int or stamp <= 0 for stamp in posts)):
             raise base.DayStop("short_burst_exact_native_post_timing_unproved")
-        left = maximum = 0
-        for right, stamp in enumerate(posts):
-            while stamp - posts[left] >= 1_000_000_000:
-                left += 1
-            maximum = max(maximum, right - left + 1)
+        rates = burst_rate_metrics(posts)
+        maximum = rates["max_posts_per_rolling_second"]
         if maximum > 5:
-            raise base.DayStop("short_burst_native_five_per_second_limit_exceeded")
+            raise RateCheckFailed(rates)
         if maximum != 5 or not queued:
             raise base.DayStop("short_burst_native_limiter_binding_not_observed")
         throttle = burst_throttle_proof(rows, begin, self.timeline.cursor.offset)
         state = self.status()
         if not base.ops.ready(state, self.targets, entry=False) or not base.ops.flat(state):
             raise base.DayStop("short_burst_final_complete_flatness_unproved")
-        return dict(status="PASS", native_posts=30, max_posts_per_rolling_second=maximum,
+        return dict(status="PASS", native_posts=30, **rates,
                     duration_seconds=self.monotonic() - started, limiter_binding_observed=True,
                     queued_native_command_observations=queued, waves=waves,
                     client_order_ids=clients, **proof, **throttle)
@@ -514,21 +575,32 @@ class ShortDriver(base.DayDriver):
         return self.restart_working()
 
     def independent_case(self, name, callback):
-        self.tick()
         begin = self.timeline.cursor.offset
+        dispatch_begin = self.dispatch_count
         self.active_scenario = name
         self.publish(dict(state="running", phase=name))
+        tick_complete = False
         try:
+            self.tick()
+            tick_complete = True
             result = callback()
         except Exception as error:
             # A failed scenario is retained. Continuing requires the owning
             # supervisor to restore, cancel/reconcile and independently prove
             # current flatness, one owned client and four TEST upstreams.
+            dispatched = self.dispatch_count - dispatch_begin
             result = dict(status="FAIL", reason=getattr(error, "code", str(error)),
-                          command_not_sent=getattr(error, "not_sent", False))
+                          command_not_sent=getattr(error, "not_sent", False) and dispatched == 0,
+                          commands_not_sent=getattr(error, "not_sent", False) and dispatched == 0,
+                          failing_command_not_sent=getattr(error, "not_sent", False),
+                          commands_dispatched_or_uncertain=dispatched)
+            if hasattr(error, "metrics"):
+                result["metrics"] = error.metrics
             self.mark(name, result, begin)
-            fatal = (not getattr(error, "not_sent", False) and any(token in str(error).lower()
-                     for token in ("uncertain", "mismatch", "identity", "unrestored", "inventory_changed", "limit_exceeded")))
+            fatal = (not tick_complete or (not getattr(error, "not_sent", False)
+                     and not isinstance(error, RateCheckFailed) and any(token in str(error).lower()
+                     for token in ("uncertain", "mismatch", "identity", "unrestored", "inventory_changed", "limit_exceeded",
+                                   "unplanned_link_lost", "native_safety_alert"))))
             if fatal:
                 raise
             recover = self.env.get("safe_case_failure")
@@ -557,7 +629,9 @@ class ShortDriver(base.DayDriver):
         self.stage("pre_SIGTERM_cancel_flat", self.prepare_empty_closeout)
         self.stage("terminal_closeout", self.closeout)
         result = "PASS" if all(row.get("status") == "PASS" for row in self.scenarios.values()) else "FAIL"
-        return dict(terminal=True, execution_result=result, coverage_scope="SHORT_INTERRUPTION_ONLY",
+        return dict(terminal=True, execution_result=result,
+                    qualification_result="SUPPLEMENTAL_TEST_COMPLETE" if result == "PASS" else "SUPPLEMENTAL_TEST_INCOMPLETE",
+                    coverage_scope="SHORT_INTERRUPTION_ONLY",
                     scenarios=self.scenarios, planned_restarts=int(self.restart_used),
                     journal_bytes=self.timeline.path.stat().st_size,
                     journal_bytes_by_kind=self.timeline.kind_bytes,

@@ -121,7 +121,7 @@ class Product:
     def poll(self):
         while self.pending:
             now = self.clock.time()
-            self.posts = [stamp for stamp in self.posts if now-stamp < 1]
+            self.posts = [stamp for stamp in self.posts if int(now*1000)-int(stamp*1000) < 1000]
             if len(self.posts) >= 5:
                 if not self.omit_throttle:
                     self.timeline.append('throttle', dict(active=True, queued=len(self.pending)))
@@ -410,6 +410,105 @@ class ShortTests(unittest.TestCase):
         with self.assertRaisesRegex(base.DayStop, 'later_trade_commit'):
             h.burst_reply_proof(rows)
 
+    def test_ms_native_admission_and_sub_ms_post_jitter_report_strict_density(self):
+        # Independent producer uses native whole-ms gate, not the checker's
+        # 999ms measurement window. Sub-ms gate phase makes strict ns density6.
+        admitted_ms, posts, now = [], [], 900_000
+        for index in range(30):
+            while len(admitted_ms) == 5 and now//1_000_000-admitted_ms[0] < 1000:
+                now += 50_000
+            if len(admitted_ms) == 5:
+                admitted_ms.pop(0)
+            admitted_ms.append(now//1_000_000)
+            posts.append(1_000_000_000 + now + (index % 3)*3_000)
+            now += 20_000
+        metrics = h.burst_rate_metrics(posts)
+        self.assertEqual(metrics['max_posts_per_rolling_second'], 5)
+        self.assertGreater(metrics['max_posts_per_strict_ns_second'], 5)
+        self.assertEqual(metrics['rate_window_slack_ns'], 1_000_000)
+
+    def test_rate_excess_is_reported_FAIL_but_cannot_skip_safe_reconciliation(self):
+        metrics = h.burst_rate_metrics([1_000_000_000+index*100_000_000 for index in range(6)])
+        self.assertEqual(metrics['max_posts_per_rolling_second'], 6)
+        calls = []
+        self.d.env['safe_case_failure'] = lambda *args: calls.append(args) or full_recovery()
+        result = self.d.independent_case('rate', lambda: (_ for _ in ()).throw(h.RateCheckFailed(metrics)))
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertEqual(result['metrics']['max_posts_per_strict_ns_second'], 6)
+        self.assertEqual(len(calls), 1)
+        self.d.env['safe_case_failure'] = lambda *_: full_recovery(flat=False)
+        with self.assertRaisesRegex(base.DayStop, 'continuation_unproved'):
+            self.d.independent_case('rate', lambda: (_ for _ in ()).throw(h.RateCheckFailed(metrics)))
+
+    def test_burst_transient_reconstruction_waits_and_refreshes_drained_baseline(self):
+        waiting, fresh = state(complete=False), state()
+        snapshots = iter([waiting, waiting, fresh])
+        self.product.status = lambda: next(snapshots)
+        self.d.last_complete_state = state(books='stale')
+        self.assertIs(self.d.burst_snapshot([]), fresh)
+        self.assertIs(self.d.last_complete_state, fresh)
+        self.assertGreater(self.clock.now, self.cfg['earliest_entry_utc'])
+
+    def test_queued_burst_snapshot_does_not_become_complete_recovery_baseline(self):
+        baseline = state()
+        self.d.last_complete_state = baseline
+        self.product.status = lambda: state(queued=1)
+        self.d.burst_snapshot([])
+        self.assertIs(self.d.last_complete_state, baseline)
+
+    def test_burst_readiness_timeout_is_not_sent_before_dispatch_uncertain_after(self):
+        self.product.status = lambda: state(complete=False)
+        self.d.burst_dispatch_begin = self.d.dispatch_count
+        with self.assertRaises(h.PreIntentNotSent):
+            self.d.burst_snapshot([])
+        self.d.dispatch_count += 1
+        with self.assertRaisesRegex(base.DayStop, 'confirmation_uncertain_readiness_timeout'):
+            self.d.burst_snapshot([])
+
+    def test_instrument_not_ready_is_transient_before_any_command(self):
+        seq = self.d.seq('price')
+        attempts = []
+        def select(_):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise actual_sequence.SequenceStop('instrument_not_ready', 'ALRS-12.26')
+            return 7000000
+        self.assertEqual(self.d.wait_passive_price(seq, state(), select)[1], 7000000)
+        self.assertEqual(self.product.commands, [])
+
+    def test_dispatched_command_timeout_and_json_error_remain_fatal(self):
+        for error in (TimeoutError(), ValueError('invalid JSON')):
+            self.product.command = lambda _, e=error: (_ for _ in ()).throw(e)
+            self.d.env['safe_case_failure'] = lambda *_: self.fail('uncertain sent command cannot continue')
+            with self.assertRaisesRegex(base.DayStop, 'dispatch_outcome_uncertain'):
+                self.d.independent_case('burst', lambda: self.d.dispatch_once('cancel one'))
+
+    def test_unplanned_link_loss_or_storage_alert_inside_burst_still_stops_session(self):
+        self.d.env['safe_case_failure'] = lambda *_: self.fail('native safety failure cannot continue')
+        for code in ('unplanned_link_lost', 'short_burst_native_safety_alert'):
+            with self.assertRaisesRegex(base.DayStop, code):
+                self.d.independent_case('burst', lambda c=code: (_ for _ in ()).throw(base.DayStop(c)))
+
+    def test_preintent_after_prior_dispatch_never_claims_whole_case_not_sent(self):
+        def case():
+            self.d.dispatch_once('kill on')
+            raise h.PreIntentNotSent('next_request_not_sent')
+        result = self.d.independent_case('case', case)
+        self.assertFalse(result['command_not_sent'])
+        self.assertFalse(result['commands_not_sent'])
+        self.assertTrue(result['failing_command_not_sent'])
+        self.assertEqual(result['commands_dispatched_or_uncertain'], 1)
+        result = self.d.independent_case('never-dispatched', lambda: (_ for _ in ()).throw(h.PreIntentNotSent('not_sent')))
+        self.assertTrue(result['command_not_sent'])
+        self.assertEqual(result['commands_dispatched_or_uncertain'], 0)
+
+    def test_tick_failure_is_recorded_without_weakening_existing_fatal_policy(self):
+        self.d.tick = lambda: (_ for _ in ()).throw(base.DayStop('unplanned_link_lost'))
+        self.d.env['safe_case_failure'] = lambda *_: self.fail('failed safety tick cannot continue')
+        with self.assertRaisesRegex(base.DayStop, 'unplanned_link_lost'):
+            self.d.independent_case('next', lambda: self.fail('callback must not run'))
+        self.assertEqual(self.d.scenarios['next']['status'], 'FAIL')
+
     def test_independent_failure_continues_only_after_strict_recovery(self):
         calls = []
         self.d.env['safe_case_failure'] = lambda *args: calls.append(args) or full_recovery()
@@ -461,6 +560,13 @@ class ShortTests(unittest.TestCase):
         self.assertEqual(calls, ['short_admission', 'rate_burst_thirty', 'one_passive_upstream_socket_loss',
                                  'one_passive_router_restart', 'planned_restart_two_working',
                                  'pre_SIGTERM_cancel_flat', 'terminal_closeout'])
+
+    def test_overall_qualification_is_incomplete_if_any_case_failed(self):
+        self.d.stage = lambda name, _: self.d.scenarios.update({name: dict(status='PASS')})
+        self.d.independent_case = lambda name, _: self.d.scenarios.update({name: dict(status='FAIL' if name == 'rate_burst_thirty' else 'PASS')})
+        result = self.d.run()
+        self.assertEqual(result['execution_result'], 'FAIL')
+        self.assertEqual(result['qualification_result'], 'SUPPLEMENTAL_TEST_INCOMPLETE')
 
     def test_pre_SIGTERM_requires_current_flatness_and_exact_cleanup(self):
         self.d.env['flatten'] = lambda *_: dict(cancel_confirmed=True, flat=True)

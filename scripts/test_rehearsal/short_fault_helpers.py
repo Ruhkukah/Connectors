@@ -120,7 +120,6 @@ class Helpers:
                 try:
                     self.r.require(self.launch_context(probe, launch, launch.pid) == launch.start,
                                    'router_restore_original_identity_changed')
-                    probe.clients(launch.pid, owner_pid, exact=False)
                     os.kill(launch.pid, signal.SIGTERM)
                 except (FileNotFoundError, ProcessLookupError):
                     self.r.require(not probe.owned_routers(), 'router_restore_identity_unproved_after_exit')
@@ -172,13 +171,21 @@ class Helpers:
         launch, before = probe.inspect(config, owner_pid)
         self.r.save(output / 'preflight.json', before)
         child = (arm or self.r.arm_rollback)(probe, launch, owner_pid, output)
-        latest, _ = probe.inspect(config, owner_pid)
-        self.r.require((latest.pid, latest.start) == (launch.pid, launch.start), 'router_changed_before_signal')
-        self.r.validate_authorization(config, owner_pid)
-        self.r.save(output / 'router-stop-intent.json', dict(pid=launch.pid, start=launch.start))
-        send_signal(launch.pid, signal.SIGTERM)
-        self.r.save(output / 'fault.json', dict(signal_sent=True, fault='LOCAL_ROUTER_RESTART',
-                    upstream_fault=False, rollback_armed=True, utc_ns=time.time_ns()))
+        # The rollback can wake while this worker is descheduled after fork.
+        # Serialize its untouched-router decision with the signal decision and
+        # verify it has not already exited before approving any router stop.
+        with (output / 'launch.lock').open('a') as arbiter:
+            fcntl.flock(arbiter, fcntl.LOCK_EX)
+            done, _ = os.waitpid(child, os.WNOHANG)
+            self.r.require(not done and not (output / 'rollback.json').exists(),
+                           'router_rollback_not_alive_before_signal')
+            latest, _ = probe.inspect(config, owner_pid)
+            self.r.require((latest.pid, latest.start) == (launch.pid, launch.start), 'router_changed_before_signal')
+            self.r.validate_authorization(config, owner_pid)
+            self.r.save(output / 'router-stop-intent.json', dict(pid=launch.pid, start=launch.start))
+            send_signal(launch.pid, signal.SIGTERM)
+            self.r.save(output / 'fault.json', dict(signal_sent=True, fault='LOCAL_ROUTER_RESTART',
+                        upstream_fault=False, rollback_armed=True, utc_ns=time.time_ns()))
         until = time.monotonic() + 100
         while time.monotonic() < until:
             done, status = os.waitpid(child, os.WNOHANG)

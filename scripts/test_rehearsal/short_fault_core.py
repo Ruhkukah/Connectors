@@ -6,6 +6,8 @@ or command. The supervisor alone supplies an owned product and authorization.
 from pathlib import Path
 import json
 import os
+import signal
+import subprocess
 import time
 import traceback
 import uuid
@@ -41,6 +43,86 @@ def install(core):
             else:
                 super().preserve_order(before, after)
 
+        def raw_refusal_request(self, line):
+            """One CLI attempt; a timeout needs positive native refusal proof.
+
+            No posts/IDs by themselves cannot prove that an accepted command
+            will not execute later. Only the exact completed native kill-guard
+            refusal can resolve this timeout, and the guard must remain current.
+            """
+            core.require(self.ops.process_identity(self.product.child.pid) == self.product_identity,
+                         'outage_probe_owner_changed')
+            core.require(core.sha(self.binary) == self.cfg['binary_sha256'], 'outage_probe_binary_changed')
+            guard = getattr(self.product, 'guard', None)
+            core.require(guard is not None, 'outage_probe_current_native_kill_guard_missing')
+            guard.prove()
+            path = self.product.work / 'interaction.ndjson'
+            offset = path.stat().st_size
+            highwaters = core.checkpoint_highwaters(self.environment['state'])
+            with self.ops.lock(self.product.work / 'command.lock'):
+                with (self.product.work / 'operator-private.ndjson').open('a') as out:
+                    out.write(json.dumps(dict(utc_ns=time.time_ns(), intent=line,
+                                             expected_local_refusal=True)) + '\n')
+                    out.flush()
+                    os.fsync(out.fileno())
+                child = subprocess.Popen([str(self.binary), 'plaza2', 'cmd', '--command-socket',
+                                          str(self.product.work / 'cmd.sock'), line],
+                    cwd=self.product.work, env=self.environment['env'],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                owner = self.ops.process_identity(child.pid)
+                timed_out = False
+                try:
+                    stdout, stderr = child.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    try:
+                        self.ops.checked_signal(owner, signal.SIGTERM)
+                    except BaseException as error:
+                        raise core.Refused('outage_probe_uncertain_cli_shutdown_unproved_never_retried') from error
+                    try:
+                        stdout, stderr = child.communicate(timeout=2)
+                    except subprocess.TimeoutExpired as error:
+                        raise core.Refused('outage_probe_uncertain_cli_exit_unproved_never_retried') from error
+                with (self.product.work / 'operator-private.ndjson').open('a') as out:
+                    out.write(json.dumps(dict(utc_ns=time.time_ns(), line=line, exit=child.returncode,
+                        stdout=stdout.decode(errors='replace'), stderr=stderr.decode(errors='replace'),
+                        cli_timeout_seconds=10, cli_timed_out=timed_out)) + '\n')
+                if not timed_out:
+                    try:
+                        value = json.loads(stdout)
+                    except (ValueError, UnicodeError) as error:
+                        raise core.Refused('outage_probe_uncertain_invalid_cli_response_never_retried') from error
+                    core.require(isinstance(value, dict) and child.returncode != 0 and value.get('ok') is False and
+                                 value.get('error') == 'kill switch enabled',
+                                 'outage_probe_uncertain_not_definite_local_kill_switch_refusal')
+                    self.last_outage_probe_cli = dict(timed_out=False, timeout_seconds=10,
+                                                       outcome='DEFINITE_LOCAL_REFUSAL', attempts=1)
+                    return
+                until = min(self.cfg['cleanup_deadline_utc'], time.time() + 5)
+                while True:
+                    core.require(self.ops.process_identity(self.product.child.pid) == self.product_identity,
+                                 'outage_probe_uncertain_owner_changed_never_retried')
+                    try:
+                        guard.prove()
+                    except BaseException as error:
+                        raise core.Refused('outage_probe_uncertain_native_guard_unproved_never_retried') from error
+                    rows = list(core.complete_events(path, offset))
+                    completed = any(event['event'] == 'local_refusal' and
+                                    event['data'].get('line') == line for event in rows)
+                    if completed:
+                        try:
+                            proof = core.verify_local_probe(rows, line, highwaters,
+                                                           core.checkpoint_highwaters(self.environment['state']))
+                        except BaseException as error:
+                            raise core.Refused('outage_probe_uncertain_native_refusal_proof_failed_never_retried') from error
+                        self.last_outage_probe_cli = dict(timed_out=True, timeout_seconds=10,
+                            outcome='NOT_SENT_NATIVE_REFUSAL_COMPLETED', attempts=1,
+                            native_completion=proof)
+                        return
+                    core.require(time.time() < until, 'outage_probe_uncertain_never_retried')
+                    self.touch()
+                    time.sleep(.02)
+
         def bounded_outage_probe(self, name, folder, observed_state):
             # Do not fetch status again after observing a brief native outage.
             core.require(name not in self.probe_attempts, 'outage_probe_must_not_be_retried')
@@ -70,6 +152,8 @@ def install(core):
             proof = core.verify_local_probe(rows, line, before, after)
             proof.update(actual_fault_observed=True, probe_attempts=1,
                          observed_outage_utc_ns=getattr(self, 'observed_outage_utc_ns', None))
+            if getattr(self, 'last_outage_probe_cli', None) is not None:
+                proof['cli'] = self.last_outage_probe_cli
             return proof
 
         def wait_ready(self, flat=False, timeout=300):

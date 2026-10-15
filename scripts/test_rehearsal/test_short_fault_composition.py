@@ -1,6 +1,7 @@
 """Real frozen-core/helper composition; only external effects use offline fakes."""
 from pathlib import Path
 import copy
+import contextlib
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -10,7 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import short_fault_core
 import short_fault_helpers
@@ -94,7 +95,7 @@ class Composition(unittest.TestCase):
         c = self.core.Controller(self.work, dict(source_git_sha='a'*40,
             entry_deadline_utc=1500., cleanup_deadline_utc=2000.))
         c.dry_run_no_order = dry
-        c.product = types.SimpleNamespace(work=self.work, child=types.SimpleNamespace(poll=lambda:None),
+        c.product = types.SimpleNamespace(work=self.work, child=types.SimpleNamespace(pid=888,poll=lambda:None),
                                           status=lambda:copy.deepcopy(state))
         c.product_identity = dict(pid=888, executable='/not-a-real-product')
         c.environment = dict(state=checkpoint)
@@ -168,6 +169,93 @@ class Composition(unittest.TestCase):
         with patch.object(short_fault_core.time, 'sleep', side_effect=sleep):
             self.assertTrue(c.bounded_outage_probe('case', folder, state)['local_refusal'])
         self.assertGreaterEqual(self.clock.now, 1002)
+
+    def raw_controller(self):
+        c,state=self.controller()
+        del c.raw_refusal_request
+        c.binary=self.work/'native-binary'
+        c.binary.write_bytes(b'protected offline executable')
+        c.cfg['binary_sha256']=self.core.sha(c.binary)
+        c.environment['env']={}
+        c.ops.lock=lambda path:contextlib.nullcontext()
+        c.ops.process_identity=lambda pid:c.product_identity if pid==888 else dict(pid=pid)
+        c.ops.checked_signal=lambda *args:True
+        c.product.guard=types.SimpleNamespace(prove=lambda:True)
+        return c,state
+
+    def test_actual_raw_probe_uses_ten_second_cli_deadline_and_one_attempt(self):
+        c,_=self.raw_controller()
+        child=types.SimpleNamespace(pid=999,returncode=1,
+            communicate=Mock(return_value=(b'{"ok":false,"error":"kill switch enabled"}',b'')))
+        with patch.object(short_fault_core.subprocess,'Popen',return_value=child) as spawned:
+            c.raw_refusal_request('place unique 101 buy 1 1 day')
+        self.assertEqual(spawned.call_count,1)
+        child.communicate.assert_called_once_with(timeout=10)
+        self.assertEqual(c.last_outage_probe_cli['timeout_seconds'],10)
+        self.assertFalse(c.last_outage_probe_cli['timed_out'])
+
+    def test_probe_cli_timeout_resolves_only_with_exact_completed_native_refusal(self):
+        c,_=self.raw_controller()
+        line='place unique 101 buy 1 1 day'
+        deadlines=[]
+        signals=[]
+        def communicate(timeout):
+            deadlines.append(timeout)
+            if timeout==10:
+                raise short_fault_core.subprocess.TimeoutExpired('offline cli',timeout)
+            self.event('operator_input',line=line,channel='command_socket')
+            self.event('local_refusal',line=line,channel='command_socket',error='kill switch enabled')
+            return b'',b''
+        child=types.SimpleNamespace(pid=999,returncode=-15,communicate=communicate)
+        c.ops.checked_signal=lambda owner,sig:signals.append((owner,sig))
+        with patch.object(short_fault_core.subprocess,'Popen',return_value=child) as spawned:
+            c.raw_refusal_request(line)
+        self.assertEqual(deadlines,[10,2])
+        self.assertEqual(spawned.call_count,1)
+        self.assertEqual(signals,[(dict(pid=999),self.r.signal.SIGTERM)])
+        self.assertEqual(c.last_outage_probe_cli['outcome'],'NOT_SENT_NATIVE_REFUSAL_COMPLETED')
+        self.assertTrue(c.last_outage_probe_cli['native_completion']['identifier_highwaters_unchanged'])
+
+    def test_probe_timeout_absence_of_posts_and_allocations_is_still_uncertain(self):
+        c,_=self.raw_controller()
+        def communicate(timeout):
+            if timeout==10:
+                raise short_fault_core.subprocess.TimeoutExpired('offline cli',timeout)
+            return b'',b''
+        child=types.SimpleNamespace(pid=999,returncode=-15,communicate=communicate)
+        with patch.object(short_fault_core.subprocess,'Popen',return_value=child) as spawned, \
+             self.assertRaisesRegex(self.core.Refused,'outage_probe_uncertain_never_retried'):
+            c.raw_refusal_request('place unique 101 buy 1 1 day')
+        self.assertEqual(spawned.call_count,1)
+        self.assertGreaterEqual(self.clock.now,1005)
+
+    def test_probe_timeout_contradictory_native_proof_cannot_be_downgraded_to_not_sent(self):
+        for contradiction in ('missing_input','posted','id_advance','guard_lost'):
+            with self.subTest(contradiction=contradiction):
+                c,_=self.raw_controller()
+                (self.work/'interaction.ndjson').write_text('')
+                line='place unique 101 buy 1 1 day'
+                if contradiction=='guard_lost':
+                    calls=[]
+                    def guard():
+                        calls.append(1)
+                        if len(calls)>1:raise self.core.Refused('guard disabled')
+                    c.product.guard.prove=guard
+                def communicate(timeout):
+                    if timeout==10:
+                        raise short_fault_core.subprocess.TimeoutExpired('offline cli',timeout)
+                    if contradiction!='missing_input':
+                        self.event('operator_input',line=line,channel='command_socket')
+                    self.event('local_refusal',line=line,channel='command_socket',error='kill switch enabled')
+                    if contradiction=='posted':self.event('command_result',user_id=44)
+                    return b'',b''
+                child=types.SimpleNamespace(pid=999,returncode=-15,communicate=communicate)
+                values=[(100,200),(101,200)] if contradiction=='id_advance' else [(100,200),(100,200)]
+                with patch.object(short_fault_core.subprocess,'Popen',return_value=child) as spawned, \
+                     patch.object(self.core,'checkpoint_highwaters',side_effect=values), \
+                     self.assertRaisesRegex(self.core.Refused,'outage_probe_uncertain_'):
+                    c.raw_refusal_request(line)
+                self.assertEqual(spawned.call_count,1)
 
     def test_worker_exit_keeps_polling_for_later_native_outage(self):
         c, state = self.controller()
@@ -274,6 +362,70 @@ class Composition(unittest.TestCase):
         with patch.object(short_fault_helpers.os, 'kill', side_effect=AssertionError('unsafe signal')):
             with self.assertRaisesRegex(self.r.Refused, 'original_identity_changed'):
                 self.helpers.wait_owned_exit(probe, launch, 20, timeout=.1)
+
+    def test_second_term_does_not_depend_on_disappearing_listener_or_client(self):
+        launch=types.SimpleNamespace(pid=10,start='same')
+        active=[10]
+        signals=[]
+        probe=types.SimpleNamespace(executable=Path('/pinned/router'),
+            owned_routers=lambda:[(10,Path('/pinned/router'))] if active else [],
+            clients=lambda *a,**k:(_ for _ in ()).throw(self.r.Refused('router_listener_not_unique_owned')))
+        self.helpers.launch_context=lambda *args:'same'
+        def signal_owned(pid,sig):
+            signals.append((pid,sig))
+            active.clear()
+        with patch.object(short_fault_helpers.os,'kill',side_effect=signal_owned):
+            self.helpers.wait_owned_exit(probe,launch,20,timeout=.1)
+        self.assertEqual(signals,[(10,self.r.signal.SIGTERM)])
+
+    def test_descheduled_worker_refuses_signal_after_rollback_already_exited(self):
+        launch=types.SimpleNamespace(pid=10,start='same')
+        cfg=dict(environment='test',user_authorized=True,candidate_green=True,
+            router_restart_authorized=True,router_restart_owner_pid=20,authorized_until_utc=1500)
+        probe=types.SimpleNamespace(inspect=lambda *a,**k:(launch,dict(client_count=1)))
+        def arm(*args):
+            self.clock.sleep(self.r.ROLLBACK_DELAY+1)
+            self.r.save(self.work/'rollback.json',dict(status='original_router_untouched',restored=True))
+            return 42
+        with patch.object(short_fault_helpers.os,'waitpid',return_value=(42,0)), \
+             self.assertRaisesRegex(self.r.Refused,'rollback_not_alive_before_signal'):
+            self.r.restart(probe,cfg,20,self.work,arm=arm,
+                           send_signal=lambda *args:self.fail('router stopped without live rollback'))
+        self.assertFalse((self.work/'router-stop-intent.json').exists())
+        self.assertFalse((self.work/'fault.json').exists())
+
+    def test_rollback_completion_receipt_prevents_signal_even_before_child_exit(self):
+        launch=types.SimpleNamespace(pid=10,start='same')
+        cfg=dict(environment='test',user_authorized=True,candidate_green=True,
+            router_restart_authorized=True,router_restart_owner_pid=20,authorized_until_utc=1500)
+        probe=types.SimpleNamespace(inspect=lambda *a,**k:(launch,dict(client_count=1)))
+        def arm(*args):
+            self.r.save(self.work/'rollback.json',dict(status='original_router_untouched',restored=True))
+            return 42
+        with patch.object(short_fault_helpers.os,'waitpid',return_value=(0,0)), \
+             self.assertRaisesRegex(self.r.Refused,'rollback_not_alive_before_signal'):
+            self.r.restart(probe,cfg,20,self.work,arm=arm,
+                           send_signal=lambda *args:self.fail('router stopped after rollback completion'))
+        self.assertFalse((self.work/'router-stop-intent.json').exists())
+
+    def test_restart_holds_arbiter_until_stop_intent_and_signal_are_committed(self):
+        launch=types.SimpleNamespace(pid=10,start='same')
+        cfg=dict(environment='test',user_authorized=True,candidate_green=True,
+            router_restart_authorized=True,router_restart_owner_pid=20,authorized_until_utc=1500)
+        probe=types.SimpleNamespace(inspect=lambda *a,**k:(launch,dict(client_count=1)))
+        calls=[]
+        def send(pid,sig):
+            calls.append((pid,sig))
+            self.assertEqual(json.loads((self.work/'router-stop-intent.json').read_text()),dict(pid=10,start='same'))
+            import fcntl
+            with (self.work/'launch.lock').open('a') as concurrent:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(concurrent,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            self.r.save(self.work/'rollback.json',dict(restored=True))
+        with patch.object(short_fault_helpers.os,'waitpid',side_effect=[(0,0),(42,0)]):
+            result=self.r.restart(probe,cfg,20,self.work,arm=lambda *args:42,send_signal=send)
+        self.assertEqual(calls,[(10,self.r.signal.SIGTERM)])
+        self.assertEqual(result['status'],'router_restored')
 
     def test_restoration_arbiter_is_held_through_health_check(self):
         launch = types.SimpleNamespace(pid=10, start='same')

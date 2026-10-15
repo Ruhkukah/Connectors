@@ -56,6 +56,8 @@ def error_codes(error):
 
 
 def uncertain_or_mismatched(error):
+    if getattr(error, 'rate_only', False) is True and type(error).__name__ == 'RateCheckFailed':
+        return False
     if getattr(error, 'not_sent', False):
         return False
     return any(any(word in code for word in ('command_outcome_uncertain',
@@ -63,6 +65,41 @@ def uncertain_or_mismatched(error):
         'owned_order_or_position_changed', 'reconciliation_mismatch',
         'working_order_or_fill_baseline_changed', 'position_baseline_changed',
         'identifier_rollback')) for code in error_codes(error))
+
+
+def supplemental_qualification(result):
+    rows = result.get('scenarios', {})
+    return ('SUPPLEMENTAL_TEST_COMPLETE' if result.get('qualification_result') == 'SUPPLEMENTAL_TEST_COMPLETE'
+            and result.get('terminal') is True and result.get('execution_result') == 'PASS'
+            and isinstance(rows,dict) and rows and all(row.get('status') == 'PASS' for row in rows.values())
+            else 'SUPPLEMENTAL_TEST_INCOMPLETE')
+
+
+def cancel_scope_proof(rows, isin, complete_flat):
+    """Only post-request native empty evidence or reply/later commit can confirm."""
+    commands, acknowledged, requested = set(), None, False
+    for row in rows:
+        event, data = row['event'], row['event'].get('data',{})
+        if (event.get('event') == 'operator_input' and data.get('line') == 'cancel-all '+str(isin)
+                and data.get('channel') == 'command_socket'):
+            requested = True
+        if not requested:
+            continue
+        if (event.get('event') == 'cancel_all_empty' and data.get('isin_id') == isin
+                and data.get('snapshot_confirmed') is True and complete_flat):
+            return dict(confirmed=True,mode='native_complete_empty_scope',native_offset=row['begin'])
+        if (event.get('event') == 'command' and data.get('name') == 'DelUserOrders'
+                and data.get('fields',{}).get('isin_id') == isin):
+            commands.add(data.get('user_id'))
+        elif (event.get('event') == 'reply' and data.get('user_id') in commands
+                and data.get('msgid') == 186):
+            if type(data.get('code')) is not int or data['code'] != 0:
+                return dict(confirmed=False,conflicting_native_reply=True)
+            acknowledged = row['end']
+        elif (acknowledged is not None and row['begin'] >= acknowledged
+                and event.get('event') == 'transaction_commit' and data.get('stream') == 'FORTS_TRADE_REPL'):
+            return dict(confirmed=True,mode='matching_code0_reply_and_later_TRADE_commit',native_offset=row['end'])
+    return dict(confirmed=False)
 
 
 class Supervisor(base.Supervisor):
@@ -135,6 +172,30 @@ class Supervisor(base.Supervisor):
     def product_class(self):
         owner, ops = self, self.ops
         class ProtectedProduct(ops.Product):
+            def start(self):
+                # One native start only. Capture its exact ownership before any
+                # metadata write/attachment can fail; never create a third boot.
+                if ops.sha(self.binary) != self.expected_sha:
+                    raise ops.Stop('product_binary_changed')
+                stdout=(self.work/'product-stdout-private.log').open('ab')
+                stderr=(self.work/'product-stderr-private.log').open('ab')
+                try:
+                    self.child=ops.subprocess.Popen(self.args,cwd=self.work,env=self.env,
+                        stdin=subprocess.DEVNULL,stdout=stdout,stderr=stderr,start_new_session=True)
+                finally:
+                    stdout.close();stderr.close()
+                for _ in range(20):
+                    try:
+                        identity=ops.process_identity(self.child.pid)
+                        break
+                    except FileNotFoundError:
+                        time.sleep(.01)
+                else:
+                    raise ops.Stop('product_start_failed')
+                base.require(Path(identity['executable']).resolve() == Path(self.binary).resolve(),
+                             'product_binary_identity_mismatch')
+                owner.latest_native_product,owner.latest_native_identity=self,identity
+                ops.atomic(self.work/'product-owned.json',identity)
             def command(self, line, permit_risk=True):
                 if line == 'status':
                     return super().command(line, permit_risk=permit_risk)
@@ -238,6 +299,10 @@ class Supervisor(base.Supervisor):
                     raise
                 folder = self.root / 'before-native-independent-flat'
                 observation = json.loads((folder / 'snapshot-observation-public.json').read_text())
+                if (observation.get('fresh_private_snapshot_ready') is True
+                        and (type(observation.get('working_orders')) is int and observation['working_orders'] > 0
+                             or type(observation.get('nonzero_positions')) is int and observation['nonzero_positions'] > 0)):
+                    raise base.Refused('short_preflight_actual_nonflat_account')
                 good = (type(observation.get('exit')) is int and observation['exit'] in (0, 5)
                     and observation.get('stop_ok') is True
                     and type(observation.get('publisher_posts')) is int and observation['publisher_posts'] == 0
@@ -344,7 +409,17 @@ class Supervisor(base.Supervisor):
         self.fault_restore_required = False
 
     def safe_case_failure(self, product, error, name):
-        self._wait_fault_restoration()
+        was_closing = self.closing
+        if getattr(self,'fault_restore_required',False) or getattr(self,'pending_fault_controller',None) is not None:
+            proof = self.emergency_cancel()  # Dispatch both risk-reducing requests before waiting.
+            base.require(proof.get('cancel_confirmed') is True and proof.get('flat') is True,
+                         'short_fault_emergency_cancellation_or_flatness_unproved')
+        try:
+            self._wait_fault_restoration()
+        except Exception:
+            self.restore_wait_failed = True
+            raise
+        self.closing = was_closing
         base.require(not uncertain_or_mismatched(error), 'short_unsafe_case_failure_stops_session')
         self.verify_owner(product)
         result = self.flatten(product, min(time.time() + 180, self.cfg['flat_deadline_utc']), final=False)
@@ -390,17 +465,192 @@ class Supervisor(base.Supervisor):
                    fast_dispatch=self.fast_dispatch, safe_case_failure=self.safe_case_failure)
         result = self.driver.run(product, self.cfg, self.work, env, self.publish)
         self.publish(dict(result, state='complete', phase='terminal_closeout', no_guardian_failure=True,
-                          qualification_result='SUPPLEMENTAL_TEST_COMPLETE'))
+                          qualification_result=supplemental_qualification(result)))
         return result
 
-    def fail(self, error):
+    def restart(self, product, saved):
+        # Keep an on-host ownership witness before the planned crash. This is
+        # evidence only; the unchanged base performs the sole planned restart.
+        self.last_restart_working_count = len(saved)
         try:
+            self.rt.atomic(self.root/'planned-restart-working-private.json',
+                           dict(saved=saved,observed_utc_ns=time.time_ns()))
+        except OSError:
+            raise base.Refused('planned_restart_order_witness_not_persisted')
+        return super().restart(product,saved)
+
+    def _emergency_owner(self):
+        product = getattr(self,'latest_native_product',None)
+        identity = getattr(self,'latest_native_identity',None)
+        if product is None:
+            product,identity = self.product,(self.meta or {}).get('identity')
+        base.require(product is not None and identity is not None and product.child.poll() is None
+                     and self.ops.process_identity(product.child.pid) == identity
+                     and Path(identity['executable']).resolve() == Path(product.binary).resolve()
+                     and self.rt.sha(product.binary) == base.BINARY
+                     and product.args.count('--command-socket') == 1
+                     and Path(product.args[product.args.index('--command-socket')+1]) == self.work/'cmd.sock',
+                     'emergency_exact_owned_product_or_socket_unproved')
+        return product,identity
+
+    def emergency_cancel(self):
+        """Acquire the same cleanup lock as the guardian; never race another owner."""
+        product,identity = self._emergency_owner()
+        self.publish(dict(emergency_product_pid=identity['pid'],
+                          emergency_product_start_ticks=identity['start_ticks']))
+        try:
+            self.rt.atomic(self.root/'emergency-product-owned-private.json',identity)
+        except OSError:
+            self.publish(dict(emergency_identity_receipt_write_failed=True))
+        try:
+            lock=self.ops.lock(self.work/'cleanup.lock',nonblocking=True)
+        except BlockingIOError:
+            result=dict(cancel_confirmed=False,flat='UNKNOWN',cleanup_lock_held=True,
+                        no_duplicate_cancel_sent=True,no_new_native_process=True)
+            self.publish(dict(state='BLOCKED',phase='another_cleanup_owner_active',terminal=False,
+                              emergency_cleanup=result,flat='UNKNOWN'))
+            return result
+        with lock:
+            return self._emergency_cancel_owned(product,identity)
+
+    def _emergency_cancel_owned(self,product,identity):
+        """Try both native scopes once, even when four upstreams are unproved."""
+        base.require(len(self.targets) == 2 and {t['symbol'] for t in self.targets}
+                     == {'ALRS-12.26','CNY-12.26'} and len({t['isin_id'] for t in self.targets}) == 2,
+                     'emergency_cancel_two_TEST_scopes_unproved')
+        self.closing = True
+        journal=self.work/'interaction.ndjson'
+        attempts=getattr(self,'emergency_cancel_attempts',{})
+        self.emergency_cancel_attempts=attempts
+        deadline=min(time.time()+180,self.cfg['hard_cleanup_deadline_utc']-1)
+        for target in self.targets:
+            isin=target['isin_id']
+            if isin in attempts:
+                continue  # Claimed requests, including uncertain ones, never retry.
+            base.require(time.time()<deadline,'emergency_cancel_hard_deadline')
+            self._emergency_owner()
+            row=dict(isin_id=isin,attempted=True,request_utc_ns=time.time_ns(),
+                     journal_begin=journal.stat().st_size,confirmed=False)
+            attempts[isin]=row  # Claim before actual CLI; never resend this scope.
+            line='cancel-all '+str(isin)
+            try:
+                with (self.work/'operator-private.ndjson').open('a') as output:
+                    output.write(json.dumps(dict(utc_ns=time.time_ns(),intent=line,
+                        emergency_risk_reducing=True,owned_pid=identity['pid']))+'\n')
+                    output.flush();os.fsync(output.fileno())
+            except OSError:
+                row['intent_receipt_write_failed']=True
+            try:
+                result=subprocess.run([product.binary,'plaza2','cmd','--command-socket',
+                    str(self.work/'cmd.sock'),line],cwd=self.work,env=product.env,
+                    capture_output=True,timeout=max(.1,min(10,deadline-time.time())))
+                data=json.loads(result.stdout)
+                row['cli_accepted']=(result.returncode==0 and isinstance(data,dict) and data.get('ok') is True)
+                if not row['cli_accepted']:
+                    row['command_outcome']='REFUSED_OR_UNCERTAIN_NEVER_RETRIED'
+            except Exception as error:
+                row['command_outcome']='UNCERTAIN_NEVER_RETRIED'
+                row['error_class']=type(error).__name__
+        complete_flat=False
+        while time.time()<deadline:
+            self.publish(dict(state='BLOCKED',phase='emergency_cancel_confirmation',terminal=False,
+                              emergency_cancel=list(attempts.values()),flat='UNKNOWN'))
+            self._emergency_owner()
+            try:
+                response=subprocess.run([product.binary,'plaza2','cmd','--command-socket',
+                    str(self.work/'cmd.sock'),'status'],cwd=self.work,env=product.env,
+                    capture_output=True,timeout=max(.1,min(5,deadline-time.time())))
+                state=json.loads(response.stdout)
+                self.rt.configuration_gate(state,self.targets,self.cfg)
+                complete_flat=(response.returncode==0 and self.ops.ready(state,self.targets,entry=False)
+                               and self.ops.flat(state))
+                for isin,row in attempts.items():
+                    rows=[]
+                    with journal.open('rb') as source:
+                        source.seek(row['journal_begin'])
+                        while True:
+                            begin=source.tell();line=source.readline()
+                            if not line or not line.endswith(b'\n'):break
+                            rows.append(dict(begin=begin,end=source.tell(),event=json.loads(line)))
+                    row.update(cancel_scope_proof(rows,isin,complete_flat))
+                if complete_flat and all(row.get('confirmed') is True for row in attempts.values()):
+                    break
+            except Exception:
+                pass  # Read-only confirmation may catch up; commands never retry.
+            time.sleep(min(.5,max(0,deadline-time.time())))
+        proof=dict(cancel_confirmed=all(row.get('confirmed') is True for row in attempts.values()),
+                   flat=complete_flat,attempts=list(attempts.values()),
+                   no_new_native_process=True,router_restoration_not_required_for_cancel_attempt=True)
+        self.publish(dict(state='BLOCKED',phase='emergency_cancel_result',terminal=False,
+                          emergency_cleanup=proof,flat=True if complete_flat else 'UNKNOWN'))
+        return proof
+
+    def _no_product_alarm(self,error):
+        self.publish(dict(state='BLOCKED',phase='orders_working_no_product',terminal=False,
+            orders_working_no_product=True,last_known_working_order_count=getattr(self,'last_restart_working_count',None),
+            initiating_failure=getattr(error,'code',type(error).__name__),
+            flat='UNKNOWN',cancel_confirmed=False,replacement_attachment_unproved=True,
+            recovery_required=True,no_third_native_boot_authorized=True,qualification_result='SUPPLEMENTAL_TEST_INCOMPLETE'))
+
+    def _stop_unattached_after_flat(self,proof):
+        product,identity=self._emergency_owner()
+        if proof.get('cancel_confirmed') is not True or proof.get('flat') is not True:
+            self.publish(dict(state='BLOCKED',phase='unattached_product_requires_operator',terminal=False,
+                flat='UNKNOWN',cancel_confirmed=False,emergency_product_pid=identity['pid'],
+                emergency_product_start_ticks=identity['start_ticks'],no_third_native_boot_authorized=True))
+            return
+        meta=self.rt.metadata(self.root,self.cfg,self.environment,product)
+        base.require(meta['identity']==identity,'emergency_metadata_identity_changed')
+        # Retrying a metadata write starts nothing and restores guardian visibility.
+        self.product,self.meta=product,meta
+        try:
+            self.rt.atomic(self.root/'active-product-private.json',meta)
+        except OSError:
+            self.publish(dict(emergency_metadata_write_failed=True))
+        base.require(not self.shutdown_sent,'emergency_single_SIGTERM_only')
+        self.shutdown_sent=True  # Uncertain signals are never repeated.
+        self.rt.owned_sigterm_once(meta)
+        product.child.wait(timeout=max(.1,min(20,self.cfg['hard_cleanup_deadline_utc']-time.time())))
+        result=dict(product_exit=product.child.returncode,cancel_confirmed=True,flat=True,
+                    no_third_native_boot_authorized=True)
+        try:
+            result['after']=self.rt.inventory(meta)
+        except Exception as error:
+            result['inventory_error']=type(error).__name__
+        self.publish(dict(state='BLOCKED',phase='unattached_replacement_closeout',terminal=False,
+                          emergency_replacement_closeout=result))
+
+    def fail(self, error):
+        self.publish(dict(state='BLOCKED',initiating_failure=getattr(error,'code',type(error).__name__),
+                          qualification_result='SUPPLEMENTAL_TEST_INCOMPLETE'))
+        emergency=None
+        try:
+            emergency=self.emergency_cancel()  # Both requests precede any restoration wait.
+        except Exception as cleanup_error:
+            self.publish(dict(emergency_cleanup_error=getattr(cleanup_error,'code',type(cleanup_error).__name__)))
+        product=getattr(self,'latest_native_product',self.product)
+        unattached=(getattr(self,'recovery_needed',False) and (product is None or product.child.poll() is not None
+                    or self.meta is None or self.meta.get('identity') != getattr(self,'latest_native_identity',self.meta.get('identity'))))
+        if unattached:
+            if emergency is None:
+                self._no_product_alarm(error)
+            else:
+                try:self._stop_unattached_after_flat(emergency)
+                except Exception as cleanup_error:
+                    self.publish(dict(state='BLOCKED',phase='unattached_product_requires_operator',terminal=False,
+                        flat='UNKNOWN',cleanup_error=getattr(cleanup_error,'code',type(cleanup_error).__name__),
+                        no_third_native_boot_authorized=True))
+            return
+        try:
+            if getattr(self,'restore_wait_failed',False):
+                raise base.Refused('prior_restore_wait_failed')
             self._wait_fault_restoration()
-        except Exception:
-            self.publish(dict(state='BLOCKED', phase='fault_restoration_pending', flat='UNKNOWN',
-                              terminal=False, initiating_failure=type(error).__name__,
-                              cleanup_error='independent_restore_still_pending'))
-            raise
+        except Exception as restore_error:
+            self.publish(dict(restoration_error=getattr(restore_error,'code',type(restore_error).__name__),
+                              flat='UNKNOWN',terminal=False))
+            return
+        if emergency is not None and (emergency.get('cancel_confirmed') is not True or emergency.get('flat') is not True):
+            return  # Never repeat an uncertain/unconfirmed emergency cancellation.
         return super().fail(error)
 
 
