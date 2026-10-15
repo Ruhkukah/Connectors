@@ -1,6 +1,6 @@
 # PR69 rebase and review, 15 October 2026
 
-PR68 base: `3c52504744fd1ac2c47b0dca3838f1e82b0bb538`. Rebased code: `3871650d6c6ef824a03d68407fe75e5766c1ed09`. Previous PR69: `0434c1b08a912c620c0dcdde793a9bc3b5719d3e`. PR68 remains unchanged. This review concerns the Full Order Log branch only.
+PR68 base: `986f1dce89a9471bd0a6a24df7b9500e0bf949af`. Rebased production snapshot: `5f18a5c104df69b0e89a4755f86c6fb7ddd13b4f`. Previous PR69: `0434c1b08a912c620c0dcdde793a9bc3b5719d3e`. PR68 remains unchanged. This review concerns the Full Order Log branch only.
 
 ## Review boundary
 
@@ -84,7 +84,19 @@ Production footprint against the current PR68 base: 1,500 gross added C++ lines 
 
 ## Validation and benchmark
 
-Fresh local Release, ASan/UBSan and unchanged PR68 baseline validation are recorded in the PR summary after completion. The baseline validation tree uses rebased production with every tracked PR68 test and rehearsal script copied byte-for-byte from the exact base. No PR68 checkout, certified binary, TEST deployment or service is changed.
+Fresh local validation completed:
+
+| Check | Result |
+|---|---|
+| Rebased Release, including real owner-loop benchmark | 46/46 passed |
+| Rebased AppleClang ASan/UBSan | 45/45 passed |
+| Exact PR68 C++ tests against rebased production | 39/39 passed; sources and original timeouts unchanged |
+| Current PR68 rehearsal safeguards | 235/235 passed |
+| Pinned clang-format 18.1.8 | 38 changed C++ files passed |
+
+The compiled Release/sanitizer suites and benchmark identify production commit `3871650d`, rebased onto the then-current PR68 `3c525047`. PR68 advanced during validation to `986f1dce` with only a runbook and nine rehearsal Python files. Rebased production, CMake, CI and C++ tests are byte-identical after this second rebase; the new safeguards were run separately. The baseline shadow tree uses the same production and exact PR68 tests/scripts, verified against Git blobs; it is explicitly a mixed validation source, never a deployment candidate. No PR68 checkout, certified binary, TEST deployment or service was changed by this work.
+
+Measured on local macOS/AppleClang with fake CGate: **4,521,560 input rows/s**, **452,156 admitted rows/s**; callback-to-book p50/p99/max **0.042/0.125/43.041 microseconds** across one million input rows, including filtered rows. Commit-to-DTC-queue p99 **3.375 microseconds**; full 64-level snapshot **4.167 microseconds**; zero row heap allocations. Book storage **31,462,220 bytes**, peak macOS RSS **91,455,488 bytes**. No TEST-host or vendor-native throughput claim follows from this local run.
 
 The benchmark uses the actual ConnectorHost/FullOrderLogDtcLoop and a real loopback DTC drain: 5,000 REFDATA rows, 100,000 retained orders, one million input rows, 90% filtered ISINs, admitted adds/cancels/trades in a 40/40/20 mix with level churn. Report input and admitted rows/s separately, callback-to-book p99, commit-to-DTC-queue p99, memory and row allocations. These are offline fake-CGate measurements.
 
