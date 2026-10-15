@@ -1,7 +1,8 @@
 # MOEX certification day — UNARMED; date to be agreed
 
 **Scope:** one formal, MOEX-agreed Monday–Thursday TEST day. This document
-authorizes nothing. The separate Friday 09:00–11:00 short test is not this day.
+authorizes nothing. The separate Friday short test has 09:00 preflight,
+10:00 earliest entry, 14:30 entry cutoff and 15:00 cleanup; it is not this day.
 Submit the questionnaire, candidate/source hashes, declared URLs/threading and
 Day/IOC/AddOrder/MoveOrder/DelOrder/DelUserOrders scope to the specialist first.
 Quantity-10 partial-fill tooling remains inactive unless separately requested.
@@ -11,7 +12,9 @@ clock offset, storage, software key, exclusive account ownership, current flatne
 no working/queued/unresolved orders, reservation coverage and sufficient unused
 durable IDs. Preserve the allocation/checkpoint. Resolve both ISINs from fresh
 committed REFDATA. Confirm native schedule, readiness and two-sided books;
-calendar time alone grants no entry. Load credentials privately; record sanitized
+calendar time alone grants no entry. Without profiling, do not use
+`book.stream_last_callback_utc_ns` for freshness: it is zero in this candidate.
+Use native product readiness and current prices. Load credentials privately; record sanitized
 effective limits. Variables below are protected deployment values, never secrets
 copied into reports.
 
