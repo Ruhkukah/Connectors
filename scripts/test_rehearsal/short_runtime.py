@@ -8,6 +8,9 @@ import json
 import re
 import time
 import urllib.request
+import urllib.error
+
+import short_scope as scope
 
 import frozen_runtime as base
 
@@ -36,7 +39,7 @@ def successful_run(run, pin, sha):
             and run.get('status') == 'completed' and run.get('conclusion') == 'success')
 
 
-def verify_ci(root, cfg):
+def _verify_ci_once(root, cfg):
     require = base.require
     review = cfg.get('review_git_sha', '')
     review_ci = cfg.get('review_ci_run_id')
@@ -76,6 +79,47 @@ def verify_ci(root, cfg):
         scripts_and_documentation_only=True,
         jobs={name: row['conclusion'] for name, row in latest.items()},
         checked_utc_ns=time.time_ns()))
+
+
+def preflight_deadline(cfg, now=None):
+    now = time.time() if now is None else now
+    return min(now + 1800, cfg['product_start_latest_utc'])
+
+
+def transient_network(error):
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code == 429 or 500 <= error.code <= 599
+    return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError))
+
+
+def verify_ci(root, cfg, tick=None):
+    # Only a transport failure may retry. A real pin, CI, schema or review
+    # refusal remains fatal. No native product is created by this loop.
+    deadline = preflight_deadline(cfg)
+    while True:
+        try:
+            return _verify_ci_once(root, cfg)
+        except Exception as error:
+            if not transient_network(error) or time.time() + 2 >= deadline:
+                raise
+            if tick is not None:
+                tick()
+            time.sleep(min(2, max(0, deadline - time.time())))
+
+
+def load_cfg(root):
+    # Scope validation precedes selecting the one owner-authorized date; the
+    # immutable base then verifies every manifest file and all native pins.
+    candidate = json.loads((Path(root) / 'configuration-private.json').read_text())
+    scope.window(candidate)
+    base.AUTHORIZED_DATE = candidate['authorized_date']
+    return base.load_cfg(root)
+
+
+def day_check(cfg, entry=False):
+    scope.window(cfg)
+    base.AUTHORIZED_DATE = cfg['authorized_date']
+    return base.day_check(cfg, entry=entry)
 
 
 base.verify_ci = verify_ci

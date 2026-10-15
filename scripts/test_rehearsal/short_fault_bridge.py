@@ -12,6 +12,8 @@ import re
 import stat
 import time
 
+import short_scope as scope
+
 DATE = '2026-10-16'
 MSK = dt.timezone(dt.timedelta(hours=3))
 
@@ -20,17 +22,48 @@ def epoch(hour, minute=0):
     return dt.datetime(2026, 10, 16, hour, minute, tzinfo=MSK).timestamp()
 
 
-def authorized(core, supervisor, cfg, now=None):
+def authorized(core, supervisor, cfg, now=None, preflight=False, dry_run_no_order=False):
     now = time.time() if now is None else now
-    core.require(cfg.get('authorized_date') == DATE and
-                 dt.datetime.fromtimestamp(now, MSK).date().isoformat() == DATE,
+    date = cfg.get('authorized_date')
+    core.require(isinstance(date, str) and (dry_run_no_order or preflight and now < cfg['scheduled_start_utc'] or
+                 dt.datetime.fromtimestamp(now, MSK).date().isoformat() == date),
                  'fault_bridge_authorized_date_changed')
     core.require(cfg.get('environment') == 'test' and cfg.get('owner_authorized') is True and
                  cfg.get('timer_paused') is True and cfg.get('one_passive_order_authorized') is True and
-                 cfg.get('skip_firewall') is True and cfg.get('max_postday_seconds') == 7200,
+                 cfg.get('skip_firewall') is True and cfg.get('max_postday_seconds') == 21600,
                  'fault_bridge_owner_scope_missing')
-    core.require(epoch(10) <= now < cfg['entry_deadline_utc'] == epoch(10, 45) and
-                 cfg['cleanup_deadline_utc'] == epoch(11), 'fault_bridge_short_deadline_invalid')
+    try:
+        scope.window(cfg)
+    except ValueError as error:
+        raise core.Refused('fault_bridge_short_deadline_invalid') from error
+    if dry_run_no_order:
+        core.require(cfg.get('zero_order_rehearsal_authorized') is True and
+                     cfg.get('dry_run_authorized_date') == '2026-10-15' and
+                     dt.datetime.fromtimestamp(now, MSK).date().isoformat() == '2026-10-15' and
+                     now < cfg.get('dry_run_until_utc', 0) <= now + 1200 and
+                     cfg['dry_run_until_utc'] < cfg.get('dry_run_cleanup_until_utc', 0) <= now + 1800 and
+                     dt.datetime.fromtimestamp(cfg['dry_run_cleanup_until_utc'], MSK).date().isoformat() == '2026-10-15',
+                     'fault_bridge_zero_order_rehearsal_scope_missing')
+        live, isolated = Path(cfg['dry_run_live_state']), Path(cfg['dry_run_state'])
+        core.require(isolated.resolve(strict=True) == Path(supervisor.environment['state']).resolve(strict=True) and
+                     isolated.resolve(strict=True) != live.resolve(strict=True) and
+                     not os.path.samefile(live, isolated) and
+                     core.sha(live) == cfg['dry_run_live_checkpoint_sha256'],
+                     'fault_bridge_zero_order_isolated_state_unproved')
+        assignment = Path(cfg['dry_run_assignment'])
+        info = assignment.stat()
+        core.require(not assignment.is_symlink() and info.st_uid == os.getuid() and info.st_mode & 0o077 == 0 and
+                     core.sha(assignment) == cfg['dry_run_assignment_sha256'],
+                     'fault_bridge_zero_order_assignment_unproved')
+        allocation = json.loads(assignment.read_text())
+        begin, end = allocation.get('ext_id_begin'), allocation.get('ext_id_end')
+        live_begin, live_end = cfg['dry_run_live_ext_id_begin'], cfg['dry_run_live_ext_id_end']
+        core.require(all(type(value) is int and value > 0 for value in (begin, end, live_begin, live_end)) and
+                     begin <= end and live_begin <= live_end and (end < live_begin or begin > live_end),
+                     'fault_bridge_zero_order_identifier_overlap_or_unknown')
+    else:
+        core.require(preflight or cfg['earliest_entry_utc'] <= now < cfg['entry_deadline_utc'],
+                     'fault_bridge_short_deadline_invalid')
     core.require(cfg['source_git_sha'] == supervisor.rt.HEAD and
                  cfg['binary_sha256'] == supervisor.rt.BINARY and
                  cfg['router_helper_sha256'] == core.ROUTER_HELPER_SHA and
@@ -129,7 +162,7 @@ class NativeKillGuard:
                     self.enabled_at = begin if self.request is not None and data.get('enabled') is True else None
 
     def prove(self):
-        until = time.monotonic() + 2
+        until = time.monotonic() + 5
         while True:
             self.update()
             if self.request is not None and self.enabled_at is not None:
@@ -165,14 +198,17 @@ class GuardedStatusProxy:
                     risk=dict(value['configuration']['risk'], kill_switch=True)))
 
 
-def build_faultcase(supervisor, core, router, upstream):
+def build_faultcase(supervisor, core, router, upstream, dry_run_no_order=False):
     """Return the ShortDriver callback; construction performs no native action."""
     cfg = dict(supervisor.cfg)
     cfg['entry_deadline_utc'] = cfg.get('entry_deadline_utc', cfg.get('hard_entry_deadline_utc'))
     cfg['cleanup_deadline_utc'] = cfg.get('cleanup_deadline_utc', cfg.get('hard_cleanup_deadline_utc'))
+    if dry_run_no_order:
+        cfg['entry_deadline_utc'] = cfg['dry_run_until_utc']
+        cfg['cleanup_deadline_utc'] = cfg['dry_run_cleanup_until_utc']
 
     def faultcase(product, name, kind, seq, client, target):
-        authorized(core, supervisor, cfg)
+        authorized(core, supervisor, cfg, dry_run_no_order=dry_run_no_order)
         core.require(kind in ('router', 'upstream') and re.fullmatch(r'[A-Za-z0-9_-]{1,100}', name),
                      'fault_bridge_case_scope_invalid')
         core.require(product is supervisor.product and supervisor.meta is not None and
@@ -185,6 +221,7 @@ def build_faultcase(supervisor, core, router, upstream):
                      core.sha(upstream.__file__) == cfg['upstream_helper_sha256'],
                      'fault_bridge_helper_bytes_changed')
         c = core.Controller(supervisor.work, cfg)
+        c.dry_run_no_order = dry_run_no_order
         kill_guard = NativeKillGuard(product.work / 'interaction.ndjson', core.require, supervisor.tick)
         c.product = GuardedStatusProxy(product, kill_guard)
         c.product_identity = dict(supervisor.meta['identity'])
@@ -199,10 +236,10 @@ def build_faultcase(supervisor, core, router, upstream):
             launch, _ = raw.inspect(dict(environment='test', binary=str(c.binary),
                         binary_sha256=cfg['binary_sha256']), owner_pid=product.child.pid)
             white = upstream.pristine_whitelist(c.probe, launch, core.T1_LINKS_SHA)
-            peers = {row.peer for row in strict_guard.strict_upstreams(upstream, c.probe, launch.pid, white)}
-            return launch, peers
+            rows = strict_guard.strict_upstreams(upstream, c.probe, launch.pid, white)
+            core.require(len(rows) == 4, 'fault_bridge_four_pristine_upstreams_unproved')
+            return launch, {row.peer for row in rows}
         c.original_router, c.initial_peers = c.probe.scan(initial_scan)
-        core.require(len(c.initial_peers) == 4, 'fault_bridge_four_pristine_peers_unproved')
         c.passive_target, c.passive_cid = target, client
         c.touch = supervisor.tick  # No inventory check while the expected outage is active.
 
@@ -213,22 +250,32 @@ def build_faultcase(supervisor, core, router, upstream):
                         binary_sha256=cfg['binary_sha256']), owner_pid=product.child.pid if exact else None)
                 core.same_launch(c.original_router, launch)
                 whitelist = upstream.pristine_whitelist(c.probe, launch, core.T1_LINKS_SHA)
-                peers = {row.peer for row in strict_guard.strict_upstreams(upstream, c.probe, launch.pid, whitelist)}
-                core.require(peers == c.initial_peers and health['client_count'] == 1,
-                             'fault_bridge_restored_peers_or_sole_client_unproved')
+                rows = strict_guard.strict_upstreams(upstream, c.probe, launch.pid, whitelist)
+                core.require(len(rows) == 4 and health['client_count'] == 1,
+                             'fault_bridge_restored_whitelist_or_sole_client_unproved')
                 return launch
             return c.probe.scan(full_scan)
         c.inspect = inspect
 
         def entry_gate():
-            authorized(core, supervisor, cfg)
+            authorized(core, supervisor, cfg, dry_run_no_order=dry_run_no_order)
             inspect(); core.require(c.budget() >= 7000, 'fault_bridge_identifier_budget_insufficient')
             core.require(cfg['cleanup_deadline_utc'] - time.time() >= 150,
                          'fault_bridge_cleanup_budget_insufficient')
-            state = c.full_state(entry=True)  # Exactly one fresh product status grants readiness.
+            if dry_run_no_order:
+                # Native reconstruction and empty inventory still have to pass;
+                # venue quote readiness cannot grant or block a no-post fault.
+                state = c.full_state(entry=False, flat=True)
+            elif hasattr(supervisor, 'risk_snapshot'):
+                state = supervisor.risk_snapshot(product, selected=[target])
+                state = dict(state, configuration=dict(state['configuration'], risk=dict(
+                             state['configuration']['risk'], kill_switch=True)))
+                kill_guard.prove()
+            else:
+                state = c.full_state(entry=True)
             supervisor.rt.configuration_gate(state, c.targets, cfg)
             c.one_working(state)
-            for current in c.targets:
+            for current in ([] if dry_run_no_order else [target]):
                 bid = c.prices.current_reference(state, current)
                 core.require(current['quote_cap_scaled'] <= 2 * bid,
                              'fault_bridge_frozen_cap_exceeds_fresh_bid')
@@ -253,14 +300,20 @@ def build_faultcase(supervisor, core, router, upstream):
         old_authorized, old_source = core.authorized, core.PINNED_SOURCE
         try:
             fcntl.flock(c.fault_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            core.authorized = lambda value, now=None: authorized(core, supervisor, value, now)
+            core.authorized = lambda value, now=None: authorized(core, supervisor, value, now,
+                                                               dry_run_no_order=dry_run_no_order)
             core.PINNED_SOURCE = cfg['source_git_sha']
+            supervisor.fault_restore_required = True
             c.working_fault(name, kind)  # Includes one bounded kill-guarded CLI refusal and native recovery proof.
             core.require(c.fault_worker is None and len(c.public['cases']) == 1,
                          'fault_bridge_worker_or_case_incomplete')
             result = dict(c.public['cases'][0])
             result['kill_guard_provenance'] = kill_guard.prove()
             result['local_refusal']['causal_scope'] = 'kill_switch_guard_during_observed_outage_not_transport_causality'
+            # An exited helper is insufficient: prove restored ownership,
+            # exactly one product client and four pristine upstreams now.
+            inspect()
+            supervisor.fault_restore_required = False
             supervisor.publish({'last_fault_case': result})
             return result
         finally:
