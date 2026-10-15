@@ -3,6 +3,7 @@ import contextlib
 import copy
 import datetime as dt
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -12,6 +13,7 @@ from unittest.mock import patch
 
 import sequence as actual_sequence
 import short_scope as scope
+from native_evidence import JournalCursor
 
 base = types.ModuleType('day_driver')
 base.MSK = scope.MSK
@@ -26,10 +28,11 @@ base.price_caps = types.SimpleNamespace(current_reference=lambda state, target, 
 
 class Timeline:
     def __init__(self):
-        self.cursor = types.SimpleNamespace(offset=0)
+        self.cursor = types.SimpleNamespace(offset=0, events=lambda: iter(()))
         self.session_states, self.instrument_states = {}, {}
         self.instrument_session = None
         self.restart_windows, self.rows = [], []
+        self.records = self.rows
         self.kind_bytes, self.kind_counts = {}, {}
         self.path = Path(__file__)
     def update(self):
@@ -114,12 +117,14 @@ class Product:
         self.targets = [dict(isin_id=1, symbol='ALRS-12.26'), dict(isin_id=2, symbol='CNY-12.26')]
         self.orders, self.pending, self.posts, self.commands = {}, [], [], []
         self.user, self.max_pending, self.max_working = 0, 0, 0
-        self.slow = self.fail_code = self.uncertain = False
+        self.slow = self.fail_code = self.uncertain = self.omit_throttle = False
     def poll(self):
         while self.pending:
             now = self.clock.time()
             self.posts = [stamp for stamp in self.posts if now-stamp < 1]
             if len(self.posts) >= 5:
+                if not self.omit_throttle:
+                    self.timeline.append('throttle', dict(active=True, queued=len(self.pending)))
                 break
             kind, client = self.pending.pop(0)
             order = self.orders[client]
@@ -309,6 +314,8 @@ class ShortTests(unittest.TestCase):
     def test_burst_binds_actual_queue_without_relaxing_position_or_notional(self):
         result = self.d.burst()
         self.assertTrue(result['limiter_binding_observed'])
+        self.assertTrue(result['native_rate_throttle_observed'])
+        self.assertTrue(result['native_rate_throttle_offsets'])
         self.assertEqual(result['native_posts'], 30)
         self.assertEqual(result['matching_code0_replies'], 30)
         self.assertEqual(result['max_posts_per_rolling_second'], 5)
@@ -320,6 +327,56 @@ class ShortTests(unittest.TestCase):
         self.assertEqual(len([line for line in self.product.commands if line.startswith('place ')]), 15)
         self.assertEqual(len([line for line in self.product.commands if line.startswith('cancel ')]), 15)
 
+    def test_queue_and_five_post_density_cannot_substitute_native_throttle(self):
+        self.product.omit_throttle = True
+        with self.assertRaisesRegex(base.DayStop, 'native_rate_throttle_not_observed'):
+            self.d.burst()
+        self.assertGreater(self.product.max_pending, 0)
+        self.assertEqual(len([row for row in self.timeline.rows if row['event']['event'] == 'command']), 30)
+
+    def test_readiness_paused_queued_add_is_not_native_rate_binding(self):
+        paused = state(queued=1)
+        paused['instruments'][0]['order_entry_ready'] = False
+        self.product.status = lambda: paused
+        queued = []
+        self.d.burst_snapshot(queued)
+        self.assertEqual(queued[0]['queued'], 1)
+        with self.assertRaisesRegex(base.DayStop, 'native_rate_throttle_not_observed'):
+            h.burst_throttle_proof(self.timeline.rows, 0, self.timeline.cursor.offset)
+
+    def test_native_throttle_requires_exact_types_positive_queue_and_current_offsets(self):
+        def record(data, begin=20, end=21):
+            return dict(begin=begin, end=end, event=dict(event='throttle', data=data))
+        for data in (dict(active=False, queued=1), dict(active='true', queued=1),
+                     dict(active=1, queued=1), dict(active=True, queued=True),
+                     dict(active=True, queued='1'), dict(active=True, queued=0),
+                     dict(active=True, queued=-1)):
+            with self.assertRaisesRegex(base.DayStop, 'native_rate_throttle_not_observed'):
+                h.burst_throttle_proof([record(data)], 10, 30)
+        for begin, end in ((0, 1), (9, 11), (29, 31), (31, 32)):
+            with self.assertRaisesRegex(base.DayStop, 'native_rate_throttle_not_observed'):
+                h.burst_throttle_proof([record(dict(active=True, queued=2), begin, end)], 10, 30)
+        proof = h.burst_throttle_proof([record(dict(active=True, queued=2))], 10, 30)
+        self.assertEqual(proof['native_rate_throttle_offsets'], [dict(begin=20, end=21, queued=2)])
+
+    def test_short_timeline_whitelist_preserves_offsets_without_mutating_frozen_class(self):
+        path = Path(self.directory.name, 'throttle.ndjson')
+        rows = [dict(utc='2026-10-16T07:00:00Z', event='operator_input', data={}),
+                dict(utc='2026-10-16T07:00:01Z', event='throttle', data=dict(active=True, queued=2)),
+                dict(utc='2026-10-16T07:00:02Z', event='throttle', data=dict(active=False, queued=0))]
+        encoded = [json.dumps(row).encode()+b'\n' for row in rows]
+        path.write_bytes(b''.join(encoded))
+        timeline = types.SimpleNamespace(cursor=JournalCursor(path, 0), records=[])
+        original = JournalCursor.events
+        h.retain_throttle_records(timeline)
+        self.assertEqual(list(timeline.cursor.events()), rows)
+        self.assertIs(JournalCursor.events, original)
+        self.assertEqual([(row['begin'], row['end']) for row in timeline.records],
+                         [(len(encoded[0]), len(encoded[0])+len(encoded[1])),
+                          (len(encoded[0])+len(encoded[1]), sum(map(len, encoded)))])
+        self.assertEqual(list(timeline.cursor.events()), [])
+        self.assertEqual(len(timeline.records), 2)
+
     def test_queued_add_cannot_be_cancelled_before_native_post(self):
         # Keep the bucket full: immediate cancel would discard this queued Add.
         self.product.posts = [self.clock.now]*5
@@ -327,7 +384,7 @@ class ShortTests(unittest.TestCase):
         self.assertEqual(self.product.status()['queued'], 1)
         self.product.command('cancel never-posted')
         self.assertEqual(self.product.status()['queued'], 0)
-        self.assertEqual(self.timeline.rows, [])
+        self.assertFalse(any(row['event']['event'] == 'command' for row in self.timeline.rows))
         # The actual driver waits Working and consequently produces all30 posts.
         self.clock.sleep(1.1)
         self.assertEqual(self.d.burst()['native_posts'], 30)

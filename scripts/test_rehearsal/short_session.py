@@ -33,6 +33,35 @@ def inventory_signature(state):
     return tuple(sorted(owned)), tuple(sorted(positions))
 
 
+def retain_throttle_records(timeline):
+    """Retain one additional native event in this adapter's timeline only."""
+    cursor, events = timeline.cursor, timeline.cursor.events
+    def observed_events():
+        previous = cursor.offset
+        for event in events():
+            end = cursor.offset
+            if event.get("event") == "throttle":
+                timeline.records.append(dict(event=event, begin=previous, end=end,
+                    stamp=dt.datetime.fromisoformat(event["utc"].replace("Z", "+00:00")).timestamp()))
+            previous = end
+            yield event
+    cursor.events = observed_events
+
+
+def burst_throttle_proof(rows, begin, end):
+    """A queued Add can wait on readiness; only native rate refusal proves binding."""
+    records = [row for row in rows if row["begin"] >= begin and row["end"] <= end
+               and row["event"].get("event") == "throttle"
+               and row["event"].get("data", {}).get("active") is True
+               and type(row["event"].get("data", {}).get("queued")) is int
+               and row["event"]["data"]["queued"] > 0]
+    if not records:
+        raise base.DayStop("short_burst_native_rate_throttle_not_observed")
+    return dict(native_rate_throttle_observed=True,
+                native_rate_throttle_offsets=[dict(begin=row["begin"], end=row["end"],
+                    queued=row["event"]["data"]["queued"]) for row in records])
+
+
 def burst_reply_proof(rows):
     """Require each actual Add/Del post's unique code-0 reply and later commit."""
     commands = [r for r in rows if r["event"]["event"] == "command"]
@@ -83,6 +112,7 @@ class ShortDriver(base.DayDriver):
                              intervals=[dict(name="main", begin=self.window["earliest_entry_utc"],
                                              end=self.window["hard_entry_deadline_utc"])])
         self.gate_passed = True  # No opening/latency gate belongs to this short session.
+        retain_throttle_records(self.timeline)
         self.admission_complete = False
         self.pre_admission_window = [self.window["scheduled_start_utc"], float("inf")]
         self.timeline.restart_windows.append(self.pre_admission_window)
@@ -453,13 +483,14 @@ class ShortDriver(base.DayDriver):
             raise base.DayStop("short_burst_native_five_per_second_limit_exceeded")
         if maximum != 5 or not queued:
             raise base.DayStop("short_burst_native_limiter_binding_not_observed")
+        throttle = burst_throttle_proof(rows, begin, self.timeline.cursor.offset)
         state = self.status()
         if not base.ops.ready(state, self.targets, entry=False) or not base.ops.flat(state):
             raise base.DayStop("short_burst_final_complete_flatness_unproved")
         return dict(status="PASS", native_posts=30, max_posts_per_rolling_second=maximum,
                     duration_seconds=self.monotonic() - started, limiter_binding_observed=True,
                     queued_native_command_observations=queued, waves=waves,
-                    client_order_ids=clients, **proof)
+                    client_order_ids=clients, **proof, **throttle)
 
     def prepare_empty_closeout(self):
         self.closing = True
