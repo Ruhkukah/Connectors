@@ -533,17 +533,18 @@ class ShortTests(unittest.TestCase):
         self.assertEqual(self.d.restart_case()['recovered_working_orders'], 2)
         self.assertEqual(self.product.commands, ['kill off'])
 
-    def test_burst_uses_one_owner_lease_and_refreshes_inside_that_lease(self):
+    def test_burst_uses_fresh_flat_wave_leases_and_refreshes_inside_each(self):
         checks = []
         @contextlib.contextmanager
         def lease(*_):
+            self.assertTrue(base.ops.flat(self.product.status()))
             checks.append(1)
             self.clock.sleep(12)  # Slow preflight invalidates any prior book.
             yield
         self.d.env['fast_dispatch'] = lease
         result = self.d.burst()
         self.assertTrue(result['limiter_binding_observed'])
-        self.assertEqual(checks, [1])
+        self.assertEqual(checks, [1, 1, 1, 1])
 
     def test_terminal_passive_fill_is_not_hidden_by_zero_position_lag(self):
         self.d.burst_clients = {'fresh'}

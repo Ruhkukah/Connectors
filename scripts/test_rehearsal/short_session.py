@@ -443,80 +443,132 @@ class ShortDriver(base.DayDriver):
             self.last_complete_state = state
         return state
 
+    def burst_wave_plan(self, seq, state, remaining, candidates=None):
+        """Plan only a flat wave; unavailable books never increase another cap."""
+        capacities, prices, blocked = {}, {}, {}
+        candidates = self.targets if candidates is None else candidates
+        for target in candidates:
+            try:
+                price = self.burst_price(seq, state, target, 1)
+                if not self.selected_entry_ready(state, [target]):
+                    raise ValueError("instrument_not_ready")
+            except (base.sequence.SequenceStop, base.DayStop, ValueError) as error:
+                reason = getattr(error, "code", str(error))
+                if reason not in TRANSIENT_PRICE_REASONS:
+                    raise
+                blocked[target["symbol"]] = reason
+                continue
+            limits = next(row for row in state["configuration"]["risk"]["instruments"]
+                          if row["isin_id"] == target["isin_id"])
+            capacity = min(2, limits["max_position"], limits["max_quote_notional_scaled"] // price)
+            seq.valid_price(state, target, price, capacity)
+            capacities[target["isin_id"]] = capacity
+            prices[target["isin_id"]] = price
+        wave = []
+        for _ in range(2):
+            for target in candidates:
+                isin = target["isin_id"]
+                if len(wave) < remaining and capacities.get(isin, 0) > 0:
+                    wave.append(target)
+                    capacities[isin] -= 1
+        return wave, prices, blocked
+
     def burst(self):
         self.case_budget(120)
         self.burst_dispatch_begin = self.dispatch_count
-        self.command("kill off")
         self.timeline.update()
         begin = self.timeline.cursor.offset
         deadline = min(self.window["hard_entry_deadline_utc"], self.wall() + 120)
         seq = self.seq("rate-burst")
         queued, clients, waves = [], [], []
         started = self.monotonic()
-        # Five same-side Adds cannot fit position<=2 on each of two ISINs.
-        # Four, four, four, three Adds followed by their Dels produce exactly
-        # 30 native posts. Each Del waits until its Add actually posted; native
-        # cancellation of an unposted queued Add would otherwise be a no-op.
+        # Exactly 15 Add/Del pairs, with at most two q1 orders per eligible
+        # ISIN. Each new wave starts flat; a one-sided unselected book cannot
+        # block the other instrument or enlarge its frozen aggregate budget.
         self.burst_clients = set()
-        with self.env["fast_dispatch"](self.product, self.targets):
-            for count in (4, 4, 4, 3):
+        enabled, completed = False, 0
+        while completed < 15:
+            price_deadline = min(deadline, self.wall() + 20)
+            while True:
                 state = self.burst_snapshot(queued)
                 if not base.ops.flat(state):
                     raise base.DayStop("short_burst_wave_initial_flatness_unproved")
-                targets = [self.targets[index % 2] for index in range(count)]
-                price_deadline = min(deadline, self.wall() + 20)
-                while True:
-                    try:
-                        prices = {target["isin_id"]: self.burst_price(seq, state, target,
-                                  sum(item["isin_id"] == target["isin_id"] for item in targets))
-                                  for target in self.targets}
-                        if not self.selected_entry_ready(state, self.targets):
-                            raise ValueError("current_price_book_unproved")
-                        break
-                    except (base.sequence.SequenceStop, base.DayStop, ValueError) as error:
-                        if getattr(error, "code", str(error)) not in TRANSIENT_PRICE_REASONS:
-                            raise
-                        if self.wall() >= price_deadline:
-                            raise PreIntentNotSent("short_burst_fresh_price_deadline_not_sent") from error
-                        self.sleep(.05)
+                targets, prices, blocked = self.burst_wave_plan(seq, state, 15 - completed)
+                if self.wall() >= price_deadline:
+                    error = PreIntentNotSent("short_burst_fresh_price_deadline_not_sent")
+                    error.metrics = dict(completed_native_pairs=completed, wait_predicates=blocked)
+                    raise error
+                if not targets:
+                    self.sleep(min(.05, max(0, price_deadline - self.wall())))
+                    continue
+                selected = [target for target in self.targets if target in targets]
+                # Waiting is outside this fresh per-wave ownership lease.
+                # Its preflight remains selected-instrument entry proof plus
+                # complete account reconstruction/configuration/ownership.
+                lease_entered = False
+                dispatch_before_lease = self.dispatch_count
+                try:
+                    with self.env["fast_dispatch"](self.product, selected):
+                        lease_entered = True
                         state = self.burst_snapshot(queued)
                         if not base.ops.flat(state):
                             raise base.DayStop("short_burst_pre_dispatch_inventory_mismatch")
-                wave = [(target, seq.next_id(target)) for target in targets]
-                clients.extend(client for _, client in wave)
-                self.burst_clients.update(client for _, client in wave)
-                if self.wall() >= deadline:
-                    raise PreIntentNotSent("short_burst_dispatch_deadline")
-                for target, client in wave:
-                    seq.record("command_requested", dict(client_order_id=client, kind="AddOrder"))
-                    result = self.dispatch_once(f"place {client} {target['isin_id']} buy 1 {base.sequence._price(prices[target['isin_id']])} day")
-                    if not isinstance(result, dict) or result.get("ok") is not True:
-                        raise base.DayStop("short_burst_command_outcome_uncertain")
-                while True:
-                    state = self.burst_snapshot(queued)
-                    orders = [seq.order(state, client) for _, client in wave]
-                    if any(row and row.get("state") in base.TERMINAL for row in orders):
-                        raise base.DayStop("short_burst_add_terminal_before_cancel")
-                    if all(row and row.get("state") == "Working" and row.get("order_id", 0) > 0 for row in orders) and state["queued"] == 0:
-                        break
+                        targets, prices, blocked = self.burst_wave_plan(seq, state, 15 - completed, selected)
+                        if self.wall() >= deadline:
+                            raise PreIntentNotSent("short_burst_dispatch_deadline")
+                        if not targets:
+                            continue  # No intent; release lease before waiting/replanning.
+                        if not enabled:
+                            self.dispatch_once("kill off")
+                            enabled = True
+                        wave = [(target, seq.next_id(target)) for target in targets]
+                        clients.extend(client for _, client in wave)
+                        self.burst_clients.update(client for _, client in wave)
+                        for target, client in wave:
+                            if self.wall() >= deadline:
+                                raise PreIntentNotSent("short_burst_dispatch_deadline")
+                            seq.record("command_requested", dict(client_order_id=client, kind="AddOrder"))
+                            self.dispatch_once(f"place {client} {target['isin_id']} buy 1 {base.sequence._price(prices[target['isin_id']])} day")
+                        while True:
+                            state = self.burst_snapshot(queued)
+                            orders = [seq.order(state, client) for _, client in wave]
+                            if any(row and row.get("state") in base.TERMINAL for row in orders):
+                                raise base.DayStop("short_burst_add_terminal_before_cancel")
+                            if all(row and row.get("state") == "Working" and row.get("order_id", 0) > 0 for row in orders) and state["queued"] == 0:
+                                break
+                            if self.wall() >= deadline:
+                                raise base.DayStop("short_burst_queued_Add_confirmation_uncertain_timeout")
+                            self.sleep(.02)
+                        for _, client in wave:
+                            # Del remains risk-reducing if the entry lease expires.
+                            self.dispatch_once("cancel " + client)
+                            self.burst_snapshot(queued)
+                        while True:
+                            state = self.burst_snapshot(queued)
+                            if base.ops.flat(state):
+                                break
+                            if self.wall() >= deadline:
+                                raise base.DayStop("short_burst_cancel_confirmation_uncertain_timeout")
+                            self.sleep(.02)
+                        count = len(wave)
+                        waves.append(dict(adds=count, dels=count, complete_flat=True,
+                                          instruments=[dict(symbol=t["symbol"], adds=targets.count(t))
+                                                       for t in selected if t in targets]))
+                        completed += count
+                except Exception as error:
+                    # Only an entry preflight that never yielded the lease
+                    # and never dispatched is eligible for read-only replan.
+                    # A timed-out/sent Add, owner refusal or uncertain outcome
+                    # is never retried, even when another book is available.
+                    if (lease_entered or self.dispatch_count != dispatch_before_lease
+                            or getattr(error, "not_sent", False) is not True
+                            or getattr(error, "code", str(error)) != "short_preintent_readiness_deadline_not_sent"):
+                        raise
                     if self.wall() >= deadline:
-                        raise base.DayStop("short_burst_queued_Add_confirmation_uncertain_timeout")
-                    self.sleep(.02)
-                for _, client in wave:
-                    result = self.dispatch_once("cancel " + client)
-                    if not isinstance(result, dict) or result.get("ok") is not True:
-                        raise base.DayStop("short_burst_command_outcome_uncertain")
-                    # Do not call frozen status(): its recovery signature
-                    # rejects exactly the queued cancellations being tested.
-                    self.burst_snapshot(queued)
-                while True:
-                    state = self.burst_snapshot(queued)
-                    if base.ops.flat(state):
-                        break
-                    if self.wall() >= deadline:
-                        raise base.DayStop("short_burst_cancel_confirmation_uncertain_timeout")
-                    self.sleep(.02)
-                waves.append(dict(adds=count, dels=count, complete_flat=True))
+                        raise PreIntentNotSent("short_burst_dispatch_deadline") from error
+                    price_deadline = min(deadline, self.wall() + 20)
+                    continue
+                break
         while True:
             self.timeline.update()
             try:
