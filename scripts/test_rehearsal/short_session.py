@@ -473,6 +473,61 @@ class ShortDriver(base.DayDriver):
                     capacities[isin] -= 1
         return wave, prices, blocked
 
+    def burst_wait_add_confirmation(self, seq, client, begin, deadline):
+        """Wait without dispatch while pre-179 recovered exposure is provisional.
+
+        TRADE can precede 179 and conservatively reserve both the submitted
+        and recovered identity. The next Add must wait for their native merge.
+        """
+        until = min(deadline, self.wall() + 10)
+        while self.wall() < until:
+            if self.env.get("tick"):
+                self.env["tick"]()
+            # Read without treating a pre-179 recovered alias as a new order.
+            # Full strict burst validation follows the correlated native merge.
+            try:
+                observed = self.product.status()
+            except Exception as error:
+                raise base.DayStop("short_burst_Add_confirmation_status_uncertain") from error
+            if any(observed.get(key) for key in ("journal_failed", "log_error", "cancel_only", "operator_action_required")):
+                raise base.DayStop("short_burst_native_safety_alert")
+            self.timeline.update()
+            rows = self.timeline.between(begin)
+            commands = [r for r in rows if r["event"].get("event") == "command"
+                        and r["event"].get("data", {}).get("name") == "AddOrder"
+                        and r["event"]["data"].get("client_order_id") == client]
+            if len(commands) > 1:
+                raise base.DayStop("short_burst_Add_native_identity_mismatch")
+            if commands:
+                command = commands[0]
+                user = command["event"]["data"].get("user_id")
+                if type(user) is not int or user <= 0:
+                    raise base.DayStop("short_burst_Add_native_identity_mismatch")
+                replies = [r for r in rows if r["event"].get("event") == "reply"
+                           and r["event"].get("data", {}).get("user_id") == user]
+                if replies:
+                    reply = replies[0]
+                    data = reply["event"]["data"]
+                    if (len(replies) != 1 or reply["begin"] < command["end"]
+                            or data.get("msgid") != 179 or type(data.get("code")) is not int
+                            or data["code"] != 0):
+                        raise base.DayStop("short_burst_matching_code0_reply_unproved")
+                    committed = any(r["begin"] >= reply["end"] and
+                        r["event"].get("event") == "transaction_commit" and
+                        r["event"].get("data", {}).get("stream") == "FORTS_TRADE_REPL" for r in rows)
+                    if committed:
+                        state = self.burst_snapshot([])
+                        row = seq.order(state, client)
+                        if (row and row.get("state") == "Working" and row.get("order_id", 0) > 0
+                                and row.get("remaining") == 1 and row.get("executed") == 0
+                                and state["queued"] == 0):
+                            return dict(client_order_id=client, command_offset=command["begin"],
+                                        reply_offset=reply["begin"])
+                        if row and row.get("state") in base.TERMINAL:
+                            raise base.DayStop("short_burst_add_terminal_before_cancel")
+            self.sleep(min(.01, max(0, until - self.wall())))
+        raise base.DayStop("short_burst_Add_native_confirmation_uncertain_timeout")
+
     def burst(self):
         self.case_budget(120)
         self.burst_dispatch_begin = self.dispatch_count
@@ -528,7 +583,9 @@ class ShortDriver(base.DayDriver):
                             if self.wall() >= deadline:
                                 raise PreIntentNotSent("short_burst_dispatch_deadline")
                             seq.record("command_requested", dict(client_order_id=client, kind="AddOrder"))
+                            add_begin = self.timeline.cursor.offset
                             self.dispatch_once(f"place {client} {target['isin_id']} buy 1 {base.sequence._price(prices[target['isin_id']])} day")
+                            self.burst_wait_add_confirmation(seq, client, add_begin, deadline)
                         while True:
                             state = self.burst_snapshot(queued)
                             orders = [seq.order(state, client) for _, client in wave]

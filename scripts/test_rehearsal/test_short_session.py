@@ -118,7 +118,16 @@ class Product:
         self.orders, self.pending, self.posts, self.commands = {}, [], [], []
         self.user, self.max_pending, self.max_working = 0, 0, 0
         self.slow = self.fail_code = self.uncertain = self.omit_throttle = False
+        self.trade_before_reply = False
+        self.awaiting_reply = {}
     def poll(self):
+        for client, (at, user, order_id, alias) in list(self.awaiting_reply.items()):
+            if self.clock.time() >= at:
+                self.orders.pop(alias)
+                self.orders[client].update(state='Working', order_id=order_id)
+                self.timeline.append('reply', dict(user_id=user, msgid=179, code=0))
+                self.timeline.append('transaction_commit', dict(stream='FORTS_TRADE_REPL'))
+                del self.awaiting_reply[client]
         while self.pending:
             now = self.clock.time()
             self.posts = [stamp for stamp in self.posts if int(now*1000)-int(stamp*1000) < 1000]
@@ -130,13 +139,20 @@ class Product:
             order = self.orders[client]
             self.user += 1
             self.posts.append(now)
-            self.timeline.append('command', dict(name=kind, user_id=self.user))
+            self.timeline.append('command', dict(name=kind, user_id=self.user, client_order_id=client))
             self.timeline.append('command_timing', dict(user_id=self.user, post_started_utc_ns=int(now*1e9)))
-            self.timeline.append('reply', dict(user_id=self.user, msgid=179 if kind == 'AddOrder' else 177, code=14 if self.fail_code else 0))
-            self.timeline.append('transaction_commit', dict(stream='FORTS_TRADE_REPL'))
-            if kind == 'AddOrder':
-                order.update(state='Working', order_id=100+self.user)
+            if kind == 'AddOrder' and self.trade_before_reply:
+                order.update(state='PendingNew', order_id=0)
+                alias = 'recovered:'+str(100+self.user)
+                self.orders[alias] = dict(order, client_order_id=alias, state='Working', order_id=100+self.user)
+                self.awaiting_reply[client] = (now+.03, self.user, 100+self.user, alias)
+                self.timeline.append('transaction_commit', dict(stream='FORTS_TRADE_REPL'))
             else:
+                self.timeline.append('reply', dict(user_id=self.user, msgid=179 if kind == 'AddOrder' else 177, code=14 if self.fail_code else 0))
+                self.timeline.append('transaction_commit', dict(stream='FORTS_TRADE_REPL'))
+            if kind == 'AddOrder' and not self.trade_before_reply:
+                order.update(state='Working', order_id=100+self.user)
+            elif kind != 'AddOrder':
                 order.update(state='Cancelled', remaining=0)
         self.max_pending = max(self.max_pending, len(self.pending))
     def command(self, line):
@@ -152,11 +168,11 @@ class Product:
             isin, quantity = int(isin), int(quantity)
             active = [order for order in self.orders.values() if order['state'] not in base.TERMINAL]
             same = [order for order in active if order['isin_id'] == isin]
-            if len(active) >= 5 or sum(order['quantity'] for order in same)+quantity > 2:
-                raise AssertionError('native position/open-order cap violated')
             units = actual_sequence._units(price)
             if sum(actual_sequence._units(order['price'])*order['remaining'] for order in same)+units*quantity > 14000000:
                 raise AssertionError('native aggregate notional cap violated')
+            if len(active) >= 5 or sum(order['quantity'] for order in same)+quantity > 2:
+                raise AssertionError('native position/open-order cap violated')
             self.orders[client] = dict(client_order_id=client, isin_id=isin, instance_owned=True,
                 operator_action_required=False, ext_id=len(self.orders)+1, quantity=quantity,
                 remaining=quantity, executed=0, side=side, price=price, state='Queued', order_id=0)
@@ -326,6 +342,47 @@ class ShortTests(unittest.TestCase):
         self.assertTrue(base.ops.flat(self.product.status()))
         self.assertEqual(len([line for line in self.product.commands if line.startswith('place ')]), 15)
         self.assertEqual(len([line for line in self.product.commands if line.startswith('cancel ')]), 15)
+
+    def test_trade_first_reservation_reproduces_old_same_instrument_add_refusal(self):
+        self.product.trade_before_reply = True
+        self.product.command('place first 1 buy 1 70 day')
+        self.assertEqual(self.product.orders['first']['state'], 'PendingNew')
+        self.assertEqual(len([key for key in self.product.orders if key.startswith('recovered:')]), 1)
+        with self.assertRaisesRegex(AssertionError, 'native aggregate notional cap violated'):
+            self.product.command('place second 1 buy 1 70 day')
+        self.assertEqual(len([row for row in self.timeline.rows if row['event']['event'] == 'command']), 1)
+
+    def test_burst_waits_for_trade_first_alias_merge_and_finishes_exactly_thirty(self):
+        self.product.trade_before_reply = True
+        sleep = self.clock.sleep
+        observed_aliases = []
+        def independent_native_loop(seconds):
+            sleep(seconds)
+            self.product.poll()
+            observed_aliases.append(any(key.startswith('recovered:') for key in self.product.orders))
+        self.clock.sleep = independent_native_loop
+        result = self.d.burst()
+        self.assertTrue(any(observed_aliases))
+        self.assertEqual(result['native_posts'], 30)
+        self.assertEqual(result['matching_code0_replies'], 30)
+        self.assertTrue(result['later_trade_commits_verified'])
+        self.assertTrue(result['native_rate_throttle_observed'])
+        self.assertEqual([row['adds'] for row in result['waves']], [4,4,4,3])
+        self.assertEqual(len([line for line in self.product.commands if line.startswith('place ')]), 15)
+        self.assertEqual(len([line for line in self.product.commands if line.startswith('cancel ')]), 15)
+        self.assertFalse(self.product.awaiting_reply)
+        self.assertTrue(base.ops.flat(self.product.status()))
+
+    def test_add_wait_requires_later_commit_not_earlier_trade_and_never_dispatches(self):
+        self.timeline.append('command', dict(name='AddOrder', user_id=1, client_order_id='original'))
+        self.timeline.append('transaction_commit', dict(stream='FORTS_TRADE_REPL'))
+        self.timeline.append('reply', dict(user_id=1, msgid=179, code=0))
+        self.product.orders['original'] = dict(client_order_id='original', isin_id=1,
+            state='Working', order_id=42, quantity=1, remaining=1, executed=0,
+            instance_owned=True, operator_action_required=False, side='buy', price='70')
+        with self.assertRaisesRegex(base.DayStop, 'native_confirmation_uncertain_timeout'):
+            self.d.burst_wait_add_confirmation(self.d.seq('wait'), 'original', 0, self.clock.time()+.1)
+        self.assertEqual(self.product.commands, [])
 
     def test_queue_and_five_post_density_cannot_substitute_native_throttle(self):
         self.product.omit_throttle = True
