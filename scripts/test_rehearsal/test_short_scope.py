@@ -54,6 +54,31 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(result['product_start_latest_utc'],scope.epoch('2026-10-16',11,50))
         self.assertEqual(result['admission_latest_utc'],scope.epoch('2026-10-16',12))
 
+    def test_burst_only_continuation_accepts_owner_and_clean_terminal_proof(self):
+        cfg=self.continuation(scope.epoch('2026-10-16',10,45))
+        cfg.pop('predecessor_blocked_preentry_verified')
+        cfg.update(burst_only=True,predecessor_clean_terminal_verified=True)
+        result=scope.window(cfg)
+        self.assertEqual(result['scheduled_start_utc'],scope.epoch('2026-10-16',10,45))
+        self.assertEqual(result['hard_entry_deadline_utc'],scope.epoch('2026-10-16',14,30))
+
+    def test_burst_only_continuation_refuses_missing_false_or_nonboolean_clean_proof(self):
+        cfg=self.continuation(scope.epoch('2026-10-16',10,45))
+        cfg['burst_only']=True
+        for value in (None,False,1,'true'):
+            with self.subTest(value=value),self.assertRaisesRegex(ValueError,'continuation_authority'):
+                scope.window(dict(cfg,predecessor_clean_terminal_verified=value))
+        with self.assertRaisesRegex(ValueError,'continuation_authority'):
+            scope.window(dict(cfg,predecessor_clean_terminal_verified=True,owner_authorized=False))
+
+    def test_clean_terminal_proof_alone_cannot_authorize_full_case_continuation(self):
+        cfg=self.continuation(scope.epoch('2026-10-16',10,45))
+        cfg.pop('predecessor_blocked_preentry_verified')
+        cfg['predecessor_clean_terminal_verified']=True
+        for value in (False,1,'true',None):
+            with self.subTest(value=value),self.assertRaisesRegex(ValueError,'continuation_authority'):
+                scope.window(dict(cfg,burst_only=value))
+
     def test_continuation_refuses_missing_owner_or_preentry_proof_and_unflagged_start(self):
         cfg=self.continuation(scope.epoch('2026-10-16',10))
         for key,value in [('owner_authorized',False),('predecessor_blocked_preentry_verified',False),

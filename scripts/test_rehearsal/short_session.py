@@ -671,19 +671,24 @@ class ShortDriver(base.DayDriver):
         return self.mark(name, result, begin)
 
     def run(self):
+        burst_only = self.cfg.get("burst_only", False)
+        if type(burst_only) is not bool:
+            raise base.DayStop("short_burst_only_scope_invalid")
         self.stage("short_admission", self.admission)
-        for name, callback, seconds in (
-                ("rate_burst_thirty", self.burst, 120),
+        cases = [("rate_burst_thirty", self.burst, 120)]
+        if not burst_only:
+            cases.extend((
                 ("one_passive_upstream_socket_loss", lambda: self.fault("one_passive_upstream_socket_loss", "upstream"), 180),
                 ("one_passive_router_restart", lambda: self.fault("one_passive_router_restart", "router"), 180),
-                ("planned_restart_two_working", self.restart_case, 900)):
+                ("planned_restart_two_working", self.restart_case, 900)))
+        for name, callback, seconds in cases:
             self.independent_case(name, lambda cb=callback, budget=seconds: (self.case_budget(budget), cb())[1])
         self.stage("pre_SIGTERM_cancel_flat", self.prepare_empty_closeout)
         self.stage("terminal_closeout", self.closeout)
         result = "PASS" if all(row.get("status") == "PASS" for row in self.scenarios.values()) else "FAIL"
         return dict(terminal=True, execution_result=result,
                     qualification_result="SUPPLEMENTAL_TEST_COMPLETE" if result == "PASS" else "SUPPLEMENTAL_TEST_INCOMPLETE",
-                    coverage_scope="SHORT_INTERRUPTION_ONLY",
+                    coverage_scope="SHORT_BURST_ONLY" if burst_only else "SHORT_INTERRUPTION_ONLY",
                     scenarios=self.scenarios, planned_restarts=int(self.restart_used),
                     journal_bytes=self.timeline.path.stat().st_size,
                     journal_bytes_by_kind=self.timeline.kind_bytes,

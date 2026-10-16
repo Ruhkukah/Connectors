@@ -569,6 +569,50 @@ class ShortTests(unittest.TestCase):
         self.assertEqual(result['execution_result'], 'FAIL')
         self.assertEqual(result['qualification_result'], 'SUPPLEMENTAL_TEST_INCOMPLETE')
 
+    def test_burst_only_runs_real_burst_and_flat_closeout_without_fault_or_restart(self):
+        self.cfg['burst_only'] = True
+        self.d.cfg['burst_only'] = True
+        stages = []
+        self.d.fault = lambda *_: self.fail('burst-only scope invoked a fault')
+        self.d.restart_case = lambda: self.fail('burst-only scope invoked a restart')
+        self.d.env['flatten'] = lambda *_: dict(cancel_confirmed=True, flat=True)
+        def closeout():
+            stages.append('terminal_closeout')
+            self.assertTrue(base.ops.flat(self.product.status()))
+            return dict(status='PASS', cancel_confirmed=True, flat=True, product_exit=0,
+                        after=dict(client_count=0))
+        self.d.closeout = closeout
+        result = self.d.run()
+        self.assertEqual(list(result['scenarios']), ['short_admission', 'rate_burst_thirty',
+            'pre_SIGTERM_cancel_flat', 'terminal_closeout'])
+        self.assertEqual(result['coverage_scope'], 'SHORT_BURST_ONLY')
+        self.assertEqual(result['execution_result'], 'PASS')
+        self.assertEqual(result['planned_restarts'], 0)
+        self.assertEqual(result['scenarios']['rate_burst_thirty']['native_posts'], 30)
+        self.assertEqual(stages, ['terminal_closeout'])
+
+    def test_burst_only_failure_keeps_failure_and_runs_cleanup(self):
+        self.d.cfg['burst_only'] = True
+        calls = []
+        self.d.burst = lambda: (_ for _ in ()).throw(h.PreIntentNotSent('no_eligible_book'))
+        self.d.stage = lambda name, _: (calls.append(name), self.d.scenarios.update({name: dict(status='PASS')}))[-1]
+        self.d.fault = lambda *_: self.fail('burst-only scope invoked a fault')
+        self.d.restart_case = lambda: self.fail('burst-only scope invoked a restart')
+        result = self.d.run()
+        self.assertEqual(calls, ['short_admission', 'pre_SIGTERM_cancel_flat', 'terminal_closeout'])
+        self.assertEqual(result['execution_result'], 'FAIL')
+        self.assertEqual(result['scenarios']['rate_burst_thirty']['status'], 'FAIL')
+        self.assertTrue(result['scenarios']['rate_burst_thirty']['safe_continuation']['flat'])
+        self.assertEqual(result['planned_restarts'], 0)
+
+    def test_burst_only_rejects_nonboolean_scope_before_admission(self):
+        self.d.stage = lambda *_: self.fail('invalid scope reached admission')
+        for value in (1, 'true', None, []):
+            self.d.cfg['burst_only'] = value
+            with self.assertRaisesRegex(base.DayStop, 'short_burst_only_scope_invalid'):
+                self.d.run()
+        self.assertEqual(self.product.commands, [])
+
     def test_pre_SIGTERM_requires_current_flatness_and_exact_cleanup(self):
         self.d.env['flatten'] = lambda *_: dict(cancel_confirmed=True, flat=True)
         self.assertEqual(self.d.prepare_empty_closeout()['status'], 'PASS')

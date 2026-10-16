@@ -39,8 +39,11 @@ def window(cfg):
     if continuation is not True and continuation is not False:
         raise ValueError('short_continuation_authority_unproved')
     if continuation:
+        predecessor_verified = (cfg.get('predecessor_clean_terminal_verified') is True
+            if cfg.get('burst_only') is True else
+            cfg.get('predecessor_blocked_preentry_verified') is True)
         if (cfg.get('owner_authorized') is not True or
-                cfg.get('predecessor_blocked_preentry_verified') is not True or
+                not predecessor_verified or
                 cfg.get('continuation_start_utc') is None):
             raise ValueError('short_continuation_authority_unproved')
         result = expected(cfg.get('authorized_date'),
