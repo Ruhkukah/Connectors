@@ -70,6 +70,10 @@ inline void immediate_dispatch_host_regression(TradingHostConfig config, const p
                   host.status().find("\"queued\":1") != std::string::npos,
               "a queued command waited in a blocking CGate process call or escaped its rate limit");
         now += std::chrono::seconds(1);
+        check(!host.poll() && control.commands().size() == before + 1 &&
+                  host.status().find("\"queued\":1") != std::string::npos,
+              "rate-held Add bypassed the fractional-millisecond guard at 1000ms");
+        now += std::chrono::milliseconds(1);
         // The command must reach the publisher before the next CGate process
         // observes a disconnect. Its definitive identity is still pending;
         // there must be no blind Add resubmission after that observation.
