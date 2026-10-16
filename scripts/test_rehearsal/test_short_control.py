@@ -346,6 +346,13 @@ class SealedReceiptTests(unittest.TestCase):
 
 
 class CleanupOrderingTests(unittest.TestCase):
+    def setUp(self):
+        # Recovery tests must run inside their sealed cleanup window regardless
+        # of the workstation's date/time. Explicit deadline tests override this.
+        clock = patch.object(supervisor.time, 'time', return_value=supervisor.epoch(10))
+        self.addCleanup(clock.stop)
+        clock.start()
+
     def runner(self, pending=True):
         runner=supervisor.Supervisor();runner.events=[];runner.public=[];runner.cfg=configuration()
         runner.verify_owner=lambda _:(runner.events.append("restored_owner") or dict(client_count=1,upstreams=4))

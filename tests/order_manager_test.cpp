@@ -19,6 +19,8 @@
 #include "scoped_unresolved_admission_regression.hpp"
 #include "retired_command_regression.hpp"
 #include "single_operator_alert_regression.hpp"
+#include "early_add_row_regression.hpp"
+#include "late_cancel_reply_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -2132,6 +2134,8 @@ void manager_scale() {
 } // namespace
 int main() {
     try {
+        moex::connector_host::early_add_row_regression();
+        moex::connector_host::late_cancel_reply_regression<Fixture>();
         add_path_profiling();
         moex::connector_host::single_operator_alert_regression<Fixture>();
         moex::connector_host::retired_command_regression<Fixture>();

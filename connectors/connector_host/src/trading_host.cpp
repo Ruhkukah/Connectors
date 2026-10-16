@@ -1048,7 +1048,7 @@ bool CgateTradingHost::cancellation_snapshot_ready() const {
            online(gen::StreamCode::kFortsUserorderbookRepl);
 }
 bool CgateTradingHost::cancellation_flat_snapshot(std::int32_t isin) const {
-    if (!cancellation_snapshot_ready())
+    if (!cancellation_snapshot_ready() || orders_->uncredited_executions_pending(isin))
         return false;
     const auto& data = session_.private_state();
     const auto transport = session_.runtime_health();
@@ -1101,7 +1101,8 @@ void CgateTradingHost::service_shutdown_cancellations() {
 }
 bool CgateTradingHost::shutdown_reconciliation_pending() const {
     assert_owner();
-    return shutdown_cancellation_requested_ && (!shutdown_scopes_.empty() || !cancellation_snapshot_ready());
+    return shutdown_cancellation_requested_ &&
+           (!shutdown_scopes_.empty() || !cancellation_snapshot_ready() || orders_->uncredited_executions_pending());
 }
 void CgateTradingHost::dispatch_commands() {
     const auto now = config_.session.recovery_now ? config_.session.recovery_now() : OrderManager::Clock::now();
