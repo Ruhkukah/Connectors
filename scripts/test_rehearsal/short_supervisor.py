@@ -103,6 +103,56 @@ def cancel_scope_proof(rows, isin, complete_flat):
 
 
 class Supervisor(base.Supervisor):
+    def publish(self,value=None):
+        if not getattr(self,'startup_lease_active',False):
+            return super().publish(value)
+        if value:
+            self.public.update(base.public_value(value))
+        # The frozen guardian accepts preflight before product attachment.
+        # Publish this before waiting or any guardian-dependent tick/inspection.
+        if self.public.get('phase') in ('preflight','resolve_refdata'):
+            self.public['ownership_lease_until_utc']=min(time.time()+100,self.cfg['product_start_latest_utc'])
+            self.public['updated_utc_ns']=time.time_ns()
+            return self.rt.atomic(self.root/'public.json',self.public)
+        return super().publish()
+
+    def await_startup_guardian(self):
+        # Installer starts this supervisor, verifies its receipt, then starts
+        # the guardian. Missing receipt is a bounded handshake, not native work.
+        until=min(time.time()+15,self.cfg['product_start_latest_utc'])
+        while time.time()<until:
+            base.require(not (self.root/'stop-requested').exists(),'startup_stop_requested')
+            base.require(not (self.root/'guardian-done.json').exists(),'startup_guardian_already_terminal')
+            base.require(self.rt.sha('/proc/sys/kernel/random/boot_id')==self.rt.BOOT,'startup_boot_changed')
+            try:
+                self.rt.guard_ok(self.root)
+                return
+            except (FileNotFoundError,ProcessLookupError):
+                self.publish()
+                time.sleep(min(.05,max(0,until-time.time())))
+        raise base.Refused('startup_guardian_handshake_deadline')
+
+    def await_installation_barrier(self):
+        if self.cfg.get('startup_arm_barrier_required') is not True:
+            return
+        path=self.root/'installation-complete.json'
+        while time.time()<self.cfg['product_start_latest_utc']:
+            base.require(not (self.root/'stop-requested').exists(),'startup_stop_requested')
+            base.require(not (self.root/'guardian-done.json').exists(),'startup_guardian_already_terminal')
+            base.require(self.rt.sha('/proc/sys/kernel/random/boot_id')==self.rt.BOOT,'startup_boot_changed')
+            self.rt.guard_ok(self.root)
+            if path.exists():
+                receipt=json.loads(path.read_text())
+                base.require(receipt.get('review_git_sha')==self.cfg['review_git_sha']
+                             and receipt.get('authorized_date')==self.cfg['authorized_date']
+                             and receipt.get('manifest_sha256')==self.rt.sha(self.root/'manifest.json'),
+                             'startup_installation_barrier_receipt_changed')
+                self.publish(dict(startup_barrier='RELEASED'))
+                return
+            self.publish(dict(startup_barrier='WAIT_INSTALLATION_COMPLETE'))
+            time.sleep(min(.05,max(0,self.cfg['product_start_latest_utc']-time.time())))
+        raise base.Refused('startup_installation_barrier_deadline')
+
     def _cheap_owner(self, product):
         base.require(product is self.product and self.meta is not None
                      and product.child.poll() is None
@@ -228,6 +278,7 @@ class Supervisor(base.Supervisor):
 
     def attach(self, product):
         super().attach(product)
+        self.startup_lease_active=False
         product.isolation = lambda: self._command_isolation(product)
         def preintent_gate():
             try:
@@ -452,7 +503,10 @@ class Supervisor(base.Supervisor):
         validate(self.cfg)
         self.fault_bridge.authorized(self.fault_core, self, self.cfg, preflight=True)
         self.rt.atomic(self.root / 'supervisor-owned.json', self.ops.process_identity(os.getpid()))
-        self.publish()
+        self.startup_lease_active=True
+        self.publish(dict(state='scheduled',phase='preflight'))
+        self.await_startup_guardian()
+        self.await_installation_barrier()
         while time.time() < self.cfg['scheduled_start_utc']:
             base.require(not (self.root / 'stop-requested').exists(), 'prestart_stop_requested')
             base.require(self.rt.sha('/proc/sys/kernel/random/boot_id') == self.rt.BOOT, 'prestart_boot_changed')

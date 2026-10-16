@@ -46,6 +46,7 @@ super_base.HEAD = "4ee96ce0cb41f0228fb74669f75d8be7a896c813"
 super_base.BINARY = "3da6b0db4f36bbc53a9e173906315bc78cf55a7e2e7ee547bb7b9bdcedca27be"
 super_base.require, super_base.Supervisor = require, ParentSupervisor
 super_base.Refused = Refused
+super_base.public_value = lambda value: value
 supervisor = adjacent("_short_supervisor_test", "short_supervisor.py", "base_supervisor", super_base)
 
 runtime_base = types.ModuleType("frozen_runtime")
@@ -109,6 +110,68 @@ class ScopeTests(unittest.TestCase):
         supervisor.validate(cfg)
         self.assertEqual(cfg['earliest_entry_utc'], short_scope.epoch('2026-10-19', 9))
         self.assertEqual(cfg['hard_cleanup_deadline_utc'], short_scope.epoch('2026-10-19', 15))
+
+
+class StartupHandoffTests(unittest.TestCase):
+    def runner(self,root):
+        runner=supervisor.Supervisor();runner.root=root;runner.cfg=configuration()
+        runner.cfg['startup_arm_barrier_required']=True
+        runner.public=dict(state='scheduled',phase='prestart',terminal=False)
+        runner.events=[]
+        def atomic(path,value):
+            runner.events.append(Path(path).name);Path(path).write_text(json.dumps(value))
+        runner.rt=types.SimpleNamespace(atomic=atomic,BOOT='boot',
+            sha=lambda path:'boot' if str(path).startswith('/proc/') else 'manifest-pin')
+        runner.ops=types.SimpleNamespace(process_identity=lambda pid:dict(pid=pid,start_ticks='1',executable='/python'))
+        runner.fault_core=object();runner.fault_bridge=types.SimpleNamespace(authorized=lambda *a,**k:None)
+        return runner
+    def test_late_start_publishes_accepted_lease_before_guardian_and_installation_barriers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);runner=self.runner(root);guards=[]
+            def guarded(path):
+                guards.append('exact_guardian')
+                if len(guards)==1:raise FileNotFoundError('guardian receipt not yet published')
+            runner.rt.guard_ok=guarded
+            def release(_):
+                (root/'installation-complete.json').write_text(json.dumps(dict(
+                    review_git_sha=runner.cfg['review_git_sha'],authorized_date=runner.cfg['authorized_date'],
+                    manifest_sha256='manifest-pin')))
+            def first_tick():
+                runner.events.append('first_native_gate')
+                public=json.loads((root/'public.json').read_text())
+                self.assertEqual(public['phase'],'preflight')
+                self.assertEqual(public['startup_barrier'],'RELEASED')
+                self.assertGreater(public['ownership_lease_until_utc'],supervisor.epoch(9,52))
+                raise RuntimeError('stop before router/native work')
+            runner.tick=first_tick
+            with patch.object(supervisor.time,'time',return_value=supervisor.epoch(9,52)),patch.object(supervisor.time,'sleep',side_effect=release):
+                with self.assertRaisesRegex(RuntimeError,'before router/native'):runner.run()
+            self.assertEqual(runner.events[0],'supervisor-owned.json')
+            self.assertEqual(runner.events[1],'public.json')
+            self.assertEqual(runner.events[-1],'first_native_gate')
+            self.assertGreaterEqual(len(guards),3)
+            self.assertFalse((root/'execution-claim.json').exists())
+    def test_missing_guardian_is_bounded_and_never_reaches_a_native_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner=self.runner(Path(directory));runner.startup_lease_active=True;runner.public['phase']='preflight'
+            runner.rt.guard_ok=lambda root:(_ for _ in ()).throw(FileNotFoundError('no guardian'))
+            now=supervisor.epoch(9,52)
+            with patch.object(supervisor.time,'time',side_effect=[now,now+16]):
+                with self.assertRaisesRegex(Refused,'guardian_handshake_deadline'):runner.await_startup_guardian()
+            self.assertFalse((runner.root/'execution-claim.json').exists())
+    def test_installation_barrier_requires_exact_review_date_and_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner=self.runner(Path(directory));runner.startup_lease_active=True;runner.public['phase']='preflight'
+            runner.rt.guard_ok=lambda root:None
+            original=dict(review_git_sha=runner.cfg['review_git_sha'],authorized_date=runner.cfg['authorized_date'],manifest_sha256='manifest-pin')
+            for key in original:
+                wrong=dict(original);wrong[key]='changed'
+                (runner.root/'installation-complete.json').write_text(json.dumps(wrong))
+                with patch.object(supervisor.time,'time',return_value=supervisor.epoch(9,52)):
+                    with self.assertRaisesRegex(Refused,'barrier_receipt_changed'):runner.await_installation_barrier()
+            (runner.root/'installation-complete.json').unlink()
+            with patch.object(supervisor.time,'time',return_value=runner.cfg['product_start_latest_utc']):
+                with self.assertRaisesRegex(Refused,'barrier_deadline'):runner.await_installation_barrier()
 
 
 class CITests(unittest.TestCase):

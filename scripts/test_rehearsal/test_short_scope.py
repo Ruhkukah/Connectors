@@ -33,6 +33,45 @@ class ScopeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'calendar_date'):
             scope.expected('2026-10-20')
 
+    def continuation(self, start):
+        return dict(scope.expected('2026-10-16',continuation_start_utc=start),
+                    same_day_continuation=True,continuation_start_utc=start,
+                    owner_authorized=True,predecessor_blocked_preentry_verified=True)
+
+    def test_explicit_friday_continuation_keeps_all_admission_and_closeout_limits(self):
+        start=scope.epoch('2026-10-16',10,20)
+        cfg=self.continuation(start)
+        result=scope.window(cfg)
+        self.assertEqual(result['scheduled_start_utc'],start)
+        self.assertEqual(result['product_start_latest_utc'],start+1800)
+        original=scope.expected('2026-10-16')
+        for key in set(original)-{'scheduled_start_utc','product_start_latest_utc'}:
+            self.assertEqual(result[key],original[key])
+
+    def test_latest_continuation_caps_product_start_before_noon_admission(self):
+        cfg=self.continuation(scope.epoch('2026-10-16',11,30))
+        result=scope.window(cfg)
+        self.assertEqual(result['product_start_latest_utc'],scope.epoch('2026-10-16',11,50))
+        self.assertEqual(result['admission_latest_utc'],scope.epoch('2026-10-16',12))
+
+    def test_continuation_refuses_missing_owner_or_preentry_proof_and_unflagged_start(self):
+        cfg=self.continuation(scope.epoch('2026-10-16',10))
+        for key,value in [('owner_authorized',False),('predecessor_blocked_preentry_verified',False),
+                          ('same_day_continuation',False),('same_day_continuation',1)]:
+            with self.subTest(key=key,value=value),self.assertRaisesRegex(ValueError,'continuation_authority'):
+                scope.window(dict(cfg,**{key:value}))
+
+    def test_continuation_refuses_boolean_nonfinite_late_start_or_different_date(self):
+        for value in (True,False,float('nan'),float('inf'),float('-inf'),10**1000,
+                      scope.epoch('2026-10-16',8,59),scope.epoch('2026-10-16',11,31)):
+            with self.subTest(value=value),self.assertRaisesRegex(ValueError,'continuation_start'):
+                scope.expected('2026-10-16',continuation_start_utc=value)
+        with self.assertRaisesRegex(ValueError,'continuation_start'):
+            scope.expected('2026-10-19',continuation_start_utc=scope.epoch('2026-10-19',10))
+        cfg=self.continuation(scope.epoch('2026-10-16',10))
+        with self.assertRaisesRegex(ValueError,'sealed_window'):
+            scope.window(dict(cfg,hard_cleanup_deadline_utc=scope.epoch('2026-10-16',16)))
+
 
 if __name__ == '__main__':
     unittest.main()
