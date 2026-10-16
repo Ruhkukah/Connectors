@@ -21,6 +21,7 @@ std::string environment(const std::string& name) {
         throw std::invalid_argument("required environment variable is missing");
     return value;
 }
+} // namespace
 std::pair<std::string, std::uint16_t> router_address(std::string_view router) {
     if (router.find_first_of("; /\\\r\n") != std::string_view::npos)
         throw std::invalid_argument("router must be host:port");
@@ -29,7 +30,6 @@ std::pair<std::string, std::uint16_t> router_address(std::string_view router) {
         throw std::invalid_argument("router must be host:port");
     return {std::string(router.substr(0, colon)), integer<std::uint16_t>(router.substr(colon + 1))};
 }
-} // namespace
 std::string_view operator_help() noexcept {
     return R"(moexctl plaza2 {status|qualify|run} [options]
 Required: --runtime-root PATH --scheme-dir PATH --config-dir PATH
@@ -37,7 +37,7 @@ Required: --runtime-root PATH --scheme-dir PATH --config-dir PATH
 Trading:  --broker-code-env NAME --client-code-env NAME --allow-orders
 Runtime:  --router HOST:PORT --environment {test|prod} --instance-id NAME
           --library-path PATH --expected-release TEXT --credentials-env NAME
-          --software-key-env NAME --max-commands-per-second N
+          --software-key-env NAME --local-pass-env NAME --max-commands-per-second N
 Output:   --json --wait-ms N
 Read-only DTC: --read-only-market-data [--public-deals]
 The current session is followed from committed REFDATA and SESSIONSTATE.
@@ -91,6 +91,12 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     host.publisher_name = inputs.read_only_market_data ? std::string{} : inputs.publisher_name;
     host.connection_settings =
         "p2tcp://" + endpoint + ":" + std::to_string(port) + ";app_name=" + inputs.publisher_name + ";timeout=2000";
+    if (!inputs.local_pass_env_var.empty()) {
+        const auto password = environment(inputs.local_pass_env_var);
+        if (password.find_first_of(";\r\n") != std::string::npos)
+            throw std::invalid_argument("local router password contains a settings delimiter");
+        host.connection_settings += ";local_pass=" + password;
+    }
     const auto scheme = host.runtime.scheme_dir.string();
     const auto stream = [&](StreamCode code, std::string name) {
         return CgateStreamConfig{
@@ -136,11 +142,23 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
     std::set<std::string> flags;
     const std::set<std::string_view> flag_names{"--json", "--allow-orders", "--read-only-market-data",
                                                 "--public-deals"};
-    const std::set<std::string_view> value_names{
-        "--runtime-root",     "--scheme-dir",       "--config-dir",      "--library-path",
-        "--expected-release", "--env-settings-var", "--broker-code-env", "--client-code-env",
-        "--isin-id",          "--router",           "--environment",     "--instance-id",
-        "--credentials-env",  "--software-key-env", "--wait-ms",         "--max-commands-per-second"};
+    const std::set<std::string_view> value_names{"--runtime-root",
+                                                 "--scheme-dir",
+                                                 "--config-dir",
+                                                 "--library-path",
+                                                 "--expected-release",
+                                                 "--env-settings-var",
+                                                 "--broker-code-env",
+                                                 "--client-code-env",
+                                                 "--isin-id",
+                                                 "--router",
+                                                 "--environment",
+                                                 "--instance-id",
+                                                 "--credentials-env",
+                                                 "--software-key-env",
+                                                 "--local-pass-env",
+                                                 "--wait-ms",
+                                                 "--max-commands-per-second"};
     Plaza2HostConfigInputs inputs;
     for (std::size_t i = 2; i < args.size(); ++i) {
         const auto key = args[i];
@@ -178,6 +196,7 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
     inputs.expected_spectra_release = get("--expected-release", "SPECTRA9.9.0");
     inputs.env_open_settings = environment(required("--env-settings-var"));
     inputs.credentials_env_var = get("--credentials-env");
+    inputs.local_pass_env_var = get("--local-pass-env");
     inputs.software_key_env_var = get("--software-key-env", "MOEX_PLAZA2_CGATE_SOFTWARE_KEY");
     if (!inputs.read_only_market_data) {
         inputs.broker_code = environment(required("--broker-code-env"));

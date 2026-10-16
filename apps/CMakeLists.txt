@@ -14,3 +14,5 @@ endfunction()
 
 moex_add_app(moexctl moexctl.cpp moex_connector_host)
 moex_add_app(moex_connector_host_dtc_runner moex_connector_host_dtc_runner.cpp moex_connector_host)
+
+moex_add_app(moex_full_order_log_dtc_runner moex_full_order_log_dtc_runner.cpp moex_connector_host)

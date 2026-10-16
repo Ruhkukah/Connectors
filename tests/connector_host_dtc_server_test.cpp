@@ -108,6 +108,8 @@ std::uint64_t number_or_zero(const Read& message, unsigned field) {
 struct Replay : DtcMarketDataSource {
     DtcMarketDataSnapshot state;
     bool security_definitions{true};
+    bool incremental{false};
+    std::vector<DtcMarketDataLevel> changes;
     bool optimistic_capabilities{false};
     unsigned failure_mode{0};
     Replay() {
@@ -140,6 +142,18 @@ struct Replay : DtcMarketDataSource {
         if (failure_mode == 2)
             throw 42;
         return state;
+    }
+    bool incremental_depth() const noexcept override {
+        return incremental;
+    }
+    std::span<const DtcMarketDataLevel> depth_changes() const noexcept override {
+        return changes;
+    }
+    DtcMarketDataSnapshot status_snapshot() const override {
+        auto out = snapshot();
+        if (incremental)
+            out.levels.clear();
+        return out;
     }
     DtcReadOnlyCapabilities capabilities() const noexcept override {
         return {.market_data = false,
@@ -325,7 +339,7 @@ struct Harness {
         txt(p, 3, std::string(kDtcMoexSpectraExchange));
         return packet(506, p);
     }
-    Bytes depth(unsigned action = 1, unsigned id = 0) {
+    Bytes depth(unsigned action = 1, unsigned id = 0, unsigned levels = 20) {
         if (id == 0)
             id = server.symbol_id() == 0 ? 7 : server.symbol_id();
         Bytes p;
@@ -333,7 +347,7 @@ struct Harness {
         num(p, 2, id);
         txt(p, 3, source.state.symbol);
         txt(p, 4, std::string(kDtcMoexSpectraExchange));
-        num(p, 5, 20);
+        num(p, 5, levels);
         return packet(102, p);
     }
     void subscribe() {
@@ -934,6 +948,204 @@ void bounds() {
         check(h.count(145) == 3, "multiple levels sorted per side");
     }
 }
+void full_order_log_committed_depth() {
+    auto c = config();
+    c.max_depth_levels = 64;
+    Harness h(c);
+    h.source.incremental = h.source.state.full_order_log = true;
+    h.source.state.levels.clear();
+    for (unsigned i = 0; i < 32; ++i) {
+        h.source.state.levels.push_back(
+            {.price_scaled = 1000000 - static_cast<std::int64_t>(i) * 10000, .volume = 5, .side = DtcDepthSide::Bid});
+        h.source.state.levels.push_back(
+            {.price_scaled = 2000000 + static_cast<std::int64_t>(i) * 10000, .volume = 7, .side = DtcDepthSide::Ask});
+    }
+    h.logon();
+    auto request = h.definition_request();
+    const auto depth = h.depth(1, 0, 0);
+    request.insert(request.end(), depth.begin(), depth.end());
+    h.send(request);
+    h.pump();
+    check(h.count(145) == 64, "FullOrderLog serves more than AGGR20 levels on both sides");
+    const Read first(h.first(145).payload);
+    check(first.n.at(15) == 64 && !first.n.contains(19) && !first.n.contains(20),
+          "FullOrderLog snapshot has no fabricated per-level CGate identities");
+    h.got.clear();
+    h.source.changes = {{.price_scaled = 1000000, .volume = 11, .side = DtcDepthSide::Bid, .depth_level = 1},
+                        {.price_scaled = 2000000, .volume = 0, .side = DtcDepthSide::Ask, .depth_level = 1}};
+    ++h.source.state.source_snapshot_version;
+    h.source.state.committed_at = std::chrono::steady_clock::now();
+    h.server.publish_depth_commit();
+    check(h.server.queued_bytes() > 0 && h.server.last_commit_to_queue_ns() > 0,
+          "TN_COMMIT queues the actual frame before returning to the owner");
+    h.pump();
+    check(h.count(140) == 2 && h.count(145) == 0, "committed sparse changes emit incremental frames");
+    std::vector<Read> rows;
+    for (const auto& frame : h.got)
+        if (frame.message_type == 140)
+            rows.emplace_back(frame.payload);
+    check(rows[0].f.at(3) == 10 && rows[0].f.at(4) == 11 && rows[0].n.at(5) == 1 && rows[0].n.at(6) == 1 &&
+              rows[0].n.at(8) == 3 && rows[0].n.at(9) == 1 && rows[0].n.at(13) == 73 && rows[0].n.at(14) == 2 &&
+              rows[0].n.at(15) == 10,
+          "DTC140 uses official fields and shared commit metadata");
+    check(rows[1].f.at(3) == 20 && rows[1].f.at(4) == 0 && rows[1].n.at(5) == 2 && rows[1].n.at(6) == 2 &&
+              rows[1].n.at(8) == 1 && rows[1].n.at(14) == 2,
+          "zero quantity deletes the price level and closes the atomic batch");
+    h.got.clear();
+    h.server.publish_depth_commit();
+    h.pump(2);
+    check(h.count(140) == 0, "same commit cannot publish twice");
+    h.source.changes.clear();
+    ++h.source.state.source_snapshot_version;
+    h.server.publish_depth_commit();
+    h.pump(2);
+    check(h.count(140) == 0, "deeper unchanged positions advance the source without a wire batch");
+    ++h.source.state.source_snapshot_version;
+    h.server.publish_depth_commit();
+    ++h.source.state.source_snapshot_version;
+    h.source.changes = {{.price_scaled = 1000000, .volume = 12, .side = DtcDepthSide::Bid, .depth_level = 1}};
+    h.server.publish_depth_commit();
+    h.pump(5);
+    check(h.count(140) == 1 && Read(h.first(140).payload).n.at(14) == 3,
+          "source revision jumps preserve consecutive DTC batch sequence");
+    h.got.clear();
+    h.source.state.source_snapshot_version += 2;
+    h.server.publish_depth_commit();
+    h.pump(5);
+    check(h.eof && h.count(140) == 0 && Read(h.first(5).payload).n.at(2) == 0,
+          "missed owner commit fences lost positional updates and permits a fresh snapshot");
+    h.connect();
+    h.logon();
+    auto fresh = h.definition_request();
+    const auto full = h.depth(1, 0, 0);
+    fresh.insert(fresh.end(), full.begin(), full.end());
+    h.send(fresh);
+    h.pump();
+    check(h.count(145) == 64 && Read(h.first(145).payload).n.at(12) == 1,
+          "missed commit recovery starts a new connection with a complete snapshot");
+    {
+        Harness limited(c);
+        limited.source.incremental = limited.source.state.full_order_log = true;
+        limited.logon();
+        limited.subscribe();
+        check(limited.count(121) == 0 && limited.count(145) == 2,
+              "finite client depth remains compatible with existing Kairos subscriptions");
+        limited.got.clear();
+        limited.send(limited.depth(1, 0, 0));
+        limited.pump();
+        check(limited.count(145) == 2, "full-depth request remains available after partial-depth rejection");
+    }
+    {
+        Harness empty(c);
+        empty.source.incremental = empty.source.state.full_order_log = true;
+        empty.source.state.levels.clear();
+        empty.source.state.empty_book = true;
+        empty.source.state.source_snapshot_version = 1;
+        empty.logon();
+        empty.subscribe();
+        check(empty.count(507) == 1 && empty.count(145) == 0 && !empty.eof && empty.count(5) == 0,
+              "initial empty full book stays subscribed without an invented quote");
+        const auto control = Read(empty.first(700).payload).s.at(1);
+        check(control.find("\"source_kind\":\"full_order_log\"") != std::string::npos &&
+                  control.find("\"book_state\":\"empty\"") != std::string::npos &&
+                  control.find("\"depth_snapshot\":{\"empty\":true,\"dtc_batch_sequence\":1") != std::string::npos &&
+                  control.find("\"level_count\":0") != std::string::npos,
+              "700 explicitly marks a completed empty snapshot with no quote row");
+        empty.got.clear();
+        empty.source.state.empty_book = false;
+        empty.source.state.source_snapshot_version = 2;
+        empty.source.changes = {{.price_scaled = 1000000,
+                                 .volume = 3,
+                                 .side = DtcDepthSide::Bid,
+                                 .exchange_moment_ns = 1759651234567890123ULL,
+                                 .depth_level = 1}};
+        empty.server.publish_depth_commit();
+        empty.pump();
+        check(empty.count(140) == 1 && empty.count(145) == 0 && !empty.eof,
+              "first nonempty commit follows the empty snapshot as a normal incremental batch");
+        const auto row = Read(empty.first(140).payload);
+        check(row.n.at(2) == 1759651234567ULL && row.n.at(14) == 2 && row.n.at(15) == 2,
+              "DTC increments preserve exchange milliseconds and consecutive batch metadata");
+    }
+    {
+        Harness crossed(c);
+        crossed.source.incremental = crossed.source.state.full_order_log = true;
+        crossed.logon();
+        crossed.subscribe();
+        crossed.got.clear();
+        crossed.source.state.crossed_book = true;
+        crossed.source.state.market_data_display_allowed = crossed.source.state.book_snapshot_current = false;
+        crossed.server.publish_depth_commit();
+        crossed.pump(5);
+        check(crossed.eof && crossed.count(140) == 0 && Read(crossed.first(5).payload).n.at(2) == 0 &&
+                  Read(crossed.first(700).payload).s.at(1).find("\"book_state\":\"crossed\"") != std::string::npos,
+              "crossed source withdraws authority without publishing invalid prices");
+        crossed.source.state.crossed_book = false;
+        crossed.source.state.market_data_display_allowed = crossed.source.state.book_snapshot_current = true;
+        crossed.connect();
+        crossed.logon();
+        crossed.subscribe();
+        check(crossed.count(145) == 2, "uncrossing permits a fresh valid snapshot");
+    }
+    {
+        Harness startup(c);
+        startup.source.incremental = startup.source.state.full_order_log = true;
+        startup.source.state.book_snapshot_current = startup.source.state.market_data_display_allowed = false;
+        startup.logon();
+        startup.subscribe();
+        check(startup.eof && startup.count(145) == 0 && Read(startup.first(5).payload).n.at(2) == 0,
+              "full-book startup with ready definition but pending ONLINE permits reconnect");
+        startup.source.state.book_snapshot_current = startup.source.state.market_data_display_allowed = true;
+        startup.connect();
+        startup.logon();
+        startup.subscribe();
+        check(startup.count(507) == 1 && startup.count(145) == 2,
+              "ONLINE commit after startup permits a fresh definition and snapshot");
+    }
+    {
+        Harness recovery(c);
+        recovery.source.incremental = recovery.source.state.full_order_log = true;
+        recovery.logon();
+        recovery.subscribe();
+        check(recovery.count(145) == 2, "full-depth client starts before listener recovery");
+        recovery.got.clear();
+        recovery.source.state.book_snapshot_current = recovery.source.state.market_data_display_allowed = false;
+        ++recovery.source.state.stream_epoch;
+        ++recovery.source.state.market_data_authority_epoch;
+        recovery.server.publish_depth_commit(); // runner invokes this synchronously on invalidation
+        recovery.pump(5);
+        check(recovery.eof && recovery.count(140) == 0 && recovery.count(700) == 1 && recovery.count(116) == 1 &&
+                  Read(recovery.first(5).payload).n.at(2) == 0 && Read(recovery.first(116).payload).n.at(2) == 1,
+              "recoverable listener invalidation withdraws authority and permits DTC reconnect");
+        recovery.source.state.book_snapshot_current = recovery.source.state.market_data_display_allowed = true;
+        recovery.source.state.source_snapshot_version = 1;
+        recovery.connect();
+        recovery.logon();
+        recovery.subscribe();
+        check(recovery.count(145) == 2 && Read(recovery.first(145).payload).n.at(11) == 74,
+              "healthy composite recovery establishes a fresh DTC snapshot and stream epoch");
+    }
+    {
+        auto bounded = c;
+        bounded.max_queued_bytes = 2048;
+        Harness overflow(bounded);
+        overflow.source.incremental = overflow.source.state.full_order_log = true;
+        overflow.logon();
+        auto request = overflow.definition_request();
+        const auto depth = overflow.depth(1, 0, 0);
+        request.insert(request.end(), depth.begin(), depth.end());
+        overflow.send(request);
+        overflow.pump();
+        check(overflow.count(145) == 2, "bounded full-depth client starts healthy");
+        overflow.got.clear();
+        overflow.source.changes.assign(
+            100, {.price_scaled = 1000000, .volume = 2, .side = DtcDepthSide::Bid, .depth_level = 1});
+        ++overflow.source.state.source_snapshot_version;
+        overflow.server.publish_depth_commit();
+        overflow.pump(5);
+        check(overflow.eof && overflow.count(140) == 0, "oversized commit closes without a partial incremental batch");
+    }
+}
 void throwing_source() {
     for (unsigned mode : {1U, 2U}) {
         Harness h;
@@ -1090,6 +1302,7 @@ int main(int argc, char** argv) {
     rejects();
     float32_wire_representability();
     bounds();
+    full_order_log_committed_depth();
     throwing_source();
     std::cout << "DTC loopback E2E: negotiation, definitions, UTF-8, authority, signed depth, replay, revocation, "
                  "rejection and bounds passed\n";
