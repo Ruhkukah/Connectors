@@ -2,6 +2,8 @@
 #include <array>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
+#include <vector>
 
 namespace moex::plaza2::cgate {
 namespace {
@@ -124,21 +126,24 @@ void sha256_update(Sha256State& state, std::span<const std::byte> bytes) {
 } // namespace
 namespace detail {
 [[nodiscard]] std::string sha256_file(const std::filesystem::path& path) {
+    return plaza2_sha256_file(path);
+}
+} // namespace detail
+std::string plaza2_sha256_file(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
+    if (!input)
+        throw std::runtime_error("cannot open SHA-256 input");
     Sha256State state;
-    std::array<std::byte, 4096> buffer{};
-    while (input.good()) {
+    std::vector<std::byte> buffer(1024 * 1024);
+    while (input) {
         input.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
-        const auto count = static_cast<std::size_t>(input.gcount());
-        if (count == 0) {
-            break;
-        }
-        sha256_update(state, std::span<const std::byte>(buffer.data(), count));
+        sha256_update(state, std::span<const std::byte>(buffer.data(), static_cast<std::size_t>(input.gcount())));
     }
+    if (!input.eof())
+        throw std::runtime_error("cannot read SHA-256 input");
     return sha256_finish(state);
 }
 
-} // namespace detail
 std::string plaza2_sha256_hex(std::span<const std::byte> bytes) {
     Sha256State state;
     sha256_update(state, bytes);

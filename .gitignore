@@ -4,7 +4,8 @@ __pycache__/
 *.pyo
 *.pyd
 
-build/
+build*/
+.codex-tmp/
 .cache/
 
 .pytest_cache/
@@ -14,12 +15,11 @@ build/
 .idea/
 .vscode/
 
-.DS_Store
-tests/dotnet/**/bin/
-tests/dotnet/**/obj/
-adapters/alorengine_dotnet/bin/
-adapters/alorengine_dotnet/obj/
+secrets/
+*.secrets.yaml
+*.local.yaml
 
+# Preserve ignored local caches and build products from the archived integration.
 spec-lock/**/cache/
 spec-lock/**/downloads/
 spec-lock/**/pcap/
@@ -28,6 +28,7 @@ spec-lock/**/*.pcapng
 spec-lock/**/*.tar
 spec-lock/**/*.tar.gz
 spec-lock/**/*.tgz
-profiles/*.local.yaml
-secrets/
-*.secrets.yaml
+tests/dotnet/**/bin/
+tests/dotnet/**/obj/
+adapters/alorengine_dotnet/bin/
+adapters/alorengine_dotnet/obj/

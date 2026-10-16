@@ -1,0 +1,451 @@
+"""Independent sealed Oct14 re-arm TEST guardian; no import-time/native action.
+
+Execution: python3 guardian.py ROOT --execute. Only the already authorized
+same-day TEST product can be adopted or recovered. Never calls Product.close
+or Product.crash; never sends a second shutdown signal or SIGKILL.
+"""
+import argparse
+import datetime as dt
+import fcntl
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+import traceback
+from pathlib import Path
+
+TERMINAL = {'Filled', 'Cancelled', 'Rejected'}
+
+
+class GuardBlocked(RuntimeError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def require(condition, code):
+    if not condition:
+        raise GuardBlocked(code)
+
+
+def heartbeat_fresh(public, now):
+    stamp = public.get('updated_utc_ns', public.get('heartbeat_utc_ns', 0))
+    return type(stamp) is int and -5 <= now-stamp/1e9 <= 120
+
+
+def healthy_lease(public, now, supervisor_alive):
+    lease = public.get('ownership_lease_until_utc', public.get('cleanup_lease_until_utc', 0))
+    return (supervisor_alive and heartbeat_fresh(public, now) and
+            public.get('phase') in ('closing', 'final_cleanup', 'final_clearing_observation',
+                                    'planned_restart', 'preflight', 'resolve_refdata') and
+            isinstance(lease, (int, float)) and now < lease <= now+120)
+
+
+def decision(cfg, public, now, supervisor_alive, product_present, stop_requested):
+    if public.get('terminal') is True:
+        return 'TERMINAL'
+    start = cfg.get('scheduled_start_utc', cfg.get('scheduled_start_utc_seconds'))
+    require(isinstance(start, (int, float)), 'guardian_scheduled_start_unproved')
+    if now < start and not product_present:
+        return 'WAIT_PRESTART'
+    preflight = public.get('phase') in ('preflight', 'resolve_refdata')
+    preflight_end = cfg.get('admission_latest_utc', cfg.get('native_opening_latest_utc', start+1200))
+    lease = public.get('ownership_lease_until_utc', public.get('cleanup_lease_until_utc', 0))
+    if healthy_lease(public, now, supervisor_alive) and (not preflight or lease <= preflight_end):
+        return 'WAIT_LEASE'
+    expired = now >= cfg.get('guardian_trigger_utc', cfg['hard_cleanup_deadline_utc']-180)
+    if not supervisor_alive or not heartbeat_fresh(public, now) or stop_requested or expired:
+        return 'PROTECT'
+    if not product_present:
+        return 'BLOCKED_PRODUCT_ABSENT_WITHOUT_RESTART_LEASE'
+    return 'WAIT'
+
+
+def terminal_clean(public):
+    closeout = public.get('closeout') or {}
+    return (public.get('terminal') is True and closeout.get('cancel_confirmed') is True and
+            closeout.get('flat') is True and type(public.get('product_exit')) is int and public.get('product_exit') == 0 and
+            type((public.get('after') or {}).get('client_count')) is int and (public.get('after') or {}).get('client_count') == 0 and
+            not any(public.get(key) or closeout.get(key) for key in
+                    ('product_shutdown_error', 'shutdown_error', 'inventory_error')))
+
+
+class Guardian:
+    def __init__(self, root, cfg, runtime, ops):
+        self.root, self.cfg, self.rt, self.ops = Path(root), cfg, runtime, ops
+        self.interval = min(15, max(1, cfg.get('guardian_interval_seconds', 5)))
+        self.recovery_child = None
+        self.proxy_meta = None
+        self.protection_deadline = None
+        self.recovery_meta = None
+        self.recovery_product = None
+
+    def publish(self, value, done=False):
+        value = dict(value, updated_utc_ns=time.time_ns())
+        self.rt.atomic(self.root/'guardian-public.json', value)
+        if done:
+            self.rt.atomic(self.root/'guardian-done.json', dict(value, terminal=True, no_new_entry=True))
+        return value
+
+    def read_public(self):
+        try:
+            return json.loads((self.root/'public.json').read_text())
+        except (FileNotFoundError, ValueError):
+            return {}
+
+    def read_meta(self):
+        try:
+            return json.loads((self.root/'active-product-private.json').read_text())
+        except FileNotFoundError:
+            return None
+
+    def alive(self, identity, strict=False):
+        try:
+            current = self.ops.process_identity(identity['pid'])
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        if current != identity:
+            if strict:
+                raise GuardBlocked('guardian_product_identity_changed')
+            return False
+        return True
+
+    def supervisor_alive(self):
+        try:
+            identity = json.loads((self.root/'supervisor-owned.json').read_text())
+        except (FileNotFoundError, ValueError):
+            return False
+        return self.alive(identity)
+
+    def immutable(self, meta):
+        self.rt.day_check(self.cfg)
+        require(self.rt.sha('/proc/sys/kernel/random/boot_id') == meta['boot_sha256'] == self.rt.BOOT,
+                'guardian_boot_changed')
+        require(Path(meta['root']).resolve() == self.root.resolve() and
+                Path(meta['work']).resolve().is_relative_to(self.root.resolve()), 'guardian_product_work_scope_changed')
+        if meta.get('kind') in ('readonly_resolver', 'readonly_flat_probe', 'readonly_flat'):
+            # Both native preflight helpers are sealed publisher-free binaries.
+            # They have no live order namespace/state and can only be stopped.
+            allowed = {str((self.root/self.cfg['resolver']).resolve()): self.cfg['resolver_sha256']}
+            if self.cfg.get('flat_probe_binary'):
+                allowed[str(Path(self.cfg['flat_probe_binary']).resolve())] = self.rt.FLAT
+            args = meta['args']
+            require(meta['authorized_date'] == self.cfg['authorized_date'] and
+                    allowed.get(str(Path(meta['binary']).resolve())) == meta['binary_sha256'] and
+                    self.rt.sha(meta['binary']) == meta['binary_sha256'] and
+                    args[0] == meta['binary'] and '--allow-orders' not in args and '--state' not in args and
+                    args[args.index('--environment')+1] == 'test' and
+                    args[args.index('--router')+1] == '127.0.0.1:4101',
+                    'guardian_exact_publisherfree_preflight_unproved')
+            return
+        require(meta['authorized_date'] == self.cfg['authorized_date'] and
+                meta['binary'] == self.cfg['binary'] and meta['binary_sha256'] == self.cfg['binary_sha256'] and
+                self.rt.sha(meta['binary']) == meta['binary_sha256'], 'guardian_exact_candidate_changed')
+        require(meta['ext_id_range'] == self.cfg['ext_id_range'] and meta['instance'] == self.cfg['instance'],
+                'guardian_namespace_assignment_changed')
+        args = meta['args']
+        require(args[0] == meta['binary'] and args[1:3] == ['plaza2', 'run'] and
+                args[args.index('--state')+1] == meta['state'] and
+                args[args.index('--environment')+1] == 'test' and
+                args[args.index('--router')+1] == '127.0.0.1:4101', 'guardian_same_state_or_test_args_changed')
+        require(self.rt.budget(meta) >= 7000, 'guardian_identifier_capacity_unproved')
+
+    def owner(self, meta):
+        self.immutable(meta)
+        require(self.alive(meta['identity'], strict=True), 'guardian_product_absent')
+        inventory = self.rt.verify_owner(meta)
+        require(inventory['client_count'] == 1 and inventory['upstreams'] == 4, 'guardian_sole_test_owner_unproved')
+        return inventory
+
+    def readonly_status(self, meta, original_run):
+        reply = original_run([meta['binary'], 'plaza2', 'cmd', '--command-socket',
+                              str(Path(meta['work'])/'cmd.sock'), 'status'],
+                             cwd=meta['work'], env=meta['env'], capture_output=True, timeout=15)
+        require(reply.returncode == 0, 'guardian_fresh_status_refused')
+        status = json.loads(reply.stdout)
+        self.rt.configuration_gate(status, meta['targets'], self.cfg)
+        require(self.ops.ready(status, meta['targets'], entry=False), 'guardian_fresh_complete_native_status_unproved')
+        return status
+
+    def validate_reduction(self, meta, line, original_run):
+        tokens = line.split()
+        require(len(tokens) == 7 and tokens[0] == 'place' and tokens[-1] == 'ioc', 'guardian_only_reducing_ioc_allowed')
+        isin, side, qty = int(tokens[2]), tokens[3], int(tokens[4])
+        from decimal import Decimal
+        units = Decimal(tokens[5])*100000
+        require(units == units.to_integral_value(), 'guardian_reduction_price_off_grid')
+        price = int(units)
+        status = self.readonly_status(meta, original_run)
+        require(status['queued'] == 0 and all(row['state'] in TERMINAL for row in status['orders']),
+                'guardian_working_orders_before_reduction')
+        targets = [target for target in meta['targets'] if target['isin_id'] == isin]
+        require(len(targets) == 1, 'guardian_reduction_instrument_outside_scope')
+        positions = [row for row in status['positions'] if row['isin_id'] == isin]
+        require(len(positions) == 1, 'guardian_reduction_position_ambiguous')
+        position = positions[0]['xpos']
+        require(0 < abs(position) <= 2 and 0 < qty <= min(2, abs(position)) and
+                side == ('sell' if position > 0 else 'buy'), 'guardian_reduction_could_add_exposure')
+        instrument = next(row for row in status['instruments'] if row['isin_id'] == isin)
+        terms, book = instrument['session_terms'], instrument['book']
+        level = book['best_bid' if side == 'sell' else 'best_ask']
+        limit = next(row for row in status['configuration']['risk']['instruments'] if row['isin_id'] == isin)
+        require(level and level['quantity'] >= qty and (price <= level['price_scaled'] if side == 'sell' else price >= level['price_scaled']) and book['valid'] is True and
+                0 <= time.time_ns()-book['stream_last_callback_utc_ns'] <= 10_000_000_000 and
+                price % terms['min_step_scaled'] == 0 and terms['lower_price_scaled'] <= price <= terms['upper_price_scaled'] and
+                qty*price <= limit['max_quote_notional_scaled'] and
+                book.get('best_bid') and book['best_bid']['price_scaled'] > 0 and
+                qty*price <= 2*book['best_bid']['price_scaled'], 'guardian_reduction_quote_or_fixed_cap_unproved')
+        self.owner(meta)  # Recheck strict ownership after the fresh read-only status.
+
+    def gated_product(self, meta):
+        guardian, ops = self, self.ops
+        class OnlyCleanupProduct(ops.Product):
+            def command(self, line, permit_risk=True):
+                if line != 'status':
+                    guardian.owner(meta)
+                    require(line == 'kill on' or line.startswith(('cancel ', 'cancel-all ')),
+                            'guardian_product_command_not_risk_reducing')
+                return super().command(line, permit_risk=permit_risk)
+            def close(self):
+                raise GuardBlocked('guardian_legacy_close_forbidden')
+            def crash(self):
+                raise GuardBlocked('guardian_legacy_crash_forbidden')
+        product = OnlyCleanupProduct(meta['work'], meta['binary'], meta['env'], meta['args'], meta['targets'])
+        product.isolation = lambda: self.owner(meta)
+        product.risk_guard = lambda: (_ for _ in ()).throw(GuardBlocked('guardian_new_exposure_forbidden'))
+        return product
+
+    def guarded_cleanup(self, meta, product, until, final=True):
+        self.owner(meta)
+        original_module = self.ops.subprocess
+        original_run = original_module.run
+        guardian = self
+        class CleanupSubprocess:
+            def __getattr__(self, name):
+                return getattr(original_module, name)
+            def run(self, args, **kwargs):
+                if args[:3] == [meta['binary'], 'plaza2', 'cmd']:
+                    line = args[-1]
+                    if line != 'status':
+                        guardian.owner(meta)
+                        if line.startswith('place '):
+                            guardian.validate_reduction(meta, line, original_run)
+                        else:
+                            require(line in ('kill on', 'kill off') or line.startswith(('cancel ', 'cancel-all ')),
+                                    'guardian_cleanup_command_forbidden')
+                return original_run(args, **kwargs)
+        # Keep the sealed helper unchanged. Its direct reduction CLI requests
+        # pass the same owner/POS/no-exposure gates as Product.command.
+        self.ops.subprocess = CleanupSubprocess()
+        try:
+            return self.ops.clean_product(product, until=until, final=final)
+        finally:
+            self.ops.subprocess = original_module
+
+    def wait_absent(self, meta, timeout=20):
+        deadline = time.monotonic()+timeout
+        while self.alive(meta['identity'], strict=True):
+            if time.monotonic() >= deadline:
+                raise GuardBlocked('guardian_sigterm_unresponsive_no_escalation')
+            time.sleep(.2)
+
+    def recovery(self, meta, public):
+        require(not self.supervisor_alive() and public.get('phase') == 'planned_restart',
+                'guardian_recovery_not_dead_supervisor_planned_restart')
+        self.immutable(meta)
+        require(not self.alive(meta['identity'], strict=True) and
+                not Path('/proc', str(meta['identity']['pid'])).exists(), 'guardian_previous_product_not_absent')
+        inventory = self.rt.inventory(meta)
+        require(inventory['client_count'] == 0 and inventory['upstreams'] == 4, 'guardian_recovery_inventory_unproved')
+        require(self.rt.budget(meta) >= 8000, 'guardian_recovery_reservation_capacity_unproved')
+        # Durable one-shot latch precedes the only permitted recovery launch.
+        with (self.root/'guardian-recovery-latch.json').open('x') as latch:
+            json.dump({'started_utc_ns': time.time_ns(), 'no_new_exposure': True}, latch)
+            latch.flush(); os.fsync(latch.fileno())
+        folder = self.root/'guardian-recovery-a1'
+        folder.mkdir(mode=0o700)
+        args = list(meta['args'])
+        for option, replacement in (('--log', folder/'interaction.ndjson'), ('--command-socket', folder/'cmd.sock')):
+            at = args.index(option)
+            args[at+1] = str(replacement)
+        recovered = dict(meta, work=str(folder), args=args)
+        product = self.gated_product(recovered)
+        # This calls only Product.start, never close/crash. Same protected
+        # checkpoint and all other arguments/env remain unchanged.
+        product.start()
+        self.recovery_child = product.child
+        recovered['identity'] = self.ops.process_identity(product.child.pid)
+        self.rt.atomic(folder/'recovery-owned-private.json', recovered)
+        product = self.gated_product(recovered)
+        product.child = self.recovery_child
+        deadline = min(time.time()+60, self.cfg['hard_cleanup_deadline_utc']-20)
+        while time.time() < deadline:
+            require(product.child.poll() is None, 'guardian_recovery_product_exited_before_admission')
+            try:
+                self.immutable(recovered)
+                require(self.alive(recovered['identity'], strict=True), 'guardian_recovery_identity_changed')
+                status = product.status()
+                self.rt.configuration_gate(status, recovered['targets'], self.cfg)
+                if self.ops.ready(status, recovered['targets'], entry=False):
+                    self.owner(recovered)
+                    return recovered, product
+            except (OSError, ValueError, self.ops.Stop):
+                pass
+            time.sleep(.2)
+        raise GuardBlocked('guardian_recovery_native_admission_unproved')
+
+    def protect(self, meta, public, reason):
+        (self.root/'stop-requested').touch(mode=0o600, exist_ok=True)
+        require(meta is not None, 'guardian_active_product_metadata_missing')
+        if self.protection_deadline is None:
+            self.protection_deadline = min(time.time()+180, self.cfg['hard_cleanup_deadline_utc']-20)
+        until = self.protection_deadline
+        require(until > time.time(), 'guardian_cleanup_window_expired')
+        if meta.get('kind') in ('readonly_resolver', 'readonly_flat_probe', 'readonly_flat'):
+            self.immutable(meta)
+            if self.alive(meta['identity'], strict=True):
+                self.owner(meta)
+                self.rt.owned_sigterm_once(meta)
+                self.wait_absent(meta)
+            after = self.rt.inventory(meta)
+            require(after['client_count'] == 0, 'guardian_readonly_preflight_client_remaining')
+            return self.publish({'state': 'READONLY_PREFLIGHT_INTERRUPTED', 'initiating_reason': reason,
+                'publisherfree_binary_verified': True, 'product_exit': None, 'after': after,
+                'flat': 'UNKNOWN', 'cancel_confirmed': False, 'normal_execution_closeout': False,
+                'no_guardian_failure': False}, done=True)
+        recovered = self.recovery_meta is not None
+        if recovered:
+            meta, product = self.recovery_meta, self.recovery_product
+        if not self.alive(meta['identity'], strict=True):
+            # A missing product without a dead-supervisor planned restart never
+            # authorizes a new process. Preserve interruption and unknown exit.
+            if public.get('phase') != 'planned_restart' or self.supervisor_alive():
+                self.immutable(meta)
+                after = self.rt.inventory(meta)
+                proof = self.rt.readonly_flat(meta, 'guardian-absent-independent-flat')
+                return self.publish({'state': 'CLEANUP_VERIFIED_EXIT_UNKNOWN', 'initiating_reason': reason,
+                    'cancel_confirmed': True, 'flat': True, 'product_exit': None, 'after': after,
+                    'independent_flatness': proof, 'normal_execution_closeout': False,
+                    'no_guardian_failure': False}, done=True)
+            meta, product = self.recovery(meta, public)
+            recovered = True
+            self.recovery_meta, self.recovery_product = meta, product
+        elif not recovered:
+            product = self.gated_product(meta)
+        while True:
+            # An independent rollback may still be restoring the router's
+            # upstreams. Wait only read-only ownership/protection checks; no
+            # command is sent until the full strict TEST gate succeeds.
+            try:
+                self.owner(meta)
+                break
+            except GuardBlocked:
+                raise
+            except BaseException:
+                require(time.time() < until, 'guardian_rollback_restore_or_owner_unproved')
+                self.publish({'state': 'WAIT_ROLLBACK_RESTORATION', 'initiating_reason': reason, 'flat': 'UNKNOWN', 'no_guardian_failure': False})
+                time.sleep(.5)
+        try:
+            cleanup = self.guarded_cleanup(meta, product, until)
+        except BlockingIOError:
+            # Never signal through a held supervisor cleanup lock; it may be
+            # in the middle of an IOC that is already reducing a position.
+            return self.publish({'state': 'WAIT_CLEANUP_LOCK', 'initiating_reason': reason,
+                                 'flat': 'UNKNOWN', 'no_guardian_failure': False})
+        self.owner(meta)
+        # Exactly one owned SIGTERM. It can cancel a known working remainder;
+        # never follow with another signal, SIGKILL or an unverified PID kill.
+        self.rt.owned_sigterm_once(meta)
+        if recovered:
+            product.child.wait(timeout=20)
+            product_exit = product.child.returncode
+        else:
+            self.wait_absent(meta)
+            product_exit = None  # Not our child; process absence does not prove exit 0.
+        after = self.rt.inventory(meta)
+        require(after['client_count'] == 0, 'guardian_client_after_shutdown')
+        proof = self.rt.readonly_flat(meta, 'guardian-final-independent-flat')
+        safe = cleanup.get('cancel_confirmed') is True and cleanup.get('flat') is True
+        normal = recovered and type(product_exit) is int and product_exit == 0 and safe
+        outcome = ('RISK_REDUCING_RECOVERY_PASS' if normal else
+                   'CLEANUP_FLAT_WITH_NONZERO_EXIT' if product_exit is not None and product_exit != 0 else
+                   'CLEANUP_FLAT_CANCELLATION_UNCONFIRMED' if not safe else 'CLEANUP_VERIFIED_EXIT_UNKNOWN')
+        return self.publish({'state': outcome,
+             'initiating_reason': reason, 'cancel_confirmed': safe, 'flat': True, 'cleanup_receipt': cleanup,
+             'product_exit': product_exit, 'after': after, 'independent_flatness': proof,
+             'normal_execution_closeout': False, 'original_run_interrupted': True,
+             'recovery_process_used': recovered, 'no_guardian_failure': False}, done=True)
+
+    def check_terminal(self, meta, public):
+        require(meta is not None and not self.alive(meta['identity'], strict=True), 'terminal_product_still_present')
+        self.immutable(meta)
+        after = self.rt.inventory(meta)
+        proof = self.rt.readonly_flat(meta, 'guardian-terminal-independent-flat')
+        passed = terminal_clean(public) and after['client_count'] == 0
+        return self.publish({'state': 'SUPERVISOR_TERMINAL_VERIFIED' if passed else 'SUPERVISOR_TERMINAL_FAILED',
+            'supervisor_terminal_closeout_verified': passed, 'product_exit': public.get('product_exit'),
+            'cancel_confirmed': (public.get('closeout') or {}).get('cancel_confirmed') is True,
+            'flat': True, 'after': after, 'independent_flatness': proof,
+            'no_guardian_failure': passed}, done=True)
+
+    def run(self):
+        self.rt.atomic(self.root/'guardian-owned.json', self.ops.process_identity(os.getpid()))
+        while True:
+            try:
+                require(self.rt.sha('/proc/sys/kernel/random/boot_id') == self.rt.BOOT, 'guardian_boot_changed')
+                public, meta = self.read_public(), self.read_meta()
+                present = meta is not None and self.alive(meta['identity'], strict=True)
+                supervisor = self.supervisor_alive()
+                start = self.cfg.get('scheduled_start_utc', self.cfg.get('scheduled_start_utc_seconds'))
+                require(isinstance(start, (int, float)), 'guardian_scheduled_start_unproved')
+                if time.time() >= start or present:
+                    self.rt.day_check(self.cfg)
+                action = decision(self.cfg, public, time.time(), supervisor, present,
+                                  (self.root/'stop-requested').exists())
+                if action == 'TERMINAL':
+                    self.check_terminal(meta, public)
+                    return
+                if action == 'PROTECT':
+                    reason = ('supervisor_absent' if not supervisor else 'public_heartbeat_stale'
+                              if not heartbeat_fresh(public, time.time()) else 'stop_or_deadline')
+                    result = self.protect(meta, public, reason)
+                    if result.get('terminal') or (self.root/'guardian-done.json').exists():
+                        return
+                elif action.startswith('BLOCKED'):
+                    raise GuardBlocked(action.lower())
+                else:
+                    self.publish({'state': action, 'no_guardian_failure': True, 'flat': 'UNKNOWN'})
+            except BaseException as error:
+                (self.root/'guardian-error-private.txt').write_text(traceback.format_exc())
+                self.publish({'state': 'BLOCKED', 'flat': 'UNKNOWN', 'cancel_confirmed': False,
+                              'error_class': type(error).__name__,
+                              'failure_code': error.code if isinstance(error, GuardBlocked) else 'guardian_gate_or_cleanup_refused',
+                              'no_guardian_failure': False}, done=True)
+                return
+            time.sleep(self.interval)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('root', type=Path)
+    parser.add_argument('--execute', action='store_true')
+    args = parser.parse_args()
+    require(args.execute, 'guardian_execution_not_requested')
+    os.umask(0o077)
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(args.root))
+    import runtime
+    import ops
+    cfg = runtime.load_cfg(args.root)
+    require(cfg['authorized_date'] == '2026-10-16' and cfg['owner_authorized'] is True and
+            cfg['timer_paused'] is True and cfg['source_git_sha'] == runtime.HEAD, 'guardian_prestart_sealed_authorization_unproved')
+    # load_cfg already verifies the private sealed bundle, binary and boot.
+    # Tonight's scheduled watcher has no product and must not require that
+    # the wall clock already be the authorized Oct14 trading date.
+    Guardian(args.root, cfg, runtime, ops).run()
+
+
+if __name__ == '__main__':
+    main()

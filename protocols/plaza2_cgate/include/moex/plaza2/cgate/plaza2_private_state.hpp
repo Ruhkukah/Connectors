@@ -1,6 +1,6 @@
 #pragma once
 
-#include "moex/plaza2/cgate/plaza2_fake_engine.hpp"
+#include "moex/plaza2/cgate/plaza2_projection_types.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -41,7 +41,7 @@ struct ResumeMarkersSnapshot {
 };
 
 struct StreamHealthSnapshot {
-    generated::StreamCode stream_code{fake::kNoStreamCode};
+    generated::StreamCode stream_code{projection::kNoStreamCode};
     std::string stream_name;
     bool online{false};
     bool snapshot_complete{false};
@@ -57,6 +57,11 @@ struct StreamHealthSnapshot {
     std::int64_t last_event_id{0};
     std::int32_t last_event_type{0};
     std::string last_message;
+    // INSTRUMENTSTATE.instrument_state has no sess_id. Its current trading
+    // day is established by a committed sys_events row from the same stream.
+    std::int32_t instrument_status_session_id{0};
+    std::uint64_t instrument_status_session_epoch{1};
+    std::int64_t instrument_status_session_revision{0};
     // USERORDERBOOK periodic consistency is distinct from initial ONLINE.
     // It is established only by a committed regular info publication_state=1 row.
     bool periodic_snapshot_consistent{false};
@@ -66,8 +71,8 @@ struct StreamHealthSnapshot {
 // meaningful only within lifenum; callers must retain both values when
 // recording a readiness or execution-safety receipt.
 struct SourceRowProvenance {
-    generated::StreamCode stream_code{fake::kNoStreamCode};
-    generated::TableCode table_code{fake::kNoTableCode};
+    generated::StreamCode stream_code{projection::kNoStreamCode};
+    generated::TableCode table_code{projection::kNoTableCode};
     std::int64_t repl_rev{0};
     std::uint64_t lifenum{0};
     bool present{false};
@@ -113,11 +118,6 @@ struct TradingSessionSnapshot {
     std::int32_t state{0};
     bool has_current_status{false};
     std::int32_t current_status{0};
-    // SPECTRA93 compatibility shadows. SPECTRA9.9 removed these fields;
-    // readiness, session terms and order gates never consume them.
-    std::int64_t inter_cl_begin{0};
-    std::int64_t inter_cl_end{0};
-    std::int32_t inter_cl_state{0};
     bool eve_on{false};
     std::int64_t eve_begin{0};
     std::int64_t eve_end{0};
@@ -137,6 +137,27 @@ struct InstrumentLegSnapshot {
     std::int8_t leg_order_no{0};
 };
 
+enum class FutureVcbJoinStatus : std::uint8_t {
+    Missing = 0,
+    Resolved = 1,
+    Ambiguous = 2,
+};
+
+// Committed FORTS_REFDATA_REPL.fut_vcb row.  curr is the schema's c3
+// "Quotation currency" and board_md is the schema's c4 "SECBOARD trading
+// board ID from ASTS gateway".  Keep both raw strings; no board/economics
+// conversion belongs in the private-state projector.
+struct FutureVcbSnapshot {
+    std::int64_t repl_id{0};
+    std::int32_t base_contract_id{0};
+    std::string base_contract_code;
+    std::string currency;
+    std::string board_md;
+    SourceRowProvenance source;
+
+    bool operator==(const FutureVcbSnapshot&) const = default;
+};
+
 struct InstrumentSnapshot {
     std::int32_t isin_id{0};
     std::int32_t sess_id{0};
@@ -145,6 +166,16 @@ struct InstrumentSnapshot {
     std::string short_isin;
     std::string name;
     std::string base_contract_code;
+    // Derived only by an unambiguous committed fut_vcb join on
+    // base_contract_code. Zero means the join did not prove an ID.
+    std::int32_t base_contract_id{0};
+    FutureVcbJoinStatus future_vcb_join_status{FutureVcbJoinStatus::Missing};
+    std::string future_vcb_currency;
+    std::string future_vcb_board_md;
+    SourceRowProvenance future_vcb_provenance;
+    // Provenance of the last committed full instrument-term row copied into
+    // this merged view (fut_instruments or fut_sess_contents).
+    SourceRowProvenance definition_source_provenance;
     std::int32_t fut_isin_id{0};
     std::int32_t option_series_id{0};
     std::int32_t inst_term{0};
@@ -156,15 +187,20 @@ struct InstrumentSnapshot {
     std::int32_t current_session_state{0};
     bool has_current_status{false};
     std::int32_t current_status{0};
-    // A status row was independently received after the current REFDATA
-    // membership was established. Reset on membership/generation invalidation.
-    // Raw has_current_status remains available to legacy private consumers.
+    // The status row and committed INSTRUMENTSTATE.sys_events session belong
+    // to the same epoch and match the current REFDATA membership.
     bool current_status_refdata_bound{false};
+    std::uint64_t current_status_session_epoch{0};
     std::int32_t signs{0};
     bool put{false};
     bool is_spread{false};
     std::string min_step;
     std::string step_price;
+    // The locked reviewed schema defines step_price_curr as the value of the
+    // minimum increment in currency (and equal to step_price for ruble
+    // contracts). It is retained only when the authoritative REFDATA row
+    // supplies step_price_curr; callers must not derive it.
+    std::string step_price_curr;
     std::string settlement_price;
     std::string strike;
     std::int64_t last_trade_date{0};
@@ -252,9 +288,10 @@ struct PositionSnapshot {
 struct OwnOrderSnapshot {
     // TRADE and USERORDERBOOK are independent MOEX TEST evidence surfaces.
     // A snapshot is never a cross-stream merge: the source flags identify the
-    // surface that supplied this row (regular/current-day are one
-    // USERORDERBOOK surface).
+    // surface that supplied this row.
     bool multileg{false};
+    // Physical replication row currently supplying this independent surface.
+    std::int64_t repl_id{0};
     std::int64_t public_order_id{0};
     std::int64_t private_order_id{0};
     std::int32_t sess_id{0};
@@ -276,6 +313,11 @@ struct OwnOrderSnapshot {
     std::int64_t moment{0};
     std::uint64_t moment_ns{0};
     std::int32_t ext_id{0};
+    // Previous exchange order ID when the venue relists a multi-day order.
+    std::int64_t id_ord1{0};
+    std::int64_t prevorder_id{0};
+    // Native aliases contain alternate IDs; canonical IDs remain in the
+    // public_order_id/private_order_id scalar fields.
     std::vector<std::int64_t> public_order_id_aliases;
     std::vector<std::int64_t> private_order_id_aliases;
     bool identity_conflict{false};
@@ -309,9 +351,47 @@ struct OwnTradeSnapshot {
     std::string login_sell;
     std::int64_t moment{0};
     std::uint64_t moment_ns{0};
+    // Committed user_deal revision within the named TRADE LifeNum. Zero
+    // denotes unavailable provenance; revisions cannot be compared across lives.
+    std::int64_t repl_rev{0};
+    std::uint64_t trade_lifenum{0};
 };
 
-class Plaza2PrivateStateProjector final : public fake::CommitListener {
+inline constexpr std::size_t kPrivateRowChangeCapacity = 8192;
+
+struct PrivateRowChanges {
+    std::vector<OwnOrderSnapshot> orders;
+    std::vector<OwnTradeSnapshot> trades;
+    // Overflow discards the incomplete delta batch and stays sticky until
+    // take. Source invalidation or removal of undrained rows also requests
+    // resync. Reconcile complete current USERORDERBOOK and TRADE snapshots
+    // before using later deltas. No partial vectors are returned with this flag.
+    bool resync_required{false};
+    // An advancing TRADE order/deal purge floor, actual own-row retirement,
+    // changed TRADE LifeNum or delta overflow can remove fill history.
+    // Unchanged finite reopen markers without row retirement never set this;
+    // clear-all remains a loss signal even for an empty table.
+    bool trade_history_truncated{false};
+    // Regular-order fill baselines exclude loss confined to multileg tables.
+    // Whole TRADE resets, epoch changes and delta overflow affect both scopes.
+    bool regular_trade_history_truncated{false};
+    // A committed regular TRADE epoch/clear-all reload, distinct from finite
+    // purges, row retirement and buffer overflow. Used for absence reconciliation.
+    bool regular_trade_history_reloaded{false};
+};
+
+// Read-only capacity metrics for the indexed private projection. No account
+// data is exposed; sampling visits table indexes, never their source rows.
+struct PrivateStorageCapacity {
+    std::size_t order_buckets{}, order_identity_buckets{}, order_view_buckets{};
+    std::size_t trade_buckets{}, trade_view_buckets{};
+    std::size_t source_table_buckets{}, source_row_buckets{};
+    std::size_t order_snapshot_capacity{}, trade_snapshot_capacity{};
+
+    friend bool operator==(const PrivateStorageCapacity&, const PrivateStorageCapacity&) = default;
+};
+
+class Plaza2PrivateStateProjector final : public projection::CommitListener {
   public:
     Plaza2PrivateStateProjector();
     ~Plaza2PrivateStateProjector() override;
@@ -329,7 +409,12 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] const ResumeMarkersSnapshot& resume_markers() const;
     [[nodiscard]] std::span<const StreamHealthSnapshot> stream_health() const;
     [[nodiscard]] std::span<const TradingSessionSnapshot> sessions() const;
+    // Borrowed committed rows; pointers are invalidated by the next mutation.
+    [[nodiscard]] const TradingSessionSnapshot* find_session(std::int32_t sess_id) const;
+    [[nodiscard]] std::int32_t current_session_id(std::int64_t now_seconds = 0) const;
     [[nodiscard]] std::span<const InstrumentSnapshot> instruments() const;
+    [[nodiscard]] const InstrumentSnapshot* find_instrument(std::int32_t isin_id) const;
+    [[nodiscard]] std::span<const FutureVcbSnapshot> future_vcb() const;
     [[nodiscard]] std::optional<FutureSessionTerms> find_future_session_terms(std::int32_t isin_id) const;
     // Current-session indexed view. Empty for other sessions, missing/deleted rows or
     // another LifeNum. Committed source validity is distinct from live transport health.
@@ -342,8 +427,21 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::size_t limit_row_count() const noexcept;
     [[nodiscard]] std::size_t unknown_limit_row_count() const noexcept;
     [[nodiscard]] std::span<const PositionSnapshot> positions() const;
+    // Borrowed committed row, invalidated by the next mutation. No row is
+    // distinct from an offline POS stream.
+    [[nodiscard]] const PositionSnapshot* find_position(std::string_view account_code, std::int32_t isin_id,
+                                                        std::int8_t account_type) const;
+    // Contiguous committed views. Online updates replace indexed slots; new
+    // exchange identities append. Callers must not rely on sorted order.
     [[nodiscard]] std::span<const OwnOrderSnapshot> own_orders() const;
     [[nodiscard]] std::span<const OwnTradeSnapshot> own_trades() const;
+    // Committed upserts since the previous take, across all listener commits,
+    // bounded by kPrivateRowChangeCapacity total rows. Always inspect the
+    // resync flag before consuming vectors. Taking acknowledges the
+    // batch; reconcile synchronously on the owner thread before later polls.
+    // Technical record deletion/reload does not manufacture terminal orders.
+    [[nodiscard]] PrivateRowChanges take_row_changes();
+    [[nodiscard]] PrivateStorageCapacity storage_capacity() const noexcept;
 
     // Typed REFDATA provenance queries for the rows used to qualify a futures
     // target.  The optional is empty when the requested row is not currently
@@ -353,20 +451,23 @@ class Plaza2PrivateStateProjector final : public fake::CommitListener {
     [[nodiscard]] std::optional<SourceRowProvenance> session_source_provenance(generated::TableCode table_code,
                                                                                std::int32_t sess_id) const;
     [[nodiscard]] std::optional<std::uint64_t> refdata_lifenum() const;
+    [[nodiscard]] std::optional<std::uint64_t> stream_lifenum(generated::StreamCode stream_code) const;
     // Local committed freshness generation, not an exchange session identifier.
     [[nodiscard]] std::uint64_t status_binding_generation() const;
+    void reset_stream_snapshot(generated::StreamCode stream_code);
     void reset_status_snapshot(generated::StreamCode stream_code);
 
     // A regular-table-scoped USERORDERBOOK refresh makes the periodic snapshot
     // inconsistent while preserving listener ONLINE/currentness.
     void invalidate_periodic_snapshot(generated::StreamCode stream_code, generated::TableCode table_code);
 
-    void on_event(const fake::ScenarioSpec& scenario, const fake::EventSpec& event,
-                  const fake::EngineState& state) override;
-    void on_stream_row(const fake::ScenarioSpec& scenario, const fake::EventSpec& event, const fake::RowSpec& row,
-                       std::span<const fake::FieldValueSpec> fields, const fake::EngineState& state) override;
-    void on_transaction_commit(const fake::ScenarioSpec& scenario, const fake::EventSpec& commit_event,
-                               const fake::EngineState& state) override;
+    void on_event(const projection::ScenarioSpec& scenario, const projection::EventSpec& event,
+                  const projection::EngineState& state) override;
+    void on_stream_row(const projection::ScenarioSpec& scenario, const projection::EventSpec& event,
+                       const projection::RowSpec& row, std::span<const projection::FieldValueSpec> fields,
+                       const projection::EngineState& state) override;
+    void on_transaction_commit(const projection::ScenarioSpec& scenario, const projection::EventSpec& commit_event,
+                               const projection::EngineState& state) override;
 
   private:
     struct Impl;

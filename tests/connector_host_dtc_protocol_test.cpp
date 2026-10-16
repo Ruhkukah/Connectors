@@ -98,6 +98,27 @@ int main() {
             "decoder silently accepted data after truncated disconnect");
     decoder.reset();
 
+    // Native ConnectorHost carries the exchange event. The DTC boundary
+    // retains the existing compatibility values and text tokens.
+    namespace dtc = moex::connector_host::dtc;
+    moex::connector_host::ConnectorHostMarketDataSnapshot native;
+    auto mapped = dtc::make_dtc_market_data_snapshot(native);
+    require(!mapped.session_ready_witness && mapped.session_ready_witness_kind == dtc::SessionReadyWitnessKind::None,
+            "absent native ready event changed the DTC compatibility value");
+    native.session_ready_event = moex::plaza2::cgate::Plaza2Aggr20SysEventSnapshot{
+        .event_type = 1, .sess_id = 321, .seen_during_snapshot = true};
+    mapped = dtc::make_dtc_market_data_snapshot(native);
+    require(mapped.session_ready_witness && mapped.session_ready_witness->sess_id == 321 &&
+                static_cast<std::uint8_t>(mapped.session_ready_witness_kind) == 3 &&
+                dtc::session_ready_witness_kind_name(mapped.session_ready_witness_kind) ==
+                    "LateJoinCorroboratedSnapshot",
+            "snapshot ready event changed the legacy DTC value or token");
+    native.session_ready_event->seen_during_snapshot = false;
+    mapped = dtc::make_dtc_market_data_snapshot(native);
+    require(static_cast<std::uint8_t>(mapped.session_ready_witness_kind) == 1 &&
+                dtc::session_ready_witness_kind_name(mapped.session_ready_witness_kind) == "OnlineSynchronousEvent",
+            "online ready event changed the legacy DTC value or token");
+
     const moex::connector_host::dtc::DtcReadOnlyCapabilities capabilities{};
     require(!capabilities.order_entry && !capabilities.accounts && !capabilities.positions,
             "read-only DTC capabilities unexpectedly advertise execution");
