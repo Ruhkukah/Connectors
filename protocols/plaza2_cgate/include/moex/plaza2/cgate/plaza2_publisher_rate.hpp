@@ -26,7 +26,9 @@ class Plaza2PublisherRateGate {
             return false;
         }
         last_ms_ = now_ms;
-        while (used_ && now_ms - times_[head_] >= 1000) {
+        // Inputs are truncated to whole milliseconds. Retain the lost
+        // fractional millisecond so a rolling second cannot expire early.
+        while (used_ && now_ms - times_[head_] >= 1001) {
             head_ = (head_ + 1) % times_.size();
             --used_;
         }

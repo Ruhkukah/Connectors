@@ -148,6 +148,26 @@ void burst() {
         require(count <= 5, "configured limit exceeded in a rolling second");
     }
 }
+void burst_submillisecond_boundary() {
+    Fixture f;
+    auto manager = f.manager();
+    for (int i = 0; i < 6; ++i)
+        require(manager.place(request("fractional-burst" + std::to_string(i))).empty(), "fractional burst refused");
+    const auto poll_ns = [&](std::int64_t ns) {
+        f.ms = ns / 1000000;
+        manager.poll(OrderManager::Clock::time_point{} + std::chrono::nanoseconds(ns), 1700000000);
+    };
+    poll_ns(925742);
+    require(f.sent.size() == 5 && manager.queued() == 1, "fractional burst did not hit the configured rate");
+    // Both times truncate to a 1000ms difference, but true elapsed time
+    // is only 999.074258ms, matching the native F8 boundary failure.
+    poll_ns(1000000000);
+    require(f.sent.size() == 5 && manager.queued() == 1, "sixth post escaped within 999.074258ms");
+    poll_ns(1000925742);
+    require(f.sent.size() == 5, "truncated clock lost its fractional-millisecond guard");
+    poll_ns(1001000000);
+    require(f.sent.size() == 6 && manager.queued() == 0, "guarded burst did not resume or lost a command");
+}
 void cancels() {
     Fixture f;
     auto manager = f.manager();
@@ -179,6 +199,8 @@ void cancels() {
     f.poll(manager, 3000);
     require(cancel_count() == before_retry, "cancel ignored its first business-failure retry delay");
     f.poll(manager, 3001);
+    require(cancel_count() == before_retry, "cancellation bypassed the shared rate rounding guard");
+    f.poll(manager, 3002);
     require(cancel_count() == before_retry + 1, "failed cancel did not retry");
     observe(manager, row(manager.orders().at("working"), 1001, 0, 0));
     require(manager.orders().at("working").state == OrderState::Cancelled,
@@ -1359,6 +1381,8 @@ void eligible_commands_and_logging() {
                           }) == 1,
             "throttle logs repeat on every blocked poll");
     throttle.poll(limited, 1000);
+    require(throttle.sent.size() == 1, "throttle expired before the millisecond rounding guard");
+    throttle.poll(limited, 1001);
     require(std::count_if(throttle.log.begin(), throttle.log.end(),
                           [](const auto& line) {
                               return line.starts_with("throttle") && line.find("\"active\":false") != std::string::npos;
@@ -1407,6 +1431,9 @@ void command_audit_only_actual_post() {
             "local send validation/allocation failure was journaled as an exchange command");
     f.certainty = cg::Plaza2SubmissionCertainty::PossiblySent;
     f.poll(manager, 1000);
+    require(count("command{") == 0 && count("command_result{") == 1,
+            "unsent attempt was refunded before the rounding guard expired");
+    f.poll(manager, 1001);
     require(count("command{") == 1 && count("command_result{") == 2,
             "actual uncertain post lost its command/result journal record");
     const auto posted_id = f.sent.back().id;
@@ -2125,6 +2152,7 @@ int main() {
         moex::connector_host::move_no_replacement_regression<Fixture>();
         moex::connector_host::lost_add_recovery_regression<Fixture>();
         command_audit_only_actual_post();
+        burst_submillisecond_boundary();
         burst();
         cancels();
         ambiguity();
