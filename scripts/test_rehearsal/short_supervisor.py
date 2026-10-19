@@ -499,6 +499,31 @@ class Supervisor(base.Supervisor):
         return dict(cancel_confirmed=True, flat=True, restored=True, upstreams=4,
                     client_count=1, complete_reconstruction=True, failed_case=name)
 
+    def await_preflight_upstreams(self):
+        """Wait read-only for all four links; identity and safety failures refuse."""
+        original = None
+        deadline = self.cfg['product_start_latest_utc']
+        while time.time() < deadline:
+            self.tick()
+            probe, guard, upstream = self.rt._probe()
+            launch, health = probe.inspect({'environment': 'test'})
+            base.require(health['client_count'] == 0, 'short_preflight_competing_client')
+            identity = (launch.pid, launch.start, launch.argv, launch.env, launch.cwd)
+            if original is None:
+                original = identity
+            base.require(identity == original, 'short_preflight_router_identity_changed')
+            white = upstream.pristine_whitelist(probe, launch, self.rt.WHITE)
+            rows = guard.strict_upstreams(upstream, probe, launch.pid, white)
+            base.require(len(rows) <= 4, 'short_preflight_upstream_count_invalid')
+            base.require(time.time() < deadline, 'short_preflight_upstreams_deadline')
+            self.publish(dict(state='scheduled', phase='preflight',
+                preflight_wait='UPSTREAM_CONNECTIONS', upstream_connections=len(rows),
+                required_upstream_connections=4))
+            if len(rows) == 4:
+                return
+            time.sleep(min(1, max(0, deadline - time.time())))
+        raise base.Refused('short_preflight_upstreams_deadline')
+
     def run(self):
         validate(self.cfg)
         self.fault_bridge.authorized(self.fault_core, self, self.cfg, preflight=True)
@@ -515,12 +540,7 @@ class Supervisor(base.Supervisor):
         self.tick()
         # The canonical helper validates pristine config and caches its resolved
         # whitelist before any order; later scans still validate all endpoints.
-        probe, guard, upstream = self.rt._probe()
-        launch, health = probe.inspect({'environment': 'test'})
-        base.require(health['client_count'] == 0, 'short_preflight_competing_client')
-        white = upstream.pristine_whitelist(probe, launch, self.rt.WHITE)
-        base.require(len(guard.strict_upstreams(upstream, probe, launch.pid, white)) == 4,
-                     'short_preflight_four_whitelisted_upstreams_unproved')
+        self.await_preflight_upstreams()
         base.require(time.time() < self.cfg['product_start_latest_utc'], 'short_product_start_window_missed')
         with (self.root / 'execution-claim.json').open('x') as out:
             json.dump(dict(claimed_utc_ns=time.time_ns(), source_git_sha=base.HEAD), out)
