@@ -731,6 +731,7 @@ struct Plaza2ListenerCallbackState {
     void* listener_handle{nullptr};
     bool scheme_loaded{false};
     std::vector<RuntimeMessagePlan> message_plans;
+    std::vector<Plaza2RawTableBinding> raw_tables;
     std::vector<Plaza2DecodedFieldValue> decoded_fields;
     std::vector<std::string> text_storage;
     Plaza2Error last_error;
@@ -771,26 +772,40 @@ struct Plaza2ListenerCallbackState {
     }
 
     state.message_plans.clear();
+    state.raw_tables.clear();
+    const bool raw = state.handler && state.handler->wants_raw_replication({});
     std::size_t msg_index = 0;
     for (auto* message = scheme->messages; message != nullptr; message = message->next, ++msg_index) {
         const auto message_name = message->name == nullptr ? std::string{} : std::string(message->name);
         const auto* table = find_table_descriptor_for_stream(state.stream_code, message_name);
-        if (table == nullptr) {
+        if (table == nullptr && !raw) {
             continue;
         }
-
+        Plaza2RawTableBinding binding{.name = message_name, .index = msg_index, .row_size = message->size};
+        for (auto* f = message->fields; f; f = f->next)
+            binding.fields.push_back({.name = f->name ? f->name : "",
+                                      .type_token = f->type ? f->type : "",
+                                      .offset = f->offset,
+                                      .size = f->size,
+                                      .index = binding.fields.size()});
+        state.raw_tables.push_back(std::move(binding));
         RuntimeMessagePlan plan;
-        plan.table_code = table->table_code;
+        plan.table_code = table ? table->table_code : kNoTableCode;
         plan.msg_index = msg_index;
         plan.msg_name = message_name;
 
+        if (raw) {
+            state.message_plans.push_back(std::move(plan));
+            continue;
+        }
+        const auto required_fields = state.handler ? state.handler->replication_fields(table->table_code)
+                                                   : generated::FieldsForTable(table->table_code);
         auto* field = message->fields;
         std::size_t ordinal = 0;
         while (field != nullptr) {
             const auto field_name = field->name == nullptr ? std::string_view{} : std::string_view(field->name);
-            const auto fields = generated::FieldsForTable(table->table_code);
             const generated::FieldDescriptor* descriptor = nullptr;
-            for (const auto& candidate : fields) {
+            for (const auto& candidate : required_fields) {
                 if (candidate.field_name == field_name) {
                     descriptor = &candidate;
                     break;
@@ -829,21 +844,20 @@ struct Plaza2ListenerCallbackState {
         }
 
         if (table->table_code == generated::TableCode::kFortsDealsReplDeal &&
-            std::any_of(generated::FieldsForTable(table->table_code).begin(),
-                        generated::FieldsForTable(table->table_code).end(), [&](const auto& expected) {
-                            return std::count_if(plan.fields.begin(), plan.fields.end(), [&](const auto& item) {
-                                       return item.field_code == expected.field_code;
-                                   }) != 1;
-                        })) {
+            std::any_of(required_fields.begin(), required_fields.end(), [&](const auto& expected) {
+                return std::count_if(plan.fields.begin(), plan.fields.end(),
+                                     [&](const auto& item) { return item.field_code == expected.field_code; }) != 1;
+            })) {
             return {.code = Plaza2ErrorCode::DecodeFailed,
                     .message = "public DEALS schema does not contain all reviewed deal fields"};
         }
         // Product metadata is the retained decoder's consumed field contract.
         // Validate all of it; unrelated server fields remain accepted above.
-        for (const auto& expected : generated::FieldsForTable(table->table_code)) {
+        for (const auto& expected : required_fields) {
             const auto actual = std::find_if(plan.fields.begin(), plan.fields.end(),
                                              [&](const auto& f) { return f.field_code == expected.field_code; });
             if (actual == plan.fields.end() || actual->type_token != expected.type_token ||
+                actual->offset > message->size || actual->size > message->size - actual->offset ||
                 std::count_if(plan.fields.begin(), plan.fields.end(),
                               [&](const auto& f) { return f.field_code == expected.field_code; }) != 1) {
                 return {.code = Plaza2ErrorCode::IncompatibleScheme,
@@ -870,7 +884,7 @@ struct Plaza2ListenerCallbackState {
 
     std::vector<std::string_view> required_tables;
     using enum generated::StreamCode;
-    switch (state.stream_code) {
+    switch (raw ? kNoStreamCode : state.stream_code) {
     case kFortsTradeRepl:
         required_tables = {"orders_log", "user_deal", "heartbeat"};
         break;
@@ -912,7 +926,7 @@ struct Plaza2ListenerCallbackState {
     if (state.handler == nullptr) {
         return {};
     }
-    if (state.shared->settings.listener_event_log)
+    if (state.shared->settings.listener_event_log && state.handler->should_log_listener_event(event))
         state.shared->settings.listener_event_log(event);
     const auto error = state.handler->on_plaza2_listener_event(event);
     return error;
@@ -976,6 +990,7 @@ struct Plaza2ListenerCallbackState {
                                                    })
                                   ? "REFDATA sys_messages table unavailable; exchange messages cannot be shown"
                                   : "",
+                .raw_tables = state->raw_tables,
             };
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
@@ -1068,6 +1083,7 @@ struct Plaza2ListenerCallbackState {
                 .signed_value = payload.table_rev,
                 .clear_deleted_flags = payload.flags,
                 .table_index = payload.table_idx,
+                .raw_table = &state->raw_tables[static_cast<std::size_t>(plan - state->message_plans.data())],
             };
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
@@ -1146,7 +1162,7 @@ struct Plaza2ListenerCallbackState {
                 return kCgErrOk;
             }
 
-            if (state->handler && state->handler->wants_raw_replication()) {
+            if (state->handler && state->handler->wants_raw_replication(plan->msg_name)) {
                 // No per-record strings, heap allocation, timestamp rounding or decimal formatting.
                 if (plan->msg_index != payload->msg_index || !payload->data ||
                     (payload->num_nulls && !payload->nulls)) {
@@ -1162,6 +1178,7 @@ struct Plaza2ListenerCallbackState {
                     .signed_value = payload->rev,
                     .raw_nulls = {payload->nulls, payload->num_nulls},
                     .table_index = payload->msg_index,
+                    .raw_table = &state->raw_tables[static_cast<std::size_t>(plan - state->message_plans.data())],
                 };
                 if (const auto error = dispatch_listener_event(*state, event); error)
                     return fail(error);
@@ -1261,6 +1278,7 @@ struct Plaza2ListenerCallbackState {
                 .signed_value = payload->rev,
                 .raw_nulls = {payload->nulls, payload->num_nulls},
                 .table_index = payload->msg_index,
+                .raw_table = &state->raw_tables[static_cast<std::size_t>(plan - state->message_plans.data())],
             };
             if (const auto error = dispatch_listener_event(*state, event); error) {
                 return fail(error);
@@ -1268,7 +1286,7 @@ struct Plaza2ListenerCallbackState {
             return kCgErrOk;
         }
         default:
-            if (state->handler && state->handler->wants_raw_replication()) {
+            if (state->handler && state->handler->wants_raw_replication({})) {
                 return fail(
                     {.code = Plaza2ErrorCode::DecodeFailed, .message = "unsupported public replication callback"});
             }

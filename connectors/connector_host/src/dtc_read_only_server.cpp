@@ -202,7 +202,7 @@ struct DtcReadOnlyServer::Impl {
     std::uint32_t symbol_id{};
     std::uint32_t trade_symbol_id{};
     std::size_t depth_limit{};
-    std::uint64_t batch{}, version{}, epoch{}, authority_epoch{};
+    std::uint64_t batch{}, version{}, epoch{}, authority_epoch{}, commit_to_queue_ns{};
     std::uint64_t trade_stream_epoch{}, trade_cursor{}, trade_delivery_sequence{};
     std::vector<std::pair<std::size_t, std::size_t>> trade_output_ranges;
     std::string symbol, exchange, underlying_board, tick, error;
@@ -222,8 +222,8 @@ struct DtcReadOnlyServer::Impl {
     Impl(DtcMarketDataSource& s, DtcReadOnlyServerConfig c)
         : source(s), config(std::move(c)), decoder(config.max_frame_bytes) {
         if (config.max_frame_bytes < 16 || config.max_frame_bytes > UINT16_MAX || config.max_queued_bytes < 64 ||
-            config.max_queued_bytes > 1024 * 1024 || config.max_write_bytes_per_poll == 0 ||
-            config.max_write_bytes_per_poll > 4096 || config.max_depth_levels == 0 || config.max_depth_levels > 20 ||
+            config.max_queued_bytes > 16 * 1024 * 1024 || config.max_write_bytes_per_poll == 0 ||
+            config.max_write_bytes_per_poll > 4096 || config.max_depth_levels == 0 || config.max_depth_levels > 20000 ||
             config.idle_timeout.count() <= 0 || config.write_timeout.count() <= 0)
             throw std::invalid_argument("invalid DTC server bounds");
         if (config.require_local_auth && (config.local_username.empty() || config.local_password.empty() ||
@@ -315,8 +315,8 @@ struct DtcReadOnlyServer::Impl {
             market_data_reject(id ? id : symbol_id, reason);
         }
     }
-    void reject(const std::string& reason) {
-        error = reason;
+    void reject(std::string_view reason, const DtcMarketDataSnapshot* source_state = nullptr) {
+        error = std::string(reason);
         // A partially written frame cannot be replaced by a LOGOFF header.
         if (sent) {
             disconnect();
@@ -333,8 +333,17 @@ struct DtcReadOnlyServer::Impl {
         pending_definition_response_end = 0;
         pending_definition_response = false;
         Bytes p;
-        str(p, 1, reason);
-        integer(p, 2, 1);
+        if (source_state) {
+            if (!authority(*source_state))
+                return;
+            integer(p, 1, symbol_id);
+            integer(p, 2, 1);
+            if (!queue(116, p))
+                return;
+            p.clear();
+        }
+        str(p, 1, error);
+        integer(p, 2, source_state ? 0 : 1);
         if (queue(5, p))
             closing = true;
     }
@@ -373,24 +382,40 @@ struct DtcReadOnlyServer::Impl {
                 ";order_entry_allowed=false;accounts=false;positions=false;orders=false");
         queue(701, p);
     }
-    bool authority(const DtcMarketDataSnapshot& s) {
+    bool authority(const DtcMarketDataSnapshot& s, std::uint64_t empty_batch = 0) {
         Bytes p;
         auto boolean = [](bool value) { return value ? "true" : "false"; };
         const auto name = session_ready_witness_kind_name(s.session_ready_witness_kind);
-        str(p, 1,
-            std::string("moex.source_authority.v1 {\"symbol_id\":") + std::to_string(symbol_id) +
-                ",\"source_mode\":\"" + std::string(dtc_source_mode_name(config.source_mode)) +
-                "\",\"stream_epoch\":" + std::to_string(s.stream_epoch) + ",\"aggr_online\":" + boolean(s.aggr_online) +
-                ",\"book_snapshot_current\":" + boolean(s.book_snapshot_current) +
-                ",\"session_ready_witness_kind\":\"" + plaza2::cgate::text::json_escape_utf8(name) +
-                "\",\"market_data_display_allowed\":" + boolean(s.market_data_display_allowed) +
-                ",\"order_entry_allowed\":false,\"exchange_confirmed\":false}");
+        auto json = std::string("moex.source_authority.v1 {\"symbol_id\":") + std::to_string(symbol_id) +
+                    ",\"source_mode\":\"" + std::string(dtc_source_mode_name(config.source_mode)) +
+                    "\",\"stream_epoch\":" + std::to_string(s.stream_epoch) +
+                    ",\"aggr_online\":" + boolean(s.aggr_online) +
+                    ",\"book_snapshot_current\":" + boolean(s.book_snapshot_current) +
+                    ",\"session_ready_witness_kind\":\"" + plaza2::cgate::text::json_escape_utf8(name) +
+                    "\",\"market_data_display_allowed\":" + boolean(s.market_data_display_allowed) +
+                    ",\"order_entry_allowed\":false,\"exchange_confirmed\":false";
+        if (s.full_order_log)
+            json += std::string(",\"source_kind\":\"full_order_log\",\"book_state\":\"") +
+                    (s.crossed_book                   ? "crossed"
+                     : !s.market_data_display_allowed ? "unavailable"
+                     : empty_batch || s.empty_book    ? "empty"
+                                                      : "nonempty") +
+                    "\"";
+        if (empty_batch)
+            json += ",\"depth_snapshot\":{\"empty\":true,\"dtc_batch_sequence\":" + std::to_string(empty_batch) +
+                    ",\"source_snapshot_version\":" + std::to_string(s.source_snapshot_version) +
+                    ",\"snapshot_watermark\":" + std::to_string(s.snapshot_watermark) +
+                    ",\"level_count\":0,\"exchange_moment_ns\":" + std::to_string(s.exchange_moment_ns) + "}";
+        str(p, 1, json + "}");
         integer(p, 2, 0);
         return queue(kDtcSourceAuthorityMessage, p);
     }
     void snapshot(const DtcMarketDataSnapshot& s) {
         if (!usable(s)) {
-            reject("source authority unavailable; fresh session required");
+            if (s.full_order_log)
+                reject("source authority or metadata changed; fresh session required", &s);
+            else
+                reject("source authority unavailable; fresh session required");
             return;
         }
         if (s.symbol != symbol || s.underlying_board != underlying_board || s.min_step != tick || s.isin_id != isin ||
@@ -398,7 +423,8 @@ struct DtcReadOnlyServer::Impl {
             reject("source metadata changed; fresh definition required");
             return;
         }
-        if (s.levels.empty() || s.levels.size() > 40 || !s.stream_epoch || !s.source_snapshot_version) {
+        if ((!s.full_order_log && s.levels.empty()) || s.levels.size() > config.max_depth_levels * 2 ||
+            !s.stream_epoch || !s.source_snapshot_version) {
             reject(source_error("invalid depth snapshot"));
             return;
         }
@@ -406,8 +432,8 @@ struct DtcReadOnlyServer::Impl {
         std::set<std::uint64_t> ids;
         for (const auto& row : rows) {
             if ((row.side != DtcDepthSide::Bid && row.side != DtcDepthSide::Ask) || row.volume <= 0 ||
-                !row.source_row_id || !row.source_sequence || row.source_sequence > INT64_MAX ||
-                !ids.insert(row.source_row_id).second) {
+                (!s.full_order_log && (!row.source_row_id || !row.source_sequence || row.source_sequence > INT64_MAX ||
+                                       !ids.insert(row.source_row_id).second))) {
                 reject(source_error("invalid row identity or quantity"));
                 return;
             }
@@ -461,8 +487,10 @@ struct DtcReadOnlyServer::Impl {
             integer(p, 14, s.snapshot_watermark);
             integer(p, 15, rows.size());
             integer(p, 18, s.source_snapshot_hash);
-            integer(p, 19, r.source_sequence);
-            integer(p, 20, r.source_row_id);
+            if (!s.full_order_log) {
+                integer(p, 19, r.source_sequence);
+                integer(p, 20, r.source_row_id);
+            }
             auto f = frame(145, p);
             if (f.size() > config.max_frame_bytes || staged.size() + f.size() > config.max_queued_bytes) {
                 error = "DTC snapshot exceeds queue bounds";
@@ -479,7 +507,7 @@ struct DtcReadOnlyServer::Impl {
         available.clear();
         integer(available, 1, symbol_id);
         integer(available, 2, 2);
-        if (!queue(116, available) || !authority(s))
+        if (!queue(116, available) || !authority(s, rows.empty() ? next_batch : 0))
             return;
         if (staged.size() > config.max_queued_bytes - output.size()) {
             error = "DTC snapshot backpressure";
@@ -494,6 +522,74 @@ struct DtcReadOnlyServer::Impl {
         epoch = s.stream_epoch;
         authority_epoch = s.market_data_authority_epoch;
         witness = witness_number(s.session_ready_witness_kind);
+    }
+    void publish_depth_commit() {
+        commit_to_queue_ns = 0;
+        if (client < 0 || !logged_on || closing || !depth_subscribed || !source.incremental_depth())
+            return;
+        const auto s = source.status_snapshot();
+        if (!usable(s) || !accepted_definition || definition_validation(s).definition != accepted_definition ||
+            s.market_data_authority_epoch != authority_epoch || s.stream_epoch != epoch) {
+            reject("source authority or metadata changed; fresh session required", &s);
+            return;
+        }
+        if (s.source_snapshot_version == version)
+            return;
+        if (version == UINT64_MAX || s.source_snapshot_version != version + 1) {
+            reject("FullOrderLog commit was missed; fresh snapshot required", &s);
+            return;
+        }
+        const auto changes = source.depth_changes();
+        const auto next_batch = batch + 1;
+        if (!next_batch) {
+            reject("DTC batch overflow");
+            return;
+        }
+        Bytes staged;
+        for (std::size_t i = 0; i < changes.size(); ++i) {
+            const auto& level = changes[i];
+            const float price = static_cast<float>(static_cast<double>(level.price_scaled) / 100000.0);
+            float quantity{};
+            if (!std::isfinite(price) || level.volume < 0 ||
+                (level.volume && !exact_dtc_quantity(level.volume, quantity)) ||
+                (level.side != DtcDepthSide::Bid && level.side != DtcDepthSide::Ask) || !level.depth_level ||
+                level.depth_level > depth_limit) {
+                reject("FullOrderLog incremental price or quantity cannot be represented by DTC");
+                return;
+            }
+            Bytes p;
+            integer(p, 1, symbol_id);
+            integer(p, 2, level.exchange_moment_ns / 1000000);
+            real(p, 3, price);
+            real(p, 4, quantity);
+            integer(p, 5, static_cast<unsigned>(level.side));
+            integer(p, 6, level.volume ? 1 : 2); // replace/delete the committed position
+            integer(p, 9, level.depth_level);
+            integer(p, 8, i + 1 == changes.size() ? 1 : i == 0 ? 3 : 2);
+            integer(p, 13, s.stream_epoch);
+            integer(p, 14, next_batch);
+            integer(p, 15, s.source_snapshot_version);
+            auto f = frame(140, p);
+            if (f.size() > config.max_frame_bytes || f.size() > config.max_queued_bytes - staged.size()) {
+                reject("FullOrderLog commit exceeds DTC queue bounds");
+                return;
+            }
+            staged.insert(staged.end(), f.begin(), f.end());
+        }
+        if (staged.size() > config.max_queued_bytes - output.size()) {
+            reject("FullOrderLog commit backpressure; fresh snapshot required", &s);
+            return;
+        }
+        if (!staged.empty()) {
+            if (output.empty())
+                last_write = Clock::now();
+            output.insert(output.end(), staged.begin(), staged.end());
+            batch = next_batch;
+            if (s.committed_at != Clock::time_point{})
+                commit_to_queue_ns =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - s.committed_at).count();
+        }
+        version = s.source_snapshot_version;
     }
     void poll_public_deals() {
         if (!source.capabilities().market_data) {
@@ -863,7 +959,8 @@ struct DtcReadOnlyServer::Impl {
             symbol_id = static_cast<std::uint32_t>(id);
             depth_limit = levels ? static_cast<std::size_t>(levels) : config.max_depth_levels;
             depth_subscribed = action == 1;
-            snapshot(s);
+            source.configure_depth_limit(depth_limit);
+            snapshot(source.snapshot());
             return;
         }
         reject("Read-only DTC: trading, accounts and unsupported requests prohibited");
@@ -925,38 +1022,19 @@ struct DtcReadOnlyServer::Impl {
             if (client < 0)
                 return;
             if (logged_on && !closing && depth_subscribed) {
-                auto s = source.snapshot();
+                auto s = source.status_snapshot();
                 if (!usable(s) || s.symbol != symbol || s.underlying_board != underlying_board || s.min_step != tick ||
                     s.isin_id != isin || !accepted_definition ||
                     definition_validation(s).definition != accepted_definition ||
                     s.market_data_authority_epoch != authority_epoch ||
                     witness_number(s.session_ready_witness_kind) != witness) {
-                    // Discard unsent stale batches. If a frame was partially
-                    // written, close immediately rather than corrupt framing.
-                    if (sent) {
-                        disconnect();
-                        return;
-                    }
-                    output.clear();
-                    pending_wire_logon_capabilities = {};
-                    pending_logon_response_end = 0;
-                    pending_logon_response = false;
-                    pending_definition_response_end = 0;
-                    pending_definition_response = false;
-                    if (!authority(s))
-                        return;
-                    Bytes unavailable;
-                    integer(unavailable, 1, symbol_id);
-                    integer(unavailable, 2, 1);
-                    if (!queue(116, unavailable))
-                        return;
-                    Bytes logoff;
-                    str(logoff, 1, "source authority or metadata changed; fresh session required");
-                    integer(logoff, 2, 0);
-                    if (queue(5, logoff))
-                        closing = true;
-                } else if (s.source_snapshot_version != version || s.stream_epoch != epoch)
-                    snapshot(s);
+                    reject("source authority or metadata changed; fresh session required", &s);
+                } else if (s.source_snapshot_version != version || s.stream_epoch != epoch) {
+                    if (source.incremental_depth())
+                        publish_depth_commit();
+                    else
+                        snapshot(s);
+                }
             }
             if (client >= 0 && logged_on && !closing && trade_subscribed)
                 poll_public_deals();
@@ -1054,6 +1132,17 @@ void DtcReadOnlyServer::stop() noexcept {
     impl_->disconnect();
     close_fd(impl_->listener);
     impl_->bound_port = 0;
+}
+void DtcReadOnlyServer::publish_depth_commit() {
+    try {
+        impl_->publish_depth_commit();
+    } catch (...) {
+        impl_->error = "DTC committed source failure";
+        impl_->disconnect();
+    }
+}
+std::uint64_t DtcReadOnlyServer::last_commit_to_queue_ns() const noexcept {
+    return impl_->commit_to_queue_ns;
 }
 std::uint16_t DtcReadOnlyServer::port() const noexcept {
     return impl_->bound_port;
