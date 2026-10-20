@@ -1,8 +1,13 @@
 # MOEX certification day — UNARMED; date to be agreed
 
-**Scope:** one formal, MOEX-agreed Monday–Thursday TEST day. This document
-authorizes nothing. The separate Friday short test has 09:00 preflight,
-10:00 earliest entry, 14:30 entry cutoff and 15:00 cleanup; it is not this day.
+**Active TEST target: T0 only.** Preserve all previous T1 evidence; do not
+fallback to T1 or reuse its account/ID state. This document authorizes nothing.
+The remaining short-session preparation is for Wednesday 21 October, with a
+proposed 09:00 preflight, 09:05 earliest entry, admission by 12:00, entry cutoff
+14:30, flat by 14:40 and cleanup by 15:00. It remains unarmed. T0 opening
+auction is 10:00–10:19:45; wait read-only until continuous trading resumes at
+10:20. The formal certification day and acceptance of T0 evidence still require
+agreement with MOEX; the accepted 15 October full-day evidence is retained.
 Submit the questionnaire, candidate/source hashes, declared URLs/threading and
 Day/IOC/AddOrder/MoveOrder/DelOrder/DelUserOrders scope to the specialist first.
 Quantity-10 partial-fill tooling remains inactive unless separately requested.
