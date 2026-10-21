@@ -192,6 +192,118 @@ class Composition(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'profile_pin_inconsistent'):
                 composition.compose(sources, self.config(), {})
 
+    def test_fresh_preentry_gate_replaces_historical_terminal_claim_before_start_effects(self):
+        sources = self.sources()
+        sources['t0_admission_scope.py'] = (HERE / 't0_admission_scope.py').read_text()
+        sources['supervisor.py'] = '''from pathlib import Path
+import json, time
+def validate(cfg):
+    return cfg.get('predecessor_clean_terminal_verified') is True
+class Supervisor:
+    def start(self):
+        self.effect()
+'''
+        copies, _, _ = composition.compose(sources, self.config(), {})
+        self.assertNotIn('predecessor_clean_terminal_verified', copies['supervisor.py'])
+        namespace = {}
+        exec(copies['supervisor.py'], namespace)
+        calls = []
+        runner = namespace['Supervisor']()
+        runner.root, runner.cfg, runner.rt = None, {}, None
+        runner.effect = lambda: calls.append('effect')
+        with self.assertRaisesRegex(RuntimeError, 'held_unarmed'):
+            runner.start()
+        namespace['_T0_COMPOSITION_HELD'] = False
+        with self.assertRaisesRegex(RuntimeError, 'receipt_path_unproved'):
+            runner.start()
+        self.assertEqual(calls, [])
+        namespace['_t0_verify_preentry'] = lambda *args: calls.append('verified')
+        runner.start()
+        self.assertEqual(calls, ['verified', 'effect'])
+        self.assertTrue(namespace['validate'](dict(fresh_T0_preentry_verification_required=True)))
+
+    def test_independent_guardian_installs_canonical_helpers_in_its_own_interpreter_context(self):
+        sources = self.sources()
+        sources['guardian.py'] = (HERE / 'fixtures' / 'startup_guardian.py.txt').read_text()
+        sources['t0_start_budget.py'] = (HERE / 't0_start_budget.py').read_text()
+        copies, _, _ = composition.compose(sources, self.config(), {})
+        namespace = {'__name__': '_offline_guardian'}
+        exec(copies['guardian.py'], namespace)
+        cfg = dict(authorized_date='2026-10-21', owner_authorized=True,
+                   timer_paused=True, source_git_sha=composition.SOURCE)
+        calls = []
+        runtime = types.ModuleType('runtime')
+        runtime.HEAD = composition.SOURCE
+        runtime.load_cfg = lambda root: calls.append('load_cfg') or cfg
+        base = types.ModuleType('base_supervisor')
+        def module_from(root, filename, logical):
+            self.assertEqual(filename, 'supervisor.py')
+            calls.append('canonical_initializer')
+            return types.SimpleNamespace(load_fault_helpers=lambda load, rt, conf:
+                calls.append('install_canonical_helpers'))
+        base.module_from = module_from
+        namespace['_T0_COMPOSITION_HELD'] = False
+        with patch.dict(sys.modules, {'runtime': runtime, 'ops': types.ModuleType('ops'),
+                                     'base_supervisor': base}), \
+             patch.object(sys, 'argv', ['guardian.py', '/not-a-native-root', '--execute']), \
+             patch.object(sys, 'path', list(sys.path)), \
+             patch.object(namespace['Guardian'], 'run', side_effect=lambda: calls.append('guardian_run')):
+            namespace['main']()
+        self.assertEqual(calls, ['load_cfg', 'canonical_initializer',
+                                 'install_canonical_helpers', 'guardian_run'])
+
+    def test_actual_supervisor_and_guardian_start_sites_claim_one_shared_budget(self):
+        sources = self.sources()
+        sources['t0_admission_scope.py'] = (HERE / 't0_admission_scope.py').read_text()
+        sources['t0_start_budget.py'] = (HERE / 't0_start_budget.py').read_text()
+        sources['guardian.py'] = (HERE / 'fixtures' / 'startup_guardian.py.txt').read_text()
+        sources['supervisor.py'] = '''from pathlib import Path
+import json,time
+def validate(cfg):
+    return cfg.get('predecessor_clean_terminal_verified') is True
+class Supervisor:
+    def start(self):
+        self.effect()
+    def product_class(self):
+        owner,ops=self,self.ops
+        class ProtectedProduct:
+            def start(self):
+                try:
+                    self.child=ops.subprocess.Popen(self.args,cwd=self.work,env=self.env,
+                        stdin=None)
+                finally:
+                    pass
+        return ProtectedProduct
+'''
+        copies, _, _ = composition.compose(sources, self.config(), {})
+        starts = []
+        namespace = {}
+        exec(copies['supervisor.py'], namespace)
+        namespace['_T0_COMPOSITION_HELD'] = False
+        budget = types.ModuleType('t0_start_budget')
+        def claim(*args, **kwargs):
+            starts.append(kwargs['purpose'])
+        budget.claim_start = claim
+        owner = namespace['Supervisor']()
+        def popen(*args, **kwargs):
+            starts.append('Popen')
+            raise OSError('injected Popen failure')
+        owner.ops = types.SimpleNamespace(subprocess=types.SimpleNamespace(Popen=popen))
+        owner.root, owner.cfg, owner.environment = None, {}, dict(state='registered-state')
+        product = owner.product_class()()
+        product.binary, product.args, product.work, product.env = 'binary', [], 'work', {}
+        with patch.dict(sys.modules, {'t0_start_budget': budget}):
+            for restarted in (False, True):
+                owner.restart_used = restarted
+                with self.assertRaises(OSError):
+                    product.start()
+        self.assertEqual(starts, ['initial', 'Popen', 'planned_restart', 'Popen'])
+        # The independent guardian competes for the same root/config ledger
+        # immediately before its inherited Product.start invocation.
+        text = copies['guardian.py']
+        self.assertIn("claim_start(self.root, self.cfg, purpose='guardian_recovery'", text)
+        self.assertLess(text.index("purpose='guardian_recovery'"), text.index('        product.start()'))
+
     def test_one_line_entry_and_docstring_only_entry_remain_valid_and_held(self):
         sources = self.sources()
         sources['tiny.py'] = 'def run(): return 2\ndef main():\n    """entry only"""\n'

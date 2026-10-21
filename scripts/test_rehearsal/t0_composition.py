@@ -31,6 +31,18 @@ STRICT_RATE = '''def burst_rate_metrics(posts):
                 minimum_six_post_span_ns=six,
                 rate_semantics='strict_native_post_1000000000ns_zero_slack')
 '''
+PREENTRY_GATE = '''def _t0_verify_preentry(root, cfg, runtime):
+    from t0_admission_scope import validate_preentry
+    name = cfg.get('prearm_flatness_receipt')
+    if not isinstance(name, str) or Path(name).name != name or not name:
+        raise RuntimeError('t0_preentry_receipt_path_unproved')
+    path = Path(root) / name
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError('t0_preentry_receipt_path_unproved')
+    validate_preentry(json.loads(path.read_text()), cfg, runtime.sha(path), time.time_ns())
+
+
+'''
 
 
 def require(value, code):
@@ -181,6 +193,49 @@ def compose(sources, cfg, replacements):
         if name == 'short_postcheck.py':
             text, count = re.subn(r'dt\.time\(23,\s*40\)', 'dt.time(15, 40)', text)
             require(count == 1 or 'dt.time(15, 40)' in text, 't0_composition_postcheck_deadline_missing')
+        if name == 'supervisor.py':
+            require('t0_admission_scope.py' in sources, 't0_composition_preentry_verifier_missing')
+            old_gate = "cfg.get('predecessor_clean_terminal_verified') is True"
+            require(text.count(old_gate) == 1 and text.count('def validate(cfg):') == 1,
+                    't0_composition_prior_terminal_gate_changed')
+            text = text.replace(old_gate, "cfg.get('fresh_T0_preentry_verification_required') is True")
+            text = text.replace('def validate(cfg):', PREENTRY_GATE + 'def validate(cfg):')
+            cls = [node for node in tree(text).body if isinstance(node, ast.ClassDef) and node.name == 'Supervisor']
+            require(len(cls) == 1, 't0_composition_supervisor_class_changed')
+            methods = [node for node in cls[0].body if isinstance(node, ast.FunctionDef) and node.name == 'start']
+            require(len(methods) == 1, 't0_composition_start_method_changed')
+            first = methods[0].body[0]
+            lines = text.splitlines(keepends=True)
+            lines.insert(first.lineno - 1, ' ' * first.col_offset +
+                         '_t0_verify_preentry(self.root, self.cfg, self.rt)\n')
+            text = ''.join(lines)
+            start_anchor = 'self.child=ops.subprocess.Popen(self.args,cwd=self.work,env=self.env,'
+            if 'class ProtectedProduct(ops.Product):' in text:
+                require(text.count(start_anchor) == 1, 't0_composition_native_start_site_changed')
+            if start_anchor in text:
+                require('t0_start_budget.py' in sources and text.count(start_anchor) == 1,
+                        't0_composition_start_budget_missing')
+                text = text.replace(start_anchor,
+                    "from t0_start_budget import claim_start\n"
+                    "                    claim_start(owner.root, owner.cfg, purpose='planned_restart' if owner.restart_used else 'initial', "
+                    "binary=self.binary, state=owner.environment['state'], args=self.args)\n"
+                    "                    " + start_anchor)
+        if name == 'guardian.py' and "cfg = runtime.load_cfg(args.root)" in text:
+            anchor = "cfg = runtime.load_cfg(args.root)"
+            require(text.count(anchor) == 1, 't0_composition_guardian_load_config_changed')
+            text = text.replace(anchor, anchor + "\n    from base_supervisor import module_from\n"
+                "    load_helper = lambda filename, logical: module_from(args.root, filename, logical)\n"
+                "    load_helper('supervisor.py', 't0_guardian_helper_initializer').load_fault_helpers(load_helper, runtime, cfg)")
+            recovery_anchor = '        product.start()\n        self.recovery_child = product.child'
+            if 'def recovery(self, meta, public):' in text:
+                require(text.count(recovery_anchor) == 1, 't0_composition_guardian_start_site_changed')
+            if recovery_anchor in text:
+                require('t0_start_budget.py' in sources and text.count(recovery_anchor) == 1,
+                        't0_composition_guardian_start_budget_missing')
+                text = text.replace(recovery_anchor,
+                    "        from t0_start_budget import claim_start\n"
+                    "        claim_start(self.root, self.cfg, purpose='guardian_recovery', "
+                    "binary=meta['binary'], state=meta['state'], args=args)\n" + recovery_anchor)
         if name == 'short_session.py':
             text = _replace_function(text, 'burst_rate_metrics', STRICT_RATE)
             final = 'self.stage("one_passive_router_restart",lambda:self.fault("one_passive_router_restart","router"))'
