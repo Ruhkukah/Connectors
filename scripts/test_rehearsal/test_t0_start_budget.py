@@ -1,4 +1,5 @@
 import copy
+import datetime as dt
 import hashlib
 import json
 import os
@@ -16,6 +17,13 @@ from t0_id_registry import virgin_checkpoint
 
 class T0StartBudgetTests(unittest.TestCase):
     def setUp(self):
+        # This campaign is sealed to DATE; fixture execution on later dates
+        # must exercise the intended gates rather than fail at its calendar.
+        fixture_ns = int(dt.datetime.combine(dt.date.fromisoformat(budget.DATE),
+            dt.time(12), dt.timezone(dt.timedelta(hours=3))).timestamp() * 1_000_000_000)
+        fixture_clock = patch.object(budget.time, 'time_ns', return_value=fixture_ns)
+        fixture_clock.start()
+        self.addCleanup(fixture_clock.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)

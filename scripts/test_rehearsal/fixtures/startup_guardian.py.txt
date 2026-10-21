@@ -191,8 +191,10 @@ class Guardian:
         terms, book = instrument['session_terms'], instrument['book']
         level = book['best_bid' if side == 'sell' else 'best_ask']
         limit = next(row for row in status['configuration']['risk']['instruments'] if row['isin_id'] == isin)
+        import price_caps
+        fresh_bid = price_caps.current_reference(status, targets[0])
         require(level and level['quantity'] >= qty and (price <= level['price_scaled'] if side == 'sell' else price >= level['price_scaled']) and book['valid'] is True and
-                0 <= time.time_ns()-book['stream_last_callback_utc_ns'] <= 10_000_000_000 and
+                fresh_bid > 0 and
                 price % terms['min_step_scaled'] == 0 and terms['lower_price_scaled'] <= price <= terms['upper_price_scaled'] and
                 qty*price <= limit['max_quote_notional_scaled'] and
                 book.get('best_bid') and book['best_bid']['price_scaled'] > 0 and

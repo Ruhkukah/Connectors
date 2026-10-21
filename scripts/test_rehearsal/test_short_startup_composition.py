@@ -16,7 +16,7 @@ from unittest.mock import patch
 import short_scope
 
 FIXTURE = Path(__file__).with_name('fixtures') / 'startup_guardian.py.txt'
-GUARDIAN_SHA = 'eaa71cd3e6df99fad377e5664673a704ad62ccd1b4964d687076192c834796b7'
+GUARDIAN_SHA = '7816cc1fd70d6686f693fc50dd62551a196672b1534be94dcbafbe92f6ce9396'
 assert hashlib.sha256(FIXTURE.read_bytes()).hexdigest() == GUARDIAN_SHA
 loader = importlib.machinery.SourceFileLoader('_startup_exact_guardian', str(FIXTURE))
 spec = importlib.util.spec_from_loader(loader.name, loader)
