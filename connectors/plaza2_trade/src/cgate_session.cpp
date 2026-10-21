@@ -594,8 +594,8 @@ struct CgateSession::Impl {
         const bool auction_day_add = instrument->current_status == 6 &&
                                      command.command_kind == Plaza2TradeCommandKind::AddOrder &&
                                      command.order_type == Plaza2TradeOrderType::Limit;
-        return instrument->kind == plaza2::private_state::InstrumentKind::kFuture && !instrument->is_spread &&
-               instrument->sess_id == day && instrument->current_session_member && instrument->has_current_status &&
+        return plaza2::private_state::is_outright_future(*instrument) && instrument->sess_id == day &&
+               instrument->current_session_member && instrument->has_current_status &&
                instrument->current_status_refdata_bound && (instrument->current_status == 1 || auction_day_add);
     }
     bool stream_online(StreamCode code) const {

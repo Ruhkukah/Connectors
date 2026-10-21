@@ -5,6 +5,7 @@
 #include "private_pos_anchor_regression.hpp"
 #include "publisher_prewarm_regression.hpp"
 #include "fixtures/cgate99_messages.hpp"
+#include "future_spread_classification_regression.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
@@ -16,6 +17,56 @@ using namespace moex::plaza2_trade;
 using namespace moex::plaza2;
 using test::require;
 namespace {
+void spread_leg_direct_post_regression(CgateSessionConfig config, const test::fake::Control& fake) {
+    config.publisher_rate_owner = PublisherRateOwner::External;
+    config.event_log = {};
+    config.listener_event_log = {};
+    fake.configure({});
+    CgateSession session(config);
+    require(!session.start(), "spread leg direct session starts");
+    for (int i = 0; i < 10; ++i)
+        require(!session.poll(false), "spread leg direct session bootstrap");
+    auto add = test_support::make_add_order();
+    add.isin_id = 1001;
+    auto move = test_support::make_move_order();
+    move.isin_id = 1001;
+    const auto encoded_add = Plaza2TradeCodec{}.encode(add);
+    const auto encoded_move = Plaza2TradeCodec{}.encode(move);
+    struct Case {
+        bool participates;
+        std::int32_t signs, mode;
+        bool outright;
+    };
+    const Case cases[]{{true, 0x80032, 1, true}, {false, 0x100, 1, false}, {false, 0x10000, 1, false},
+                       {false, 0, 14, false},    {false, 0, 15, false},    {true, 0x80032, 1, true}};
+    std::int64_t revision = 50000;
+    std::uint32_t user = 880500;
+    for (const auto& current : cases) {
+        test::spread_classification::enqueue_catalog_row(fake, current.participates, current.signs, current.mode,
+                                                         revision);
+        test::spread_classification::commit_and_refresh_status(fake, revision);
+        for (int i = 0; i < 8; ++i)
+            require(!session.poll(false), "spread leg direct committed metadata");
+        const auto before = session.publisher_call_counts();
+        const auto added = session.post_command(encoded_add, user++);
+        const auto moved = session.post_command(encoded_move, user++);
+        const auto after = session.publisher_call_counts();
+        if (current.outright) {
+            require(added.certainty == cgate::Plaza2SubmissionCertainty::Posted &&
+                        moved.certainty == cgate::Plaza2SubmissionCertainty::Posted && after.post == before.post + 2,
+                    "direct native Add/Move refused a regular future participating in spread netting");
+        } else {
+            require(added.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent &&
+                        moved.certainty == cgate::Plaza2SubmissionCertainty::DefinitelyNotSent && !added.post_invoked &&
+                        !moved.post_invoked && after.msgnew == before.msgnew && after.post == before.post,
+                    "direct native Add/Move reached publisher for a composite calendar instrument");
+        }
+        revision += 10;
+    }
+    require(!session.stop(), "spread leg direct session stops");
+    fake.configure({});
+}
+
 void instrument_session_post_regression(CgateSessionConfig config, const test::fake::Control& fake) {
     using enum generated::StreamCode;
     using enum generated::TableCode;
@@ -697,6 +748,7 @@ int main(int argc, char** argv) {
         requested_trade_epoch_regression(config, fake);
         poll_metrics_regression(config, fake);
         eventful_poll_return_regression(config, fake);
+        spread_leg_direct_post_regression(config, fake);
         instrument_session_post_regression(config, fake);
         test::publisher_prewarm_regression(config, fake, fixture.library_path);
         test::private_pos_anchor_regression(config, fake);

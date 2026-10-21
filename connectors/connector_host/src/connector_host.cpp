@@ -63,8 +63,8 @@ bool order_entry_ready(const CgateSession& host, std::int64_t isin_id, std::int3
     if (!session || !session->has_current_status || session->current_status != 1)
         return false;
     const auto* instrument = data.find_instrument(static_cast<std::int32_t>(isin_id));
-    return instrument && instrument->kind == ps::InstrumentKind::kFuture && !instrument->is_spread &&
-           instrument->sess_id == session_id && instrument->current_session_member && instrument->has_current_status &&
+    return instrument && ps::is_outright_future(*instrument) && instrument->sess_id == session_id &&
+           instrument->current_session_member && instrument->has_current_status &&
            instrument->current_status_refdata_bound &&
            (instrument->current_status == 1 || (allow_opening_auction && instrument->current_status == 6));
 }
@@ -215,8 +215,8 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
         out.min_step = instrument.min_step;
         out.description = instrument.name;
         out.target_is_future = instrument.kind == ps::InstrumentKind::kFuture;
-        out.target_is_spread = instrument.is_spread;
-        out.target_is_multileg = (instrument.signs & 0x100) != 0 || instrument.trade_mode_id == 14;
+        out.target_is_spread = ps::is_calendar_spread(instrument);
+        out.target_is_multileg = ps::is_multileg_instrument(instrument);
         out.future_vcb_base_contract_code = instrument.base_contract_code;
         out.future_vcb_base_contract_id = instrument.base_contract_id;
         out.definition_source_provenance = instrument.definition_source_provenance;

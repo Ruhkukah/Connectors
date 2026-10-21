@@ -3,6 +3,7 @@
 #include "moex/connector_host/trading_host.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
+#include "future_spread_classification_regression.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -50,6 +51,43 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "00000000", 1);
         fake.set(moex::plaza2::test::fake::Option::ClientCode, "BRK1C01");
         fake.set(moex::plaza2::test::fake::Option::AggrSnapshotReadyOnly, "1");
+        {
+            // is_spread=1 describes a normal spread leg, such as the T0 CNY
+            // future with signs=0x80032. Actual composites have other markers.
+            ConnectorHost host(config(fixture));
+            warm(host);
+            struct Case {
+                bool participates;
+                std::int32_t signs, mode;
+                bool outright;
+            };
+            const Case cases[]{{true, 0x80032, 1, true}, {false, 0x100, 1, false}, {false, 0x10000, 1, false},
+                               {false, 0, 14, false},    {false, 0, 15, false},    {true, 0x80032, 1, true}};
+            std::int64_t revision = 50000;
+            bool previously_ready = true;
+            for (const auto& current : cases) {
+                test::spread_classification::enqueue_catalog_row(fake, current.participates, current.signs,
+                                                                 current.mode, revision);
+                for (int i = 0; i < 5; ++i)
+                    test::require(!host.poll(), "pending spread classification polls");
+                test::require(host.order_entry_ready(1001) == previously_ready,
+                              "uncommitted REFDATA changed outright readiness");
+                test::spread_classification::commit_and_refresh_status(fake, revision);
+                for (int i = 0; i < 8; ++i)
+                    test::require(!host.poll(), "committed spread classification polls");
+                test::require(host.order_entry_ready(1001) == current.outright,
+                              "host confused intermonth membership with a composite instrument");
+                const auto market = host.market_data_snapshot();
+                test::require(market.target_is_multileg == !current.outright,
+                              "DTC definition classification differs from order-entry classification");
+                if (current.outright)
+                    test::require(!market.target_is_spread, "ordinary spread leg was advertised as a calendar spread");
+                previously_ready = current.outright;
+                revision += 10;
+            }
+            test::require(host.snapshot().publisher_calls.post == 0, "readiness regression posted an order");
+            test::require(!host.stop(), "spread classification host stops");
+        }
         {
             ::unsetenv("MOEX_PLAZA2_TEST_CREDENTIALS");
             ConnectorHost host(config(fixture));
