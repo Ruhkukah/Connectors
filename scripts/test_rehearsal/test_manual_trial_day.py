@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -128,6 +129,11 @@ class OwnerTests(unittest.TestCase):
   short=types.SimpleNamespace(Supervisor=Base,base=types.SimpleNamespace(Supervisor=Base))
   cls=m.owner_class(short)
   with self.assertRaisesRegex(m.Refused,'second_product_forbidden'):cls.__new__(cls).restart()
+ def start_facts(self,owner,*,clients=0,age_ns=0,remaining=47000):
+  owner.environment=dict(state=self.cfg['state'],inventory=lambda:dict(client_count=clients,upstreams=4))
+  owner.public=dict(preentry_independent_flatness=dict(completed_utc_ns=time.time_ns()-age_ns,
+      complete_replication_streams=8,working_orders=0,nonzero_positions=0,exit=0,after=dict(client_count=0)))
+  owner.rt=types.SimpleNamespace(budget=lambda meta:remaining)
  def test_oneproduct_claim_precedes_native_popen_even_failure(self):
   order=[]
   class Product:
@@ -138,11 +144,35 @@ class OwnerTests(unittest.TestCase):
   self_args=self.args
   short=types.SimpleNamespace(Supervisor=Base,base=types.SimpleNamespace(Supervisor=Base))
   cls=m.owner_class(short);owner=cls.__new__(cls);owner.root=self.root;owner.cfg=self.cfg;owner.ops=types.SimpleNamespace(Product=Product)
+  self.start_facts(owner)
   product=owner.product_class()()
   def claim(*args):order.append('durable claim')
   with patch.object(m,'claim_start_once',side_effect=claim):
    with self.assertRaises(OSError):product.start()
   self.assertEqual(order,['durable claim','Popen'])
+ def test_pre_popen_competing_client_stale_flat_or_headroom_refuses_before_claim(self):
+  for facts,code in [(dict(clients=1),'current_inventory'),(dict(age_ns=121000000000),'fresh_flatness'),
+                    (dict(remaining=8999),'id_headroom')]:
+   with self.subTest(facts=facts):
+    order=[]
+    class Product:
+     def __init__(self):self.args=self_args;self.child=None
+     def start(self):order.append('Popen')
+    class Base:
+     def product_class(self):return Product
+    self_args=self.args
+    cls=m.owner_class(types.SimpleNamespace(Supervisor=Base,base=types.SimpleNamespace(Supervisor=Base)))
+    owner=cls.__new__(cls);owner.root=self.root;owner.cfg=self.cfg;owner.ops=types.SimpleNamespace(Product=Product)
+    self.start_facts(owner,**facts);product=owner.product_class()()
+    with patch.object(m,'claim_start_once') as claim:
+     with self.assertRaisesRegex(m.Refused,code):product.start()
+     claim.assert_not_called()
+    self.assertEqual(order,[])
+ def test_pre_popen_current_zero_client_and_fresh_flatness_pass(self):
+  owner=types.SimpleNamespace(cfg=self.cfg)
+  self.start_facts(owner,age_ns=1000000000)
+  self.assertEqual(m.pre_popen_freshness(owner),dict(client_count=0,upstreams=4))
+
  def resolved_metadata(self):
   return dict(ok=True,read_only=True,committed_refdata=True,publisher_created=False,
       message_allocations=0,publisher_posts=0,captured_utc_ns=1_000_000_000,sess_id=123,refdata_lifenum=7,

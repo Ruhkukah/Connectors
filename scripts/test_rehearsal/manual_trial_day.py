@@ -183,6 +183,25 @@ def install_runtime_scope(runtime):
     runtime.load_cfg = load_cfg
     return runtime
 
+def pre_popen_freshness(owner):
+    """Refresh ownership after any wait; only a current strict flat probe admits boot."""
+    inventory = owner.environment['inventory']()
+    require(type(inventory.get('client_count')) is int and inventory['client_count'] == 0
+            and type(inventory.get('upstreams')) is int and inventory['upstreams'] == 4,
+            'manual_prestart_current_inventory_unproved')
+    proof = owner.public.get('preentry_independent_flatness') or {}
+    stamp = proof.get('completed_utc_ns')
+    require(type(stamp) is int and 0 <= time.time_ns()-stamp <= 120_000_000_000
+            and all(type(proof.get(key)) is int and proof[key] == value for key,value in
+                    (('complete_replication_streams',8),('working_orders',0),('nonzero_positions',0),('exit',0)))
+            and type((proof.get('after') or {}).get('client_count')) is int
+            and proof['after']['client_count'] == 0,
+            'manual_prestart_fresh_flatness_unproved')
+    budget = owner.rt.budget(dict(state=str(owner.environment['state']),
+                      ext_id_range=owner.cfg['ext_id_range'],instance=owner.cfg['instance']))
+    require(type(budget) is int and budget >= 9000,'manual_prestart_id_headroom')
+    return inventory
+
 def metadata_targets(resolved, now_ns):
     """Metadata resolves identity pre-open; it never grants order admission."""
     require(resolved.get('ok') is True and resolved.get('read_only') is True
@@ -266,6 +285,7 @@ def owner_class(short_module):
             protected = base.Supervisor.product_class(self)
             class OneProduct(protected):
                 def start(self):
+                    pre_popen_freshness(owner)
                     claim_start_once(owner.root,owner.cfg,self.args)
                     try:
                         return ops.Product.start(self)
@@ -297,6 +317,11 @@ def owner_class(short_module):
                     'manual_candidate_or_state_changed')
             self.environment['binary'] = self.cfg['binary']
             self.before_live_sha = self.rt.sha(self.environment['state'])
+            # Resolve and probe immediately before the sole product start,
+            # rather than letting a06:20 proof age through the06:40 wait.
+            observe_until = self.cfg['normal_product_target_utc']-60
+            while time.time() < observe_until:
+                self.tick();time.sleep(min(1,observe_until-time.time()))
             self.resolve()
             self.initial_flat_probe()  # Reviewed bounded publisher-free retries, strict complete flatness.
             clock = self.clock()
