@@ -311,7 +311,7 @@ void test_future_terms() {
                    signed_field(FieldCode::kFortsRefdataReplFutSessContentsReplId, 123),
                    signed_field(FieldCode::kFortsRefdataReplFutSessContentsReplAct, action),
                    text_field(FieldCode::kFortsRefdataReplFutSessContentsSettlementPrice, settlement),
-                   text_field(FieldCode::kFortsRefdataReplFutSessContentsSettlementPriceOpen, "9999"),
+                   text_field(static_cast<FieldCode>(0x8453894Eu), "9999"),
                    text_field(FieldCode::kFortsRefdataReplFutSessContentsLimitUp, "184"),
                    text_field(FieldCode::kFortsRefdataReplFutSessContentsLimitDown, "184"),
                    text_field(FieldCode::kFortsRefdataReplFutSessContentsMinStep, "1")});

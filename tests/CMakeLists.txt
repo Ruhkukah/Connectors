@@ -41,6 +41,7 @@ foreach(name IN ITEMS plaza2_runtime_probe_test
         plaza2_runtime_adapter_test plaza2_runtime_listener_test plaza2_schema_contract_test)
     moex_runtime_test(${name} plaza2_cgate/${name}.cpp)
 endforeach()
+target_link_libraries(plaza2_schema_contract_test PRIVATE moex_plaza2_cgate_bridge)
 moex_runtime_test(connector_host_test connector_host_test.cpp moex_connector_host)
 
 moex_test(plaza2_generated_metadata_test plaza2_cgate/plaza2_generated_metadata_test.cpp moex_plaza2_cgate_metadata)

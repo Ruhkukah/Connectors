@@ -2,6 +2,7 @@
 #include "fake_cgate_abi.hpp"
 #include "fake_cgate_control.hpp"
 #include "fixtures/server_schema.hpp"
+#include "fixtures/server_schema_912.hpp"
 #include <deque>
 #include "moex/plaza2/cgate/plaza2_public_decode.hpp"
 #include "../plaza2_trade/fixtures/cgate99_messages.hpp"
@@ -1601,7 +1602,11 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
         plan.message_name = message->name;
 
         std::size_t offset = 0;
-        for (const auto& descriptor : moex::plaza2::test::server_schema_fields(message_script.table_code)) {
+        const bool spectra912 = scenario.spectra912_refdata_schema &&
+                                message_script.table_code == TableCode::kFortsRefdataReplFutSessContents;
+        const auto server_fields = spectra912 ? moex::plaza2::test::spectra912_future_session_schema()
+                                              : moex::plaza2::test::server_schema_fields(message_script.table_code);
+        for (const auto& descriptor : server_fields) {
             const auto* field = &descriptor;
             if (field == nullptr) {
                 return {};
@@ -1652,7 +1657,8 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             message->fields.push_back(std::move(owned_field));
         }
 
-        offset = std::max(offset, moex::plaza2::test::server_schema_row_size(message_script.table_code));
+        offset = std::max(offset, spectra912 ? moex::plaza2::test::kSpectra912FutureSessionRowSize
+                                             : moex::plaza2::test::server_schema_row_size(message_script.table_code));
         if (fake_flag(Option::SchemeExtraTable)) {
             auto field = std::make_unique<OwnedField>();
             field->name = "future_field";
