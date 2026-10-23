@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""Temporary TEST-only router fault; preflight is read-only, execution is explicit."""
+import argparse
+import dataclasses
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import select
+import signal
+import subprocess as sp
+import sys
+import time
+
+REVIEWED_ROUTER_SHA = '6ea6ad50d6e3300fee99e43900eb22a21c207166f2455d2fc850f7e30bc91423'
+ROLLBACK_DELAY = 5
+
+
+class Refused(Exception):
+    pass
+
+
+def require(value, reason):
+    if not value:
+        raise Refused(reason)
+
+
+def digest(path):
+    result = hashlib.sha256()
+    with Path(path).open('rb') as source:
+        for block in iter(lambda: source.read(1024 * 1024), b''):
+            result.update(block)
+    return result.hexdigest()
+
+
+def save(path, value):
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    with temporary.open('x') as out:
+        json.dump(value, out, sort_keys=True)
+        out.write('\n')
+        out.flush()
+        os.fsync(out.fileno())
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
+    fd = os.open(path.parent, os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+@dataclasses.dataclass
+class Launch:
+    pid: int
+    start: str
+    argv: list
+    env: dict
+    cwd: Path
+
+
+class Probe:
+    def __init__(self, executable, expected_sha, proc=Path('/proc')):
+        self.executable = Path(executable).resolve(strict=True)
+        self.expected_sha = expected_sha
+        self.proc = proc
+
+    def owned_routers(self):
+        routers = []
+        for entry in self.proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if entry.stat().st_uid != os.getuid():
+                    continue
+                executable = (entry / 'exe').resolve(strict=True)
+                if executable.name.startswith('P2MQRouter'):
+                    routers.append((int(entry.name), executable))
+            except (OSError, RuntimeError):
+                continue
+        return routers
+
+    def identity(self, pid, executable):
+        process = self.proc / str(pid)
+        require(process.stat().st_uid == os.getuid(), 'process_not_owned')
+        require((process / 'exe').resolve(strict=True) == executable, 'process_executable_mismatch')
+        # Field22, after a comm which may contain spaces and parentheses.
+        return (process / 'stat').read_text().rpartition(')')[2].split()[19]
+
+    def sockets(self, pid):
+        result = set()
+        for entry in (self.proc / str(pid) / 'fd').iterdir():
+            try:
+                link = os.readlink(entry)
+                match = re.fullmatch(r'socket:\[(\d+)\]', link)
+                if match:
+                    result.add(match[1])
+            except OSError:
+                continue
+        return result
+
+    def tcp(self):
+        rows = []
+        for name in ('tcp', 'tcp6'):
+            path = self.proc / 'net' / name
+            if not path.exists():
+                continue
+            for line in path.read_text().splitlines()[1:]:
+                fields = line.split()
+                require(len(fields) >= 10, 'socket_inventory_malformed')
+                rows.append((fields[1], fields[2], fields[3], fields[9]))
+        return rows
+
+    def clients(self, router_pid, owner_pid=None, exact=True):
+        rows = self.tcp()
+        server = [row for row in rows if int(row[0].split(':')[-1], 16) == 4101]
+        router_sockets = self.sockets(router_pid)
+        listeners = [row for row in server if row[2] == '0A']
+        require(len(listeners) == 1 and listeners[0][3] in router_sockets, 'router_listener_not_unique_owned')
+        established = [row for row in server if row[2] == '01']
+        require(len(established) <= (1 if owner_pid else 0), 'other_router_clients')
+        if exact and owner_pid:
+            require(len(established) == 1, 'test_owner_connection_missing')
+        if established:
+            owner_sockets = self.sockets(owner_pid)
+            for local, peer, _, inode in established:
+                require(inode in router_sockets, 'router_server_socket_not_owned')
+                paired = [row for row in rows if row[:3] == (peer, local, '01')]
+                require(len(paired) == 1 and paired[0][3] in owner_sockets, 'router_client_not_test_owner')
+        return len(established)
+
+    def inspect(self, config, owner_pid=None):
+        require(digest(self.executable) == self.expected_sha, 'router_binary_hash_mismatch')
+        routers = self.owned_routers()
+        require(len(routers) == 1 and routers[0][1] == self.executable, 'router_instance_not_unique_expected')
+        pid = routers[0][0]
+        start = self.identity(pid, self.executable)
+        if owner_pid:
+            owner_executable = Path(config['binary']).resolve(strict=True)
+            self.identity(owner_pid, owner_executable)
+            require(digest(owner_executable) == config['binary_sha256'], 'test_owner_binary_hash_mismatch')
+            argv = [part for part in (self.proc / str(owner_pid) / 'cmdline').read_bytes().split(b'\0') if part]
+            require(argv.count(b'--environment') == 1 and
+                    argv[argv.index(b'--environment') + 1] == b'test', 'native_owner_not_test')
+        count = self.clients(pid, owner_pid)
+        process = self.proc / str(pid)
+        argv = [part for part in (process / 'cmdline').read_bytes().split(b'\0') if part]
+        require(argv, 'router_launch_argv_missing')
+        environment = dict(part.split(b'=', 1) for part in (process / 'environ').read_bytes().split(b'\0') if b'=' in part)
+        launch = Launch(pid, start, argv, environment, (process / 'cwd').resolve(strict=True))
+        return launch, dict(router_count=1, router_hash_matched=True, client_count=count,
+                            test_owner_verified=bool(owner_pid), other_clients=0, signal_sent=False)
+
+
+def validate_authorization(config, owner_pid):
+    require(config.get('environment') == 'test', 'authorization_not_test')
+    require(config.get('user_authorized') is True and config.get('candidate_green') is True and
+            config.get('router_restart_authorized') is True, 'router_fault_not_authorized')
+    require(time.time() < config.get('authorized_until_utc', 0), 'authorization_expired')
+    require(owner_pid and config.get('router_restart_owner_pid') == owner_pid, 'authorized_owner_pid_mismatch')
+
+
+def rollback(probe, launch, owner_pid, output):
+    """Always undo an authorized fault even if its parent or authorization expires."""
+    time.sleep(ROLLBACK_DELAY)
+    try:
+        if probe.identity(launch.pid, probe.executable) == launch.start:
+            save(output / 'rollback.json', dict(status='original_router_still_running', restored=False))
+            return 2
+    except (OSError, Refused):
+        pass
+    require(digest(probe.executable) == probe.expected_sha, 'rollback_binary_hash_mismatch')
+    require(not probe.owned_routers(), 'rollback_another_router_present')
+    with (output / 'router-restart-private.log').open('xb', buffering=0) as log:
+        router = sp.Popen(launch.argv, executable=str(probe.executable), cwd=launch.cwd, env=launch.env,
+                          stdin=sp.DEVNULL, stdout=log, stderr=log, close_fds=True, start_new_session=True)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            require(router.poll() is None, 'restored_router_exited')
+            probe.identity(router.pid, probe.executable)
+            probe.clients(router.pid, owner_pid, exact=False)
+            save(output / 'rollback.json', dict(status='router_restored', restored=True,
+                                                router_count=1, router_hash_matched=True, utc_ns=time.time_ns()))
+            return 0
+        except (OSError, Refused):
+            time.sleep(0.1)
+    save(output / 'rollback.json', dict(status='router_restore_not_verified', restored=False))
+    return 3
+
+
+def arm_rollback(probe, launch, owner_pid, output, keep_fd=None):
+    read_fd, write_fd = os.pipe()
+    child = os.fork()
+    if child == 0:
+        try:
+            os.close(read_fd)
+            os.setsid()
+            with open(os.devnull, 'r+b', buffering=0) as null:
+                for fd in (0, 1, 2):
+                    os.dup2(null.fileno(), fd)
+            for entry in list(Path('/proc/self/fd').iterdir()):
+                fd = int(entry.name)
+                if fd > 2 and fd not in (write_fd, keep_fd):
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+            os.write(write_fd, b'ARMED')
+            os.close(write_fd)
+            os._exit(rollback(probe, launch, owner_pid, output))
+        except BaseException:
+            try:
+                save(output / 'rollback.json', dict(status='rollback_failed', restored=False))
+            except BaseException:
+                pass
+            os._exit(4)
+    os.close(write_fd)
+    try:
+        ready, _, _ = select.select([read_fd], [], [], 2)
+        require(ready and os.read(read_fd, 5) == b'ARMED', 'rollback_not_armed')
+    finally:
+        os.close(read_fd)
+    save(output / 'rollback-armed.json', dict(armed=True, delay_seconds=ROLLBACK_DELAY, utc_ns=time.time_ns()))
+    return child
+
+
+def restart(probe, config, owner_pid, output, arm=arm_rollback, send_signal=os.kill):
+    validate_authorization(config, owner_pid)
+    launch, before = probe.inspect(config, owner_pid)
+    save(output / 'preflight.json', before)
+    child = arm(probe, launch, owner_pid, output)
+    # Fail safely if another client/process appears after rollback was armed.
+    latest, _ = probe.inspect(config, owner_pid)
+    require((latest.pid, latest.start) == (launch.pid, launch.start), 'router_changed_before_signal')
+    validate_authorization(config, owner_pid)
+    send_signal(launch.pid, signal.SIGTERM)
+    save(output / 'fault.json', dict(signal_sent=True, fault='LOCAL_ROUTER_RESTART', upstream_fault=False,
+                                     rollback_armed=True, utc_ns=time.time_ns()))
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        done, status = os.waitpid(child, os.WNOHANG)
+        if done:
+            require(status == 0, 'router_rollback_not_verified')
+            receipt = json.loads((output / 'rollback.json').read_text())
+            require(receipt.get('restored') is True, 'router_rollback_receipt_missing')
+            return dict(status='router_restored', fault='LOCAL_ROUTER_RESTART', upstream_fault=False,
+                        rollback_armed=True, native_recovery_proof='supervisor_status_before_after_required')
+        time.sleep(0.1)
+    raise Refused('rollback_wait_deadline')
+
+
+def main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--authorization', required=True)
+    parser.add_argument('--router-executable', required=True)
+    parser.add_argument('--router-sha256', default=REVIEWED_ROUTER_SHA)
+    parser.add_argument('--owner-pid', type=int)
+    parser.add_argument('--execute', action='store_true')
+    args = parser.parse_args()
+    require(sys.platform == 'linux', 'linux_test_host_required')
+    authorization = Path(args.authorization)
+    require(authorization.stat().st_uid == os.getuid() and authorization.stat().st_mode & 0o077 == 0,
+            'authorization_not_private_owned')
+    config = json.loads(authorization.read_text())
+    require(config.get('environment') == 'test', 'authorization_not_test')
+    probe = Probe(args.router_executable, args.router_sha256)
+    if not args.execute:
+        _, receipt = probe.inspect(config, args.owner_pid)
+        print(json.dumps(receipt, sort_keys=True))
+        return
+    qualification = Path.home() / 'moex/qualification/pr68-round5-20261002'
+    require(qualification.is_dir() and qualification.stat().st_uid == os.getuid() and
+            qualification.stat().st_mode & 0o077 == 0, 'qualification_not_private_owned')
+    with (qualification / 'router-fault.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        output = qualification / ('router-recovery-' + str(time.time_ns()))
+        output.mkdir(mode=0o700)
+        # Keep only the fault lock in the independent worker, so losing this
+        # controller cannot let a second harness race the bounded rollback.
+        arm = lambda *values: arm_rollback(*values, keep_fd=lock.fileno())
+        print(json.dumps(restart(probe, config, args.owner_pid, output, arm=arm), sort_keys=True))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Refused as error:
+        print(json.dumps(dict(status='refused', reason=str(error))), flush=True)
+        raise SystemExit(1)
+    except BaseException:
+        print(json.dumps(dict(status='failed', reason='private_runtime_failure')), flush=True)
+        raise SystemExit(1)

@@ -92,6 +92,19 @@ void test_unknown_and_short_replies_fail_closed() {
     require(validation.code == Plaza2TradeValidationCode::BufferTooSmall, "short reply should fail closed");
 }
 
+void test_excluded_command_replies_fail_closed() {
+    const Plaza2TradeCodec codec;
+    Plaza2TradeValidationResult validation;
+    // Complete payloads must still be rejected when their command family is outside this certificate.
+    const std::vector<std::byte> payload(276, std::byte{0});
+    for (const int msgid : {172, 180, 181, 182, 10000}) {
+        const auto reply = codec.decode_reply(msgid, payload, validation);
+        require(validation.code == Plaza2TradeValidationCode::UnknownMessage &&
+                    reply.status == Plaza2TradeReplyStatusCategory::Unknown,
+                "excluded command reply was accepted by the first-certificate codec");
+    }
+}
+
 void test_official_reply_layouts() {
     using namespace moex::plaza2_trade::test_support;
     const Plaza2TradeCodec codec;
@@ -131,6 +144,7 @@ int main() {
         test_move_reply_decoding();
         test_error_decoding();
         test_unknown_and_short_replies_fail_closed();
+        test_excluded_command_replies_fail_closed();
         test_official_reply_layouts();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

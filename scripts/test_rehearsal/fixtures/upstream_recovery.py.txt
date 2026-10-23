@@ -1,0 +1,601 @@
+#!/usr/bin/env python3
+"""Temporary TEST qualification harness; execution requires explicit authorization."""
+import argparse
+import configparser
+import ctypes
+import dataclasses
+import fcntl
+import ipaddress
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import select
+import signal
+import socket
+import struct
+import subprocess as sp
+import sys
+import tarfile
+import time
+
+import router_recovery as frozen
+
+PROBE_SHA = '4c5fdc191de16ecd6cc6a7fac8f7c643cb15cd894c906924acbc7ce6a67737e4'
+require, Refused, digest, save = frozen.require, frozen.Refused, frozen.digest, frozen.save
+STARTUP_TIMEOUT, ACK_TIMEOUT, UPSTREAM_TIMEOUT = 30, 40, 30
+WATCHDOG_TIMEOUT, RECOVERY_TIMEOUT = 120, 20
+
+
+@dataclasses.dataclass(frozen=True)
+class Whitelist:
+    peers: frozenset
+    file_sha256: str
+    configured_count: int
+
+
+@dataclasses.dataclass(frozen=True)
+class Upstream:
+    fd: int
+    inode: str
+    peer: tuple
+
+
+def normalized_ip(value):
+    value = ipaddress.ip_address(value)
+    return value.ipv4_mapped if isinstance(value, ipaddress.IPv6Address) and value.ipv4_mapped else value
+
+
+def endpoint(encoded):
+    address, port = encoded.split(':')
+    require(len(address) in (8, 32), 'tcp_address_format')
+    raw = b''.join(struct.pack('<I', int(address[i:i + 8], 16)) for i in range(0, len(address), 8))
+    return str(normalized_ip(raw)), int(port, 16)
+
+
+def endpoint_list(raw):
+    ini = configparser.ConfigParser(strict=False, interpolation=None)
+    ini.read_string(raw.decode('cp1251'))
+    result = set()
+    for section in ini.sections():
+        for key, value in ini[section].items():
+            if key == 'default' or key == 'direct' or re.fullmatch(r'direct\.[0-9]+', key):
+                match = re.fullmatch(r'([A-Za-z0-9_.-]+):([0-9]{1,5})', value.strip())
+                require(match, 't1_endpoint_format')
+                host, port = match.groups()
+                require(0 < int(port) < 65536, 't1_endpoint_port')
+                result.add((host.lower().rstrip('.'), int(port)))
+    require(result, 't1_endpoint_list_empty')
+    return result
+
+
+def pristine_whitelist(probe, launch, expected_sha, vendor=None):
+    """Resolve only existing package-proven T1 names; never create a TCP socket."""
+    vendor = vendor or Path.home() / 'moex/vendor/cgate-test-9.9.1853'
+    pristine = list(vendor.rglob('links_public.t1.ini'))
+    require(len(pristine) == 1, 'pristine_t1_not_unique')
+    raw = pristine[0].read_bytes()
+    require(digest(pristine[0]) == expected_sha, 'pristine_t1_hash_mismatch')
+    archive_matched = False
+    for archive in vendor.rglob('*.deb'):
+        child = sp.Popen(['dpkg-deb', '--fsys-tarfile', str(archive)], stdout=sp.PIPE, stderr=sp.DEVNULL)
+        archived = None
+        try:
+            with tarfile.open(fileobj=child.stdout, mode='r|') as stream:
+                for member in stream:
+                    if member.isfile() and Path(member.name).name == 'links_public.t1.ini':
+                        archived = stream.extractfile(member).read()
+        finally:
+            child.stdout.close()
+            child.wait()
+        if archived is not None:
+            require(archived == raw, 'pristine_t1_archive_mismatch')
+            archive_matched = True
+            break
+    require(archive_matched, 'pristine_t1_archive_missing')
+    files = []
+    for value in launch.argv:
+        token = value.decode().split('=', 1)[-1]
+        if token.lower().endswith(('.ini', '.cfg', '.conf')):
+            path = Path(token)
+            path = path if path.is_absolute() else launch.cwd / path
+            if path.is_file():
+                files.append(path)
+    for directory in (launch.cwd, probe.executable.parent):
+        for path in directory.iterdir():
+            if path.suffix.lower() in ('.ini', '.cfg', '.conf') and path.is_file() and path not in files:
+                files.append(path)
+    require(len(files) == 1, 'actual_router_config_not_unique')
+    ini = configparser.ConfigParser(strict=False, interpolation=None)
+    ini.read(files[0])
+    name = ini['ROUTEINFO']['connections_ini'].strip().strip('"')
+    name = name.split('|FILE|', 1)[-1].split('|', 1)[0].split(';', 1)[0].strip()
+    name = re.sub(r'\$\{([A-Za-z0-9_]+)\}',
+                  lambda match: launch.env.get(match[1].encode(), b'').decode(), name)
+    path = Path(name).expanduser()
+    candidates = [path] if path.is_absolute() else [launch.cwd / path, files[0].parent / path]
+    candidates = {path.resolve() for path in candidates if path.is_file()}
+    require(len(candidates) == 1, 'actual_t1_config_not_unique')
+    require(next(iter(candidates)).read_bytes() == raw, 'actual_t1_not_pristine')
+    names = endpoint_list(raw)
+    peers = set()
+    for host, port in names:
+        for _, _, _, _, address in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+            ip = normalized_ip(address[0])
+            require(not ip.is_loopback and not ip.is_unspecified, 't1_resolution_not_upstream')
+            peers.add((str(ip), int(address[1])))
+    require(peers, 't1_resolution_empty')
+    return Whitelist(frozenset(peers), expected_sha, len(names))
+
+
+def upstreams(probe, pid, whitelist):
+    by_inode = {}
+    for entry in (probe.proc / str(pid) / 'fd').iterdir():
+        try:
+            match = re.fullmatch(r'socket:\[(\d+)\]', os.readlink(entry))
+            if match:
+                by_inode.setdefault(match[1], int(entry.name))
+        except OSError:
+            continue
+    result = []
+    for local, peer, state, inode in probe.tcp():
+        if state != '01' or inode not in by_inode:
+            continue
+        address = endpoint(peer)
+        if normalized_ip(address[0]).is_loopback:
+            continue
+        require(address in whitelist.peers, 'unlisted_owned_upstream')
+        require(not normalized_ip(endpoint(local)[0]).is_loopback, 'upstream_local_loopback')
+        result.append(Upstream(by_inode[inode], inode, address))
+    require(result and len({row.inode for row in result}) == len(result), 'upstream_inventory_not_unique')
+    return result
+
+
+def inspect_retry(probe, config, owner_pid):
+    """Retry the whole strict read-only inventory, never a partial /proc scan."""
+    executable = Path(config['binary']).resolve(strict=True)
+    owner_start = probe.identity(owner_pid, executable)
+    for attempt in range(3):
+        require(probe.identity(owner_pid, executable) == owner_start, 'native_owner_identity_changed')
+        try:
+            launch, health = probe.inspect(config, owner_pid)
+            require(probe.identity(owner_pid, executable) == owner_start, 'native_owner_identity_changed')
+            require(probe.identity(launch.pid, probe.executable) == launch.start, 'router_identity_changed')
+            return launch, health
+        except FileNotFoundError:
+            if attempt == 2:
+                raise Refused('strict_socket_inventory_unstable')
+            time.sleep(.02)
+
+
+def local_connection(probe, router_pid, owner_pid, allow_reconnect=False):
+    router_start = probe.identity(router_pid, probe.executable)
+    executable = (probe.proc / str(owner_pid) / 'exe').resolve(strict=True)
+    owner_start = probe.identity(owner_pid, executable)
+    for attempt in range(3):
+        try:
+            require(probe.identity(router_pid, probe.executable) == router_start, 'router_identity_changed')
+            require(probe.identity(owner_pid, executable) == owner_start, 'native_owner_identity_changed')
+            count = probe.clients(router_pid, owner_pid, exact=not allow_reconnect)
+            owned = probe.sockets(router_pid)
+            rows = probe.tcp()
+            matches = [row for row in rows if row[3] in owned and row[2] == '01' and
+                       endpoint(row[0])[1] == 4101 and normalized_ip(endpoint(row[1])[0]).is_loopback]
+            require(probe.identity(router_pid, probe.executable) == router_start, 'router_identity_changed')
+            require(probe.identity(owner_pid, executable) == owner_start, 'native_owner_identity_changed')
+            # A completely inspected zero-client gap is pending, never healthy.
+            if allow_reconnect and count == 0 and not matches:
+                return None
+            require(count == 1 and len(matches) == 1, 'native_loopback_connection_not_unique')
+            return matches[0][3]
+        except FileNotFoundError:
+            if attempt == 2:
+                raise Refused('strict_socket_inventory_unstable')
+            time.sleep(.02)
+
+
+def validate(config, owner_pid):
+    frozen.validate_authorization(config, owner_pid)
+    require(config.get('upstream_fault_authorized') is True, 'upstream_fault_not_authorized')
+    require(config.get('upstream_owner_pid') == owner_pid, 'upstream_owner_mismatch')
+    require(config.get('upstream_harness_sha256') == digest(__file__), 'upstream_harness_hash_mismatch')
+    require(re.fullmatch('[0-9a-f]{64}', config.get('test_upstream_file_sha256', '')), 't1_hash_pin_missing')
+
+
+def child_identity(probe, pid):
+    start = probe.identity(pid, probe.executable)
+    stat = (probe.proc / str(pid) / 'stat').read_text().rpartition(')')[2].split()
+    require(int(stat[1]) == os.getpid(), 'router_not_direct_child')
+    return start
+
+
+def ensure_pidfd_api():
+    require(hasattr(os, 'pidfd_open'), 'pidfd_open_api_unavailable')
+    pidfd_getfd_api()
+
+
+def pidfd_getfd_api():
+    libc = ctypes.CDLL(None, use_errno=True)
+    getfd = getattr(libc, 'pidfd_getfd', None)
+    if getfd is not None:
+        getfd.argtypes, getfd.restype = [ctypes.c_int, ctypes.c_int, ctypes.c_uint], ctypes.c_int
+        return getfd
+    # Older TEST glibc omits the wrapper. The dummy C child probe has already
+    # proved the kernel call; verify the installed architecture/header number
+    # before making that same syscall directly. Never guess another ABI.
+    require(platform.machine() == 'x86_64', 'pidfd_getfd_abi_unverified')
+    header = Path('/usr/include/x86_64-linux-gnu/asm/unistd_64.h')
+    require(header.is_file(), 'pidfd_getfd_header_missing')
+    number = re.search(r'^#define\s+__NR_pidfd_getfd\s+([0-9]+)\s*$', header.read_text(), re.MULTILINE)
+    require(number and int(number.group(1)) == 438, 'pidfd_getfd_syscall_unverified')
+    libc.syscall.restype = ctypes.c_long
+    return lambda pidfd, target, flags: libc.syscall(ctypes.c_long(438), ctypes.c_int(pidfd),
+                                                   ctypes.c_int(target), ctypes.c_uint(flags))
+
+
+def duplicate_verified(probe, pid, start, rows, whitelist):
+    require(child_identity(probe, pid) == start, 'child_router_identity_changed')
+    getfd = pidfd_getfd_api()
+    pidfd = os.pidfd_open(pid, 0)
+    duplicates = []
+    try:
+        for row in rows:
+            require(os.readlink(probe.proc / str(pid) / 'fd' / str(row.fd)) == 'socket:[' + row.inode + ']',
+                    'upstream_fd_reused_before_duplicate')
+            fd = getfd(pidfd, row.fd, 0)
+            require(fd >= 0, 'pidfd_getfd_refused')
+            duplicate = socket.socket(fileno=fd)
+            duplicates.append(duplicate)
+            require(duplicate.family in (socket.AF_INET, socket.AF_INET6) and
+                    duplicate.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) == socket.SOCK_STREAM,
+                    'duplicated_socket_not_tcp')
+            peer = duplicate.getpeername()
+            actual = (str(normalized_ip(peer[0])), int(peer[1]))
+            require(actual == row.peer and actual in whitelist.peers and not normalized_ip(actual[0]).is_loopback,
+                    'duplicated_socket_not_verified_t1')
+            require(os.readlink('/proc/self/fd/' + str(fd)) == 'socket:[' + row.inode + ']',
+                    'duplicated_socket_inode_mismatch')
+        require(child_identity(probe, pid) == start, 'child_router_identity_changed')
+        return duplicates
+    except BaseException:
+        for duplicate in duplicates:
+            duplicate.close()
+        raise
+    finally:
+        os.close(pidfd)
+
+
+def launch_router(probe, launch, output):
+    require(digest(probe.executable) == probe.expected_sha, 'launch_binary_hash_mismatch')
+    require(not probe.owned_routers(), 'launch_another_router_present')
+    log = (output / ('router-launch-private-' + str(time.time_ns()) + '.log')).open('xb', buffering=0)
+    try:
+        return sp.Popen(launch.argv, executable=str(probe.executable), cwd=launch.cwd, env=launch.env,
+                        stdin=sp.DEVNULL, stdout=log, stderr=log, close_fds=True, start_new_session=True)
+    finally:
+        log.close()
+
+
+def recover_unhealthy_child(probe, launch, owner_pid, output, pid):
+    """Undo only our exact replacement launch; never signal an unknown router."""
+    require(pid != launch.pid, 'watchdog_original_router_not_replaced')
+    process = probe.proc / str(pid)
+    start = probe.identity(pid, probe.executable)
+    argv = [part for part in (process / 'cmdline').read_bytes().split(b'\0') if part]
+    env = dict(part.split(b'=', 1) for part in (process / 'environ').read_bytes().split(b'\0') if b'=' in part)
+    require(argv == launch.argv and env == launch.env and (process / 'cwd').resolve() == launch.cwd,
+            'watchdog_unknown_replacement_context')
+    probe.clients(pid, owner_pid, exact=False)
+    require(probe.identity(pid, probe.executable) == start, 'watchdog_replacement_identity_changed')
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 5
+    while probe.owned_routers() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    return launch_router(probe, launch, output)
+
+
+def restore_if_needed(probe, launch, owner_pid, output, whitelist, initial_peers):
+    deadline = time.monotonic() + RECOVERY_TIMEOUT
+    began = time.monotonic()
+    replacement_retried = False
+    while time.monotonic() < deadline:
+        # The parent and watchdog use separately opened descriptions for this
+        # arbiter. Their shared fault lock keeps other harnesses out.
+        with (output / 'launch.lock').open('a') as arbiter:
+            fcntl.flock(arbiter, fcntl.LOCK_EX)
+            routers = probe.owned_routers()
+            require(len(routers) <= 1 and all(exe == probe.executable for _, exe in routers),
+                    'watchdog_other_router_present')
+            if not routers:
+                router = launch_router(probe, launch, output)
+                routers = [(router.pid, probe.executable)]
+        try:
+            pid = routers[0][0]
+            probe.identity(pid, probe.executable)
+            probe.clients(pid, owner_pid, exact=False)
+            rows = upstreams(probe, pid, whitelist)
+            if initial_peers <= {row.peer for row in rows}:
+                save(output / 'rollback.json', dict(restored=True, router_count=1, router_hash_matched=True,
+                                                    all_peers_pristine_t1=True, utc_ns=time.time_ns()))
+                return 0
+        except (OSError, Refused):
+            pass
+        if not replacement_retried and time.monotonic() - began > 5 and routers[0][0] != launch.pid:
+            with (output / 'launch.lock').open('a') as arbiter:
+                fcntl.flock(arbiter, fcntl.LOCK_EX)
+                latest = probe.owned_routers()
+                require(latest == routers, 'watchdog_router_changed_before_recovery')
+                recover_unhealthy_child(probe, launch, owner_pid, output, routers[0][0])
+                replacement_retried = True
+        time.sleep(0.1)
+    save(output / 'rollback.json', dict(restored=False, status='router_health_not_verified', utc_ns=time.time_ns()))
+    return 3
+
+
+def arm_watchdog(probe, launch, owner_pid, output, whitelist, initial_peers, keep_fd):
+    ready_r, ready_w = os.pipe()
+    control_r, control_w = os.pipe()
+    child = os.fork()
+    if child == 0:
+        try:
+            os.close(ready_r)
+            os.close(control_w)
+            os.setsid()
+            with open(os.devnull, 'r+b', buffering=0) as null:
+                for fd in (0, 1, 2):
+                    os.dup2(null.fileno(), fd)
+            for entry in list(Path('/proc/self/fd').iterdir()):
+                fd = int(entry.name)
+                if fd > 2 and fd not in (ready_w, control_r, keep_fd):
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+            os.write(ready_w, b'ARMED')
+            os.close(ready_w)
+            started = time.monotonic()
+            while time.monotonic() - started < WATCHDOG_TIMEOUT:
+                ready, _, _ = select.select([control_r], [], [], 0.2)
+                if ready:
+                    os.read(control_r, 1)  # DONE, ERROR, or EOF: leave/restore one healthy router.
+                    break
+                if time.monotonic() - started > 5 and not probe.owned_routers():
+                    break
+            os._exit(restore_if_needed(probe, launch, owner_pid, output, whitelist, initial_peers))
+        except BaseException:
+            try:
+                save(output / 'rollback.json', dict(restored=False, status='watchdog_private_failure'))
+            except BaseException:
+                pass
+            os._exit(4)
+    os.close(ready_w)
+    os.close(control_r)
+    try:
+        ready, _, _ = select.select([ready_r], [], [], 2)
+        require(ready and os.read(ready_r, 5) == b'ARMED', 'watchdog_not_armed')
+    except BaseException:
+        os.close(control_w)
+        raise
+    finally:
+        os.close(ready_r)
+    save(output / 'rollback-armed.json', dict(armed=True, timeout_seconds=WATCHDOG_TIMEOUT, utc_ns=time.time_ns()))
+    return child, control_w
+
+
+def wait_child_ready(probe, router, owner_pid, whitelist, initial_peers):
+    deadline = time.monotonic() + STARTUP_TIMEOUT
+    while time.monotonic() < deadline:
+        require(router.poll() is None, 'child_router_exited')
+        try:
+            child_identity(probe, router.pid)
+            probe.clients(router.pid, owner_pid)
+            rows = upstreams(probe, router.pid, whitelist)
+            if initial_peers <= {row.peer for row in rows}:
+                return rows
+        except (OSError, Refused):
+            pass
+        time.sleep(0.1)
+    raise Refused('child_router_recovery_deadline')
+
+
+def read_ack_line(fd, timeout):
+    deadline = time.monotonic() + timeout
+    raw = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, 'native_recovery_ack_deadline')
+        try:
+            ready, _, _ = select.select([fd], [], [], remaining)
+        except InterruptedError:
+            continue
+        require(ready, 'native_recovery_ack_deadline')
+        chunk = os.read(fd, 4097 - len(raw))
+        require(chunk, 'native_recovery_ack_eof')
+        raw.extend(chunk)
+        require(len(raw) <= 4096, 'native_recovery_ack_oversize')
+        if b'\n' in raw:
+            require(raw.endswith(b'\n') and raw.count(b'\n') == 1, 'native_recovery_ack_format')
+            return bytes(raw)
+
+
+def acknowledge_native():
+    print(json.dumps(dict(stage='ROUTER_CHILD_READY', awaiting_native_recovery_ack=True,
+                          router_hash_matched=True, test_upstreams_restored=True)), flush=True)
+    raw = read_ack_line(sys.stdin.fileno(), ACK_TIMEOUT)
+    value = json.loads(raw)
+    require(set(value) == {'native_ready', 'working_ids_preserved', 'fill_baseline_preserved'} and
+            all(value[key] is True for key in value), 'native_recovery_not_confirmed')
+
+
+def require_watchdog_live(watchdog, started):
+    require(time.monotonic() - started < WATCHDOG_TIMEOUT - UPSTREAM_TIMEOUT - RECOVERY_TIMEOUT - 5,
+            'watchdog_budget_exhausted_before_upstream_fault')
+    status = os.waitid(os.P_PID, watchdog, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    require(status is None, 'watchdog_not_alive_before_upstream_fault')
+
+
+def interrupt(probe, config, owner_pid, output, keep_fd, acknowledge=acknowledge_native):
+    validate(config, owner_pid)
+    ensure_pidfd_api()
+    owner_executable = Path(config['binary']).resolve(strict=True)
+    require(digest(owner_executable) == config['binary_sha256'], 'native_owner_binary_hash_changed')
+    owner_start = probe.identity(owner_pid, owner_executable)
+    launch, before = inspect_retry(probe, config, owner_pid)
+    whitelist = pristine_whitelist(probe, launch, config['test_upstream_file_sha256'])
+    initial = upstreams(probe, launch.pid, whitelist)
+    initial_peers = {row.peer for row in initial}
+    save(output / 'preflight.json', {**before, 'test_upstream_verified': True,
+                                    'upstream_count': len(initial), 'pristine_t1_sha256': whitelist.file_sha256})
+    watchdog_started = time.monotonic()
+    watchdog, control = arm_watchdog(probe, launch, owner_pid, output, whitelist, initial_peers, keep_fd)
+    duplicates = []
+    completed = False
+    try:
+        latest, _ = inspect_retry(probe, config, owner_pid)
+        require((latest.pid, latest.start) == (launch.pid, launch.start), 'router_changed_before_term')
+        validate(config, owner_pid)
+        os.kill(launch.pid, signal.SIGTERM)
+        save(output / 'parent-setup.json', dict(router_restart_sent=True, rollback_armed=True,
+                                                upstream_fault=False, utc_ns=time.time_ns()))
+        deadline = time.monotonic() + 5
+        while probe.owned_routers() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        with (output / 'launch.lock').open('a') as arbiter:
+            fcntl.flock(arbiter, fcntl.LOCK_EX)
+            router = launch_router(probe, launch, output)
+        save(output / 'child-private.json', dict(pid=router.pid, start=child_identity(probe, router.pid)))
+        wait_child_ready(probe, router, owner_pid, whitelist, initial_peers)
+        acknowledge()
+        require_watchdog_live(watchdog, watchdog_started)
+        validate(config, owner_pid)
+        latest, _ = inspect_retry(probe, config, owner_pid)
+        require(latest.pid == router.pid, 'router_changed_before_upstream_fault')
+        start = child_identity(probe, router.pid)
+        local_inode = local_connection(probe, router.pid, owner_pid)
+        old = upstreams(probe, router.pid, whitelist)
+        require_watchdog_live(watchdog, watchdog_started)
+        duplicates = duplicate_verified(probe, router.pid, start, old, whitelist)
+        require(local_connection(probe, router.pid, owner_pid) == local_inode, 'local_connection_changed_before_fault')
+        require(child_identity(probe, router.pid) == start, 'child_router_identity_changed')
+        old_inodes = {row.inode for row in old}
+        old_peers = {row.peer for row in old}
+        began = time.monotonic()
+        interrupted = 0
+        save(output / 'fault.json', dict(fault='TEST_UPSTREAM_SOCKET_INTERRUPTION', upstream_fault=False,
+                                          fault_attempted=True, planned_socket_count=len(old),
+                                          interrupted_socket_count=0, rollback_armed=True, utc_ns=time.time_ns()))
+        require_watchdog_live(watchdog, watchdog_started)
+        for duplicate in duplicates:
+            duplicate.shutdown(socket.SHUT_RDWR)
+            interrupted += 1
+            save(output / 'fault.json', dict(fault='TEST_UPSTREAM_SOCKET_INTERRUPTION', upstream_fault=True,
+                                              fault_attempted=True, planned_socket_count=len(old),
+                                              interrupted_socket_count=interrupted, rollback_armed=True,
+                                              utc_ns=time.time_ns()))
+        for duplicate in duplicates:
+            duplicate.close()
+        duplicates = []
+        severed = False
+        loopback_gap = loopback_reconnected = False
+        deadline = began + UPSTREAM_TIMEOUT
+        while time.monotonic() < deadline:
+            require(router.poll() is None and child_identity(probe, router.pid) == start, 'router_died_during_upstream_fault')
+            require(probe.identity(owner_pid, owner_executable) == owner_start, 'native_owner_identity_changed')
+            current_local = local_connection(probe, router.pid, owner_pid, allow_reconnect=True)
+            loopback_gap |= current_local is None
+            loopback_reconnected |= current_local is not None and current_local != local_inode
+            established = {row[3] for row in probe.tcp() if row[2] == '01'}
+            severed |= old_inodes.isdisjoint(established)
+            try:
+                current = upstreams(probe, router.pid, whitelist)
+            except Refused as error:
+                if str(error) != 'upstream_inventory_not_unique':
+                    raise
+                current = []
+            fresh = [row for row in current if row.inode not in old_inodes]
+            if severed and current_local is not None and len(fresh) >= len(old) and old_peers <= {row.peer for row in fresh}:
+                latest, _ = inspect_retry(probe, config, owner_pid)
+                require(latest.pid == router.pid and latest.start == start, 'router_changed_after_upstream_fault')
+                require(probe.identity(owner_pid, owner_executable) == owner_start, 'native_owner_identity_changed')
+                completed = True
+                return dict(stage='UPSTREAM_RESTORED', fault='TEST_UPSTREAM_SOCKET_INTERRUPTION', upstream_fault=True,
+                            router_direct_child=True, router_process_preserved=True,
+                            native_loopback_preserved=not loopback_gap and not loopback_reconnected,
+                            native_loopback_gap_observed=loopback_gap,
+                            native_loopback_reconnected=loopback_reconnected,
+                            owned_native_loopback_restored=True,
+                            old_upstream_sockets_severed=True, fresh_test_upstreams_restored=True,
+                            interrupted_socket_count=len(old), restored_socket_count=len(fresh),
+                            socket_recovery_ms=round((time.monotonic() - began) * 1000), rollback_armed=True,
+                            new_destinations_configured=0, privileges_changed=False,
+                            native_recovery_proof='supervisor_status_after_required')
+            time.sleep(0.05)
+        raise Refused('upstream_socket_recovery_deadline')
+    finally:
+        for duplicate in duplicates:
+            duplicate.close()
+        try:
+            os.write(control, b'D' if completed else b'E')
+        except OSError:
+            pass
+        os.close(control)
+        deadline = time.monotonic() + RECOVERY_TIMEOUT + 2
+        waited = False
+        while time.monotonic() < deadline:
+            done, status = os.waitpid(watchdog, os.WNOHANG)
+            if done:
+                require(status == 0, 'independent_router_rollback_not_verified')
+                waited = True
+                break
+            time.sleep(0.1)
+        if not waited:
+            raise Refused('watchdog_completion_deadline')
+
+
+def main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--authorization', required=True)
+    parser.add_argument('--router-executable', required=True)
+    parser.add_argument('--owner-pid', type=int, required=True)
+    parser.add_argument('--execute', action='store_true')
+    args = parser.parse_args()
+    require(sys.platform == 'linux', 'linux_test_host_required')
+    require(digest(frozen.__file__) == PROBE_SHA, 'frozen_router_probe_hash_mismatch')
+    authorization = Path(args.authorization)
+    require(not authorization.is_symlink() and authorization.stat().st_uid == os.getuid() and
+            authorization.stat().st_mode & 0o077 == 0, 'authorization_not_private_owned')
+    config = json.loads(authorization.read_text())
+    require(config.get('environment') == 'test', 'authorization_not_test')
+    probe = frozen.Probe(args.router_executable, frozen.REVIEWED_ROUTER_SHA)
+    if not args.execute:
+        launch, before = probe.inspect(config, args.owner_pid)
+        whitelist = pristine_whitelist(probe, launch, config['test_upstream_file_sha256'])
+        rows = upstreams(probe, launch.pid, whitelist)
+        print(json.dumps({**before, 'test_upstream_verified': True, 'upstream_count': len(rows),
+                          'pristine_t1_sha256': whitelist.file_sha256, 'router_fd_actions': 0}, sort_keys=True))
+        return
+    root = Path.home() / 'moex/qualification/pr68-round5-20261002'
+    require(root.is_dir() and not root.is_symlink() and root.stat().st_uid == os.getuid() and
+            root.stat().st_mode & 0o077 == 0, 'qualification_not_private_owned')
+    lock_path = root / 'router-fault.lock'
+    require(not lock_path.is_symlink(), 'fault_lock_symlink')
+    with lock_path.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        output = root / ('upstream-recovery-' + str(time.time_ns()))
+        output.mkdir(mode=0o700)
+        result = interrupt(probe, config, args.owner_pid, output, lock.fileno())
+        save(output / 'result.json', result)
+        print(json.dumps(result, sort_keys=True), flush=True)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Refused as error:
+        print(json.dumps(dict(stage='REFUSED', reason=str(error))), flush=True)
+        raise SystemExit(1)
+    except BaseException:
+        print(json.dumps(dict(stage='FAILED', reason='private_runtime_failure')), flush=True)
+        raise SystemExit(1)
