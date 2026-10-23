@@ -4,6 +4,7 @@
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
 #include "future_spread_classification_regression.hpp"
+#include "public_deals_composition_regression.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -385,6 +386,7 @@ int main(int argc, char** argv) {
                           "read-only DTC accepts current committed book and denies order entry");
             test::require(!host.stop(), "read-only host stops");
         }
+        test::deals_composition::run(fixture, fake);
         fake.clear(moex::plaza2::test::fake::Option::AggrSnapshotReadyOnly);
         test::remove_tree(path);
         return 0;

@@ -507,6 +507,52 @@ void test_conflicting_identity_and_pending_bound() {
     }
 }
 
+void test_failure_diagnostic_survives_teardown() {
+    {
+        Plaza2PublicDealsBridge bridge(0, 0);
+        must_fail(bridge, control(Plaza2ListenerEventKind::Open), "zero target must fail Open");
+        const auto initiating_error = bridge.error();
+        require(initiating_error == "public DEALS target IDs must be positive", "target failure diagnostic");
+        send(bridge, control(Plaza2ListenerEventKind::Close));
+        bridge.on_plaza2_listener_error({.code = Plaza2ErrorCode::AdapterState, .message = "secondary callback error"});
+        require(bridge.error() == initiating_error && bridge.snapshot().error == initiating_error,
+                "Close and callback error must preserve the initiating target failure");
+        require(!bridge.valid() && !bridge.online() && bridge.snapshot().trades.empty(),
+                "diagnostic preservation must keep the disabled target inert");
+    }
+    {
+        Plaza2PublicDealsBridge bridge(1001, 321);
+        start(bridge);
+        online(bridge);
+        send(bridge, control(Plaza2ListenerEventKind::TransactionBegin));
+        DealOptions malformed;
+        malformed.quantity = 0;
+        must_fail(bridge, decoded_deal(malformed).event(), "malformed target deal must fail");
+        const auto initiating_error = bridge.error();
+        send(bridge, control(Plaza2ListenerEventKind::Close));
+        send(bridge, control(Plaza2ListenerEventKind::Close));
+        bridge.on_plaza2_listener_error({.code = Plaza2ErrorCode::AdapterState, .message = "secondary callback error"});
+        require(bridge.error() == initiating_error && bridge.snapshot().error == initiating_error,
+                "teardown must preserve the initiating decode failure");
+        require(!bridge.valid() && !bridge.online() && bridge.snapshot().trades.empty(),
+                "failed generation remains invalid and cannot retain trades");
+        start(bridge, 78);
+        require(bridge.valid() && !bridge.online() && bridge.error().empty(),
+                "a fresh listener generation clears the previous failure");
+        online(bridge);
+        send(bridge, control(Plaza2ListenerEventKind::Close));
+        require(bridge.error() == "public DEALS listener closed" && !bridge.valid() && !bridge.online(),
+                "ordinary healthy Close still exposes the close diagnostic and invalidates the stream");
+        bridge.on_plaza2_listener_error({.code = Plaza2ErrorCode::AdapterState, .message = "native callback failed"});
+        require(bridge.error() == "native callback failed", "a real callback failure replaces ordinary close status");
+        send(bridge, control(Plaza2ListenerEventKind::Close));
+        require(bridge.error() == "native callback failed", "Close preserves the first callback failure");
+        bridge.reset();
+        require(bridge.error().empty() && !bridge.valid() && !bridge.online(),
+                "explicit reset clears the diagnostic while remaining offline");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -517,6 +563,7 @@ int main() {
         test_lifenum_revision_and_cursor_ring();
         test_bad_transactions_prices_and_lifenum();
         test_conflicting_identity_and_pending_bound();
+        test_failure_diagnostic_survives_teardown();
         std::cout << "PASS plaza2_public_deals_test\n";
         field_reads.verify("optional public DEALS projection", 13);
         return 0;

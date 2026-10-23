@@ -194,6 +194,7 @@ std::uint64_t g_status_open_count = 0;
 std::uint64_t g_conn_new_count = 0;
 std::array<std::uint64_t, 4> successful_closes{}; // environment, connection, listener, publisher
 std::unordered_map<void*, FakePublisherMessage*> g_publisher_messages;
+std::unordered_map<StreamCode, std::uint64_t> listener_handles;
 
 std::uint32_t configured_result(Option variable) {
     const auto* value = option(variable);
@@ -1497,10 +1498,12 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     const auto scenario_day = scenario.session_id ? std::to_string(scenario.session_id) : "";
     if (const auto* value = scenario_day.empty() ? option(Option::SessionId) : scenario_day.c_str()) {
         const auto day = std::strtoll(value, nullptr, 10);
-        constexpr std::array session_fields{
-            FieldCode::kFortsRefdataReplSessionSessId, FieldCode::kFortsRefdataReplFutSessContentsSessId,
-            FieldCode::kFortsSessionstateReplSessionStateSessId, FieldCode::kFortsInstrumentstateReplSysEventsSessId,
-            FieldCode::kFortsAggrReplSysEventsSessId};
+        constexpr std::array session_fields{FieldCode::kFortsRefdataReplSessionSessId,
+                                            FieldCode::kFortsRefdataReplFutSessContentsSessId,
+                                            FieldCode::kFortsSessionstateReplSessionStateSessId,
+                                            FieldCode::kFortsInstrumentstateReplSysEventsSessId,
+                                            FieldCode::kFortsAggrReplSysEventsSessId,
+                                            FieldCode::kFortsDealsReplDealSessId};
         for (auto& message : script)
             for (const auto field : session_fields)
                 if (auto* decoded = find_field(message, field))
@@ -1907,9 +1910,17 @@ std::uint32_t emit_script(FakeListener& listener) {
                 return result;
         }
     }
+    // Bootstrap barriers expose the actual decoded rows without their commit
+    // or ONLINE proof. Tests complete the same callback transaction explicitly.
+    if ((listener.stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::RefdataPauseBeforeCommit)) ||
+        (listener.stream_code == StreamCode::kFortsSessionstateRepl &&
+         fake_flag(Option::SessionstatePauseBeforeCommit)))
+        return kCgErrOk;
     if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk) {
         return result;
     }
+    if (listener.stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::RefdataPauseBeforeOnline))
+        return kCgErrOk;
     if (const auto result = emit_simple_message(listener, kCgMsgP2replOnline); result != kCgErrOk) {
         return result;
     }
@@ -2797,6 +2808,7 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
     }
 
     connection->listeners.push_back(listener);
+    ++listener_handles[listener->stream_code];
     *lsnptr = listener;
     return kCgErrOk;
 }
@@ -2806,6 +2818,11 @@ std::uint32_t cg_lsn_destroy(void* listener) {
         return kCgErrInvalidArgument;
     }
     auto* typed = static_cast<FakeListener*>(listener);
+    if (typed->stream_code == StreamCode::kFortsDealsRepl && fake_flag(Option::DealsDestroyOnce)) {
+        clear_option(Option::DealsDestroyOnce);
+        return kCgErrInternal;
+    }
+    --listener_handles[typed->stream_code];
     detach_listener(typed->connection, typed);
     delete typed;
     return kCgErrOk;
@@ -3278,6 +3295,9 @@ extern "C" std::int64_t moex_fake_last_post_started_steady_ns() {
 }
 extern "C" std::uint64_t moex_fake_listener_opens(StreamCode stream) {
     return listener_opens[stream];
+}
+extern "C" std::uint64_t moex_fake_listener_handles(StreamCode stream) {
+    return listener_handles[stream];
 }
 extern "C" void moex_fake_trade_open_settings(std::string* settings) {
     if (settings)

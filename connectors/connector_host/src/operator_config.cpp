@@ -107,8 +107,10 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     host.status_streams = {stream(StreamCode::kFortsSessionstateRepl, "FORTS_SESSIONSTATE_REPL"),
                            stream(StreamCode::kFortsInstrumentstateRepl, "FORTS_INSTRUMENTSTATE_REPL")};
     host.aggr20_stream = stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL");
-    if (inputs.public_deals)
+    if (inputs.public_deals) {
         host.public_deals_stream = stream(StreamCode::kFortsDealsRepl, "FORTS_DEALS_REPL");
+        host.public_deals_target_isin_id = out.transport.target_isin_id;
+    }
     if (!inputs.read_only_market_data) {
         host.publisher_settings = "p2mq://FORTS_SRV;category=FORTS_MSG;name=" + host.publisher_name +
                                   ";timeout=60000;scheme=|FILE|" + scheme + "/forts_messages.ini|message";

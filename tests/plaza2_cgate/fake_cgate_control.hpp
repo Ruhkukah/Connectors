@@ -52,6 +52,7 @@ enum class Option : std::uint32_t {
     ConnToOpening,
     Cp1251Text,
     DealsBadScheme,
+    DealsDestroyOnce,
     DecodeCorruption,
     DelayUserorderbook,
     DisablePublisher,
@@ -113,6 +114,8 @@ enum class Option : std::uint32_t {
     PubReplyTimeoutDel,
     PubReplyTimeoutRecovery,
     RefdataOnlyNewGeneration,
+    RefdataPauseBeforeCommit,
+    RefdataPauseBeforeOnline,
     RefdataOpenErrorOnce,
     RegularRecoveredOrder,
     RemoveTargetAfterReady,
@@ -124,6 +127,7 @@ enum class Option : std::uint32_t {
     SchemeMissingPrice,
     SchemeRetypePrice,
     SessionId,
+    SessionstatePauseBeforeCommit,
     SessionPriceRevision,
     SinglePrivateError,
     StatusBeforeRefdata,
@@ -248,6 +252,9 @@ class Control {
     }
     std::uint64_t opens(generated::StreamCode stream) const {
         return call<std::uint64_t (*)(generated::StreamCode)>("moex_fake_listener_opens")(stream);
+    }
+    std::uint64_t listener_handles(generated::StreamCode stream) const {
+        return call<std::uint64_t (*)(generated::StreamCode)>("moex_fake_listener_handles")(stream);
     }
     std::string trade_open_settings() const {
         std::string result;

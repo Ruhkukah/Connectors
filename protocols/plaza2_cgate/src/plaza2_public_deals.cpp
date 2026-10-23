@@ -19,6 +19,7 @@ constexpr auto kDealsStream = generated::StreamCode::kFortsDealsRepl;
 constexpr auto kActiveSide = std::uint64_t{0x20000000000};
 constexpr auto kPassiveSide = std::uint64_t{0x40000000000};
 constexpr auto kMaxD16_5Magnitude = std::int64_t{9'999'999'999'999'999};
+constexpr std::string_view kListenerClosed = "public DEALS listener closed";
 
 const Plaza2DecodedFieldValue* find_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCode code) noexcept {
 #ifdef MOEX_CGATE_FIELD_READ_AUDIT
@@ -225,7 +226,11 @@ Plaza2Error Plaza2PublicDealsBridge::fail(Plaza2ErrorCode code, const char* mess
     pending_.clear();
     pending_by_repl_id_.clear();
     pending_by_deal_id_.clear();
-    error_ = message;
+    // Teardown callbacks can follow the initiating failure. Keep that first
+    // diagnostic until a fresh generation starts, rather than masking it.
+    if (error_.empty() || error_ == kListenerClosed) {
+        error_ = message;
+    }
     return {.code = code, .message = error_};
 }
 
@@ -257,7 +262,9 @@ void Plaza2PublicDealsBridge::on_plaza2_listener_error(const Plaza2Error& error)
     clear_generation();
     valid_ = false;
     try {
-        error_ = error.message.empty() ? "public DEALS listener callback failed" : error.message;
+        if (error_.empty() || error_ == kListenerClosed) {
+            error_ = error.message.empty() ? "public DEALS listener callback failed" : error.message;
+        }
     } catch (...) {
         error_.clear();
     }
@@ -596,7 +603,9 @@ Plaza2Error Plaza2PublicDealsBridge::on_message(const Plaza2ListenerEvent& event
         clear_generation();
         opened_ = false;
         valid_ = false;
-        error_ = "public DEALS listener closed";
+        if (error_.empty()) {
+            error_ = kListenerClosed;
+        }
         return {};
     case Kind::TransactionBegin:
         if (!opened_) {

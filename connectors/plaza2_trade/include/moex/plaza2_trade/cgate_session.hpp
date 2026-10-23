@@ -64,6 +64,8 @@ struct CgateSessionConfig {
     CgateStreamConfig aggr20_stream;
     // Optional public anonymous trades, independent of private TRADE replay.
     // An empty URL preserves the existing four-listener read-only profile.
+    // The selected ISIN is required; its session is resolved only from complete
+    // committed current REFDATA/SESSIONSTATE, never from the AGGR bootstrap pin.
     CgateStreamConfig public_deals_stream;
     std::int64_t public_deals_target_isin_id{0};
     // Optional exact AGGR20 sys_events session identity. Zero accepts a
