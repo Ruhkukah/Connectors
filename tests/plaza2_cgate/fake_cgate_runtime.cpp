@@ -1858,7 +1858,11 @@ std::uint32_t emit_script(FakeListener& listener) {
         .flags = 0,
     };
     // TRADE negotiates LifeNum before OPEN; an equal requested epoch emits no notification.
-    if (listener.stream_code != StreamCode::kFortsTradeRepl)
+    // The native DEALS callback-order scenario also delivers its only LifeNum
+    // from cg_lsn_open, before OPEN. A second notification here would hide a
+    // bridge that discarded or reset the pending value during OPEN.
+    if (listener.stream_code != StreamCode::kFortsTradeRepl &&
+        !(listener.stream_code == StreamCode::kFortsDealsRepl && fake_flag(Option::DealsLifeNumBeforeOpen)))
         if (const auto result = emit_simple_message(listener, kCgMsgP2replLifenum, &lifenum, sizeof(lifenum));
             result != kCgErrOk)
             return result;
@@ -2928,6 +2932,12 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
         return kCgErrOk;
     }
     typed->state = kStateActive;
+    if (typed->stream_code == StreamCode::kFortsDealsRepl && fake_flag(Option::DealsLifeNumBeforeOpen)) {
+        CgDataLifeNum life{.life_number = fake_flag(Option::FreshPosAnchor) ? 8u : 7u, .flags = 0};
+        if (const auto result = emit_simple_message(*typed, kCgMsgP2replLifenum, &life, sizeof(life));
+            result != kCgErrOk)
+            return result;
+    }
     if (typed->stream_code == StreamCode::kFortsTradeRepl) {
         const auto server =
             scenario.trade_server_lifenum ? scenario.trade_server_lifenum : typed->connection->trade_lifenum;

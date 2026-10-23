@@ -53,6 +53,7 @@ enum class Option : std::uint32_t {
     Cp1251Text,
     DealsBadScheme,
     DealsDestroyOnce,
+    DealsLifeNumBeforeOpen,
     DecodeCorruption,
     DelayUserorderbook,
     DisablePublisher,

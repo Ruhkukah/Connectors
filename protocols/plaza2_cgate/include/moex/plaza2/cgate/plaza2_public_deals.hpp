@@ -113,6 +113,7 @@ class Plaza2PublicDealsBridge final : public Plaza2ListenerEventHandler {
     std::unordered_map<std::int64_t, Identity> pending_by_deal_id_;
     std::uint64_t stream_epoch_{0};
     std::uint64_t lifenum_{0};
+    std::uint64_t pending_lifenum_{0};
     std::uint64_t last_sequence_{0};
     std::int64_t last_repl_rev_{-1};
     bool has_lifenum_{false};

@@ -67,10 +67,12 @@ foreach(name IN ITEMS plaza2_trade_fake_session_test plaza2_trade_fake_session_r
 endforeach()
 moex_test(plaza2_public_deals_test plaza2_cgate/plaza2_public_deals_test.cpp moex_plaza2_cgate_aggr20_md)
 moex_test(plaza2_publisher_rate_test plaza2_cgate/plaza2_publisher_rate_test.cpp moex_plaza2_cgate_metadata)
-foreach(name IN ITEMS connector_host_dtc_protocol_test connector_host_dtc_server_test connector_host_dtc_public_deals_test)
+foreach(name IN ITEMS connector_host_dtc_protocol_test connector_host_dtc_server_test)
     moex_test(${name} ${name}.cpp moex_connector_host)
     set_tests_properties(${name} PROPERTIES LABELS "dtc;read-only;sanitizer")
 endforeach()
+moex_runtime_test(connector_host_dtc_public_deals_test connector_host_dtc_public_deals_test.cpp moex_connector_host)
+set_tests_properties(connector_host_dtc_public_deals_test PROPERTIES LABELS "dtc;read-only;integration;sanitizer")
 add_executable(plaza2_text_test plaza2_cgate/plaza2_text_test.cpp)
 target_link_libraries(plaza2_text_test PRIVATE moex_plaza2_cgate_aggr20_md)
 add_test(NAME plaza2_text_roundtrip_test COMMAND "${Python3_EXECUTABLE}"

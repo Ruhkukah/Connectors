@@ -68,8 +68,10 @@ inline void live_deal(const fake::Control& runtime, std::int32_t session, std::i
 inline void run(const RuntimeFixturePaths& fixture, const fake::Control& runtime) {
     using enum generated::StreamCode;
     const auto commands_before = runtime.commands().size();
-    runtime.configure({});
-    {
+    for (const bool life_before_open : {false, true}) {
+        runtime.configure({});
+        if (life_before_open)
+            runtime.set(fake::Option::DealsLifeNumBeforeOpen);
         const auto cfg = operator_config(fixture);
         require(cfg.transport.host.public_deals_target_isin_id == 1001 &&
                     cfg.transport.host.aggr20_target_session_id == 0,
@@ -100,12 +102,45 @@ inline void run(const RuntimeFixturePaths& fixture, const fake::Control& runtime
         require(!host.stop(), "operator-composed public-DEALS host stops");
         require(!host.public_deals_snapshot().valid && host.public_deals_snapshot().trades.empty(),
                 "stop retained public-deal authority or buffered trades");
+        if (life_before_open)
+            runtime.set(fake::Option::FreshPosAnchor);
         require(!host.start(), "same operator-composed host restarts offline");
         pump(host);
-        require(host.public_deals_snapshot().valid && host.public_deals_snapshot().stream_epoch > initial.stream_epoch,
-                "same-owner stop/start reused a public-DEALS epoch");
+        const auto restarted = host.public_deals_snapshot();
+        require(restarted.valid && restarted.lifenum == (life_before_open ? 8u : 7u) &&
+                    restarted.stream_epoch > initial.stream_epoch && restarted.trades.size() == 2 &&
+                    restarted.trades.front().deal_id == 9002 && restarted.trades.front().lifenum == restarted.lifenum,
+                "same-owner stop/start retained an old DEALS LifeNum, trade, or epoch");
         require_read_only(host, runtime, commands_before);
         require(!host.stop(), "restarted public-DEALS host stops");
+    }
+    {
+        runtime.configure({});
+        runtime.set(fake::Option::DealsLifeNumBeforeOpen);
+        runtime.set(fake::Option::DealsBadScheme);
+        const auto opens_before = runtime.opens(kFortsDealsRepl);
+        connector_host::ConnectorHost host(operator_config(fixture));
+        require(!host.start(), "pre-OPEN LifeNum with incompatible DEALS scheme starts asynchronously");
+        pump(host);
+        const auto rejected = host.public_deals_snapshot();
+        require(runtime.opens(kFortsDealsRepl) > opens_before && !rejected.valid && !rejected.online &&
+                    rejected.trades.empty() &&
+                    host.snapshot().last_error.find(
+                        "public DEALS schema field type, size or offset mismatch: moment_ns") != std::string::npos,
+                "pending pre-OPEN LifeNum bypassed native OPEN scheme validation or hid its actual field error");
+        require_read_only(host, runtime, commands_before);
+        require(!host.stop() && runtime.listener_handles(kFortsDealsRepl) == 0,
+                "incompatible pre-OPEN DEALS listener did not stop cleanly");
+        runtime.clear(fake::Option::DealsBadScheme);
+        require(!host.start(), "fresh pre-OPEN DEALS host starts after correcting the fake scheme");
+        pump(host);
+        const auto recovered = host.public_deals_snapshot();
+        require(recovered.valid && recovered.online && recovered.lifenum == 7 && recovered.trades.size() == 2 &&
+                    recovered.error.empty(),
+                "a fresh validated OPEN did not recover committed DEALS after the rejected scheme");
+        require_read_only(host, runtime, commands_before);
+        require(!host.stop() && runtime.listener_handles(kFortsDealsRepl) == 0,
+                "corrected pre-OPEN DEALS listener did not stop cleanly");
     }
     for (const auto barrier : {fake::Option::RefdataPauseBeforeCommit, fake::Option::RefdataPauseBeforeOnline,
                                fake::Option::SessionstatePauseBeforeCommit}) {
@@ -145,6 +180,7 @@ inline void run(const RuntimeFixturePaths& fixture, const fake::Control& runtime
     }
     {
         runtime.configure({});
+        runtime.set(fake::Option::DealsLifeNumBeforeOpen);
         auto now = std::chrono::steady_clock::time_point{std::chrono::seconds{100}};
         auto cfg = operator_config(fixture);
         cfg.transport.host.recovery_now = [&] { return now; };
@@ -152,21 +188,37 @@ inline void run(const RuntimeFixturePaths& fixture, const fake::Control& runtime
         require(!host.start(), "recovering public-DEALS host starts");
         pump(host);
         const auto old = host.public_deals_snapshot();
-        require(old.valid && old.trades.size() == 2, "recovery starts with actual bound public deals");
+        require(old.valid && old.lifenum == 7 && old.trades.size() == 2,
+                "recovery starts with actual bound public deals");
         runtime.set(fake::Option::ConnectionError);
         pump(host, 1);
         runtime.clear(fake::Option::ConnectionError);
         require(!host.public_deals_snapshot().valid && host.public_deals_snapshot().trades.empty(),
                 "connection loss retained public-deal authority or buffered trades");
         runtime.set(fake::Option::SessionId, "322");
+        runtime.set(fake::Option::FreshPosAnchor);
         for (int i = 0; i < 40; ++i) {
             now += std::chrono::milliseconds(100);
             pump(host, 1);
         }
         const auto next = host.public_deals_snapshot();
-        require(next.valid && next.online && next.stream_epoch > old.stream_epoch && next.trades.size() == 2 &&
-                    next.trades.front().session_id == 322 && next.trades.front().stream_epoch == next.stream_epoch,
+        require(next.valid && next.online && next.lifenum == 8 && next.stream_epoch > old.stream_epoch &&
+                    next.trades.size() == 2 && next.trades.front().session_id == 322 &&
+                    next.trades.front().stream_epoch == next.stream_epoch,
                 "recovery did not rebind current metadata with a strictly newer public-DEALS epoch");
+        runtime.enqueue({.kind = fake::EventKind::Begin, .stream_code = kFortsDealsRepl});
+        live_deal(runtime, 321, 9150, 150);
+        live_deal(runtime, 322, 9151, 151);
+        pump(host);
+        require(host.public_deals_snapshot().last_sequence == next.last_sequence,
+                "recovered pre-OPEN LifeNum released a deal before its commit");
+        runtime.enqueue({.kind = fake::EventKind::Commit, .stream_code = kFortsDealsRepl});
+        pump(host);
+        const auto recovered_tail = host.public_deals_snapshot(next.last_sequence);
+        require(recovered_tail.trades.size() == 1 && recovered_tail.trades.front().deal_id == 9151 &&
+                    recovered_tail.trades.front().session_id == 322 && recovered_tail.trades.front().lifenum == 8 &&
+                    recovered_tail.trades.front().stream_epoch == next.stream_epoch,
+                "recovered DEALS output accepted the old session or retained an old LifeNum/epoch");
         require_read_only(host, runtime, commands_before);
         require(!host.stop(), "recovering public-DEALS host stops");
     }

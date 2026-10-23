@@ -331,6 +331,120 @@ void test_lifenum_revision_and_cursor_ring() {
             "new generation resumes with monotonic cursor sequence");
 }
 
+void test_lifenum_before_open() {
+    for (const bool life_first : {false, true}) {
+        Plaza2PublicDealsBridge bridge(1001, 321);
+        if (life_first) {
+            send(bridge, control(Plaza2ListenerEventKind::LifeNum, 77));
+            send(bridge, control(Plaza2ListenerEventKind::LifeNum, 77));
+            const auto pending = bridge.snapshot();
+            require(!pending.valid && !pending.online && pending.lifenum == 0 && pending.stream_epoch == 0 &&
+                        pending.trades.empty() && pending.error.empty(),
+                    "pre-OPEN LifeNum must remain private negotiation metadata");
+            send(bridge, control(Plaza2ListenerEventKind::Open));
+        } else {
+            start(bridge);
+        }
+        const auto opened = bridge.snapshot();
+        require(opened.valid && !opened.online && opened.lifenum == 77 && opened.stream_epoch == 1 &&
+                    opened.trades.empty(),
+                "actual OPEN must adopt the negotiated LifeNum without a second notification");
+        send(bridge, control(Plaza2ListenerEventKind::LifeNum, 77));
+        require(bridge.snapshot().stream_epoch == opened.stream_epoch,
+                "repeated negotiated LifeNum must not create a second generation");
+        transaction(bridge, {decoded_deal()});
+        require(bridge.snapshot().trades.empty(), "bootstrap trades must remain suppressed for either callback order");
+        online(bridge);
+        DealOptions live;
+        live.repl_id = 2;
+        live.repl_rev = 2;
+        live.deal_id = 9002;
+        send(bridge, control(Plaza2ListenerEventKind::TransactionBegin));
+        send(bridge, decoded_deal(live).event());
+        require(bridge.snapshot().last_sequence == 0 && bridge.snapshot().trades.empty(),
+                "negotiated LifeNum cannot release a live trade before commit");
+        send(bridge, control(Plaza2ListenerEventKind::TransactionCommit));
+        const auto committed = bridge.snapshot();
+        require(committed.trades.size() == 1 && committed.trades[0].lifenum == 77 &&
+                    committed.trades[0].sequence == 1 && committed.trades[0].stream_epoch == opened.stream_epoch,
+                "committed trade must retain the negotiated LifeNum and fresh epoch");
+        transaction(bridge, {decoded_deal(live)});
+        require(bridge.snapshot().last_sequence == 1, "negotiation must not weaken exactly-once replay handling");
+        send(bridge, control(Plaza2ListenerEventKind::Close));
+        send(bridge, control(Plaza2ListenerEventKind::LifeNum, 78));
+        require(!bridge.valid() && !bridge.online() && bridge.snapshot().lifenum == 0,
+                "next generation negotiation cannot restore authority before OPEN");
+        send(bridge, control(Plaza2ListenerEventKind::Open));
+        require(bridge.snapshot().lifenum == 78 && bridge.snapshot().stream_epoch > committed.stream_epoch &&
+                    bridge.snapshot().last_sequence == 1 && bridge.snapshot().trades.empty(),
+                "reopen must adopt only the fresh LifeNum without rewinding the cursor or retaining old trades");
+    }
+}
+
+void test_pending_lifenum_invalidation() {
+    for (int invalidation = 0; invalidation < 4; ++invalidation) {
+        Plaza2PublicDealsBridge bridge(1001, 321);
+        send(bridge, control(Plaza2ListenerEventKind::LifeNum, 77));
+        if (invalidation == 0)
+            send(bridge, control(Plaza2ListenerEventKind::Close));
+        else if (invalidation == 1)
+            bridge.reset();
+        else if (invalidation == 2)
+            bridge.on_plaza2_listener_error(
+                {.code = Plaza2ErrorCode::IncompatibleScheme, .message = "incompatible test schema"});
+        else
+            must_fail(bridge, control(Plaza2ListenerEventKind::LifeNum, 0), "zero pending LifeNum must fail closed");
+        send(bridge, control(Plaza2ListenerEventKind::Open));
+        require(bridge.snapshot().lifenum == 0 && bridge.snapshot().trades.empty(),
+                "Close, reset or fatal/schema failure must discard an unconsumed LifeNum");
+        must_fail(bridge, control(Plaza2ListenerEventKind::Online),
+                  "OPEN without a fresh LifeNum must not inherit stale negotiation metadata");
+    }
+    for (const auto premature : {Plaza2ListenerEventKind::TransactionBegin, Plaza2ListenerEventKind::Online,
+                                 Plaza2ListenerEventKind::StreamData}) {
+        Plaza2PublicDealsBridge bridge(1001, 321);
+        send(bridge, control(Plaza2ListenerEventKind::LifeNum, 77));
+        must_fail(bridge,
+                  premature == Plaza2ListenerEventKind::StreamData ? decoded_deal().event() : control(premature),
+                  "positive pending LifeNum must not admit data, transactions or ONLINE before OPEN");
+        const auto original_error = bridge.error();
+        send(bridge, control(Plaza2ListenerEventKind::LifeNum, 78));
+        require(!bridge.valid() && !bridge.online() && bridge.error() == original_error,
+                "LifeNum alone cannot clear a fatal failure or restore authority");
+        bridge.on_plaza2_listener_error(
+            {.code = Plaza2ErrorCode::AdapterState, .message = "secondary callback failure"});
+        send(bridge, control(Plaza2ListenerEventKind::Open));
+        require(bridge.snapshot().lifenum == 0, "callback failure must discard negotiation queued after a failure");
+        must_fail(bridge, control(Plaza2ListenerEventKind::Online), "stale queued LifeNum must not survive an error");
+    }
+    {
+        Plaza2PublicDealsBridge bridge(1001, 321);
+        send(bridge, control(Plaza2ListenerEventKind::LifeNum, 77));
+        must_fail(bridge, control(Plaza2ListenerEventKind::LifeNum, 78),
+                  "conflicting pending LifeNum must not silently replace negotiated metadata");
+        send(bridge, control(Plaza2ListenerEventKind::Open));
+        require(bridge.snapshot().lifenum == 0, "conflicting negotiation must be discarded before OPEN");
+        must_fail(bridge, control(Plaza2ListenerEventKind::Online), "conflicting negotiation cannot grant authority");
+    }
+    Plaza2PublicDealsBridge bridge(1001, 321);
+    start(bridge);
+    online(bridge);
+    send(bridge, control(Plaza2ListenerEventKind::TransactionBegin));
+    DealOptions malformed;
+    malformed.quantity = 0;
+    must_fail(bridge, decoded_deal(malformed).event(), "malformed row must invalidate the current generation");
+    const auto original_error = bridge.error();
+    send(bridge, control(Plaza2ListenerEventKind::LifeNum, 78));
+    require(!bridge.valid() && !bridge.online() && bridge.error() == original_error && bridge.snapshot().lifenum == 0,
+            "LifeNum cannot revive a failed open generation");
+    must_fail(bridge, control(Plaza2ListenerEventKind::Online), "actual OPEN is required after a fatal decode failure");
+    send(bridge, control(Plaza2ListenerEventKind::Close));
+    send(bridge, control(Plaza2ListenerEventKind::LifeNum, 79));
+    send(bridge, control(Plaza2ListenerEventKind::Open));
+    require(bridge.valid() && !bridge.online() && bridge.snapshot().lifenum == 79 && bridge.error().empty(),
+            "fresh negotiation and actual OPEN must recover while preserving all admission gates");
+}
+
 void test_bad_transactions_prices_and_lifenum() {
     {
         Plaza2PublicDealsBridge bridge(1001, 321);
@@ -561,6 +675,8 @@ int main() {
         test_snapshot_barrier_and_atomic_commit();
         test_aggressor_status_flags();
         test_lifenum_revision_and_cursor_ring();
+        test_lifenum_before_open();
+        test_pending_lifenum_invalidation();
         test_bad_transactions_prices_and_lifenum();
         test_conflicting_identity_and_pending_bound();
         test_failure_diagnostic_survives_teardown();
