@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
             }
         };
         pump();
-        require(!session.runtime_health().valid && fake.opens(generated::StreamCode::kFortsRefdataRepl) == 0 &&
+        require(!session.runtime_health().private_active && fake.opens(generated::StreamCode::kFortsRefdataRepl) == 0 &&
                     fake.opens(cgate::kFullOrderLogStreamCode) == 0,
                 "read-only startup must wait for ACTIVE with no listener opens or fabricated healthy streams");
         fake.clear(f::Option::ConnHoldOpening);
