@@ -52,6 +52,8 @@ enum class Option : std::uint32_t {
     ConnToOpening,
     Cp1251Text,
     DealsBadScheme,
+    DealsDestroyOnce,
+    DealsLifeNumBeforeOpen,
     DecodeCorruption,
     DelayUserorderbook,
     DisablePublisher,
@@ -115,6 +117,8 @@ enum class Option : std::uint32_t {
     PubReplyTimeoutDel,
     PubReplyTimeoutRecovery,
     RefdataOnlyNewGeneration,
+    RefdataPauseBeforeCommit,
+    RefdataPauseBeforeOnline,
     RefdataOpenErrorOnce,
     RegularRecoveredOrder,
     RemoveTargetAfterReady,
@@ -126,6 +130,7 @@ enum class Option : std::uint32_t {
     SchemeMissingPrice,
     SchemeRetypePrice,
     SessionId,
+    SessionstatePauseBeforeCommit,
     SessionPriceRevision,
     SinglePrivateError,
     StatusBeforeRefdata,
@@ -156,6 +161,7 @@ struct Scenario {
     // Zero follows the fake server's POS epoch; a positive value models an independent TRADE rollover.
     std::uint32_t trade_server_lifenum{0};
     std::uint32_t listener_create_result{0}, publisher_create_result{0};
+    bool spectra912_refdata_schema{false};
     generated::StreamCode unrecognized_schema_stream{};
     generated::FieldCode mutated_schema_field{};
     generated::TableCode omitted_schema_table{};
@@ -258,6 +264,9 @@ class Control {
     }
     std::uint64_t opens(generated::StreamCode stream) const {
         return call<std::uint64_t (*)(generated::StreamCode)>("moex_fake_listener_opens")(stream);
+    }
+    std::uint64_t listener_handles(generated::StreamCode stream) const {
+        return call<std::uint64_t (*)(generated::StreamCode)>("moex_fake_listener_handles")(stream);
     }
     std::string listener_open_settings(generated::StreamCode stream) const {
         std::string result;

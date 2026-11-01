@@ -19,6 +19,7 @@ constexpr auto kDealsStream = generated::StreamCode::kFortsDealsRepl;
 constexpr auto kActiveSide = std::uint64_t{0x20000000000};
 constexpr auto kPassiveSide = std::uint64_t{0x40000000000};
 constexpr auto kMaxD16_5Magnitude = std::int64_t{9'999'999'999'999'999};
+constexpr std::string_view kListenerClosed = "public DEALS listener closed";
 
 const Plaza2DecodedFieldValue* find_field(std::span<const Plaza2DecodedFieldValue> fields, FieldCode code) noexcept {
 #ifdef MOEX_CGATE_FIELD_READ_AUDIT
@@ -221,15 +222,24 @@ bool Plaza2PublicDealsBridge::same_economic_trade(const Identity& a, const Ident
 Plaza2Error Plaza2PublicDealsBridge::fail(Plaza2ErrorCode code, const char* message) {
     online_ = false;
     valid_ = false;
+    opened_ = false;
+    lifenum_ = 0;
+    has_lifenum_ = false;
+    pending_lifenum_ = 0;
     transaction_open_ = false;
     pending_.clear();
     pending_by_repl_id_.clear();
     pending_by_deal_id_.clear();
-    error_ = message;
+    // Teardown callbacks can follow the initiating failure. Keep that first
+    // diagnostic until a fresh generation starts, rather than masking it.
+    if (error_.empty() || error_ == kListenerClosed) {
+        error_ = message;
+    }
     return {.code = code, .message = error_};
 }
 
 void Plaza2PublicDealsBridge::clear_generation() noexcept {
+    pending_lifenum_ = 0;
     ring_begin_ = 0;
     ring_size_ = 0;
     dedup_begin_ = 0;
@@ -256,8 +266,13 @@ void Plaza2PublicDealsBridge::reset() noexcept {
 void Plaza2PublicDealsBridge::on_plaza2_listener_error(const Plaza2Error& error) noexcept {
     clear_generation();
     valid_ = false;
+    opened_ = false;
+    lifenum_ = 0;
+    has_lifenum_ = false;
     try {
-        error_ = error.message.empty() ? "public DEALS listener callback failed" : error.message;
+        if (error_.empty() || error_ == kListenerClosed) {
+            error_ = error.message.empty() ? "public DEALS listener callback failed" : error.message;
+        }
     } catch (...) {
         error_.clear();
     }
@@ -545,32 +560,38 @@ Plaza2Error Plaza2PublicDealsBridge::on_message(const Plaza2ListenerEvent& event
         return fail(Plaza2ErrorCode::DecodeFailed, "public DEALS bridge received an unexpected stream");
     }
     if (!valid_ && event.kind != Kind::Open && event.kind != Kind::LifeNum && event.kind != Kind::Close) {
-        return {.code = Plaza2ErrorCode::AdapterState,
-                .message = error_.empty() ? "public DEALS requires a fresh listener generation" : error_};
+        return fail(Plaza2ErrorCode::AdapterState, "public DEALS requires a fresh listener generation");
     }
 
     switch (event.kind) {
-    case Kind::Open:
+    case Kind::Open: {
         if (target_isin_id_ <= 0 || target_session_id_ <= 0) {
             return fail(Plaza2ErrorCode::InvalidConfiguration, "public DEALS target IDs must be positive");
         }
         if (stream_epoch_ == std::numeric_limits<std::uint64_t>::max()) {
             return fail(Plaza2ErrorCode::AdapterState, "public DEALS stream epoch exhausted");
         }
+        // CGate may negotiate LifeNum before OPEN. Only the actual, schema-
+        // validated OPEN may activate that value and begin a visible epoch.
+        const auto negotiated_lifenum = pending_lifenum_;
         clear_generation();
         ++stream_epoch_;
-        lifenum_ = 0;
-        has_lifenum_ = false;
+        lifenum_ = negotiated_lifenum;
+        has_lifenum_ = negotiated_lifenum != 0;
         opened_ = true;
         valid_ = true;
         error_.clear();
         return {};
+    }
     case Kind::LifeNum: {
-        if (!opened_) {
-            return fail(Plaza2ErrorCode::AdapterState, "public DEALS LifeNum arrived before listener Open");
-        }
         if (event.unsigned_value == 0) {
             return fail(Plaza2ErrorCode::AdapterState, "public DEALS requires a nonzero LifeNum");
+        }
+        if (!opened_) {
+            if (pending_lifenum_ && pending_lifenum_ != event.unsigned_value)
+                return fail(Plaza2ErrorCode::AdapterState, "public DEALS has conflicting LifeNum before listener Open");
+            pending_lifenum_ = event.unsigned_value;
+            return {};
         }
         if (transaction_open_) {
             return fail(Plaza2ErrorCode::AdapterState, "public DEALS LifeNum changed inside a transaction");
@@ -594,9 +615,13 @@ Plaza2Error Plaza2PublicDealsBridge::on_message(const Plaza2ListenerEvent& event
     }
     case Kind::Close:
         clear_generation();
+        lifenum_ = 0;
+        has_lifenum_ = false;
         opened_ = false;
         valid_ = false;
-        error_ = "public DEALS listener closed";
+        if (error_.empty()) {
+            error_ = kListenerClosed;
+        }
         return {};
     case Kind::TransactionBegin:
         if (!opened_) {

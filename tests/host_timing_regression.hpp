@@ -71,6 +71,11 @@ inline void host_timing_regression(TradingHostConfig config, const plaza2::test:
           "timed rate-held Add refused");
     check(!host.poll(), "timed immediate reply");
     now += std::chrono::seconds(1);
+    const auto before_release = control.commands().size();
+    check(!host.poll() && control.commands().size() == before_release &&
+              host.status().find("\"queued\":1") != std::string::npos,
+          "timed rate-held Add bypassed the fractional-millisecond guard at 1000ms");
+    now += std::chrono::milliseconds(1);
     control.set(plaza2::test::fake::Option::PubReplyOrderId, "67002");
     check(!host.poll(), "timed rate-released Add");
     check(!host.poll(), "timed rate-released reply");

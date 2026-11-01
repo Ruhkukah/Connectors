@@ -1,7 +1,13 @@
 # MOEX certification day — UNARMED; date to be agreed
 
-**Scope:** one formal, MOEX-agreed Monday–Thursday TEST day. This document
-authorizes nothing. The separate Friday 09:00–11:00 short test is not this day.
+**Active TEST target: T0 only.** Preserve all previous T1 evidence; do not
+fallback to T1 or reuse its account/ID state. This document authorizes nothing.
+The remaining short-session preparation is for Wednesday 21 October, with a
+proposed 09:00 preflight, 09:05 earliest entry, admission by 12:00, entry cutoff
+14:30, flat by 14:40 and cleanup by 15:00. It remains unarmed. T0 opening
+auction is 10:00–10:19:45; wait read-only until continuous trading resumes at
+10:20. The formal certification day and acceptance of T0 evidence still require
+agreement with MOEX; the accepted 15 October full-day evidence is retained.
 Submit the questionnaire, candidate/source hashes, declared URLs/threading and
 Day/IOC/AddOrder/MoveOrder/DelOrder/DelUserOrders scope to the specialist first.
 Quantity-10 partial-fill tooling remains inactive unless separately requested.
@@ -11,7 +17,9 @@ clock offset, storage, software key, exclusive account ownership, current flatne
 no working/queued/unresolved orders, reservation coverage and sufficient unused
 durable IDs. Preserve the allocation/checkpoint. Resolve both ISINs from fresh
 committed REFDATA. Confirm native schedule, readiness and two-sided books;
-calendar time alone grants no entry. Load credentials privately; record sanitized
+calendar time alone grants no entry. Without profiling, do not use
+`book.stream_last_callback_utc_ns` for freshness: it is zero in this candidate.
+Use native product readiness and current prices. Load credentials privately; record sanitized
 effective limits. Variables below are protected deployment values, never secrets
 copied into reports.
 

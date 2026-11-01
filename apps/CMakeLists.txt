@@ -15,4 +15,7 @@ endfunction()
 moex_add_app(moexctl moexctl.cpp moex_connector_host)
 moex_add_app(moex_connector_host_dtc_runner moex_connector_host_dtc_runner.cpp moex_connector_host)
 
+# Read-only discovery for TEST qualification; its parser refuses publisher/order profiles.
+moex_add_app(moex_qualification_resolver moex_qualification_resolver.cpp moex_connector_host)
+
 moex_add_app(moex_full_order_log_dtc_runner moex_full_order_log_dtc_runner.cpp moex_connector_host)

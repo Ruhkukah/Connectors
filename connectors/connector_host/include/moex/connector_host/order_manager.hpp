@@ -43,6 +43,9 @@ struct ManagedOrder {
     OrderState state{OrderState::PendingNew};
     std::int32_t ext_id{}, sess_id{};
     std::int64_t order_id{}, remaining{}, executed{};
+    // Early committed order rows can precede user_deal. Reserve their implied
+    // executions without crediting a synthetic fill or POS change.
+    std::int64_t replicated_execution_floor{};
     bool cancel_requested{}, absence_reply{};
     bool operator_action_required{}, confirmed_by_replication{};
     bool add_unconfirmed{}, transport_retry_warned{};
@@ -156,6 +159,7 @@ class OrderManager {
         return cancels_.size() + adds_.size();
     }
     [[nodiscard]] bool operator_action_required() const noexcept;
+    [[nodiscard]] bool uncredited_executions_pending(std::int32_t isin = 0) const noexcept;
     [[nodiscard]] bool cancellations_pending(std::int32_t isin = 0) const noexcept;
     // Only the host's current complete native empty-order/flat-position proof
     // may invoke this. A code-3 refusal is never an exchange acknowledgement.
@@ -183,6 +187,15 @@ class OrderManager {
     struct BulkCancellation {
         std::uint64_t after_commit_sequence{};
         bool awaiting_reply{true}, uncertain_exhausted{}, refused_session_closed{};
+    };
+    // Diagnostic correlation only: replication may retire a posted cancel
+    // before its reply. Never restore pending intent or alter risk from this.
+    struct CompletedCancel {
+        plaza2_trade::Plaza2TradeCommandKind kind;
+        std::int64_t target_order_id{};
+        std::int32_t isin_id{}, submitted_session{};
+        Clock::time_point expires{};
+        bool reply_seen{};
     };
     [[nodiscard]] static bool is_bulk_cancel(const Command& command) {
         return command.key.empty() &&
@@ -266,6 +279,8 @@ class OrderManager {
     void replay_deferred_trades();
     void emit(std::string_view kind, std::string_view fields) noexcept;
     void changed(const std::string& key);
+    void remember_completed_cancel(const Command& command);
+    void prune_completed_cancels(Clock::time_point now);
     void refresh_exposure(const std::string& key);
     void erase_exposure(const std::string& key);
     [[nodiscard]] Exposure exposure(const std::string& key, const ManagedOrder& order) const;
@@ -311,6 +326,8 @@ class OrderManager {
     std::uint64_t trade_commit_sequence_{};
     std::deque<Command> cancels_, adds_;
     std::unordered_map<std::uint32_t, Command> pending_;
+    std::unordered_map<std::uint32_t, CompletedCancel> completed_cancels_;
+    std::deque<std::uint32_t> completed_cancel_ids_;
     Clock::time_point now_{};
     bool throttled_{}, logging_failed_{};
     const AddPathTiming* active_add_path_{};

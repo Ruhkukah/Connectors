@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <thread>
 #include <utility>
@@ -231,7 +232,20 @@ struct CgateSession::Impl {
     std::optional<std::int8_t> matching_id;
     cg::Plaza2Aggr20BookProjector book;
     cg::Plaza2Aggr20ListenerBridge aggr{book, 0};
-    cg::Plaza2PublicDealsBridge deals;
+    struct PublicDealsTarget {
+        std::int64_t isin_id{};
+        std::int32_t session_id{};
+        std::uint64_t refdata_lifenum{}, session_lifenum{};
+        bool operator==(const PublicDealsTarget&) const = default;
+    };
+    std::unique_ptr<cg::Plaza2PublicDealsBridge> deals;
+    std::optional<PublicDealsTarget> deals_target;
+    // A replacement bridge begins at its own epoch one. Keep exported epochs
+    // increasing so a DTC subscription can never mistake a new target for its
+    // previous stream, including stop/start on the same session object.
+    std::uint64_t deals_epoch_base{};
+    bool deals_restart{}, deals_epoch_exhausted{};
+    std::chrono::steady_clock::time_point deals_retry{};
     Replies replies;
     cg::Plaza2PublisherRateGate rate;
     std::vector<Listener> listeners;
@@ -246,9 +260,7 @@ struct CgateSession::Impl {
     std::optional<Plaza2TradeReplayAnchor> anchor;
     std::optional<std::uint32_t> observed_connection, observed_publisher;
     explicit Impl(CgateSessionConfig c)
-        : config(std::move(c)), book({}, config.market_data_isin_ids),
-          deals(config.public_deals_target_isin_id, config.aggr20_target_session_id),
-          rate(config.publisher_messages_per_second) {
+        : config(std::move(c)), book({}, config.market_data_isin_ids), rate(config.publisher_messages_per_second) {
         replies.penalty = [this](std::uint32_t ms) {
             if (config.publisher_rate_owner == PublisherRateOwner::Session)
                 rate.penalize(now_ms(), ms);
@@ -458,6 +470,10 @@ struct CgateSession::Impl {
         if (config.read_only_market_data &&
             (config.allow_orders || !config.publisher_settings.empty() || !config.p2mqreply_settings.empty()))
             return invalid("read-only CGate session cannot configure order entry");
+        if (!config.public_deals_stream.settings.empty() &&
+            (!config.read_only_market_data || config.public_deals_target_isin_id <= 0 ||
+             config.public_deals_target_isin_id > std::numeric_limits<std::int32_t>::max()))
+            return invalid("public DEALS requires read-only market data and a positive int32 target ISIN");
         if (config.connection_settings.empty() || config.runtime.runtime_root.empty())
             return invalid("CGate runtime and connection are required");
         if (!config.full_order_log_stream.settings.empty() &&
@@ -571,9 +587,8 @@ struct CgateSession::Impl {
         if (!config.aggr20_stream.settings.empty())
             if (auto error = add_listener(config.aggr20_stream, aggr); error)
                 return error;
-        if (!config.public_deals_stream.settings.empty())
-            if (auto error = add_listener(config.public_deals_stream, deals); error)
-                return error;
+        // DEALS has immutable target IDs. Its listener must wait for committed
+        // current-session metadata instead of opening a zero-session bridge.
         if (!config.read_only_market_data) {
             if (auto error = publisher.create(connection, render(config.publisher_settings)); error)
                 return error;
@@ -667,8 +682,8 @@ struct CgateSession::Impl {
         const bool auction_day_add = instrument->current_status == 6 &&
                                      command.command_kind == Plaza2TradeCommandKind::AddOrder &&
                                      command.order_type == Plaza2TradeOrderType::Limit;
-        return instrument->kind == plaza2::private_state::InstrumentKind::kFuture && !instrument->is_spread &&
-               instrument->sess_id == day && instrument->current_session_member && instrument->has_current_status &&
+        return plaza2::private_state::is_outright_future(*instrument) && instrument->sess_id == day &&
+               instrument->current_session_member && instrument->has_current_status &&
                instrument->current_status_refdata_bound && (instrument->current_status == 1 || auction_day_add);
     }
     bool stream_online(StreamCode code) const {
@@ -676,6 +691,104 @@ struct CgateSession::Impl {
         const auto found =
             std::find_if(health.begin(), health.end(), [&](const auto& s) { return s.stream_code == code; });
         return found != health.end() && found->online && found->snapshot_complete;
+    }
+    std::optional<PublicDealsTarget> current_public_deals_target() const {
+        if (config.public_deals_stream.settings.empty() || !stream_online(StreamCode::kFortsRefdataRepl) ||
+            !stream_online(StreamCode::kFortsSessionstateRepl))
+            return std::nullopt;
+        const auto refdata_life = projection.stream_lifenum(StreamCode::kFortsRefdataRepl);
+        const auto session_life = projection.stream_lifenum(StreamCode::kFortsSessionstateRepl);
+        const auto session_id = projection.current_session_id();
+        if (!refdata_life || !*refdata_life || !session_life || !*session_life || session_id <= 0 ||
+            (config.aggr20_target_session_id && config.aggr20_target_session_id != session_id))
+            return std::nullopt;
+        const auto* instrument =
+            projection.find_instrument(static_cast<std::int32_t>(config.public_deals_target_isin_id));
+        if (!instrument || !instrument->current_session_member || instrument->sess_id != session_id ||
+            !instrument->definition_source_provenance.present ||
+            instrument->definition_source_provenance.lifenum != *refdata_life)
+            return std::nullopt;
+        // The merged instrument can also carry a different session's row.
+        // Require the exact committed current-life session membership cache.
+        const auto terms = projection.find_future_session_terms(
+            static_cast<std::int32_t>(config.public_deals_target_isin_id), session_id, *refdata_life);
+        if (!terms || terms->isin_id != config.public_deals_target_isin_id || terms->sess_id != session_id)
+            return std::nullopt;
+        return PublicDealsTarget{config.public_deals_target_isin_id, session_id, *refdata_life, *session_life};
+    }
+    Plaza2Error retire_public_deals() {
+        if (!deals)
+            return {};
+        // Hide the old stream before attempting native teardown. If destroy
+        // fails its callback still owns this bridge; retain both and retry.
+        deals_restart = true;
+        const auto listener = std::find_if(listeners.begin(), listeners.end(), [](const auto& l) {
+            return l.config.stream_code == StreamCode::kFortsDealsRepl;
+        });
+        if (listener != listeners.end()) {
+            close_listener(*listener);
+            if (auto error = listener->object.destroy(); error) {
+                operation("listener", "destroy", error, listener->config.stream_code);
+                deals_retry = now() + config.recovery_retry_interval;
+                return error;
+            }
+            listeners.erase(listener);
+        }
+        const auto epoch = deals->snapshot(std::numeric_limits<std::uint64_t>::max()).stream_epoch;
+        if (epoch > std::numeric_limits<std::uint64_t>::max() - deals_epoch_base)
+            deals_epoch_exhausted = true;
+        else
+            deals_epoch_base += epoch;
+        deals.reset();
+        deals_target.reset();
+        deals_restart = false;
+        return {};
+    }
+    Plaza2Error synchronize_public_deals() {
+        if (config.public_deals_stream.settings.empty())
+            return {};
+        const auto target = current_public_deals_target();
+        if (now() < deals_retry)
+            return {};
+        if (deals && (deals_restart || !target || target != deals_target)) {
+            if (auto error = retire_public_deals(); error)
+                return error;
+        }
+        if (!target || deals)
+            return {};
+        if (deals_epoch_exhausted || deals_epoch_base == std::numeric_limits<std::uint64_t>::max())
+            return invalid("public DEALS stream epoch exhausted");
+        auto candidate = std::make_unique<cg::Plaza2PublicDealsBridge>(target->isin_id, target->session_id);
+        if (auto error = add_listener(config.public_deals_stream, *candidate); error) {
+            deals_retry = now() + config.recovery_retry_interval;
+            return error;
+        }
+        deals = std::move(candidate);
+        deals_target = target;
+        log("public_deals_target", "{\"isin_id\":" + std::to_string(target->isin_id) +
+                                       ",\"session_id\":" + std::to_string(target->session_id) +
+                                       ",\"refdata_lifenum\":" + std::to_string(target->refdata_lifenum) +
+                                       ",\"session_lifenum\":" + std::to_string(target->session_lifenum) + "}");
+        return {};
+    }
+    cg::Plaza2PublicDealsSnapshot public_deals_snapshot(std::uint64_t after) const {
+        if (deals_epoch_exhausted)
+            return {.stream_epoch = deals_epoch_base, .error = "public DEALS stream epoch exhausted"};
+        if (!deals || deals_restart || deals_target != current_public_deals_target())
+            return {.stream_epoch = deals_epoch_base,
+                    .error = config.public_deals_stream.settings.empty()
+                                 ? std::string{}
+                                 : "public DEALS is waiting for complete current target metadata"};
+        auto result = deals->snapshot(after);
+        if (result.stream_epoch > std::numeric_limits<std::uint64_t>::max() - deals_epoch_base)
+            return {.stream_epoch = deals_epoch_base, .error = "public DEALS stream epoch exhausted"};
+        result.stream_epoch += deals_epoch_base;
+        for (auto& trade : result.trades) {
+            if (trade.stream_epoch > std::numeric_limits<std::uint64_t>::max() - deals_epoch_base)
+                return {.stream_epoch = deals_epoch_base, .error = "public DEALS stream epoch exhausted"};
+            trade.stream_epoch += deals_epoch_base;
+        }
+        return result;
     }
     const plaza2::private_state::StreamHealthSnapshot* pos_anchor_health() const {
         const auto health = projection.stream_health();
@@ -753,6 +866,12 @@ struct CgateSession::Impl {
         return {};
     }
     void invalidate(Listener& listener) {
+        if (deals && (listener.config.stream_code == StreamCode::kFortsRefdataRepl ||
+                      listener.config.stream_code == StreamCode::kFortsSessionstateRepl)) {
+            // Keep the callback target alive for any already-queued native
+            // events. The hidden buffer is discarded after native teardown.
+            deals_restart = true;
+        }
         listener.snapshot_wait.reset();
         static_cast<void>(listener.handler->on_plaza2_listener_event(
             {.kind = cg::Plaza2ListenerEventKind::Close, .stream_code = listener.config.stream_code}));
@@ -768,6 +887,8 @@ struct CgateSession::Impl {
                                                                                 : config.recovery_retry_interval);
     }
     void supervise_listener(Listener& listener) {
+        if (listener.handler == deals.get() && (deals_restart || deals_target != current_public_deals_target()))
+            return;
         std::uint32_t state = Closed;
         if (listener.scheme_incompatible)
             return;
@@ -821,8 +942,8 @@ struct CgateSession::Impl {
                 projection.reset_stream_snapshot(listener.config.stream_code);
             if (listener.handler == &aggr)
                 aggr.reset();
-            if (listener.handler == &deals)
-                deals.reset();
+            if (listener.handler == deals.get())
+                deals->reset();
             if (listener.handler == &anchored_trade_events)
                 anchored_trade_events.opening(static_cast<std::uint64_t>(anchor->trades_lifenum));
             const auto e = listener.object.open(render(listener.config.open_settings));
@@ -907,6 +1028,8 @@ struct CgateSession::Impl {
         replies.expire(now());
         std::uint32_t state = Closed;
         if (auto error = connection.state(state); error) {
+            if (auto retire_error = retire_public_deals(); retire_error)
+                last_error = retire_error.message;
             operation("connection", "getstate", error);
             waiting(error, Plaza2RecoveryWaitState::WaitingForRouter, "connection");
             wait_for_recovery();
@@ -985,6 +1108,8 @@ struct CgateSession::Impl {
                 }
             }
             if (auto error = open_anchored_trade(); error)
+                last_error = error.message;
+            if (auto error = synchronize_public_deals(); error)
                 last_error = error.message;
             for (auto& l : listeners) {
                 supervise_listener(l);
@@ -1082,6 +1207,8 @@ struct CgateSession::Impl {
                 break;
             }
         }
+        if (auto error = synchronize_public_deals(); error)
+            last_error = error.message;
         if (auto error = resolve_full_order_log(); error) {
             recovery.operation = Plaza2SessionOperation::Failed;
             recovery.cause = error;
@@ -1111,6 +1238,8 @@ struct CgateSession::Impl {
         return {};
     }
     Plaza2Error stop() {
+        if (auto error = retire_public_deals(); error)
+            return error;
         for (auto& l : listeners) {
             close_listener(l);
             static_cast<void>(l.object.destroy());
@@ -1188,7 +1317,7 @@ const cg::Plaza2Aggr20BookProjector& CgateSession::aggr20_projector() const noex
     return impl_->book;
 }
 cg::Plaza2PublicDealsSnapshot CgateSession::public_deals_snapshot(std::uint64_t after) const {
-    return impl_->deals.snapshot(after);
+    return impl_->public_deals_snapshot(after);
 }
 std::uint64_t CgateSession::market_data_metadata_revision() const noexcept {
     return impl_->projection.metadata_revision();

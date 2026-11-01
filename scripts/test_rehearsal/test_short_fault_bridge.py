@@ -77,7 +77,7 @@ class BridgeTests(unittest.TestCase):
         self.routerfile, self.upstreamfile = self.q / 'router.py', self.q / 'upstream.py'
         self.routerfile.write_text('fixture router helper')
         self.upstreamfile.write_text('fixture upstream helper')
-        self.core = types.SimpleNamespace(require=require, sha=sha, same_launch=same_launch,
+        self.core = types.SimpleNamespace(Refused=Refused, require=require, sha=sha, same_launch=same_launch,
             PINNED_SOURCE='d'*40, authorized=lambda *a, **kw: None, T1_LINKS_SHA='e'*64)
         self.core.ROUTER_HELPER_SHA = old.sha(self.routerfile)
         self.core.UPSTREAM_HELPER_SHA = old.sha(self.upstreamfile)
@@ -110,6 +110,8 @@ class BridgeTests(unittest.TestCase):
                 if getattr(owner, 'pending', False):
                     self.fault_worker = 12345
                     raise old.Refused('offline_helper_pending')
+                if getattr(owner, 'failed_after_exit', False):
+                    raise old.Refused('offline_helper_exited_but_restore_unknown')
                 self.public['cases'].append(dict(case=name, status='PASS', working_order_preserved=True,
                     local_refusal=dict(local_refusal=True, native_posts=0,
                         identifier_highwaters_unchanged=True, probe_attempts=1),
@@ -121,11 +123,15 @@ class BridgeTests(unittest.TestCase):
         self.core.Controller = Controller
         self.cfg = dict(authorized_date=h.DATE, environment='test', owner_authorized=True,
             timer_paused=True, one_passive_order_authorized=True, skip_firewall=True,
-            max_postday_seconds=7200, source_git_sha='a'*40,
+            max_postday_seconds=21600, source_git_sha='a'*40,
             binary=str(self.binary), binary_sha256=old.sha(self.binary),
             router_helper_sha256=self.core.ROUTER_HELPER_SHA,
             upstream_helper_sha256=self.core.UPSTREAM_HELPER_SHA,
-            hard_entry_deadline_utc=h.epoch(10,45), hard_cleanup_deadline_utc=h.epoch(11),
+            scheduled_start_utc=h.epoch(9), earliest_entry_utc=h.epoch(10),
+            product_start_latest_utc=h.epoch(10,10),
+            admission_latest_utc=h.epoch(12), hard_entry_deadline_utc=h.epoch(14,30),
+            flat_deadline_utc=h.epoch(14,40), guardian_trigger_utc=h.epoch(14,55),
+            hard_cleanup_deadline_utc=h.epoch(15),
             fault_lock=str(self.q/'router-fault.lock'))
         self.targets = [dict(symbol='ALRS-12.26', isin_id=101, quote_cap_scaled=200),
                         dict(symbol='CNY-12.26', isin_id=102, quote_cap_scaled=200)]
@@ -176,6 +182,53 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.instances, [])
         self.assertEqual(self.raw.calls, 0)
 
+    def dry_cfg(self):
+        live = self.q/'live-identity'
+        live.write_bytes(b'untouched live checkpoint')
+        allocation = self.q/'dedicated-assignment.json'
+        allocation.write_text(json.dumps(dict(ext_id_begin=50000,ext_id_end=59999)))
+        allocation.chmod(0o600)
+        now = h.epoch(18)-86400
+        cfg=dict(self.cfg,entry_deadline_utc=now+1200,cleanup_deadline_utc=now+1800,
+            zero_order_rehearsal_authorized=True,dry_run_authorized_date='2026-10-15',
+            dry_run_until_utc=now+1200,dry_run_cleanup_until_utc=now+1800,
+            dry_run_live_state=str(live),dry_run_state=str(self.q/'identity'),
+            dry_run_live_checkpoint_sha256=sha(live),dry_run_assignment=str(allocation),
+            dry_run_assignment_sha256=sha(allocation),dry_run_live_ext_id_begin=10000,
+            dry_run_live_ext_id_end=49999)
+        return cfg,now
+
+    def test_tonight_zero_order_authorization_requires_separate_state_and_ids(self):
+        cfg,now=self.dry_cfg()
+        h.authorized(self.core,self.s,cfg,now=now,dry_run_no_order=True)
+        for key,value in [('zero_order_rehearsal_authorized',False),
+                          ('dry_run_authorized_date','2026-10-16'),
+                          ('dry_run_until_utc',now+1201),
+                          ('dry_run_state',cfg['dry_run_live_state']),
+                          ('dry_run_live_ext_id_end',55000)]:
+            with self.subTest(key=key),self.assertRaises(Refused):
+                h.authorized(self.core,self.s,dict(cfg,**{key:value}),now=now,dry_run_no_order=True)
+
+    def test_october_fifteen_never_authorizes_normal_working_order_fault(self):
+        cfg,now=self.dry_cfg()
+        with self.assertRaises(Refused):
+            h.authorized(self.core,self.s,cfg,now=now,dry_run_no_order=False)
+        with self.assertRaises(Refused):
+            h.authorized(self.core,self.s,dict(cfg,authorized_date='2026-10-15'),now=now,
+                         dry_run_no_order=False)
+
+    def test_dry_rehearsal_rejects_hardlinked_live_checkpoint_and_changed_assignment(self):
+        cfg,now=self.dry_cfg()
+        isolated=Path(cfg['dry_run_state'])
+        isolated.unlink()
+        os.link(cfg['dry_run_live_state'],isolated)
+        with self.assertRaisesRegex(Refused,'isolated_state_unproved'):
+            h.authorized(self.core,self.s,cfg,now=now,dry_run_no_order=True)
+        isolated.unlink();isolated.write_text('isolated')
+        Path(cfg['dry_run_assignment']).write_text('{}')
+        with self.assertRaisesRegex(Refused,'assignment_unproved'):
+            h.authorized(self.core,self.s,cfg,now=now,dry_run_no_order=True)
+
     def test_only_fd_symlink_race_restarts_whole_inspection(self):
         self.raw.failures = [FileNotFoundError(2, 'gone', '/proc/222/fd/9'), None]
         with patch.object(h.time, 'sleep'):
@@ -219,13 +272,14 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.core.PINNED_SOURCE, prior_pin)
         self.assertTrue(self.instances[0].fault_lock.closed)
         self.assertNotIn('kill_switch', self.state['configuration']['risk'])
+        self.assertIs(self.s.fault_restore_required, False)
         self.assertEqual(result['kill_guard_provenance']['proof'],
                          'native_operator_kill_on_then_kill_switch_enabled')
 
     def test_wrong_day_pin_scope_deadlines_never_reach_core(self):
         for key, value in (('authorized_date','2026-10-17'),('source_git_sha','b'*40),
                            ('timer_paused',False),('max_postday_seconds',300),('skip_firewall',False),
-                           ('hard_entry_deadline_utc',h.epoch(10,46))):
+                           ('hard_entry_deadline_utc',h.epoch(11,59))):
             original = self.cfg[key]
             self.cfg[key] = value
             with self.subTest(key=key), self.assertRaises(old.Refused):
@@ -288,7 +342,7 @@ class BridgeTests(unittest.TestCase):
                 for name, data in rows:
                     self.event(name, **data)
                 guard = h.NativeKillGuard(self.journal, require, lambda:None)
-                with patch.object(h.time, 'monotonic', side_effect=[1,4]):
+                with patch.object(h.time, 'monotonic', side_effect=[1,7]):
                     with self.assertRaisesRegex(Refused, 'native_kill_guard_unproved'):
                         guard.prove()
 
@@ -325,8 +379,16 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(c.fault_worker, 12345)
         self.assertFalse(c.fault_lock.closed)
         self.assertIs(self.core.authorized, prior)
+        self.assertIs(self.s.fault_restore_required, True)
         # Test fixture owns harmless descriptors; no helper was actually created.
         os.close(c.guard_control); c.fault_lock.close()
+
+    def test_worker_exit_alone_does_not_clear_restoration_requirement(self):
+        self.failed_after_exit = True
+        with self.assertRaisesRegex(old.Refused,'restore_unknown'):
+            self.callback()(self.product,'case','router',None,'passive',self.targets[0])
+        self.assertIs(self.s.fault_restore_required,True)
+        self.assertIsNone(self.instances[-1].fault_worker)
 
 
 if __name__ == '__main__':

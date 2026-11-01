@@ -13,6 +13,7 @@ namespace tr = plaza2_trade;
 namespace cg = plaza2::cgate;
 using Kind = tr::Plaza2TradeCommandKind;
 constexpr std::uint32_t kDuoUncertainOutcomeLimit = 3;
+constexpr std::size_t kCompletedCancelLimit = 1024;
 std::uint64_t milliseconds(OrderManager::Clock::time_point now) {
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
@@ -104,7 +105,8 @@ OrderManager::Exposure OrderManager::exposure(const std::string& key, const Mana
     Exposure result;
     result.unknown = order.state == OrderState::Unknown || order.snapshot_missing;
     result.operator_action = order.operator_action_required;
-    if (terminal(order.state)) {
+    const auto uncredited = std::max<std::int64_t>(0, order.replicated_execution_floor - order.executed);
+    if (terminal(order.state) && uncredited == 0) {
         // A late authoritative179 can still revive an absence-resolved Add.
         // Keep its submitted identity/correlation through session changes.
         result.terminal_session = order.add_unconfirmed ? 0 : order.sess_id;
@@ -116,8 +118,10 @@ OrderManager::Exposure OrderManager::exposure(const std::string& key, const Mana
     const auto price = plaza2::private_state::parse_session_decimal(order.request.price);
     result.invalid_price = !price;
     auto units = price ? absolute_units(price->units) : 0;
-    auto remaining = result.unknown ? std::max(order.remaining, std::int64_t(order.request.quantity) - order.executed)
-                                    : order.remaining;
+    auto remaining = terminal(order.state) ? 0 : std::max<std::int64_t>(0, order.remaining);
+    remaining = uncredited > INT64_MAX - remaining ? INT64_MAX : remaining + uncredited;
+    if (result.unknown)
+        remaining = std::max(remaining, std::int64_t(order.request.quantity) - order.executed);
     if (const auto move = move_reservations_.find(key); move != move_reservations_.end()) {
         units = std::max(units, move->second.price_units);
         remaining = std::max(remaining, std::int64_t(move->second.quantity) - order.executed);
@@ -521,11 +525,40 @@ void OrderManager::prune_terminal() {
 void OrderManager::changed(const std::string& key) {
     if (terminal(orders_.at(key).state))
         std::erase_if(pending_, [&](const auto& entry) {
-            return entry.second.key == key && (entry.second.encoded.command_kind == Kind::DelOrder ||
-                                               entry.second.encoded.command_kind == Kind::DelUserOrders);
+            const auto& command = entry.second;
+            const bool retired = command.key == key && (command.encoded.command_kind == Kind::DelOrder ||
+                                                        command.encoded.command_kind == Kind::DelUserOrders);
+            if (retired && orders_.at(key).confirmed_by_replication && command.sent_utc_seconds > 0)
+                remember_completed_cancel(command);
+            return retired;
         });
     refresh_exposure(key);
     emit("order", order_json(key, orders_.at(key)));
+}
+void OrderManager::prune_completed_cancels(Clock::time_point now) {
+    while (!completed_cancel_ids_.empty()) {
+        const auto found = completed_cancels_.find(completed_cancel_ids_.front());
+        if (found != completed_cancels_.end() && now < found->second.expires &&
+            completed_cancels_.size() <= kCompletedCancelLimit)
+            break;
+        if (found != completed_cancels_.end())
+            completed_cancels_.erase(found);
+        completed_cancel_ids_.pop_front();
+    }
+}
+void OrderManager::remember_completed_cancel(const Command& command) {
+    prune_completed_cancels(now_);
+    const auto [_, inserted] = completed_cancels_.emplace(
+        command.user_id,
+        CompletedCancel{.kind = command.encoded.command_kind,
+                        .target_order_id = command.target_order_id,
+                        .isin_id = command.encoded.isin_id.value_or(orders_.at(command.key).request.isin_id),
+                        .submitted_session = command.submitted_session,
+                        .expires = now_ + config_.reply_timeout,
+                        .reply_seen = command.acknowledged});
+    if (inserted)
+        completed_cancel_ids_.push_back(command.user_id);
+    prune_completed_cancels(now_);
 }
 bool OrderManager::has_outstanding_command(std::string_view key, Kind kind) const {
     const auto same = [&](const Command& command) {
@@ -560,6 +593,12 @@ std::uint64_t OrderManager::stage_now(const AddPathTiming* timing) const {
     return config_.stage_timing_now
                ? config_.stage_timing_now()
                : std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+}
+bool OrderManager::uncredited_executions_pending(std::int32_t isin) const noexcept {
+    return std::any_of(orders_.begin(), orders_.end(), [&](const auto& entry) {
+        const auto& order = entry.second;
+        return (!isin || order.request.isin_id == isin) && order.replicated_execution_floor > order.executed;
+    });
 }
 bool OrderManager::ready(std::int32_t isin, AddPathTiming* timing) {
     const auto started = stage_now(timing);
@@ -859,6 +898,8 @@ std::string OrderManager::move(std::string_view client_id, std::string price, st
         return "only a working order can be moved";
     if (!order.execution_baseline_known)
         return "recovered order has no complete fill baseline; cancel instead of moving";
+    if (order.replicated_execution_floor > order.executed)
+        return "committed own executions are awaiting user_deal; cancel instead of moving";
     const auto earlier_fills = order.executed - filled_by_id_[order.order_id];
     if (quantity <= order.executed)
         return "target quantity is no greater than total executed quantity; cancel instead";
@@ -1120,6 +1161,7 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now, bool bus
 }
 void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
     now_ = now;
+    prune_completed_cancels(now);
     std::vector<std::uint32_t> expired;
     for (const auto& [id, command] : pending_)
         if (now >= command.deadline)
@@ -1321,6 +1363,23 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
     if (reply.msgid == 99)
         rate_.penalize(milliseconds(now), static_cast<std::uint32_t>(std::max(0, reply.penalty_remain.value_or(0))));
     if (pending == pending_.end()) {
+        prune_completed_cancels(now);
+        if (const auto completed = completed_cancels_.find(id); completed != completed_cancels_.end()) {
+            auto& command = completed->second;
+            const auto expected = command.kind == Kind::DelOrder ? 177 : 186;
+            const bool accepted = reply.msgid == expected && reply.code == 0;
+            emit(accepted ? "late_reply" : "late_reply_mismatch",
+                 "{\"user_id\":" + std::to_string(id) + ",\"msgid\":" + std::to_string(reply.msgid) +
+                     ",\"expected_msgid\":" + std::to_string(expected) + ",\"code\":" + std::to_string(reply.code) +
+                     ",\"isin_id\":" + std::to_string(command.isin_id) +
+                     ",\"sess_id\":" + std::to_string(command.submitted_session) +
+                     ",\"target_order_id\":" + std::to_string(command.target_order_id) +
+                     ",\"completed_by_replication\":true,\"acknowledged\":" + (accepted ? "true" : "false") +
+                     ",\"duplicate\":" + (command.reply_seen ? "true" : "false") + "}");
+            if (accepted)
+                command.reply_seen = true;
+            return;
+        }
         emit("unknown_reply", "{\"user_id\":" + std::to_string(id) + "}");
         return;
     }
@@ -1351,6 +1410,27 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
     auto command = std::move(pending->second);
     pending_.erase(pending);
     const auto found = orders_.find(command.key);
+    const auto contradicts_replicated_add = [&](std::string_view message) {
+        if (kind != Kind::AddOrder || found == orders_.end() || !found->second.confirmed_by_replication ||
+            found->second.order_id <= 0)
+            return false;
+        auto& order = found->second;
+        // A rejection cannot release exposure already proved by a committed
+        // own-order row. Preserve that identity and require reconciliation.
+        order.state = OrderState::Unknown;
+        order.operator_action_required = true;
+        order.ext_id_conflict = true;
+        order.add_unconfirmed = false;
+        discard_recovery_cancel(order);
+        order.last_error = message;
+        config_.risk.kill_switch = true;
+        emit("add_identity_conflict", "{\"client_order_id\":" + json_string(found->first) +
+                                          ",\"replicated_order_id\":" + std::to_string(order.order_id) + ",\"msgid\":" +
+                                          std::to_string(reply.msgid) + ",\"code\":" + std::to_string(reply.code) +
+                                          ",\"message\":" + json_string(order.last_error) + "}");
+        changed(found->first);
+        return true;
+    };
     if (is_bulk_cancel(command))
         if (auto bulk = bulk_cancellations_.find(*command.encoded.isin_id); bulk != bulk_cancellations_.end())
             bulk->second.refused_session_closed =
@@ -1374,6 +1454,8 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
         return;
     }
     if (reply.msgid == 99) {
+        if (contradicts_replicated_add("Add flood reply conflicts with committed own order"))
+            return;
         if (found != orders_.end() && command.encoded.command_kind != Kind::AddOrder &&
             (terminal(found->second.state) ||
              (bulk_cancellations_.contains(found->second.request.isin_id) &&
@@ -1440,6 +1522,8 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
     if (command.encoded.command_kind == Kind::AddOrder && reply.msgid == 179) {
         const auto key = found->first;
         if (reply.code != 0) {
+            if (contradicts_replicated_add("Add rejection conflicts with committed own order"))
+                return;
             order.state = OrderState::Rejected;
             order.remaining = 0;
             order.last_error = reply.message;
@@ -1737,9 +1821,27 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
                                   row.dir == static_cast<std::int8_t>(candidate.request.side);
             if (matches_lost_add(row, candidate) && candidate.add_unconfirmed && candidate.order_id == 0) {
                 deferred_orders_[{row.sess_id, id}] = row;
-                if (candidate.state == OrderState::Unknown) {
+                // A committed exact row for this instance's actually submitted
+                // Add is the same exposure, even when replication beats 179.
+                // Keep the Add/reply correlation; 179 must still confirm its ID.
+                const bool early_own_add =
+                    candidate.state == OrderState::PendingNew && candidate.instance_owned &&
+                    config_.ext_id_range_configured && row.ext_id >= config_.ext_id_begin &&
+                    row.ext_id <= config_.ext_id_end && !candidate.ext_id_conflict &&
+                    !candidate.operator_action_required && row.from_trade_repl && row.trade_repl_commit_sequence > 0 &&
+                    row.trade_repl_commit_sequence != UINT64_MAX && row.sess_id == current_session_ &&
+                    row.public_amount == candidate.request.quantity && row.id_ord1 == 0 && row.prevorder_id == 0 &&
+                    key.empty() && !order_index_.contains(id) && !terminal_links_.contains(id) &&
+                    std::any_of(pending_.begin(), pending_.end(), [&](const auto& entry) {
+                        const auto& submitted = entry.second;
+                        return submitted.key == candidate.request.client_order_id &&
+                               submitted.encoded.command_kind == Kind::AddOrder &&
+                               submitted.submitted_session == row.sess_id && submitted.sent_utc_seconds > 0;
+                    });
+                if (candidate.state == OrderState::Unknown || early_own_add) {
                     key = candidate.request.client_order_id;
-                    if (adopt_recovered_order(key, id, candidate.sess_id) == RecoveredAdoption::Conflict)
+                    if (!early_own_add &&
+                        adopt_recovered_order(key, id, candidate.sess_id) == RecoveredAdoption::Conflict)
                         continue;
                     deferred_orders_.erase({row.sess_id, id});
                 }
@@ -1816,6 +1918,13 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
         }
         const auto before = order_json(key, order);
         const auto action = row.from_trade_repl ? row.public_action : row.private_action;
+        if (order.add_unconfirmed && row.from_trade_repl && row.trade_repl_commit_sequence > 0 &&
+            row.trade_repl_commit_sequence != UINT64_MAX && (action == 1 || action == 2))
+            // A decreased live balance or fill row proves risk, not a credited
+            // execution. Only actual user_deal can release this hold.
+            order.replicated_execution_floor =
+                std::max(order.replicated_execution_floor,
+                         std::max<std::int64_t>(0, order.request.quantity - std::max<std::int64_t>(0, remaining)));
         const bool replacing_current_id = order.order_id == id && has_outstanding_command(key, Kind::MoveOrder);
         const bool unresolved_replacement =
             order.order_id == id && order.state == OrderState::Unknown && move_reservations_.contains(key);

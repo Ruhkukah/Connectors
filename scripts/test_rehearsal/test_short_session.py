@@ -1,7 +1,9 @@
-"""Offline short-session regressions; no process, socket, signal or native API."""
+"""Offline driver tests exercise actual queued sequence logic, never native I/O."""
+import contextlib
 import copy
 import datetime as dt
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -9,299 +11,672 @@ import types
 import unittest
 from unittest.mock import patch
 
-# The protected supervisor supplies the frozen day_driver module at runtime.
-# Unit tests provide only that public API; no private source or native code loads.
-base = types.ModuleType("day_driver")
-base.MSK = dt.timezone(dt.timedelta(hours=3))
-base.DayStop = type("DayStop", (RuntimeError,), {})
-base.TERMINAL = {"Filled", "Cancelled", "Rejected"}
-base.ops = types.SimpleNamespace(ready=lambda *_args, **_kwargs: False, flat=lambda _: False)
-base.price_caps = types.SimpleNamespace(current_reference=lambda *_args, **_kwargs: None)
-base.sequence = types.SimpleNamespace(_price=lambda units: str(units / 100000))
+import sequence as actual_sequence
+import short_scope as scope
+from native_evidence import JournalCursor
 
-
-class MockDayDriver:
-    """Only the inherited API called by the actual short-session adapter."""
-    def __init__(self, product, cfg, work, env, publish, *, wall=None, monotonic=None, sleep=None):
-        self.product, self.cfg, self.work, self.env, self.publish = product, cfg, Path(work), env, publish
-        self.wall, self.monotonic, self.sleep = wall, monotonic, sleep
-        self.targets = product.targets
-        self.timeline = Timeline()
-        product.status()
-    def product_entry_ready(self, state):
-        if state.get("sess_id") != self.schedule["sess_id"] or not base.ops.ready(state, self.targets):
-            return False
-        try:
-            for target in self.targets:
-                base.price_caps.current_reference(state, target, now_ns=int(self.wall() * 1e9))
-        except ValueError:
-            return False
-        return True
-    def burst(self):
-        raise AssertionError("replace inherited API with explicit test result")
-    def restart_working(self):
-        raise AssertionError("native restart must not execute in unit tests")
-    def closeout(self):
-        raise AssertionError("native closeout must not execute in unit tests")
-
-
-base.DayDriver = MockDayDriver
-spec = importlib.util.spec_from_file_location("_short_session_under_test", Path(__file__).with_name("short_session.py"))
-h = importlib.util.module_from_spec(spec)
-with patch.dict(sys.modules, {"day_driver": base}):
-    spec.loader.exec_module(h)
-
-
-def row(event, data, at):
-    return dict(begin=at, end=at + 1, event=dict(event=event, data=data))
-
-
-def replies():
-    out = []
-    for index in range(30):
-        add = index % 2 == 0
-        out += [row("command", dict(name="AddOrder" if add else "DelOrder", user_id=index+1), index*3),
-                row("reply", dict(user_id=index+1, msgid=179 if add else 177, code=0), index*3+1),
-                row("transaction_commit", dict(stream="FORTS_TRADE_REPL"), index*3+2)]
-    return out
-
-
-def proof():
-    return dict(status="PASS", working_order_preserved=True,
-                local_refusal=dict(local_refusal=True, native_posts=0, identifier_highwaters_unchanged=True, probe_attempts=1),
-                native_witness=dict(observed_native_outage=True, all_streams_current_native_ready=True, fresh_trade_commits=1))
+base = types.ModuleType('day_driver')
+base.MSK = scope.MSK
+base.DayStop = type('DayStop', (RuntimeError,), {})
+base.TERMINAL = {'Filled', 'Cancelled', 'Rejected'}
+base.sequence = actual_sequence
+base.ops = types.SimpleNamespace()
+base.ops.ready = lambda state, _targets, entry=True: state.get('complete') is True and (not entry or state.get('entry') is True)
+base.ops.flat = lambda state: state['queued'] == 0 and all(row['xpos'] == 0 for row in state['positions']) and all(row['state'] in base.TERMINAL for row in state['orders'])
+base.price_caps = types.SimpleNamespace(current_reference=lambda state, target, **_: 10000000 if state.get('books') == 'fresh' else (_ for _ in ()).throw(ValueError('current_price_book_stale')))
 
 
 class Timeline:
     def __init__(self):
-        self.cursor = types.SimpleNamespace(offset=0)
+        self.cursor = types.SimpleNamespace(offset=0, events=lambda: iter(()))
         self.session_states, self.instrument_states = {}, {}
         self.instrument_session = None
-        self.restart_windows = []
-        self.rows = []
-    def update(self): pass
-    def between(self, _): return self.rows
+        self.restart_windows, self.rows = [], []
+        self.records = self.rows
+        self.kind_bytes, self.kind_counts = {}, {}
+        self.path = Path(__file__)
+    def update(self):
+        self.cursor.offset = len(self.rows)
+    def between(self, offset):
+        return [row for row in self.rows if row['begin'] >= offset]
+    def timing(self, _):
+        return {}
+    def append(self, event, data):
+        index = len(self.rows)
+        self.rows.append(dict(begin=index, end=index+1, event=dict(event=event, data=data)))
+        self.update()
 
 
-class Seq:
-    def __init__(self):
-        self.order_row = dict(client_order_id="owned", instance_owned=True, order_id=80, ext_id=10,
-                              isin_id=1, quantity=1, remaining=1, executed=0, price="1", state="Working")
-        self.active = False
-        self.sent = []
-        self.cancelled = []
-    def snapshot(self):
-        return dict(complete=True, entry=True, queued=0, positions=[dict(xpos=0)],
-                    orders=[self.order_row] if self.active else [])
-    def passive(self, *_): return 100000
-    def next_id(self, _): return "owned"
-    def send(self, line): self.sent.append(line); self.active = True
-    def accepted_order(self, *_): return self.order_row
-    def order(self, *_): return self.order_row
-    def cancel(self, client):
-        self.cancelled.append(client)
-        self.order_row.update(state="Cancelled", remaining=0)
+class MockDayDriver:
+    def __init__(self, product, cfg, work, env, publish, *, wall=None, monotonic=None, sleep=None):
+        self.product, self.cfg, self.work, self.env, self.publish = product, cfg, Path(work), env, publish
+        self.wall, self.monotonic, self.sleep = wall, monotonic, sleep
+        self.targets, self.timeline, self.scenarios = product.targets, Timeline(), {}
+        self.failed = self.closing = self.restart_used = False
+        product.status()
+    def tick(self):
+        self.timeline.update()
+    def status(self):
+        return self.product.status()
+    def mark(self, name, result, begin):
+        result = dict(result, journal_begin=begin, journal_end=self.timeline.cursor.offset)
+        self.scenarios[name] = result
+        return result
+    def stage(self, name, callback):
+        return self.mark(name, callback(), self.timeline.cursor.offset)
+    def restart_working(self):
+        raise AssertionError('native restart cannot execute in offline tests')
+    def closeout(self):
+        raise AssertionError('native closeout cannot execute in offline tests')
+
+
+base.DayDriver = MockDayDriver
+spec = importlib.util.spec_from_file_location('_short_session_under_test', Path(__file__).with_name('short_session.py'))
+h = importlib.util.module_from_spec(spec)
+with patch.dict(sys.modules, {'day_driver': base}):
+    spec.loader.exec_module(h)
+
+
+def state(**changes):
+    instruments = [dict(isin_id=isin, symbol=symbol, order_entry_ready=True,
+                        session_terms=dict(sess_id=42, interval_valid=True, min_step_scaled=10000,
+                                           lower_price_scaled=7000000, upper_price_scaled=12000000,
+                                           reference_price_scaled=10000000, refdata_lifenum=5),
+                        book=dict(valid=True, best_bid=dict(price_scaled=10000000, quantity=10),
+                                  best_ask=dict(price_scaled=10100000, quantity=10)))
+                   for isin, symbol in ((1, 'ALRS-12.26'), (2, 'CNY-12.26'))]
+    return dict(dict(sess_id=42, complete=True, entry=True, books='fresh', queued=0,
+                     reconstructing=False, orders=[], positions=[], instruments=instruments,
+                     configuration=dict(allow_orders=True, sole_instance=True, login_configured=True,
+                                        rate=5, risk=dict(max_quantity=2, max_open_orders=5,
+                                        instruments=[dict(isin_id=isin, max_position=2, max_quote_notional_scaled=14000000) for isin in (1, 2)]))), **changes)
+
+
+def full_recovery(**changes):
+    return dict(dict(cancel_confirmed=True, flat=True, restored=True,
+                     complete_reconstruction=True, client_count=1, upstreams=4), **changes)
+
+
+class Clock:
+    def __init__(self, date='2026-10-16'):
+        self.now = scope.expected(date)['earliest_entry_utc']
+    def time(self):
+        return self.now
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class Product:
+    """Small native queue model: Del of an unposted Add discards it locally.
+
+    Every actual post is timestamped, replied and committed. A rate bucket is
+    shared across all waves; native risk reserves queued and working Adds.
+    """
+    def __init__(self, clock, timeline):
+        self.clock, self.timeline = clock, timeline
+        self.targets = [dict(isin_id=1, symbol='ALRS-12.26'), dict(isin_id=2, symbol='CNY-12.26')]
+        self.orders, self.pending, self.posts, self.commands = {}, [], [], []
+        self.user, self.max_pending, self.max_working = 0, 0, 0
+        self.slow = self.fail_code = self.uncertain = self.omit_throttle = False
+        self.trade_before_reply = False
+        self.awaiting_reply = {}
+    def poll(self):
+        for client, (at, user, order_id, alias) in list(self.awaiting_reply.items()):
+            if self.clock.time() >= at:
+                self.orders.pop(alias)
+                self.orders[client].update(state='Working', order_id=order_id)
+                self.timeline.append('reply', dict(user_id=user, msgid=179, code=0))
+                self.timeline.append('transaction_commit', dict(stream='FORTS_TRADE_REPL'))
+                del self.awaiting_reply[client]
+        while self.pending:
+            now = self.clock.time()
+            self.posts = [stamp for stamp in self.posts if int(now*1000)-int(stamp*1000) < 1000]
+            if len(self.posts) >= 5:
+                if not self.omit_throttle:
+                    self.timeline.append('throttle', dict(active=True, queued=len(self.pending)))
+                break
+            kind, client = self.pending.pop(0)
+            order = self.orders[client]
+            self.user += 1
+            self.posts.append(now)
+            self.timeline.append('command', dict(name=kind, user_id=self.user, client_order_id=client))
+            self.timeline.append('command_timing', dict(user_id=self.user, post_started_utc_ns=int(now*1e9)))
+            if kind == 'AddOrder' and self.trade_before_reply:
+                order.update(state='PendingNew', order_id=0)
+                alias = 'recovered:'+str(100+self.user)
+                self.orders[alias] = dict(order, client_order_id=alias, state='Working', order_id=100+self.user)
+                self.awaiting_reply[client] = (now+.03, self.user, 100+self.user, alias)
+                self.timeline.append('transaction_commit', dict(stream='FORTS_TRADE_REPL'))
+            else:
+                self.timeline.append('reply', dict(user_id=self.user, msgid=179 if kind == 'AddOrder' else 177, code=14 if self.fail_code else 0))
+                self.timeline.append('transaction_commit', dict(stream='FORTS_TRADE_REPL'))
+            if kind == 'AddOrder' and not self.trade_before_reply:
+                order.update(state='Working', order_id=100+self.user)
+            elif kind != 'AddOrder':
+                order.update(state='Cancelled', remaining=0)
+        self.max_pending = max(self.max_pending, len(self.pending))
+    def command(self, line):
+        self.commands.append(line)
+        self.clock.sleep(.31 if self.slow else .003)
+        if self.uncertain:
+            raise RuntimeError('command_outcome_uncertain')
+        fields = line.split()
+        if fields[0] == 'kill':
+            return dict(ok=True)
+        if fields[0] == 'place':
+            _, client, isin, side, quantity, price, tif = fields
+            isin, quantity = int(isin), int(quantity)
+            active = [order for order in self.orders.values() if order['state'] not in base.TERMINAL]
+            same = [order for order in active if order['isin_id'] == isin]
+            units = actual_sequence._units(price)
+            if sum(actual_sequence._units(order['price'])*order['remaining'] for order in same)+units*quantity > 14000000:
+                raise AssertionError('native aggregate notional cap violated')
+            if len(active) >= 5 or sum(order['quantity'] for order in same)+quantity > 2:
+                raise AssertionError('native position/open-order cap violated')
+            self.orders[client] = dict(client_order_id=client, isin_id=isin, instance_owned=True,
+                operator_action_required=False, ext_id=len(self.orders)+1, quantity=quantity,
+                remaining=quantity, executed=0, side=side, price=price, state='Queued', order_id=0)
+            self.pending.append(('AddOrder', client))
+            self.max_working = max(self.max_working, len(active)+1)
+        elif fields[0] == 'cancel':
+            client = fields[1]
+            # Mirrors order_manager.cpp: cancelling a queued Add removes it;
+            # it produces neither an Add post nor a Del post.
+            if ('AddOrder', client) in self.pending:
+                self.pending.remove(('AddOrder', client))
+                self.orders[client].update(state='Cancelled', remaining=0)
+            else:
+                self.pending.append(('DelOrder', client))
+        self.poll()
+        return dict(ok=True)
+    def status(self):
+        self.clock.sleep(.003)
+        self.poll()
+        return state(queued=len(self.pending), orders=copy.deepcopy(list(self.orders.values())))
 
 
 class ShortTests(unittest.TestCase):
     def setUp(self):
-        self.now = h.epoch(10)
-        self.d = h.ShortDriver.__new__(h.ShortDriver)
-        self.d.wall = lambda: self.now
-        self.d.sleep = lambda seconds: setattr(self, "now", self.now + seconds)
-        self.d.monotonic = self.d.wall
-        self.d.timeline = Timeline()
-        self.d.targets = [dict(isin_id=1, symbol="ALRS-12.26"), dict(isin_id=2, symbol="CNY-12.26")]
-        self.d.schedule = dict(sess_id=42, cleanup_at=h.epoch(10,45))
-        self.d.env, self.d.cfg = {}, dict(authorized_date=h.DATE)
-        self.d.product = object()
-        self.d.commands = []
-        self.d.command = self.d.commands.append
-        self.ready = patch.object(base.ops, "ready", side_effect=lambda s, _, entry=True: s.get("complete") is True and (not entry or s.get("entry") is True))
-        self.ready.start()
-        self.flat = patch.object(base.ops, "flat", side_effect=lambda s: s.get("queued", 0) == 0 and all(p["xpos"] == 0 for p in s.get("positions", [])) and all(o["state"] in base.TERMINAL for o in s.get("orders", [])))
-        self.flat.start()
-        def reference(s, *_args, **_kwargs):
-            if s.get("books") != "fresh": raise ValueError("current_price_two_sided_book_unproved")
-            return 100000
-        self.prices = patch.object(base.price_caps, "current_reference", side_effect=reference)
-        self.prices.start()
-    def tearDown(self):
-        self.prices.stop(); self.flat.stop(); self.ready.stop()
-    def state(self, **changes):
-        return dict(dict(sess_id=42, complete=True, entry=True, books="fresh", positions=[], orders=[], queued=0), **changes)
+        self.clock = Clock()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        Path(self.directory.name, 'interaction.ndjson').touch()
+        self.timeline = Timeline()
+        self.product = Product(self.clock, self.timeline)
+        self.cfg = dict(scope.expected('2026-10-16'), closeout_mode='flat_then_observe_clearing')
+        self.env = dict(fast_dispatch=lambda *_: contextlib.nullcontext(), safe_case_failure=lambda *_: full_recovery())
+        self.d = h.ShortDriver(self.product, self.cfg, self.directory.name, self.env, lambda _: None,
+                              wall=self.clock.time, monotonic=self.clock.time, sleep=self.clock.sleep)
+        self.d.timeline = self.timeline
+        self.d.schedule['sess_id'] = 42
 
-    def test_friday_monday_trade_date_does_not_use_calendar_schedule_filter(self):
-        state=self.state(trading_date="2026-10-19")
-        self.d.status=lambda: state
-        self.assertEqual(self.d.admission()["sess_id"],42)
+    def test_window_comes_from_shared_config_and_monday_fallback(self):
+        self.assertEqual(self.d.schedule['cleanup_at'], scope.epoch('2026-10-16', 14, 30))
+        self.cfg.update(scope.expected('2026-10-19'))
+        other = h.ShortDriver(self.product, self.cfg, self.directory.name, self.env, lambda _: None,
+                              wall=self.clock.time, monotonic=self.clock.time, sleep=self.clock.sleep)
+        self.assertEqual(other.schedule['intervals'][0]['begin'], scope.epoch('2026-10-19', 9))
 
-    def test_admission_one_product_snapshot_per_iteration_and_waits_for_fresh_books(self):
-        states=iter([self.state(books="one-sided"),self.state(books="stale"),self.state()]); calls=[]
-        self.d.status=lambda: calls.append(1) or next(states)
-        self.assertEqual(self.d.admission()["status"],"PASS")
-        self.assertEqual(len(calls),3); self.assertEqual(self.d.commands,[])
+    def test_preadmission_transport_window_closes_at_real_admission(self):
+        self.d.timeline.restart_windows.append(self.d.pre_admission_window)
+        self.assertEqual(self.d.pre_admission_window[1], float('inf'))
+        self.d.tick()
+        self.assertFalse(self.d.admission_complete)
+        self.d.admission()
+        self.assertTrue(self.d.admission_complete)
+        self.assertNotEqual(self.d.pre_admission_window[1], float('inf'))
+        self.assertEqual(self.d.pre_admission_window[1], self.clock.time())
 
-    def test_journal_cannot_grant_false_product_readiness(self):
-        self.d.timeline.session_states[42]=dict(fields=dict(public_state=1))
-        self.assertFalse(self.d.product_entry_ready(self.state(entry=False)))
+    def test_inherited_restart_status_entry_waits_transient_snapshot(self):
+        snapshots = iter([state(books='stale'), state()])
+        self.product.status = lambda: next(snapshots)
+        self.assertEqual(self.d.status(entry=True)['books'], 'fresh')
+        self.assertEqual(self.product.commands, [])
 
-    def test_known_native_auction_vetoes_otherwise_ready_product(self):
-        self.d.timeline.session_states[42]=dict(fields=dict(public_state=2))
-        self.assertFalse(self.d.product_entry_ready(self.state()))
+    def test_admission_one_snapshot_per_check_waits_transient_books(self):
+        snapshots = iter([state(books='stale'), state(books='one-sided'), state(trading_date='2026-10-19')])
+        calls = []
+        self.d.status = lambda: calls.append(1) or next(snapshots)
+        self.assertEqual(self.d.admission()['sess_id'], 42)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(self.product.commands, [])
+
+    def test_admission_waits_known_auction_and_never_journal_grants_entry(self):
+        self.d.timeline.session_states[42] = dict(fields=dict(public_state=2))
+        self.assertFalse(self.d.product_entry_ready(state()))
         self.d.timeline.session_states.clear()
-        self.d.timeline.instrument_session=42
-        self.d.timeline.instrument_states[1]=dict(fields=dict(public_state=2))
-        self.assertFalse(self.d.product_entry_ready(self.state()))
+        bad = state(); bad['instruments'][0]['order_entry_ready'] = False
+        self.assertFalse(self.d.product_entry_ready(bad))
 
-    def test_absent_journal_authority_does_not_block_true_product_status(self):
-        self.assertTrue(self.d.product_entry_ready(self.state()))
+    def test_single_instrument_preintent_wait_does_not_require_other_book(self):
+        snapshot = state(); snapshot['instruments'][1]['order_entry_ready'] = False
+        self.assertTrue(self.d.selected_entry_ready(snapshot, [self.product.targets[0]]))
+        self.assertFalse(self.d.product_entry_ready(snapshot))
 
-    def test_no_entry_before_1000_or_at_1045_or_wrong_session(self):
-        for timestamp, state in ((h.epoch(9,59),self.state()),(h.epoch(10,45),self.state()),(h.epoch(10),self.state(sess_id=99))):
-            self.now=timestamp
-            self.assertFalse(self.d.product_entry_ready(state))
+    def test_no_early_or_late_entry_and_admission_expiry_has_no_dispatch(self):
+        for at in (scope.epoch('2026-10-16', 9, 59), scope.epoch('2026-10-16', 14, 30)):
+            self.clock.now = at
+            self.assertFalse(self.d.product_entry_ready(state()))
+        self.clock.now = self.cfg['admission_latest_utc']
+        with self.assertRaisesRegex(base.DayStop, 'admission_deadline'):
+            self.d.admission()
+        self.assertEqual(self.product.commands, [])
 
-    def test_no_product_before_0900(self):
-        self.now=h.epoch(8,59)
-        self.d.status=lambda:self.fail("status should not be called")
-        with self.assertRaisesRegex(base.DayStop,"before_0900"): self.d.admission()
+    def test_preintent_wait_keeps_single_dispatch_and_reports_not_sent(self):
+        snapshots = iter([state(books='stale'), state()])
+        self.d.status = lambda: next(snapshots)
+        self.d.command('kill off')
+        self.assertEqual(self.product.commands, ['kill off'])
+        self.d.status = lambda: state(books='stale')
+        with self.assertRaises(h.PreIntentNotSent):
+            self.d.command('kill off')
+        self.assertEqual(self.product.commands, ['kill off'])
 
-    def test_admission_deadline_stops_without_order(self):
-        self.now=h.epoch(10,15)
-        self.d.status=lambda:self.fail("deadline already expired")
-        with self.assertRaisesRegex(base.DayStop,"admission_deadline"): self.d.admission()
-        self.assertEqual(self.d.commands,[])
+    def test_sequence_preserves_preintent_refusal_and_never_retries(self):
+        seq = self.d.seq('preintent')
+        self.d.command = lambda _: (_ for _ in ()).throw(h.PreIntentNotSent('entry_wait_expired'))
+        with self.assertRaises(h.PreIntentNotSent):
+            seq.send('kill off')
+        transcript = Path(self.directory.name, 'sequence-private.ndjson').read_text()
+        self.assertIn('command_not_sent', transcript)
+        self.assertNotIn('command_uncertain', transcript)
+        self.assertEqual(self.product.commands, [])
 
-    def test_restart_wait_entry_one_snapshot_per_check_and_no_dispatch(self):
-        states=iter([self.state(books="one-sided"),self.state()]);calls=[]
-        self.d.status=lambda:calls.append(1) or next(states)
-        self.d.current_phase=lambda:"main"
-        result=self.d.wait_entry(h.epoch(10,15),require_continuous=True)
-        self.assertEqual(result["books"],"fresh")
-        self.assertEqual(calls,[1,1]);self.assertEqual(self.d.commands,[])
+    def test_sequence_preserves_actual_uncertain_dispatch_as_fatal(self):
+        seq = self.d.seq('uncertain')
+        self.d.command = lambda _: (_ for _ in ()).throw(RuntimeError('socket_timeout'))
+        with self.assertRaisesRegex(actual_sequence.SequenceStop, 'command_outcome_uncertain'):
+            seq.send('place once')
 
-    def test_restart_wait_can_preserve_working_orders_without_claiming_flat(self):
-        state=self.state(orders=[dict(state="Working")])
-        self.d.status=lambda:state
-        self.assertIs(self.d.wait_entry(h.epoch(10,15),require_flat=False),state)
-        with self.assertRaisesRegex(base.DayStop,"entry_not_flat"):
-            self.d.wait_entry(h.epoch(10,15))
+    def test_passive_wait_handles_exact_transients_without_dispatch(self):
+        seq = self.d.seq('price')
+        attempts = []
+        def select(snapshot):
+            attempts.append(1)
+            if len(attempts) < 4:
+                raise actual_sequence.SequenceStop(('current_price_book_stale', 'current_price_two_sided_book_unproved', 'passive_quote_unavailable')[len(attempts)-1])
+            return 7020000
+        self.assertEqual(self.d.wait_passive_price(seq, state(), select)[1], 7020000)
+        self.assertEqual(len(attempts), 4)
+        self.assertEqual(self.product.commands, [])
 
-    def test_restart_wait_rechecks_deadline_after_slow_snapshot(self):
-        def status():self.now=h.epoch(10,15);return self.state()
-        self.d.status=status
-        with self.assertRaisesRegex(base.DayStop,"readiness_deadline"):
-            self.d.wait_entry(h.epoch(10,15))
+    def test_passive_wait_rejects_nontransient_or_changed_inventory(self):
+        seq = self.d.seq('price')
+        with self.assertRaisesRegex(actual_sequence.SequenceStop, 'off_grid'):
+            self.d.wait_passive_price(seq, state(), lambda _: (_ for _ in ()).throw(actual_sequence.SequenceStop('off_grid')))
+        seq.snapshot = lambda: state(positions=[dict(isin_id=1, xpos=1)])
+        with self.assertRaisesRegex(base.DayStop, 'inventory_changed'):
+            self.d.wait_passive_price(seq, state(), lambda _: (_ for _ in ()).throw(actual_sequence.SequenceStop('current_price_book_stale')))
 
-    def setup_fault(self, callback=None):
-        seq=Seq(); self.d.seq=lambda _:seq
-        self.d.wait_passive_price=lambda _seq,state,select,**_: (state,select(state))
-        self.d.env["faultcase"]=callback or (lambda *_:proof())
-        return seq
+    def test_first_fault_refreshes_after_slow_killoff_before_price_selection(self):
+        seq = self.d.seq('fault')
+        seen = []
+        original = self.d.command
+        def command(line):
+            original(line)
+            if line == 'kill off':
+                self.clock.sleep(12)
+        self.d.command = command
+        self.d.seq = lambda _: seq
+        def price(_seq, snapshot, _select, **_):
+            seen.append(self.clock.time())
+            raise actual_sequence.SequenceStop('sentinel_after_refresh')
+        self.d.wait_passive_price = price
+        with self.assertRaisesRegex(actual_sequence.SequenceStop, 'sentinel_after_refresh'):
+            self.d.fault('router', 'router')
+        self.assertGreater(seen[0], scope.epoch('2026-10-16', 10)+12)
+        self.assertEqual(self.product.commands, ['kill off'])
 
-    def test_fault_preserves_then_cancels_one_owned_order_and_flat(self):
-        seq=self.setup_fault()
-        result=self.d.fault("router","router")
-        self.assertTrue(result["flat_after_case"])
-        self.assertEqual(seq.cancelled,["owned"])
-        self.assertEqual(len(seq.sent),1)
-        self.assertEqual(self.d.commands,["kill off","kill on"])
-        self.assertEqual(self.d.timeline.restart_windows,[[self.now,self.now]])
+    def test_burst_binds_actual_queue_without_relaxing_position_or_notional(self):
+        result = self.d.burst()
+        self.assertTrue(result['limiter_binding_observed'])
+        self.assertTrue(result['native_rate_throttle_observed'])
+        self.assertTrue(result['native_rate_throttle_offsets'])
+        self.assertEqual(result['native_posts'], 30)
+        self.assertEqual(result['matching_code0_replies'], 30)
+        self.assertEqual(result['max_posts_per_rolling_second'], 5)
+        self.assertEqual([wave['adds'] for wave in result['waves']], [4, 4, 4, 3])
+        self.assertGreater(self.product.max_pending, 0)
+        self.assertEqual(self.product.max_working, 4)
+        self.assertTrue(all(order['price'] == '70' for order in self.product.orders.values()))
+        self.assertTrue(base.ops.flat(self.product.status()))
+        self.assertEqual(len([line for line in self.product.commands if line.startswith('place ')]), 15)
+        self.assertEqual(len([line for line in self.product.commands if line.startswith('cancel ')]), 15)
 
-    def test_each_fault_gets_fresh_order(self):
-        first=self.setup_fault(); self.d.fault("router","router")
-        second=self.setup_fault(); self.d.fault("upstream","upstream")
-        self.assertIsNot(first.order_row,second.order_row)
-        self.assertEqual(len(first.sent)+len(second.sent),2)
+    def test_trade_first_reservation_reproduces_old_same_instrument_add_refusal(self):
+        self.product.trade_before_reply = True
+        self.product.command('place first 1 buy 1 70 day')
+        self.assertEqual(self.product.orders['first']['state'], 'PendingNew')
+        self.assertEqual(len([key for key in self.product.orders if key.startswith('recovered:')]), 1)
+        with self.assertRaisesRegex(AssertionError, 'native aggregate notional cap violated'):
+            self.product.command('place second 1 buy 1 70 day')
+        self.assertEqual(len([row for row in self.timeline.rows if row['event']['event'] == 'command']), 1)
 
-    def test_fault_uncertainty_never_retries_add_and_closes_expected_window(self):
-        def error(*_): raise RuntimeError("uncertain")
-        seq=self.setup_fault(error)
-        with self.assertRaisesRegex(RuntimeError,"uncertain"):self.d.fault("router","router")
-        self.assertEqual(len(seq.sent),1)
-        self.assertNotEqual(self.d.timeline.restart_windows[0][1],float("inf"))
+    def test_burst_waits_for_trade_first_alias_merge_and_finishes_exactly_thirty(self):
+        self.product.trade_before_reply = True
+        sleep = self.clock.sleep
+        observed_aliases = []
+        def independent_native_loop(seconds):
+            sleep(seconds)
+            self.product.poll()
+            observed_aliases.append(any(key.startswith('recovered:') for key in self.product.orders))
+        self.clock.sleep = independent_native_loop
+        result = self.d.burst()
+        self.assertTrue(any(observed_aliases))
+        self.assertEqual(result['native_posts'], 30)
+        self.assertEqual(result['matching_code0_replies'], 30)
+        self.assertTrue(result['later_trade_commits_verified'])
+        self.assertTrue(result['native_rate_throttle_observed'])
+        self.assertEqual([row['adds'] for row in result['waves']], [4,4,4,3])
+        self.assertEqual(len([line for line in self.product.commands if line.startswith('place ')]), 15)
+        self.assertEqual(len([line for line in self.product.commands if line.startswith('cancel ')]), 15)
+        self.assertFalse(self.product.awaiting_reply)
+        self.assertTrue(base.ops.flat(self.product.status()))
 
-    def test_fault_requires_single_refusal_and_no_posts(self):
-        for change in (dict(native_posts=1),dict(probe_attempts=2),dict(identifier_highwaters_unchanged=False)):
-            p=proof();p["local_refusal"].update(change);seq=self.setup_fault(lambda *_:p)
-            with self.assertRaisesRegex(base.DayStop,"refusal_and_recovery"):self.d.fault("router","router")
-            self.assertEqual(len(seq.sent),1)
+    def test_add_wait_requires_later_commit_not_earlier_trade_and_never_dispatches(self):
+        self.timeline.append('command', dict(name='AddOrder', user_id=1, client_order_id='original'))
+        self.timeline.append('transaction_commit', dict(stream='FORTS_TRADE_REPL'))
+        self.timeline.append('reply', dict(user_id=1, msgid=179, code=0))
+        self.product.orders['original'] = dict(client_order_id='original', isin_id=1,
+            state='Working', order_id=42, quantity=1, remaining=1, executed=0,
+            instance_owned=True, operator_action_required=False, side='buy', price='70')
+        with self.assertRaisesRegex(base.DayStop, 'native_confirmation_uncertain_timeout'):
+            self.d.burst_wait_add_confirmation(self.d.seq('wait'), 'original', 0, self.clock.time()+.1)
+        self.assertEqual(self.product.commands, [])
 
-    def test_fault_refuses_changed_order_identity_fill_or_foreign_owner(self):
-        for change in (dict(order_id=81),dict(executed=1),dict(instance_owned=False)):
-            seq=self.setup_fault()
-            self.d.env["faultcase"]=lambda *_, q=seq,c=change: (q.order_row.update(c) or proof())
-            with self.assertRaisesRegex(base.DayStop,"owned_order_or_position_changed"):self.d.fault("router","router")
+    def test_queue_and_five_post_density_cannot_substitute_native_throttle(self):
+        self.product.omit_throttle = True
+        with self.assertRaisesRegex(base.DayStop, 'native_rate_throttle_not_observed'):
+            self.d.burst()
+        self.assertGreater(self.product.max_pending, 0)
+        self.assertEqual(len([row for row in self.timeline.rows if row['event']['event'] == 'command']), 30)
 
-    def test_no_fault_if_recovery_cleanup_budget_missing(self):
-        self.now=h.epoch(10,43)
-        self.setup_fault()
-        with self.assertRaisesRegex(base.DayStop,"budget_insufficient"):self.d.fault("router","router")
-        self.assertEqual(self.d.commands,[])
+    def test_readiness_paused_queued_add_is_not_native_rate_binding(self):
+        paused = state(queued=1)
+        paused['instruments'][0]['order_entry_ready'] = False
+        self.product.status = lambda: paused
+        queued = []
+        self.d.burst_snapshot(queued)
+        self.assertEqual(queued[0]['queued'], 1)
+        with self.assertRaisesRegex(base.DayStop, 'native_rate_throttle_not_observed'):
+            h.burst_throttle_proof(self.timeline.rows, 0, self.timeline.cursor.offset)
 
-    def test_burst_all_thirty_replies_and_commits_match(self):
-        self.assertEqual(h.burst_reply_proof(replies())["matching_code0_replies"],30)
+    def test_native_throttle_requires_exact_types_positive_queue_and_current_offsets(self):
+        def record(data, begin=20, end=21):
+            return dict(begin=begin, end=end, event=dict(event='throttle', data=data))
+        for data in (dict(active=False, queued=1), dict(active='true', queued=1),
+                     dict(active=1, queued=1), dict(active=True, queued=True),
+                     dict(active=True, queued='1'), dict(active=True, queued=0),
+                     dict(active=True, queued=-1)):
+            with self.assertRaisesRegex(base.DayStop, 'native_rate_throttle_not_observed'):
+                h.burst_throttle_proof([record(data)], 10, 30)
+        for begin, end in ((0, 1), (9, 11), (29, 31), (31, 32)):
+            with self.assertRaisesRegex(base.DayStop, 'native_rate_throttle_not_observed'):
+                h.burst_throttle_proof([record(dict(active=True, queued=2), begin, end)], 10, 30)
+        proof = h.burst_throttle_proof([record(dict(active=True, queued=2))], 10, 30)
+        self.assertEqual(proof['native_rate_throttle_offsets'], [dict(begin=20, end=21, queued=2)])
 
-    def test_burst_rejects_missing_duplicate_wrong_or_nonzero_reply(self):
-        for mutation in (lambda r:r.pop(1),lambda r:r.append(copy.deepcopy(r[1])),lambda r:r[1]["event"]["data"].update(msgid=177),lambda r:r[1]["event"]["data"].update(code=14),lambda r:r[1]["event"]["data"].update(code=False)):
-            rows=replies();mutation(rows)
-            with self.assertRaisesRegex(base.DayStop,"matching_code0_reply"):h.burst_reply_proof(rows)
+    def test_short_timeline_whitelist_preserves_offsets_without_mutating_frozen_class(self):
+        path = Path(self.directory.name, 'throttle.ndjson')
+        rows = [dict(utc='2026-10-16T07:00:00Z', event='operator_input', data={}),
+                dict(utc='2026-10-16T07:00:01Z', event='throttle', data=dict(active=True, queued=2)),
+                dict(utc='2026-10-16T07:00:02Z', event='throttle', data=dict(active=False, queued=0))]
+        encoded = [json.dumps(row).encode()+b'\n' for row in rows]
+        path.write_bytes(b''.join(encoded))
+        timeline = types.SimpleNamespace(cursor=JournalCursor(path, 0), records=[])
+        original = JournalCursor.events
+        h.retain_throttle_records(timeline)
+        self.assertEqual(list(timeline.cursor.events()), rows)
+        self.assertIs(JournalCursor.events, original)
+        self.assertEqual([(row['begin'], row['end']) for row in timeline.records],
+                         [(len(encoded[0]), len(encoded[0])+len(encoded[1])),
+                          (len(encoded[0])+len(encoded[1]), sum(map(len, encoded)))])
+        self.assertEqual(list(timeline.cursor.events()), [])
+        self.assertEqual(len(timeline.records), 2)
 
-    def test_burst_nonzero_reply_is_fatal_without_wait_or_command_retry(self):
-        self.d.status=lambda:self.state()
-        self.d.timeline.rows=replies()
-        self.d.timeline.rows[1]["event"]["data"]["code"]=14
-        self.d.sleep=lambda _:self.fail("contradictory reply must fail immediately")
-        with patch.object(base.DayDriver,"burst",return_value=dict(status="PASS",native_posts=30)):
-            with self.assertRaisesRegex(base.DayStop,"reply_unproved"):self.d.burst()
+    def test_queued_add_cannot_be_cancelled_before_native_post(self):
+        # Keep the bucket full: immediate cancel would discard this queued Add.
+        self.product.posts = [self.clock.now]*5
+        self.product.command('place never-posted 1 buy 1 70.2 day')
+        self.assertEqual(self.product.status()['queued'], 1)
+        self.product.command('cancel never-posted')
+        self.assertEqual(self.product.status()['queued'], 0)
+        self.assertFalse(any(row['event']['event'] == 'command' for row in self.timeline.rows))
+        # The actual driver waits Working and consequently produces all30 posts.
+        self.clock.sleep(1.1)
+        self.assertEqual(self.d.burst()['native_posts'], 30)
 
-    def test_burst_rejects_duplicate_user_and_missing_last_commit(self):
-        rows=replies();rows[3]["event"]["data"]["user_id"]=1
-        with self.assertRaisesRegex(base.DayStop,"unique_Add_Del_posts"):h.burst_reply_proof(rows)
-        rows=replies();rows.pop()
-        with self.assertRaisesRegex(base.DayStop,"later_trade_commit"):h.burst_reply_proof(rows)
+    def test_slow_burst_does_not_claim_binding_from_thirty_replies_alone(self):
+        self.product.slow = True
+        with self.assertRaisesRegex(base.DayStop, 'binding_not_observed'):
+            self.d.burst()
 
-    def test_burst_calls_inherited_thirty_post_limiter_then_checks_replies(self):
-        self.d.status=lambda:self.state()
-        self.d.timeline.rows=replies()
-        with patch.object(base.DayDriver,"burst",return_value=dict(status="PASS",native_posts=30,max_posts_per_rolling_second=5)) as inherited:
-            result=self.d.burst()
-        inherited.assert_called_once_with();self.assertEqual(result["matching_code0_replies"],30)
+    def test_burst_rejects_nonzero_reply_and_missing_timing(self):
+        self.product.fail_code = True
+        with self.assertRaisesRegex(base.DayStop, 'reply_unproved'):
+            self.d.burst()
 
-    def test_pre_SIGTERM_requires_real_cleanup_and_current_complete_flat(self):
-        self.d.env["flatten"]=lambda *_:dict(cancel_confirmed=True,flat=True)
-        self.d.status=lambda:self.state()
-        self.assertEqual(self.d.prepare_empty_closeout()["status"],"PASS")
-        self.assertEqual(self.d.commands,["kill on"])
-        self.d.status=lambda:self.state(complete=False)
-        with self.assertRaisesRegex(base.DayStop,"complete_flatness"):self.d.prepare_empty_closeout()
+    def test_reply_proof_rejects_duplicate_and_missing_commit(self):
+        self.d.burst()
+        rows = copy.deepcopy(self.timeline.rows)
+        reply = next(row for row in rows if row['event']['event'] == 'reply')
+        rows.append(copy.deepcopy(reply))
+        with self.assertRaisesRegex(base.DayStop, 'reply_unproved'):
+            h.burst_reply_proof(rows)
+        rows = copy.deepcopy(self.timeline.rows); rows.pop()
+        with self.assertRaisesRegex(base.DayStop, 'later_trade_commit'):
+            h.burst_reply_proof(rows)
 
-    def test_flat_deadline_refuses_without_cleanup(self):
-        self.now=h.epoch(10,50)
-        self.d.env["flatten"]=lambda *_:self.fail("cleanup deadline expired")
-        with self.assertRaisesRegex(base.DayStop,"flat_deadline_passed"):self.d.prepare_empty_closeout()
+    def test_ms_native_admission_and_sub_ms_post_jitter_report_strict_density(self):
+        # Independent producer uses native whole-ms gate, not the checker's
+        # 999ms measurement window. Sub-ms gate phase makes strict ns density6.
+        admitted_ms, posts, now = [], [], 900_000
+        for index in range(30):
+            while len(admitted_ms) == 5 and now//1_000_000-admitted_ms[0] < 1000:
+                now += 50_000
+            if len(admitted_ms) == 5:
+                admitted_ms.pop(0)
+            admitted_ms.append(now//1_000_000)
+            posts.append(1_000_000_000 + now + (index % 3)*3_000)
+            now += 20_000
+        metrics = h.burst_rate_metrics(posts)
+        self.assertEqual(metrics['max_posts_per_rolling_second'], 5)
+        self.assertGreater(metrics['max_posts_per_strict_ns_second'], 5)
+        self.assertEqual(metrics['rate_window_slack_ns'], 1_000_000)
 
-    def test_constructor_uses_supplied_base_and_one_initial_snapshot(self):
-        with tempfile.TemporaryDirectory() as directory:
-            Path(directory,"interaction.ndjson").touch()
-            calls=[]
-            product=types.SimpleNamespace(targets=self.d.targets,status=lambda:calls.append(1) or self.state())
-            driver=h.ShortDriver(product,dict(authorized_date=h.DATE,closeout_mode="flat_then_observe_clearing"),directory,{},lambda _:None,wall=lambda:self.now)
-            self.assertIsInstance(driver,base.DayDriver)
-            self.assertEqual(calls,[1])
-            self.assertEqual(driver.schedule["cleanup_at"],h.epoch(10,45))
-            self.assertTrue(driver.gate_passed)
+    def test_rate_excess_is_reported_FAIL_but_cannot_skip_safe_reconciliation(self):
+        metrics = h.burst_rate_metrics([1_000_000_000+index*100_000_000 for index in range(6)])
+        self.assertEqual(metrics['max_posts_per_rolling_second'], 6)
+        calls = []
+        self.d.env['safe_case_failure'] = lambda *args: calls.append(args) or full_recovery()
+        result = self.d.independent_case('rate', lambda: (_ for _ in ()).throw(h.RateCheckFailed(metrics)))
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertEqual(result['metrics']['max_posts_per_strict_ns_second'], 6)
+        self.assertEqual(len(calls), 1)
+        self.d.env['safe_case_failure'] = lambda *_: full_recovery(flat=False)
+        with self.assertRaisesRegex(base.DayStop, 'continuation_unproved'):
+            self.d.independent_case('rate', lambda: (_ for _ in ()).throw(h.RateCheckFailed(metrics)))
 
-    def test_run_only_requested_short_scenarios_no_full_day_partial_or_gate(self):
-        stages=[]
-        self.d.scenarios={};self.d.restart_used=True
-        self.d.stage=lambda name,callback:stages.append(name)
-        self.d.timeline.path=Path(__file__)
-        self.d.timeline.kind_bytes={};self.d.timeline.kind_counts={};self.d.timeline.timing=lambda _:{}
-        result=self.d.run()
-        self.assertEqual(stages,["short_admission","planned_restart_two_working","one_passive_router_restart","one_passive_upstream_socket_loss","rate_burst_thirty","pre_SIGTERM_cancel_flat","terminal_closeout"])
-        self.assertEqual(result["coverage_scope"],"SHORT_INTERRUPTION_ONLY")
+    def test_burst_transient_reconstruction_waits_and_refreshes_drained_baseline(self):
+        waiting, fresh = state(complete=False), state()
+        snapshots = iter([waiting, waiting, fresh])
+        self.product.status = lambda: next(snapshots)
+        self.d.last_complete_state = state(books='stale')
+        self.assertIs(self.d.burst_snapshot([]), fresh)
+        self.assertIs(self.d.last_complete_state, fresh)
+        self.assertGreater(self.clock.now, self.cfg['earliest_entry_utc'])
+
+    def test_queued_burst_snapshot_does_not_become_complete_recovery_baseline(self):
+        baseline = state()
+        self.d.last_complete_state = baseline
+        self.product.status = lambda: state(queued=1)
+        self.d.burst_snapshot([])
+        self.assertIs(self.d.last_complete_state, baseline)
+
+    def test_burst_readiness_timeout_is_not_sent_before_dispatch_uncertain_after(self):
+        self.product.status = lambda: state(complete=False)
+        self.d.burst_dispatch_begin = self.d.dispatch_count
+        with self.assertRaises(h.PreIntentNotSent):
+            self.d.burst_snapshot([])
+        self.d.dispatch_count += 1
+        with self.assertRaisesRegex(base.DayStop, 'confirmation_uncertain_readiness_timeout'):
+            self.d.burst_snapshot([])
+
+    def test_instrument_not_ready_is_transient_before_any_command(self):
+        seq = self.d.seq('price')
+        attempts = []
+        def select(_):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise actual_sequence.SequenceStop('instrument_not_ready', 'ALRS-12.26')
+            return 7000000
+        self.assertEqual(self.d.wait_passive_price(seq, state(), select)[1], 7000000)
+        self.assertEqual(self.product.commands, [])
+
+    def test_dispatched_command_timeout_and_json_error_remain_fatal(self):
+        for error in (TimeoutError(), ValueError('invalid JSON')):
+            self.product.command = lambda _, e=error: (_ for _ in ()).throw(e)
+            self.d.env['safe_case_failure'] = lambda *_: self.fail('uncertain sent command cannot continue')
+            with self.assertRaisesRegex(base.DayStop, 'dispatch_outcome_uncertain'):
+                self.d.independent_case('burst', lambda: self.d.dispatch_once('cancel one'))
+
+    def test_unplanned_link_loss_or_storage_alert_inside_burst_still_stops_session(self):
+        self.d.env['safe_case_failure'] = lambda *_: self.fail('native safety failure cannot continue')
+        for code in ('unplanned_link_lost', 'short_burst_native_safety_alert'):
+            with self.assertRaisesRegex(base.DayStop, code):
+                self.d.independent_case('burst', lambda c=code: (_ for _ in ()).throw(base.DayStop(c)))
+
+    def test_preintent_after_prior_dispatch_never_claims_whole_case_not_sent(self):
+        def case():
+            self.d.dispatch_once('kill on')
+            raise h.PreIntentNotSent('next_request_not_sent')
+        result = self.d.independent_case('case', case)
+        self.assertFalse(result['command_not_sent'])
+        self.assertFalse(result['commands_not_sent'])
+        self.assertTrue(result['failing_command_not_sent'])
+        self.assertEqual(result['commands_dispatched_or_uncertain'], 1)
+        result = self.d.independent_case('never-dispatched', lambda: (_ for _ in ()).throw(h.PreIntentNotSent('not_sent')))
+        self.assertTrue(result['command_not_sent'])
+        self.assertEqual(result['commands_dispatched_or_uncertain'], 0)
+
+    def test_tick_failure_is_recorded_without_weakening_existing_fatal_policy(self):
+        self.d.tick = lambda: (_ for _ in ()).throw(base.DayStop('unplanned_link_lost'))
+        self.d.env['safe_case_failure'] = lambda *_: self.fail('failed safety tick cannot continue')
+        with self.assertRaisesRegex(base.DayStop, 'unplanned_link_lost'):
+            self.d.independent_case('next', lambda: self.fail('callback must not run'))
+        self.assertEqual(self.d.scenarios['next']['status'], 'FAIL')
+
+    def test_independent_failure_continues_only_after_strict_recovery(self):
+        calls = []
+        self.d.env['safe_case_failure'] = lambda *args: calls.append(args) or full_recovery()
+        result = self.d.independent_case('case', lambda: (_ for _ in ()).throw(base.DayStop('measurement_unobserved')))
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertTrue(result['safe_continuation']['flat'])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.d.independent_case('next', lambda: dict(status='PASS'))['status'], 'PASS')
+
+    def test_independent_failure_stops_uncertain_mismatch_or_unproved_recovery(self):
+        for code in ('command_outcome_uncertain', 'order_identity_mismatch', 'router_unrestored'):
+            self.d.env['safe_case_failure'] = lambda *_: self.fail('fatal outcome cannot continue')
+            with self.assertRaisesRegex(base.DayStop, code):
+                self.d.independent_case('case', lambda c=code: (_ for _ in ()).throw(base.DayStop(c)))
+        for change in (dict(flat=False), dict(client_count=0), dict(upstreams=3), dict(cancel_confirmed=1)):
+            self.d.env['safe_case_failure'] = lambda *_, c=change: full_recovery(**c)
+            with self.assertRaisesRegex(base.DayStop, 'continuation_unproved'):
+                self.d.independent_case('case', lambda: (_ for _ in ()).throw(base.DayStop('not_observed')))
+
+    def test_restart_last_explicitly_reenables_entry_after_fault_kill_switch(self):
+        self.d.restart_working = lambda: dict(status='PASS', recovered_working_orders=2)
+        self.assertEqual(self.d.restart_case()['recovered_working_orders'], 2)
+        self.assertEqual(self.product.commands, ['kill off'])
+
+    def test_burst_uses_fresh_flat_wave_leases_and_refreshes_inside_each(self):
+        checks = []
+        @contextlib.contextmanager
+        def lease(*_):
+            self.assertTrue(base.ops.flat(self.product.status()))
+            checks.append(1)
+            self.clock.sleep(12)  # Slow preflight invalidates any prior book.
+            yield
+        self.d.env['fast_dispatch'] = lease
+        result = self.d.burst()
+        self.assertTrue(result['limiter_binding_observed'])
+        self.assertEqual(checks, [1, 1, 1, 1])
+
+    def test_terminal_passive_fill_is_not_hidden_by_zero_position_lag(self):
+        self.d.burst_clients = {'fresh'}
+        self.product.orders['fresh'] = dict(client_order_id='fresh', state='Filled', executed=1,
+            quantity=1, remaining=0, isin_id=1, side='buy', instance_owned=True)
+        with self.assertRaisesRegex(base.DayStop, 'execution_mismatch'):
+            self.d.burst_snapshot([])
+
+    def test_run_order_is_burst_upstream_router_restart_then_flat_SIGTERM(self):
+        calls = []
+        self.d.stage = lambda name, callback: calls.append(name)
+        self.d.independent_case = lambda name, callback: calls.append(name)
+        self.d.run()
+        self.assertEqual(calls, ['short_admission', 'rate_burst_thirty', 'one_passive_upstream_socket_loss',
+                                 'one_passive_router_restart', 'planned_restart_two_working',
+                                 'pre_SIGTERM_cancel_flat', 'terminal_closeout'])
+
+    def test_overall_qualification_is_incomplete_if_any_case_failed(self):
+        self.d.stage = lambda name, _: self.d.scenarios.update({name: dict(status='PASS')})
+        self.d.independent_case = lambda name, _: self.d.scenarios.update({name: dict(status='FAIL' if name == 'rate_burst_thirty' else 'PASS')})
+        result = self.d.run()
+        self.assertEqual(result['execution_result'], 'FAIL')
+        self.assertEqual(result['qualification_result'], 'SUPPLEMENTAL_TEST_INCOMPLETE')
+
+    def test_burst_only_runs_real_burst_and_flat_closeout_without_fault_or_restart(self):
+        self.cfg['burst_only'] = True
+        self.d.cfg['burst_only'] = True
+        stages = []
+        self.d.fault = lambda *_: self.fail('burst-only scope invoked a fault')
+        self.d.restart_case = lambda: self.fail('burst-only scope invoked a restart')
+        self.d.env['flatten'] = lambda *_: dict(cancel_confirmed=True, flat=True)
+        def closeout():
+            stages.append('terminal_closeout')
+            self.assertTrue(base.ops.flat(self.product.status()))
+            return dict(status='PASS', cancel_confirmed=True, flat=True, product_exit=0,
+                        after=dict(client_count=0))
+        self.d.closeout = closeout
+        result = self.d.run()
+        self.assertEqual(list(result['scenarios']), ['short_admission', 'rate_burst_thirty',
+            'pre_SIGTERM_cancel_flat', 'terminal_closeout'])
+        self.assertEqual(result['coverage_scope'], 'SHORT_BURST_ONLY')
+        self.assertEqual(result['execution_result'], 'PASS')
+        self.assertEqual(result['planned_restarts'], 0)
+        self.assertEqual(result['scenarios']['rate_burst_thirty']['native_posts'], 30)
+        self.assertEqual(stages, ['terminal_closeout'])
+
+    def test_burst_only_failure_keeps_failure_and_runs_cleanup(self):
+        self.d.cfg['burst_only'] = True
+        calls = []
+        self.d.burst = lambda: (_ for _ in ()).throw(h.PreIntentNotSent('no_eligible_book'))
+        self.d.stage = lambda name, _: (calls.append(name), self.d.scenarios.update({name: dict(status='PASS')}))[-1]
+        self.d.fault = lambda *_: self.fail('burst-only scope invoked a fault')
+        self.d.restart_case = lambda: self.fail('burst-only scope invoked a restart')
+        result = self.d.run()
+        self.assertEqual(calls, ['short_admission', 'pre_SIGTERM_cancel_flat', 'terminal_closeout'])
+        self.assertEqual(result['execution_result'], 'FAIL')
+        self.assertEqual(result['scenarios']['rate_burst_thirty']['status'], 'FAIL')
+        self.assertTrue(result['scenarios']['rate_burst_thirty']['safe_continuation']['flat'])
+        self.assertEqual(result['planned_restarts'], 0)
+
+    def test_burst_only_rejects_nonboolean_scope_before_admission(self):
+        self.d.stage = lambda *_: self.fail('invalid scope reached admission')
+        for value in (1, 'true', None, []):
+            self.d.cfg['burst_only'] = value
+            with self.assertRaisesRegex(base.DayStop, 'short_burst_only_scope_invalid'):
+                self.d.run()
+        self.assertEqual(self.product.commands, [])
+
+    def test_pre_SIGTERM_requires_current_flatness_and_exact_cleanup(self):
+        self.d.env['flatten'] = lambda *_: dict(cancel_confirmed=True, flat=True)
+        self.assertEqual(self.d.prepare_empty_closeout()['status'], 'PASS')
+        self.d.status = lambda: state(queued=1)
+        with self.assertRaisesRegex(base.DayStop, 'complete_flatness'):
+            self.d.prepare_empty_closeout()
 
 
-if __name__ == "__main__": unittest.main(verbosity=2)
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

@@ -20,8 +20,20 @@ def current_reference(state, target, now_ns=None):
     if not book or not book['valid']:
         raise ValueError('current_price_book_unproved')
     now_ns = time.time_ns() if now_ns is None else now_ns
-    age = now_ns - book.get('stream_last_callback_utc_ns', 0)
-    if not 0 <= age <= 10_000_000_000:
+    callback = book.get('stream_last_callback_utc_ns')
+    if type(callback) is int and callback > 0:
+        fresh = 0 <= now_ns - callback <= 10_000_000_000
+    elif type(callback) is int and callback == 0:
+        # Without profiling the callback clock is intentionally zero. Native
+        # committed-book clocks are still populated and must BOTH be fresh.
+        committed, exchange = book.get('book_commit_monotonic_ns'), book.get('exchange_moment_ns')
+        fresh = (type(committed) is int and committed > 0
+                 and 0 <= time.monotonic_ns() - committed <= 10_000_000_000
+                 and type(exchange) is int and exchange > 0
+                 and -1_000_000_000 <= now_ns - exchange <= 10_000_000_000)
+    else:
+        fresh = False
+    if not fresh:
         raise ValueError('current_price_book_stale')
     bid, ask = book.get('best_bid'), book.get('best_ask')
     if not bid or not ask or bid['price_scaled'] > ask['price_scaled']:

@@ -1,6 +1,10 @@
 #include "moex/connector_host/dtc_read_only_server.hpp"
+#include "moex/connector_host/operator_config.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
 #include "moex/plaza2/cgate/plaza2_public_deals.hpp"
+#include "plaza2_runtime_test_support.hpp"
+#include "fake_cgate_control.hpp"
+#include "future_spread_classification_regression.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,6 +14,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fcntl.h>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <netinet/in.h>
@@ -302,9 +307,19 @@ struct Harness {
     std::vector<DtcFrame> received;
     int socket{-1};
     bool eof{false};
+    std::function<void()> poll_source;
 
     explicit Harness(bool publisher = true) : source(), server(source, server_config()) {
         source.publisher = publisher;
+        connect_client();
+    }
+
+    Harness(DtcMarketDataSource& native_source, std::function<void()> owner_poll)
+        : source(), server(native_source, server_config()), poll_source(std::move(owner_poll)) {
+        connect_client();
+    }
+
+    void connect_client() {
         std::string error;
         require(server.start(error), error);
         socket = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -343,6 +358,8 @@ struct Harness {
 
     void pump(unsigned iterations = 40) {
         for (unsigned i = 0; i < iterations; ++i) {
+            if (poll_source)
+                poll_source();
             server.poll();
             std::array<std::uint8_t, 8192> buffer{};
             const auto count = ::recv(socket, buffer.data(), buffer.size(), 0);
@@ -392,10 +409,10 @@ struct Harness {
             require(reply.number(field) == 0, "logon keeps trading and private capabilities disabled");
     }
 
-    void definition() {
+    void definition(std::string_view symbol = kSymbol, std::int32_t session = kSession) {
         Bytes request;
         put_integer(request, 1, 41);
-        put_text(request, 2, kSymbol);
+        put_text(request, 2, symbol);
         put_text(request, 3, kExchange);
         send_message(506, request);
         pump();
@@ -403,7 +420,7 @@ struct Harness {
         const WireMessage response(first(507).payload);
         require(response.number(1) == 41, "507 request id preserved");
         require(!response.has(20), "507 does not encode EarningsPerShare field20 as a varint capability");
-        require(source.publisher ? response.number(35) == static_cast<std::uint64_t>(kSession) : !response.has(35),
+        require(source.publisher ? response.number(35) == static_cast<std::uint64_t>(session) : !response.has(35),
                 "507 session extension binds public trades and remains absent for depth-only clients");
     }
 
@@ -435,6 +452,157 @@ struct Harness {
         require(server.has_client() && !eof, "trade rejection keeps the DTC client connected");
     }
 };
+
+void test_composed_native_lifenum_callback_order(const std::filesystem::path& fake_library) {
+    namespace native = moex::plaza2::test;
+    namespace fake = native::fake;
+    namespace generated = moex::plaza2::generated;
+    using enum generated::StreamCode;
+    using enum generated::TableCode;
+    using enum generated::FieldCode;
+    const auto path = native::make_temp_directory("dtc_public_deals_callback_order");
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            native::remove_tree(path);
+        }
+    } cleanup{path};
+    const auto fixture =
+        native::materialize_runtime_fixture(path, fake_library, moex::plaza2::cgate::Plaza2Environment::Test,
+                                            native::build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test"));
+    fake::Control runtime(fixture.library_path);
+    ::setenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "00000000", 1);
+
+    // Keep the established OPEN-first path and reproduce the native T0 order:
+    // LifeNum is emitted only before OPEN, with no later duplicate to mask loss.
+    for (const bool life_before_open : {false, true}) {
+        runtime.configure({});
+        if (life_before_open)
+            runtime.set(fake::Option::DealsLifeNumBeforeOpen);
+        moex::connector_host::Plaza2HostConfigInputs inputs;
+        inputs.read_only_market_data = true;
+        inputs.public_deals = true;
+        inputs.runtime_root = fixture.root;
+        inputs.library_path = fixture.library_path;
+        inputs.scheme_dir = fixture.scheme_dir;
+        inputs.config_dir = fixture.config_dir;
+        inputs.env_open_settings = "ini=config/t1.ini;key=00000000";
+        inputs.software_key_env_var = "MOEX_PLAZA2_CGATE_SOFTWARE_KEY";
+        inputs.expected_spectra_release = "SPECTRA93";
+        inputs.isin_ids = {1001};
+        auto config = moex::connector_host::build_plaza2_host_config(inputs);
+        config.transport.host.process_timeout_ms = 0;
+        config.market_data_now = [] { return std::chrono::system_clock::time_point{std::chrono::seconds{1700000100}}; };
+        require(config.transport.host.public_deals_target_isin_id == 1001,
+                "operator composition preserves the selected public-DEALS instrument");
+        moex::connector_host::ConnectorHost host(config);
+        require(!host.start(), "native read-only wire host starts");
+        const auto poll = [&] { require(!host.poll(), "native read-only wire host polls"); };
+        for (int i = 0; i < 20; ++i)
+            poll();
+        const auto initial = host.public_deals_snapshot();
+        require(initial.online && initial.valid && initial.lifenum == 7 && initial.trades.size() == 2,
+                life_before_open ? "LifeNum-before-OPEN failed to reach the composed native public-DEALS stream"
+                                 : "OPEN-first native public-DEALS baseline failed");
+
+        // Supply real decoded, committed economics for the LiveTest 507 path;
+        // do not substitute FakeSource metadata or the replay definition mode.
+        native::spread_classification::enqueue_catalog_row(runtime, false, 0, 4, 1000);
+        runtime.enqueue(
+            {.stream_code = kFortsRefdataRepl,
+             .table_code = kFortsRefdataReplFutVcb,
+             .revision = 1001,
+             .fields = {
+                 {.field_code = kFortsRefdataReplFutVcbReplId, .signed_value = 2501},
+                 {.field_code = kFortsRefdataReplFutVcbBaseContractCode, .kind = fake::FieldKind::Text, .text = "RTS"},
+                 {.field_code = kFortsRefdataReplFutVcbCurr, .kind = fake::FieldKind::Text, .text = "RUB"},
+                 {.field_code = kFortsRefdataReplFutVcbBaseContractId, .signed_value = 500},
+                 {.field_code = kFortsRefdataReplFutVcbBoardMd, .kind = fake::FieldKind::Text, .text = "RFUD"}}});
+        runtime.enqueue({.kind = fake::EventKind::Commit, .stream_code = kFortsRefdataRepl});
+        for (int i = 0; i < 20; ++i)
+            poll();
+        ConnectorHostDtcMarketDataSource source(host);
+        const auto definition = validate_dtc_security_definition(source.snapshot(), DtcSourceMode::LiveTest);
+        require(definition.available(), definition.reason);
+        const auto capabilities = source.capabilities();
+        require(capabilities.market_data && capabilities.market_depth && capabilities.security_definitions &&
+                    !capabilities.accounts && !capabilities.positions && !capabilities.orders &&
+                    !capabilities.order_entry,
+                "native public-DEALS DTC adapter exposes only read-only market data capabilities");
+        const auto symbol = source.snapshot().symbol;
+        const auto session = source.snapshot().session_id;
+        require(symbol == "RTS-6.26" && session == 321, "native wire target comes from current committed metadata");
+
+        const auto enqueue_deal = [&](std::int64_t id, std::int64_t revision) {
+            runtime.enqueue(
+                {.stream_code = kFortsDealsRepl,
+                 .table_code = kFortsDealsReplDeal,
+                 .revision = revision,
+                 .fields = {
+                     {.field_code = kFortsDealsReplDealReplId, .signed_value = revision},
+                     {.field_code = kFortsDealsReplDealReplRev, .signed_value = revision},
+                     {.field_code = kFortsDealsReplDealReplAct, .signed_value = 0},
+                     {.field_code = kFortsDealsReplDealSessId, .signed_value = session},
+                     {.field_code = kFortsDealsReplDealIsinId, .signed_value = 1001},
+                     {.field_code = kFortsDealsReplDealIdDeal, .signed_value = id},
+                     {.field_code = kFortsDealsReplDealXamount, .signed_value = 1},
+                     {.field_code = kFortsDealsReplDealPrice, .kind = fake::FieldKind::Text, .text = "102500.12500"},
+                     {.field_code = kFortsDealsReplDealMoment,
+                      .kind = fake::FieldKind::Timestamp,
+                      .unsigned_value = 1700000000},
+                     {.field_code = kFortsDealsReplDealMomentNs,
+                      .kind = fake::FieldKind::UnsignedInteger,
+                      .unsigned_value = 1700000000123456789ULL},
+                     {.field_code = kFortsDealsReplDealNosystem, .signed_value = 0},
+                     {.field_code = kFortsDealsReplDealXstatusBuy, .signed_value = 0},
+                     {.field_code = kFortsDealsReplDealXstatusSell, .signed_value = 0}}});
+        };
+        {
+            Harness wire(source, poll);
+            wire.logon();
+            wire.definition(symbol, session);
+            wire.trade_request(symbol);
+            require(wire.server.has_public_deals_subscription() && wire.count(107) == 0,
+                    "DTC101 starts at the native committed tail without replaying retained public trades");
+            const auto tail = host.public_deals_snapshot().last_sequence;
+            runtime.enqueue({.kind = fake::EventKind::Begin, .stream_code = kFortsDealsRepl});
+            enqueue_deal(9100, 100);
+            wire.pump();
+            require(wire.count(107) == 0 && host.public_deals_snapshot().last_sequence == tail,
+                    "native uncommitted public deal must not escape as DTC107");
+            runtime.enqueue({.kind = fake::EventKind::Commit, .stream_code = kFortsDealsRepl});
+            wire.pump();
+            require(wire.count(107) == 1, "native public-deal commit emits exactly one DTC107");
+            const WireMessage trade(wire.first(107).payload);
+            require(trade.number(1) == kSymbolId && trade.string(8) == "9100" && trade.number(7) == 1 &&
+                        trade.number(13) == 100 && trade.number(14) == 100 && trade.number(15) == 7 &&
+                        trade.number(16) == 321 && trade.number(17) == 1001 &&
+                        trade.number(6) == host.public_deals_snapshot().stream_epoch &&
+                        trade.number(10) == 1700000000123456789ULL && trade.number(18) > 0 &&
+                        trade.real64(3) == 102500.125 && trade.real64(4) == 1.0,
+                    "native callback-order wire preserves exact target, LifeNum, epoch, revision, price and time");
+            wire.trade_request(symbol);
+            runtime.enqueue({.kind = fake::EventKind::Begin, .stream_code = kFortsDealsRepl});
+            enqueue_deal(9100, 100);
+            runtime.enqueue({.kind = fake::EventKind::Commit, .stream_code = kFortsDealsRepl});
+            wire.pump();
+            require(wire.count(107) == 1, "duplicate subscribe and repeated committed native row do not duplicate107");
+            runtime.enqueue({.kind = fake::EventKind::Begin, .stream_code = kFortsDealsRepl});
+            enqueue_deal(9101, 101);
+            runtime.enqueue({.kind = fake::EventKind::Commit, .stream_code = kFortsDealsRepl});
+            wire.pump();
+            require(wire.count(107) == 2, "the next unique committed native deal reaches DTC exactly once");
+            wire.server.stop();
+        }
+        const auto state = host.snapshot();
+        require(
+            !host.has_publisher_or_reply_handles() && !host.order_entry_ready(1001) &&
+                state.publisher_calls.msgnew == 0 && state.publisher_calls.post == 0 && runtime.commands().empty(),
+            "native-to-DTC callback-order regression must acquire no publisher, reply, allocation or order surface");
+        require(!host.stop() && runtime.listener_handles(kFortsDealsRepl) == 0,
+                "native-to-DTC callback-order regression releases the DEALS listener cleanly");
+    }
+}
 
 void test_wire_fields_and_forward_only_cursor() {
     Harness h;
@@ -711,11 +879,12 @@ int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--serve-fixture")
             return serve_fixture();
-        require(argc == 1, "usage: connector_host_dtc_public_deals_test [--serve-fixture]");
+        require(argc == 2, "usage: connector_host_dtc_public_deals_test <fake CGate library> | --serve-fixture");
         test_wire_fields_and_forward_only_cursor();
         test_capability_offline_and_no_publisher();
         test_overflow_epoch_and_invalid_deals();
         test_trade_only_revalidates_definition_and_keeps_depth_independent();
+        test_composed_native_lifenum_callback_order(argv[1]);
         std::cout << "PASS connector_host_dtc_public_deals_test\n";
         return 0;
     } catch (const std::exception& error) {

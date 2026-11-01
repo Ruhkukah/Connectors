@@ -2,6 +2,7 @@
 #include "fake_cgate_abi.hpp"
 #include "fake_cgate_control.hpp"
 #include "fixtures/server_schema.hpp"
+#include "fixtures/server_schema_912.hpp"
 #include <deque>
 #include "moex/plaza2/cgate/plaza2_public_decode.hpp"
 #include "../plaza2_trade/fixtures/cgate99_messages.hpp"
@@ -195,6 +196,7 @@ std::uint64_t g_status_open_count = 0;
 std::uint64_t g_conn_new_count = 0;
 std::array<std::uint64_t, 4> successful_closes{}; // environment, connection, listener, publisher
 std::unordered_map<void*, FakePublisherMessage*> g_publisher_messages;
+std::unordered_map<StreamCode, std::uint64_t> listener_handles;
 
 std::uint32_t configured_result(Option variable) {
     const auto* value = option(variable);
@@ -1582,10 +1584,12 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     const auto scenario_day = scenario.session_id ? std::to_string(scenario.session_id) : "";
     if (const auto* value = scenario_day.empty() ? option(Option::SessionId) : scenario_day.c_str()) {
         const auto day = std::strtoll(value, nullptr, 10);
-        constexpr std::array session_fields{
-            FieldCode::kFortsRefdataReplSessionSessId, FieldCode::kFortsRefdataReplFutSessContentsSessId,
-            FieldCode::kFortsSessionstateReplSessionStateSessId, FieldCode::kFortsInstrumentstateReplSysEventsSessId,
-            FieldCode::kFortsAggrReplSysEventsSessId};
+        constexpr std::array session_fields{FieldCode::kFortsRefdataReplSessionSessId,
+                                            FieldCode::kFortsRefdataReplFutSessContentsSessId,
+                                            FieldCode::kFortsSessionstateReplSessionStateSessId,
+                                            FieldCode::kFortsInstrumentstateReplSysEventsSessId,
+                                            FieldCode::kFortsAggrReplSysEventsSessId,
+                                            FieldCode::kFortsDealsReplDealSessId};
         for (auto& message : script)
             for (const auto field : session_fields)
                 if (auto* decoded = find_field(message, field))
@@ -1698,7 +1702,11 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
         plan.message_name = message->name;
 
         std::size_t offset = 0;
-        for (const auto& descriptor : moex::plaza2::test::server_schema_fields(message_script.table_code)) {
+        const bool spectra912 = scenario.spectra912_refdata_schema &&
+                                message_script.table_code == TableCode::kFortsRefdataReplFutSessContents;
+        const auto server_fields = spectra912 ? moex::plaza2::test::spectra912_future_session_schema()
+                                              : moex::plaza2::test::server_schema_fields(message_script.table_code);
+        for (const auto& descriptor : server_fields) {
             const auto* field = &descriptor;
             if (field == nullptr) {
                 return {};
@@ -1750,7 +1758,8 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             message->fields.push_back(std::move(owned_field));
         }
 
-        offset = std::max(offset, moex::plaza2::test::server_schema_row_size(message_script.table_code));
+        offset = std::max(offset, spectra912 ? moex::plaza2::test::kSpectra912FutureSessionRowSize
+                                             : moex::plaza2::test::server_schema_row_size(message_script.table_code));
         if (fake_flag(Option::SchemeExtraTable)) {
             auto field = std::make_unique<OwnedField>();
             field->name = "future_field";
@@ -1947,7 +1956,11 @@ std::uint32_t emit_script(FakeListener& listener) {
         .flags = 0,
     };
     // TRADE negotiates LifeNum before OPEN; an equal requested epoch emits no notification.
-    if (listener.stream_code != StreamCode::kFortsTradeRepl)
+    // The native DEALS callback-order scenario also delivers its only LifeNum
+    // from cg_lsn_open, before OPEN. A second notification here would hide a
+    // bridge that discarded or reset the pending value during OPEN.
+    if (listener.stream_code != StreamCode::kFortsTradeRepl &&
+        !(listener.stream_code == StreamCode::kFortsDealsRepl && fake_flag(Option::DealsLifeNumBeforeOpen)))
         if (const auto result = emit_simple_message(listener, kCgMsgP2replLifenum, &lifenum, sizeof(lifenum));
             result != kCgErrOk)
             return result;
@@ -1999,9 +2012,17 @@ std::uint32_t emit_script(FakeListener& listener) {
                 return result;
         }
     }
+    // Bootstrap barriers expose the actual decoded rows without their commit
+    // or ONLINE proof. Tests complete the same callback transaction explicitly.
+    if ((listener.stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::RefdataPauseBeforeCommit)) ||
+        (listener.stream_code == StreamCode::kFortsSessionstateRepl &&
+         fake_flag(Option::SessionstatePauseBeforeCommit)))
+        return kCgErrOk;
     if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk) {
         return result;
     }
+    if (listener.stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::RefdataPauseBeforeOnline))
+        return kCgErrOk;
     if (const auto result = emit_simple_message(listener, kCgMsgP2replOnline); result != kCgErrOk) {
         return result;
     }
@@ -2907,6 +2928,7 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
     }
 
     connection->listeners.push_back(listener);
+    ++listener_handles[listener->stream_code];
     *lsnptr = listener;
     return kCgErrOk;
 }
@@ -2916,6 +2938,11 @@ std::uint32_t cg_lsn_destroy(void* listener) {
         return kCgErrInvalidArgument;
     }
     auto* typed = static_cast<FakeListener*>(listener);
+    if (typed->stream_code == StreamCode::kFortsDealsRepl && fake_flag(Option::DealsDestroyOnce)) {
+        clear_option(Option::DealsDestroyOnce);
+        return kCgErrInternal;
+    }
+    --listener_handles[typed->stream_code];
     detach_listener(typed->connection, typed);
     delete typed;
     return kCgErrOk;
@@ -3022,6 +3049,12 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
         return kCgErrOk;
     }
     typed->state = kStateActive;
+    if (typed->stream_code == StreamCode::kFortsDealsRepl && fake_flag(Option::DealsLifeNumBeforeOpen)) {
+        CgDataLifeNum life{.life_number = fake_flag(Option::FreshPosAnchor) ? 8u : 7u, .flags = 0};
+        if (const auto result = emit_simple_message(*typed, kCgMsgP2replLifenum, &life, sizeof(life));
+            result != kCgErrOk)
+            return result;
+    }
     if (typed->stream_code == StreamCode::kFortsTradeRepl) {
         const auto server =
             scenario.trade_server_lifenum ? scenario.trade_server_lifenum : typed->connection->trade_lifenum;
@@ -3402,6 +3435,9 @@ extern "C" std::int64_t moex_fake_last_post_started_steady_ns() {
 }
 extern "C" std::uint64_t moex_fake_listener_opens(StreamCode stream) {
     return listener_opens[stream];
+}
+extern "C" std::uint64_t moex_fake_listener_handles(StreamCode stream) {
+    return listener_handles[stream];
 }
 extern "C" void moex_fake_trade_open_settings(std::string* settings) {
     if (settings)

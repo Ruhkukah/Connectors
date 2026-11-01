@@ -343,7 +343,7 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
         std::optional<std::uint32_t> posted_before_loss;
         if (!close) {
             require(host.place(add("posted-before-history-loss", isin)).empty(), "pre-loss pending Add refused");
-            now += std::chrono::seconds(1);
+            now += std::chrono::milliseconds(1001);
             poll();
             posted_before_loss = control.commands().back().user_id;
         }
@@ -351,7 +351,7 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
             auto second = add("second-working-order", isin);
             second.quantity = 4;
             require(host.place(second).empty(), "second reconnect Add refused");
-            now += std::chrono::seconds(1);
+            now += std::chrono::milliseconds(1001);
             poll();
             reply(control.commands().back().user_id, 20005);
             auto second_row = own_order(20005, isin, account);
@@ -471,7 +471,7 @@ inline void private_delta_host_regression(TradingHostConfig config, const plaza2
         }
         if (close) {
             for (int i = 0; i < 3; ++i) {
-                now += std::chrono::seconds(1);
+                now += std::chrono::milliseconds(1001);
                 poll();
             }
             std::map<std::int64_t, std::int32_t> moved;

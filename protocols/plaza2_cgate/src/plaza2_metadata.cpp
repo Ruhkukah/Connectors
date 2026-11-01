@@ -1,4 +1,4 @@
-// Hand-maintained CGate 9.9 metadata for the retained product streams.
+// Consumed metadata shared by CGate 9.9 and 9.12 for the retained product streams.
 // Unknown server tables and fields are accepted; required layouts are validated at OPEN.
 #include "moex/plaza2/cgate/plaza2_metadata.hpp"
 
@@ -68,18 +68,18 @@ constexpr std::array<TableDescriptor, kTableCount> kTableDescriptors{{
     {TableCode::kFortsPartReplPart, 0x29343FB7u, "FORTS_PART_REPL", "part", 169, 0},
     {TableCode::kFortsPartReplPartSa, 0x29343FB7u, "FORTS_PART_REPL", "part_sa", 169, 0},
     {TableCode::kFortsPartReplSysEvents, 0x29343FB7u, "FORTS_PART_REPL", "sys_events", 169, 8},
-    {TableCode::kFortsRefdataReplFutSessContents, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "fut_sess_contents", 177, 26},
-    {TableCode::kFortsRefdataReplFutVcb, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "fut_vcb", 203, 7},
-    {TableCode::kFortsRefdataReplFutInstruments, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "fut_instruments", 210, 21},
-    {TableCode::kFortsRefdataReplSysMessages, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "sys_messages", 231, 11},
-    {TableCode::kFortsRefdataReplOptSessContents, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "opt_sess_contents", 242, 0},
-    {TableCode::kFortsRefdataReplMultilegDict, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "multileg_dict", 242, 0},
-    {TableCode::kFortsRefdataReplInstr2matchingMap, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "instr2matching_map", 242, 0},
-    {TableCode::kFortsRefdataReplSession, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "session", 242, 18},
-    {TableCode::kFortsSessionstateReplSessionState, 0x4C6EE2C3u, "FORTS_SESSIONSTATE_REPL", "session_state", 260, 5},
+    {TableCode::kFortsRefdataReplFutSessContents, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "fut_sess_contents", 177, 25},
+    {TableCode::kFortsRefdataReplFutVcb, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "fut_vcb", 202, 7},
+    {TableCode::kFortsRefdataReplFutInstruments, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "fut_instruments", 209, 21},
+    {TableCode::kFortsRefdataReplSysMessages, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "sys_messages", 230, 11},
+    {TableCode::kFortsRefdataReplOptSessContents, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "opt_sess_contents", 241, 0},
+    {TableCode::kFortsRefdataReplMultilegDict, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "multileg_dict", 241, 0},
+    {TableCode::kFortsRefdataReplInstr2matchingMap, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "instr2matching_map", 241, 0},
+    {TableCode::kFortsRefdataReplSession, 0xF42AF31Fu, "FORTS_REFDATA_REPL", "session", 241, 18},
+    {TableCode::kFortsSessionstateReplSessionState, 0x4C6EE2C3u, "FORTS_SESSIONSTATE_REPL", "session_state", 259, 5},
     {TableCode::kFortsInstrumentstateReplInstrumentState, 0x53AD8B6Au, "FORTS_INSTRUMENTSTATE_REPL", "instrument_state",
-     265, 5},
-    {TableCode::kFortsInstrumentstateReplSysEvents, 0x53AD8B6Au, "FORTS_INSTRUMENTSTATE_REPL", "sys_events", 270, 8},
+     264, 5},
+    {TableCode::kFortsInstrumentstateReplSysEvents, 0x53AD8B6Au, "FORTS_INSTRUMENTSTATE_REPL", "sys_events", 269, 8},
 }};
 
 constexpr std::array<FieldDescriptor, kFieldCount> kFieldDescriptors{{
@@ -304,8 +304,6 @@ constexpr std::array<FieldDescriptor, kFieldCount> kFieldDescriptors{{
     {FieldCode::kFortsRefdataReplFutSessContentsLimitUp, "limit_up", "d16.5", ValueClass::kDecimal, 0, 16, 5, false},
     {FieldCode::kFortsRefdataReplFutSessContentsLimitDown, "limit_down", "d16.5", ValueClass::kDecimal, 0, 16, 5,
      false},
-    {FieldCode::kFortsRefdataReplFutSessContentsSettlementPriceOpen, "settlement_price_open", "d16.5",
-     ValueClass::kDecimal, 0, 16, 5, false},
     {FieldCode::kFortsRefdataReplFutSessContentsRoundto, "roundto", "i4", ValueClass::kSignedInteger, 4, 0, 0, false},
     {FieldCode::kFortsRefdataReplFutSessContentsMinStep, "min_step", "d16.5", ValueClass::kDecimal, 0, 16, 5, false},
     {FieldCode::kFortsRefdataReplFutSessContentsLotVolume, "lot_volume", "i4", ValueClass::kSignedInteger, 4, 0, 0,

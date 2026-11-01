@@ -193,6 +193,8 @@ struct InstrumentSnapshot {
     std::uint64_t current_status_session_epoch{0};
     std::int32_t signs{0};
     bool put{false};
+    // Raw REFDATA is_spread: this future participates in intermonth-spread
+    // risk netting. It does not mean that the instrument itself is a spread.
     bool is_spread{false};
     std::string min_step;
     std::string step_price;
@@ -210,6 +212,21 @@ struct InstrumentSnapshot {
     // Coherent fut_sess_contents row; never populated from fut_instruments.
     std::optional<FutureSessionTerms> future_session_terms;
 };
+
+// PLAZA II REFDATA defines signs 0x100 as a composite instrument and 0x10000
+// as a calendar spread; trade modes 14/15 are calendar-spread markets.
+// Keep spread legs eligible as outright futures regardless of raw is_spread.
+[[nodiscard]] inline bool is_calendar_spread(const InstrumentSnapshot& instrument) noexcept {
+    return (instrument.signs & 0x10000) != 0 || instrument.trade_mode_id == 14 || instrument.trade_mode_id == 15;
+}
+
+[[nodiscard]] inline bool is_multileg_instrument(const InstrumentSnapshot& instrument) noexcept {
+    return (instrument.signs & 0x100) != 0 || is_calendar_spread(instrument) || !instrument.legs.empty();
+}
+
+[[nodiscard]] inline bool is_outright_future(const InstrumentSnapshot& instrument) noexcept {
+    return instrument.kind == InstrumentKind::kFuture && !is_multileg_instrument(instrument);
+}
 
 struct MatchingMapSnapshot {
     std::int32_t base_contract_id{0};

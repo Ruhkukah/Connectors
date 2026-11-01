@@ -3,6 +3,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).parent))
 import price_caps,sequence
@@ -48,5 +49,27 @@ class CurrentPriceCaps(unittest.TestCase):
         self.assertEqual(sequence._units('8020'),802000000)
         self.assertEqual(sequence._units('1858'),185800000)
         self.assertEqual(sequence._price(1559200000),'15592')
+
+    def test_unprofiled_fresh_book_does_not_need_callback_clock(self):
+        book=self.state['instruments'][0]['book']
+        book.update(stream_last_callback_utc_ns=0,book_commit_monotonic_ns=5000000000,exchange_moment_ns=99000000000)
+        with patch.object(price_caps.time,'monotonic_ns',return_value=6000000000):
+            self.assertEqual(price_caps.current_reference(self.state,self.target,100000000000),779600000)
+    def test_stale_profile_clock_cannot_be_rescued_by_other_clocks(self):
+        book=self.state['instruments'][0]['book']
+        book.update(stream_last_callback_utc_ns=80000000000,book_commit_monotonic_ns=5000000000,exchange_moment_ns=99000000000)
+        with patch.object(price_caps.time,'monotonic_ns',return_value=6000000000):
+            with self.assertRaisesRegex(ValueError,'current_price_book_stale'):
+                price_caps.current_reference(self.state,self.target,100000000000)
+    def test_unprofiled_missing_or_stale_clock_is_not_fresh(self):
+        for key,value in [('book_commit_monotonic_ns',None),('book_commit_monotonic_ns',1),('exchange_moment_ns',None),('exchange_moment_ns',1),('stream_last_callback_utc_ns',None)]:
+            with self.subTest(key=key,value=value):
+                state=copy.deepcopy(self.state);book=state['instruments'][0]['book']
+                book.update(stream_last_callback_utc_ns=0,book_commit_monotonic_ns=15000000000,exchange_moment_ns=99000000000)
+                if value is None:book.pop(key,None)
+                else:book[key]=value
+                with patch.object(price_caps.time,'monotonic_ns',return_value=20000000000):
+                    with self.assertRaisesRegex(ValueError,'current_price_book_stale'):
+                        price_caps.current_reference(state,self.target,100000000000)
 
 if __name__=='__main__':unittest.main()

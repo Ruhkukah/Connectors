@@ -22,7 +22,12 @@ inline void spread_scope_host_regression(TradingHostConfig config, const plaza2:
                      .fields = {integer(kFortsRefdataReplFutSessContentsReplId, 82000),
                                 integer(kFortsRefdataReplFutSessContentsIsinId, isin),
                                 integer(kFortsRefdataReplFutSessContentsSessId, 321),
-                                integer(kFortsRefdataReplFutSessContentsIsSpread, 1),
+                                // A spread instrument need not participate in
+                                // spread-leg risk netting. Classify its own
+                                // composite/calendar flags and trading mode.
+                                integer(kFortsRefdataReplFutSessContentsIsSpread, 0),
+                                integer(kFortsRefdataReplFutSessContentsSigns, 0x10100),
+                                integer(kFortsRefdataReplFutSessContentsTradeModeId, 14),
                                 text(kFortsRefdataReplFutSessContentsMinStep, "1"),
                                 text(kFortsRefdataReplFutSessContentsSettlementPrice, "105000"),
                                 text(kFortsRefdataReplFutSessContentsLimitUp, "10000"),
