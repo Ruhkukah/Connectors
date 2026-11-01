@@ -2,7 +2,9 @@
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
+#include <algorithm>
 #include <array>
+#include <vector>
 #include <iostream>
 #include <limits>
 using namespace moex::plaza2;
@@ -33,12 +35,24 @@ int main(int argc, char** argv) {
         config.full_order_log_stream = {cgate::kFullOrderLogStreamCode,
                                         "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL", ""};
         config.full_order_log_handler = &book;
+        std::vector<std::string> operation_logs;
+        std::vector<std::uint32_t> close_reasons;
+        config.event_log = [&](std::string_view kind, std::string_view detail) {
+            operation_logs.push_back(std::string(kind) + " " + std::string(detail));
+        };
+        config.listener_event_log = [&](const cgate::Plaza2ListenerEvent& event) {
+            if (event.stream_code == cgate::kFullOrderLogStreamCode &&
+                event.kind == cgate::Plaza2ListenerEventKind::Close)
+                close_reasons.push_back(event.close_reason);
+        };
         auto scenario = f::Scenario{};
+        scenario.spectra912_refdata_schema = true;
         scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogRefdata)] = "1";
         scenario.options[static_cast<std::size_t>(f::Option::DisablePublisher)] = "1";
         scenario.options[static_cast<std::size_t>(f::Option::DisableReplyListener)] = "1";
         fake.configure(scenario);
         fake.configure_refdata_count(5000);
+        fake.set(f::Option::ConnHoldOpening);
         CgateSession session(config);
         require(!session.start(), "full order log start");
         const auto pump = [&](int n = 3) {
@@ -48,7 +62,13 @@ int main(int argc, char** argv) {
             }
         };
         pump();
-        require(session.full_order_log_matching_id() == 3, "REFDATA matching join must resolve matching 3");
+        require(!session.runtime_health().valid && fake.opens(generated::StreamCode::kFortsRefdataRepl) == 0 &&
+                    fake.opens(cgate::kFullOrderLogStreamCode) == 0,
+                "read-only startup must wait for ACTIVE with no listener opens or fabricated healthy streams");
+        fake.clear(f::Option::ConnHoldOpening);
+        pump();
+        require(session.full_order_log_matching_id() == 3,
+                "Spectra 9.12 REFDATA without opening price must resolve matching 3");
         require(session.private_state().instruments().size() == 5000, "realistic REFDATA bootstrap size");
         const auto metadata_revision = session.market_data_metadata_revision();
         pump(100);
@@ -69,6 +89,34 @@ int main(int argc, char** argv) {
                           .revision = rev,
                           .value = value});
         };
+        // Vendor channel timeout arrives as a native CLOSE reason. The old
+        // committed book must disappear before the next fresh composite OPEN.
+        auto timeout_opens = fake.opens(cgate::kFullOrderLogStreamCode);
+        enqueue(f::EventKind::Close, 0, cgate::kNoTableCode, 0xA006);
+        pump(1);
+        require(!book.valid() && !close_reasons.empty() && close_reasons.back() == 0xA006,
+                "REPL:CHANNEL_DISCONNECT_ON_TIMEOUT close reason must be delivered and fence the book");
+        pump();
+        require(fake.opens(cgate::kFullOrderLogStreamCode) == timeout_opens + 1 && book.valid() &&
+                    book.order_count() == 2,
+                "0xA006 native CLOSE must reopen the composite and publish a fresh snapshot/ONLINE commit");
+        require(fake.listener_open_settings(cgate::kFullOrderLogStreamCode).find("replstate") == std::string::npos,
+                "0xA006 composite recovery must not reuse replay state");
+        timeout_opens = fake.opens(cgate::kFullOrderLogStreamCode);
+        fake.set(f::Option::ProcessResult, "40966");
+        pump(1);
+        fake.clear(f::Option::ProcessResult);
+        require(!book.valid() && std::any_of(operation_logs.begin(), operation_logs.end(),
+                                             [](const auto& line) {
+                                                 return line.find("cgate_operation") != std::string::npos &&
+                                                        line.find("\"runtime_code\":40966") != std::string::npos;
+                                             }),
+                "injected 0xA006 process error must be logged and fence the composite");
+        now += std::chrono::seconds(1);
+        pump(5);
+        require(fake.opens(cgate::kFullOrderLogStreamCode) == timeout_opens + 1 && book.valid() &&
+                    !session.publisher_open() && !session.p2mqreply_open() && fake.commands().empty(),
+                "0xA006 process recovery must restore only read-side replication with no order handles or posts");
         enqueue(f::EventKind::Begin);
         enqueue(f::EventKind::ClearDeleted, 22, generated::TableCode::kFortsUserorderbookReplOrders);
         enqueue(f::EventKind::Commit);

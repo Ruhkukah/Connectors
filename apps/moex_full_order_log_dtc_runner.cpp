@@ -79,6 +79,8 @@ int main(int argc, char** argv) {
                 arguments.insert(arguments.end(), {key, value});
         arguments.push_back("--read-only-market-data");
         auto request = moex::connector_host::parse_operator_arguments(arguments);
+        if (request.config.transport.host.runtime.environment != cg::Plaza2Environment::Test)
+            throw std::invalid_argument("FullOrderLog runner is TEST-only");
         const auto& connection = request.config.transport.host.connection_settings;
         if (router_endpoint(connection.substr(8, connection.find(';') - 8)) == router_endpoint(trading_router))
             throw std::invalid_argument("order-log and trading router addresses must differ");
@@ -98,17 +100,16 @@ int main(int argc, char** argv) {
         transport.aggr20_stream = {};
         transport.public_deals_stream = {};
         transport.process_timeout_ms = 1;
+        transport.collect_poll_metrics = true; // This separate read-only process only.
         transport.full_order_log_stream = {.stream_code = cg::kFullOrderLogStreamCode,
                                            .settings = "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL"};
         transport.full_order_log_handler = &book;
         transport.event_log = [](std::string_view event, std::string_view detail) {
             std::cerr << event << ' ' << detail << '\n';
         };
-        transport.listener_event_log = [](const cg::Plaza2ListenerEvent& event) {
-            if (event.stream_code == cg::kFullOrderLogStreamCode)
-                std::cerr << "FullOrderLog listener event " << static_cast<unsigned>(event.kind)
-                          << " life=" << event.unsigned_value << " revision=" << event.signed_value
-                          << " table=" << (event.raw_table ? event.raw_table->name : "unspecified") << '\n';
+        transport.listener_event_log = [&book](const cg::Plaza2ListenerEvent& event) {
+            if (event.stream_code == cg::kFullOrderLogStreamCode && book.should_log_listener_event(event))
+                moex::connector_host::log_full_order_log_listener_event(std::cerr, event);
         };
         moex::connector_host::ConnectorHost host(std::move(request.config));
         moex::connector_host::FullOrderLogDtcLoop loop(
@@ -136,8 +137,15 @@ int main(int argc, char** argv) {
             const auto now = std::chrono::steady_clock::now();
             const auto metrics = book.metrics();
             const auto life = book.committed_log_lifenum();
-            std::cout << "rows_per_second="
-                      << (metrics.rows_total - rows_at) / std::chrono::duration<double>(now - rate_at).count()
+            const auto elapsed = std::chrono::duration<double>(now - rate_at).count();
+            const auto& native = loop.metrics;
+            std::cout << "metrics_interval_seconds=" << elapsed << " callbacks=" << native.callbacks
+                      << " callbacks_per_second=" << (elapsed > 0 ? native.callbacks / elapsed : 0)
+                      << " full_order_log_attributed_callbacks=" << native.full_order_log_attributed_callbacks
+                      << " unattributed_callbacks=" << native.unattributed_callbacks
+                      << " cg_conn_process_calls=" << native.process_calls
+                      << " cg_conn_process_loop_max_ns=" << native.cg_conn_process_loop_max_ns
+                      << " rows_per_second=" << (elapsed > 0 ? (metrics.rows_total - rows_at) / elapsed : 0)
                       << " info_life_available=" << life.has_value() << " info_trades_lifenum=" << life.value_or(0)
                       << " rows_total=" << metrics.rows_total << " ignored_executions=" << metrics.ignored_executions
                       << " excluded_adds=" << metrics.excluded_adds << " lag_samples=" << metrics.lag_samples
@@ -149,11 +157,13 @@ int main(int argc, char** argv) {
                       << std::flush;
             rate_at = now;
             rows_at = metrics.rows_total;
+            loop.metrics.reset_interval();
         };
         while (!stop_requested.load(std::memory_order_relaxed) &&
                (!run_ms || std::chrono::steady_clock::now() - start < std::chrono::milliseconds(run_ms))) {
             loop.poll();
-            if (std::chrono::steady_clock::now() - rate_at >= std::chrono::seconds(30))
+            if (std::chrono::steady_clock::now() - rate_at >=
+                moex::connector_host::FullOrderLogDtcMetrics::report_interval)
                 report();
         }
         report();

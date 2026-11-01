@@ -152,3 +152,4 @@ if(MOEX_BUILD_APPS)
 endif()
 
 moex_test(full_order_log_dtc_source_test full_order_log_dtc_source_test.cpp moex_connector_host)
+moex_test(full_order_log_dtc_metrics_test full_order_log_dtc_metrics_test.cpp moex_connector_host)

@@ -252,6 +252,15 @@ int main(int argc, char** argv) {
                                          "--offline-fake",
                                          "--dtc-port",
                                          "11398"};
+        auto prod_args = md_args;
+        prod_args.insert(prod_args.end(), {"--environment", "prod"});
+        Child prod_refused(prod_args, root / "prod-refused.err");
+        prod_refused.close_input();
+        test::require(prod_refused.wait() == 2, "internal FOL runner must refuse PROD before native startup");
+        std::ifstream prod_log(root / "prod-refused.err");
+        const std::string prod_diagnostic((std::istreambuf_iterator<char>(prod_log)), {});
+        test::require(prod_diagnostic.find("TEST") != std::string::npos,
+                      "PROD refusal must identify the TEST-only boundary");
         Child md(md_args, root / "md.err");
         test::require(md.line().find("dtc_port=") != std::string::npos, "actual MD process started");
         const auto responsive = [&] {

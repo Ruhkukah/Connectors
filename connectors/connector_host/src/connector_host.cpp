@@ -137,6 +137,9 @@ bool ConnectorHost::order_entry_ready(std::int64_t isin_id) const {
 std::uint64_t ConnectorHost::market_data_metadata_revision() const noexcept {
     return impl_->host.market_data_metadata_revision();
 }
+const plaza2_trade::CgatePollMetrics& ConnectorHost::last_poll_metrics() const noexcept {
+    return impl_->host.last_poll_metrics();
+}
 ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot() const {
     return market_data_snapshot(impl_->config.transport.target_isin_id);
 }

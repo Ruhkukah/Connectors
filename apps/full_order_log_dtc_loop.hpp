@@ -1,10 +1,54 @@
 #pragma once
 #include "moex/connector_host/full_order_log_dtc.hpp"
 #include "moex/connector_host/dtc_read_only_server.hpp"
+#include <algorithm>
+#include <iomanip>
 #include <memory>
+#include <ostream>
 #include <tuple>
 
 namespace moex::connector_host {
+// Counts all native callback types serviced during measured owner polls. Storage is fixed;
+// process_ns is cumulative cg_conn_process wall time in ONE poll, not one native call.
+struct FullOrderLogDtcMetrics {
+    static constexpr auto report_interval = std::chrono::seconds(60);
+    std::uint64_t callbacks{}, full_order_log_attributed_callbacks{}, unattributed_callbacks{}, process_calls{};
+    std::uint64_t cg_conn_process_loop_max_ns{};
+    void observe(const plaza2_trade::CgatePollMetrics& sample) noexcept {
+        if (!sample.sequence || sample.sequence == sequence_)
+            return;
+        sequence_ = sample.sequence;
+        callbacks += sample.unattributed_callbacks;
+        unattributed_callbacks += sample.unattributed_callbacks;
+        for (const auto& callback : sample.callbacks) {
+            callbacks += callback.count;
+            if (callback.stream_code == plaza2::cgate::kFullOrderLogStreamCode)
+                full_order_log_attributed_callbacks += callback.count;
+        }
+        process_calls += sample.process_calls;
+        cg_conn_process_loop_max_ns = std::max(cg_conn_process_loop_max_ns, sample.process_ns);
+    }
+    void reset_interval() noexcept {
+        callbacks = full_order_log_attributed_callbacks = unattributed_callbacks = process_calls = 0;
+        cg_conn_process_loop_max_ns = 0;
+    }
+
+  private:
+    std::uint64_t sequence_{};
+};
+inline void log_full_order_log_listener_event(std::ostream& out, const plaza2::cgate::Plaza2ListenerEvent& event) {
+    out << "FullOrderLog listener event " << static_cast<unsigned>(event.kind) << " life=" << event.unsigned_value
+        << " revision=" << event.signed_value << " table=" << (event.raw_table ? event.raw_table->name : "unspecified");
+    if (event.kind == plaza2::cgate::Plaza2ListenerEventKind::Close) {
+        const auto flags = out.flags();
+        out << " close_reason=" << std::dec << event.close_reason << " close_reason_hex=0x" << std::uppercase
+            << std::hex << event.close_reason;
+        out.flags(flags);
+        if (event.close_reason == 0xA006)
+            out << " close_reason_name=REPL:CHANNEL_DISCONNECT_ON_TIMEOUT";
+    }
+    out << '\n';
+}
 // The standalone process and offline benchmark share the same owner loop.
 class FullOrderLogDtcLoop {
   public:
@@ -49,8 +93,10 @@ class FullOrderLogDtcLoop {
                 throw std::runtime_error(error);
     }
     void poll() {
-        if (const auto e = host_.poll(); e)
-            throw std::runtime_error(e.message);
+        const auto error = host_.poll();
+        metrics.observe(host_.last_poll_metrics());
+        if (error)
+            throw std::runtime_error(error.message);
         ++polls;
         refresh_metadata();
         for (auto& server : servers_)
@@ -70,6 +116,7 @@ class FullOrderLogDtcLoop {
     }
     std::function<void()> on_queued_commit;
     std::uint64_t polls{}, metadata_refreshes{};
+    FullOrderLogDtcMetrics metrics;
 
   private:
     ConnectorHost& host_;
