@@ -1,4 +1,5 @@
 #include "moex/connector_host/operator_config.hpp"
+#include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
 #include <charconv>
 #include <cstdlib>
 #include <map>
@@ -92,23 +93,21 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     host.connection_settings =
         "p2tcp://" + endpoint + ":" + std::to_string(port) + ";app_name=" + inputs.publisher_name + ";timeout=2000";
     const auto scheme = host.runtime.scheme_dir.string();
-    const auto stream = [&](StreamCode code, std::string name) {
-        return CgateStreamConfig{
-            .stream_code = code, .settings = "p2repl://" + name, .open_settings = "mode=snapshot+online"};
+    const auto stream = [&](StreamCode code) {
+        return CgateStreamConfig{.stream_code = code,
+                                 .settings = cg::required_replication_listener_settings(code),
+                                 .open_settings = "mode=snapshot+online"};
     };
     if (inputs.read_only_market_data)
-        host.private_streams = {stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL")};
+        host.private_streams = {stream(StreamCode::kFortsRefdataRepl)};
     else
-        host.private_streams = {stream(StreamCode::kFortsTradeRepl, "FORTS_TRADE_REPL"),
-                                stream(StreamCode::kFortsUserorderbookRepl, "FORTS_USERORDERBOOK_REPL"),
-                                stream(StreamCode::kFortsPosRepl, "FORTS_POS_REPL"),
-                                stream(StreamCode::kFortsPartRepl, "FORTS_PART_REPL"),
-                                stream(StreamCode::kFortsRefdataRepl, "FORTS_REFDATA_REPL")};
-    host.status_streams = {stream(StreamCode::kFortsSessionstateRepl, "FORTS_SESSIONSTATE_REPL"),
-                           stream(StreamCode::kFortsInstrumentstateRepl, "FORTS_INSTRUMENTSTATE_REPL")};
-    host.aggr20_stream = stream(StreamCode::kFortsAggrRepl, "FORTS_AGGR20_REPL");
+        host.private_streams = {stream(StreamCode::kFortsTradeRepl), stream(StreamCode::kFortsUserorderbookRepl),
+                                stream(StreamCode::kFortsPosRepl), stream(StreamCode::kFortsPartRepl),
+                                stream(StreamCode::kFortsRefdataRepl)};
+    host.status_streams = {stream(StreamCode::kFortsSessionstateRepl), stream(StreamCode::kFortsInstrumentstateRepl)};
+    host.aggr20_stream = stream(StreamCode::kFortsAggrRepl);
     if (inputs.public_deals) {
-        host.public_deals_stream = stream(StreamCode::kFortsDealsRepl, "FORTS_DEALS_REPL");
+        host.public_deals_stream = stream(StreamCode::kFortsDealsRepl);
         host.public_deals_target_isin_id = out.transport.target_isin_id;
     }
     if (!inputs.read_only_market_data) {

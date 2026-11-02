@@ -1,4 +1,5 @@
 #include "moex/plaza2_trade/cgate_session.hpp"
+#include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state_bridge.hpp"
 #include "moex/plaza2/cgate/cgate_logging.hpp"
 
@@ -553,9 +554,12 @@ struct CgateSession::Impl {
     Plaza2Error create_streams() {
         auto streams = config.private_streams;
         if (config.status_streams.empty()) {
-            config.status_streams = {
-                {StreamCode::kFortsSessionstateRepl, "p2repl://FORTS_SESSIONSTATE_REPL", {}},
-                {StreamCode::kFortsInstrumentstateRepl, "p2repl://FORTS_INSTRUMENTSTATE_REPL", {}}};
+            config.status_streams = {{StreamCode::kFortsSessionstateRepl,
+                                      cg::required_replication_listener_settings(StreamCode::kFortsSessionstateRepl),
+                                      {}},
+                                     {StreamCode::kFortsInstrumentstateRepl,
+                                      cg::required_replication_listener_settings(StreamCode::kFortsInstrumentstateRepl),
+                                      {}}};
         }
         streams.insert(streams.end(), config.status_streams.begin(), config.status_streams.end());
         std::vector<StreamCode> codes;

@@ -144,6 +144,7 @@ struct FakeListener {
     void* callback_data{nullptr};
     StreamCode stream_code{};
     bool reply_listener{false};
+    bool tables_filtered{false};
     std::unique_ptr<OwnedScheme> scheme;
     std::vector<MessagePlan> message_plans;
     bool script_emitted{false};
@@ -1706,6 +1707,62 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
     return scheme;
 }
 
+// Model the vendor tables= contract rather than exposing every fixture table.
+// Schema indices are negotiated again after filtering; product decoders must
+// use this descriptor's indices, not generated/full-server table ordinals.
+bool filter_listener_tables(FakeListener& listener) {
+    std::optional<std::string_view> requested;
+    auto parameters = std::string_view(listener.settings);
+    while (!parameters.empty()) {
+        const auto end = parameters.find(';');
+        const auto parameter = parameters.substr(0, end);
+        if (parameter.starts_with("tables=")) {
+            if (requested)
+                return false;
+            requested = parameter.substr(7);
+        }
+        if (end == std::string_view::npos)
+            break;
+        parameters.remove_prefix(end + 1);
+    }
+    if (!requested)
+        return true;
+    if (requested->empty() || listener.settings.find(";scheme=") != std::string::npos)
+        return false;
+    listener.tables_filtered = true;
+    std::vector<std::string_view> names;
+    auto remaining = *requested;
+    while (true) {
+        const auto end = remaining.find(',');
+        const auto name = remaining.substr(0, end);
+        if (name.empty() || std::find(names.begin(), names.end(), name) != names.end() ||
+            std::none_of(TablesForStream(listener.stream_code).begin(), TablesForStream(listener.stream_code).end(),
+                         [&](const auto& table) { return table.table_name == name; }))
+            return false;
+        names.push_back(name);
+        if (end == std::string_view::npos)
+            break;
+        remaining.remove_prefix(end + 1);
+    }
+    const auto selected = [&](std::string_view name) {
+        return std::find(names.begin(), names.end(), name) != names.end();
+    };
+    std::erase_if(listener.scheme->messages, [&](const auto& message) { return !selected(message->name); });
+    std::erase_if(listener.message_plans, [&](const auto& plan) { return !selected(plan.message_name); });
+    for (std::size_t index = 0; index < listener.scheme->messages.size(); ++index) {
+        auto& message = listener.scheme->messages[index];
+        message->desc.next =
+            index + 1 < listener.scheme->messages.size() ? &listener.scheme->messages[index + 1]->desc : nullptr;
+        for (auto& plan : listener.message_plans)
+            if (plan.message_name == message->name)
+                plan.msg_index = index;
+    }
+    listener.scheme->desc.num_messages = listener.scheme->messages.size();
+    listener.scheme->desc.messages =
+        listener.scheme->messages.empty() ? nullptr : &listener.scheme->messages.front()->desc;
+    return true;
+}
+
 const MessagePlan* find_message_plan(const FakeListener& listener, TableCode table_code) {
     for (const auto& plan : listener.message_plans) {
         if (plan.table_code == table_code) {
@@ -1786,7 +1843,8 @@ std::uint32_t emit_simple_message(FakeListener& listener, std::uint32_t type, vo
 std::uint32_t emit_stream_message(FakeListener& listener, const FakeMessageScript& message) {
     const auto* plan = find_message_plan(listener, message.table_code);
     if (plan == nullptr) {
-        return kCgErrIncorrectState;
+        // Filtered-out rows never arrive on the native subscription.
+        return listener.tables_filtered ? kCgErrOk : kCgErrIncorrectState;
     }
     if (plan->revision_floor && message.rev < *plan->revision_floor)
         return kCgErrOk;
@@ -1831,7 +1889,7 @@ std::uint32_t emit_reply_message(FakeListener& listener, const FakeReply& reply)
 
 std::uint32_t emit_script(FakeListener& listener) {
     const auto script = script_for_stream(listener.stream_code);
-    if (fake_flag(Option::SchemeExtraTable)) {
+    if (fake_flag(Option::SchemeExtraTable) && !listener.tables_filtered) {
         std::byte byte{};
         CgMsgStreamData extra{
             .type = kCgMsgStreamData, .data_size = 1, .data = &byte, .msg_index = 0, .msg_name = "future_server_table"};
@@ -2795,6 +2853,10 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
     if (!listener->scheme) {
         delete listener;
         return kCgErrIncorrectState;
+    }
+    if (!filter_listener_tables(*listener)) {
+        delete listener;
+        return kCgErrInvalidArgument;
     }
     // A public FILE OrdBook alias is not the private USERORDERBOOK schema.
     if (listener->stream_code == StreamCode::kFortsUserorderbookRepl &&

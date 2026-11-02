@@ -5,6 +5,7 @@
 #include "fake_cgate_control.hpp"
 #include "future_spread_classification_regression.hpp"
 #include "public_deals_composition_regression.hpp"
+#include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -13,9 +14,10 @@ using namespace moex::connector_host;
 namespace cg = moex::plaza2::cgate;
 namespace test = moex::plaza2::test;
 
-Plaza2HostConfig config(const test::RuntimeFixturePaths& fixture, bool read_only = false) {
+Plaza2HostConfig config(const test::RuntimeFixturePaths& fixture, bool read_only = false, bool public_deals = false) {
     Plaza2HostConfigInputs inputs;
     inputs.read_only_market_data = read_only;
+    inputs.public_deals = public_deals;
     inputs.runtime_root = fixture.root;
     inputs.library_path = fixture.library_path;
     inputs.scheme_dir = fixture.scheme_dir;
@@ -40,6 +42,36 @@ void warm(ConnectorHost& host) {
     for (int i = 0; i < 20; ++i)
         test::require(!host.poll(), "host polls");
 }
+void require_restricted_subscriptions(const Plaza2HostConfig& cfg) {
+    using enum moex::plaza2::generated::StreamCode;
+    const std::pair<moex::plaza2::generated::StreamCode, std::string_view> expected[]{
+        {kFortsTradeRepl, "p2repl://FORTS_TRADE_REPL;tables=orders_log,user_deal,heartbeat,sys_events"},
+        {kFortsUserorderbookRepl, "p2repl://FORTS_USERORDERBOOK_REPL;tables=orders,info"},
+        {kFortsPosRepl, "p2repl://FORTS_POS_REPL;tables=position,info"},
+        {kFortsPartRepl, "p2repl://FORTS_PART_REPL;tables=sys_events"},
+        {kFortsRefdataRepl,
+         "p2repl://FORTS_REFDATA_REPL;tables=session,fut_instruments,fut_sess_contents,fut_vcb,sys_messages"},
+        {kFortsSessionstateRepl, "p2repl://FORTS_SESSIONSTATE_REPL;tables=session_state"},
+        {kFortsInstrumentstateRepl, "p2repl://FORTS_INSTRUMENTSTATE_REPL;tables=instrument_state,sys_events"},
+        {kFortsAggrRepl, "p2repl://FORTS_AGGR20_REPL;tables=orders_aggr,sys_events"},
+        {kFortsDealsRepl, "p2repl://FORTS_DEALS_REPL;tables=deal"}};
+    auto streams = cfg.transport.host.private_streams;
+    streams.insert(streams.end(), cfg.transport.host.status_streams.begin(), cfg.transport.host.status_streams.end());
+    streams.push_back(cfg.transport.host.aggr20_stream);
+    if (!cfg.transport.host.public_deals_stream.settings.empty())
+        streams.push_back(cfg.transport.host.public_deals_stream);
+    test::require(streams.size() ==
+                      (cfg.read_only_market_data ? 4 + !cfg.transport.host.public_deals_stream.settings.empty() : 8),
+                  "expected only the configured replication listeners");
+    for (const auto& stream : streams) {
+        const auto match = std::find_if(std::begin(expected), std::end(expected),
+                                        [&](const auto& item) { return item.first == stream.stream_code; });
+        test::require(
+            match != std::end(expected) && stream.settings == match->second &&
+                stream.open_settings == "mode=snapshot+online",
+            "product listener must select exactly its consumed tables, independently of OPEN replay settings");
+    }
+}
 int main(int argc, char** argv) {
     try {
         test::require(argc == 2, "fake runtime path required");
@@ -52,6 +84,20 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_PLAZA2_CGATE_SOFTWARE_KEY", "00000000", 1);
         fake.set(moex::plaza2::test::fake::Option::ClientCode, "BRK1C01");
         fake.set(moex::plaza2::test::fake::Option::AggrSnapshotReadyOnly, "1");
+        {
+            require_restricted_subscriptions(config(fixture));
+            auto market = config(fixture, true);
+            require_restricted_subscriptions(market);
+            market = config(fixture, true, true);
+            require_restricted_subscriptions(market);
+            auto fallback = config(fixture);
+            fallback.transport.host.status_streams.clear();
+            ConnectorHost host(fallback);
+            warm(host);
+            test::require(host.order_entry_ready(1001) && host.snapshot().private_streams_ready,
+                          "default status listeners remain ready with restricted tables");
+            test::require(!host.stop(), "restricted default-status host stops");
+        }
         {
             // is_spread=1 describes a normal spread leg, such as the T0 CNY
             // future with signs=0x80032. Actual composites have other markers.
