@@ -7,6 +7,17 @@
 #include <fstream>
 #include <sstream>
 
+namespace moex::logging {
+std::string redact_value(SecretKind kind, const std::string& value) {
+    if (value.empty())
+        return {};
+    if (kind == SecretKind::AccountIdentifier && value.size() > 4) {
+        return value.substr(0, 2) + "***" + value.substr(value.size() - 2);
+    }
+    return "[REDACTED]";
+}
+} // namespace moex::logging
+
 namespace moex::plaza2::cgate {
 
 namespace {

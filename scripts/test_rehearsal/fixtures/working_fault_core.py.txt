@@ -1,0 +1,1011 @@
+#!/usr/bin/env python3
+"""Prepared TEST-only interruption sequence. Execution requires --execute.
+
+This temporary controller uses actual moexctl CLI requests only. It imports the
+reviewed private environment and recovery helpers on TEST; importing this file
+does not contact the host, open CGate, alter a router or send any command.
+"""
+from pathlib import Path
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import importlib.util
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+import traceback
+import uuid
+import urllib.request
+
+MSK = dt.timezone(dt.timedelta(hours=3))
+PINNED_SOURCE = 'd3787e67245302071eb80560858b965f9c73f821'
+ROUTER_SHA = '6ea6ad50d6e3300fee99e43900eb22a21c207166f2455d2fc850f7e30bc91423'
+ROUTER_HELPER_SHA = '4c5fdc191de16ecd6cc6a7fac8f7c643cb15cd894c906924acbc7ce6a67737e4'
+UPSTREAM_HELPER_SHA = 'eaf3a89d337f9f0c29bf66b0632ff45946b30030e39ec54d30a694da0ddd1712'
+T1_LINKS_SHA = 'ff64e85ac33958025c928f7cafd5da1804e35406bf3f016058f13e5826ed597a'
+TERMINAL = {'Filled', 'Cancelled', 'Rejected'}
+
+
+class Refused(RuntimeError):
+    pass
+
+
+def require(value, reason):
+    if not value:
+        raise Refused(reason)
+
+
+def sha(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def atomic(path, data):
+    tmp = path.with_name(path.name + '.' + str(os.getpid()) + '.tmp')
+    with tmp.open('x') as out:
+        json.dump(data, out, sort_keys=True)
+        out.write('\n')
+        out.flush()
+        os.fsync(out.fileno())
+    tmp.replace(path)
+
+
+def authorized(cfg, now=None):
+    now = time.time() if now is None else now
+    date = dt.date.fromisoformat(cfg['authorized_date'])
+    require(dt.datetime.fromtimestamp(now, MSK).date() == date, 'authorized_date_changed')
+    require(cfg.get('environment') == 'test' and cfg.get('owner_authorized') is True and
+            cfg.get('timer_paused') is True and cfg.get('one_passive_order_authorized') is True,
+            'owner_scope_or_timer_pause_missing')
+    require(cfg.get('skip_firewall') is True and cfg.get('max_postday_seconds') == 300,
+            'postday_scope_not_explicit')
+    end = dt.datetime.combine(date + dt.timedelta(days=1), dt.time(), MSK).timestamp()
+    require(now < cfg['entry_deadline_utc'] < cfg['cleanup_deadline_utc'] <= end,
+            'same_day_bounded_deadline_invalid')
+    require(cfg['cleanup_deadline_utc'] - now <= 300, 'postday_duration_exceeds_five_minutes')
+    require(cfg['source_git_sha'] == PINNED_SOURCE, 'owner_candidate_source_pin_changed')
+    for field in ('source_git_sha',):
+        require(len(cfg[field]) == 40 and all(c in '0123456789abcdef' for c in cfg[field]), 'source_pin_invalid')
+    for field in ('binary_sha256', 'source_archive_sha256', 'router_helper_sha256',
+                  'upstream_helper_sha256', 'full_day_manifest_sha256'):
+        require(len(cfg[field]) == 64 and all(c in '0123456789abcdef' for c in cfg[field]), 'artifact_pin_invalid')
+
+def same_launch(original, current):
+    require(current.argv == original.argv and current.env == original.env and current.cwd == original.cwd,
+            'router_replacement_context_changed')
+
+
+def without_options(arguments, values, flags):
+    result, at = [], 0
+    while at < len(arguments):
+        option = arguments[at]
+        if option in values:
+            require(at + 1 < len(arguments), 'protected_argument_missing_value')
+            at += 2
+        elif option in flags:
+            at += 1
+        else:
+            result.append(option); at += 1
+    return result
+
+
+class CommittedRegime:
+    """Read only committed native status/window rows, retaining one journal cursor."""
+    DOMAINS = {'FORTS_SESSIONSTATE_REPL': ('session_state', 'sess_id', 'sessions'),
+               'FORTS_INSTRUMENTSTATE_REPL': ('instrument_state', 'isin_id', 'instruments'),
+               'FORTS_REFDATA_REPL': ('session', 'sess_id', 'windows')}
+    def __init__(self, path):
+        self.path, self.offset = path, 0
+        stat = path.stat(); self.identity = stat.st_dev, stat.st_ino
+        self.pending, self.begun = {}, set()
+        self.sessions, self.instruments, self.windows = {}, {}, {}
+        self.instrument_status_session_id = self.instrument_status_epoch = 0
+        self.instrument_online = False
+        self.instrument_marker_revision = -1
+
+    def update(self):
+        with self.path.open('rb') as source:
+            stat = os.fstat(source.fileno())
+            require((stat.st_dev, stat.st_ino) == self.identity and stat.st_size >= self.offset,
+                    'native_journal_identity_or_cursor_changed')
+            source.seek(self.offset)
+            for line in source:
+                if not line.endswith(b'\n'): break
+                self.offset += len(line)
+                event = json.loads(line); data = event.get('data', {}); stream = data.get('stream')
+                if stream not in self.DOMAINS: continue
+                table, key, domain = self.DOMAINS[stream]; target = getattr(self, domain)
+                name = event.get('event')
+                if name in ('listener_open', 'listener_close', 'lifenum'):
+                    self.pending.pop(stream, None); self.begun.discard(stream); target.clear()
+                    if stream == 'FORTS_INSTRUMENTSTATE_REPL':
+                        self.instrument_status_session_id = 0; self.instrument_status_epoch += 1
+                        self.instrument_online = False; self.instrument_marker_revision = -1
+                elif name == 'listener_online' and stream == 'FORTS_INSTRUMENTSTATE_REPL':
+                    self.instrument_online = True
+                elif name == 'clear_deleted' and data.get('table') == 'sys_events' and stream == 'FORTS_INSTRUMENTSTATE_REPL':
+                    floor = data.get('signed_value')
+                    if type(floor) is int and self.instrument_marker_revision < floor:
+                        self.instrument_status_session_id = 0
+                elif name == 'clear_deleted' and data.get('table') == table:
+                    floor = data.get('signed_value')
+                    if type(floor) is int and floor >= 0:
+                        for ident, row in list(target.items()):
+                            if row.get('replRev', -1) < floor: target.pop(ident)
+                elif name == 'transaction_begin':
+                    self.pending[stream] = []; self.begun.add(stream)
+                elif name == 'stream_row' and stream in self.begun and (data.get('table') == table or
+                      stream == 'FORTS_INSTRUMENTSTATE_REPL' and data.get('table') == 'sys_events'):
+                    row = decoded_fields(data)
+                    row.setdefault('replRev', data.get('signed_value', -1))
+                    self.pending[stream].append((data.get('table'), row))
+                elif name == 'transaction_commit' and stream in self.begun:
+                    for row_table, row in self.pending.pop(stream, []):
+                        if stream == 'FORTS_INSTRUMENTSTATE_REPL' and row_table == 'sys_events':
+                            session = row.get('sess_id', 0)
+                            if session != self.instrument_status_session_id:
+                                if self.instrument_status_session_id and self.instrument_online:
+                                    self.instrument_status_epoch += 1
+                                self.instrument_status_session_id = session
+                            self.instrument_marker_revision = row.get('replRev', -1)
+                            continue
+                        if stream == 'FORTS_INSTRUMENTSTATE_REPL': row['_status_epoch'] = self.instrument_status_epoch
+                        if row.get('replAct', 0): target.pop(row.get(key), None)
+                        elif row.get(key, 0) > 0: target[row[key]] = row
+                    self.begun.discard(stream)
+
+    def continuous(self, state, targets):
+        self.update()
+        return (self.sessions.get(state['sess_id'], {}).get('public_state') == 1 and
+                self.instrument_status_session_id == state['sess_id'] and
+                all(self.instruments.get(t['isin_id'], {}).get('public_state') == 1 and
+                    self.instruments[t['isin_id']].get('_status_epoch') == self.instrument_status_epoch for t in targets))
+
+    def open_window_end(self, state, now):
+        self.update(); row = self.windows.get(state['sess_id'], {})
+        intervals = [(row.get('begin', 0), row.get('end', 0))]
+        if row.get('mon_on') == 1: intervals.append((row.get('mon_begin', 0), row.get('mon_end', 0)))
+        if row.get('eve_on') == 1: intervals.append((row.get('eve_begin', 0), row.get('eve_end', 0)))
+        ends = [end for begin, end in intervals if type(begin) is int and type(end) is int and begin <= now < end]
+        require(ends, 'current_committed_native_open_interval_unproved')
+        return max(ends)
+
+
+def decoded_fields(data):
+    out = {}
+    for field in data.get('fields', []):
+        kind = field.get('kind', 1)
+        if kind == 6:
+            # Native timestamps are nanoseconds. Older journals populated only
+            # unsigned seconds, so accept that representation only when the
+            # native timestamp is absent/zero; never interpret nanoseconds as
+            # seconds or use zero unsigned over a present native timestamp.
+            timestamp = field.get('timestamp_ns', 0)
+            require(type(timestamp) is int, 'native_timestamp_field_invalid')
+            value = timestamp // 1_000_000_000 if timestamp else field.get('unsigned')
+            require(type(value) is int, 'native_timestamp_fallback_invalid')
+        else:
+            value = field.get('unsigned') if kind == 2 else field.get('signed')
+        out[field['name']] = value
+    return out
+
+
+def complete_events(path, offset):
+    with Path(path).open('rb') as source:
+        require(os.fstat(source.fileno()).st_size >= offset, 'native_journal_truncated')
+        source.seek(offset)
+        for line in source:
+            if not line.endswith(b'\n'): break
+            event = json.loads(line)
+            require(isinstance(event, dict) and isinstance(event.get('data', {}), dict), 'native_record_invalid')
+            yield event
+
+
+def terminal_gate(public, guardian):
+    close = public.get('closeout') or public.get('final_closeout') or {}
+    after = close.get('after') or public.get('after') or {}
+    product_exit = close.get('product_exit') if 'product_exit' in close else public.get('product_exit')
+    require(public.get('terminal') is True and close.get('cancel_confirmed') is True and close.get('flat') is True
+            and type(product_exit) is int and product_exit == 0 and after.get('client_count') == 0,
+            'full_day_clean_terminal_proof_missing')
+    require(not close.get('shutdown_error') and not close.get('inventory_error') and
+            not public.get('shutdown_error') and not public.get('inventory_error'), 'full_day_closeout_error')
+    require(guardian.get('no_guardian_failure') is True and not guardian.get('error_class') and not guardian.get('reason') and
+            guardian.get('state', '').lower() not in ('blocked', 'failed', 'forced_shutdown') and
+            guardian.get('flat', True) is True and guardian.get('cancel_confirmed', True) is True,
+            'full_day_guardian_failure_or_unknown')
+    return True
+
+
+def checkpoint_highwaters(path):
+    fields = Path(path).read_text().split()
+    require(len(fields) == 8 and fields[0] == 'MOEXJ2', 'durable_checkpoint_schema_unproved')
+    checksum = 14695981039346656037
+    for byte in ' '.join(fields[:7]).encode(): checksum = ((checksum ^ byte) * 1099511628211) & ((1 << 64) - 1)
+    require(int(fields[7]) == checksum, 'durable_checkpoint_checksum_invalid')
+    values = tuple(int(fields[i]) for i in (4, 5))
+    require(all(x > 0 for x in values), 'durable_checkpoint_highwater_invalid')
+    return values
+
+
+def verify_local_probe(events, line, before, after):
+    rows = list(events)
+    inputs = [e for e in rows if e['event'] == 'operator_input' and e['data'].get('line') == line]
+    refusals = [e for e in rows if e['event'] == 'local_refusal' and e['data'].get('line') == line]
+    require(len(inputs) == len(refusals) == 1 and inputs[0]['data'].get('channel') == 'command_socket' and
+            refusals[0]['data'].get('channel') == 'command_socket' and
+            refusals[0]['data'].get('error') == 'kill switch enabled', 'single_local_kill_switch_refusal_unproved')
+    require(before == after, 'local_refusal_changed_identifier_highwaters')
+    require(not any(e['event'] in ('command', 'command_timing', 'command_result', 'reservation') for e in rows),
+            'local_probe_reached_publication_or_identifier_reservation')
+    return dict(local_refusal=True, refusal_reason='kill switch enabled', native_posts=0,
+                identifier_highwaters_unchanged=True, causal_transport_refusal='NOT_CLAIMED_KILL_SWITCH_GUARD')
+
+
+def selective_recovery(events, after, required, kind):
+    events = list(events); replication = set(required) - {'p2mqreply'}
+    opened, online, reset, gaps, commits, heartbeats = set(), set(), set(), [], [], []
+    for event in events:
+        data = event['data']; stream = data.get('stream'); name = event['event']
+        if name == 'listener_open': opened.add(stream)
+        if name == 'listener_online': online.add(stream)
+        if name in ('listener_close', 'listener_recovery') and stream in replication: reset.add(stream)
+        if name == 'link_lost': gaps.append(data)
+        if name == 'transaction_commit' and stream == 'FORTS_TRADE_REPL': commits.append(event)
+        if name == 'trade_server_time' and stream == 'FORTS_TRADE_REPL' and data.get('repl_rev', 0) > 0:
+            heartbeats.append(event)
+    require(gaps, 'native_fault_not_observed')
+    require(commits, 'postfault_trade_commit_unproved')
+    if kind == 'router': require(replication <= opened & online, 'router_full_stream_recovery_unproved')
+    else:
+        require(reset <= opened & online, 'affected_replication_stream_recovery_unproved')
+        require('p2mqreply' in opened or not any(x.get('publisher_state') != 3 for x in gaps),
+                'affected_reply_listener_recovery_unproved')
+    require(after['transport']['connection']['state'] == after['transport']['publisher']['state'] == 3 and
+            len(after['transport']['listeners']) == len(required) and
+            {r['stream'] for r in after['transport']['listeners']} == set(required) and
+            all(r['native']['state'] == 3 and r['online'] is True and r['snapshot_complete'] is True and
+                r['error']['code'] == 0 for r in after['transport']['listeners']) and
+            not after['reconstructing'], 'current_native_listener_authority_unproved')
+    return dict(observed_native_outage=True, affected_replication_stream_count=len(reset),
+                retained_replication_stream_count=len(replication-reset),
+                fresh_trade_commits=len(commits), compact_trade_heartbeat_samples=len(heartbeats),
+                all_streams_current_native_ready=True, all_eight_fresh_commits='NOT_CLAIMED')
+
+
+def signal_cancel_proof(events, isin):
+    events = list(events); signal_at = next((i for i,e in enumerate(events) if e['event']=='operator_input' and
+        e['data'].get('channel')=='signal' and e['data'].get('line')=='SIGTERM'), None)
+    require(signal_at is not None, 'native_sigterm_observation_missing')
+    commands = [(i,e['data']['user_id']) for i,e in enumerate(events) if i>signal_at and e['event']=='command' and
+        e['data'].get('name')=='DelUserOrders' and e['data'].get('fields',{}).get('isin_id')==isin]
+    require(len(commands)==1, 'signal_working_scope_mass_cancel_missing_or_repeated')
+    command_at, user = commands[0]
+    reply_at = next((i for i,e in enumerate(events) if i>command_at and e['event']=='reply' and
+        e['data'].get('user_id')==user and e['data'].get('msgid')==186 and e['data'].get('code')==0), None)
+    require(reply_at is not None and any(i>reply_at and e['event']=='transaction_commit' and
+        e['data'].get('stream')=='FORTS_TRADE_REPL' for i,e in enumerate(events)),
+        'signal_cancel_ack_or_later_trade_commit_unproved')
+    drains=[e['data'] for e in events if e['event']=='cancel_drain' and e['data'].get('reason')=='SIGTERM']
+    require(len(drains)==1 and drains[0].get('outcome')=='completed' and
+            all(drains[0].get(k) is False for k in ('pending_cancellations','reconciliation_pending','working_orders')),
+            'native_signal_cancel_drain_incomplete')
+    shutdown=[e['data'] for e in events if e['event']=='shutdown']
+    require(shutdown and shutdown[-1].get('pending_cancellations') is False and shutdown[-1].get('working_orders') is False,
+            'native_shutdown_outstanding_work')
+    return dict(native_signal_observed=True, signal_scope_mass_cancel_count=1, matching_code0_reply=True,
+                later_trade_commit=True, cancel_drain_completed=True,
+                same_owner_turn='SUPPORTED_BY_FAKE_REGRESSION_NATIVE_TURN_COUNTER_UNAVAILABLE')
+
+
+def verify_ci(cfg):
+    def get(url):
+        request = urllib.request.Request(url, headers={'User-Agent': 'MOEX-TEST-qualification'})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.load(response)
+    base = 'https://api.github.com/repos/Ruhkukah/Connectors/'
+    pr = get(base + 'pulls/68')
+    require(pr['state'] == 'open' and pr['draft'] and pr['head']['sha'] == cfg['source_git_sha'],
+            'published_exact_head_changed')
+    checks = get(base + 'commits/' + cfg['source_git_sha'] + '/check-runs')['check_runs']
+    latest = {}
+    for check in checks:
+        if check['name'] in ('connector-validation', 'component-sanitizers'):
+            latest.setdefault(check['name'], check)
+    require(len(latest) == 2 and all(c['status'] == 'completed' and c['conclusion'] == 'success'
+                                   for c in latest.values()), 'exact_head_ci_not_green')
+
+
+def load_module(name, source, expected):
+    require(sha(source) == expected, 'protected_module_hash_changed')
+    spec = importlib.util.spec_from_file_location(name, source)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class Controller:
+    def __init__(self, work, cfg):
+        self.work, self.cfg = work, cfg
+        self.public = dict(state='PREPARED', phase='preflight', source_git_sha=cfg['source_git_sha'],
+                           cases=[], sustained_upstream_block='NOT_OBSERVED', timer_paused=True)
+        self.product = self.guardian = self.guard_control = None
+        self.environment = self.targets = None
+        self.allow_orders = True
+        self.probe_attempts = set()
+        self.fault_worker = None
+
+    def touch(self):
+        self.public['updated_utc_ns'] = time.time_ns()
+        atomic(self.work / 'public.json', self.public)
+
+    def configuration(self, state):
+        config, risk = state['configuration'], state['configuration']['risk']
+        require(config['allow_orders'] is self.allow_orders and config['sole_instance'] and config['login_configured'] and
+                config['rate'] == 5 and 0 < risk['max_quantity'] <= 2 and
+                0 < risk['max_open_orders'] <= 5, 'effective_limits_outside_original_scope')
+        require({r['isin_id'] for r in risk['instruments']} == {t['isin_id'] for t in self.targets},
+                'configured_instrument_scope_changed')
+        for target in self.targets:
+            row = next(r for r in risk['instruments'] if r['isin_id'] == target['isin_id'])
+            require(0 < row['max_position'] <= 2 and
+                    row['max_quote_notional_scaled'] == target['quote_cap_scaled'],
+                    'fixed_instrument_limits_changed')
+        if not self.allow_orders:
+            require(sha(self.environment['state']) == self.live_checkpoint_before, 'readonly_changed_live_checkpoint')
+
+    def inspect(self, exact=True):
+        identity = self.ops.process_identity(self.product.child.pid)
+        require(identity == self.product_identity, 'product_process_identity_changed')
+        launch, _ = self.probe.inspect(dict(environment='test', binary=str(self.binary),
+                                          binary_sha256=self.cfg['binary_sha256']),
+                                      owner_pid=self.product.child.pid if exact else None)
+        same_launch(self.original_router, launch)
+        white = self.upstream.pristine_whitelist(self.probe, launch, T1_LINKS_SHA)
+        rows = self.upstream.upstreams(self.probe, launch.pid, white)
+        require(self.initial_peers <= {r.peer for r in rows}, 'original_test_upstreams_not_restored')
+        return launch
+
+    def monotonic_ids(self):
+        current = checkpoint_highwaters(self.environment['state'])
+        require(all(now >= old for now, old in zip(current, self.initial_highwaters)),
+                'durable_identifier_highwater_rollback')
+        self.budget()
+        return True
+
+    def full_day_closeout_gate(self, q):
+        require(sha(q / self.cfg['full_day_manifest_relative']) == self.cfg['full_day_manifest_sha256'],
+                'full_day_manifest_changed')
+        public_path = q / self.cfg['full_day_public_relative']
+        guardian_path = q / self.cfg['full_day_guardian_done_relative']
+        public, guardian = json.loads(public_path.read_text()), json.loads(guardian_path.read_text())
+        extra = self.cfg.get('full_day_guardian_public_relative')
+        if extra and (q / extra).exists():
+            guardian = dict(guardian, **json.loads((q / extra).read_text()))
+        terminal_gate(public, guardian)
+        require(public.get('source_git_sha') == self.cfg['source_git_sha'],
+                'full_day_candidate_source_mismatch')
+        require(len(self.cfg['full_day_owned_relatives']) >= 3 and
+                len(set(self.cfg['full_day_owned_relatives'])) == len(self.cfg['full_day_owned_relatives']),
+                'full_day_supervisor_guardian_product_ownership_receipts_missing')
+        supervisor = self.cfg['full_day_supervisor_owned_relative']
+        require(supervisor in self.cfg['full_day_owned_relatives'], 'sealed_supervisor_receipt_missing')
+        for relative in self.cfg['full_day_owned_relatives']:
+            owned = json.loads((q / relative).read_text())
+            if relative == supervisor and self.cfg.get('allow_same_supervisor_postday') is True:
+                require(owned.get('pid') == os.getpid() and self.ops.process_identity(os.getpid()) == owned,
+                        'same_supervisor_postday_identity_unproved')
+            else:
+                require(not Path('/proc', str(owned['pid'])).exists(), 'full_day_owned_process_present')
+        self.public['full_day_precondition'] = dict(terminal_verified=True, cancel_confirmed=True, flat=True,
+            product_exit=0, client_count=0, no_guardian_failure=True, public_sha256=sha(public_path),
+            guardian_sha256=sha(guardian_path), manifest_sha256=self.cfg['full_day_manifest_sha256'])
+
+    def one_working(self, state):
+        rows = [r for r in state['orders'] if r['state'] not in TERMINAL]
+        require(len(rows)==1 and rows[0]['instance_owned'] is True and rows[0]['state']=='Working' and
+                rows[0]['quantity']==rows[0]['remaining']==1 and rows[0]['executed']==0 and
+                state['queued']==0 and all(r['xpos']==0 for r in state['positions']),
+                'exactly_one_unfilled_owned_order_unproved')
+        return rows[0]
+
+    def place_one(self):
+        initial=self.entry_gate(); require(self.ops.flat(initial), 'passive_entry_not_flat')
+        require(self.coverage.prove_fill_coverage(initial, self.product.work/'interaction.ndjson',
+            self.product.work, self.product.status) is True, 'fresh_fill_reservation_coverage_or_negative_control_unproved')
+        self.product.command('kill off')
+        seq=self.sequence._Sequence(self.product.command,self.product.status,self.product.work,self.targets,'interrupt-passive')
+        target=next(t for t in self.targets if t['symbol']==self.cfg['passive_symbol'])
+        state=self.entry_gate(); seq.assert_flat(state)
+        price=seq.passive(state,target,1); bid=self.prices.current_reference(state,target)
+        require(price<=bid and price<=min(target['quote_cap_scaled'],2*bid),'passive_price_or_quote_cap_violation')
+        cid=seq.next_id(target)
+        seq.send(f"place {cid} {target['isin_id']} buy 1 {self.sequence._price(price)} day")
+        seq.accepted_order(target,cid,allowed_fill=0)
+        self.passive_target=target; self.passive_cid=cid
+        self.one_working(self.full_state(entry=True))
+        self.public['passive_admission']=dict(quantity=1, executed=0, remaining=1, price_at_or_below_bid=True,
+                                             fixed_quote_caps_preserved=True)
+        self.touch()
+
+    def raw_refusal_request(self, line):
+        require(self.ops.process_identity(self.product.child.pid)==self.product_identity,'outage_probe_owner_changed')
+        require(sha(self.binary)==self.cfg['binary_sha256'],'outage_probe_binary_changed')
+        with self.ops.lock(self.product.work/'command.lock'):
+            with (self.product.work/'operator-private.ndjson').open('a') as out:
+                out.write(json.dumps(dict(utc_ns=time.time_ns(),intent=line,expected_local_refusal=True))+'\n')
+                out.flush(); os.fsync(out.fileno())
+            child=subprocess.Popen([str(self.binary),'plaza2','cmd','--command-socket',str(self.product.work/'cmd.sock'),line],
+                cwd=self.product.work,env=self.environment['env'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            owner=self.ops.process_identity(child.pid)
+            try: stdout,stderr=child.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.ops.checked_signal(owner,signal.SIGTERM); child.wait(timeout=2)
+                raise Refused('outage_probe_uncertain_never_retried')
+            with (self.product.work/'operator-private.ndjson').open('a') as out:
+                out.write(json.dumps(dict(utc_ns=time.time_ns(),line=line,exit=child.returncode,
+                    stdout=stdout.decode(errors='replace'),stderr=stderr.decode(errors='replace')))+'\n')
+            value=json.loads(stdout)
+            require(child.returncode!=0 and value.get('ok') is False and value.get('error')=='kill switch enabled',
+                    'outage_probe_not_definite_local_kill_switch_refusal')
+
+    def bounded_outage_probe(self, name, folder):
+        require(name not in self.probe_attempts,'outage_probe_must_not_be_retried')
+        fault=json.loads((folder/'fault.json').read_text())
+        require(fault.get('rollback_armed') is True and (fault.get('signal_sent') is True or
+                fault.get('upstream_fault') is True and fault.get('interrupted_socket_count',0)>0),
+                'actual_fault_receipt_missing')
+        state=self.product.status()
+        require(state['transport']['connection']['state']!=3 or state['transport']['publisher']['state']!=3,
+                'native_outage_no_longer_observed_before_probe')
+        require(state['configuration']['risk']['kill_switch'] is True,'outage_probe_kill_switch_not_enabled')
+        self.one_working(state)
+        line=f"place q-outage-{uuid.uuid4().hex[:12]} {self.passive_target['isin_id']} buy 1 {self.sequence._price(self.passive_price)} day"
+        offset=(self.product.work/'interaction.ndjson').stat().st_size
+        before=checkpoint_highwaters(self.environment['state'])
+        self.probe_attempts.add(name)  # Intent precedes sending; never retry, including timeout.
+        self.raw_refusal_request(line)
+        after=checkpoint_highwaters(self.environment['state'])
+        until=time.monotonic()+1
+        while True:
+            rows=list(complete_events(self.product.work/'interaction.ndjson',offset))
+            if any(e['event']=='local_refusal' and e['data'].get('line')==line for e in rows): break
+            require(time.monotonic()<until,'local_refusal_journal_flush_deadline')
+            self.touch(); time.sleep(.01)
+        proof=verify_local_probe(rows,line,before,after)
+        proof.update(actual_fault_observed=True, probe_attempts=1)
+        return proof
+
+    def working_fault(self, name, kind):
+        before=self.entry_gate(); self.one_working(before)
+        require(self.cfg['cleanup_deadline_utc']-time.time()>=150, 'fault_restore_and_cleanup_budget_insufficient')
+        require(before['configuration']['risk']['kill_switch'] is True,'fault_requires_kill_switch_guard')
+        self.passive_price=next(r for r in before['orders'] if r['client_order_id']==self.passive_cid)['price']
+        # Native status prices are decimal strings; convert once without changing the original order.
+        self.passive_price=self.sequence._units(self.passive_price)
+        offset=(self.product.work/'interaction.ndjson').stat().st_size
+        folder=self.work/name; folder.mkdir(mode=0o700)
+        self.public['phase']=name; self.touch(); started=time.monotonic()
+        worker=os.fork()
+        if worker==0:
+            # Only the parent owns the product guardian's normal-closeout pipe.
+            os.close(self.guard_control)
+            identity=self.product_identity; ops=self.ops
+            class OwnedProcess:
+                pid=identity['pid']
+                def poll(child):
+                    try:
+                        require(ops.process_identity(child.pid)==identity,'fault_worker_product_identity_changed'); return None
+                    except (FileNotFoundError,ProcessLookupError): return 0
+            self.product.child=OwnedProcess()
+            try:
+                auth=self.fault_authorization()
+                if kind=='router':
+                    result=self.router.restart(self.probe,auth,self.product.child.pid,folder,
+                        arm=lambda *args:self.router.arm_rollback(*args,keep_fd=self.fault_lock.fileno()))
+                    witness=offset
+                else:
+                    witness=[None]
+                    def acknowledge():
+                        ready=self.wait_ready(timeout=40); self.preserve_order(before,ready)
+                        witness[0]=(self.product.work/'interaction.ndjson').stat().st_size
+                    result=self.upstream.interrupt(self.probe,auth,self.product.child.pid,folder,self.fault_lock.fileno(),
+                                                   acknowledge=acknowledge)
+                    witness=witness[0]
+                atomic(folder/'helper-result-private.json',dict(result=result,witness_offset=witness))
+                os._exit(0)
+            except BaseException as error:
+                (folder/'helper-error-private.txt').write_text(traceback.format_exc())
+                atomic(folder/'helper-error-public.json',dict(error_class=type(error).__name__,fault_result='UNKNOWN'))
+                os._exit(2)
+        self.fault_worker=worker
+        until=min(self.cfg['entry_deadline_utc'],time.time()+65); refusal=None; status=None
+        try:
+            while time.time()<until:
+                self.touch()
+                if (folder/'helper-error-public.json').exists(): raise Refused('independent_fault_helper_failed')
+                if refusal is None and (folder/'fault.json').exists():
+                    fault=json.loads((folder/'fault.json').read_text())
+                    actual=fault.get('signal_sent') is True or fault.get('upstream_fault') is True
+                    if actual:
+                        state=self.product.status()
+                        if state['transport']['connection']['state']!=3 or state['transport']['publisher']['state']!=3:
+                            refusal=self.bounded_outage_probe(name,folder)
+                done, code=os.waitpid(worker,os.WNOHANG)
+                if done: status=code; self.fault_worker=None; break
+                time.sleep(.02)
+            require(status==0 and refusal is not None,'fault_or_single_refusal_not_completed_within_bound')
+        finally:
+            self.wait_fault_worker()
+        saved=json.loads((folder/'helper-result-private.json').read_text()); after=self.wait_ready()
+        self.one_working(after); self.preserve_order(before,after)
+        proof_until=min(self.cfg['entry_deadline_utc'],time.time()+10)
+        while True:
+            events=list(complete_events(self.product.work/'interaction.ndjson',saved['witness_offset']))
+            if any(e['event']=='transaction_commit' and e['data'].get('stream')=='FORTS_TRADE_REPL' for e in events): break
+            require(time.time()<proof_until,'postfault_trade_commit_deadline')
+            self.touch(); time.sleep(.05)
+        witness=selective_recovery(events,after,self.ops.REQUIRED,kind)
+        self.public['cases'].append(dict(case=name,status='PASS',working_order_preserved=True,
+            local_refusal=refusal,recovery=saved['result'],native_witness=witness,
+            duration_ms=round((time.monotonic()-started)*1000),ready_utc_ns=time.time_ns()))
+        self.touch()
+
+    def sigterm_working_closeout(self):
+        state=self.entry_gate(); self.one_working(state)
+        self.public['phase']='final_sigterm_with_working_order'; self.touch()
+        self.wait_fault_worker()
+        offset=(self.product.work/'interaction.ndjson').stat().st_size
+        require(self.ops.checked_signal(self.product_identity,signal.SIGTERM),'owned_sigterm_not_delivered')
+        self.product.sigterm_sent=True
+        self.product.child.wait(timeout=20)
+        require(self.product.child.returncode==0,'working_signal_exit_not_zero')
+        proof=signal_cancel_proof(complete_events(self.product.work/'interaction.ndjson',offset),self.passive_target['isin_id'])
+        folder=self.product.work; self.finish_guard(folder); self.product=None
+        after=self.no_clients(); independent=self.independent_flat('working-sigterm-after-flatness')
+        return dict(cancel_confirmed=True,flat=True,product_exit=0,after=after,
+                    no_guardian_failure=True,signal_proof=proof,independent_after_flatness=independent)
+
+    def full_state(self, entry=False, flat=False):
+        state = self.product.status()
+        require(self.ops.ready(state, self.targets, entry=entry), 'full_native_reconstruction_unproved')
+        require(not any(state.get(k) for k in ('journal_failed', 'log_error', 'cancel_only',
+                                               'operator_action_required', 'cgate_key_check_failed')),
+                'product_safety_alert')
+        self.configuration(state)
+        self.monotonic_ids()
+        if flat:
+            require(self.ops.flat(state), 'fresh_account_flatness_unproved')
+        return state
+
+    def wait_ready(self, flat=False, timeout=300):
+        deadline = min(self.cfg['cleanup_deadline_utc'], time.time() + timeout)
+        state = self.product.wait_ready(deadline, require_flat=flat, entry=False)
+        self.inspect()
+        self.configuration(state)
+        self.monotonic_ids()
+        return state
+
+    def journal_counts(self, offset):
+        counts = {'AddOrder': 0, 'MoveOrder': 0}
+        with (self.product.work / 'interaction.ndjson').open('rb') as stream:
+            stream.seek(offset)
+            for line in stream:
+                if not line.endswith(b'\n'):
+                    break
+                event = json.loads(line)
+                if event.get('event') == 'command' and event['data'].get('name') in counts:
+                    counts[event['data']['name']] += 1
+        return counts
+
+    def preserve_order(self, before, after):
+        original = [r for r in before['orders'] if r['state'] not in TERMINAL]
+        current = [r for r in after['orders'] if r['state'] not in TERMINAL]
+        require(len(original) == len(current), 'working_order_population_changed')
+        for row in original:
+            matches = [r for r in current if r['instance_owned'] and
+                       all(r[k] == row[k] for k in ('order_id', 'ext_id', 'isin_id', 'quantity',
+                                                   'executed', 'remaining', 'price'))]
+            require(len(matches) == 1, 'working_order_or_fill_baseline_changed')
+        require(after['positions'] == before['positions'], 'position_baseline_changed')
+
+
+
+
+    def fault_authorization(self):
+        authorized(self.cfg)
+        pid = self.product.child.pid
+        return dict(environment='test', user_authorized=True, candidate_green=True,
+                    router_restart_authorized=True, router_restart_owner_pid=pid,
+                    upstream_fault_authorized=True, upstream_owner_pid=pid,
+                    upstream_harness_sha256=self.cfg['upstream_helper_sha256'], test_upstream_file_sha256=T1_LINKS_SHA,
+                    authorized_until_utc=self.cfg['entry_deadline_utc'],
+                    binary=str(self.binary), binary_sha256=self.cfg['binary_sha256'])
+
+
+    def start_product(self, label, router_down=False):
+        folder = self.work / label; folder.mkdir(mode=0o700)
+        args = self.run_args + ['--log', str(folder / 'interaction.ndjson'),
+                                '--command-socket', str(folder / 'cmd.sock')]
+        self.product = self.Product(folder, self.binary, self.environment['env'], args, self.targets, self.touch)
+        self.product.start(); self.product_identity = self.ops.process_identity(self.product.child.pid)
+        self.product.isolation = lambda: self.inspect()
+        self.product.risk_guard = lambda: self.entry_gate()
+        atomic(folder / 'owned-private.json', self.product_identity)
+        self.arm_product_guard()
+        journal_deadline = time.monotonic() + 3
+        while not (folder / 'interaction.ndjson').exists() and time.monotonic() < journal_deadline:
+            self.touch(); time.sleep(.02)
+        require((folder / 'interaction.ndjson').exists(), 'native_journal_startup_deadline')
+        self.regime = CommittedRegime(folder / 'interaction.ndjson')
+        if not router_down:
+            self.wait_ready(flat=True)
+
+    def arm_product_guard(self):
+        require(self.guardian is None, 'previous_product_guardian_not_closed')
+        ready_r, ready_w = os.pipe(); control_r, control_w = os.pipe()
+        child = os.fork()
+        if child == 0:
+            os.close(ready_r); os.close(control_w); os.setsid()
+            with open(os.devnull, 'r+b', buffering=0) as null:
+                for fd in (0, 1, 2):
+                    os.dup2(null.fileno(), fd)
+            try:
+                os.write(ready_w, b'ARMED'); os.close(ready_w)
+                # Ordinary completion sends D. EOF or a stale/bounded lease
+                # performs actual CLI risk-reducing cleanup on this owned PID.
+                import select
+                while time.time() < self.cfg['cleanup_deadline_utc']:
+                    readable, _, _ = select.select([control_r], [], [], 1)
+                    if readable:
+                        if os.read(control_r, 1) == b'D':
+                            atomic(self.product.work / 'guardian-done.json', dict(state='NORMAL_PARENT_CLOSEOUT',
+                                                                                no_guardian_failure=True))
+                            os._exit(0)
+                        break
+                    receipt = json.loads((self.work / 'public.json').read_text())
+                    if time.time_ns() - receipt.get('updated_utc_ns', 0) > 120_000_000_000:
+                        break
+                self.guardian_cleanup()
+                os._exit(0)
+            except BaseException as error:
+                atomic(self.product.work / 'guardian-done.json',
+                       dict(state='BLOCKED', error_class=type(error).__name__, flatness='UNKNOWN'))
+                os._exit(2)
+        os.close(ready_w); os.close(control_r)
+        import select
+        readable, _, _ = select.select([ready_r], [], [], 2)
+        require(readable and os.read(ready_r, 5) == b'ARMED', 'product_guardian_not_armed')
+        os.close(ready_r)
+        self.guardian, self.guard_control = child, control_w
+        atomic(self.product.work / 'guardian-owned-private.json', self.ops.process_identity(child))
+
+    def guardian_cleanup(self):
+        product, identity, ops = self.product, self.product_identity, self.ops
+        (product.work / 'stop-requested').touch()
+        # A forked guardian cannot waitpid() the CLI. Its native process proof
+        # uses exact /proc identity; it never invents a process exit code.
+        class OwnedProcess:
+            pid = identity['pid']
+            def poll(child):
+                try:
+                    require(ops.process_identity(child.pid) == identity, 'guardian_product_identity_changed')
+                    return None
+                except (FileNotFoundError, ProcessLookupError):
+                    return 0
+        product.child = OwnedProcess(); product.risk_guard = None
+        product.touch = lambda: None
+        # Router helpers independently restore their exact recipe. Wait only
+        # read-only status until full native reconstruction is current again.
+        until = min(self.cfg['cleanup_deadline_utc'], time.time() + 600)
+        state = product.wait_ready(until, entry=False)
+        self.inspect(); self.configuration(state)
+        result = (ops.clean_product(product, until=until, final=True) if self.allow_orders else
+                  dict(cancel_confirmed=ops.flat(state), flat=ops.flat(state),
+                       cancellation='not_required_complete_native_empty_snapshot'))
+        require(result['cancel_confirmed'] is True and result['flat'] is True,
+                'guardian_cancellation_or_flatness_unproved')
+        self.full_state(flat=True); self.inspect()
+        require(ops.checked_signal(identity, signal.SIGTERM), 'guardian_owned_sigterm_not_delivered')
+        end = time.monotonic() + 20
+        while product.child.poll() is None and time.monotonic() < end:
+            time.sleep(.1)
+        require(product.child.poll() is not None, 'guardian_product_did_not_exit')
+        atomic(product.work / 'guardian-done.json',
+               dict(state='RISK_REDUCED', cancel_confirmed=True, flat=True, process_absent=True,
+                    product_exit='UNKNOWN_GUARDIAN_CANNOT_WAITPID', no_guardian_failure=True))
+
+    def finish_guard(self, folder):
+        require(self.guardian is not None, 'product_guardian_missing')
+        os.write(self.guard_control, b'D'); os.close(self.guard_control)
+        _, code = os.waitpid(self.guardian, 0)
+        require(code == 0 and json.loads((folder / 'guardian-done.json').read_text()).get('no_guardian_failure') is True,
+                'product_guardian_failure')
+        self.guardian = self.guard_control = None
+
+    def entry_gate(self):
+        authorized(self.cfg); self.inspect(); self.budget()
+        require(self.cfg['cleanup_deadline_utc'] - time.time() >= 120,
+                'insufficient_bounded_cleanup_time_for_new_entry')
+        state = self.full_state(entry=True)
+        require(self.regime.continuous(state, self.targets), 'committed_native_continuous_regime_unproved')
+        end = self.regime.open_window_end(state, time.time())
+        require(end >= self.cfg['cleanup_deadline_utc'] + 120,
+                'native_open_interval_ends_before_guard_cleanup_margin')
+        for target in self.targets:
+            self.prices.current_reference(state, target)
+        return state
+    def wait_fault_worker(self):
+        if self.fault_worker is None: return
+        until=min(self.cfg['cleanup_deadline_utc']-20, time.time()+145)
+        while time.time()<until:
+            done, code=os.waitpid(self.fault_worker,os.WNOHANG)
+            if done:
+                self.fault_worker=None
+                return
+            self.touch(); time.sleep(.1)
+        raise Refused('fault_helper_or_independent_restore_still_pending_cleanup_deferred')
+
+    def cleanup(self):
+        if self.product is None or self.product.child.poll() is not None:
+            return None
+        self.product.risk_guard = None
+        self.public['phase'] = 'cleanup'; self.touch()
+        self.wait_fault_worker()
+        # Existing bounded cleanup preserves original quantity/position/caps,
+        # does not retry uncertain Adds and uses the actual command socket.
+        self.wait_ready()
+        result = (self.ops.clean_product(self.product, until=min(self.cfg['cleanup_deadline_utc'],
+                                                                time.time() + 180), final=True)
+                  if self.allow_orders else dict(cancel_confirmed=True, flat=True,
+                                                 cancellation='not_required_complete_native_empty_snapshot'))
+        if not self.allow_orders:
+            self.full_state(flat=True)
+        require(result['cancel_confirmed'] is True and result['flat'] is True, 'cleanup_flatness_unproved')
+        self.full_state(flat=True)
+        self.product.close()  # Owned SIGTERM only; never SIGKILL or a second signal.
+        result['product_exit'] = self.product.child.returncode
+        require(result['product_exit'] == 0, 'normal_cli_exit_not_zero')
+        self.finish_guard(self.product.work)
+        label = self.product.work.name
+        self.product = None
+        self.no_clients()
+        result['independent_after_flatness'] = self.independent_flat(label + '-after-flatness')
+        return result
+
+    def independent_flat(self, label):
+        require(self.product is None, 'flat_probe_requires_old_cli_stopped')
+        self.no_clients()
+        self.budget()
+        checkpoint_before_probe = sha(self.environment['state'])
+        highwaters_before_probe = checkpoint_highwaters(self.environment['state'])
+        binary = Path.home() / 'moex/qualification' / self.cfg['flat_probe_relative']
+        require(sha(binary) == self.cfg['flat_probe_sha256'],
+                'publisherfree_flat_probe_changed')
+        folder = self.work / label; folder.mkdir(mode=0o700)
+        extra = sum((['--isin-id', str(t['isin_id'])] for t in self.targets), [])
+        with (folder / 'result-private.json').open('x') as out, (folder / 'stderr-private.log').open('x') as err:
+            child = subprocess.Popen([str(binary), *self.environment['common'], *extra],
+                                     cwd=folder, env=self.environment['env'], stdin=subprocess.DEVNULL,
+                                     stdout=out, stderr=err)
+            identity = self.ops.process_identity(child.pid)
+            try:
+                child.wait(timeout=90)
+            except subprocess.TimeoutExpired:
+                self.ops.checked_signal(identity, signal.SIGTERM)
+                child.wait(timeout=15)
+                raise Refused('publisherfree_flatness_deadline')
+        data = next(json.loads(line) for line in reversed((folder / 'result-private.json').read_text().splitlines())
+                    if line.startswith('{'))
+        after = self.no_clients()
+        require(child.returncode == 0 and data['fresh_private_snapshot_ready'] is True and
+                data['working_orders'] == 0 and data['nonzero_positions'] == 0 and
+                data['publisher_posts'] == 0 and data['message_allocations'] == 0 and
+                data['stop_ok'] is True and sha(self.environment['state']) == checkpoint_before_probe and
+                checkpoint_highwaters(self.environment['state']) == highwaters_before_probe,
+                'independent_fresh_flatness_unproved')
+        result = dict(label=label, complete_replication_streams=8, working_orders=0, nonzero_positions=0,
+                      publisher_posts=0, message_allocations=0, exit=child.returncode, after=after,
+                      live_checkpoint_unchanged_during_probe=True,
+                      checkpoint_highwaters_monotonic_across_session=self.monotonic_ids(),
+                      completed_utc_ns=time.time_ns(),
+                      receipt_sha256=sha(folder / 'result-private.json'))
+        atomic(folder / 'public.json', result)
+        self.public.setdefault('independent_flatness', []).append(result)
+        self.touch()
+        return result
+
+    def no_clients(self):
+        launch, health = self.probe.inspect(dict(environment='test'))
+        same_launch(self.original_router, launch)
+        require(health['client_count'] == 0, 'final_router_clients_nonzero')
+        white = self.upstream.pristine_whitelist(self.probe, launch, T1_LINKS_SHA)
+        require(self.initial_peers <= {r.peer for r in self.upstream.upstreams(self.probe, launch.pid, white)},
+                'final_original_upstream_inventory_unproved')
+        return dict(client_count=0, upstreams=len(self.initial_peers))
+
+
+    def execute(self):
+        try:
+            authorized(self.cfg); self.prepare()
+            self.independent_flat('before-first-cli-flatness')
+            self.public.update(state='RUNNING', phase='working_order_admission'); self.touch()
+            self.start_product('working-order-cli')
+            self.place_one()
+            self.product.command('kill on', permit_risk=False)
+            for name, kind in [('one_passive_router_restart', 'router'),
+                               ('one_passive_upstream_socket_loss', 'upstream')]:
+                self.working_fault(name, kind)
+            self.public['final_closeout'] = self.sigterm_working_closeout()
+            self.public.update(state='COMPLETE', terminal=True, after=self.no_clients(),
+                               remaining_ids=self.budget(), finished_utc_ns=time.time_ns())
+        except BaseException as error:
+            self.public.update(state='BLOCKED', terminal=False, error_class=type(error).__name__)
+            (self.work / 'controller-error-private.txt').write_text(traceback.format_exc())
+            try:
+                result = self.cleanup()
+                self.public['failure_closeout'] = result
+                self.public['terminal'] = bool(result and result.get('cancel_confirmed') is True and
+                    result.get('flat') is True and result.get('product_exit') == 0 and
+                    result.get('independent_after_flatness', {}).get('after', {}).get('client_count') == 0)
+            except BaseException as cleanup_error:
+                self.public['cleanup_error_class'] = type(cleanup_error).__name__
+            raise
+        finally:
+            self.touch()
+    def prepare(self):
+        require(sys.platform == 'linux', 'native_test_host_required')
+        q = Path.home() / 'moex/qualification'
+        require(self.work.is_relative_to(q.resolve()) and not self.work.is_symlink(), 'qualification_path_violation')
+        require(self.work.stat().st_uid == os.getuid() and not self.work.stat().st_mode & 0o077,
+                'qualification_directory_not_private_owned')
+        for name, pin in self.cfg['protected_files'].items():
+            path = q / name
+            require(path.resolve().is_relative_to(q.resolve()) and not path.is_symlink() and sha(path) == pin,
+                    'protected_source_or_artifact_changed')
+        verify_ci(self.cfg)
+        self.binary = q / self.cfg['binary_relative']
+        require(sha(self.binary) == self.cfg['binary_sha256'], 'candidate_binary_changed')
+        receipt = json.loads((q / self.cfg['stage_receipt_relative']).read_text())
+        require(receipt['state'] == 'BUILD_PASS' and receipt['source_git_sha'] == self.cfg['source_git_sha'] and
+                receipt['normal_candidate_binary_sha256'] == self.cfg['binary_sha256'] and
+                receipt['source_archive_sha256'] == self.cfg['source_archive_sha256'] and
+                receipt['protected_production_not_deployed'] is True and
+                receipt['production_binary_unchanged'] is True and receipt['checkpoint_unchanged'] is True,
+                'exact_candidate_build_unproved')
+        require(sha(q / self.cfg['source_archive_relative']) == self.cfg['source_archive_sha256'],
+                'candidate_source_archive_changed')
+        require(not any(x in self.binary.read_bytes() for x in
+                        (b'qualification-no-post-test', b'qualification-loss', b'qualification_owned_loss')),
+                'candidate_contains_fault_injection_command')
+        protected = q / self.cfg['bootstrap_relative']
+        sys.path.insert(0, str(protected.parent))
+        self.prices = load_module('price_caps', q / self.cfg['price_caps_relative'],
+                                  self.cfg['protected_files'][self.cfg['price_caps_relative']])
+        self.ops = load_module('ops', q / self.cfg['ops_relative'], self.cfg['protected_files'][self.cfg['ops_relative']])
+        bootstrap = load_module('bootstrap', protected, self.cfg['protected_files'][self.cfg['bootstrap_relative']])
+        router_source = q / self.cfg['router_helper_relative']
+        helpers = router_source.parent
+        self.router = load_module('router_recovery', router_source, self.cfg['router_helper_sha256'])
+        fresh_helper = q / self.cfg['upstream_helper_relative']
+        self.upstream = load_module('upstream_recovery', fresh_helper, self.cfg['upstream_helper_sha256'])
+        sys.path.insert(0, str(q / self.cfg['sequence_relative']).rsplit('/', 1)[0])
+        self.sequence = load_module('sequence', q / self.cfg['sequence_relative'],
+                                    self.cfg['protected_files'][self.cfg['sequence_relative']])
+        self.coverage = load_module('interruption_coverage', q / self.cfg['coverage_relative'],
+                                    self.cfg['protected_files'][self.cfg['coverage_relative']])
+        require(sha(Path('/proc/sys/kernel/random/boot_id')) == self.cfg['boot_sha256'], 'boot_changed')
+        self.full_day_closeout_gate(q)
+        folder = self.work / 'native-env'; folder.mkdir(mode=0o700)
+        base_cfg = json.loads((q / self.cfg['bootstrap_inputs_relative']).read_text())
+        self.environment = bootstrap.setup(folder, base_cfg)
+        self.live_checkpoint_before = sha(self.environment['state'])
+        self.initial_highwaters = checkpoint_highwaters(self.environment['state'])
+        require(self.environment['inventory']()['client_count'] == 0, 'existing_router_client')
+        cells = [c.cell_contents for c in self.environment['inventory'].__closure__]
+        self.probe = next(c for c in cells if hasattr(c, 'inspect') and hasattr(c, 'clients'))
+        self.original_router, _ = self.probe.inspect(dict(environment='test'))
+        white = self.upstream.pristine_whitelist(self.probe, self.original_router, T1_LINKS_SHA)
+        self.initial_peers = {r.peer for r in self.upstream.upstreams(self.probe, self.original_router.pid, white)}
+        self.fault_lock = (helpers / 'router-fault.lock').open('a')
+        fcntl.flock(self.fault_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        begin, end = map(int, base_cfg['ext_id_range'].split(':'))
+        self.budget = lambda: self.ops.capacity(self.environment['state'], q / self.cfg['allocation_receipt_relative'],
+                                               base_cfg['instance'], begin, end)
+        self.budget()
+        resolver = q / self.cfg['resolver_relative']
+        require(sha(resolver) == self.cfg['protected_files'][self.cfg['resolver_relative']], 'resolver_changed')
+        with (self.work / 'refdata-private.json').open('x') as out, (self.work / 'refdata-error-private.log').open('x') as err:
+            result = subprocess.Popen([str(resolver), *self.environment['common'], '--read-only-market-data',
+                                       '--isin-id', '1', '--wait-ms', '60000'], cwd=folder,
+                                      env=self.environment['env'], stdout=out, stderr=err, stdin=subprocess.DEVNULL)
+            identity = self.ops.process_identity(result.pid)
+            try:
+                result.wait(timeout=80)
+            except subprocess.TimeoutExpired:
+                self.ops.checked_signal(identity, signal.SIGTERM)
+                result.wait(timeout=20)
+                raise Refused('fresh_refdata_resolver_deadline')
+        require(result.returncode == 0, 'fresh_committed_refdata_resolution_failed')
+        self.targets = json.loads((self.work / 'refdata-private.json').read_text())['targets']
+        require(len(self.targets) == 2 and {t['symbol'] for t in self.targets} == {'ALRS-12.26', 'CNY-12.26'},
+                'resolved_symbol_scope_changed')
+        for target in self.targets:
+            cap = self.cfg['fixed_quote_caps_scaled'][target['symbol']]
+            require(type(cap) is int and cap > 0, 'fixed_quote_cap_missing')
+            target.update(quote_cap_scaled=cap, quote_reference_scaled=cap // 2)
+        self.no_clients()
+        common = without_options(self.environment['common'],
+                                 {'--max-commands-per-second', '--max-quantity', '--max-open-orders',
+                                  '--login-env', '--ext-id-range', '--state'}, {'--allow-orders', '--sole-instance'})
+        state = self.environment['state']
+        self.run_args = [str(self.binary), *common, '--measure-timings', '--sole-instance',
+                         '--login-env', 'MOEX_LOGIN', '--ext-id-range', base_cfg['ext_id_range'],
+                         '--max-quantity', '2', '--max-open-orders', '5', '--max-commands-per-second', '5',
+                         '--state', str(state)]
+        if self.allow_orders:
+            self.run_args.append('--allow-orders')
+        for target in self.targets:
+            self.run_args += ['--isin-id', str(target['isin_id']), '--max-notional',
+                              str(target['isin_id']) + '=' + self.sequence._price(target['quote_cap_scaled']),
+                              '--max-position', str(target['isin_id']) + '=2']
+        ops = self.ops; controller = self
+        # This newly authorized session owns its explicit same-day deadline;
+        # no executed script/bundle or historical receipt is changed.
+        ops.CLEANUP = self.cfg['entry_deadline_utc']
+        self.ops.CLEANUP = self.cfg['entry_deadline_utc']
+        class ManagedProduct(ops.Product):
+            def close(product):
+                if product.child is not None and product.child.poll() is None:
+                    controller.inspect()
+                    require(not getattr(product, 'sigterm_sent', False), 'owned_sigterm_already_sent')
+                    require(ops.checked_signal(controller.product_identity, signal.SIGTERM), 'owned_sigterm_not_delivered')
+                    product.sigterm_sent = True
+                    product.child.wait(timeout=20)
+        self.Product = ManagedProduct
+        self.public.update(state='PREFLIGHT_PASS', timer_paused=True, after=self.no_clients(),
+                           remaining_ids=self.budget(), trading_armed=False, authorized_date=self.cfg['authorized_date'])
+        self.touch()
+
+
+def run_after_full_day(cfg, work):
+    """Explicit executor entry point. Root seals/installs cfg and work before calling."""
+    sys.dont_write_bytecode = True; os.umask(0o077)
+    authorized(cfg)
+    work = Path(work).resolve(strict=True)
+    require(not (work / 'public.json').exists(), 'one_shot_work_already_used')
+    Controller(work, cfg).execute()
+    return json.loads((work / 'public.json').read_text())
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--work', type=Path, required=True)
+    parser.add_argument('--execute', action='store_true')
+    args = parser.parse_args()
+    sys.dont_write_bytecode = True; os.umask(0o077)
+    cfg = json.loads(args.config.read_text())
+    authorized(cfg)
+    require(args.execute, 'preparation_only_native_execution_not_selected')
+    # The controller and its independent guardians live on TEST after SSH loss.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        os.setsid()
+    except PermissionError:
+        require(os.getsid(0) == os.getpid(), 'controller_session_detachment_unproved')
+    work = args.work.resolve(strict=True)
+    require(not (work / 'public.json').exists(), 'one_shot_work_already_used')
+    run_after_full_day(cfg, work)
+
+
+if __name__ == '__main__':
+    main()

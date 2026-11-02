@@ -84,24 +84,19 @@ void test_add_order_confirmation_projects_private_state() {
     project_batch(accepted.replication, projector);
 
     require(projector.connector_health().commit_count == 1, "fake confirmation should commit once");
-    require(projector.own_orders().size() == 2,
-            "fake confirmation should project independent TRADE and USERORDERBOOK order surfaces");
+    require(projector.own_orders().size() == 1,
+            "fake confirmation should project only the consumed regular TRADE surface");
     const auto trade_order =
         std::find_if(projector.own_orders().begin(), projector.own_orders().end(), [](const auto& order) {
             return order.from_trade_repl && !order.from_user_book && !order.from_current_day;
         });
-    const auto userbook_order =
-        std::find_if(projector.own_orders().begin(), projector.own_orders().end(),
-                     [](const auto& order) { return !order.from_trade_repl && order.from_current_day; });
-    require(trade_order != projector.own_orders().end() && userbook_order != projector.own_orders().end(),
-            "fake confirmation should preserve both source surfaces");
+    require(trade_order != projector.own_orders().end(),
+            "fake confirmation should preserve the consumed TRADE surface");
     const auto& order = *trade_order;
     require(order.private_order_id == *accepted.generated_order_id, "projected order id should correlate to reply");
     require(order.client_code == "C01", "projected client code should match fake command");
     require(order.price == "101.25", "projected price should match fake command");
     require(order.private_amount_rest == 10, "projected remaining quantity should match fake command");
-    require(userbook_order->private_order_id == *accepted.generated_order_id,
-            "USERORDERBOOK confirmation should retain its independent order identity");
 }
 
 void test_commit_boundary_visibility() {
@@ -141,8 +136,8 @@ void test_cancel_and_fill_confirmations_project() {
     const auto canceled = session.submit(Plaza2TradeCommandRequest{cancel});
     require(canceled.status == Plaza2TradeFakeOutcomeStatus::Accepted, "cancel should accept after partial fill");
     project_batch(canceled.replication, projector);
-    require(projector.own_orders().size() == 2,
-            "cancel confirmation should keep both independent order surfaces visible for read side");
+    require(projector.own_orders().size() == 1,
+            "cancel confirmation should keep the consumed regular TRADE surface visible");
     for (const auto& order : projector.own_orders()) {
         require(order.private_amount_rest == 0, "cancel confirmation should zero remaining quantity on each surface");
     }

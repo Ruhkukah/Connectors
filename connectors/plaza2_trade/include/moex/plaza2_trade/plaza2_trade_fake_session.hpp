@@ -26,7 +26,6 @@ enum class Plaza2TradeFakeOutcomeStatus {
     DuplicateClientTransactionId,
     UnknownOrder,
     InvalidState,
-    UnsupportedCommand,
     ValidationFailed,
 };
 

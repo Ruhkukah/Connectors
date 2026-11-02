@@ -43,33 +43,11 @@ inline AddOrderRequest make_add_order() {
     return request;
 }
 
-inline IcebergAddOrderRequest make_iceberg_add_order() {
-    IcebergAddOrderRequest request;
-    request.broker_code = "BRK1";
-    request.isin_id = 123456;
-    request.client_code = "C01";
-    request.dir = Plaza2TradeSide::Buy;
-    request.type = Plaza2TradeOrderType::Limit;
-    request.disclose_const_amount = 2;
-    request.iceberg_amount = 10;
-    request.price = "101.25";
-    request.ext_id = 502;
-    return request;
-}
-
 inline DelOrderRequest make_del_order() {
     DelOrderRequest request;
     request.broker_code = "BRK1";
     request.order_id = 9001;
     request.client_code = "C01";
-    request.isin_id = 123456;
-    return request;
-}
-
-inline IcebergDelOrderRequest make_iceberg_del_order() {
-    IcebergDelOrderRequest request;
-    request.broker_code = "BRK1";
-    request.order_id = 9001;
     request.isin_id = 123456;
     return request;
 }
@@ -92,38 +70,16 @@ inline MoveOrderRequest make_move_order() {
     return request;
 }
 
-inline IcebergMoveOrderRequest make_iceberg_move_order() {
-    IcebergMoveOrderRequest request;
-    request.broker_code = "BRK1";
-    request.order_id = 9001;
-    request.isin_id = 123456;
-    request.price = "102.50";
-    request.ext_id = 701;
-    return request;
-}
-
 inline DelUserOrdersRequest make_del_user_orders() {
     DelUserOrdersRequest request;
     request.broker_code = "BRK1";
-    request.buy_sell = 0;
+    request.buy_sell = 3;
     request.non_system = 0;
     request.code = "C01";
     request.base_contract_code = "SYNTH";
     request.ext_id = 777;
     request.isin_id = 123456;
     request.instrument_mask = 1;
-    return request;
-}
-
-inline DelOrdersByBFLimitRequest make_del_orders_by_bf_limit() {
-    DelOrdersByBFLimitRequest request;
-    request.broker_code = "BRK1";
-    return request;
-}
-
-inline CODHeartbeatRequest make_cod_heartbeat() {
-    CODHeartbeatRequest request;
-    request.seq_number = 42;
     return request;
 }
 

@@ -9,12 +9,12 @@ namespace moex::plaza2::cgate {
 
 namespace {
 
-using fake::EngineState;
-using fake::EventKind;
-using fake::EventSpec;
-using fake::FieldValueSpec;
-using fake::RowSpec;
 using generated::StreamCode;
+using projection::EngineState;
+using projection::EventKind;
+using projection::EventSpec;
+using projection::FieldValueSpec;
+using projection::RowSpec;
 
 std::string stream_name(StreamCode stream_code) {
     const auto* descriptor = generated::FindStreamByCode(stream_code);
@@ -44,6 +44,8 @@ Plaza2Error Plaza2PrivateStateBridge::reset(std::span<const StreamCode> streams)
     state_ = {};
     state_.streams.clear();
     pending_row_deltas_.assign(streams.size(), 0);
+    transaction_open_.assign(streams.size(), false);
+    operations_.assign(streams.size(), {});
     pending_clear_deleted_.assign(streams.size(), {});
     stream_lifenums_.clear();
     for (const auto stream_code : streams) {
@@ -69,6 +71,9 @@ Plaza2Error Plaza2PrivateStateBridge::end_run() {
     state_.closed = true;
     state_.online = false;
     state_.transaction_open = false;
+    std::fill(transaction_open_.begin(), transaction_open_.end(), false);
+    for (auto& ops : operations_)
+        ops.clear();
     for (auto& stream : state_.streams) {
         stream.online = false;
         stream.snapshot_complete = false;
@@ -137,7 +142,8 @@ Plaza2Error Plaza2PrivateStateBridge::handle_event(const Plaza2ListenerEvent& ev
 }
 
 Plaza2Error Plaza2PrivateStateBridge::reset_status_snapshot(StreamCode stream_code) {
-    if (state_.transaction_open ||
+    const auto status_index = stream_index(state_, stream_code);
+    if ((status_index < transaction_open_.size() && transaction_open_[status_index]) ||
         (stream_code != StreamCode::kFortsSessionstateRepl && stream_code != StreamCode::kFortsInstrumentstateRepl))
         return ordering_error("status snapshot reset requires an idle declared status stream");
     if (const auto error = handle_close(stream_code); error)
@@ -155,6 +161,12 @@ Plaza2Error Plaza2PrivateStateBridge::handle_close(StreamCode stream_code) {
     if (index == state_.streams.size()) {
         return ordering_error("PLAZA II private-state bridge received CLOSE for an undeclared stream");
     }
+    transaction_open_[index] = false;
+    operations_[index].clear();
+    pending_clear_deleted_[index].clear();
+    pending_row_deltas_[index] = 0;
+    state_.transaction_open =
+        std::any_of(transaction_open_.begin(), transaction_open_.end(), [](bool open) { return open; });
     state_.streams[index].online = false;
     state_.streams[index].snapshot_complete = false;
     recompute_online();
@@ -163,111 +175,106 @@ Plaza2Error Plaza2PrivateStateBridge::handle_close(StreamCode stream_code) {
 }
 
 Plaza2Error Plaza2PrivateStateBridge::handle_transaction_begin(StreamCode stream_code) {
-    if (state_.transaction_open) {
-        return ordering_error("PLAZA II private-state bridge received nested TN_BEGIN");
-    }
     const auto index = stream_index(state_, stream_code);
-    if (index == state_.streams.size()) {
-        return ordering_error("PLAZA II private-state bridge received TN_BEGIN for an undeclared stream");
-    }
-    std::fill(pending_row_deltas_.begin(), pending_row_deltas_.end(), 0);
+    if (index == state_.streams.size() || transaction_open_[index])
+        return ordering_error("private stream received nested or undeclared TN_BEGIN");
+    transaction_open_[index] = true;
     state_.transaction_open = true;
-    projector_.on_event(scenario_, EventSpec{.kind = EventKind::kTransactionBegin, .stream_code = stream_code}, state_);
-    for (const auto& pending : pending_clear_deleted_[index]) {
-        projector_.on_event(scenario_,
-                            EventSpec{.kind = EventKind::kClearDeleted,
-                                      .stream_code = pending.stream_code,
-                                      .table_code = pending.table_code,
-                                      .signed_value = pending.table_rev,
-                                      .clear_deleted_flags = pending.flags},
-                            state_);
-    }
+    pending_row_deltas_[index] = 0;
+    operations_[index].clear();
+    for (const auto& clear : pending_clear_deleted_[index])
+        operations_[index].push_back({.event = {.kind = EventKind::kClearDeleted,
+                                                .stream_code = clear.stream_code,
+                                                .table_code = clear.table_code,
+                                                .signed_value = clear.table_rev,
+                                                .clear_deleted_flags = clear.flags}});
     pending_clear_deleted_[index].clear();
     return {};
 }
 
 Plaza2Error Plaza2PrivateStateBridge::handle_transaction_commit(StreamCode stream_code) {
-    if (!state_.transaction_open) {
-        return ordering_error("PLAZA II private-state bridge received TN_COMMIT without TN_BEGIN");
-    }
     const auto index = stream_index(state_, stream_code);
-    if (index == state_.streams.size()) {
-        return ordering_error("PLAZA II private-state bridge received TN_COMMIT for an undeclared stream");
+    if (index == state_.streams.size() || !transaction_open_[index])
+        return ordering_error("private stream received TN_COMMIT without TN_BEGIN");
+    // Each stream has its own operation list. Replay atomically only when that
+    // stream commits, so interleaved callbacks cannot overwrite another stream.
+    projector_.on_event(scenario_,
+                        EventSpec{.kind = EventKind::kTransactionBegin, .stream_code = stream_code, .numeric_value = 1},
+                        state_);
+    for (auto& operation : operations_[index]) {
+        if (operation.event.kind == EventKind::kClearDeleted) {
+            projector_.on_event(scenario_, operation.event, state_);
+            continue;
+        }
+        field_storage_.clear();
+        field_storage_.reserve(operation.fields.size());
+        for (auto& field : operation.fields) {
+            auto value = field.value;
+            if (!field.text.empty())
+                value.text_value = field.text;
+            field_storage_.push_back(value);
+        }
+        projector_.on_stream_row(scenario_, operation.event,
+                                 RowSpec{.stream_code = stream_code,
+                                         .table_code = operation.event.table_code,
+                                         .field_count = static_cast<std::uint32_t>(field_storage_.size())},
+                                 field_storage_, state_);
     }
-    for (std::size_t delta_index = 0; delta_index < state_.streams.size(); ++delta_index) {
-        state_.streams[delta_index].committed_row_count += pending_row_deltas_[delta_index];
-    }
-    std::fill(pending_row_deltas_.begin(), pending_row_deltas_.end(), 0);
-    state_.transaction_open = false;
-    state_.commit_count += 1;
-    const EventSpec commit_event{.kind = EventKind::kTransactionCommit, .stream_code = stream_code};
-    projector_.on_event(scenario_, commit_event, state_);
-    projector_.on_transaction_commit(scenario_, commit_event, state_);
+    state_.streams[index].committed_row_count += pending_row_deltas_[index];
+    pending_row_deltas_[index] = 0;
+    operations_[index].clear();
+    transaction_open_[index] = false;
+    state_.transaction_open =
+        std::any_of(transaction_open_.begin(), transaction_open_.end(), [](bool open) { return open; });
+    ++state_.commit_count;
+    const EventSpec commit{.kind = EventKind::kTransactionCommit, .stream_code = stream_code};
+    projector_.on_event(scenario_, commit, state_);
+    projector_.on_transaction_commit(scenario_, commit, state_);
     return {};
 }
 
 Plaza2Error Plaza2PrivateStateBridge::handle_stream_data(const Plaza2ListenerEvent& event) {
-    if (!state_.transaction_open) {
-        return ordering_error("PLAZA II private-state bridge received STREAM_DATA outside TN_BEGIN/TN_COMMIT");
-    }
     const auto index = stream_index(state_, event.stream_code);
-    if (index == state_.streams.size()) {
-        return ordering_error("PLAZA II private-state bridge received STREAM_DATA for an undeclared stream");
-    }
-
-    text_storage_.clear();
-    field_storage_.clear();
-    text_storage_.reserve(event.fields.size());
-    field_storage_.reserve(event.fields.size());
+    if (index >= transaction_open_.size() || !transaction_open_[index])
+        return ordering_error("private STREAM_DATA outside its stream transaction");
+    // Own every callback value until its listener transaction commits. Text
+    // views are bound only during commit, after the owning strings stop moving.
+    Operation operation{.event = {.kind = EventKind::kStreamData,
+                                  .stream_code = event.stream_code,
+                                  .table_code = event.table_code,
+                                  .signed_value = event.signed_value}};
+    operation.fields.reserve(event.fields.size());
     for (const auto& field : event.fields) {
-        FieldValueSpec decoded{.field_code = field.field_code};
+        OwnedField owned{.value = {.field_code = field.field_code}};
+        auto& decoded = owned.value;
         switch (field.kind) {
         case Plaza2DecodedValueKind::None:
             continue;
         case Plaza2DecodedValueKind::SignedInteger:
-            decoded.kind = fake::ValueKind::kSignedInteger;
+            decoded.kind = projection::ValueKind::kSignedInteger;
             decoded.signed_value = field.signed_value;
             break;
         case Plaza2DecodedValueKind::UnsignedInteger:
-            decoded.kind = fake::ValueKind::kUnsignedInteger;
+            decoded.kind = projection::ValueKind::kUnsignedInteger;
             decoded.unsigned_value = field.unsigned_value;
             break;
         case Plaza2DecodedValueKind::Decimal:
-            decoded.kind = fake::ValueKind::kDecimal;
-            text_storage_.emplace_back(field.text_value);
-            decoded.text_value = text_storage_.back();
-            break;
         case Plaza2DecodedValueKind::FloatingPoint:
-            decoded.kind = fake::ValueKind::kFloatingPoint;
-            text_storage_.emplace_back(field.text_value);
-            decoded.text_value = text_storage_.back();
-            break;
         case Plaza2DecodedValueKind::String:
-            decoded.kind = fake::ValueKind::kString;
-            text_storage_.emplace_back(field.text_value);
-            decoded.text_value = text_storage_.back();
+            decoded.kind = field.kind == Plaza2DecodedValueKind::Decimal         ? projection::ValueKind::kDecimal
+                           : field.kind == Plaza2DecodedValueKind::FloatingPoint ? projection::ValueKind::kFloatingPoint
+                                                                                 : projection::ValueKind::kString;
+            owned.text = field.text_value;
             break;
         case Plaza2DecodedValueKind::Timestamp:
-            decoded.kind = fake::ValueKind::kTimestamp;
+            decoded.kind = projection::ValueKind::kTimestamp;
             decoded.unsigned_value = field.unsigned_value;
+            decoded.timestamp_ns = field.timestamp_ns;
             break;
         }
-        field_storage_.push_back(std::move(decoded));
+        operation.fields.push_back(std::move(owned));
     }
-
-    // Keep table and signed_value (the runtime replRev) attached to the row.
-    const EventSpec fake_event{
-        .kind = EventKind::kStreamData,
-        .stream_code = event.stream_code,
-        .table_code = event.table_code,
-        .signed_value = event.signed_value,
-    };
-    const RowSpec row{
-        .stream_code = event.stream_code,
-        .table_code = event.table_code,
-        .field_count = static_cast<std::uint32_t>(field_storage_.size()),
-    };
-    projector_.on_stream_row(scenario_, fake_event, row, field_storage_, state_);
+    operations_[index].push_back(std::move(operation));
     pending_row_deltas_[index] += 1;
     return {};
 }
@@ -295,9 +302,9 @@ Plaza2Error Plaza2PrivateStateBridge::handle_online(StreamCode stream_code) {
 }
 
 Plaza2Error Plaza2PrivateStateBridge::handle_lifenum(StreamCode stream_code, std::uint64_t life_number) {
-    if (state_.transaction_open) {
-        return ordering_error("PLAZA II private-state bridge received P2REPL_LIFENUM inside an open transaction");
-    }
+    const auto life_index = stream_index(state_, stream_code);
+    if (life_index < transaction_open_.size() && transaction_open_[life_index])
+        return ordering_error("private LIFENUM inside its stream transaction");
     auto known_stream =
         std::ranges::find_if(stream_lifenums_, [stream_code](const auto& entry) { return entry.first == stream_code; });
     if (known_stream != stream_lifenums_.end() && known_stream->second == life_number) {
@@ -346,24 +353,20 @@ Plaza2Error Plaza2PrivateStateBridge::handle_clear_deleted(const Plaza2ListenerE
         .flags = event.clear_deleted_flags,
     });
     last_resync_reason_ = "clear_deleted:" + stream_name(event.stream_code);
-    if (state_.transaction_open) {
+    if (transaction_open_[index]) {
         const auto pending = pending_clear_deleted_[index].back();
-        projector_.on_event(scenario_,
-                            EventSpec{.kind = EventKind::kClearDeleted,
-                                      .stream_code = pending.stream_code,
-                                      .table_code = pending.table_code,
-                                      .signed_value = pending.table_rev,
-                                      .clear_deleted_flags = pending.flags},
-                            state_);
+        operations_[index].push_back({.event = {.kind = EventKind::kClearDeleted,
+                                                .stream_code = pending.stream_code,
+                                                .table_code = pending.table_code,
+                                                .signed_value = pending.table_rev,
+                                                .clear_deleted_flags = pending.flags}});
         pending_clear_deleted_[index].pop_back();
     }
     return {};
 }
 
 Plaza2Error Plaza2PrivateStateBridge::handle_replstate(std::string_view replstate) {
-    if (state_.transaction_open) {
-        return ordering_error("PLAZA II private-state bridge received P2REPL_REPLSTATE inside an open transaction");
-    }
+
     state_.last_replstate.assign(replstate);
     projector_.on_event(scenario_, EventSpec{.kind = EventKind::kReplState, .text_value = state_.last_replstate},
                         state_);
@@ -373,7 +376,7 @@ Plaza2Error Plaza2PrivateStateBridge::handle_replstate(std::string_view replstat
 void Plaza2PrivateStateBridge::recompute_online() {
     state_.online =
         !state_.streams.empty() && std::all_of(state_.streams.begin(), state_.streams.end(),
-                                               [](const fake::StreamState& stream) { return stream.online; });
+                                               [](const projection::StreamState& stream) { return stream.online; });
 }
 
 Plaza2Error Plaza2PrivateStateBridge::ordering_error(std::string message) {

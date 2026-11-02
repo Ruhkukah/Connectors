@@ -1,7 +1,8 @@
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
-#include "moex/plaza2/cgate/plaza2_certification_evidence.hpp"
 
 #include "plaza2_runtime_test_support.hpp"
+#include "fake_cgate_control.hpp"
+#include "fake_cgate_abi.hpp"
 
 #include <array>
 #include <cstddef>
@@ -45,16 +46,6 @@ struct ReplyCapture final : moex::plaza2::cgate::Plaza2ListenerEventHandler {
     std::vector<Captured> events;
 };
 
-std::string read_text(const std::filesystem::path& path) {
-    std::ifstream input(path);
-    if (!input) {
-        throw std::runtime_error("failed to open reviewed ABI lock: " + path.string());
-    }
-    std::ostringstream text;
-    text << input.rdbuf();
-    return text.str();
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -67,125 +58,6 @@ int main(int argc, char** argv) {
         using namespace moex::plaza2::cgate;
         using namespace moex::plaza2::test;
 
-        Plaza2ClockEvidence clock{.sync_source = "chrony",
-                                  .sync_status_ok = true,
-                                  .wall_offset_ns = 120'000'000,
-                                  .offset_uncertainty_ns = 20'000'000,
-                                  .monotonic_clock_id = "CLOCK_MONOTONIC_RAW",
-                                  .paired_samples = {{.local_wall_ns = 1'700'000'000'000'000'000,
-                                                      .local_monotonic_ns = 1'000'000'000,
-                                                      .exchange_wall_ns = 1'699'999'999'880'000'000,
-                                                      .provenance = "test-current-clock",
-                                                      .current_reference = true},
-                                                     {.local_wall_ns = 1'700'000'000'500'000'000,
-                                                      .local_monotonic_ns = 2'000'000'000,
-                                                      .exchange_wall_ns = 1'700'000'000'380'000'000,
-                                                      .provenance = "test-current-clock",
-                                                      .current_reference = true}},
-                                  .current_local_wall_ns = 1'700'000'001'000'000'000,
-                                  .current_local_monotonic_ns = 3'000'000'000,
-                                  .sync_status_monotonic_ns = 2'500'000'000,
-                                  .evidence_generated_wall_ns = 1'700'000'001'000'000'000,
-                                  .boot_id = "test-boot"};
-        const auto baseline_clock = clock;
-        require(plaza2_clock_evidence_passes(clock), "clock evidence within one second should pass");
-        clock.paired_samples[0].exchange_wall_ns -= 1'000'000'001;
-        require(!plaza2_clock_evidence_passes(clock), "clock evidence over one second must fail");
-        auto threshold_clock = clock;
-        threshold_clock.wall_offset_ns = kPlaza2MaxLogClockSkewNs;
-        threshold_clock.offset_uncertainty_ns = 1;
-        threshold_clock.paired_samples[0].exchange_wall_ns =
-            threshold_clock.paired_samples[0].local_wall_ns - kPlaza2MaxLogClockSkewNs;
-        threshold_clock.paired_samples[1].exchange_wall_ns =
-            threshold_clock.paired_samples[1].local_wall_ns - kPlaza2MaxLogClockSkewNs;
-        require(plaza2_clock_evidence_passes(threshold_clock),
-                "clock evidence exactly at the one-second offset threshold should pass");
-        threshold_clock.wall_offset_ns = kPlaza2MaxLogClockSkewNs + 1;
-        require(!plaza2_clock_evidence_passes(threshold_clock),
-                "clock evidence over the one-second offset threshold must fail");
-        clock.paired_samples[0].exchange_wall_ns = 1'699'999'999'880'000'000;
-        clock.sync_status_ok = false;
-        require(!plaza2_clock_evidence_passes(clock), "unsynchronized clock must fail");
-        clock.sync_status_ok = true;
-        clock.paired_samples.clear();
-        require(!plaza2_clock_evidence_passes(clock), "clock evidence without paired timestamps must fail");
-
-        clock = {.sync_source = "chrony",
-                 .sync_status_ok = true,
-                 .wall_offset_ns = 120'000'000,
-                 .offset_uncertainty_ns = 20'000'000,
-                 .monotonic_clock_id = "CLOCK_MONOTONIC_RAW",
-                 .paired_samples = {{.local_wall_ns = 1'700'000'000'000'000'000,
-                                     .local_monotonic_ns = 1'000'000'000,
-                                     .exchange_wall_ns = 1'699'999'999'880'000'000,
-                                     .provenance = "test-current-clock",
-                                     .current_reference = true},
-                                    {.local_wall_ns = 1'700'000'000'500'000'000,
-                                     .local_monotonic_ns = 1'000'000'000,
-                                     .exchange_wall_ns = 1'700'000'000'380'000'000,
-                                     .provenance = "test-current-clock",
-                                     .current_reference = true}},
-                 .current_local_wall_ns = 1'700'000'001'000'000'000,
-                 .current_local_monotonic_ns = 3'000'000'000,
-                 .sync_status_monotonic_ns = 2'500'000'000,
-                 .evidence_generated_wall_ns = 1'700'000'001'000'000'000,
-                 .boot_id = "test-boot"};
-        require(!plaza2_clock_evidence_passes(clock), "repeated monotonic samples must fail");
-        clock.paired_samples[1].local_monotonic_ns = 500'000'000;
-        require(!plaza2_clock_evidence_passes(clock), "decreasing monotonic samples must fail");
-        clock.paired_samples[1].local_monotonic_ns = 2'000'000'000;
-        clock.paired_samples[1].provenance.clear();
-        require(!plaza2_clock_evidence_passes(clock), "unlabelled samples must fail");
-        clock.paired_samples[1].provenance = "old-snapshot-row";
-        clock.paired_samples[1].current_reference = false;
-        require(!plaza2_clock_evidence_passes(clock), "old snapshot rows must not qualify as clock references");
-        clock.paired_samples[1].current_reference = true;
-        clock.paired_samples[1].local_wall_ns = 1'700'000'000'000'000'000;
-        require(!plaza2_clock_evidence_passes(clock), "stale wall samples must fail the freshness gate");
-        clock.paired_samples[1].local_wall_ns = 1'700'000'000'500'000'000;
-        clock.paired_samples[1].exchange_wall_ns = 1'700'000'000'200'000'000;
-        require(!plaza2_clock_evidence_passes(clock), "offset steps beyond uncertainty must fail");
-        clock.paired_samples[1].exchange_wall_ns = 1'700'000'000'380'000'000;
-        clock.wall_offset_ns = std::numeric_limits<std::int64_t>::min();
-        require(!plaza2_clock_evidence_passes(clock), "signed offset extremes must fail without overflow");
-        clock.wall_offset_ns = 120'000'000;
-        clock.paired_samples[0].local_wall_ns = std::numeric_limits<std::int64_t>::max();
-        clock.paired_samples[0].exchange_wall_ns = std::numeric_limits<std::int64_t>::min();
-        require(!plaza2_clock_evidence_passes(clock), "paired timestamp extremes must fail without overflow");
-
-        {
-            constexpr std::uint64_t one_day_ns = 86'400'000'000'000;
-            auto freshness_clock = baseline_clock;
-            const auto generated_wall_ns = *freshness_clock.evidence_generated_wall_ns;
-            require(plaza2_clock_evidence_passes_at(freshness_clock, generated_wall_ns, kPlaza2MaxClockSampleAgeNs),
-                    "fresh generated wall evidence should pass against the current wall clock");
-
-            auto yesterday = freshness_clock;
-            require(generated_wall_ns <=
-                        std::numeric_limits<std::int64_t>::max() - static_cast<std::int64_t>(one_day_ns),
-                    "test wall-clock fixture must leave room for deterministic age checks");
-            require(!plaza2_clock_evidence_passes_at(yesterday,
-                                                     generated_wall_ns + static_cast<std::int64_t>(one_day_ns),
-                                                     kPlaza2MaxClockSampleAgeNs),
-                    "yesterday's generated wall evidence must fail the freshness gate");
-
-            auto future = freshness_clock;
-            future.evidence_generated_wall_ns = generated_wall_ns + kPlaza2MaxClockEvidenceFutureNs + 1;
-            require(!plaza2_clock_evidence_passes_at(future, generated_wall_ns, kPlaza2MaxClockSampleAgeNs),
-                    "future-generated wall evidence beyond tolerance must fail");
-
-            auto overflow_old = freshness_clock;
-            overflow_old.evidence_generated_wall_ns = std::numeric_limits<std::int64_t>::min();
-            require(!plaza2_clock_evidence_passes_at(overflow_old, std::numeric_limits<std::int64_t>::max(),
-                                                     kPlaza2MaxClockSampleAgeNs),
-                    "wall-clock age overflow must fail closed");
-            auto overflow_future = freshness_clock;
-            overflow_future.evidence_generated_wall_ns = std::numeric_limits<std::int64_t>::max();
-            require(!plaza2_clock_evidence_passes_at(overflow_future, std::numeric_limits<std::int64_t>::min(),
-                                                     kPlaza2MaxClockSampleAgeNs),
-                    "wall-clock future overflow must fail closed");
-        }
-
         const auto fake_library = std::filesystem::path(argv[1]);
         const auto fixture_root = make_temp_directory("plaza2_runtime_adapter_test");
         const auto cleanup = [&]() { remove_tree(fixture_root); };
@@ -193,6 +65,7 @@ int main(int argc, char** argv) {
         const auto scheme_text = build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test");
         const auto fixture =
             materialize_runtime_fixture(fixture_root, fake_library, Plaza2Environment::Test, scheme_text);
+        moex::plaza2::test::fake::Control fake(fixture.library_path);
 
         Plaza2Settings settings;
         settings.environment = Plaza2Environment::Test;
@@ -220,40 +93,38 @@ int main(int argc, char** argv) {
         require(!connection.process(0, &process_code), "timeout process should not be treated as error");
         require(process_code == 131075, "fake runtime should report CG_ERR_TIMEOUT from process");
 
-        ::setenv("MOEX_FAKE_PROCESS_TIMEOUT", "1", 1);
+        fake.set(moex::plaza2::test::fake::Option::ProcessTimeout, "1");
         for (int poll = 0; poll < 1000; ++poll) {
             process_code = 0;
             require(!connection.process(0, &process_code) && process_code == 131075,
                     "explicit runtime timeout remains successful and preserves its raw code");
         }
-        ::unsetenv("MOEX_FAKE_PROCESS_TIMEOUT");
+        fake.clear(moex::plaza2::test::fake::Option::ProcessTimeout);
 
         Plaza2Listener listener;
         require(!listener.create(connection, "p2repl://FORTS_TRADE_REPL;scheme=|FILE|scheme/forts_scheme.ini|TRADES"),
                 "listener create should succeed");
 
-        const auto abi_lock = read_text(std::filesystem::path(MOEX_SOURCE_ROOT) / "spec-lock" / "test" / "plaza2" /
-                                        "cgate99" / "abi_x86_64.json");
-        require(abi_lock.find("\"CG_STATE_CLOSED\": 0") != std::string::npos &&
-                    abi_lock.find("\"CG_STATE_ERROR\": 1") != std::string::npos &&
-                    abi_lock.find("\"CG_STATE_OPENING\": 2") != std::string::npos &&
-                    abi_lock.find("\"CG_STATE_ACTIVE\": 3") != std::string::npos,
-                "reviewed CGate 9.9 ABI state lock should retain the expected raw values");
+        // CGate 6.102.0 (Spectra 9.9), LP64 layout from the vendor SDK.
+        require(sizeof(CgMsg) == 32 && sizeof(CgMsgData) == 80 && sizeof(CgTime) == 10 &&
+                    offsetof(CgMsgData, msg_index) == 32 && offsetof(CgMsgData, user_id) == 56 &&
+                    offsetof(CgTime, msec) == 8,
+                "native CGate message ABI layout must match the retained vendor contract");
 
         std::uint32_t listener_state = 99;
         require(!listener.state(listener_state) && listener_state == 0,
                 "new fake listener should expose CG_STATE_CLOSED=0");
 
-        ::setenv("MOEX_FAKE_LSN_OPENING_STATE", "1", 1);
+        fake.set(moex::plaza2::test::fake::Option::LsnOpeningState, "1");
         require(!listener.open({}), "listener open should succeed");
-        ::unsetenv("MOEX_FAKE_LSN_OPENING_STATE");
+        fake.clear(moex::plaza2::test::fake::Option::LsnOpeningState);
         require(!listener.state(listener_state) && listener_state == 2,
                 "opening fake listener should expose CG_STATE_OPENING=2");
         require(!listener.close(), "opening listener close should succeed");
 
-        ::setenv("MOEX_FAKE_LSN_ERROR_STATE", "1", 1);
+        fake.set(moex::plaza2::test::fake::Option::LsnErrorState, "1");
         require(!listener.open({}), "forced-error listener open should return its modeled state");
-        ::unsetenv("MOEX_FAKE_LSN_ERROR_STATE");
+        fake.clear(moex::plaza2::test::fake::Option::LsnErrorState);
         require(!listener.state(listener_state) && listener_state == 1,
                 "forced-error fake listener should expose CG_STATE_ERROR=1");
         require(!listener.close(), "forced-error listener close should succeed");
@@ -278,33 +149,33 @@ int main(int argc, char** argv) {
         const std::array<std::byte, 128> add_payload{};
         const std::array<std::byte, 28> del_payload{};
 
-        ::setenv("MOEX_FAKE_PUB_MSGNEW_RESULT", "internal", 1);
+        fake.set(moex::plaza2::test::fake::Option::PubMsgnewResult, "internal");
         const auto allocation_failure = publisher.post_by_message_name("AddOrder", add_payload, 701, true);
         require(allocation_failure.certainty == Plaza2SubmissionCertainty::DefinitelyNotSent &&
                     allocation_failure.allocation_error && !allocation_failure.post_invoked,
                 "message allocation failure should be definitely not sent");
-        ::unsetenv("MOEX_FAKE_PUB_MSGNEW_RESULT");
+        fake.clear(moex::plaza2::test::fake::Option::PubMsgnewResult);
 
-        ::setenv("MOEX_FAKE_PUB_POST_RESULT", "timeout", 1);
+        fake.set(moex::plaza2::test::fake::Option::PubPostResult, "timeout");
         const auto ambiguous = publisher.post_by_message_name("AddOrder", add_payload, 702, true);
         require(ambiguous.certainty == Plaza2SubmissionCertainty::PossiblySent && ambiguous.post_error,
                 "publisher timeout should preserve possible-submission certainty");
-        ::unsetenv("MOEX_FAKE_PUB_POST_RESULT");
+        fake.clear(moex::plaza2::test::fake::Option::PubPostResult);
 
-        ::setenv("MOEX_FAKE_PUB_MSGFREE_RESULT", "internal", 1);
+        fake.set(moex::plaza2::test::fake::Option::PubMsgfreeResult, "internal");
         const auto posted_free_failure = publisher.post_by_message_name("AddOrder", add_payload, 703, true);
         require(posted_free_failure.certainty == Plaza2SubmissionCertainty::Posted && posted_free_failure.free_error &&
                     !posted_free_failure.post_error,
                 "message-free failure must not erase a successful post");
-        ::unsetenv("MOEX_FAKE_PUB_MSGFREE_RESULT");
+        fake.clear(moex::plaza2::test::fake::Option::PubMsgfreeResult);
 
-        ::setenv("MOEX_FAKE_PUB_REPLY_MODE", "timeout", 1);
+        fake.set(moex::plaza2::test::fake::Option::PubReplyMode, "timeout");
         const auto add_timeout = publisher.post_by_message_name("AddOrder", add_payload, 704, true);
         const auto del_timeout = publisher.post_by_message_name("DelOrder", del_payload, 705, true);
         require(add_timeout.certainty == Plaza2SubmissionCertainty::Posted &&
                     del_timeout.certainty == Plaza2SubmissionCertainty::Posted,
                 "timeout fixtures should model successfully posted commands awaiting replies");
-        ::unsetenv("MOEX_FAKE_PUB_REPLY_MODE");
+        fake.clear(moex::plaza2::test::fake::Option::PubReplyMode);
 
         std::uint32_t reply_process_code = 0;
         const auto reply_process_error = connection.process(0, &reply_process_code);

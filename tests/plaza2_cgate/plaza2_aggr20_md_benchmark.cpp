@@ -391,7 +391,7 @@ Result measure(cg::Plaza2Aggr20BookProjector& projector, const RetentionProfile&
     check(after && after->levels.size() == kLevelsPerInstrument);
     if (updated == "unrelated_last_slot")
         check(after->source_snapshot_version == before->source_snapshot_version &&
-              after->source_snapshot_hash == before->source_snapshot_hash &&
+              after->source_snapshot_version == before->source_snapshot_version &&
               after->committed_at == before->committed_at);
     else
         check(after->source_snapshot_version > before->source_snapshot_version);

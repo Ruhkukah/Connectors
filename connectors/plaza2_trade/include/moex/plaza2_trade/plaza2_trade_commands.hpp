@@ -9,14 +9,9 @@ namespace moex::plaza2_trade {
 
 enum class Plaza2TradeCommandKind : std::uint16_t {
     AddOrder = 474,
-    IcebergAddOrder = 475,
     DelOrder = 461,
-    IcebergDelOrder = 464,
     MoveOrder = 476,
-    IcebergMoveOrder = 477,
     DelUserOrders = 466,
-    DelOrdersByBFLimit = 419,
-    CODHeartbeat = 10000,
 };
 
 enum class Plaza2TradeSide : std::int32_t {
@@ -26,7 +21,7 @@ enum class Plaza2TradeSide : std::int32_t {
 
 enum class Plaza2TradeOrderType : std::int32_t {
     Limit = 1,
-    Market = 2,
+    Ioc = 2,
 };
 
 struct AddOrderRequest {
@@ -48,38 +43,12 @@ struct AddOrderRequest {
     std::optional<std::string> compliance_id;
 };
 
-struct IcebergAddOrderRequest {
-    std::optional<std::string> broker_code;
-    std::optional<std::int32_t> isin_id;
-    std::optional<std::string> client_code;
-    std::optional<Plaza2TradeSide> dir;
-    std::optional<Plaza2TradeOrderType> type;
-    std::optional<std::int32_t> disclose_const_amount;
-    std::optional<std::int32_t> iceberg_amount;
-    std::optional<std::int32_t> variance_amount;
-    std::optional<std::string> price;
-    std::optional<std::string> comment;
-    std::optional<std::int32_t> ext_id;
-    std::optional<std::int32_t> is_check_limit;
-    std::optional<std::string> date_exp;
-    std::optional<std::int32_t> dont_check_money;
-    std::optional<std::int8_t> ncc_request;
-    std::optional<std::string> compliance_id;
-};
-
 struct DelOrderRequest {
     std::optional<std::string> broker_code;
     std::optional<std::int64_t> order_id;
     std::optional<std::int8_t> ncc_request;
     std::optional<std::string> client_code;
     std::optional<std::int32_t> isin_id;
-};
-
-struct IcebergDelOrderRequest {
-    std::optional<std::string> broker_code;
-    std::optional<std::int64_t> order_id;
-    std::optional<std::int32_t> isin_id;
-    std::optional<std::int8_t> ncc_request;
 };
 
 struct MoveOrderRequest {
@@ -100,17 +69,6 @@ struct MoveOrderRequest {
     std::optional<std::string> compliance_id;
 };
 
-struct IcebergMoveOrderRequest {
-    std::optional<std::string> broker_code;
-    std::optional<std::int64_t> order_id;
-    std::optional<std::int32_t> isin_id;
-    std::optional<std::string> price;
-    std::optional<std::int32_t> ext_id;
-    std::optional<std::int8_t> ncc_request;
-    std::optional<std::int32_t> is_check_limit;
-    std::optional<std::string> compliance_id;
-};
-
 struct DelUserOrdersRequest {
     std::optional<std::string> broker_code;
     std::optional<std::int32_t> buy_sell;
@@ -122,17 +80,8 @@ struct DelUserOrdersRequest {
     std::optional<std::int8_t> instrument_mask;
 };
 
-struct DelOrdersByBFLimitRequest {
-    std::optional<std::string> broker_code;
-};
-
-struct CODHeartbeatRequest {
-    std::optional<std::int32_t> seq_number;
-};
-
 using Plaza2TradeCommandRequest =
-    std::variant<AddOrderRequest, IcebergAddOrderRequest, DelOrderRequest, IcebergDelOrderRequest, MoveOrderRequest,
-                 IcebergMoveOrderRequest, DelUserOrdersRequest, DelOrdersByBFLimitRequest, CODHeartbeatRequest>;
+    std::variant<AddOrderRequest, DelOrderRequest, MoveOrderRequest, DelUserOrdersRequest>;
 
 [[nodiscard]] Plaza2TradeCommandKind command_kind(const Plaza2TradeCommandRequest& request);
 [[nodiscard]] const char* command_name(Plaza2TradeCommandKind kind) noexcept;

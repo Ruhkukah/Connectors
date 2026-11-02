@@ -1,14 +1,48 @@
 #pragma once
 
 #include "moex/connector_host/connector_host.hpp"
+#include "moex/plaza2/cgate/plaza2_public_deals.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace moex::connector_host::dtc {
+
+// Values retained by the existing read-only DTC wire protocol. They describe
+// how the committed event was received and do not grant trading permission.
+enum class SessionReadyWitnessKind : std::uint8_t {
+    None = 0,
+    OnlineSynchronousEvent = 1,
+    LateJoinCorroboratedSnapshot = 3,
+};
+[[nodiscard]] constexpr std::string_view session_ready_witness_kind_name(SessionReadyWitnessKind kind) noexcept {
+    switch (kind) {
+    case SessionReadyWitnessKind::OnlineSynchronousEvent:
+        return "OnlineSynchronousEvent";
+    case SessionReadyWitnessKind::LateJoinCorroboratedSnapshot:
+        return "LateJoinCorroboratedSnapshot";
+    default:
+        return "None";
+    }
+}
+
+enum class DtcSourceMode : std::uint8_t {
+    Replay = 0,
+    LiveTest = 1,
+};
+
+[[nodiscard]] constexpr std::string_view dtc_source_mode_name(DtcSourceMode mode) noexcept {
+    return mode == DtcSourceMode::LiveTest ? "live_test" : "replay";
+}
+
+// Gateway-defined DTC Exchange identifier for the only venue represented by
+// this endpoint. It is intentionally not copied from fut_vcb.board_md, which
+// is an ASTS SECBOARD identifier for the underlying asset.
+inline constexpr std::string_view kDtcMoexSpectraExchange = "MOEX_SPECTRA";
 
 // DTC v8 uses a little-endian uint16 size (including this four-byte header)
 // followed by a little-endian uint16 message type.  The protobuf payload is
@@ -111,12 +145,39 @@ struct DtcMarketDataSnapshot {
     std::uint64_t exchange_moment_ns{0};
     std::uint64_t sampled_at_unix_ns{0};
     std::int64_t isin_id{0};
+    std::int32_t session_id{0};
     std::string symbol;
-    std::string board;
+    // Raw FORTS_REFDATA_REPL.fut_vcb.board_md (ASTS SECBOARD identifier).
+    // DTC requests and SecurityDefinitionResponse use the separate gateway
+    // identifier kDtcMoexSpectraExchange in their Exchange field.
+    std::string underlying_board;
     std::string min_step;
-    // These are deliberately separate: a live CGate transport, an ONLINE
-    // snapshot, current session_data_ready, and a target-authoritative book
-    // are different states at the DTC boundary.
+    std::string description;
+    std::string currency;
+    std::string contract_size;
+    std::string currency_value_per_increment;
+    bool refdata_vcb_join_current{false};
+    bool refdata_vcb_join_ambiguous{false};
+    bool refdata_board_proven{false};
+    // Supported monetary/tick denomination proof, currently exact RUB in
+    // the live TEST path; raw non-RUB quotation codes are not enough.
+    bool refdata_currency_proven{false};
+    bool future_vcb_provenance_present{false};
+    std::int64_t future_vcb_repl_rev{0};
+    std::uint64_t future_vcb_lifenum{0};
+    bool target_is_future{false};
+    bool target_is_spread{false};
+    bool target_is_multileg{false};
+    std::string future_vcb_base_contract_code;
+    std::int32_t future_vcb_base_contract_id{0};
+    plaza2::private_state::SourceRowProvenance definition_source_provenance;
+    plaza2::private_state::SourceRowProvenance future_instruments_provenance;
+    plaza2::private_state::SourceRowProvenance future_sess_contents_provenance;
+    plaza2::private_state::SourceRowProvenance session_provenance;
+    plaza2::private_state::SourceRowProvenance future_vcb_provenance;
+    // A fresh snapshot followed by ONLINE is the AGGR synchronization barrier.
+    // session_data_ready is a retained event annotation; transport and target
+    // authority still require their independent current-source checks.
     bool transport_active{false};
     bool source_online{false};
     bool snapshot_complete{false};
@@ -125,7 +186,7 @@ struct DtcMarketDataSnapshot {
     bool aggr_online{false};
     bool book_snapshot_current{false};
     std::optional<plaza2::cgate::Plaza2Aggr20SysEventSnapshot> session_ready_witness;
-    plaza2::cgate::SessionReadyWitnessKind session_ready_witness_kind{plaza2::cgate::SessionReadyWitnessKind::None};
+    SessionReadyWitnessKind session_ready_witness_kind{SessionReadyWitnessKind::None};
     bool market_data_display_allowed{false};
     bool source_consistent{false};
     bool market_data_live{false};
@@ -141,6 +202,61 @@ struct DtcMarketDataSnapshot {
     std::string invalid_reason;
     std::vector<DtcMarketDataLevel> levels;
 };
+
+enum class DtcSecurityType : std::uint32_t { Future = 1 };
+
+struct DtcReplayDefinitionTerms {
+    std::string currency;
+    std::string description;
+    float contract_size{0};
+    float currency_value_per_increment{0};
+};
+
+// Validated immutable-by-convention definition value. `underlying_board` is
+// source metadata, never the DTC Exchange string. `definition_version` binds
+// the semantic 507 terms to their REFDATA source generation and deliberately
+// excludes AGGR price/book versions.
+struct DtcSecurityDefinitionSnapshot {
+    std::string symbol;
+    std::string exchange;
+    std::string underlying_board;
+    DtcSecurityType security_type{DtcSecurityType::Future};
+    std::string description;
+    float min_price_increment{0};
+    float currency_value_per_increment{0};
+    std::string currency;
+    float contract_size{0};
+    std::int64_t security_identifier{0};
+    std::int32_t session_id{0};
+    std::string base_contract_code;
+    std::int32_t base_contract_id{0};
+    std::string min_step_source;
+    std::string contract_size_source;
+    std::string currency_value_per_increment_source;
+    plaza2::private_state::SourceRowProvenance definition_source_provenance;
+    plaza2::private_state::SourceRowProvenance future_instruments_provenance;
+    plaza2::private_state::SourceRowProvenance future_sess_contents_provenance;
+    plaza2::private_state::SourceRowProvenance session_provenance;
+    plaza2::private_state::SourceRowProvenance future_vcb_provenance;
+    std::uint64_t definition_version{0};
+
+    friend bool operator==(const DtcSecurityDefinitionSnapshot&, const DtcSecurityDefinitionSnapshot&) = default;
+};
+
+struct DtcSecurityDefinitionValidation {
+    std::optional<DtcSecurityDefinitionSnapshot> definition;
+    std::string reason;
+
+    [[nodiscard]] bool available() const noexcept {
+        return definition.has_value();
+    }
+};
+
+// The single semantic validator/builder used by the DTC server and live
+// runner. Unknown mappings and economics fail closed with an exact reason.
+[[nodiscard]] DtcSecurityDefinitionValidation
+validate_dtc_security_definition(const DtcMarketDataSnapshot& snapshot, DtcSourceMode source_mode,
+                                 const DtcReplayDefinitionTerms& replay_terms = {});
 
 // Value conversion shared by the live owner-thread adapter and replay tests.
 [[nodiscard]] DtcMarketDataSnapshot make_dtc_market_data_snapshot(const ConnectorHostMarketDataSnapshot& market_data);
@@ -162,6 +278,13 @@ class DtcMarketDataSource {
     virtual ~DtcMarketDataSource() = default;
     [[nodiscard]] virtual DtcMarketDataSnapshot snapshot() const = 0;
     [[nodiscard]] virtual DtcReadOnlyCapabilities capabilities() const noexcept = 0;
+    // Public trades are a distinct committed event stream. Sources which do
+    // not publish that stream remain depth-only by default.
+    [[nodiscard]] virtual plaza2::cgate::Plaza2PublicDealsSnapshot
+    public_deals(std::uint64_t after_sequence = 0) const {
+        (void)after_sequence;
+        return {};
+    }
 };
 
 // Adapter from the single-threaded ConnectorHost owner to the provider-
@@ -173,6 +296,8 @@ class ConnectorHostDtcMarketDataSource final : public DtcMarketDataSource {
 
     [[nodiscard]] DtcMarketDataSnapshot snapshot() const override;
     [[nodiscard]] DtcReadOnlyCapabilities capabilities() const noexcept override;
+    [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
+    public_deals(std::uint64_t after_sequence = 0) const override;
 
   private:
     ConnectorHost& host_;

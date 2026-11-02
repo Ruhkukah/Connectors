@@ -1,10 +1,12 @@
 #include "plaza2_runtime_test_support.hpp"
+#include "fake_cgate_control.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -20,8 +22,12 @@ struct CapturedText {
 
 struct Capture final : Plaza2ListenerEventHandler {
     std::vector<CapturedText> values;
+    bool slow_data{};
 
     Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override {
+        if (slow_data && event.kind == Plaza2ListenerEventKind::StreamData &&
+            event.table_code == generated::TableCode::kFortsAggrReplSysEvents)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         for (const auto& field : event.fields) {
             if (field.kind != Plaza2DecodedValueKind::String)
                 continue;
@@ -50,22 +56,27 @@ struct Capture final : Plaza2ListenerEventHandler {
     }
 };
 
-void run(const moex::plaza2::test::RuntimeFixturePaths& fixture, bool cp1251) {
+void run(const moex::plaza2::test::RuntimeFixturePaths& fixture, bool cp1251, bool timed = false) {
+    moex::plaza2::test::fake::Control fake(fixture.library_path);
     using enum generated::FieldCode;
     if (cp1251)
-        require(::setenv("MOEX_FAKE_CP1251_TEXT", "1", 1) == 0, "set text fixture flag");
+        fake.set(moex::plaza2::test::fake::Option::Cp1251Text);
     else
-        require(::unsetenv("MOEX_FAKE_CP1251_TEXT") == 0, "clear text fixture flag");
+        fake.clear(moex::plaza2::test::fake::Option::Cp1251Text);
     Plaza2Settings settings;
     settings.environment = Plaza2Environment::Test;
     settings.runtime_root = fixture.root;
     settings.env_open_settings = "ini=config/t1.ini;key=00000000";
+    std::vector<Plaza2CallbackTiming> timings;
+    if (timed)
+        settings.listener_callback_timing = [&](const auto& timing) { timings.push_back(timing); };
     Plaza2Env env;
     require(!env.open(settings), "open fake environment");
     Plaza2Connection connection;
     require(!connection.create(env, "p2tcp://127.0.0.1:4001;app_name=text_fixture"), "create fake connection");
     require(!connection.open({}), "open fake connection");
     Capture capture;
+    capture.slow_data = timed;
     Plaza2Listener refdata;
     Plaza2Listener aggr;
     require(
@@ -87,6 +98,14 @@ void run(const moex::plaza2::test::RuntimeFixturePaths& fixture, bool cp1251) {
     } else {
         capture.check(kFortsAggrReplSysEventsMessage, "session_data_ready", "session_data_ready");
     }
+    if (timed) {
+        const auto slow = std::find_if(timings.begin(), timings.end(), [](const auto& timing) {
+            return timing.stream_code == generated::StreamCode::kFortsAggrRepl &&
+                   timing.table_code == generated::TableCode::kFortsAggrReplSysEvents &&
+                   timing.native_message_type == 0x120 && timing.elapsed_ns >= 1000000;
+        });
+        require(slow != timings.end(), "callback timing omitted slow projection work with no event observer");
+    }
 }
 } // namespace
 
@@ -98,12 +117,12 @@ int main(int argc, char** argv) {
         const auto fixture = materialize_runtime_fixture(
             root, argv[1], Plaza2Environment::Test, build_vendor_like_runtime_scheme("SPECTRA93", "93.0.0.0", "test"));
         run(fixture, false);
+        run(fixture, false, true);
         run(fixture, true);
         run(fixture, false);
         remove_tree(root);
         return 0;
     } catch (const std::exception& error) {
-        ::unsetenv("MOEX_FAKE_CP1251_TEXT");
         remove_tree(root);
         std::cerr << error.what() << '\n';
         return 1;

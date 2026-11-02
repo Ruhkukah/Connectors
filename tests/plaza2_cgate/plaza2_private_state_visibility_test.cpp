@@ -1,3 +1,4 @@
+#include "moex/plaza2/cgate/plaza2_fake_engine.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state.hpp"
 
 #include "plaza2_fake_scenarios.hpp"
@@ -96,10 +97,9 @@ int main() {
         require(!listener.visible_during_rows, "committed projection must remain hidden during row staging");
         require(!listener.visible_before_commit, "committed projection must remain hidden until TN_COMMIT");
         require(listener.committed_sessions == 1, "session state should become visible on commit");
-        require(listener.committed_instruments == 3, "instrument state should become visible on commit");
-        require(
-            listener.committed_orders == 3,
-            "independent TRADE, regular USERORDERBOOK, and current-day order state should become visible on commit");
+        require(listener.committed_instruments == 1, "instrument state should become visible on commit");
+        require(listener.committed_orders == 2,
+                "independent regular TRADE and USERORDERBOOK state should become visible on commit");
         require(listener.committed_trades == 1, "own-trade state should become visible on commit");
 
         return 0;
