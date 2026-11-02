@@ -1,16 +1,22 @@
 #pragma once
 
 #include "late_move_host_regression.hpp"
+#include <sstream>
 
 namespace moex::connector_host::regression {
-inline void multileg_history_host_regression(TradingHostConfig config, const plaza2::test::fake::Control& control,
-                                             const std::filesystem::path& root) {
+inline void multileg_history_host_case(TradingHostConfig config, const plaza2::test::fake::Control& control,
+                                       const std::filesystem::path& root, bool filtered) {
     using namespace private_delta_host_detail;
     const auto isin = config.isin_ids.front();
     const auto account = config.orders.broker_code + config.orders.client_code;
     config.session.process_timeout_ms = 0;
-    config.journal_path = root / "multileg-history.ndjson";
-    config.identity_state_path = root / "multileg-history.state";
+    const auto suffix = filtered ? "filtered" : "unfiltered";
+    config.journal_path = root / (std::string("multileg-history-") + suffix + ".ndjson");
+    config.identity_state_path = root / (std::string("multileg-history-") + suffix + ".state");
+    if (!filtered)
+        for (auto& stream : config.session.private_streams)
+            if (stream.stream_code == gen::StreamCode::kFortsTradeRepl)
+                stream.settings = "p2repl://FORTS_TRADE_REPL";
     control.configure({.suppress_auto_replies = true,
                        .suppress_initial_orders = true,
                        .zero_position = true,
@@ -62,7 +68,24 @@ inline void multileg_history_host_regression(TradingHostConfig config, const pla
     require(!host.stop(), "multileg history fixture stop");
     std::ifstream journal(config.journal_path);
     const std::string records{std::istreambuf_iterator<char>(journal), std::istreambuf_iterator<char>()};
+    std::size_t multileg_clears{};
+    std::istringstream lines(records);
+    std::string line;
+    while (std::getline(lines, line))
+        if (line.find("\"event\":\"clear_deleted\"") != std::string::npos &&
+            (line.find("\"table\":\"multileg_orders_log\"") != std::string::npos ||
+             line.find("\"table\":\"user_multileg_deal\"") != std::string::npos))
+            ++multileg_clears;
+    require(multileg_clears == (filtered ? 0U : 2U),
+            "multileg clears were not filtered or legacy delivered-clear guard was bypassed");
     require(records.find("\"event\":\"private_history_gap\"") == std::string::npos,
             "excluded multileg cleanup unnecessarily rebuilt regular private orders");
+}
+inline void multileg_history_host_regression(TradingHostConfig config, const plaza2::test::fake::Control& control,
+                                             const std::filesystem::path& root) {
+    // Preserve both boundaries: ignored legacy full-schema callbacks must not
+    // invalidate regular history, and restricted subscriptions receive none.
+    multileg_history_host_case(config, control, root, false);
+    multileg_history_host_case(std::move(config), control, root, true);
 }
 } // namespace moex::connector_host::regression

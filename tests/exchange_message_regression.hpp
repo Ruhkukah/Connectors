@@ -27,21 +27,28 @@ inline void exchange_message_regression(TradingHostConfig config, const plaza2::
             const auto prefix = missing ? "exchange-missing" : "exchange-messages";
             config.journal_path = root / (std::string(prefix) + ".ndjson");
             config.identity_state_path = root / (std::string(prefix) + ".state");
+            const auto posts_before = control.commands().size();
             CgateTradingHost host(config);
-            bootstrap(host);
             if (missing) {
-                require(diagnostics.str().find("sys_messages table unavailable") != std::string::npos,
-                        "negotiated REFDATA without sys_messages had no operator warning");
-                require(host.status().find("\"order_entry_ready\":true") != std::string::npos,
-                        "missing informational messages blocked trading readiness");
-                require(!host.stop(), "missing informational table stop");
+                // sys_messages is explicitly requested and declared to MOEX.
+                // Losing that selected table must prevent readiness, rather
+                // than silently accepting a smaller subscription contract.
+                require(!host.start(), "missing exchange table host start");
+                for (int i = 0; i < 30; ++i)
+                    require(!host.poll(), "missing exchange table poll");
+                const auto status = host.status();
+                require(status.find("\"order_entry_ready\":true") == std::string::npos &&
+                            status.find("INCOMPATIBLE_SCHEME sys_messages") != std::string::npos,
+                        "missing declared exchange-message table allowed readiness or lost its schema failure");
+                require(control.commands().size() == posts_before, "missing exchange-message table posted a command");
+                require(!host.stop(), "missing exchange table stop");
                 std::ifstream journal(config.journal_path);
                 const std::string logged{std::istreambuf_iterator<char>(journal), {}};
-                require(logged.find("\"event\":\"exchange_messages_unavailable\"") != std::string::npos &&
-                            logged.find("sys_messages table unavailable") != std::string::npos,
-                        "missing exchange table warning was not journaled");
+                require(logged.find("INCOMPATIBLE_SCHEME sys_messages") != std::string::npos,
+                        "missing selected exchange-message table has no named schema failure");
                 continue;
             }
+            bootstrap(host);
             require(host.status().find("Certification test service") != std::string::npos &&
                         diagnostics.str().find("exchange_message:") != std::string::npos,
                     "committed exchange message absent from status/stderr");

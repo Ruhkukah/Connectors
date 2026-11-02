@@ -2651,7 +2651,7 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
             case fixture::EventKind::ClearDeleted: {
                 const auto* plan = find_message_plan(listener, owned.table_code);
                 if (!plan)
-                    return kCgErrInvalidArgument;
+                    return listener.tables_filtered ? kCgErrOk : kCgErrInvalidArgument;
                 auto data = make_clear_deleted_payload(static_cast<std::uint32_t>(plan->msg_index), owned.revision,
                                                        owned.flags);
                 return emit_simple_message(listener, kCgMsgP2replClearDeleted, data.data(), data.size());
