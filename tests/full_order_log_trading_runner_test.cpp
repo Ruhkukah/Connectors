@@ -246,6 +246,22 @@ int main(int argc, char** argv) {
                           "missing trading scope reached CGate or a native post");
         }
         {
+            const fs::path misleading_log{"--clock-offset-us"};
+            const fs::path identity{"clock-value.state"};
+            auto request = arguments(executable, fixture, "clock-value.ndjson", "fol_clock_value");
+            erase_option(request, "--clock-offset-us");
+            const auto log = std::ranges::find(request, "--log");
+            *(log + 1) = misleading_log.string();
+            request.insert(request.end(), {"--state", identity.string()});
+            Process child(request, "clock-value");
+            test::require(child.wait() == 2 && child.errors().find("--clock-offset-us") != std::string::npos,
+                          "option-looking log value bypassed parsed clock requirement");
+            for (const auto& path :
+                 {misleading_log, fs::path(misleading_log.string() + ".sock"), identity,
+                  fs::path(identity.string() + ".lock"), fixture.config_dir / "fol-native-posts.log"})
+                test::require(!fs::exists(path), "clock refusal created journal/socket/ID/native-post resources");
+        }
+        {
             const fs::path wrong_log{"wrong-source.ndjson"};
             host::CommandSocket wrong(wrong_log.string() + ".sock");
             Process client({executable, "plaza2", "cmd", "--offline-fake", "--log", wrong_log.string(),

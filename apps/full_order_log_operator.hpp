@@ -77,6 +77,8 @@ inline int full_order_log_operator(int argc, char** argv,
         if (session.runtime.environment != cg::Plaza2Environment::Test || !session.allow_orders ||
             session.read_only_market_data)
             throw std::invalid_argument("FOL write mode is TEST-only and requires orders explicitly enabled");
+        if (!config.clock_offset_us)
+            throw std::invalid_argument("FOL run requires measured --clock-offset-us");
         const auto& connection = session.connection_settings;
         if (endpoint(connection.substr(8, connection.find(';') - 8)) == endpoint(trading_router))
             throw std::invalid_argument("order-log and trading router addresses must differ");
