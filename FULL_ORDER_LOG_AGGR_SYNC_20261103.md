@@ -1,5 +1,7 @@
 # Full Order Log: AGGR synchronization, 3 November 2026
 
+> Historical merge snapshot at `6a9245fe`: the later client-scheme restriction supersedes the bare composite URI described below. See `FULL_ORDER_LOG_SCHEME_REVIEW_20261103.md` for the current four-table contract.
+
 The owner requested the newly certified AGGR changes on the separate Full Order Log line. The verified current AGGR/PR68 head is `fb57c8f7e3505ad8f41b0191438930192844c24e`. PR70 previously ended at `625e726bd697623c651c48466f91de0c6d72891f`, whose AGGR merge base is `52782266cc9e230dbcbb84bd67433a2febce7d9b`.
 
 This synchronization merges the two intervening AGGR commits:

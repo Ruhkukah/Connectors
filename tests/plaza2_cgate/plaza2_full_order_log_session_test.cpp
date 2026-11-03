@@ -8,6 +8,8 @@
 #include <vector>
 #include <iostream>
 #include <limits>
+#include <fstream>
+#include <iterator>
 using namespace moex::plaza2;
 using namespace moex::plaza2_trade;
 using test::require;
@@ -25,6 +27,7 @@ int main(int argc, char** argv) {
         cgate::Plaza2FullOrderLog book(ids, 100, 100);
         CgateSessionConfig config;
         config.runtime.runtime_root = fixture.root;
+        config.runtime.scheme_dir = fixture.scheme_dir;
         config.runtime.env_open_settings = "ini=config/t1.ini;key=00000000";
         config.connection_settings = "p2tcp://127.0.0.1:4101;app_name=full-order-log-test";
         config.read_only_market_data = true;
@@ -35,12 +38,12 @@ int main(int argc, char** argv) {
              cgate::required_replication_listener_settings(generated::StreamCode::kFortsRefdataRepl),
              "mode=snapshot+online"}};
         config.market_data_isin_ids = {1001};
-        config.full_order_log_stream = {cgate::kFullOrderLogStreamCode,
-                                        "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL", ""};
+        const auto canonical_url = cgate::full_order_log_listener_settings(fixture.scheme_dir);
+        config.full_order_log_stream = {cgate::kFullOrderLogStreamCode, canonical_url, ""};
         config.full_order_log_handler = &book;
         std::vector<std::string> operation_logs;
         std::vector<std::uint32_t> close_reasons;
-        std::vector<std::string> refdata_tables;
+        std::vector<std::string> refdata_tables, full_log_tables;
         config.event_log = [&](std::string_view kind, std::string_view detail) {
             operation_logs.push_back(std::string(kind) + " " + std::string(detail));
         };
@@ -53,6 +56,18 @@ int main(int argc, char** argv) {
                 std::ranges::sort(refdata_tables);
             }
             if (event.stream_code == cgate::kFullOrderLogStreamCode &&
+                event.kind == cgate::Plaza2ListenerEventKind::Open) {
+                full_log_tables.clear();
+                for (std::size_t i = 0; i < event.raw_tables.size(); ++i) {
+                    require(event.raw_tables[i].index == i, "filtered composite table indices must be reindexed");
+                    full_log_tables.push_back(event.raw_tables[i].name);
+                }
+                if (event.raw_tables.size() == 4)
+                    require(event.raw_tables[2].name == "orders" && event.raw_tables[3].name == "info",
+                            "client schema order must move snapshot indices before ClearDeleted probes");
+                std::ranges::sort(full_log_tables);
+            }
+            if (event.stream_code == cgate::kFullOrderLogStreamCode &&
                 event.kind == cgate::Plaza2ListenerEventKind::Close)
                 close_reasons.push_back(event.close_reason);
         };
@@ -63,6 +78,35 @@ int main(int argc, char** argv) {
         scenario.options[static_cast<std::size_t>(f::Option::DisableReplyListener)] = "1";
         fake.configure(scenario);
         fake.configure_refdata_count(5000);
+        for (const auto& unsafe : {std::string("p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL"),
+                                   canonical_url + ";tables=orders_log", canonical_url + ";unexpected=1"}) {
+            auto bad = config;
+            bad.full_order_log_stream.settings = unsafe;
+            CgateSession rejected(bad);
+            require(rejected.start().code == cgate::Plaza2ErrorCode::InvalidConfiguration &&
+                        fake.opens(cgate::kFullOrderLogStreamCode) == 0,
+                    "bare, tables= and unexpected composite URLs must fail before listener startup");
+        }
+        for (const auto& unsafe :
+             {std::filesystem::path("relative"), fixture.scheme_dir / "bad;path", fixture.scheme_dir / "bad|path",
+              fixture.scheme_dir / "bad\npath", fixture.scheme_dir / "bad;path/../safe"}) {
+            bool refused = false;
+            try {
+                (void)cgate::full_order_log_listener_settings(unsafe);
+            } catch (const std::invalid_argument&) {
+                refused = true;
+            }
+            require(refused, "ambiguous CGate schema paths must be refused");
+        }
+        for (const auto* name : {"online.ini", "snapshot.ini"}) {
+            const auto path = fixture.scheme_dir / "full_order_log" / name;
+            std::filesystem::rename(path, path.string() + ".hidden");
+            CgateSession missing_file(config);
+            require(missing_file.start().code == cgate::Plaza2ErrorCode::InvalidConfiguration &&
+                        fake.opens(cgate::kFullOrderLogStreamCode) == 0,
+                    "a missing client schema must refuse startup without an unfiltered fallback");
+            std::filesystem::rename(path.string() + ".hidden", path);
+        }
         fake.set(f::Option::ConnHoldOpening);
         CgateSession session(config);
         require(!session.start(), "full order log start");
@@ -88,9 +132,9 @@ int main(int argc, char** argv) {
                     "FORTS_REFDATA_REPL;tables=session,fut_instruments,fut_sess_contents,fut_vcb,sys_messages,"
                     "instr2matching_map",
                 "FullLog alone must append matching to the reviewed REFDATA server subscription");
-        require(fake.listener_settings(cgate::kFullOrderLogStreamCode) ==
-                    "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL",
-                "filtered REFDATA must preserve the exact vendor composite URL without tables or scheme");
+        require(fake.listener_settings(cgate::kFullOrderLogStreamCode) == canonical_url &&
+                    full_log_tables == std::vector<std::string>{"info", "orders", "orders_log", "sys_events"},
+                "both client INIs must negotiate exactly the four composite tables with no tables selector");
         require(session.private_state().instruments().size() == 5000, "realistic REFDATA bootstrap size");
         const auto metadata_revision = session.market_data_metadata_revision();
         pump(100);
@@ -177,8 +221,10 @@ int main(int argc, char** argv) {
         pump();
         require(fake.opens(cgate::kFullOrderLogStreamCode) == opens + 1 && book.valid() && book.order_count() == 2,
                 "ERROR must reopen a fresh composite snapshot");
-        require(fake.listener_open_settings(cgate::kFullOrderLogStreamCode).find("replstate") == std::string::npos,
-                "p2ordbook recovery must never pass p2repl replay keys");
+        require(fake.listener_open_settings(cgate::kFullOrderLogStreamCode).find("replstate") == std::string::npos &&
+                    fake.listener_settings(cgate::kFullOrderLogStreamCode) == canonical_url &&
+                    full_log_tables == std::vector<std::string>{"info", "orders", "orders_log", "sys_events"},
+                "fresh composite recovery must retain both client schemas and never pass replay keys");
         // A committed single-partition remap fences the book and rebuilds it.
         fake.enqueue({.kind = f::EventKind::Begin, .stream_code = generated::StreamCode::kFortsRefdataRepl});
         fake.enqueue(
@@ -296,6 +342,28 @@ int main(int argc, char** argv) {
         require(fake.opens(cgate::kFullOrderLogStreamCode) == life_opens + 1,
                 "successful fresh reopen does not rearm the watchdog");
         require(!session.stop(), "full log stop");
+        // Mutating the actual client schema must change the negotiated OPEN,
+        // rather than letting a fake pass from URL text alone.
+        const auto online_path = fixture.scheme_dir / "full_order_log/online.ini";
+        std::ifstream online_input(online_path);
+        const std::string online_text((std::istreambuf_iterator<char>(online_input)), {});
+        for (const auto& omitted : {std::string("table=sys_events"), std::string("field=public_amount_rest,i8")}) {
+            auto filtered = online_text;
+            const auto at = filtered.find(omitted);
+            require(at != std::string::npos, "vendor client schema contains required declaration");
+            filtered.erase(at, omitted.size());
+            test::write_text_file(online_path, filtered);
+            fake.configure(scenario);
+            CgateSession incomplete(config);
+            require(!incomplete.start(), "incomplete client schema starts its read-side connection");
+            cgate::Plaza2Error error;
+            for (int i = 0; i < 5 && !error; ++i)
+                error = incomplete.poll(false);
+            require(error.code == cgate::Plaza2ErrorCode::IncompatibleScheme && !book.valid(),
+                    "a required table or field omitted from the actual client INI must fail closed at OPEN");
+            require(!incomplete.stop(), "incomplete client schema stop");
+            test::write_text_file(online_path, online_text);
+        }
         // A bad anonymous table contract is a startup refusal with its missing field named.
         scenario.mutated_schema_field = generated::FieldCode::kFortsUserorderbookReplOrdersPublicAmountRest;
         scenario.omit_schema_field = true;

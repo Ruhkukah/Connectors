@@ -81,13 +81,11 @@ static void semantics() {
     h.add(4, 11, 100000, 2, 2, 7, 0x2);
     h.add(5, 11, 100000, 7, 1, 8, 0x4);
     h.add(6, 11, 100000, 7, 1, 9, 0x8000000);
-    Row multileg(h.schema[3]);
-    h.apply(multileg);
     h.add(7, 11, 100000, 10, 1, 10);
     h.add(7, 11, 100000, 4, 2, 11, 0x2);
     h.commit();
     require(h.book.order_count() == 1 && h.book.levels(11, true).at(100000) == 4,
-            "IOC remainders, NonQuote and multileg excluded; resting IOC-flagged execution applied");
+            "IOC remainders and NonQuote excluded; resting IOC-flagged execution applied");
     h.begin();
     const auto before = h.book.metrics();
     auto excluded = row(h.schema[2], 9, 33, 0, 1);
@@ -147,6 +145,17 @@ static void recovery() {
     missing[2].name = "other";
     const auto error = h.book.on_plaza2_listener_event({.kind = Kind::Open, .raw_tables = missing});
     require(error.code == Plaza2ErrorCode::IncompatibleScheme, "missing table is permanent schema incompatibility");
+    missing = tables();
+    missing[3].name = "multileg_orders_log";
+    require(h.book.on_plaza2_listener_event({.kind = Kind::Open, .raw_tables = missing}).code ==
+                Plaza2ErrorCode::IncompatibleScheme,
+            "sys_events is mandatory");
+    std::vector<Plaza2RawTableBinding> extra(missing.begin(), missing.end());
+    extra[3].name = "sys_events";
+    extra.push_back({.name = "heartbeat", .index = 4});
+    require(h.book.on_plaza2_listener_event({.kind = Kind::Open, .raw_tables = extra}).code ==
+                Plaza2ErrorCode::IncompatibleScheme,
+            "extra composite table violates restricted subscription");
     Harness small(2, 8);
     small.online();
     small.begin();

@@ -102,7 +102,8 @@ int main(int argc, char** argv) {
         transport.process_timeout_ms = 1;
         transport.collect_poll_metrics = true; // This separate read-only process only.
         transport.full_order_log_stream = {.stream_code = cg::kFullOrderLogStreamCode,
-                                           .settings = "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL"};
+                                           .settings =
+                                               cg::full_order_log_listener_settings(transport.runtime.scheme_dir)};
         transport.full_order_log_handler = &book;
         transport.event_log = [](std::string_view event, std::string_view detail) {
             std::cerr << event << ' ' << detail << '\n';

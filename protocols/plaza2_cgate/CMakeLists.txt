@@ -118,3 +118,8 @@ target_compile_features(moex_plaza2_cgate_aggr20_md PUBLIC cxx_std_20)
 add_library(moex_plaza2_cgate_full_order_log STATIC src/plaza2_full_order_log.cpp)
 target_link_libraries(moex_plaza2_cgate_full_order_log PUBLIC moex_plaza2_cgate_runtime)
 target_compile_features(moex_plaza2_cgate_full_order_log PUBLIC cxx_std_20)
+
+# Deployment copies this subdirectory beside the full vendor forts_scheme.ini.
+install(FILES schema/full_order_log/online.ini schema/full_order_log/snapshot.ini
+    schema/full_order_log/manifest.json schema/full_order_log/README.md
+    DESTINATION share/moex/plaza2/cgate/schema/full_order_log)

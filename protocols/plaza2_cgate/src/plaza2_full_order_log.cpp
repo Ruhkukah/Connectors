@@ -387,12 +387,14 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
             p.bound = false;
             p.have_life = false;
             p.life = p.initial_life = 0;
+            require(e.raw_tables.size() == 4, "requires exactly orders_log, sys_events, orders and info");
             const auto table = [&](std::string_view name) -> const Plaza2RawTableBinding& {
                 const auto i = std::find_if(e.raw_tables.begin(), e.raw_tables.end(),
                                             [&](const auto& t) { return t.name == name; });
-                require(i != e.raw_tables.end(), "requires orders_log, orders and info");
+                require(i != e.raw_tables.end(), "requires orders_log, sys_events, orders and info");
                 return *i;
             };
+            table("sys_events");
             p.log = bind(table("orders_log"), true);
             p.snapshot = bind(table("orders"), false);
             const auto& info = table("info");

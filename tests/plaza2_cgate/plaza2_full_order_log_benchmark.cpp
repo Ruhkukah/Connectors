@@ -142,7 +142,8 @@ int main(int argc, char** argv) {
         transport.process_timeout_ms = 1;
         transport.aggr20_stream = {};
         transport.full_order_log_stream = {.stream_code = cg::kFullOrderLogStreamCode,
-                                           .settings = "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL"};
+                                           .settings =
+                                               cg::full_order_log_listener_settings(transport.runtime.scheme_dir)};
         transport.full_order_log_handler = &timed;
         moex::connector_host::ConnectorHost host(std::move(config));
         moex::connector_host::FullOrderLogDtcLoop loop(host, book,

@@ -16,11 +16,6 @@ struct Fixture {
     Fixture() {
         const auto base = tables();
         schema.assign(base.begin(), base.end());
-        for (const auto* name : {"heartbeat", "sys_events"})
-            schema.push_back({.name = name,
-                              .fields = {{.name = "replRev", .type_token = "i8", .size = 8}},
-                              .index = schema.size(),
-                              .row_size = 8});
         open(composite);
         open(reference);
         send(composite, {.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 7});
@@ -80,7 +75,7 @@ int main() {
         Fixture f;
         f.begin(f.composite);
         f.log(101, 4);
-        for (std::size_t i : {std::size_t{4}, std::size_t{5}}) {
+        for (std::size_t i : {std::size_t{3}}) {
             Row unrelated(f.schema[i]);
             unrelated.set("replRev", std::int64_t{999999});
             f.send(f.composite, unrelated.event());

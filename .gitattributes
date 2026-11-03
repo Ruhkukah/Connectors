@@ -1,0 +1,3 @@
+# Preserve byte-identical schemetool output, including its trailing empty lines.
+protocols/plaza2_cgate/schema/full_order_log/online.ini -text whitespace=-blank-at-eof
+protocols/plaza2_cgate/schema/full_order_log/snapshot.ini -text whitespace=-blank-at-eof

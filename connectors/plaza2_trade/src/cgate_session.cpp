@@ -1,5 +1,6 @@
 #include "moex/plaza2_trade/cgate_session.hpp"
 #include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state_bridge.hpp"
 #include "moex/plaza2/cgate/cgate_logging.hpp"
 
@@ -477,12 +478,26 @@ struct CgateSession::Impl {
             return invalid("public DEALS requires read-only market data and a positive int32 target ISIN");
         if (config.connection_settings.empty() || config.runtime.runtime_root.empty())
             return invalid("CGate runtime and connection are required");
-        if (!config.full_order_log_stream.settings.empty() &&
-            (!config.read_only_market_data || !config.full_order_log_handler || config.market_data_isin_ids.empty() ||
-             config.full_order_log_stream.stream_code != cg::kFullOrderLogStreamCode ||
-             config.full_order_log_stream.settings != "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL" ||
-             config.full_order_log_stream.open_settings.find("replstate") != std::string::npos))
-            return invalid("FullOrderLog requires read-only composite listener, configured ISINs and no replstate");
+        if (!config.full_order_log_stream.settings.empty()) {
+            try {
+                if (!config.read_only_market_data || !config.full_order_log_handler ||
+                    config.market_data_isin_ids.empty() ||
+                    config.full_order_log_stream.stream_code != cg::kFullOrderLogStreamCode ||
+                    config.full_order_log_stream.settings !=
+                        cg::full_order_log_listener_settings(config.runtime.scheme_dir) ||
+                    config.full_order_log_stream.open_settings.find("replstate") != std::string::npos)
+                    return invalid(
+                        "FullOrderLog requires its canonical two-schema read-only listener and no replstate");
+                for (const auto name : {"online.ini", "snapshot.ini"}) {
+                    const auto path = config.runtime.scheme_dir / "full_order_log" / name;
+                    std::error_code error;
+                    if (!std::filesystem::is_regular_file(path, error) || !std::ifstream(path).good())
+                        return invalid("FullOrderLog client schema is missing or unreadable: " + std::string(name));
+                }
+            } catch (const std::invalid_argument& error) {
+                return invalid(error.what());
+            }
+        }
         if (config.private_streams.empty())
             return invalid("at least one private replication stream is required");
         if (!config.read_only_market_data && config.publisher_settings.empty())

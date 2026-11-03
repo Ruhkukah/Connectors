@@ -72,7 +72,10 @@ inline std::array<Plaza2RawTableBinding, 4> tables() {
                      },
                  .index = 2,
                  .row_size = 128};
-    result[3] = {.name = "multileg_orders_log", .index = 3, .row_size = 1};
+    result[3] = {.name = "sys_events",
+                 .fields = {{.name = "replRev", .type_token = "i8", .offset = 0, .size = 8, .index = 0}},
+                 .index = 3,
+                 .row_size = 8};
     return result;
 }
 struct Row {

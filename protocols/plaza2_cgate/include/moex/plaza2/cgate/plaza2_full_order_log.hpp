@@ -7,8 +7,22 @@
 #include <memory>
 #include <memory_resource>
 #include <optional>
+#include <stdexcept>
 
 namespace moex::plaza2::cgate {
+
+// Fixed client schemas restrict each leg independently; CGate p2ordbook does
+// not support the p2repl tables= selector. Keep forts_scheme.ini beside this
+// subdirectory for the shared runtime compatibility probe.
+inline std::string full_order_log_listener_settings(const std::filesystem::path& scheme_dir) {
+    const auto directory = scheme_dir.string();
+    if (!scheme_dir.is_absolute() || directory.find_first_of(";|\r\n") != std::string::npos ||
+        directory.find('\0') != std::string::npos)
+        throw std::invalid_argument("FullOrderLog requires an absolute scheme directory without CGate delimiters");
+    return "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL;online.scheme=|FILE|" +
+           (scheme_dir.lexically_normal() / "full_order_log/online.ini").string() + "|ORDLOG;snapshot.scheme=|FILE|" +
+           (scheme_dir.lexically_normal() / "full_order_log/snapshot.ini").string() + "|OrdBook";
+}
 
 struct FullOrderLogMetrics {
     std::uint64_t rows_total{}, rows_filtered{}, excluded_adds{}, excluded_ids{}, excluded_evictions{};

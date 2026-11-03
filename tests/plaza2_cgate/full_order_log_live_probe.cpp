@@ -132,10 +132,12 @@ int main(int argc, char** argv) {
         }
         const auto suffix = "_MATCH" + std::to_string(matching);
         cg::Plaza2Listener full, raw;
-        check(full.create(connection, cg::kFullOrderLogStreamCode,
-                          "p2ordbook://FORTS_ORDLOG_REPL" + suffix + ";snapshot=FORTS_ORDBOOK_REPL" + suffix,
-                          &composite));
-        check(raw.create(connection, cg::kFullOrderLogStreamCode, "p2repl://FORTS_ORDBOOK_REPL" + suffix, &reference));
+        auto full_settings = cg::full_order_log_listener_settings(config.runtime.scheme_dir);
+        replace(full_settings, "FORTS_ORDLOG_REPL", "FORTS_ORDLOG_REPL" + suffix);
+        replace(full_settings, "FORTS_ORDBOOK_REPL", "FORTS_ORDBOOK_REPL" + suffix);
+        check(full.create(connection, cg::kFullOrderLogStreamCode, full_settings, &composite));
+        check(raw.create(connection, cg::kFullOrderLogStreamCode,
+                         "p2repl://FORTS_ORDBOOK_REPL" + suffix + ";tables=orders,info", &reference));
         check(full.open(""));
         check(raw.open("mode=snapshot+online"));
         std::signal(SIGINT, stop);

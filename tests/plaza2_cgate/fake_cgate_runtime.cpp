@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <map>
 #include <limits>
 #include <optional>
 #include <string>
@@ -1805,6 +1806,53 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
     return scheme;
 }
 
+// The fake reads the same client INIs that CGate receives. Selection is not
+// inferred from the expected URL: changing a file changes the negotiated schema.
+using ClientTables = std::map<std::string, std::vector<std::pair<std::string, std::string>>>;
+bool read_client_schema(std::string_view settings, std::string_view key, std::string_view group,
+                        std::vector<std::string>& names, ClientTables& tables) {
+    const auto prefix = ";" + std::string(key) + "=|FILE|";
+    const auto begin = settings.find(prefix);
+    if (begin == std::string_view::npos || settings.find(prefix, begin + 1) != std::string_view::npos)
+        return false;
+    const auto value = settings.substr(begin + prefix.size());
+    const auto separator = value.find('|');
+    if (separator == std::string_view::npos || value.substr(separator + 1, value.find(';') - separator - 1) != group)
+        return false;
+    std::ifstream input(std::string(value.substr(0, separator)));
+    if (!input)
+        return false;
+    bool selected = false, found = false;
+    const auto initial_size = names.size();
+    std::string line, table_name;
+    while (std::getline(input, line)) {
+        const auto first = line.find_first_not_of(" \t\r");
+        if (first == std::string::npos)
+            continue;
+        line = line.substr(first, line.find_last_not_of(" \t\r") - first + 1);
+        if (line.starts_with('[')) {
+            selected = line == "[dbscheme:" + std::string(group) + "]";
+            found = found || selected;
+            const auto table_prefix = "[table:" + std::string(group) + ":";
+            table_name = line.starts_with(table_prefix) && line.ends_with(']')
+                             ? line.substr(table_prefix.size(), line.size() - table_prefix.size() - 1)
+                             : "";
+        } else if (selected && line.starts_with("table=")) {
+            auto name = line.substr(6);
+            if (name.empty() || std::find(names.begin(), names.end(), name) != names.end())
+                return false;
+            names.push_back(std::move(name));
+        } else if (!table_name.empty() && line.starts_with("field=")) {
+            const auto comma = line.find(',');
+            if (comma == std::string::npos)
+                return false;
+            tables[table_name].emplace_back(line.substr(6, comma - 6),
+                                            line.substr(comma + 1, line.find(',', comma + 1) - comma - 1));
+        }
+    }
+    return input.eof() && found && names.size() > initial_size;
+}
+
 // Model the vendor tables= contract rather than exposing every fixture table.
 // Schema indices are negotiated again after filtering; product decoders must
 // use this descriptor's indices, not generated/full-server table ordinals.
@@ -1823,14 +1871,24 @@ bool filter_listener_tables(FakeListener& listener) {
             break;
         parameters.remove_prefix(end + 1);
     }
-    if (!requested)
+    std::vector<std::string> client_tables;
+    ClientTables client_fields;
+    if (listener.stream_code == kFullOrderLogStreamCode) {
+        if (requested ||
+            !read_client_schema(listener.settings, "online.scheme", "ORDLOG", client_tables, client_fields) ||
+            !read_client_schema(listener.settings, "snapshot.scheme", "OrdBook", client_tables, client_fields))
+            return false;
+        listener.tables_filtered = true;
+    } else if (!requested)
         return true;
-    if (requested->empty() || listener.settings.find(";scheme=") != std::string::npos)
+    if (requested && (requested->empty() || listener.settings.find(";scheme=") != std::string::npos))
         return false;
     listener.tables_filtered = true;
     std::vector<std::string_view> names;
-    auto remaining = *requested;
-    while (true) {
+    for (const auto& name : client_tables)
+        names.push_back(name);
+    auto remaining = requested.value_or("");
+    while (requested) {
         const auto end = remaining.find(',');
         const auto name = remaining.substr(0, end);
         if (name.empty() || std::find(names.begin(), names.end(), name) != names.end() ||
@@ -1847,8 +1905,42 @@ bool filter_listener_tables(FakeListener& listener) {
     };
     std::erase_if(listener.scheme->messages, [&](const auto& message) { return !selected(message->name); });
     std::erase_if(listener.message_plans, [&](const auto& plan) { return !selected(plan.message_name); });
+    if (!client_tables.empty())
+        std::ranges::sort(listener.scheme->messages, {}, [&](const auto& message) {
+            return std::find(names.begin(), names.end(), message->name) - names.begin();
+        });
     for (std::size_t index = 0; index < listener.scheme->messages.size(); ++index) {
         auto& message = listener.scheme->messages[index];
+        if (!client_tables.empty()) {
+            const auto fields = client_fields.find(message->name);
+            if (fields == client_fields.end() || fields->second.empty())
+                return false;
+            std::erase_if(message->fields, [&](const auto& field) {
+                const auto* original = FindFieldByCode(static_cast<FieldCode>(field->desc.id));
+                const auto declared = std::ranges::find_if(fields->second, [&](const auto& entry) {
+                    return entry.first == (original ? original->field_name : field->name);
+                });
+                if (declared == fields->second.end())
+                    return true;
+                if (static_cast<FieldCode>(field->desc.id) != scenario.mutated_schema_field) {
+                    field->type_token = declared->second;
+                    field->desc.type = field->type_token.data();
+                }
+                return false;
+            });
+            for (std::size_t i = 0; i < message->fields.size(); ++i)
+                message->fields[i]->desc.next =
+                    i + 1 < message->fields.size() ? &message->fields[i + 1]->desc : nullptr;
+            message->desc.num_fields = message->fields.size();
+            message->desc.fields = message->fields.empty() ? nullptr : &message->fields.front()->desc;
+            for (auto& plan : listener.message_plans)
+                if (plan.message_name == message->name)
+                    std::erase_if(plan.fields, [&](const auto& field) {
+                        return std::ranges::none_of(message->fields, [&](const auto& kept) {
+                            return kept->desc.id == static_cast<std::uint32_t>(field.field_code);
+                        });
+                    });
+        }
         message->desc.next =
             index + 1 < listener.scheme->messages.size() ? &listener.scheme->messages[index + 1]->desc : nullptr;
         for (auto& plan : listener.message_plans)
