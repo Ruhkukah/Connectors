@@ -72,6 +72,15 @@ using fixture::Option;
 using FakeValueKind = fixture::FieldKind;
 using FakeFieldValue = fixture::Field;
 fixture::Scenario scenario;
+// Explicit INI opt-in for a separately exec'd fake FOL runner; never enabled by environment.
+std::string fol_runner_profile;
+std::filesystem::path fol_runner_posts, fol_runner_control;
+struct FolRunnerOrder {
+    std::int64_t id{20003}, ext_id{100};
+    std::string price{"102500"};
+    bool present{}, cancelled{};
+    std::uint64_t revision{};
+} fol_runner_order;
 std::deque<fixture::Event> queued_events;
 std::vector<fixture::PostedCommand> posted_commands;
 std::unordered_map<StreamCode, std::uint64_t> listener_opens;
@@ -1041,12 +1050,22 @@ bool persistent_order_session() {
     return fake_flag(Option::PersistentOrderSession);
 }
 
+std::uint64_t fol_runner_moment_ns() {
+    const auto now =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    return static_cast<std::uint64_t>(now - (fol_runner_profile == "stale" ? 31'000'000'000LL : 0));
+}
+
 std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     auto script = base_script_for_stream(stream_code);
     if (stream_code == kFullOrderLogStreamCode) {
         using enum FieldCode;
         using enum FakeValueKind;
         script = {{.table_code = TableCode::kFortsTradeReplOrdersLog}};
+        const auto session = scenario.session_id         ? scenario.session_id
+                             : option(Option::SessionId) ? std::strtoll(option(Option::SessionId), nullptr, 10)
+                                                         : 321;
         for (std::int64_t side = 1; side <= 2; ++side)
             script.push_back(
                 {.table_code = TableCode::kFortsUserorderbookReplOrders,
@@ -1056,11 +1075,18 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                      {.field_code = kFortsUserorderbookReplOrdersReplRev, .signed_value = 20 + side},
                      {.field_code = kFortsUserorderbookReplOrdersPublicOrderId, .signed_value = 9000 + side},
                      {.field_code = kFortsUserorderbookReplOrdersIsinId, .signed_value = 1001},
+                     {.field_code = kFortsUserorderbookReplOrdersSessId, .signed_value = session},
                      {.field_code = kFortsUserorderbookReplOrdersPublicAmountRest, .signed_value = side == 1 ? 7 : 9},
                      {.field_code = kFortsUserorderbookReplOrdersDir, .signed_value = side},
                      {.field_code = kFortsUserorderbookReplOrdersPrice,
                       .kind = Text,
-                      .text = side == 1 ? "102500" : "102600"}}});
+                      .text = side == 1 ? (fol_runner_profile == "invalid" ? "102700" : "102500") : "102600"}}});
+        if (!fol_runner_profile.empty())
+            for (auto& row : script)
+                if (row.table_code == TableCode::kFortsUserorderbookReplOrders)
+                    row.fields.push_back({.field_code = kFortsUserorderbookReplOrdersMomentNs,
+                                          .kind = UnsignedInteger,
+                                          .unsigned_value = fol_runner_moment_ns()});
         script.push_back({.table_code = TableCode::kFortsUserorderbookReplInfo,
                           .rev = 22,
                           .fields = {{.field_code = kFortsUserorderbookReplInfoTradesRev, .signed_value = 22},
@@ -1612,6 +1638,73 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
         for (auto& message : script)
             if (auto* field = find_field(message, FieldCode::kFortsAggrReplSysEventsSessId))
                 --field->signed_value;
+    if (!fol_runner_profile.empty() &&
+        (stream_code == StreamCode::kFortsTradeRepl || stream_code == StreamCode::kFortsUserorderbookRepl)) {
+        const auto table = stream_code == StreamCode::kFortsTradeRepl ? kFortsTradeReplOrdersLog
+                                                                      : kFortsUserorderbookReplOrdersCurrentday;
+        std::erase_if(script, [&](const auto& row) { return row.table_code == table; });
+        if (fol_runner_order.present) {
+            const auto base = base_script_for_stream(stream_code);
+            auto row = *std::ranges::find_if(base, [&](const auto& value) { return value.table_code == table; });
+            row.rev += static_cast<std::int64_t>(fol_runner_order.revision);
+            for (auto& field : row.fields) {
+                switch (field.field_code) {
+                case kFortsTradeReplOrdersLogPublicOrderId:
+                case kFortsUserorderbookReplOrdersCurrentdayPublicOrderId:
+                    field.signed_value = fol_runner_order.id - 10000;
+                    break;
+                case kFortsTradeReplOrdersLogPrivateOrderId:
+                case kFortsUserorderbookReplOrdersCurrentdayPrivateOrderId:
+                    field.signed_value = fol_runner_order.id;
+                    break;
+                case kFortsTradeReplOrdersLogExtId:
+                case kFortsUserorderbookReplOrdersCurrentdayExtId:
+                    field.signed_value = fol_runner_order.ext_id;
+                    break;
+                case kFortsTradeReplOrdersLogClientCode:
+                case kFortsUserorderbookReplOrdersCurrentdayClientCode:
+                    field.text = "BRK1C01";
+                    break;
+                case kFortsTradeReplOrdersLogLoginFrom:
+                case kFortsUserorderbookReplOrdersCurrentdayLoginFrom:
+                    field.text = "fol-offline-owner";
+                    break;
+                case kFortsTradeReplOrdersLogPrice:
+                case kFortsUserorderbookReplOrdersCurrentdayPrice:
+                    field.text = fol_runner_order.price;
+                    break;
+                case kFortsTradeReplOrdersLogPublicAmount:
+                case kFortsTradeReplOrdersLogPrivateAmount:
+                case kFortsUserorderbookReplOrdersCurrentdayPublicAmount:
+                case kFortsUserorderbookReplOrdersCurrentdayPrivateAmount:
+                case kFortsTradeReplOrdersLogDir:
+                case kFortsUserorderbookReplOrdersCurrentdayDir:
+                    field.signed_value = 1;
+                    break;
+                case kFortsTradeReplOrdersLogPublicAmountRest:
+                case kFortsTradeReplOrdersLogPrivateAmountRest:
+                case kFortsUserorderbookReplOrdersCurrentdayPublicAmountRest:
+                case kFortsUserorderbookReplOrdersCurrentdayPrivateAmountRest:
+                case kFortsTradeReplOrdersLogPublicAction:
+                case kFortsTradeReplOrdersLogPrivateAction:
+                case kFortsUserorderbookReplOrdersCurrentdayPublicAction:
+                case kFortsUserorderbookReplOrdersCurrentdayPrivateAction:
+                    field.signed_value = fol_runner_order.cancelled ? 0 : 1;
+                    break;
+                case kFortsTradeReplOrdersLogIdDeal:
+                    field.signed_value = 0;
+                    break;
+                case kFortsTradeReplOrdersLogMoment:
+                case kFortsUserorderbookReplOrdersCurrentdayMoment:
+                    field.signed_value += static_cast<std::int64_t>(fol_runner_order.revision);
+                    break;
+                default:
+                    break;
+                }
+            }
+            script.push_back(std::move(row));
+        }
+    }
     std::erase_if(script, [](const auto& row) { return row.table_code == scenario.omitted_schema_table; });
     return script;
 }
@@ -2280,12 +2373,50 @@ const char* moex_fake_cgate_runtime_v1() {
     return "moex_fake_cgate_runtime_v1";
 }
 
+std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
+    fol_runner_profile.clear();
+    fol_runner_posts.clear();
+    fol_runner_control.clear();
+    const auto begin = settings.find("ini=");
+    if (begin == std::string_view::npos)
+        return kCgErrOk;
+    const auto value = settings.substr(begin + 4);
+    const std::filesystem::path ini(value.substr(0, value.find(';')));
+    std::ifstream input(ini);
+    std::string line, profile;
+    bool section{};
+    while (std::getline(input, line)) {
+        if (line.starts_with('['))
+            section = line == "[moex-fake-fol-runner]";
+        else if (section && line.starts_with("profile="))
+            profile = line.substr(8);
+    }
+    if (profile.empty())
+        return kCgErrOk;
+    if (profile != "fresh" && profile != "stale" && profile != "invalid")
+        return kCgErrInvalidArgument;
+    scenario = {};
+    scenario.spectra912_refdata_schema = true;
+    scenario.zero_position = true;
+    scenario.client_code = "BRK1C01";
+    scenario.suppress_initial_orders = true;
+    scenario.simulate_idle_wait = true;
+    scenario.options[static_cast<std::size_t>(Option::FullOrderLogRefdata)] = "1";
+    fol_runner_profile = profile;
+    fol_runner_posts = ini.parent_path() / "fol-native-posts.log";
+    fol_runner_control = ini.parent_path() / "fol-control";
+    fol_runner_order = {};
+    return kCgErrOk;
+}
+
 std::uint32_t cg_env_open(const char* settings) {
     if (const auto result = configured_result(Option::EnvOpenResult); result != kCgErrOk)
         return result;
     if (settings == nullptr || *settings == '\0') {
         return kCgErrInvalidArgument;
     }
+    if (const auto result = configure_fol_runner_fixture(settings); result != kCgErrOk)
+        return result;
     g_env_open = true;
     ++g_env_open_count;
     return kCgErrOk;
@@ -2377,6 +2508,21 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
     }
     ++process_calls;
     auto* connection = static_cast<FakeConnection*>(conn);
+    if (!fol_runner_profile.empty()) {
+        std::ifstream control(fol_runner_control);
+        std::string profile;
+        if (std::getline(control, profile) && profile != fol_runner_profile) {
+            if (profile != "fresh" && profile != "stale" && profile != "invalid")
+                return kCgErrInvalidArgument;
+            fol_runner_profile = profile;
+            for (auto* listener : connection->listeners)
+                if (listener && listener->stream_code == kFullOrderLogStreamCode) {
+                    // A real generation change is required: snapshot-table rows are not online deltas.
+                    listener->state = kStateError;
+                    return emit_simple_message(*listener, kCgMsgClose);
+                }
+        }
+    }
     if (fake_flag(Option::ConnHoldOpening) || fake_flag(Option::ConnToOpening)) {
         connection->state = kStateOpening;
         return kCgErrTimeout;
@@ -3359,9 +3505,53 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
     if (publisher == nullptr || message == nullptr) {
         return kCgErrInvalidArgument;
     }
-    const auto result = configured_result(Option::PubPostResult);
+    auto result = configured_result(Option::PubPostResult);
     const auto* posted = static_cast<CgMsgData*>(message);
     const auto* bytes = static_cast<const std::byte*>(posted->data);
+    if (!fol_runner_profile.empty()) {
+        const std::string_view name = posted->msg_name ? posted->msg_name : "";
+        const auto text = [](const auto& field) { return std::string(field, strnlen(field, sizeof(field))); };
+        bool valid{};
+        if (name == "AddOrder" && bytes && posted->data_size == sizeof(official_cgate99::AddOrder)) {
+            official_cgate99::AddOrder wire{};
+            std::memcpy(&wire, bytes, sizeof(wire));
+            valid = !fol_runner_order.present && wire.isin_id == 1001 && wire.dir == 1 && wire.amount == 1 &&
+                    text(wire.price) == "102500" && wire.ext_id == 100 && text(wire.broker_code) == "BRK1" &&
+                    text(wire.client_code) == "C01";
+            if (valid) {
+                fol_runner_order.present = true;
+                fol_runner_order.ext_id = wire.ext_id;
+            }
+        } else if (name == "MoveOrder" && bytes && posted->data_size == sizeof(official_cgate99::MoveOrder)) {
+            official_cgate99::MoveOrder wire{};
+            std::memcpy(&wire, bytes, sizeof(wire));
+            valid = fol_runner_order.present && !fol_runner_order.cancelled && wire.order_id1 == 20003 &&
+                    wire.amount1 == 1 && wire.regime == 3 && text(wire.price1) == "102000" && wire.ext_id1 == 100;
+            if (valid) {
+                fol_runner_order.id = 20004;
+                fol_runner_order.price = "102000";
+            }
+        } else if (name == "DelOrder" && bytes && posted->data_size == sizeof(official_cgate99::DelOrder)) {
+            official_cgate99::DelOrder wire{};
+            std::memcpy(&wire, bytes, sizeof(wire));
+            valid = fol_runner_order.present && wire.order_id == fol_runner_order.id;
+            if (valid)
+                fol_runner_order.cancelled = true;
+        }
+        std::ofstream journal(fol_runner_posts, std::ios::app);
+        journal << name << " wire_valid=" << valid << " bytes=" << posted->data_size << '\n';
+        journal.flush();
+        if (!valid || !journal)
+            result = kCgErrInvalidArgument;
+        else {
+            ++fol_runner_order.revision;
+            auto* connection = static_cast<FakePublisher*>(publisher)->connection;
+            for (auto* listener : connection->listeners)
+                if (listener && (listener->stream_code == StreamCode::kFortsTradeRepl ||
+                                 listener->stream_code == StreamCode::kFortsUserorderbookRepl))
+                    listener->script_emitted = false;
+        }
+    }
     posted_commands.push_back(
         {.name = posted->msg_name ? posted->msg_name : "",
          .user_id = posted->user_id,

@@ -33,6 +33,16 @@ struct CgateStreamConfig {
     std::string open_settings;
 };
 
+// Borrowed committed public-book authority, evaluated on the CGate owner thread.
+// Private account, session, risk and durable-ID proofs remain independent.
+struct FullOrderLogTradingAuthority {
+    std::int32_t session_id{};
+    std::uint64_t epoch{}, revision{}, exchange_moment_ns{};
+    std::int64_t best_bid{}, best_ask{}, best_bid_quantity{}, best_ask_quantity{};
+    std::chrono::steady_clock::time_point committed_at{};
+    bool valid{}, crossed{};
+};
+
 // POS.info selects user_deal/heartbeat replay. Completed USERORDERBOOK.info is a
 // reconstruction barrier; orders_log replays the full current-life history.
 struct Plaza2TradeReplayAnchor {
@@ -71,6 +81,10 @@ struct CgateSessionConfig {
     // An externally owned consumer runs on this session's CGate owner thread.
     CgateStreamConfig full_order_log_stream;
     plaza2::cgate::Plaza2ListenerEventHandler* full_order_log_handler{nullptr};
+    // Required only for explicit TEST order entry alongside the composite feed.
+    std::function<FullOrderLogTradingAuthority(std::int32_t)> full_order_log_authority;
+    // Empty uses system_clock; injectable for offline freshness boundaries.
+    std::function<std::uint64_t()> full_order_log_utc_now_ns;
     // Optional exact AGGR20 sys_events session identity. Zero accepts a
     // non-zero current session id and is suitable only before refdata
     // negotiation has supplied the target session.
@@ -209,6 +223,7 @@ class CgateSession final {
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;
     [[nodiscard]] std::optional<std::int8_t> full_order_log_matching_id() const noexcept;
     [[nodiscard]] std::uint64_t market_data_metadata_revision() const noexcept;
+    [[nodiscard]] bool full_order_log_entry_ready(std::int64_t isin_id) const noexcept;
     [[nodiscard]] bool aggr_online() const noexcept;
     [[nodiscard]] bool aggr_snapshot_complete() const noexcept;
     [[nodiscard]] bool aggr_session_data_ready() const noexcept;

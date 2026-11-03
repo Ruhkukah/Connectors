@@ -34,7 +34,7 @@ At `6a9245fe`, local CTest registered 47 tests because local configuration expli
 
 ## Requested FOL order entry
 
-The owner clarified that future order testing must use a writable FOL executable, not a repeat of the already certified AGGR executable. No AGGR test is prepared or run in this change. The current FOL executable remains explicitly read-only; adding a raw publisher would bypass the existing own-order reconstruction and risk path and is not the implementation plan.
+The owner clarified that future order testing must use a writable FOL executable, not a repeat of the already certified AGGR executable. No AGGR test is prepared or run in this change. The scheme-fix commit remains explicitly read-only; the separate follow-up implements TEST `plaza2 run` by reusing the existing trading host, rather than introducing a raw publisher. See `FULL_ORDER_LOG_WRITE_REVIEW_20261103.md` for that mode's exact boundaries and additional listener inventory.
 
 Reuse `CgateTradingHost`, `OrderManager`, the journal, command socket and shutdown drain. Preserve private TRADE/POS/USERORDERBOOK reconstruction, registered durable IDs, account/instance ownership, replies and risk limits. FOL validity/current session/freshness must gate Add/Move at admission and dispatch, while cancellations and reconciliation remain available when FOL data is invalid.
 

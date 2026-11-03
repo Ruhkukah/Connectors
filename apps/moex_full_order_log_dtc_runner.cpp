@@ -1,4 +1,5 @@
 #include "full_order_log_dtc_loop.hpp"
+#include "full_order_log_operator.hpp"
 #include "moex/connector_host/operator_config.hpp"
 #include <atomic>
 #include <charconv>
@@ -33,6 +34,9 @@ std::string router_endpoint(std::string_view address) {
 } // namespace
 int main(int argc, char** argv) {
     try {
+        if (argc >= 3 && std::string_view(argv[1]) == "plaza2" &&
+            (std::string_view(argv[2]) == "run" || std::string_view(argv[2]) == "cmd"))
+            return moex::connector_host::full_order_log_operator(argc, argv, router_endpoint);
         if (argc == 2 && std::string_view(argv[1]) == "--help") {
             std::cout << "moex_full_order_log_dtc_runner plaza2 qualify [read-only runtime options]\n"
                          "  --dtc-port N (default 11300, consecutive loopback ports for configured ISINs)\n"
@@ -41,7 +45,12 @@ int main(int argc, char** argv) {
                          "  --trading-router HOST:PORT (default 127.0.0.1:4101; must differ from --router)\n"
                          "  --offline-fake --run-ms N (offline tests; no live authorization inferred)\n"
                          "  --dtc-depth N (default 20; up to 20000 per side; NumLevels=0 uses that cap)\n"
-                         "Order entry, accounts, positions and market-by-order are unavailable.\n"
+                         "DTC is read-only. No accounts, positions or market-by-order on DTC.\n"
+                         "plaza2 run --live|--offline-fake --allow-orders [operator/risk options]\n"
+                         "  TEST-only ORDLOG account: private reconciliation and orders on the FOL connection.\n"
+                         "  Explicit measured --clock-offset-us and all operator risk/identity options required.\n"
+                         "  Limits: quantity/position <=2, open orders/rate <=5; no DTC server in run mode.\n"
+                         "plaza2 cmd --command-socket PATH \"COMMAND\" (FOL endpoint only)\n"
                       << moex::connector_host::operator_help();
             return 0;
         }

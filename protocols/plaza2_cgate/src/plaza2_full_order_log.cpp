@@ -63,7 +63,7 @@ void require(bool condition, std::string_view message) {
 }
 struct Binding {
     std::size_t index{}, row_size{};
-    BoundField isin, order, row, rev, act, price, rest, status, dir, action, moment;
+    BoundField isin, session, order, row, rev, act, price, rest, status, dir, action, moment;
 };
 BoundField field(const Plaza2RawTableBinding& table, std::string_view name, std::string_view type, std::size_t size) {
     const auto i =
@@ -76,6 +76,7 @@ BoundField field(const Plaza2RawTableBinding& table, std::string_view name, std:
 Binding bind(const Plaza2RawTableBinding& t, bool log) {
     Binding b{.index = t.index, .row_size = t.row_size};
     b.isin = field(t, "isin_id", "i4", 4);
+    b.session = field(t, "sess_id", "i4", 4);
     b.order = field(t, "public_order_id", "i8", 8);
     b.row = field(t, "replID", "i8", 8);
     b.rev = field(t, "replRev", "i8", 8);
@@ -101,7 +102,8 @@ struct Plaza2FullOrderLog::Impl {
     struct Instrument {
         LevelMap published[2], dirty[2];
         std::uint64_t revision{}, moment{}, committed_moment{};
-        bool touched{}, crossed{};
+        std::int32_t session{}, committed_session{};
+        bool touched{}, crossed{}, mixed_session{};
         explicit Instrument(std::pmr::memory_resource* r)
             : published{LevelMap(r), LevelMap(r)}, dirty{LevelMap(r), LevelMap(r)} {}
     };
@@ -159,7 +161,8 @@ struct Plaza2FullOrderLog::Impl {
                 b.dirty[side].clear();
             }
             b.revision = b.moment = b.committed_moment = 0;
-            b.touched = b.crossed = false;
+            b.session = b.committed_session = 0;
+            b.touched = b.crossed = b.mixed_session = false;
         }
         valid = online = transaction = have_info = pending_info = snapshot_seen = false;
         info_log_life = pending_log_life = 0;
@@ -195,6 +198,14 @@ struct Plaza2FullOrderLog::Impl {
         auto& book = books[index];
         book.moment = std::max(book.moment, read<std::uint64_t>(e, b.moment));
         book.touched = true;
+    }
+    void observe_session(std::size_t index, const Plaza2ListenerEvent& e, const Binding& b) {
+        auto& book = books[index];
+        const auto session = read<std::int32_t>(e, b.session);
+        if (session <= 0 || (book.session && session != book.session))
+            book.mixed_session = true;
+        else
+            book.session = session;
     }
     void erase(std::pmr::unordered_map<std::int64_t, Order>::iterator i) {
         adjust(i->second, -i->second.quantity);
@@ -252,6 +263,7 @@ struct Plaza2FullOrderLog::Impl {
         require(action >= 0 && action <= 2, "unknown action");
         if (action == 0) {
             if (i != orders.end()) {
+                observe_session(index, e, b);
                 touch(index, e, b);
                 erase(i);
             }
@@ -274,6 +286,8 @@ struct Plaza2FullOrderLog::Impl {
         const auto price = public_wire::decimal_scaled(read<public_wire::Bcd16_5>(e, b.price));
         require(price && quantity >= 0 && (dir == 1 || dir == 2), "invalid price, remainder, or direction");
         touch(index, e, b);
+        if (i != orders.end() || quantity)
+            observe_session(index, e, b);
         if (i != orders.end()) {
             auto& o = i->second;
             require(o.price == *price && o.bid == (dir == 1), "order attributes changed");
@@ -328,6 +342,7 @@ struct Plaza2FullOrderLog::Impl {
                     owner.on_crossed(isins[n], cross);
             }
             b.committed_moment = b.moment;
+            b.committed_session = b.mixed_session ? 0 : b.session;
         }
         if (pending_info) {
             info_log_life = pending_log_life;
@@ -485,6 +500,13 @@ bool Plaza2FullOrderLog::crossed(std::int32_t isin) const noexcept {
 std::uint64_t Plaza2FullOrderLog::exchange_moment_ns(std::int32_t isin) const noexcept {
     const auto n = impl_->instrument(isin);
     return n < impl_->books.size() ? impl_->books[n].committed_moment : 0;
+}
+std::int32_t Plaza2FullOrderLog::committed_session_id(std::int32_t isin) const noexcept {
+    const auto n = impl_->instrument(isin);
+    if (!impl_->valid || n == impl_->books.size())
+        return 0;
+    const auto& b = impl_->books[n];
+    return b.published[0].empty() && b.published[1].empty() ? 0 : b.committed_session;
 }
 FullOrderLogMetrics Plaza2FullOrderLog::metrics() const noexcept {
     auto result = impl_->metrics;

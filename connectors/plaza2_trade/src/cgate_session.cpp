@@ -480,14 +480,18 @@ struct CgateSession::Impl {
             return invalid("CGate runtime and connection are required");
         if (!config.full_order_log_stream.settings.empty()) {
             try {
-                if (!config.read_only_market_data || !config.full_order_log_handler ||
+                const bool writable = config.allow_orders &&
+                                      config.runtime.environment == cg::Plaza2Environment::Test &&
+                                      config.full_order_log_authority;
+                if ((!config.read_only_market_data && !writable) || !config.full_order_log_handler ||
                     config.market_data_isin_ids.empty() ||
                     config.full_order_log_stream.stream_code != cg::kFullOrderLogStreamCode ||
                     config.full_order_log_stream.settings !=
                         cg::full_order_log_listener_settings(config.runtime.scheme_dir) ||
                     config.full_order_log_stream.open_settings.find("replstate") != std::string::npos)
                     return invalid(
-                        "FullOrderLog requires its canonical two-schema read-only listener and no replstate");
+                        "FullOrderLog requires its canonical two-schema listener, read-only or explicit TEST order "
+                        "authority, and no replstate");
                 for (const auto name : {"online.ini", "snapshot.ini"}) {
                     const auto path = config.runtime.scheme_dir / "full_order_log" / name;
                     std::error_code error;
@@ -498,6 +502,8 @@ struct CgateSession::Impl {
                 return invalid(error.what());
             }
         }
+        if (config.full_order_log_authority && config.full_order_log_stream.settings.empty())
+            return invalid("FullOrderLog order authority requires the composite listener");
         if (config.private_streams.empty())
             return invalid("at least one private replication stream is required");
         if (!config.read_only_market_data && config.publisher_settings.empty())
@@ -1344,6 +1350,32 @@ cg::Plaza2PublicDealsSnapshot CgateSession::public_deals_snapshot(std::uint64_t 
 std::uint64_t CgateSession::market_data_metadata_revision() const noexcept {
     return impl_->projection.metadata_revision();
 }
+bool CgateSession::full_order_log_entry_ready(std::int64_t isin_id) const noexcept {
+    if (impl_->config.full_order_log_stream.settings.empty())
+        return true;
+    if (isin_id <= 0 || isin_id > INT32_MAX || !impl_->config.full_order_log_authority)
+        return false;
+    try {
+        if (runtime_health().full_order_log != Active)
+            return false;
+        const auto authority = impl_->config.full_order_log_authority(static_cast<std::int32_t>(isin_id));
+        const auto now = impl_->now();
+        const auto utc = impl_->config.full_order_log_utc_now_ns
+                             ? impl_->config.full_order_log_utc_now_ns()
+                             : std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count();
+        return authority.valid && !authority.crossed && authority.epoch && authority.revision &&
+               authority.session_id > 0 && authority.session_id == impl_->projection.current_session_id() &&
+               authority.best_bid > 0 && authority.best_bid < authority.best_ask && authority.best_bid_quantity > 0 &&
+               authority.best_ask_quantity > 0 && authority.committed_at != std::chrono::steady_clock::time_point{} &&
+               now >= authority.committed_at && now - authority.committed_at <= std::chrono::seconds(30) &&
+               authority.exchange_moment_ns && utc >= authority.exchange_moment_ns &&
+               utc - authority.exchange_moment_ns <= 30000000000ULL;
+    } catch (...) {
+        return false;
+    }
+}
 std::optional<std::int8_t> CgateSession::full_order_log_matching_id() const noexcept {
     return impl_->matching_id;
 }
@@ -1424,6 +1456,11 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
     if (command.command_kind == Plaza2TradeCommandKind::AddOrder ||
         command.command_kind == Plaza2TradeCommandKind::MoveOrder) {
         const auto proof_started = impl_->config.collect_poll_metrics ? ns(std::chrono::steady_clock::now()) : 0;
+        if (command.isin_id && !full_order_log_entry_ready(*command.isin_id)) {
+            out.validation_error =
+                invalid("FullOrderLog entry requires a fresh committed two-sided current-session book");
+            return out;
+        }
         required_private = trade_replay_anchor_ready() && command.isin_id && impl_->trading_ready(command);
         if (proof_started)
             out.session_instrument_proof_ns = ns(std::chrono::steady_clock::now()) - proof_started;

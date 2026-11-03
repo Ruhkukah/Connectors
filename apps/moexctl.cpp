@@ -4,6 +4,7 @@
 #include "command_socket.hpp"
 #include "scope_exit.hpp"
 #include "shutdown_signals.hpp"
+#include "operator_program.hpp"
 
 #include <array>
 #include <charconv>
@@ -164,7 +165,7 @@ std::string command(moex::connector_host::CgateTradingHost& host, ShutdownReques
     return error.empty() ? "{\"ok\":true,\"error\":\"\"}" : refusal(host, line, error, channel);
 }
 } // namespace
-int main(int argc, char** argv) {
+int moex::connector_host::operator_program(int argc, char** argv, const OperatorProgramHooks& hooks) {
     using namespace moex::connector_host;
     std::signal(SIGHUP, SIG_IGN);
     std::signal(SIGPIPE, SIG_IGN);
@@ -264,6 +265,8 @@ int main(int argc, char** argv) {
             if (arguments.size() != 3)
                 throw std::invalid_argument("usage: moexctl plaza2 cmd [--log FILE | "
                                             "--command-socket PATH] \"COMMAND\"");
+            if (hooks.verify_command_endpoint)
+                hooks.verify_command_endpoint(socket_path);
             const auto response = send_command(socket_path, std::string(arguments[2]));
             std::cout << response << '\n' << std::flush;
             return response.find("\"ok\":false") == std::string::npos ? 0 : 2;
@@ -328,6 +331,8 @@ int main(int argc, char** argv) {
                     throw std::invalid_argument("isin id outside CGate i4 range");
                 config.isin_ids.push_back(static_cast<std::int32_t>(isin));
             }
+            if (hooks.configure)
+                hooks.configure(config);
             validate_trading_host_config(config);
             config.binary_sha256 = binary_sha256(argv[0]);
             const auto signal_isins = config.isin_ids;
@@ -363,6 +368,8 @@ int main(int argc, char** argv) {
                     std::cerr << error.message << '\n';
                     return 3;
                 }
+                if (hooks.after_poll)
+                    hooks.after_poll(host);
                 // A signal received during CGate polling is consumed before
                 // another operator command can enter the host.
                 signal_shutdown();

@@ -90,11 +90,93 @@ static void semantics() {
     const auto before = h.book.metrics();
     auto excluded = row(h.schema[2], 9, 33, 0, 1);
     excluded.nulls[excluded.field("price").index] = 1;
+    excluded.nulls[excluded.field("sess_id").index] = 1;
     h.apply(excluded);
     h.commit();
     require(h.book.order_count() == 1 && h.book.metrics().rows_total == before.rows_total + 1 &&
                 h.book.metrics().rows_filtered == before.rows_filtered + 1,
             "ISIN filter precedes other field validation and filtered rows enter total rate");
+}
+
+static void committed_source_session() {
+    Harness h;
+    h.begin();
+    h.add(1, 11, 100000, 4);
+    h.commit();
+    require(h.book.committed_session_id(11) == 0, "pre-ONLINE source session is not entry authority");
+    h.online();
+    h.begin();
+    require(h.book.committed_session_id(11) == 0, "ONLINE alone cannot publish session authority");
+    h.commit();
+    require(h.book.committed_session_id(11) == 321 && h.book.committed_session_id(22) == 0 &&
+                h.book.committed_session_id(33) == 0,
+            "only a committed nonempty configured book has a session");
+    h.begin();
+    auto other = row(h.schema[2], 2, 22, 100000, 2);
+    other.set("sess_id", std::int32_t{322});
+    h.apply(other);
+    require(h.book.committed_session_id(22) == 0, "uncommitted rows cannot publish a session");
+    h.commit();
+    require(h.book.committed_session_id(22) == 322 && h.book.committed_session_id(11) == 321,
+            "source sessions are per instrument");
+    h.begin();
+    auto mixed = row(h.schema[2], 3, 11, 100000, 3);
+    mixed.set("sess_id", std::int32_t{322});
+    h.apply(mixed);
+    require(h.book.committed_session_id(11) == 321, "working mixed session is invisible until commit");
+    h.commit();
+    require(h.book.valid() && h.book.committed_session_id(11) == 0 && h.book.levels(11, true).at(100000) == 7,
+            "mixed-session retained orders cannot be retagged as current authority");
+    h.begin();
+    h.add(3, 11, 100000, 1, 2, 2);
+    h.commit();
+    require(h.book.committed_session_id(11) == 0, "later old-session rows cannot clear an epoch conflict");
+    h.clear(0, std::numeric_limits<std::int64_t>::max());
+    require(h.book.committed_session_id(11) == 0 && h.book.committed_session_id(22) == 0,
+            "MAX immediately withdraws committed source sessions");
+    h.open();
+    h.online();
+    h.begin();
+    h.apply(mixed);
+    h.commit();
+    require(h.book.committed_session_id(11) == 322, "fresh epoch can establish a new committed source session");
+    h.begin();
+    auto depleted = row(h.schema[2], 3, 11, 100000, 0, 0, 3);
+    depleted.set("sess_id", std::int32_t{322});
+    h.apply(depleted);
+    require(h.book.committed_session_id(11) == 322, "pending depletion preserves prior committed authority");
+    h.commit();
+    require(h.book.committed_session_id(11) == 0, "committed empty book has no source session authority");
+    h.open();
+    h.online();
+    h.begin();
+    auto unknown = row(h.schema[2], 4, 11, 100000, 1);
+    unknown.set("sess_id", std::int32_t{0});
+    h.apply(unknown);
+    h.commit();
+    require(h.book.valid() && h.book.committed_session_id(11) == 0,
+            "unknown admitted source session withholds authority without fabricating a session");
+    h.begin();
+    h.add(5, 11, 100000, 2);
+    h.commit();
+    require(h.book.committed_session_id(11) == 0, "later known sessions cannot retag unknown retained orders");
+    h.book.reset();
+    require(h.book.committed_session_id(11) == 0, "reset withdraws source session authority");
+    h.open();
+    h.online();
+    h.begin();
+    h.add(6, 11, 100000, 2);
+    h.commit();
+    require(h.book.committed_session_id(11) == 321, "fresh epoch restores source session proof");
+    require(!h.book.on_plaza2_listener_event({.kind = Kind::LifeNum, .unsigned_value = 7}) &&
+                !h.book.on_plaza2_listener_event({.kind = Kind::LifeNum, .unsigned_value = 99}) &&
+                h.book.committed_session_id(11) == 0,
+            "unexplained LifeNum clears committed source session proof");
+    auto incompatible = tables();
+    incompatible[0].fields[4].type_token = "i8";
+    require(h.book.on_plaza2_listener_event({.kind = Kind::Open, .raw_tables = incompatible}).code ==
+                Plaza2ErrorCode::IncompatibleScheme,
+            "sess_id must negotiate exact i4");
 }
 
 static void recovery() {
@@ -426,6 +508,7 @@ static void publication_lag() {
 int main() {
     try {
         semantics();
+        committed_source_session();
         recovery();
         independent_snapshot();
         allocation_reuse();

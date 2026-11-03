@@ -121,6 +121,7 @@ inline Row row(const Plaza2RawTableBinding& table, std::int64_t id, std::int32_t
     r.set("replID", rev);
     r.set("public_order_id", id);
     r.set("isin_id", isin);
+    r.set("sess_id", std::int32_t{321});
     r.price(price);
     r.set("public_amount_rest", qty);
     r.set("public_action", action);
