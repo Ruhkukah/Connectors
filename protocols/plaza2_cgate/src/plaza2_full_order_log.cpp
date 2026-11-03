@@ -47,7 +47,7 @@ class BookArena final : public std::pmr::memory_resource {
 
   public:
     BookArena(std::size_t orders, std::size_t levels)
-        : nodes_(orders * 2 + levels * 4 + 32), large_(orders * 48 + 4096) {}
+        : nodes_(orders * 3 + levels * 4 + 32), large_(orders * 48 + 4096) {}
     std::size_t bytes() const {
         return nodes_.size() * sizeof(Block) + large_.size();
     }
@@ -102,10 +102,11 @@ struct Plaza2FullOrderLog::Impl {
     struct Instrument {
         LevelMap published[2], dirty[2];
         std::uint64_t revision{}, moment{}, committed_moment{};
-        std::int32_t session{}, committed_session{};
-        bool touched{}, crossed{}, mixed_session{};
+        std::pmr::map<std::int32_t, std::size_t> sessions;
+        std::int32_t committed_session{};
+        bool touched{}, crossed{};
         explicit Instrument(std::pmr::memory_resource* r)
-            : published{LevelMap(r), LevelMap(r)}, dirty{LevelMap(r), LevelMap(r)} {}
+            : published{LevelMap(r), LevelMap(r)}, dirty{LevelMap(r), LevelMap(r)}, sessions(r) {}
     };
     struct Source {
         std::int64_t row{}, revision{};
@@ -114,6 +115,7 @@ struct Plaza2FullOrderLog::Impl {
         std::int64_t price{}, quantity{};
         Source source[2]{};
         std::size_t instrument{};
+        std::int32_t session{};
         unsigned current{};
         bool bid{};
     };
@@ -161,8 +163,9 @@ struct Plaza2FullOrderLog::Impl {
                 b.dirty[side].clear();
             }
             b.revision = b.moment = b.committed_moment = 0;
-            b.session = b.committed_session = 0;
-            b.touched = b.crossed = b.mixed_session = false;
+            b.sessions.clear();
+            b.committed_session = 0;
+            b.touched = b.crossed = false;
         }
         valid = online = transaction = have_info = pending_info = snapshot_seen = false;
         info_log_life = pending_log_life = 0;
@@ -199,16 +202,19 @@ struct Plaza2FullOrderLog::Impl {
         book.moment = std::max(book.moment, read<std::uint64_t>(e, b.moment));
         book.touched = true;
     }
-    void observe_session(std::size_t index, const Plaza2ListenerEvent& e, const Binding& b) {
-        auto& book = books[index];
-        const auto session = read<std::int32_t>(e, b.session);
-        if (session <= 0 || (book.session && session != book.session))
-            book.mixed_session = true;
-        else
-            book.session = session;
+    void remove_session(const Order& o) {
+        auto& sessions = books[o.instrument].sessions;
+        const auto i = sessions.find(o.session);
+        require(i != sessions.end() && i->second, "missing order session count");
+        if (!--i->second)
+            sessions.erase(i);
+    }
+    void retire(const Order& o) {
+        adjust(o, -o.quantity);
+        remove_session(o);
     }
     void erase(std::pmr::unordered_map<std::int64_t, Order>::iterator i) {
-        adjust(i->second, -i->second.quantity);
+        retire(i->second);
         orders.erase(i);
     }
     void row(const Plaza2ListenerEvent& e) {
@@ -263,7 +269,6 @@ struct Plaza2FullOrderLog::Impl {
         require(action >= 0 && action <= 2, "unknown action");
         if (action == 0) {
             if (i != orders.end()) {
-                observe_session(index, e, b);
                 touch(index, e, b);
                 erase(i);
             }
@@ -286,8 +291,6 @@ struct Plaza2FullOrderLog::Impl {
         const auto price = public_wire::decimal_scaled(read<public_wire::Bcd16_5>(e, b.price));
         require(price && quantity >= 0 && (dir == 1 || dir == 2), "invalid price, remainder, or direction");
         touch(index, e, b);
-        if (i != orders.end() || quantity)
-            observe_session(index, e, b);
         if (i != orders.end()) {
             auto& o = i->second;
             require(o.price == *price && o.bid == (dir == 1), "order attributes changed");
@@ -296,6 +299,12 @@ struct Plaza2FullOrderLog::Impl {
                 erase(i);
                 return;
             }
+            if (o.session && read<std::int32_t>(e, b.session) != o.session) {
+                // A contradictory update cannot retag the retained order into a new session.
+                remove_session(o);
+                o.session = 0;
+                ++books[index].sessions[0];
+            }
             adjust(o, quantity - o.quantity);
             o.quantity = quantity;
             o.source[source] = {row_id, rev};
@@ -303,10 +312,16 @@ struct Plaza2FullOrderLog::Impl {
         } else if (quantity) {
             if (orders.size() == order_capacity)
                 throw std::bad_alloc();
-            Order o{.price = *price, .quantity = quantity, .instrument = index, .current = source, .bid = dir == 1};
+            Order o{.price = *price,
+                    .quantity = quantity,
+                    .instrument = index,
+                    .session = std::max(0, read<std::int32_t>(e, b.session)),
+                    .current = source,
+                    .bid = dir == 1};
             o.source[source] = {row_id, rev};
             adjust(o, quantity);
             orders.emplace(id, o);
+            ++books[index].sessions[o.session];
             excluded.erase(id);
         }
     }
@@ -342,7 +357,7 @@ struct Plaza2FullOrderLog::Impl {
                     owner.on_crossed(isins[n], cross);
             }
             b.committed_moment = b.moment;
-            b.committed_session = b.mixed_session ? 0 : b.session;
+            b.committed_session = b.sessions.size() == 1 ? b.sessions.begin()->first : 0;
         }
         if (pending_info) {
             info_log_life = pending_log_life;
@@ -462,7 +477,7 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
                     const auto& row = o.source[source];
                     if (!row.row || row.revision >= e.signed_value || (!source && o.current != source))
                         return false;
-                    p.adjust(o, -o.quantity);
+                    p.retire(o);
                     return true;
                 });
             }

@@ -809,10 +809,18 @@ void OrderManager::discard_recovery_cancel(ManagedOrder& order) {
     std::erase_if(cancels_, recovery_for_ext);
     std::erase_if(pending_, [&](const auto& entry) { return recovery_for_ext(entry.second); });
 }
+bool OrderManager::bulk_fallback_allowed(const ManagedOrder& order, std::int64_t target_id,
+                                         std::int32_t target_session) const {
+    const auto bulk = bulk_cancellations_.find(order.request.isin_id);
+    if (bulk == bulk_cancellations_.end())
+        return true;
+    return (bulk->second.awaiting_reply && bulk->second.uncertain_exhausted) ||
+           (!bulk->second.awaiting_reply && bulk->second.fallbacks_enabled && target_id > 0 &&
+            bulk->second.post_reply_orders.contains({target_session, target_id}));
+}
 void OrderManager::enqueue_cancel(ManagedOrder& order, bool explicit_retry) {
     if ((order.operator_action_required && !explicit_retry) ||
-        (bulk_cancellations_.contains(order.request.isin_id) &&
-         !bulk_cancellations_.at(order.request.isin_id).uncertain_exhausted))
+        !bulk_fallback_allowed(order, order.order_id, order.sess_id))
         return;
     if (order.order_id <= 0) {
         recovery_cancel(order, explicit_retry);
@@ -1103,7 +1111,7 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now, bool bus
         return;
     if (found != orders_.end() && bulk_cancellations_.contains(found->second.request.isin_id) &&
         !(command.encoded.command_kind == Kind::DelOrder &&
-          bulk_cancellations_.at(found->second.request.isin_id).uncertain_exhausted))
+          bulk_fallback_allowed(found->second, command.target_order_id, command.submitted_session)))
         return; // The mass request superseded this outstanding individual cancel.
     if (command.encoded.command_kind == Kind::DelUserOrders && command.uncertain_outcomes >= kDuoUncertainOutcomeLimit)
         return; // Only a deliberate new cancellation can renew this bounded scope.
@@ -1460,7 +1468,7 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             (terminal(found->second.state) ||
              (bulk_cancellations_.contains(found->second.request.isin_id) &&
               !(command.encoded.command_kind == Kind::DelOrder &&
-                bulk_cancellations_.at(found->second.request.isin_id).uncertain_exhausted)) ||
+                bulk_fallback_allowed(found->second, command.target_order_id, command.submitted_session))) ||
              (command.encoded.command_kind == Kind::MoveOrder && found->second.cancel_requested))) {
             if (command.encoded.command_kind == Kind::MoveOrder) {
                 move_reservations_.erase(found->first);
@@ -1966,6 +1974,11 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             changed(key);
         else
             refresh_exposure(key);
+        if (row.from_trade_repl && row.trade_repl_commit_sequence != UINT64_MAX)
+            if (const auto bulk = bulk_cancellations_.find(row.isin_id);
+                bulk != bulk_cancellations_.end() && !bulk->second.awaiting_reply &&
+                row.trade_repl_commit_sequence > bulk->second.after_commit_sequence)
+                bulk->second.post_reply_orders.emplace(row.sess_id, id);
         if (order.cancel_requested && !terminal(order.state))
             enqueue_cancel(order, relisted);
     }
@@ -1996,19 +2009,35 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
 void OrderManager::observe_trade_commit(std::uint64_t sequence) {
     trade_commit_sequence_ = std::max(trade_commit_sequence_, sequence);
     std::vector<std::int32_t> reconciled;
-    for (const auto& [isin, bulk] : bulk_cancellations_)
-        if (!bulk.awaiting_reply && sequence > bulk.after_commit_sequence)
+    for (auto& [isin, bulk] : bulk_cancellations_) {
+        if (bulk.awaiting_reply || sequence <= bulk.after_commit_sequence)
+            continue;
+        bool surviving{}, proved = true;
+        for (const auto& [key, order] : orders_)
+            if (order.request.isin_id == isin && !terminal(order.state)) {
+                surviving = true;
+                proved &= order.order_id > 0 && bulk.post_reply_orders.contains({order.sess_id, order.order_id});
+            }
+        if (!surviving) {
             reconciled.push_back(isin);
+            continue;
+        }
+        if (!bulk.fallbacks_enabled && proved) {
+            bulk.fallbacks_enabled = true;
+            // Exact scoped working rows permit per-ID cancels only. Keep the
+            // entry gate until all logical orders have terminal native proof.
+            for (auto& [key, order] : orders_)
+                if (order.request.isin_id == isin && !terminal(order.state)) {
+                    order.cancel_requested = true;
+                    enqueue_cancel(order, true);
+                }
+        }
+    }
     for (const auto isin : reconciled) {
-        const bool exhausted = bulk_cancellations_.at(isin).uncertain_exhausted;
         bulk_cancellations_.erase(isin);
         std::erase_if(pending_, [&](const auto& entry) {
             return is_bulk_cancel(entry.second) && entry.second.encoded.isin_id == isin;
         });
-        for (auto& [key, order] : orders_)
-            if (order.request.isin_id == isin && order.cancel_requested && !terminal(order.state) &&
-                (!exhausted || order.order_id > 0))
-                enqueue_cancel(order, true);
     }
 }
 void OrderManager::replay_deferred_trades() {

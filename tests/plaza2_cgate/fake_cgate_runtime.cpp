@@ -75,6 +75,7 @@ fixture::Scenario scenario;
 // Explicit INI opt-in for a separately exec'd fake FOL runner; never enabled by environment.
 std::string fol_runner_profile;
 std::filesystem::path fol_runner_posts, fol_runner_control;
+std::chrono::steady_clock::time_point fol_runner_next_activity{};
 struct FolRunnerOrder {
     std::int64_t id{20003}, ext_id{100};
     std::string price{"102500"};
@@ -1054,7 +1055,8 @@ std::uint64_t fol_runner_moment_ns() {
     const auto now =
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
             .count();
-    return static_cast<std::uint64_t>(now - (fol_runner_profile == "stale" ? 31'000'000'000LL : 0));
+    return static_cast<std::uint64_t>(
+        now - ((fol_runner_profile == "stale" || fol_runner_profile == "quiet") ? 31'000'000'000LL : 0));
 }
 
 std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
@@ -2393,7 +2395,8 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
     }
     if (profile.empty())
         return kCgErrOk;
-    if (profile != "fresh" && profile != "stale" && profile != "invalid")
+    if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" && profile != "invalid" &&
+        profile != "recovery")
         return kCgErrInvalidArgument;
     scenario = {};
     scenario.spectra912_refdata_schema = true;
@@ -2406,6 +2409,8 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
     fol_runner_posts = ini.parent_path() / "fol-native-posts.log";
     fol_runner_control = ini.parent_path() / "fol-control";
     fol_runner_order = {};
+    fol_runner_order.present = profile == "recovery";
+    fol_runner_next_activity = {};
     return kCgErrOk;
 }
 
@@ -2512,9 +2517,12 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
         std::ifstream control(fol_runner_control);
         std::string profile;
         if (std::getline(control, profile) && profile != fol_runner_profile) {
-            if (profile != "fresh" && profile != "stale" && profile != "invalid")
+            if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" &&
+                profile != "invalid")
                 return kCgErrInvalidArgument;
             fol_runner_profile = profile;
+            if (profile == "dead")
+                return kCgErrOk; // Leave its published snapshot/ONLINE identity intact; emit no more FOL events.
             for (auto* listener : connection->listeners)
                 if (listener && listener->stream_code == kFullOrderLogStreamCode) {
                     // A real generation change is required: snapshot-table rows are not online deltas.
@@ -3039,6 +3047,22 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
     }
     if (connection->script_emitted && connection->pending_replies.empty()) {
         if (!pending_new_listener) {
+            if ((fol_runner_profile == "quiet" || fol_runner_profile == "dead") &&
+                std::chrono::steady_clock::now() >= fol_runner_next_activity) {
+                fol_runner_next_activity = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+                const auto code = fol_runner_profile == "quiet" ? kFullOrderLogStreamCode : StreamCode::kFortsTradeRepl;
+                for (auto* listener : connection->listeners)
+                    if (listener && listener->state == kStateActive && listener->stream_code == code) {
+                        if (const auto error = emit_simple_message(*listener, kCgMsgTnBegin); error != kCgErrOk)
+                            return error;
+                        if (code == kFullOrderLogStreamCode)
+                            if (const auto error =
+                                    emit_stream_message(*listener, {.table_code = TableCode::kFortsTradeReplSysEvents});
+                                error != kCgErrOk)
+                                return error;
+                        return emit_simple_message(*listener, kCgMsgTnCommit);
+                    }
+            }
             if (scenario.simulate_idle_wait && timeout_ms)
                 std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
             return kCgErrTimeout;

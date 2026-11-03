@@ -155,8 +155,8 @@ std::string command(const std::string& executable, const fs::path& log, const st
     test::require(response.find("\"ok\":") != std::string::npos, "actual FOL command response missing");
     return response;
 }
-std::string wait_status(Process& owner, const fs::path& log, const auto& accept) {
-    const auto end = std::chrono::steady_clock::now() + 10s;
+std::string wait_status(Process& owner, const fs::path& log, const auto& accept, std::chrono::seconds timeout = 10s) {
+    const auto end = std::chrono::steady_clock::now() + timeout;
     std::string status;
     do {
         test::require(owner.alive(), "actual FOL owner exited: " + owner.errors());
@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
                               client.errors().find("not a Full Order Log") != std::string::npos,
                           "FOL command client sent a trading command to an AGGR endpoint");
         }
-        for (const auto mode : {"fresh", "invalid", "stale"}) {
+        for (const auto mode : {"fresh", "quiet", "invalid", "dead"}) {
             // Each actual executable starts its own fake-runtime instance and isolated journal namespace.
             fs::remove(fixture.config_dir / "fol-control");
             fs::remove(fixture.config_dir / "fol-native-posts.log");
@@ -304,9 +304,17 @@ int main(int argc, char** argv) {
                 return value.find("\"client_order_id\":\"fol_order\"") != std::string::npos &&
                        value.find("\"state\":\"Working\"") != std::string::npos;
             });
-            if (std::string_view(mode) == "fresh") {
-                test::require(command(executable, log, "move fol_order 1 102000", "fresh-move").find("\"ok\":true") !=
-                                  std::string::npos,
+            if (std::string_view(mode) == "fresh" || std::string_view(mode) == "quiet") {
+                if (std::string_view(mode) == "quiet") {
+                    test::write_text_file(fixture.config_dir / "fol-control", "quiet\n");
+                    status = wait_status(owner, log, [](const auto& value) {
+                        return value.find("\"source\":\"full_order_log\",\"valid\":true") != std::string::npos &&
+                               stale_exchange_moment(value);
+                    });
+                    private_online(status);
+                }
+                test::require(command(executable, log, "move fol_order 1 102000", std::string(mode) + "-move")
+                                      .find("\"ok\":true") != std::string::npos,
                               "fresh FOL Move was refused");
                 wait_status(owner, log, [](const auto& value) {
                     return value.find("\"order_id\":20004") != std::string::npos &&
@@ -314,11 +322,15 @@ int main(int argc, char** argv) {
                 });
             } else {
                 test::write_text_file(fixture.config_dir / "fol-control", std::string(mode) + '\n');
-                status = wait_status(owner, log, [&](const auto& value) {
-                    return value.find("\"source\":\"full_order_log\",\"valid\":false") != std::string::npos &&
-                           (std::string_view(mode) == "invalid" ? value.find("\"crossed\":true") != std::string::npos
-                                                                : stale_exchange_moment(value));
-                });
+                status = wait_status(
+                    owner, log,
+                    [&](const auto& value) {
+                        return value.find("\"source\":\"full_order_log\",\"valid\":false") != std::string::npos &&
+                               (std::string_view(mode) == "invalid"
+                                    ? value.find("\"crossed\":true") != std::string::npos
+                                    : stale_exchange_moment(value));
+                    },
+                    std::string_view(mode) == "dead" ? 35s : 10s);
                 private_online(status);
                 for (const auto& line : {"place blocked 1001 buy 1 102500 day", "move fol_order 1 102000"}) {
                     const auto response =
@@ -337,7 +349,7 @@ int main(int argc, char** argv) {
             command(executable, log, "quit", std::string(mode) + "-quit");
             test::require(owner.wait() == 0, "FOL owner did not stop flat: " + owner.errors());
             const auto native = contents(fixture.config_dir / "fol-native-posts.log");
-            const bool moved = std::string_view(mode) == "fresh";
+            const bool moved = std::string_view(mode) == "fresh" || std::string_view(mode) == "quiet";
             test::require(
                 occurrences(native, "AddOrder wire_valid=1") == 1 &&
                     occurrences(native, "MoveOrder wire_valid=1") == (moved ? 1u : 0u) &&
@@ -356,8 +368,50 @@ int main(int argc, char** argv) {
                               journal.find("offline-fixture-only") == std::string::npos,
                           "FOL journal omitted native posts/replies or exposed fixture credentials");
         }
+        {
+            fs::remove(fixture.config_dir / "fol-control");
+            fs::remove(fixture.config_dir / "fol-native-posts.log");
+            auto profile = contents(fixture.config_dir / "t1.ini");
+            const auto at = profile.find("profile=fresh");
+            test::require(at != std::string::npos, "recovery fixture profile missing");
+            profile.replace(at, std::string_view("profile=fresh").size(), "profile=recovery");
+            test::write_text_file(fixture.config_dir / "t1.ini", profile);
+            // Recovery must not touch even an unusable public FOL client schema.
+            test::write_text_file(fixture.scheme_dir / "full_order_log/snapshot.ini", "invalid FOL scheme\n");
+            const fs::path log{"cancel-only.ndjson"};
+            auto request = arguments(executable, fixture, log, "fol_cancel_only");
+            request.push_back("--cancel-only");
+            Process owner(std::move(request), "cancel-only-owner");
+            auto status = wait_status(owner, log, [](const auto& value) {
+                return value.find("\"reconstructing\":false") != std::string::npos &&
+                       value.find("recovered:321:20003") != std::string::npos;
+            });
+            private_online(status);
+            test::require(status.find("\"execution_mode\":\"full_order_log_cancel_only\"") != std::string::npos &&
+                              status.find("FORTS_ORDLOG") == std::string::npos &&
+                              status.find("FORTS_AGGR") == std::string::npos,
+                          "cancel-only recovery must have private authority without market-data listeners");
+            command(executable, log, "kill off", "cancel-only-kill-off");
+            for (const auto& line : {"place forbidden 1001 buy 1 102500 day", "move recovered:321:20003 1 102000"})
+                test::require(command(executable, log, line, "cancel-only-refused-" + std::to_string(index++))
+                                      .find("\"ok\":false") != std::string::npos,
+                              "kill off must not grant Add or Move authority in cancel-only recovery");
+            test::require(
+                command(executable, log, "cancel recovered:321:20003", "cancel-only-cancel").find("\"ok\":true") !=
+                    std::string::npos,
+                "reconstructed owned order cancel must work with unavailable FOL scheme");
+            wait_status(owner, log,
+                        [](const auto& value) { return value.find("\"state\":\"Cancelled\"") != std::string::npos; });
+            command(executable, log, "quit", "cancel-only-quit");
+            test::require(owner.wait() == 0, "cancel-only executable did not stop flat: " + owner.errors());
+            const auto native = contents(fixture.config_dir / "fol-native-posts.log");
+            test::require(occurrences(native, "DelOrder wire_valid=1") == 1 && occurrences(native, "bytes=") == 1 &&
+                              native.find("AddOrder") == std::string::npos &&
+                              native.find("MoveOrder") == std::string::npos,
+                          "cancel-only fixture must publish exactly its recovered-order cancellation");
+        }
         std::cout << "PASS actual FOL executable scoped fake Add/Move/Cancel, private7/current-FOL gates, "
-                     "stale/invalid refusals\n";
+                     "quiet-source admission/dead-stream refusals and cancel-only recovery\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -127,9 +127,9 @@ int main(int argc, char** argv) {
         const auto place = [&](CgateTradingHost& host, std::string id) {
             return host.place({.client_order_id = std::move(id), .isin_id = 1001, .price = "102500", .quantity = 1});
         };
-        for (const auto mode : {"invalid", "stale", "stale-exchange", "future", "future-exchange", "crossed",
-                                "one-sided", "empty-quantity", "missing-epoch", "missing-revision", "session-mismatch",
-                                "exception", "MAX", "LifeNum", "channel-close"}) {
+        for (const auto mode :
+             {"invalid", "dead", "future-exchange", "crossed", "one-sided", "empty-quantity", "missing-epoch",
+              "missing-revision", "session-mismatch", "exception", "MAX", "LifeNum", "channel-close"}) {
             configure();
             CgateTradingHost host(configuration(mode));
             warm(host);
@@ -138,7 +138,10 @@ int main(int argc, char** argv) {
             pump(host, 2);
             require(control.commands().size() == before + 1, "exactly one initial Add");
             const std::string_view name = mode;
-            if (name == "MAX" || name == "LifeNum" || name == "channel-close") {
+            if (name == "dead") {
+                frozen_now = std::chrono::steady_clock::now() + std::chrono::seconds(31);
+                pump(host, 3);
+            } else if (name == "MAX" || name == "LifeNum" || name == "channel-close") {
                 control.enqueue({.kind = name == "MAX"       ? fake::EventKind::ClearDeleted
                                          : name == "LifeNum" ? fake::EventKind::LifeNum
                                                              : fake::EventKind::Close,
@@ -152,14 +155,8 @@ int main(int argc, char** argv) {
                 alter = [=](auto& value) {
                     if (name == "invalid")
                         value.valid = false;
-                    if (name == "stale")
-                        value.committed_at -= std::chrono::seconds(31);
-                    if (name == "stale-exchange")
-                        value.exchange_moment_ns -= 31000000000ULL;
-                    if (name == "future")
-                        value.committed_at += std::chrono::seconds(1);
                     if (name == "future-exchange")
-                        ++value.exchange_moment_ns;
+                        value.exchange_moment_ns += 1000000001ULL;
                     if (name == "crossed")
                         value.crossed = true;
                     if (name == "one-sided")
@@ -208,27 +205,68 @@ int main(int argc, char** argv) {
             require(canonical_url && (name != "MAX" || clear) && (name != "channel-close" || close),
                     "FOL URL and native clear/close lifecycle evidence must be retained");
         }
+        for (const auto activity : {"commit", "filtered-row", "sys_events"}) {
+            configure();
+            CgateTradingHost host(configuration(std::string("quiet-") + activity));
+            warm(host);
+            frozen_now = std::chrono::steady_clock::now() + std::chrono::seconds(31);
+            alter = [=](auto& value) {
+                value.committed_at -= std::chrono::seconds(31);
+                value.exchange_moment_ns = initial_utc - 31000000000ULL;
+            };
+            require(!place(host, "before-activity").empty(), "dead stream must not be revived by empty process calls");
+            const auto revision = book.revision(1001);
+            control.enqueue({.kind = fake::EventKind::Begin, .stream_code = cg::kFullOrderLogStreamCode});
+            if (std::string_view(activity) == "commit")
+                control.enqueue({.kind = fake::EventKind::Commit, .stream_code = cg::kFullOrderLogStreamCode});
+            else
+                control.enqueue({.stream_code = cg::kFullOrderLogStreamCode,
+                                 .table_code = std::string_view(activity) == "filtered-row"
+                                                   ? gen::TableCode::kFortsTradeReplOrdersLog
+                                                   : gen::TableCode::kFortsTradeReplSysEvents,
+                                 .fields = {{.field_code = gen::FieldCode::kFortsTradeReplOrdersLogIsinId,
+                                             .signed_value = 999999}}});
+            pump(host, 3);
+            require(book.revision(1001) == revision && place(host, "quiet").empty(),
+                    "stream activity elsewhere must admit an unchanged quiet instrument's committed book");
+            pump(host, 2);
+            require(host.move("quiet", "102250", 1).empty(), "active stream must also allow quiet-instrument Move");
+            pump(host, 2);
+            require(host.cancel("quiet").empty(), "quiet instrument cancel");
+            if (std::string_view(activity) != "commit") {
+                control.enqueue({.kind = fake::EventKind::Commit, .stream_code = cg::kFullOrderLogStreamCode});
+                pump(host);
+            }
+            require(!host.stop(), "quiet FOL source stop");
+        }
         for (const bool exchange : {false, true}) {
             configure();
-            CgateTradingHost host(configuration(exchange ? "exchange-boundary" : "commit-boundary"));
+            CgateTradingHost host(configuration(exchange ? "future-tolerance" : "stream-boundary"));
             warm(host);
             const auto boundary = std::chrono::steady_clock::now();
             frozen_now = boundary;
             alter = [=](auto& value) {
                 value.committed_at = boundary - std::chrono::seconds(30);
-                value.exchange_moment_ns = initial_utc - 30000000000ULL;
+                value.exchange_moment_ns = exchange ? initial_utc + 1000000000ULL : initial_utc - 31000000000ULL;
             };
+            control.enqueue({.kind = fake::EventKind::Begin, .stream_code = cg::kFullOrderLogStreamCode});
+            control.enqueue({.kind = fake::EventKind::Commit, .stream_code = cg::kFullOrderLogStreamCode});
+            pump(host);
+            if (!exchange)
+                *frozen_now += std::chrono::seconds(30);
             const auto before = control.commands().size();
             require(place(host, "boundary").empty() && control.commands().size() == before + 1,
-                    "exactly 30-second committed and exchange ages remain admitted");
+                    "exactly30s stream age or1s future exchange time must remain admitted");
             pump(host, 2);
             if (exchange)
-                ++utc;
+                --utc;
             else
                 *frozen_now += std::chrono::nanoseconds(1);
             require(!place(host, "expired").empty() && !host.move("boundary", "102250", 1).empty() &&
                         control.commands().size() == before + 1,
-                    "one nanosecond beyond either freshness boundary must refuse Add and Move");
+                    "one nanosecond beyond stream inactivity or future tolerance must refuse Add and Move");
+            pump(host, 3);
+            require(!place(host, "still-expired").empty(), "empty native process calls must not restore FOL liveness");
             require(host.cancel("boundary").empty(), "freshness boundary expiry must preserve cancel");
             require(!host.stop(), "FOL freshness boundary stop");
         }
@@ -255,6 +293,62 @@ int main(int argc, char** argv) {
             require(control.commands().size() == before + 2 && control.commands().back().name == "DelOrder",
                     "cancel must drain after rate-held Add/Move is refused");
             require(!host.stop(), "queued FOL authority stop");
+        }
+        configure();
+        {
+            fake::Scenario scenario{.zero_position = true, .client_code = "BRK1C01"};
+            control.configure(scenario);
+            auto recovery = configuration("cancel-only");
+            recovery.session.full_order_log_cancel_only = true;
+            recovery.session.full_order_log_stream = {};
+            recovery.session.full_order_log_handler = nullptr;
+            recovery.session.full_order_log_authority = {};
+            recovery.orders.login_from = "trader_a";
+            const auto full_opens = control.opens(cg::kFullOrderLogStreamCode);
+            const auto before = control.commands().size();
+            CgateTradingHost host(recovery);
+            require(!host.start(), "cancel-only recovery start");
+            pump(host, 30);
+            require(host.status().find("recovered:321:20003") != std::string::npos,
+                    "cancel-only recovery must reconstruct existing owned orders");
+            host.set_kill_switch(false);
+            require(!place(host, "forbidden").empty() && !host.move("recovered:321:20003", "102250", 1).empty() &&
+                        control.commands().size() == before,
+                    "immutable cancel-only mode must block Add/Move even after kill off");
+            require(host.cancel("recovered:321:20003").empty() && control.commands().size() == before + 1 &&
+                        control.commands().back().name == "DelOrder" &&
+                        control.opens(cg::kFullOrderLogStreamCode) == full_opens &&
+                        control.opens(gen::StreamCode::kFortsAggrRepl) == 0,
+                    "reconstructed cancel must remain available without FOL or AGGR");
+            require(!host.stop(), "cancel-only recovery stop");
+            tr::CgateSession native(recovery.session);
+            require(!native.start(), "native cancel-only start");
+            for (int i = 0; i < 20; ++i)
+                require(!native.poll(false), "native cancel-only poll");
+            const auto health = native.runtime_health();
+            require(health.publisher == 3 && health.reply == 3 && health.private_active,
+                    "cancel-only prepost regression requires otherwise ready native transports");
+            const tr::Plaza2TradeCodec codec;
+            const auto add = codec.encode(tr::AddOrderRequest{.broker_code = "BRK1",
+                                                              .isin_id = 1001,
+                                                              .client_code = "C01",
+                                                              .dir = tr::Plaza2TradeSide::Buy,
+                                                              .type = tr::Plaza2TradeOrderType::Limit,
+                                                              .amount = 1,
+                                                              .price = "102500",
+                                                              .ext_id = 80});
+            const auto move = codec.encode(tr::MoveOrderRequest{.broker_code = "BRK1",
+                                                                .regime = 3,
+                                                                .order_id1 = 20003,
+                                                                .amount1 = 1,
+                                                                .price1 = "102250",
+                                                                .ext_id1 = 80,
+                                                                .client_code = "C01",
+                                                                .isin_id = 1001});
+            require(add.validation.ok() && move.validation.ok() && !native.post_command(add, 1).post_invoked &&
+                        !native.post_command(move, 2).post_invoked && control.commands().size() == before + 1,
+                    "cancel-only native final guard must refuse otherwise valid encoded Add/Move");
+            require(!native.stop(), "native cancel-only stop");
         }
         configure();
         auto missing_host = configuration("missing-provider");

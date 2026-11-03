@@ -12,7 +12,7 @@ namespace moex::connector_host {
 inline int full_order_log_operator(int argc, char** argv,
                                    const std::function<std::string(std::string_view)>& endpoint) {
     const bool run = std::string_view(argv[2]) == "run";
-    bool offline{}, live{};
+    bool offline{}, live{}, cancel_only{};
     std::string trading_instance, trading_router{"127.0.0.1:4101"};
     std::vector<std::string> args{argv[0]};
     for (int i = 1; i < argc; ++i) {
@@ -21,6 +21,8 @@ inline int full_order_log_operator(int argc, char** argv,
             offline = true;
         else if (key == "--live")
             live = true;
+        else if (key == "--cancel-only")
+            cancel_only = true;
         else if (key == "--trading-instance-id" || key == "--trading-router") {
             if (++i == argc)
                 throw std::invalid_argument("missing FOL operator option value");
@@ -90,11 +92,19 @@ inline int full_order_log_operator(int argc, char** argv,
             std::ranges::any_of(config.orders.risk.max_position_by_isin,
                                 [](const auto& item) { return item.second > 2; }))
             throw std::invalid_argument("FOL TEST limits: 64 ISINs, quantity/position 2, open orders/rate 5");
-        book = std::make_unique<cg::Plaza2FullOrderLog>(config.isin_ids);
         session.mode = offline ? plaza2_trade::CgateSessionMode::OfflineFake : plaza2_trade::CgateSessionMode::Live;
         session.aggr20_stream = {};
         session.public_deals_stream = {};
         session.process_timeout_ms = 1;
+        session.full_order_log_cancel_only = cancel_only;
+        if (cancel_only) {
+            session.full_order_log_stream = {};
+            session.full_order_log_handler = nullptr;
+            session.full_order_log_authority = {};
+            config.orders.risk.kill_switch = true;
+            return;
+        }
+        book = std::make_unique<cg::Plaza2FullOrderLog>(config.isin_ids);
         session.collect_poll_metrics = true;
         session.full_order_log_stream = {.stream_code = cg::kFullOrderLogStreamCode,
                                          .settings = cg::full_order_log_listener_settings(session.runtime.scheme_dir)};
@@ -107,13 +117,16 @@ inline int full_order_log_operator(int argc, char** argv,
         };
     };
     hooks.after_poll = [&](CgateTradingHost& host) {
+        if (!book)
+            return;
         native.observe(host.last_poll_metrics());
         if (std::chrono::steady_clock::now() - rate_at >= FullOrderLogDtcMetrics::report_interval)
             report();
     };
     hooks.verify_command_endpoint = [](const std::filesystem::path& path) {
         const auto status = send_command(path, "status");
-        if (status.find("\"market_data_source\":\"full_order_log\"") == std::string::npos)
+        if (status.find("\"market_data_source\":\"full_order_log\"") == std::string::npos &&
+            status.find("\"execution_mode\":\"full_order_log_cancel_only\"") == std::string::npos)
             throw std::invalid_argument("command endpoint is not a Full Order Log trading host");
     };
     std::vector<char*> pointers;

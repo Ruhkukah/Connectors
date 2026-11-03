@@ -50,6 +50,7 @@ int main(int argc, char** argv) {
                          "  TEST-only ORDLOG account: private reconciliation and orders on the FOL connection.\n"
                          "  Explicit measured --clock-offset-us and all operator risk/identity options required.\n"
                          "  Limits: quantity/position <=2, open orders/rate <=5; no DTC server in run mode.\n"
+                         "  --cancel-only: private-state recovery, no FOL/AGGR; Add/Move always refused.\n"
                          "plaza2 cmd --command-socket PATH \"COMMAND\" (FOL endpoint only)\n"
                       << moex::connector_host::operator_help();
             return 0;

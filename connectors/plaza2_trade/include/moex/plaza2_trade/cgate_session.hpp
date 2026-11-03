@@ -83,8 +83,10 @@ struct CgateSessionConfig {
     plaza2::cgate::Plaza2ListenerEventHandler* full_order_log_handler{nullptr};
     // Required only for explicit TEST order entry alongside the composite feed.
     std::function<FullOrderLogTradingAuthority(std::int32_t)> full_order_log_authority;
-    // Empty uses system_clock; injectable for offline freshness boundaries.
+    // Empty uses system_clock; injectable for offline future-clock tolerance tests.
     std::function<std::uint64_t()> full_order_log_utc_now_ns;
+    // Immutable TEST recovery without market-data listeners; never Add/Move.
+    bool full_order_log_cancel_only{false};
     // Optional exact AGGR20 sys_events session identity. Zero accepts a
     // non-zero current session id and is suitable only before refdata
     // negotiation has supplied the target session.
@@ -223,6 +225,8 @@ class CgateSession final {
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;
     [[nodiscard]] std::optional<std::int8_t> full_order_log_matching_id() const noexcept;
     [[nodiscard]] std::uint64_t market_data_metadata_revision() const noexcept;
+    // Freshness follows successful FOL stream callbacks (30s), not quiet-ISIN age.
+    // Exchange timestamps may lead UTC by at most one second.
     [[nodiscard]] bool full_order_log_entry_ready(std::int64_t isin_id) const noexcept;
     [[nodiscard]] bool aggr_online() const noexcept;
     [[nodiscard]] bool aggr_snapshot_complete() const noexcept;

@@ -213,6 +213,37 @@ std::string_view plaza2_recovery_wait_state_name(Plaza2RecoveryWaitState state) 
     return "None";
 }
 struct CgateSession::Impl {
+    struct FullOrderLogEvents final : cg::Plaza2ListenerEventHandler {
+        Impl& owner;
+        std::optional<std::chrono::steady_clock::time_point> activity;
+        explicit FullOrderLogEvents(Impl& value) : owner(value) {}
+        bool wants_raw_replication(std::string_view table) const noexcept override {
+            return owner.config.full_order_log_handler->wants_raw_replication(table);
+        }
+        std::span<const plaza2::generated::FieldDescriptor>
+        replication_fields(plaza2::generated::TableCode table) const noexcept override {
+            return owner.config.full_order_log_handler->replication_fields(table);
+        }
+        bool should_log_listener_event(const cg::Plaza2ListenerEvent& event) const noexcept override {
+            return owner.config.full_order_log_handler->should_log_listener_event(event);
+        }
+        bool needs_fresh_snapshot() const noexcept override {
+            return owner.config.full_order_log_handler->needs_fresh_snapshot();
+        }
+        void on_plaza2_listener_error(const Plaza2Error& error) noexcept override {
+            activity.reset();
+            owner.config.full_order_log_handler->on_plaza2_listener_error(error);
+        }
+        Plaza2Error on_plaza2_listener_event(const cg::Plaza2ListenerEvent& event) override {
+            using enum cg::Plaza2ListenerEventKind;
+            if (event.kind == Open || event.kind == Close)
+                activity.reset();
+            const auto error = owner.config.full_order_log_handler->on_plaza2_listener_event(event);
+            if (!error && (event.kind == StreamData || event.kind == TransactionCommit))
+                activity = owner.now();
+            return error;
+        }
+    } full_order_log_events{*this};
     struct Listener {
         CgateStreamConfig config;
         cg::Plaza2Listener object;
@@ -346,7 +377,7 @@ struct CgateSession::Impl {
             poll_metrics.blocking_process_ns += elapsed;
         return error;
     }
-    auto now() const {
+    std::chrono::steady_clock::time_point now() const {
         return config.recovery_now ? config.recovery_now() : std::chrono::steady_clock::now();
     }
     std::uint64_t now_ms() const {
@@ -472,6 +503,13 @@ struct CgateSession::Impl {
         if (config.read_only_market_data &&
             (config.allow_orders || !config.publisher_settings.empty() || !config.p2mqreply_settings.empty()))
             return invalid("read-only CGate session cannot configure order entry");
+        if (config.full_order_log_cancel_only &&
+            (config.runtime.environment != cg::Plaza2Environment::Test || !config.allow_orders ||
+             config.read_only_market_data || !config.full_order_log_stream.settings.empty() ||
+             config.full_order_log_handler || config.full_order_log_authority ||
+             !config.aggr20_stream.settings.empty() || !config.public_deals_stream.settings.empty()))
+            return invalid(
+                "FullOrderLog cancel-only requires explicit TEST order authority and no market-data listeners");
         if (!config.public_deals_stream.settings.empty() &&
             (!config.read_only_market_data || config.public_deals_target_isin_id <= 0 ||
              config.public_deals_target_isin_id > std::numeric_limits<std::int32_t>::max()))
@@ -690,7 +728,8 @@ struct CgateSession::Impl {
         matching_id = resolved;
         if (std::none_of(listeners.begin(), listeners.end(),
                          [](const auto& l) { return l.config.stream_code == cg::kFullOrderLogStreamCode; }))
-            return add_listener(config.full_order_log_stream, *config.full_order_log_handler);
+            return add_listener(config.full_order_log_stream,
+                                config.read_only_market_data ? *config.full_order_log_handler : full_order_log_events);
         return {};
     }
     bool trading_ready(const Plaza2TradeEncodedCommand& command) const {
@@ -1143,7 +1182,8 @@ struct CgateSession::Impl {
                 supervise_listener(l);
                 if (config.full_order_log_handler &&
                     l.object.last_callback_error().code == Plaza2ErrorCode::IncompatibleScheme &&
-                    (l.handler == &bridge || l.handler == config.full_order_log_handler)) {
+                    (l.handler == &bridge || l.handler == config.full_order_log_handler ||
+                     l.handler == &full_order_log_events)) {
                     recovery.operation = Plaza2SessionOperation::Failed;
                     recovery.cause = l.object.last_callback_error();
                     return recovery.cause;
@@ -1285,6 +1325,7 @@ struct CgateSession::Impl {
         anchor.reset();
         matching_id.reset();
         matching_refdata.reset();
+        full_order_log_events.activity.reset();
         deferred_trade.reset();
         replies.pending.clear();
         recovery.operation = Plaza2SessionOperation::Stopped;
@@ -1351,6 +1392,8 @@ std::uint64_t CgateSession::market_data_metadata_revision() const noexcept {
     return impl_->projection.metadata_revision();
 }
 bool CgateSession::full_order_log_entry_ready(std::int64_t isin_id) const noexcept {
+    if (impl_->config.full_order_log_cancel_only)
+        return false;
     if (impl_->config.full_order_log_stream.settings.empty())
         return true;
     if (isin_id <= 0 || isin_id > INT32_MAX || !impl_->config.full_order_log_authority)
@@ -1358,8 +1401,11 @@ bool CgateSession::full_order_log_entry_ready(std::int64_t isin_id) const noexce
     try {
         if (runtime_health().full_order_log != Active)
             return false;
-        const auto authority = impl_->config.full_order_log_authority(static_cast<std::int32_t>(isin_id));
         const auto now = impl_->now();
+        const auto activity = impl_->full_order_log_events.activity;
+        if (!activity || now < *activity || now - *activity > std::chrono::seconds(30))
+            return false;
+        const auto authority = impl_->config.full_order_log_authority(static_cast<std::int32_t>(isin_id));
         const auto utc = impl_->config.full_order_log_utc_now_ns
                              ? impl_->config.full_order_log_utc_now_ns()
                              : std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1368,10 +1414,8 @@ bool CgateSession::full_order_log_entry_ready(std::int64_t isin_id) const noexce
         return authority.valid && !authority.crossed && authority.epoch && authority.revision &&
                authority.session_id > 0 && authority.session_id == impl_->projection.current_session_id() &&
                authority.best_bid > 0 && authority.best_bid < authority.best_ask && authority.best_bid_quantity > 0 &&
-               authority.best_ask_quantity > 0 && authority.committed_at != std::chrono::steady_clock::time_point{} &&
-               now >= authority.committed_at && now - authority.committed_at <= std::chrono::seconds(30) &&
-               authority.exchange_moment_ns && utc >= authority.exchange_moment_ns &&
-               utc - authority.exchange_moment_ns <= 30000000000ULL;
+               authority.best_ask_quantity > 0 && authority.exchange_moment_ns &&
+               (authority.exchange_moment_ns <= utc || authority.exchange_moment_ns - utc <= 1000000000ULL);
     } catch (...) {
         return false;
     }
@@ -1458,7 +1502,7 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
         const auto proof_started = impl_->config.collect_poll_metrics ? ns(std::chrono::steady_clock::now()) : 0;
         if (command.isin_id && !full_order_log_entry_ready(*command.isin_id)) {
             out.validation_error =
-                invalid("FullOrderLog entry requires a fresh committed two-sided current-session book");
+                invalid("FullOrderLog entry requires a live stream and valid committed two-sided current-session book");
             return out;
         }
         required_private = trade_replay_anchor_ready() && command.isin_id && impl_->trading_ready(command);

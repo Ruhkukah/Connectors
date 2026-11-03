@@ -128,9 +128,11 @@ static void committed_source_session() {
     require(h.book.valid() && h.book.committed_session_id(11) == 0 && h.book.levels(11, true).at(100000) == 7,
             "mixed-session retained orders cannot be retagged as current authority");
     h.begin();
-    h.add(3, 11, 100000, 1, 2, 2);
+    h.add(1, 11, 100000, 0, 0, 2);
+    require(h.book.committed_session_id(11) == 0, "working old-session deletion cannot publish authority");
     h.commit();
-    require(h.book.committed_session_id(11) == 0, "later old-session rows cannot clear an epoch conflict");
+    require(h.book.committed_session_id(11) == 322 && h.book.levels(11, true).at(100000) == 3,
+            "removing the last old-session order recovers the retained new-session authority at commit");
     h.clear(0, std::numeric_limits<std::int64_t>::max());
     require(h.book.committed_session_id(11) == 0 && h.book.committed_session_id(22) == 0,
             "MAX immediately withdraws committed source sessions");
@@ -147,6 +149,11 @@ static void committed_source_session() {
     require(h.book.committed_session_id(11) == 322, "pending depletion preserves prior committed authority");
     h.commit();
     require(h.book.committed_session_id(11) == 0, "committed empty book has no source session authority");
+    h.begin();
+    h.add(7, 11, 100000, 2);
+    require(h.book.committed_session_id(11) == 0, "new-session arrival remains hidden before commit");
+    h.commit();
+    require(h.book.committed_session_id(11) == 321, "empty-to-new-session rollover needs no reset");
     h.open();
     h.online();
     h.begin();
@@ -160,6 +167,10 @@ static void committed_source_session() {
     h.add(5, 11, 100000, 2);
     h.commit();
     require(h.book.committed_session_id(11) == 0, "later known sessions cannot retag unknown retained orders");
+    h.begin();
+    h.add(4, 11, 100000, 0, 2, 2);
+    h.commit();
+    require(h.book.committed_session_id(11) == 321, "removing the unknown-session order recovers known authority");
     h.book.reset();
     require(h.book.committed_session_id(11) == 0, "reset withdraws source session authority");
     h.open();
@@ -177,6 +188,67 @@ static void committed_source_session() {
     require(h.book.on_plaza2_listener_event({.kind = Kind::Open, .raw_tables = incompatible}).code ==
                 Plaza2ErrorCode::IncompatibleScheme,
             "sess_id must negotiate exact i4");
+}
+
+static void session_rollover_deletions() {
+    for (const auto method : {0, 1, 2, 3}) {
+        Harness h;
+        h.online();
+        h.begin();
+        h.apply(row(h.schema[0], 1, 11, 100000, 4, 1, 10));
+        h.add(2, 11, 200000, 5, 1, 11, 1, 2);
+        auto fresh = row(h.schema[2], 3, 11, 100000, 3, 1, 12);
+        fresh.set("sess_id", std::int32_t{322});
+        h.apply(fresh);
+        h.commit();
+        require(h.book.committed_session_id(11) == 0, "mixed retained session generations have no authority");
+        h.begin();
+        if (method == 2)
+            h.clear(0, 11);
+        else
+            h.add(1, 11, 100000, 0, method == 1 ? 2 : 0, 20);
+        h.commit();
+        require(h.book.committed_session_id(11) == 0 && h.book.order_count() == 2,
+                "one remaining old-session order still blocks new-session authority");
+        h.begin();
+        if (method == 2)
+            h.clear(2, 12); // Equality retains the new-session row at revision12.
+        else {
+            auto removed = row(h.schema[2], 2, 11, 200000, 0, method == 1 ? 2 : 0, 21, 1, 2);
+            if (method == 3) {
+                removed.set("replID", std::int64_t{11});
+                removed.set("replAct", std::int64_t{1});
+                removed.nulls[removed.field("sess_id").index] = 1;
+            }
+            h.apply(removed);
+        }
+        require(h.book.committed_session_id(11) == 0, "session-count changes remain uncommitted");
+        h.commit();
+        require(h.book.committed_session_id(11) == 322 && h.book.order_count() == 1,
+                "cancel, full trade, finite clear and replAct removals recover the sole retained session");
+    }
+    Harness changed;
+    changed.online();
+    changed.begin();
+    changed.add(1, 11, 100000, 4);
+    changed.commit();
+    changed.begin();
+    auto relabel = row(changed.schema[2], 1, 11, 100000, 3, 2, 2);
+    relabel.set("sess_id", std::int32_t{322});
+    changed.apply(relabel);
+    changed.commit();
+    require(changed.book.committed_session_id(11) == 0 && changed.book.order_count() == 1,
+            "a contradictory update cannot retag a retained old-session order as new");
+    changed.begin();
+    changed.add(1, 11, 100000, 0, 0, 3);
+    relabel.set("public_order_id", std::int64_t{2});
+    relabel.set("replID", std::int64_t{4});
+    relabel.set("replRev", std::int64_t{4});
+    relabel.set("public_action", std::int8_t{1});
+    changed.apply(relabel);
+    changed.commit();
+    require(changed.book.committed_session_id(11) == 322,
+            "deleting the contradictory old order and adding a new identity restores new-session authority");
 }
 
 static void recovery() {
@@ -509,6 +581,7 @@ int main() {
     try {
         semantics();
         committed_source_session();
+        session_rollover_deletions();
         recovery();
         independent_snapshot();
         allocation_reuse();

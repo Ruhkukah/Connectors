@@ -52,7 +52,7 @@ class Plaza2FullOrderLog final : public Plaza2ListenerEventHandler {
     [[nodiscard]] bool needs_fresh_snapshot() const noexcept override;
     [[nodiscard]] bool crossed(std::int32_t isin) const noexcept;
     [[nodiscard]] std::uint64_t exchange_moment_ns(std::int32_t isin) const noexcept;
-    // Zero for an invalid/empty book or any mixed/unknown admitted source session in this epoch.
+    // Zero for an invalid/empty book or mixed/unknown sessions among retained orders.
     [[nodiscard]] std::int32_t committed_session_id(std::int32_t isin) const noexcept;
     [[nodiscard]] FullOrderLogMetrics metrics() const noexcept;
     [[nodiscard]] std::optional<std::uint64_t> committed_log_lifenum() const noexcept;

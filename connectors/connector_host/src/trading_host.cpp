@@ -309,6 +309,12 @@ TradingHostConfig checked_config(TradingHostConfig config) {
 }
 } // namespace
 void validate_trading_host_config(const TradingHostConfig& config) {
+    if (config.session.full_order_log_cancel_only &&
+        (config.session.runtime.environment != cg::Plaza2Environment::Test || !config.session.allow_orders ||
+         config.session.read_only_market_data || !config.session.full_order_log_stream.settings.empty() ||
+         config.session.full_order_log_handler || config.session.full_order_log_authority ||
+         !config.session.aggr20_stream.settings.empty() || !config.session.public_deals_stream.settings.empty()))
+        throw std::invalid_argument("FullOrderLog cancel-only recovery requires TEST orders and no market-data source");
     if (!config.session.full_order_log_stream.settings.empty() && !config.session.read_only_market_data &&
         (!config.session.allow_orders || config.session.runtime.environment != cg::Plaza2Environment::Test ||
          !config.session.full_order_log_authority))
@@ -901,7 +907,8 @@ cg::Plaza2Error CgateTradingHost::poll() {
         orders_->observe_orders(changes.orders);
         orders_->observe_trades(changes.trades);
     }
-    // Empty TRADE commits also establish the post-186 reconciliation boundary.
+    // Deliver every commit sequence; an empty/unrelated commit alone is not
+    // scoped post-186 evidence and must not release cancellation fallbacks.
     // Apply their rows first so individual fallbacks see only surviving orders.
     orders_->observe_trade_commit(trade_commit_sequence);
     if (!rebuilding_)
@@ -1013,6 +1020,8 @@ cg::Plaza2Error CgateTradingHost::stop() {
 }
 std::string CgateTradingHost::place(OrderRequest request, std::int64_t socket_receipt_steady_ns) {
     assert_owner();
+    if (config_.session.full_order_log_cancel_only)
+        return "FullOrderLog cancel-only recovery refuses Add";
     immediate_socket_receipt_ns_ = socket_receipt_steady_ns;
     if ((config_.measure_timings || config_.measure_command_latency) && orders_->queued() == 0)
         immediate_place_timing_ = {{request.client_order_id, std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1024,7 +1033,7 @@ std::string CgateTradingHost::place(OrderRequest request, std::int64_t socket_re
     }
     std::string error;
     if (!session_.full_order_log_entry_ready(request.isin_id))
-        error = "FullOrderLog entry requires a fresh committed two-sided current-session book";
+        error = "FullOrderLog Add requires a live stream and valid committed two-sided current-session book";
     else if (request.type == tr::Plaza2TradeOrderType::Ioc && !order_entry_ready(session_, request.isin_id))
         error = "IOC requires continuous trading; opening-auction IOC is prohibited";
     else
@@ -1043,11 +1052,13 @@ std::string CgateTradingHost::cancel(std::string_view key) {
 }
 std::string CgateTradingHost::move(std::string_view key, std::string price, std::int32_t quantity) {
     assert_owner();
+    if (config_.session.full_order_log_cancel_only)
+        return "FullOrderLog cancel-only recovery refuses Move";
     if (!log_error_.empty())
         return "storage failure; cancel-only mode blocks Move";
     const auto order = orders_->orders().find(std::string(key));
     if (order != orders_->orders().end() && !session_.full_order_log_entry_ready(order->second.request.isin_id))
-        return "FullOrderLog Move requires a fresh committed two-sided current-session book";
+        return "FullOrderLog Move requires a live stream and valid committed two-sided current-session book";
     if (order != orders_->orders().end() && !order_entry_ready(session_, order->second.request.isin_id))
         return "Move requires continuous trading; opening-auction Move is prohibited";
     auto error = orders_->move(key, std::move(price), quantity);
@@ -1276,6 +1287,8 @@ std::string CgateTradingHost::status() const {
                          ",\"risk\":" + configured_risk_fields(config_) + "}";
     if (!config_.session.full_order_log_stream.settings.empty())
         result += ",\"market_data_source\":\"full_order_log\"";
+    if (config_.session.full_order_log_cancel_only)
+        result += ",\"execution_mode\":\"full_order_log_cancel_only\"";
     const auto anchor = session_.trade_replay_anchor_used();
     const auto life = data.stream_lifenum(gen::StreamCode::kFortsTradeRepl);
     result += ",\"trade_replay\":{\"anchor_ready\":" + std::string(boolean(session_.trade_replay_anchor_ready())) +

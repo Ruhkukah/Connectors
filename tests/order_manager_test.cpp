@@ -21,6 +21,7 @@
 #include "single_operator_alert_regression.hpp"
 #include "early_add_row_regression.hpp"
 #include "late_cancel_reply_regression.hpp"
+#include "mass_cancel_scoped_trade_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -482,8 +483,12 @@ void mass_cancel_priority_and_reconciliation() {
     require(empty_commit.sent.size() == 1, "reply186 reused a commit already present in the same owner poll");
     empty.observe_trade_commit(8);
     empty_commit.poll(empty, 1001);
+    require(empty_commit.sent.size() == 1, "empty TRADE commit released an unrefreshed surviving per-ID fallback");
+    working.trade_repl_commit_sequence = 9;
+    observe(empty, working);
+    empty_commit.poll(empty, 1002);
     require(empty_commit.sent.size() == 2 && empty_commit.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder,
-            "empty TRADE commit did not release a surviving per-ID fallback");
+            "postbarrier scoped TRADE row did not release a surviving per-ID fallback");
 }
 
 void operator_action_alerts_clear_only_at_terminal() {
@@ -800,6 +805,8 @@ void mass_cancel_supersedes_delayed_flood_replies() {
             "replacement mass cancel retained the superseded native correlation");
     replaced.on_reply(new_mass.id, {.msgid = 186, .num_orders = 1}, OrderManager::Clock::time_point{}, 1);
     replaced.observe_trade_commit(2);
+    live.trade_repl_commit_sequence = 3;
+    observe(replaced, live);
     replacement.poll(replaced, 1999);
     require(replacement.sent.size() == 2, "superseded mass99 lost its global flood penalty");
     replacement.poll(replaced, 2000);
@@ -1606,8 +1613,13 @@ void cached_risk_move_races() {
     superseded.on_reply(flood.sent.back().id, {.msgid = 186, .num_orders = 0},
                         OrderManager::Clock::time_point{} + std::chrono::milliseconds(1002));
     superseded.observe_trade_commit(1);
+    require(!superseded.place(request("working-bulk-still-gated", 3)).empty(),
+            "empty commit treated acknowledged bulk as completed");
+    auto bulk_terminal = row(superseded.orders().at("first"), 1001, 0, 0);
+    bulk_terminal.trade_repl_commit_sequence = 2;
+    observe(superseded, bulk_terminal);
     require(superseded.place(request("fits-after-flood", 3)).empty(),
-            "superseded Move99 did not release rejected replacement exposure");
+            "terminal bulk scope retained rejected replacement exposure or entry gate");
 
     Fixture rejected;
     rejected.config.risk.max_notional_scaled = 60'000'000;
@@ -2165,6 +2177,7 @@ int main() {
         risk();
         cancel_races_and_identity();
         mass_cancel_priority_and_reconciliation();
+        mass_cancel_scoped_trade_regression<Fixture>();
         operator_action_alerts_clear_only_at_terminal();
         rejected_mass_cancel_falls_back_to_each_known_id();
         accepted_mass_cancel_waits_for_trade_without_resending();
