@@ -10,17 +10,10 @@ Read-only inspection covered retained `qualification/oct20*ordlog*` directories 
 
 Result: **historical resting-order session histogram unavailable**, not empty and not proof of a mixed or single-session book. The20October private USERORDERBOOK snapshot is account-only and cannot substitute for public ORDBOOK. No T0 connection or native process was started. Machine-readable inventory/hashes: `/private/tmp/moex-fol-oct20-histogram-audit-20261103.json`.
 
-## Block A acceptance report
+## Revised binding gate: B's own writer
 
-For each candidate ISIN, use A's own complete committed snapshot+ONLINE cutover to report:
+A's histogram is UNAVAILABLE in pinned qualify; no per-book session authority or meaningful writable readiness is exposed there. Do not attempt to derive it from the counters-only probe or add a connection. The earlier proposed A histogram gate is superseded.
 
-| Field | Required evidence |
-|---|---|
-| Resting-order histogram | Counts by native sess_id, totals, retained/admitted versus excluded rows |
-| Current session | Committed session_state sess_id at the same observation |
-| Counterfactual FOL source gate | Would full_order_log_entry_ready pass with the writer's provider configured; every refusal reason and unavailable input |
-| Provenance | Life/revision, snapshot/ONLINE/commit boundary and observation timestamps |
+Only after B's separate start message, start its pinned writer on the registered instance/original journal, send no Add, engage kill on, and record writer command-socket status every30s for at least3minutes. For each candidate save source_session_id, session_terms.sess_id, valid/crossed, best bid/ask, exchange_moment_ns and order_entry_ready with UTC receipt time. On the latest sample all must satisfy positive/equal session IDs, valid, uncrossed and ready before kill off and the first passive Add. Pinned readiness does not include kill-switch state, so observation can keep kill on.
 
-No extra connection or diagnostic instrumentation is authorized by this report. The pinned qualify executable's ordinary top-depth/metrics output alone does not expose a complete per-order histogram; capture sufficiency must be checked explicitly. If complete same-process evidence is unavailable, report incomplete and keep B blocked. Do not quietly add a listener or change the binary to obtain it.
-
-A remains unarmed until the owner's separate start message after confirmed system start. Any mixed candidate blocks B. Report it and propose a latest-committed-session/sys_events authority rule that still rejects zero/unknown/future sessions, with tests and a newly pinned release; do not implement it tonight.
+Source ID0 throughout with a valid two-sided book is treated as mixed: kill on, SIGTERM writer then router, zero orders sent, report and defer B. Empty/invalid/unknown states are distinguished and cannot grant entry. The semantic authority fix still requires review, tests and a new pinned release; no code change tonight. See the runbook for the exact sequence and C's additive read-only Kairos checks. Every block remains separately unarmed.
