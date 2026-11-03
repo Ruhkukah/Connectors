@@ -1,4 +1,5 @@
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
+#include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 
 #include "moex/plaza2/cgate/plaza2_metadata.hpp"
@@ -882,41 +883,18 @@ struct Plaza2ListenerCallbackState {
         };
     }
 
-    std::vector<std::string_view> required_tables;
-    using enum generated::StreamCode;
-    switch (raw ? kNoStreamCode : state.stream_code) {
-    case kFortsTradeRepl:
-        required_tables = {"orders_log", "user_deal", "heartbeat"};
-        break;
-    case kFortsUserorderbookRepl:
-        required_tables = {"orders", "info"};
-        break;
-    case kFortsPosRepl:
-        required_tables = {"position", "info"};
-        break;
-    case kFortsPartRepl:
-        required_tables = {"part"};
-        break;
-    case kFortsRefdataRepl:
-        required_tables = {"session", "fut_instruments", "fut_sess_contents"};
-        break;
-    case kFortsSessionstateRepl:
-        required_tables = {"session_state"};
-        break;
-    case kFortsInstrumentstateRepl:
-        required_tables = {"instrument_state", "sys_events"};
-        break;
-    case kFortsAggrRepl:
-        required_tables = {"orders_aggr", "sys_events"};
-        break;
-    default:
-        break;
-    }
-    for (auto name : required_tables)
+    auto required = required_replication_tables(raw ? kNoStreamCode : state.stream_code);
+    while (!required.empty()) {
+        const auto comma = required.find(',');
+        const auto name = required.substr(0, comma);
         if (std::none_of(state.message_plans.begin(), state.message_plans.end(),
                          [&](const auto& p) { return p.msg_name == name; }))
             return {.code = Plaza2ErrorCode::IncompatibleScheme,
                     .message = "INCOMPATIBLE_SCHEME " + std::string(name) + " expected=TABLE got=MISSING"};
+        if (comma == std::string_view::npos)
+            break;
+        required.remove_prefix(comma + 1);
+    }
     state.scheme_loaded = true;
     return {};
 }

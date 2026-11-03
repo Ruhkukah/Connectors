@@ -273,6 +273,11 @@ class Control {
         call<void (*)(generated::StreamCode, std::string*)>("moex_fake_listener_open_settings")(stream, &result);
         return result;
     }
+    std::string listener_settings(generated::StreamCode stream) const {
+        std::string result;
+        call<void (*)(generated::StreamCode, std::string*)>("moex_fake_listener_settings")(stream, &result);
+        return result;
+    }
     std::string trade_open_settings() const {
         std::string result;
         call<void (*)(std::string*)>("moex_fake_trade_open_settings")(&result);

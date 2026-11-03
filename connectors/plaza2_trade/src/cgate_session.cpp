@@ -1,4 +1,5 @@
 #include "moex/plaza2_trade/cgate_session.hpp"
+#include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state_bridge.hpp"
 #include "moex/plaza2/cgate/cgate_logging.hpp"
 
@@ -562,9 +563,12 @@ struct CgateSession::Impl {
     Plaza2Error create_streams() {
         auto streams = config.private_streams;
         if (config.status_streams.empty()) {
-            config.status_streams = {
-                {StreamCode::kFortsSessionstateRepl, "p2repl://FORTS_SESSIONSTATE_REPL", {}},
-                {StreamCode::kFortsInstrumentstateRepl, "p2repl://FORTS_INSTRUMENTSTATE_REPL", {}}};
+            config.status_streams = {{StreamCode::kFortsSessionstateRepl,
+                                      cg::required_replication_listener_settings(StreamCode::kFortsSessionstateRepl),
+                                      {}},
+                                     {StreamCode::kFortsInstrumentstateRepl,
+                                      cg::required_replication_listener_settings(StreamCode::kFortsInstrumentstateRepl),
+                                      {}}};
         }
         streams.insert(streams.end(), config.status_streams.begin(), config.status_streams.end());
         std::vector<StreamCode> codes;
@@ -577,6 +581,9 @@ struct CgateSession::Impl {
             return error;
         listeners.reserve(streams.size() + 3);
         for (auto& stream : streams) {
+            if (config.full_order_log_handler && stream.stream_code == StreamCode::kFortsRefdataRepl)
+                stream.settings =
+                    cg::required_replication_listener_settings(stream.stream_code) + ",instr2matching_map";
             if (config.trade_replay_from_pos_anchor && stream.stream_code == StreamCode::kFortsTradeRepl) {
                 deferred_trade = stream;
                 continue;

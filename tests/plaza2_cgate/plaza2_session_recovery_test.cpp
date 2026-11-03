@@ -1,3 +1,4 @@
+#include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
 #include "moex/plaza2_trade/cgate_session.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
@@ -856,7 +857,14 @@ int main(int argc, char** argv) {
                     precise_time |= field.timestamp_ns == field.unsigned_value * 1000000000ULL + 321000000ULL;
             }
         };
-        CgateSession additions(config);
+        // Keep this case unfiltered: unknown server table index 0 precedes
+        // the known plans. Automatic product status subscriptions are now
+        // filtered, so use explicit unfiltered URLs for this legacy case.
+        auto additive_config = config;
+        additive_config.status_streams = {
+            {generated::StreamCode::kFortsSessionstateRepl, "p2repl://FORTS_SESSIONSTATE_REPL", {}},
+            {generated::StreamCode::kFortsInstrumentstateRepl, "p2repl://FORTS_INSTRUMENTSTATE_REPL", {}}};
+        CgateSession additions(additive_config);
         require(!additions.start(), "start additive schema");
         for (int i = 0; i < 10; ++i) {
             now += std::chrono::seconds(1);
@@ -867,6 +875,27 @@ int main(int argc, char** argv) {
         require(precise_time, "CGate timestamp fractional milliseconds lost");
         require(moscow_time, "CGate Moscow wall time was not converted to UTC");
         require(!additions.stop(), "stop additions");
+        // With tables=, the extra server table is excluded and known table
+        // index 0 is legitimate. Use an actually unknown index to retain the
+        // same fail-safe lookup check for the restricted product schema.
+        flag(moex::plaza2::test::fake::Option::CgateClearDeletedUnknownTable, true);
+        auto filtered_config = config;
+        for (auto& stream : filtered_config.private_streams)
+            stream.settings = cgate::required_replication_listener_settings(stream.stream_code);
+        filtered_config.aggr20_stream.settings =
+            cgate::required_replication_listener_settings(generated::StreamCode::kFortsAggrRepl);
+        unknown_clears = 0;
+        CgateSession filtered_additions(filtered_config);
+        require(!filtered_additions.start(), "start filtered additive schema");
+        for (int i = 0; i < 10; ++i) {
+            now += std::chrono::seconds(1);
+            require(!filtered_additions.poll(), "filtered additive schema rejected");
+        }
+        require(filtered_additions.runtime_health().private_active,
+                "filtered subscriptions did not reconstruct with extra server tables");
+        require(unknown_clears == 0, "unknown ClearDeleted index mapped onto a filtered known table");
+        require(!filtered_additions.stop(), "stop filtered additions");
+        flag(moex::plaza2::test::fake::Option::CgateClearDeletedUnknownTable, false);
         flag(moex::plaza2::test::fake::Option::CgateClearDeletedInsideTransaction, false);
         flag(moex::plaza2::test::fake::Option::TimestampMilliseconds, false);
         config.listener_event_log = {};

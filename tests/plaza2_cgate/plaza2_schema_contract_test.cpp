@@ -3,6 +3,7 @@
 #include "fixtures/server_schema.hpp"
 #include "fixtures/server_schema_912.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state_bridge.hpp"
+#include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
 
 #include <algorithm>
 #include <array>
@@ -59,9 +60,10 @@ static void require_refdata_projection(Plaza2Connection& connection, const test:
     fake.configure(scenario);
     RefdataProjection handler;
     Plaza2Listener listener;
-    require(
-        !listener.create(connection, generated::StreamCode::kFortsRefdataRepl, "p2repl://FORTS_REFDATA_REPL", &handler),
-        "create versioned REFDATA listener");
+    require(!listener.create(connection, generated::StreamCode::kFortsRefdataRepl,
+                             required_replication_listener_settings(generated::StreamCode::kFortsRefdataRepl),
+                             &handler),
+            "create versioned REFDATA listener");
     require(!listener.open("mode=snapshot+online"), "open versioned REFDATA listener");
     for (int i = 0; i < 8 && !listener.last_callback_error(); ++i)
         require(!connection.process(0), "process versioned REFDATA");
@@ -109,10 +111,9 @@ static std::size_t require_captured_schema_subset() {
         require(std::none_of(session.begin(), session.end(),
                              [&](const auto& field) { return field.field_name == obsolete; }),
                 "captured CGate 9.9 session fixture contains obsolete field: " + std::string(obsolete));
-    // PART.part is required at OPEN even though its rows are not projected.
-    require_table(generated::TableCode::kFortsPartReplPart);
-    require(!test::server_schema_fields(generated::TableCode::kFortsPartReplPart).empty(),
-            "captured CGate 9.9 required PART part table missing");
+    // PART account balances are not consumed. Its session-event table is the
+    // retained contract and must remain available with tables=sys_events.
+    require_table(generated::TableCode::kFortsPartReplSysEvents);
     std::size_t checked{};
     for (const auto& table : generated::TableDescriptors()) {
         if (table.stream_id == static_cast<std::uint32_t>(generated::StreamCode::kFortsDealsRepl))
@@ -140,6 +141,104 @@ static std::size_t require_captured_schema_subset() {
         }
     }
     return checked;
+}
+
+struct FilteredRows final : Plaza2ListenerEventHandler {
+    generated::StreamCode stream{};
+    std::string expected;
+    std::size_t rows{}, clears{};
+    bool opened{}, online{};
+    std::vector<generated::TableCode> seen;
+
+    Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override {
+        require(event.stream_code == stream, "filtered callback changed stream");
+        opened |= event.kind == Plaza2ListenerEventKind::Open;
+        online |= event.kind == Plaza2ListenerEventKind::Online;
+        if (event.kind == Plaza2ListenerEventKind::StreamData || event.kind == Plaza2ListenerEventKind::ClearDeleted) {
+            const auto* table = generated::FindTableByCode(event.table_code);
+            require(table &&
+                        ("," + expected + ",").find("," + std::string(table->table_name) + ",") != std::string::npos,
+                    "filtered subscription delivered an unrequested or misindexed table");
+            if (event.kind == Plaza2ListenerEventKind::StreamData) {
+                ++rows;
+                seen.push_back(event.table_code);
+                const auto fields = generated::FieldsForTable(event.table_code);
+                for (const auto& field : event.fields)
+                    require(
+                        std::any_of(fields.begin(), fields.end(),
+                                    [&](const auto& descriptor) { return descriptor.field_code == field.field_code; }),
+                        "filtered schema index decoded another table's fields");
+            } else {
+                ++clears;
+            }
+        }
+        return {};
+    }
+};
+
+static void require_filtered_subscriptions(Plaza2Connection& connection, const test::fake::Control& fake) {
+    using enum generated::StreamCode;
+    // Independent declaration: changes to a production allowlist must not
+    // silently expand the streams described in the certification questionnaire.
+    const std::array contracts{
+        std::pair{kFortsTradeRepl, "orders_log,user_deal,heartbeat,sys_events"},
+        std::pair{kFortsUserorderbookRepl, "orders,info"},
+        std::pair{kFortsPosRepl, "position,info"},
+        std::pair{kFortsPartRepl, "sys_events"},
+        std::pair{kFortsRefdataRepl, "session,fut_instruments,fut_sess_contents,fut_vcb,sys_messages"},
+        std::pair{kFortsSessionstateRepl, "session_state"},
+        std::pair{kFortsInstrumentstateRepl, "instrument_state,sys_events"},
+        std::pair{kFortsAggrRepl, "orders_aggr,sys_events"},
+        std::pair{kFortsDealsRepl, "deal"}};
+    for (const auto& [stream, names] : contracts) {
+        require(required_replication_tables(stream) == names, "production table allowlist changed unexpectedly");
+        test::fake::Scenario scenario;
+        scenario.options[static_cast<std::size_t>(test::fake::Option::SchemeExtraTable)] = "1";
+        scenario.options[static_cast<std::size_t>(test::fake::Option::CgateClearDeletedInsideTransaction)] = "1";
+        fake.configure(scenario);
+        FilteredRows handler;
+        handler.stream = stream;
+        handler.expected = names;
+        Plaza2Listener listener;
+        require(!listener.create(connection, stream, required_replication_listener_settings(stream), &handler),
+                "create filtered replication listener");
+        require(!listener.open("mode=snapshot+online"), "open filtered replication listener");
+        for (int i = 0; i < 8 && !listener.last_callback_error(); ++i)
+            require(!connection.process(0), "process filtered replication listener");
+        require(!listener.last_callback_error(),
+                "filtered schema or row decode failed: " + listener.last_callback_error().message);
+        require(handler.opened && handler.online && (handler.rows > 0 || stream == kFortsPartRepl) &&
+                    handler.clears > 0,
+                "filtered listener did not decode rows/clear indices and reach ONLINE: " + std::string(names) +
+                    " rows=" + std::to_string(handler.rows) + " clears=" + std::to_string(handler.clears) +
+                    " opened=" + std::to_string(handler.opened) + " online=" + std::to_string(handler.online));
+        if (stream == kFortsTradeRepl)
+            require(std::find(handler.seen.begin(), handler.seen.end(),
+                              generated::TableCode::kFortsTradeReplUserDeal) != handler.seen.end(),
+                    "filtered TRADE user_deal was lost after its full-server index changed");
+        require(!listener.close() && !listener.destroy(), "close filtered replication listener");
+        // Missing tables remain fatal with filtering. A filtered or reordered
+        // descriptor must never turn incomplete reconstruction into readiness.
+        for (const auto& table : generated::TablesForStream(stream)) {
+            if (("," + std::string(names) + ",").find("," + std::string(table.table_name) + ",") == std::string::npos)
+                continue;
+            scenario = {};
+            scenario.omitted_schema_table = table.table_code;
+            fake.configure(scenario);
+            IgnoreRows ignored;
+            Plaza2Listener missing;
+            require(!missing.create(connection, stream, required_replication_listener_settings(stream), &ignored),
+                    "create missing-table filtered listener");
+            const auto opened = missing.open("mode=snapshot+online");
+            for (int i = 0; i < 8 && !missing.last_callback_error(); ++i)
+                (void)connection.process(0);
+            const auto error = opened ? opened : missing.last_callback_error();
+            require(error && (error.message.find(table.table_name) != std::string::npos ||
+                              error.message.find("REQUIRED_TABLES") != std::string::npos),
+                    "filtered listener accepted a missing required table: " + std::string(table.table_name));
+        }
+    }
+    fake.configure({});
 }
 
 int main(int argc, char** argv) {
@@ -183,6 +282,7 @@ int main(int argc, char** argv) {
         const auto obsolete = static_cast<generated::FieldCode>(0x8453894Eu);
         require_refdata_projection(connection, fake, false, obsolete);
         require_refdata_projection(connection, fake, false, obsolete, "invalid_type");
+        require_filtered_subscriptions(connection, fake);
         IgnoreRows handler;
         std::size_t checked{};
         // These native tables do not participate in own regular-futures

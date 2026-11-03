@@ -1,5 +1,6 @@
 #include "moex/plaza2_trade/cgate_session.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
+#include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
 #include <algorithm>
@@ -30,17 +31,27 @@ int main(int argc, char** argv) {
         config.process_timeout_ms = 0;
         config.recovery_now = [&] { return now; };
         config.private_streams = {
-            {generated::StreamCode::kFortsRefdataRepl, "p2repl://FORTS_REFDATA_REPL", "mode=snapshot+online"}};
+            {generated::StreamCode::kFortsRefdataRepl,
+             cgate::required_replication_listener_settings(generated::StreamCode::kFortsRefdataRepl),
+             "mode=snapshot+online"}};
         config.market_data_isin_ids = {1001};
         config.full_order_log_stream = {cgate::kFullOrderLogStreamCode,
                                         "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL", ""};
         config.full_order_log_handler = &book;
         std::vector<std::string> operation_logs;
         std::vector<std::uint32_t> close_reasons;
+        std::vector<std::string> refdata_tables;
         config.event_log = [&](std::string_view kind, std::string_view detail) {
             operation_logs.push_back(std::string(kind) + " " + std::string(detail));
         };
         config.listener_event_log = [&](const cgate::Plaza2ListenerEvent& event) {
+            if (event.stream_code == generated::StreamCode::kFortsRefdataRepl &&
+                event.kind == cgate::Plaza2ListenerEventKind::Open) {
+                refdata_tables.clear();
+                for (const auto& table : event.raw_tables)
+                    refdata_tables.push_back(table.name);
+                std::ranges::sort(refdata_tables);
+            }
             if (event.stream_code == cgate::kFullOrderLogStreamCode &&
                 event.kind == cgate::Plaza2ListenerEventKind::Close)
                 close_reasons.push_back(event.close_reason);
@@ -69,6 +80,17 @@ int main(int argc, char** argv) {
         pump();
         require(session.full_order_log_matching_id() == 3,
                 "Spectra 9.12 REFDATA without opening price must resolve matching 3");
+        require(refdata_tables == std::vector<std::string>{"fut_instruments", "fut_sess_contents", "fut_vcb",
+                                                           "instr2matching_map", "session", "sys_messages"},
+                "FullLog must negotiate exactly the six consumed REFDATA tables under native filtering");
+        require(fake.listener_settings(generated::StreamCode::kFortsRefdataRepl) ==
+                    "p2repl://"
+                    "FORTS_REFDATA_REPL;tables=session,fut_instruments,fut_sess_contents,fut_vcb,sys_messages,"
+                    "instr2matching_map",
+                "FullLog alone must append matching to the reviewed REFDATA server subscription");
+        require(fake.listener_settings(cgate::kFullOrderLogStreamCode) ==
+                    "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL",
+                "filtered REFDATA must preserve the exact vendor composite URL without tables or scheme");
         require(session.private_state().instruments().size() == 5000, "realistic REFDATA bootstrap size");
         const auto metadata_revision = session.market_data_metadata_revision();
         pump(100);
@@ -289,6 +311,29 @@ int main(int argc, char** argv) {
         require(!incompatible.stop(), "schema test stop");
         scenario.mutated_schema_field = {};
         scenario.omit_schema_field = false;
+        for (const bool missing_table : {true, false}) {
+            scenario.omitted_schema_table =
+                missing_table ? generated::TableCode::kFortsRefdataReplInstr2matchingMap : cgate::kNoTableCode;
+            scenario.mutated_schema_field = missing_table
+                                                ? generated::FieldCode{}
+                                                : generated::FieldCode::kFortsRefdataReplInstr2matchingMapMatchingId;
+            scenario.omit_schema_field = !missing_table;
+            fake.configure(scenario);
+            const auto before = fake.opens(cgate::kFullOrderLogStreamCode);
+            CgateSession missing_matching(config);
+            require(!missing_matching.start(), "missing matching contract start");
+            cgate::Plaza2Error error;
+            for (int i = 0; i < 5 && !error; ++i)
+                error = missing_matching.poll(false);
+            require(error.code == cgate::Plaza2ErrorCode::IncompatibleScheme &&
+                        error.message.find("instr2matching_map") != std::string::npos &&
+                        fake.opens(cgate::kFullOrderLogStreamCode) == before && !book.valid(),
+                    "missing filtered matching table or field must refuse before composite startup");
+            require(!missing_matching.stop(), "missing matching contract stop");
+        }
+        scenario.omitted_schema_table = {};
+        scenario.mutated_schema_field = {};
+        scenario.omit_schema_field = false;
         scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogMultiMatching)] = "1";
         fake.configure(scenario);
         config.market_data_isin_ids = {1001, 2002};
@@ -309,6 +354,22 @@ int main(int argc, char** argv) {
         require(invalid.start().code == cgate::Plaza2ErrorCode::InvalidConfiguration,
                 "composite cannot accept replstate");
         require(!invalid.stop(), "invalid config stop");
+        config.full_order_log_handler = nullptr;
+        config.full_order_log_stream = {};
+        scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogMultiMatching)] = "";
+        fake.configure(scenario);
+        CgateSession ordinary(config);
+        require(!ordinary.start(), "ordinary restricted REFDATA start");
+        for (int i = 0; i < 5; ++i)
+            require(!ordinary.poll(false), "ordinary restricted REFDATA poll");
+        require(
+            refdata_tables == std::vector<std::string>{"fut_instruments", "fut_sess_contents", "fut_vcb", "session",
+                                                       "sys_messages"} &&
+                ordinary.private_state().matching_map().empty() &&
+                fake.listener_settings(generated::StreamCode::kFortsRefdataRepl) ==
+                    "p2repl://FORTS_REFDATA_REPL;tables=session,fut_instruments,fut_sess_contents,fut_vcb,sys_messages",
+            "no-handler subscription must retain exactly the certified five REFDATA tables");
+        require(!ordinary.stop(), "ordinary restricted REFDATA stop");
         test::remove_tree(root);
         std::cout << "full order log session recovery/schema/matching passed\n";
     } catch (const std::exception& e) {
