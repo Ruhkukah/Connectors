@@ -49,6 +49,20 @@ Stop with SIGTERM to the verified FOL/probe PIDs, then the ORDLOG router, within
 
 ## B and D: orders through FOL only
 
+### Mandatory A report: long-lived resting-order session authority
+
+The mixed-session issue remains OPEN; the rollover tests do not prove that long-lived resting orders must belong to the current session. No authority code changes or replacement executable are authorized tonight. A starts only after a separate owner message and confirmed system start.
+
+From **A's own committed snapshot plus ONLINE capture**, at an identified committed cutover, report each candidate ISIN's resting-order count grouped by `sess_id`, current committed `session_state.sess_id`, and whether `full_order_log_entry_ready` would pass with the writable authority provider configured. Include every failed predicate/refusal reason, native life/revision, capture/commit time and the histogram total. Distinguish all native resting rows from retained/admitted orders if exclusions differ; never substitute own-account USERORDERBOOK for market-wide ORDBOOK.
+
+This is a counterfactual FOL source-gate assessment, not proof of complete trading readiness or order rights: A is read-only. Do not call it false merely because A intentionally has no writable provider, and do not call complete order entry ready when its private prerequisites were not measured. Keep the actual read-only configuration explicit. Check book validity, session authority/current-session agreement, depth/crossing, epoch/revision, stream activity and exchange-time predicates against the pinned implementation.
+
+Use only the existing A connection/capture; no additional connection, raw listener, changed logging verbosity, debugger attachment or replacement binary is implicitly authorized. If the retained capture cannot supply complete committed rows or the gate inputs, report **UNAVAILABLE/incomplete**, not zero orders or a guessed histogram; B remains blocked pending review. Default row counters/top20 depth alone cannot establish this histogram.
+
+**If any candidate book is mixed-session, B must not start.** Report the evidence and propose an authority change based on latest committed session/sys_events, still refusing zero, unknown and future sessions. That proposal needs tests, review and a new pinned release before B; no such code change is made tonight. Missing/ambiguous authority evidence also cannot grant entry.
+
+Offline20October check: the retained ORDLOG recheck logs are counters/metadata (the successful reader logged only the first DATA message); no complete public ORDBOOK snapshot was found in the inspected ORDLOG capture directories. A resting-order histogram cannot be reconstructed from those files. Own-account USERORDERBOOK empty snapshots do not answer this market-wide question. The offline audit and hashes are preserved in `FULL_ORDER_LOG_SESSION_AUTHORITY_OPEN_20261103.md`.
+
 Use the registered writer instance with original journal/identity path across restarts. Configure the same ORDLOG login for data and orders, verified broker/client environment variables, assigned range, measured clock, TEST and `--live --allow-orders`. For one instrument use quantity1 per command, configured quantity/position cap2, open-order cap5, rate5/s and an explicit quote-notional cap. No latency/profiling flags. `--sole-instance` is permitted only after proving this account/instrument is exclusively controlled; it is required for an actual instrument-scoped DelUserOrders test.
 
 The concrete writer invocation is the [cleanup invocation](FULL_ORDER_LOG_CLEANUP_20261104.md), **without `--cancel-only`**, using the normal command socket. Require private/current snapshots, valid FOL book and stream liveness before each Add/Move. Day passive prices are recalculated from fresh exact-tick FOL and current limits; do not hard-code yesterday's prices or intentionally cross. Maintain unique client-order IDs and account for Move aliases.
