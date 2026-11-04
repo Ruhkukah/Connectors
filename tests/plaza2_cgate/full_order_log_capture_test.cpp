@@ -187,6 +187,24 @@ int main() {
             require(refused([&] { FullOrderLogCapture c(bad, ids, b); }), "disk reserve refused before host start");
         }
 
+        // Exercise final partial-block publication while the worker is starting/idle.
+        for (unsigned trial = 0; trial < 100; ++trial) {
+            auto small = o;
+            small.directory = root / ("close-" + std::to_string(trial));
+            small.queue_blocks = 2;
+            FullOrderLogCapture closing(small, ids, book);
+            require(!closing.on_plaza2_listener_event(
+                        {.kind = Kind::Open, .stream_code = kFullOrderLogStreamCode, .raw_tables = schema}),
+                    "close-race OPEN");
+            require(!closing.on_plaza2_listener_event({.kind = Kind::Online, .stream_code = kFullOrderLogStreamCode}),
+                    "close-race ONLINE");
+            require(!closing.on_plaza2_listener_event({.kind = Kind::Close, .stream_code = kFullOrderLogStreamCode}),
+                    "close-race Close");
+            std::this_thread::yield();
+            closing.finish();
+            const auto checked = read_full_order_log_capture(small.directory, [](const auto&) {});
+            require(checked.records == 3 && closing.metrics().records == 5, "final block including end marker drained");
+        }
         require(refused([&] { FullOrderLogCapture duplicate(o, ids, book); }), "cannot overwrite existing capture");
         std::cout << "capture bytes/filter/quiet flush/rotation/sync/replay/DBN/corruption/failure checks passed at "
                   << root << '\n';

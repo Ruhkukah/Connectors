@@ -208,7 +208,9 @@ struct FullOrderLogCapture::Impl {
             for (;;) {
                 const auto t = tail.load(std::memory_order_relaxed);
                 if (t == head.load(std::memory_order_acquire)) {
-                    if (closing.load(std::memory_order_acquire))
+                    // Closing synchronizes the owner's final publish. Re-read head after
+                    // observing it; the earlier empty-queue load may predate that publish.
+                    if (closing.load(std::memory_order_acquire) && t == head.load(std::memory_order_acquire))
                         break;
                     std::this_thread::sleep_for(std::chrono::microseconds(100));
                 } else {
