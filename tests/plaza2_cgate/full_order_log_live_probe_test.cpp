@@ -72,6 +72,46 @@ struct Fixture {
 } // namespace
 int main() {
     try {
+        {
+            Fixture native;
+            native.open(native.composite);
+            for (const auto index : {0U, 1U})
+                native.send(native.composite, {.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                               .signed_value = INT64_MAX,
+                                               .table_index = native.schema[index].index,
+                                               .raw_table = &native.schema[index]});
+            for (unsigned n = 1; n <= 36; ++n)
+                native.send(native.composite, row(native.schema[0], n, 33, 10000000, 2).event());
+            native.send(native.composite, row(native.schema[0], 101, 11, 10000000, 3).event());
+            native.begin(native.composite);
+            native.info(native.composite, 100, 7);
+            native.commit(native.composite);
+            expect(!native.book.valid() && native.window.states[0].empty(), "probe snapshot commits stay hidden");
+            native.control(native.composite, Plaza2ListenerEventKind::Online);
+            expect(native.book.valid() && native.window.states[0].contains({7, 100}),
+                   "probe records unframed snapshot at ONLINE with exact native info cutover");
+            native.raw(100, 3);
+            expect(native.window.states[0].at({7, 100}).paired,
+                   "probe pairs the ONLINE snapshot with raw committed info");
+            const auto error =
+                native.composite.on_plaza2_listener_event(row(native.schema[2], 101, 11, 10000000, 2).event());
+            expect(error && error.message.find("outside bound transaction") != std::string::npos,
+                   "probe rejects unframed rows after ONLINE");
+        }
+        {
+            Fixture empty;
+            empty.open(empty.composite);
+            empty.info(empty.composite, 100, 7);
+            empty.control(empty.composite, Plaza2ListenerEventKind::Online);
+            expect(empty.book.valid() && empty.book.order_count() == 0 && empty.window.states[0].contains({7, 100}),
+                   "probe publishes a completed empty snapshot at ONLINE");
+            empty.raw(100, 0);
+            expect(empty.window.states[0].at({7, 100}).paired, "empty composite matches raw snapshot");
+            empty.open(empty.composite);
+            empty.send(empty.composite, row(empty.schema[0], 101, 11, 10000000, 3).event());
+            empty.control(empty.composite, Plaza2ListenerEventKind::Close);
+            expect(!empty.book.valid() && empty.window.states[0].empty(), "probe discards interrupted snapshot");
+        }
         Fixture f;
         f.begin(f.composite);
         f.log(101, 4);

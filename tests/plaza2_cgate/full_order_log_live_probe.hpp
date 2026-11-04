@@ -147,10 +147,11 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     std::unordered_map<std::int64_t, Order> orders_;
     OrderBinding fields_;
     cg::Plaza2RawFieldBinding publication_, info_rev_, info_life_, log_rev_, log_status_, log_act_;
-    std::size_t order_index_{}, info_index_{}, log_index_{}, order_capacity_;
+    std::size_t order_index_{}, info_index_{}, log_index_{}, order_size_{}, info_size_{}, log_size_{}, order_capacity_;
     Key committed_{}, pending_{};
     bool transaction_{}, info_done_{}, have_info_{}, online_{}, fenced_{}, log_started_{}, progress_needed_{};
     bool committed_lastrec_{true}, pending_lastrec_{true};
+    bool unframed_snapshot_{}, published_at_online_{};
     std::ostream* output_;
     std::uint64_t diagnostic_limit_, diagnostics_{}, generation_{};
     void retire_generation() {
@@ -180,6 +181,7 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
         for (const auto& t : tables) {
             if (t.name == "orders") {
                 order_index_ = t.index;
+                order_size_ = t.row_size;
                 orders = true;
                 fields_ = {field(t, "replID", "i8", 8),
                            field(t, "replRev", "i8", 8),
@@ -192,12 +194,14 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
             } else if (book_ && t.name == "orders_log") {
                 log = true;
                 log_index_ = t.index;
+                log_size_ = t.row_size;
                 log_rev_ = field(t, "replRev", "i8", 8);
                 log_status_ = field(t, "xstatus", "i8", 8);
                 log_act_ = field(t, "replAct", "i8", 8);
             } else if (t.name == "info") {
                 info = true;
                 info_index_ = t.index;
+                info_size_ = t.row_size;
                 publication_ = field(t, "publication_state", "i1", 1);
                 info_rev_ = field(t, "trades_rev", "i8", 8);
                 info_life_ = field(t, "trades_lifenum", "i8", 8);
@@ -207,8 +211,18 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 "probe requires native orders, info and composite orders_log tables");
     }
     void data(const cg::Plaza2ListenerEvent& e) {
-        require(e.raw_table && transaction_, "probe row outside bound transaction");
+        require(e.raw_table != nullptr, "probe row without binding");
         const auto name = e.raw_table->name;
+        const auto size = name == "orders"       ? order_size_
+                          : name == "info"       ? info_size_
+                          : name == "orders_log" ? log_size_
+                                                 : e.raw_table->row_size;
+        require(e.raw_payload.size() >= size, "probe row size");
+        require(transaction_ || (book_ && !online_), "probe row outside bound transaction");
+        if (book_ && !online_ && !transaction_)
+            unframed_snapshot_ = true;
+        if (online_)
+            published_at_online_ = false;
         if (name == "info") {
             require(e.table_index == info_index_, "probe info index mismatch");
             const auto publication = read<std::int8_t>(e, publication_);
@@ -230,7 +244,7 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
         }
         if (book_) {
             if (name == "orders_log") {
-                log_started_ = true;
+                log_started_ = online_;
                 require(e.table_index == log_index_, "probe orders_log index mismatch");
                 const auto revision = read<std::int64_t>(e, log_rev_);
                 require(revision > 0, "invalid native orders_log revision");
@@ -292,6 +306,18 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     bool needs_fresh_snapshot() const noexcept override {
         return book_ && book_->needs_fresh_snapshot();
     }
+    void on_plaza2_listener_error(const cg::Plaza2Error& error) noexcept override {
+        try {
+            orders_.clear();
+            transaction_ = info_done_ = have_info_ = online_ = fenced_ = log_started_ = false;
+            unframed_snapshot_ = published_at_online_ = false;
+            committed_ = pending_ = {};
+            retire_generation();
+            if (book_)
+                book_->on_plaza2_listener_error(error);
+        } catch (...) {
+        }
+    }
     cg::Plaza2Error on_plaza2_listener_event(const cg::Plaza2ListenerEvent& e) override {
         try {
             using Kind = cg::Plaza2ListenerEventKind;
@@ -307,26 +333,29 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 committed_ = {};
                 pending_ = {};
                 transaction_ = info_done_ = have_info_ = online_ = fenced_ = log_started_ = false;
+                unframed_snapshot_ = published_at_online_ = false;
                 committed_lastrec_ = pending_lastrec_ = true;
             }
             if (e.kind == Kind::TransactionBegin) {
                 require(!transaction_, "nested probe transaction");
                 transaction_ = true;
-                pending_ = committed_;
-                pending_lastrec_ = committed_lastrec_;
-                info_done_ = false;
+                if (!book_ || online_) {
+                    pending_ = committed_;
+                    pending_lastrec_ = committed_lastrec_;
+                    info_done_ = false;
+                }
             }
             if (e.kind == Kind::StreamData)
                 data(e);
-            if (e.kind == Kind::Online)
-                online_ = true;
             std::uint64_t erased = 0;
             const auto prior = book_ ? book_->metrics().clear_deleted_erased : 0;
             const auto epoch = book_ ? book_->epoch() : 0;
             if (book_) {
                 const auto error = book_->on_plaza2_listener_event(e);
-                if (error)
+                if (error) {
+                    on_plaza2_listener_error(error);
                     return error;
+                }
                 erased = book_->metrics().clear_deleted_erased - prior;
             }
             if (e.kind == Kind::ClearDeleted) {
@@ -364,9 +393,21 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
             if (book_ && (epoch != book_->epoch() || e.kind == Kind::LifeNum)) {
                 retire_generation();
                 have_info_ = online_ = fenced_ = log_started_ = false;
+                unframed_snapshot_ = published_at_online_ = false;
                 committed_lastrec_ = pending_lastrec_ = true;
                 committed_ = {};
                 pending_ = {};
+            }
+            if (e.kind == Kind::Online) {
+                online_ = true;
+                if (book_ && unframed_snapshot_ && book_->valid()) {
+                    committed_ = pending_;
+                    committed_lastrec_ = pending_lastrec_;
+                    if (!progress_needed_ && have_info_ && info_done_ && pending_lastrec_ && !fenced_)
+                        window_.record(side, committed_, digest(levels(), ids_));
+                    published_at_online_ = true;
+                    unframed_snapshot_ = false;
+                }
             }
             if (e.kind == Kind::TransactionCommit) {
                 require(transaction_, "probe commit without begin");
@@ -375,22 +416,26 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 committed_lastrec_ = pending_lastrec_;
                 // Capture only the actual published maps after native TN_COMMIT. A raw target
                 // inside this CGate block has no committed digest and remains UNALIGNED.
-                if (!progress_needed_ &&
+                if (!published_at_online_ && !progress_needed_ &&
                     (book_ ? have_info_ && online_ && book_->valid() && pending_lastrec_ && !fenced_
                            : have_info_ && info_done_))
                     window_.record(side, committed_, digest(levels(), ids_));
-                else if (book_ && online_)
+                else if (book_ && online_ && !published_at_online_)
                     ++unanchored_commits;
+                published_at_online_ = false;
             }
             if (e.kind == Kind::Close || (!book_ && e.kind == Kind::LifeNum)) {
                 orders_.clear();
                 transaction_ = info_done_ = have_info_ = online_ = false;
+                unframed_snapshot_ = published_at_online_ = false;
                 committed_ = pending_ = {};
                 retire_generation();
             }
             return {};
         } catch (const std::exception& error) {
-            return {.code = cg::Plaza2ErrorCode::DecodeFailed, .message = error.what()};
+            const auto result = cg::Plaza2Error{.code = cg::Plaza2ErrorCode::DecodeFailed, .message = error.what()};
+            on_plaza2_listener_error(result);
+            return result;
         }
     }
 };

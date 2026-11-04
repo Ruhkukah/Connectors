@@ -62,9 +62,9 @@ inline int full_order_log_operator(int argc, char** argv,
                   << " cg_conn_process_calls=" << native.process_calls
                   << " cg_conn_process_loop_max_ns=" << native.cg_conn_process_loop_max_ns
                   << " rows_per_second=" << (elapsed > 0 ? (m.rows_total - rows_at) / elapsed : 0)
-                  << " rows_total=" << m.rows_total << " lag_samples=" << m.lag_samples
-                  << " lag_last_ns=" << m.lag_last_ns << " lag_max_ns=" << m.lag_max_ns
-                  << " ignored_executions=" << m.ignored_executions
+                  << " book_valid=" << book->valid() << " rows_total=" << m.rows_total
+                  << " lag_samples=" << m.lag_samples << " lag_last_ns=" << m.lag_last_ns
+                  << " lag_max_ns=" << m.lag_max_ns << " ignored_executions=" << m.ignored_executions
                   << " clear_deleted_events=" << m.clear_deleted_events
                   << " clear_deleted_erased=" << m.clear_deleted_erased << '\n'
                   << std::flush;

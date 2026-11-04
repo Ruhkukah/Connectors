@@ -286,7 +286,7 @@ int main(int argc, char** argv) {
             const auto original_profile = contents(fixture.config_dir / "t1.ini");
             test::write_text_file(fixture.config_dir / "t1.ini",
                                   original_profile.substr(0, original_profile.find("[moex-fake-fol-runner]")) +
-                                      "[moex-fake-fol-runner]\nprofile=unframed\n");
+                                      "[moex-fake-fol-runner]\nprofile=short-snapshot\n");
             for (const auto mode : {"qualify", "run"}) {
                 fs::remove(fixture.config_dir / "fol-native-posts.log");
                 const auto log = fs::path(std::string("unframed-") + mode + ".ndjson");
@@ -319,8 +319,8 @@ int main(int argc, char** argv) {
                 Process child(request, std::string("unframed-") + mode);
                 test::require(child.wait() != 0, "three-strike FOL process must exit non-zero in both modes");
                 const auto output = child.errors() + child.output() + contents(log);
-                test::require(output.find("3 identical row-validation failures before ONLINE") != std::string::npos &&
-                                  output.find("row outside transaction") != std::string::npos,
+                test::require(output.find("3 identical row-validation failures") != std::string::npos &&
+                                  output.find("row size table=orders") != std::string::npos,
                               "FOL executable did not retain the exact fatal reason: " + output);
                 test::require(!fs::exists(fixture.config_dir / "fol-native-posts.log") &&
                                   !fs::exists(log.string() + ".sock"),

@@ -130,6 +130,11 @@ int main() {
         recovery.online();
         recovery.begin();
         recovery.commit();
+        // Snapshot TN_COMMITs no longer publish revisions. Add one actual online
+        // change so the new epoch deliberately reuses the old collision revision2.
+        recovery.begin();
+        recovery.add(5, 11, 8000000, 1);
+        recovery.commit();
         require(recovery.book.revision(11) == 2 && recover_source.status_snapshot().valid,
                 "new stream epoch clears cached collision even at the same book revision");
     } catch (const std::exception& error) {

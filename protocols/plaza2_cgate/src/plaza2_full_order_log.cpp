@@ -126,11 +126,12 @@ struct Plaza2FullOrderLog::Impl {
     std::vector<Instrument> books;
     std::size_t order_capacity, level_capacity, active_levels{}, dirty_levels{}, committed_count{};
     Binding log, snapshot;
-    BoundField info_life, info_publication;
+    BoundField info_life, info_publication, info_rev;
+    std::size_t info_size{}, sys_index{}, sys_size{};
     std::size_t info_index{};
     FullOrderLogMetrics metrics;
     std::uint64_t epoch{}, life{}, initial_life{}, info_log_life{}, pending_log_life{}, event_position{};
-    bool online_seen{};
+    bool online_seen{}, unframed_snapshot{}, skip_empty_online_commit{};
     bool have_life{}, have_info{}, pending_info{}, bound{}, online{}, transaction{}, valid{}, waiting_snapshot{},
         snapshot_seen{};
     Clock::time_point committed_at{};
@@ -169,6 +170,7 @@ struct Plaza2FullOrderLog::Impl {
             b.touched = b.crossed = false;
         }
         valid = online = transaction = have_info = pending_info = snapshot_seen = false;
+        online_seen = unframed_snapshot = skip_empty_online_commit = false;
         info_log_life = pending_log_life = 0;
         committed_at = {};
         ++epoch;
@@ -220,11 +222,34 @@ struct Plaza2FullOrderLog::Impl {
     }
     void row(const Plaza2ListenerEvent& e) {
         require(e.raw_table != nullptr, "missing row binding");
-        if (e.raw_table->name == "info") {
-            require(transaction && e.table_index == info_index, "invalid info delivery");
+        const auto name = std::string_view(e.raw_table->name);
+        const bool is_log = name == "orders_log", is_order = name == "orders";
+        const auto& b = is_log ? log : snapshot;
+        const auto expected_index = is_log || is_order ? b.index : name == "info" ? info_index : sys_index;
+        const auto expected_size = is_log || is_order ? b.row_size : name == "info" ? info_size : sys_size;
+        require(bound && (is_log || is_order || name == "info" || name == "sys_events") &&
+                    e.table_index == expected_index,
+                "unknown table index");
+        if (e.raw_payload.size() < expected_size)
+            require(false, "row size table=" + e.raw_table->name + " actual=" + std::to_string(e.raw_payload.size()) +
+                               " expected=" + std::to_string(expected_size));
+        if (online_seen && !transaction)
+            require(false, "row outside transaction table=" + e.raw_table->name +
+                               " online_seen=yes event_kind=" + std::to_string(static_cast<unsigned>(e.kind)) +
+                               " event_position=" + std::to_string(event_position));
+        if (!online_seen && !transaction)
+            unframed_snapshot = true;
+        if (online_seen)
+            skip_empty_online_commit = false;
+        if (name == "info") {
             const auto publication = read<std::int8_t>(e, info_publication);
-            const auto value = read<std::int64_t>(e, info_life);
-            require(publication >= 0 && publication <= 1 && value >= 0, "invalid snapshot info");
+            const auto value = read<std::int64_t>(e, info_life), revision = read<std::int64_t>(e, info_rev);
+            require(publication >= 0 && publication <= 1 && value >= 0 && revision >= 0, "invalid snapshot info");
+            if (!online_seen) {
+                pending_info = false;
+                if (!publication)
+                    have_info = false;
+            }
             if (publication == 1) {
                 pending_log_life = value;
                 pending_info = true;
@@ -232,12 +257,9 @@ struct Plaza2FullOrderLog::Impl {
             }
             return;
         }
-        const bool is_log = e.raw_table->name == "orders_log";
-        if (!is_log && e.raw_table->name != "orders")
+        if (!is_log && !is_order)
             return;
         ++metrics.rows_total;
-        const auto& b = is_log ? log : snapshot;
-        require(bound && e.table_index == b.index, "unknown table index");
         if (!is_log)
             snapshot_seen = true;
         const auto index = instrument(read<std::int32_t>(e, b.isin));
@@ -245,14 +267,6 @@ struct Plaza2FullOrderLog::Impl {
             ++metrics.rows_filtered;
             return;
         }
-        if (!transaction)
-            require(false, "row outside transaction table=" + e.raw_table->name +
-                               " online_seen=" + (online_seen ? "yes" : "no") +
-                               " event_kind=" + std::to_string(static_cast<unsigned>(e.kind)) +
-                               " event_position=" + std::to_string(event_position));
-        if (e.raw_payload.size() < b.row_size)
-            require(false, "row size table=" + e.raw_table->name + " actual=" + std::to_string(e.raw_payload.size()) +
-                               " expected=" + std::to_string(b.row_size));
         const auto id = read<std::int64_t>(e, b.order), rev = read<std::int64_t>(e, b.rev),
                    row_id = read<std::int64_t>(e, b.row);
         const auto act = read<std::int64_t>(e, b.act);
@@ -437,11 +451,14 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
                 require(i != e.raw_tables.end(), "requires orders_log, sys_events, orders and info");
                 return *i;
             };
-            table("sys_events");
+            const auto& sys = table("sys_events");
+            p.sys_index = sys.index;
+            p.sys_size = sys.row_size;
             p.log = bind(table("orders_log"), true);
             p.snapshot = bind(table("orders"), false);
             const auto& info = table("info");
-            field(info, "trades_rev", "i8", 8);
+            p.info_rev = field(info, "trades_rev", "i8", 8);
+            p.info_size = info.row_size;
             p.info_life = field(info, "trades_lifenum", "i8", 8);
             p.info_publication = field(info, "publication_state", "i1", 1);
             p.info_index = info.index;
@@ -457,19 +474,42 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
             break;
         case Kind::TransactionCommit:
             require(p.transaction, "commit without begin");
+            if (!p.online_seen || !p.online || p.skip_empty_online_commit) {
+                if (!p.online_seen && p.pending_info) {
+                    p.info_log_life = p.pending_log_life;
+                    p.have_info = true;
+                    p.pending_info = false;
+                }
+                p.transaction = false;
+                p.skip_empty_online_commit = false;
+                break; // Snapshot TN_COMMIT never exposes staged rows.
+            }
             p.commit(*this);
             if (p.valid && on_commit)
                 on_commit(*this);
             break;
         case Kind::Online:
             p.online_seen = true;
-            if (!p.waiting_snapshot || p.snapshot_seen)
-                p.online = true;
-            break; // visibility waits for the following commit
+            p.online = (!p.waiting_snapshot || p.snapshot_seen) &&
+                       (!p.unframed_snapshot || (p.snapshot_seen && (p.pending_info || p.have_info)));
+            if (!p.online)
+                p.waiting_snapshot = true;
+            if (p.unframed_snapshot && p.online) {
+                const bool transaction = p.transaction;
+                p.commit(*this);
+                p.transaction = transaction;
+                p.skip_empty_online_commit = transaction;
+                p.unframed_snapshot = false;
+                if (p.valid && on_commit)
+                    on_commit(*this);
+            }
+            break; // A fully framed snapshot still waits for the following commit.
         case Kind::LifeNum:
             ++p.metrics.life_events;
             if (p.have_life && p.life != e.unsigned_value &&
-                !(p.have_info && (p.info_log_life == e.unsigned_value || p.initial_life == e.unsigned_value)))
+                !((p.have_info && (p.info_log_life == e.unsigned_value || p.initial_life == e.unsigned_value)) ||
+                  (!p.online_seen && p.pending_info &&
+                   (p.pending_log_life == e.unsigned_value || p.initial_life == e.unsigned_value))))
                 reset(true);
             if (!p.have_life)
                 p.initial_life = e.unsigned_value;
@@ -478,13 +518,14 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
             break;
         case Kind::ClearDeleted: {
             ++p.metrics.clear_deleted_events;
-            if (!e.raw_table || (e.raw_table->name != "orders_log" && e.raw_table->name != "orders"))
+            if (!e.raw_table ||
+                (e.raw_table->name != "orders_log" && e.raw_table->name != "orders" && e.raw_table->name != "info"))
                 break;
             require(e.raw_table->index == e.table_index, "ClearDeleted index mismatch");
             if (e.signed_value == INT64_MAX) {
                 p.metrics.clear_deleted_erased += p.orders.size();
                 reset(true);
-            } else {
+            } else if (e.raw_table->name != "info") {
                 const unsigned source = e.raw_table->name == "orders_log" ? 1 : 0;
                 p.metrics.clear_deleted_erased += std::erase_if(p.orders, [&](const auto& item) {
                     const auto& o = item.second;

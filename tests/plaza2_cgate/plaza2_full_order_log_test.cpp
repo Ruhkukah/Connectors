@@ -580,28 +580,100 @@ static void publication_lag() {
 static void unframed_snapshot_diagnostics() {
     using namespace full_order_log_test;
     using Kind = Plaza2ListenerEventKind;
-    Harness h;
-    const auto snapshot = row(h.schema[0], 1, 11, 100000, 2);
-    auto error = h.book.on_plaza2_listener_event(snapshot.event());
-    require(
-        error.code == Plaza2ErrorCode::DecodeFailed &&
-            error.message.find("row outside transaction table=orders online_seen=no event_kind=4 event_position=2") !=
-                std::string::npos,
-        "unframed snapshot must refuse with transaction and event-position diagnostics");
-    require(!h.book.valid() && h.book.order_count() == 0, "diagnostic must not admit an unframed row");
-    h.open();
-    h.online();
-    error = h.book.on_plaza2_listener_event(snapshot.event());
-    require(error.message.find("online_seen=yes") != std::string::npos, "diagnostic records ONLINE seen");
-    h.open();
-    h.begin();
-    auto short_row = snapshot.event();
-    short_row.raw_payload = short_row.raw_payload.first(127);
-    error = h.book.on_plaza2_listener_event(short_row);
-    require(error.message.find("row size table=orders actual=127 expected=128") != std::string::npos &&
-                error.message.find("outside transaction") == std::string::npos,
-            "short framed row must report actual/expected size separately");
-    require(!h.book.valid() && h.book.order_count() == 0, "short row stays hidden");
+    const auto info = [](Harness& h, std::int8_t publication = 1, std::int64_t revision = 100) {
+        Row row(h.schema[1]);
+        row.set("publication_state", publication);
+        row.set("trades_rev", revision);
+        row.set("trades_lifenum", std::int64_t{7});
+        return row;
+    };
+    Harness observed;
+    std::size_t publications{};
+    observed.book.on_commit = [&](const auto&) { ++publications; };
+    observed.clear(0, INT64_MAX);
+    observed.clear(1, INT64_MAX);
+    // Exact captured order: Open, two MAX clears,36 filtered128-byte rows, tracked row at40.
+    for (unsigned n = 1; n <= 36; ++n)
+        observed.apply(row(observed.schema[0], n, 33, 100000, 2));
+    observed.apply(row(observed.schema[0], 101, 11, 100000, 2));
+    require(!observed.book.valid() && observed.book.order_count() == 0 && observed.book.levels(11, true).empty() &&
+                publications == 0,
+            "unframed snapshot stays entirely hidden");
+    observed.apply(info(observed));
+    observed.online();
+    require(observed.book.valid() && observed.book.order_count() == 1 && publications == 1 &&
+                observed.book.levels(11, true).at(100000) == 2 && observed.book.committed_log_lifenum() == 7,
+            "complete unframed snapshot publishes exactly once at ONLINE");
+    auto error = observed.book.on_plaza2_listener_event(row(observed.schema[2], 101, 11, 100000, 1, 2).event());
+    require(error.code == Plaza2ErrorCode::DecodeFailed &&
+                error.message.find("row outside transaction table=orders_log online_seen=yes") != std::string::npos,
+            "post-ONLINE unframed business row remains a validation failure");
+    require(!observed.book.valid() && observed.book.order_count() == 0, "post-ONLINE error invalidates the book");
+
+    Harness mixed;
+    mixed.apply(row(mixed.schema[0], 1, 11, 100000, 2));
+    mixed.begin();
+    mixed.apply(row(mixed.schema[0], 2, 11, 100000, 3));
+    mixed.apply(info(mixed));
+    mixed.commit();
+    require(!mixed.book.valid() && mixed.book.levels(11, true).empty(), "snapshot TN_COMMIT cannot publish");
+    mixed.apply(row(mixed.schema[2], 1, 11, 100000, 1, 2, 2));
+    mixed.apply(Row(mixed.schema[3]));
+    mixed.online();
+    require(mixed.book.valid() && mixed.book.levels(11, true).at(100000) == 4,
+            "mixed framed/unframed orders, info, log and system rows share one hidden snapshot");
+    mixed.begin();
+    mixed.add(1, 11, 100000, 0, 2, 3);
+    require(mixed.book.levels(11, true).at(100000) == 4, "online updates stay hidden until commit");
+    mixed.commit();
+    require(mixed.book.levels(11, true).at(100000) == 3, "framed online updates remain commit-atomic");
+    mixed.clear(1, INT64_MAX);
+    require(!mixed.book.valid() && mixed.book.order_count() == 0, "MAX info clear retires snapshot authority");
+
+    Harness online_in_frame;
+    unsigned online_publications{};
+    online_in_frame.book.on_commit = [&](const auto&) { ++online_publications; };
+    online_in_frame.apply(row(online_in_frame.schema[0], 1, 11, 100000, 2));
+    online_in_frame.begin();
+    online_in_frame.apply(info(online_in_frame));
+    online_in_frame.online();
+    require(online_in_frame.book.valid() && online_publications == 1,
+            "ONLINE commits a mixed snapshot inside an open frame");
+    online_in_frame.commit();
+    require(online_publications == 1, "trailing snapshot TN_COMMIT does not publish the same snapshot twice");
+    Harness interrupted;
+    interrupted.apply(row(interrupted.schema[0], 1, 11, 100000, 2));
+    interrupted.apply(info(interrupted));
+    interrupted.control(Kind::Close);
+    require(!interrupted.book.valid() && interrupted.book.order_count() == 0 &&
+                interrupted.book.levels(11, true).empty(),
+            "Close mid-snapshot discards every hidden row");
+    Harness empty;
+    empty.clear(0, INT64_MAX);
+    empty.clear(1, INT64_MAX);
+    empty.apply(info(empty));
+    empty.online();
+    require(empty.book.valid() && empty.book.order_count() == 0 && empty.book.revision(11) > 0,
+            "publication-complete empty snapshot becomes visible at ONLINE");
+    Harness incomplete;
+    incomplete.apply(row(incomplete.schema[0], 1, 11, 100000, 2));
+    incomplete.apply(info(incomplete, 0));
+    incomplete.online();
+    incomplete.begin();
+    incomplete.commit();
+    require(!incomplete.book.valid() && incomplete.book.levels(11, true).empty(),
+            "ONLINE without completed info never publishes an incomplete snapshot");
+    Harness short_row;
+    auto payload = row(short_row.schema[0], 1, 11, 100000, 2);
+    auto event = payload.event();
+    event.raw_payload = event.raw_payload.first(127);
+    error = short_row.book.on_plaza2_listener_event(event);
+    require(error.message.find("row size table=orders actual=127 expected=128") != std::string::npos,
+            "snapshot size validation runs independently of absent TN_BEGIN");
+    short_row.open();
+    error = short_row.book.on_plaza2_listener_event(info(short_row, 1, -1).event());
+    require(error.message.find("invalid snapshot info") != std::string::npos,
+            "negative trades_rev cannot complete an unframed snapshot");
 }
 int main() {
     try {

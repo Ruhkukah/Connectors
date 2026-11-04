@@ -6,6 +6,12 @@ All times are Europe/Moscow. This is a one-day internal TEST plan, not certifica
 
 The original-profile full-link retry passed SOFTWARE_AUTH and committed REFDATA/matching ID1, but the composite repeatedly failed `invalid row transaction or size` before ONLINE. **B/C/D remain unstarted/on hold until a valid read-only book is demonstrated.** No order or read-only restart is implied by the old timetable. See [the diagnostic review](FULL_ORDER_LOG_DIAGNOSTIC_REVIEW_20261104.md). The diagnostic release retains strict transaction/size admission and needs its own separately authorized qualify-only run (<=5 minutes, explicit absolute TERM deadline, full vendor links). Existing298d9b1e deployment inputs are historical; future commands must select the new reviewed diagnostic manifest explicitly.
 
+## Snapshot follow-up and deferred blocks
+
+The [snapshot admission review](FULL_ORDER_LOG_SNAPSHOT_REVIEW_20261104.md) supersedes the diagnostic-only admission policy for the next pinned release. Its deployment does not authorize a native run. A separate owner message may authorize qualify only for <=10minutes, explicitly choosing the new BIN/SCHEMES, an absolute TERM deadline and original full vendor links. Report time to ONLINE, all snapshot-table counts, info position, online framing, book validity/lag and strikes/exit. Proposed afternoon window14:05–14:50; avoid14:55–15:10.
+
+B is deferred to5November around08:00, conditional on a valid read-only book and the unchanged3-minute writer/session gate. A can run that morning. C/Kairos is deferred to5November10:20–11:20. Each still needs its own owner start message; D stays held. The4November timetable below is historical, not start authority. No timer or wake-up is installed.
+
 ## Schedule and block boundaries
 
 MOEX's [current T0 schedule](https://www.moex.com/s438), checked3November, lists07:00–10:00 morning trading,10:00–10:19:45 opening auction,10:20–14:00 main,14:00–16:00 evening,15:00 settlement and16:00 mark-to-market; weekdays are ordinary T0 days. This is the current schedule endpoint; the older `/a550` page has different weekend wording. A clock time does not prove the system is up or a selected instrument is tradable. Recheck current notices and native session/instrument state on4November. Never start the ORDLOG router before the trading system starts; do not probe the exchange before07:00.

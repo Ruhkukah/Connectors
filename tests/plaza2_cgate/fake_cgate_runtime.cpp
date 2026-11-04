@@ -2153,6 +2153,10 @@ std::uint32_t emit_stream_message(FakeListener& listener, const FakeMessageScrip
         .nulls = nullptr,
         .user_id = 0,
     };
+    if (listener.stream_code == kFullOrderLogStreamCode &&
+        message.table_code == TableCode::kFortsUserorderbookReplOrders &&
+        (fake_flag(Option::FullOrderLogSnapshotShortRow) || fol_runner_profile == "short-snapshot"))
+        --stream_data.data_size;
     return listener.callback(listener.connection, &listener, &stream_data, listener.callback_data);
 }
 
@@ -2221,7 +2225,8 @@ std::uint32_t emit_script(FakeListener& listener) {
     }
 
     const bool unframed = listener.stream_code == kFullOrderLogStreamCode &&
-                          (fake_flag(Option::FullOrderLogSnapshotNoTransactions) || fol_runner_profile == "unframed");
+                          (fake_flag(Option::FullOrderLogSnapshotNoTransactions) || fol_runner_profile == "unframed" ||
+                           fol_runner_profile == "short-snapshot" || fol_runner_profile == "unframed-online");
     if (const auto result = unframed ? kCgErrOk : emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk) {
         return result;
     }
@@ -2265,7 +2270,7 @@ std::uint32_t emit_script(FakeListener& listener) {
         (listener.stream_code == StreamCode::kFortsSessionstateRepl &&
          fake_flag(Option::SessionstatePauseBeforeCommit)))
         return kCgErrOk;
-    if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk) {
+    if (const auto result = unframed ? kCgErrOk : emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk) {
         return result;
     }
     if (listener.stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::RefdataPauseBeforeOnline))
@@ -2273,7 +2278,12 @@ std::uint32_t emit_script(FakeListener& listener) {
     if (const auto result = emit_simple_message(listener, kCgMsgP2replOnline); result != kCgErrOk) {
         return result;
     }
-    if (listener.stream_code == kFullOrderLogStreamCode) {
+    if (listener.stream_code == kFullOrderLogStreamCode &&
+        (fake_flag(Option::FullOrderLogUnframedOnlineRow) || fol_runner_profile == "unframed-online")) {
+        if (const auto result = emit_stream_message(listener, script.front()); result != kCgErrOk)
+            return result;
+    }
+    if (listener.stream_code == kFullOrderLogStreamCode && !unframed) {
         if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk)
             return result;
         if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk)
@@ -2398,7 +2408,7 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
     if (profile.empty())
         return kCgErrOk;
     if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" && profile != "invalid" &&
-        profile != "recovery" && profile != "unframed")
+        profile != "recovery" && profile != "unframed" && profile != "short-snapshot" && profile != "unframed-online")
         return kCgErrInvalidArgument;
     scenario = {};
     scenario.spectra912_refdata_schema = true;

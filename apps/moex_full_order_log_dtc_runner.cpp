@@ -129,6 +129,13 @@ int main(int argc, char** argv) {
              .source_mode = offline ? dtc::DtcSourceMode::Replay : dtc::DtcSourceMode::LiveTest,
              .max_queued_bytes = 4 * 1024 * 1024,
              .max_depth_levels = depth_levels});
+        bool first_valid_commit = false;
+        loop.on_queued_commit = [&] {
+            if (!first_valid_commit) {
+                first_valid_commit = true;
+                std::cout << "book_valid=1 first_valid_commit=1\n" << std::flush;
+            }
+        };
         book.on_crossed = [](std::int32_t isin, bool crossed) {
             std::cerr << "FullOrderLog crossed isin=" << isin << " crossed=" << crossed << '\n';
         };
@@ -158,7 +165,8 @@ int main(int argc, char** argv) {
                       << " cg_conn_process_loop_max_ns=" << native.cg_conn_process_loop_max_ns
                       << " rows_per_second=" << (elapsed > 0 ? (metrics.rows_total - rows_at) / elapsed : 0)
                       << " info_life_available=" << life.has_value() << " info_trades_lifenum=" << life.value_or(0)
-                      << " rows_total=" << metrics.rows_total << " ignored_executions=" << metrics.ignored_executions
+                      << " book_valid=" << book.valid() << " rows_total=" << metrics.rows_total
+                      << " ignored_executions=" << metrics.ignored_executions
                       << " excluded_adds=" << metrics.excluded_adds << " lag_samples=" << metrics.lag_samples
                       << " lag_last_ns=" << metrics.lag_last_ns << " lag_max_ns=" << metrics.lag_max_ns
                       << " clear_deleted_events=" << metrics.clear_deleted_events

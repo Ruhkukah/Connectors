@@ -218,10 +218,14 @@ struct CgateSession::Impl {
         Impl& owner;
         std::optional<std::chrono::steady_clock::time_point> activity;
         std::array<std::uint64_t, 11> event_counts{};
+        std::array<std::uint64_t, 4> snapshot_rows{};
+        std::uint64_t first_info_position{}, last_info_position{};
+        std::chrono::steady_clock::time_point cycle_started{};
         std::uint64_t cycle{}, event_position{};
         bool cycle_open{}, online_seen{}, failed_this_cycle{};
-        unsigned strikes{};
-        std::string last_failure;
+        unsigned strikes{}, post_online_strikes{}, post_online_position{};
+        bool trace_after_online{}, post_online_rows{};
+        std::string last_failure, post_online_failure;
         Plaza2Error fatal;
         void diagnostic(const cg::Plaza2ListenerEvent& event) {
             using enum cg::Plaza2ListenerEventKind;
@@ -230,9 +234,13 @@ struct CgateSession::Impl {
                     summary();
                 ++cycle;
                 event_counts.fill(0);
+                snapshot_rows.fill(0);
+                first_info_position = last_info_position = 0;
+                cycle_started = owner.now();
                 event_position = 0;
                 cycle_open = true;
-                online_seen = failed_this_cycle = false;
+                online_seen = failed_this_cycle = trace_after_online = post_online_rows = false;
+                post_online_position = 0;
             }
             if (!cycle_open)
                 return; // Native and synthetic CLOSE may both arrive for one cycle.
@@ -244,6 +252,26 @@ struct CgateSession::Impl {
                               ",\"kind\":" + std::to_string(kind) +
                               ",\"table\":" + json_quote(event.raw_table ? event.raw_table->name : "unspecified") +
                               ",\"data_size\":" + std::to_string(event.native_data_size) + "}");
+            if (!online_seen && event.kind == StreamData && event.raw_table) {
+                constexpr std::array<std::string_view, 4> tables{"orders", "info", "orders_log", "sys_events"};
+                const auto at = std::ranges::find(tables, event.raw_table->name);
+                if (at != tables.end())
+                    ++snapshot_rows[at - tables.begin()];
+                if (event.raw_table->name == "info") {
+                    if (!first_info_position)
+                        first_info_position = event_position;
+                    last_info_position = event_position;
+                }
+            }
+            if (trace_after_online && post_online_position < 32) {
+                ++post_online_position;
+                owner.log("full_order_log_online_event",
+                          "{\"cycle\":" + std::to_string(cycle) + ",\"position\":" + std::to_string(event_position) +
+                              ",\"post_online_position\":" + std::to_string(post_online_position) +
+                              ",\"kind\":" + std::to_string(kind) +
+                              ",\"table\":" + json_quote(event.raw_table ? event.raw_table->name : "unspecified") +
+                              ",\"data_size\":" + std::to_string(event.native_data_size) + "}");
+            }
             if (event.kind == Close)
                 summary();
         }
@@ -251,9 +279,13 @@ struct CgateSession::Impl {
             std::string counts;
             for (auto count : event_counts)
                 counts += (counts.empty() ? "" : ",") + std::to_string(count);
-            owner.log("full_order_log_cycle_totals", "{\"cycle\":" + std::to_string(cycle) +
-                                                         ",\"events\":" + std::to_string(event_position) +
-                                                         ",\"counts\":[" + counts + "]}");
+            owner.log("full_order_log_cycle_totals",
+                      "{\"cycle\":" + std::to_string(cycle) + ",\"events\":" + std::to_string(event_position) +
+                          ",\"counts\":[" + counts + "]" + ",\"snapshot_rows\":[" + std::to_string(snapshot_rows[0]) +
+                          "," + std::to_string(snapshot_rows[1]) + "," + std::to_string(snapshot_rows[2]) + "," +
+                          std::to_string(snapshot_rows[3]) + "]" +
+                          ",\"first_info_position\":" + std::to_string(first_info_position) +
+                          ",\"last_info_position\":" + std::to_string(last_info_position) + "}");
             cycle_open = false;
         }
         explicit FullOrderLogEvents(Impl& value) : owner(value) {}
@@ -281,30 +313,50 @@ struct CgateSession::Impl {
             diagnostic(event);
             const auto error = owner.config.full_order_log_handler->on_plaza2_listener_event(event);
             if (!error && event.kind == Online) {
-                online_seen = true;
+                owner.log(
+                    "full_order_log_snapshot",
+                    "{\"cycle\":" + std::to_string(cycle) + ",\"time_to_online_ns\":" +
+                        std::to_string(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(owner.now() - cycle_started).count()) +
+                        ",\"orders_rows\":" + std::to_string(snapshot_rows[0]) + ",\"info_rows\":" +
+                        std::to_string(snapshot_rows[1]) + ",\"orders_log_rows\":" + std::to_string(snapshot_rows[2]) +
+                        ",\"sys_events_rows\":" + std::to_string(snapshot_rows[3]) +
+                        ",\"first_info_position\":" + std::to_string(first_info_position) +
+                        ",\"last_info_position\":" + std::to_string(last_info_position) + "}");
+                online_seen = trace_after_online = true;
+                post_online_position = 0;
                 strikes = 0;
                 last_failure.clear();
             }
-            if (error && !online_seen && !failed_this_cycle) {
+            if (!error && online_seen && event.kind == TransactionBegin)
+                post_online_rows = false;
+            if (!error && online_seen && event.kind == StreamData)
+                post_online_rows = true;
+            if (!error && online_seen && event.kind == TransactionCommit && post_online_rows) {
+                post_online_strikes = 0;
+                post_online_failure.clear();
+            }
+            if (error && !failed_this_cycle) {
                 failed_this_cycle = true;
                 if (event.kind == StreamData && error.code == Plaza2ErrorCode::DecodeFailed) {
                     // Sequence positions may vary with filtered rows; compare the stable validation reason.
                     const auto signature = error.message.substr(0, error.message.find(" event_position="));
-                    strikes = signature == last_failure ? strikes + 1 : 1;
-                    last_failure = signature;
+                    auto& count = online_seen ? post_online_strikes : strikes;
+                    auto& previous = online_seen ? post_online_failure : last_failure;
+                    count = signature == previous ? count + 1 : 1;
+                    previous = signature;
                     owner.log("full_order_log_row_failure",
-                              "{\"strikes\":" + std::to_string(strikes) + ",\"reason\":" + json_quote(signature) + "}");
-                    if (strikes == 3) {
-                        fatal = {
-                            .code = Plaza2ErrorCode::DecodeFailed,
-                            .message =
-                                "Full Order Log stopped after 3 identical row-validation failures before ONLINE: " +
-                                signature};
+                              "{\"strikes\":" + std::to_string(count) + ",\"reason\":" + json_quote(signature) + "}");
+                    if (count == 3) {
+                        fatal = {.code = Plaza2ErrorCode::DecodeFailed,
+                                 .message =
+                                     "Full Order Log stopped after 3 identical row-validation failures: " + signature};
                         owner.log("full_order_log_fatal", "{\"reason\":" + json_quote(fatal.message) + "}");
                     }
                 } else {
-                    strikes = 0;
+                    strikes = post_online_strikes = 0;
                     last_failure.clear();
+                    post_online_failure.clear();
                 }
             }
             if (!error && (event.kind == StreamData || event.kind == TransactionCommit))

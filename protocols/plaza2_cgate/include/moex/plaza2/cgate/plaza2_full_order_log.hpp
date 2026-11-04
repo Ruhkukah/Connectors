@@ -31,7 +31,8 @@ struct FullOrderLogMetrics {
     std::uint64_t exchange_ahead_of_clock{}, clear_deleted_events{}, clear_deleted_erased{};
 };
 // Single-owner composite consumer. Orders and level nodes use a bounded,
-// reusable arena; published levels change only at an online TN_COMMIT.
+// reusable arena; unframed snapshots publish at complete ONLINE, then rows
+// require transactions and published levels change only at TN_COMMIT.
 class Plaza2FullOrderLog final : public Plaza2ListenerEventHandler {
   public:
     using LevelMap = std::pmr::map<std::int64_t, std::int64_t>;
