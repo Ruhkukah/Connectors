@@ -13,7 +13,7 @@ Transport template: `p2tcp://<dedicated-router-host>:<port>;app_name=<unique-ins
 ## Full Order Log subscription
 
 ```text
-p2ordbook://FORTS_ORDLOG_REPL_MATCH<matching_id>;snapshot=FORTS_ORDBOOK_REPL_MATCH<matching_id>;online.scheme=|FILE|<absolute-SCHEMES>/full_order_log/online.ini|ORDLOG;snapshot.scheme=|FILE|<absolute-SCHEMES>/full_order_log/snapshot.ini|OrdBook
+p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL;online.scheme=|FILE|<absolute-SCHEMES>/full_order_log/online.ini|ORDLOG;snapshot.scheme=|FILE|<absolute-SCHEMES>/full_order_log/snapshot.ini|OrdBook
 ```
 
 Online client scheme contains exactly `orders_log,sys_events`; snapshot client scheme exactly `orders,info`. p2ordbook does not accept tables=. CGate internally binds streams with snapshot.bind, default info.trades_rev. The application validates info if delivered but does not require an application info callback: hidden unframed snapshot staging becomes visible at authoritative ONLINE; online rows stay transaction/commit atomic. See the reviewed snapshot contract and client-scheme manifest.
@@ -38,7 +38,7 @@ Every p2repl listener uses an explicit tables= selection; no client scheme= is c
 
 Append `;tables=<comma-separated-list>` to each stream URL above; open mode is snapshot+online, with the existing POS-anchored TRADE replay settings where applicable. Cancel-only opens no FOL/AGGR/DEALS/DTC market-data listener and refuses Add/Move immutably.
 
-`instr2matching_map` is consumed, not an unrestricted extra: committed REFDATA resolves the selected instrument's base-contract mapping through fut_vcb and instr2matching_map. Missing, ambiguous or contradictory mapping waits/refuses rather than guessing or falling back to an unsuffixed stream. Current T0 CNY-12.26/ISIN4350847 resolved matching_id1; record fresh resolution for each future native run/instrument.
+`instr2matching_map` is consumed, not an unrestricted extra: committed REFDATA resolves the selected instrument's base-contract mapping through fut_vcb and instr2matching_map. Missing, ambiguous or contradictory mapping waits/refuses rather than guessing the instrument matching ID. In the current pinned writer this is an authority check: its listener URL remains unsuffixed, as confirmed by native cg_lsn_new logs. Matching resolution must not be described as a writer subscription-shard restriction; changing that routing needs separate review. Current T0 CNY-12.26/ISIN4350847 resolved matching_id1; record fresh resolution for each future native run/instrument.
 
 Writer additionally opens:
 
@@ -51,7 +51,7 @@ The questionnaire must state the order message families actually enabled/tested:
 
 ## Diagnostic-only comparison and display
 
-The separate read-only comparison probe opens the restricted composite URL above and `p2repl://FORTS_ORDBOOK_REPL_MATCH<matching_id>;tables=orders,info`. It has a unique app_name, no publisher and zero order posts. It requires exact exposed life/revision alignment; otherwise comparisons are UNALIGNED. This diagnostic connection must be declared if included in a certification session; it is not silently added to the production application's questionnaire inventory.
+The separate read-only comparison probe opens the restricted composite URL above with both stream names explicitly suffixed `_MATCH<matching_id>`, plus `p2repl://FORTS_ORDBOOK_REPL_MATCH<matching_id>;tables=orders,info`. This differs from the current unsuffixed writer URL. It has a unique app_name, no publisher and zero order posts. It requires exact exposed life/revision alignment; otherwise comparisons are UNALIGNED. This diagnostic connection must be declared if included in a certification session; it is not silently added to the production application's questionnaire inventory.
 
 DTC display binds localhost only, depth20 by default, with FullOrderLog authority envelope and atomic positional-level batches. Kairos end-to-end validation remains conditional on the reviewed PR111 build and recorded live evidence; do not claim it from connector-only tests.
 
