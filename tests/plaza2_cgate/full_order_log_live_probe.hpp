@@ -162,6 +162,7 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     };
     Window& window_;
     ContentWindow* content_{};
+    cg::Plaza2FullOrderLog::Clock::time_point content_commit_{};
     std::int64_t raw_begin_{};
     cg::Plaza2FullOrderLog* book_;
     std::vector<std::int32_t> ids_;
@@ -336,8 +337,10 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 sets.at(o.isin).emplace(o.id, std::tuple{o.remaining, o.price, o.session, o.bid});
             })) {
             const auto at = ContentWindow::now();
-            for (const auto& [isin, orders] : sets)
-                content_->record(isin, order_set_digest(orders), at);
+            const bool commit = content_commit_ != book_->committed_at();
+            content_commit_ = book_->committed_at();
+            for (auto& [isin, orders] : sets)
+                content_->record(isin, std::move(orders), at, commit);
         }
     }
     bool wants_raw_replication(std::string_view) const noexcept override {
@@ -484,8 +487,8 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                         sets.at(o.isin).emplace(o.public_id, std::tuple{o.quantity, o.price, o.session, o.bid}).second,
                         "duplicate reference public order ID");
                 const auto at = ContentWindow::now();
-                for (const auto& [isin, orders] : sets)
-                    content_->raw(isin, order_set_digest(orders), raw_begin_ ? raw_begin_ : at, at);
+                for (auto& [isin, orders] : sets)
+                    content_->raw(isin, std::move(orders), raw_begin_ ? raw_begin_ : at, at);
                 raw_begin_ = 0;
             }
             if (e.kind == Kind::Close || (!book_ && e.kind == Kind::LifeNum)) {

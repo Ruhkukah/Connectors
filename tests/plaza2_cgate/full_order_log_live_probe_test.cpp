@@ -1,6 +1,7 @@
 #include "full_order_log_live_probe.hpp"
 #include "full_order_log_test_support.hpp"
 #include <iostream>
+#include <sstream>
 using namespace full_order_log_probe;
 using namespace full_order_log_test;
 namespace {
@@ -166,6 +167,44 @@ int main() {
             b = a;
             b.at(1) = {1, 100, 7, true};
             expect(order_set_digest(a) != order_set_digest(b), "remaining quantity participates in content");
+        }
+        {
+            constexpr std::int64_t a = 9000000000000000111LL, b = 9000000000000000222LL;
+            constexpr std::int64_t c = 9000000000000000333LL, d = 9000000000000000444LL;
+            const OrderSet nearest{{a, {1, 987654321099999LL, 7, true}},
+                                   {b, {2, 123456789099999LL, 7, true}},
+                                   {c, {3, 777777777099999LL, 7, false}}};
+            OrderSet raw = nearest;
+            raw.at(a) = {9, 987654321099999LL, 7, true};
+            raw.erase(c);
+            raw.emplace(d, std::tuple{4LL, 555555555099999LL, 7, false});
+            std::ostringstream trace;
+            ContentWindow diagnostics(20, 8, &trace);
+            diagnostics.record(11, OrderSet{{a, {8, 1, 7, true}}}, 100);
+            diagnostics.record(11, nearest, 120);
+            diagnostics.record(11, nearest, 125, false); // Idle inspection is not another native commit.
+            diagnostics.raw(11, raw, 110, 115);
+            expect(trace.str().empty(), "no-match diagnostics wait for the arrival grace");
+            diagnostics.record(11, nearest, 140); // Outside expanded window:90..135.
+            const auto text = trace.str();
+            expect(diagnostics.different == 1 && text.find("\"missing_orders\":1") != std::string::npos &&
+                       text.find("\"extra_orders\":1") != std::string::npos &&
+                       text.find("\"changed_orders\":1") != std::string::npos &&
+                       text.find("\"composite_commits_in_window\":2") != std::string::npos,
+                   "no-match must report symmetric differences against nearest state and only in-window commits");
+            for (auto secret_value : std::array<std::int64_t, 6>{a, b, c, d, 987654321099999LL, 123456789099999LL})
+                expect(text.find(std::to_string(secret_value)) == std::string::npos,
+                       "comparison diagnostics leaked an order ID or value");
+            diagnostics.raw(22, raw, 200, 205);
+            diagnostics.poll(226);
+            expect(trace.str().find("\"missing_orders\":null") != std::string::npos,
+                   "missing nearest state must report unavailable counts, not false zeros");
+            ContentWindow bounded_sets(20, 8, nullptr, 3);
+            bounded_sets.record(11, nearest, 100);
+            bounded_sets.raw(11, OrderSet{}, 101, 102);
+            bounded_sets.record(11, OrderSet{{d, {4, 1, 7, true}}}, 103);
+            expect(*bounded_sets.retained_rows <= 3 && bounded_sets.unresolved == 1 && bounded_sets.evictions == 1,
+                   "order-image storage limit must retire pending observations explicitly");
         }
         {
             Fixture no_info;

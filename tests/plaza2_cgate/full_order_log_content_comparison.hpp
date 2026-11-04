@@ -22,27 +22,45 @@ inline std::string order_set_digest(const OrderSet& orders) {
     return moex::plaza2::cgate::plaza2_sha256_hex(text);
 }
 struct ContentWindow {
+    struct Image {
+        OrderSet orders;
+        std::shared_ptr<std::size_t> retained;
+        Image(OrderSet value, std::shared_ptr<std::size_t> count)
+            : orders(std::move(value)), retained(std::move(count)) {
+            *retained += orders.size();
+        }
+        ~Image() {
+            *retained -= orders.size();
+        }
+    };
+    using ImagePtr = std::shared_ptr<const Image>;
     struct State {
         std::int64_t at;
         std::string hash;
+        ImagePtr image;
+        bool commit{};
     };
     struct Publication {
         std::int32_t isin;
         std::int64_t begin, end;
         std::string hash;
         bool eligible{}, truncated{};
+        ImagePtr image;
     };
     std::map<std::int32_t, std::deque<State>> history;
     std::deque<Publication> pending;
     std::map<std::int32_t, bool> lost_history;
     std::int64_t tolerance_ms;
     std::size_t capacity;
+    std::size_t order_budget;
+    std::shared_ptr<std::size_t> retained_rows{std::make_shared<std::size_t>(0)};
     std::ostream* output;
     std::function<void()> resample;
     std::uint64_t matched{}, different{}, unresolved{}, evictions{}, observations{};
-    explicit ContentWindow(std::int64_t tolerance = 2000, std::size_t cap = 4096, std::ostream* out = nullptr)
-        : tolerance_ms(tolerance), capacity(cap), output(out) {
-        if (tolerance < 0 || tolerance > 30000 || cap == 0 || cap > 65536)
+    explicit ContentWindow(std::int64_t tolerance = 2000, std::size_t cap = 4096, std::ostream* out = nullptr,
+                           std::size_t rows = 1000000)
+        : tolerance_ms(tolerance), capacity(cap), order_budget(rows), output(out) {
+        if (tolerance < 0 || tolerance > 30000 || cap == 0 || cap > 65536 || !rows || rows > 10000000)
             throw std::invalid_argument("invalid content comparison bounds");
     }
     static std::int64_t now() {
@@ -51,12 +69,58 @@ struct ContentWindow {
             .count();
     }
     void emit(const Publication& p, const char* result) {
-        if (output)
-            *output << "{\"kind\":\"content_comparison\",\"isin_id\":" << p.isin << ",\"result\":\"" << result
-                    << "\",\"raw_begin_monotonic_ms\":" << p.begin << ",\"raw_end_monotonic_ms\":" << p.end
-                    << ",\"tolerance_ms\":" << tolerance_ms << ",\"raw_order_set_sha256\":" << std::quoted(p.hash)
-                    << ",\"same_revision_proven\":false}\n"
-                    << std::flush;
+        if (!output)
+            return;
+        const State* nearest = nullptr;
+        std::uint64_t commits = 0;
+        const auto h = history.find(p.isin);
+        const auto distance = [&](const State& s) { return s.at < p.end ? p.end - s.at : s.at - p.end; };
+        if (h != history.end())
+            for (const auto& s : h->second) {
+                if (s.commit && s.at >= p.begin - tolerance_ms && s.at <= p.end + tolerance_ms)
+                    ++commits;
+                if (!nearest || distance(s) < distance(*nearest))
+                    nearest = &s;
+            }
+        std::uint64_t missing = 0, extra = 0, changed = 0;
+        const bool available = nearest && nearest->image && p.image;
+        if (available) {
+            for (const auto& [id, value] : p.image->orders) {
+                const auto i = nearest->image->orders.find(id);
+                if (i == nearest->image->orders.end())
+                    ++missing;
+                else if (i->second != value)
+                    ++changed;
+            }
+            for (const auto& [id, value] : nearest->image->orders)
+                extra += !p.image->orders.contains(id);
+        }
+        *output << "{\"kind\":\"content_comparison\",\"isin_id\":" << p.isin << ",\"result\":\"" << result
+                << "\",\"raw_begin_monotonic_ms\":" << p.begin << ",\"raw_end_monotonic_ms\":" << p.end
+                << ",\"tolerance_ms\":" << tolerance_ms << ",\"raw_order_set_sha256\":" << std::quoted(p.hash)
+                << ",\"composite_commits_in_window\":" << commits << ",\"nearest_sample_in_window\":"
+                << (nearest && nearest->at >= p.begin - tolerance_ms && nearest->at <= p.end + tolerance_ms ? "true"
+                                                                                                            : "false")
+                << ",\"missing_orders\":" << (available ? std::to_string(missing) : "null")
+                << ",\"extra_orders\":" << (available ? std::to_string(extra) : "null")
+                << ",\"changed_orders\":" << (available ? std::to_string(changed) : "null")
+                << ",\"same_revision_proven\":false}\n"
+                << std::flush;
+    }
+    ImagePtr image(OrderSet orders) {
+        if (orders.size() > order_budget)
+            throw std::invalid_argument("content order set exceeds storage bound");
+        if (*retained_rows > order_budget - orders.size()) {
+            ++evictions;
+            auto lost = lost_history;
+            for (const auto& [isin, states] : history)
+                lost[isin] = true;
+            retire("unresolved_order_storage_limit");
+            lost_history = std::move(lost);
+        }
+        if (*retained_rows > order_budget - orders.size())
+            throw std::invalid_argument("active content observations exceed storage bound");
+        return std::make_shared<Image>(std::move(orders), retained_rows);
     }
     void poll(std::int64_t at = now()) {
         for (auto p = pending.begin(); p != pending.end();) {
@@ -91,9 +155,22 @@ struct ContentWindow {
             p = pending.erase(p);
         }
     }
-    void record(std::int32_t isin, std::string hash, std::int64_t at = now()) {
+    void record(std::int32_t isin, OrderSet orders, std::int64_t at = now(), bool commit = true) {
+        const auto hash = order_set_digest(orders);
+        const auto h = history.find(isin);
+        auto value = h != history.end() && !h->second.empty() && h->second.back().hash == hash ? h->second.back().image
+                                                                                               : ImagePtr{};
+        if (!value)
+            value = image(std::move(orders));
+        record(isin, hash, at, std::move(value), commit);
+    }
+    void record(std::int32_t isin, std::string hash, std::int64_t at = now(), ImagePtr value = {}, bool commit = true) {
         auto& h = history[isin];
-        h.push_back({at, std::move(hash)});
+        if (!commit && !h.empty() && h.back().hash == hash) {
+            poll(at);
+            return;
+        }
+        h.push_back({at, std::move(hash), std::move(value), commit});
         if (h.size() > capacity) {
             h.pop_front();
             lost_history[isin] = true;
@@ -109,7 +186,11 @@ struct ContentWindow {
         }
         poll(at);
     }
-    void raw(std::int32_t isin, std::string hash, std::int64_t begin, std::int64_t end) {
+    void raw(std::int32_t isin, OrderSet orders, std::int64_t begin, std::int64_t end) {
+        const auto hash = order_set_digest(orders);
+        raw(isin, hash, begin, end, image(std::move(orders)));
+    }
+    void raw(std::int32_t isin, std::string hash, std::int64_t begin, std::int64_t end, ImagePtr value = {}) {
         if (begin > end)
             throw std::invalid_argument("reversed raw publication interval");
         if (resample)
@@ -122,15 +203,15 @@ struct ContentWindow {
         }
         ++observations;
         const auto h = history.find(isin);
-        const bool truncated = lost_history[isin] && h != history.end() && !h->second.empty() &&
-                               begin - tolerance_ms < h->second.front().at;
-        pending.push_back({isin, begin, end, std::move(hash), false, truncated});
+        const bool truncated = lost_history[isin] &&
+                               (h == history.end() || h->second.empty() || begin - tolerance_ms < h->second.front().at);
+        pending.push_back({isin, begin, end, std::move(hash), false, truncated, std::move(value)});
         poll(end);
     }
-    void retire() {
+    void retire(const char* reason = "unresolved_lifecycle_change") {
         for (const auto& p : pending) {
             ++unresolved;
-            emit(p, "unresolved_lifecycle_change");
+            emit(p, reason);
         }
         pending.clear();
         history.clear();
