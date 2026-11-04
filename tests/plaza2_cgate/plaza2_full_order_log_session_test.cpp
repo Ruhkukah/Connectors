@@ -147,6 +147,24 @@ int main(int argc, char** argv) {
                 "full log must run without order-entry transports");
         require(session.connection_app_name() == "full-order-log-test",
                 "market data process must retain own app identity");
+        for (unsigned i = 0; i < 80; ++i)
+            fake.enqueue({.kind = f::EventKind::Row,
+                          .stream_code = cgate::kFullOrderLogStreamCode,
+                          .table_code = generated::TableCode::kFortsTradeReplSysEvents});
+        pump(100);
+        require(std::count_if(operation_logs.begin(), operation_logs.end(),
+                              [](const auto& line) { return line.starts_with("full_order_log_event "); }) == 64,
+                "each cycle must log only the first 64 kinds, including ordinary filtered data: " +
+                    std::to_string(std::count_if(operation_logs.begin(), operation_logs.end(), [](const auto& line) {
+                        return line.starts_with("full_order_log_event ");
+                    })));
+        require(std::any_of(operation_logs.begin(), operation_logs.end(),
+                            [](const auto& line) {
+                                return line.starts_with("full_order_log_event ") &&
+                                       line.find("\"data_size\":") != std::string::npos &&
+                                       line.find("\"table\":\"sys_events\"") != std::string::npos;
+                            }),
+                "bounded diagnostics include table and size without decoding field values");
         const auto enqueue = [&](f::EventKind kind, std::int64_t rev = 0,
                                  generated::TableCode table = cgate::kNoTableCode, std::uint64_t value = 0) {
             fake.enqueue({.kind = kind,
@@ -422,6 +440,66 @@ int main(int argc, char** argv) {
         require(invalid.start().code == cgate::Plaza2ErrorCode::InvalidConfiguration,
                 "composite cannot accept replstate");
         require(!invalid.stop(), "invalid config stop");
+        config.full_order_log_stream.open_settings.clear();
+        scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogMultiMatching)] = "";
+        scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogSnapshotNoTransactions)] = "1";
+        fake.configure(scenario);
+        operation_logs.clear();
+        const auto unframed_opens = fake.opens(cgate::kFullOrderLogStreamCode);
+        CgateSession unframed(config);
+        require(!unframed.start(), "unframed diagnostic start");
+        cgate::Plaza2Error fatal;
+        for (unsigned i = 0; i < 12 && !fatal; ++i) {
+            fatal = unframed.poll(false);
+            now += std::chrono::seconds(1);
+        }
+        require(fatal.code == cgate::Plaza2ErrorCode::DecodeFailed &&
+                    fatal.message.find("3 identical row-validation failures before ONLINE") != std::string::npos &&
+                    fatal.message.find("row outside transaction table=orders") != std::string::npos,
+                "unframed snapshot must stop on the third identical pre-ONLINE row failure");
+        const auto fatal_opens = fake.opens(cgate::kFullOrderLogStreamCode);
+        require(fatal_opens == unframed_opens + 3 && !book.valid(),
+                "no fourth OPEN or visible book after three strikes");
+        for (unsigned i = 0; i < 5; ++i) {
+            now += std::chrono::seconds(10);
+            require(unframed.poll(false).message == fatal.message, "fatal must stay sticky");
+        }
+        require(fake.opens(cgate::kFullOrderLogStreamCode) == fatal_opens, "fatal must never reopen again");
+        require(!unframed.stop(), "fatal diagnostic cleanup");
+        require(std::count_if(operation_logs.begin(), operation_logs.end(),
+                              [](const auto& line) { return line.starts_with("full_order_log_cycle_totals "); }) == 3,
+                "one totals record per failed cycle despite native/synthetic CLOSE");
+        scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogSnapshotNoTransactions)] = "";
+        // A genuine successful ONLINE between failures breaks the fatal streak.
+        fake.configure(scenario);
+        operation_logs.clear();
+        fake.set(f::Option::FullOrderLogSnapshotNoTransactions);
+        CgateSession recovering(config);
+        require(!recovering.start(), "diagnostic streak-reset start");
+        const auto failures = [&] {
+            return std::count_if(operation_logs.begin(), operation_logs.end(),
+                                 [](const auto& line) { return line.starts_with("full_order_log_row_failure "); });
+        };
+        for (unsigned i = 0; i < 10 && failures() < 2; ++i) {
+            require(!recovering.poll(false), "two failures remain recoverable");
+            now += std::chrono::seconds(1);
+        }
+        require(failures() == 2, "streak fixture must deliver two real unframed snapshots");
+        fake.clear(f::Option::FullOrderLogSnapshotNoTransactions);
+        for (unsigned i = 0; i < 5 && !book.valid(); ++i) {
+            require(!recovering.poll(false), "framed snapshot recovers before third strike");
+            now += std::chrono::seconds(1);
+        }
+        require(book.valid(), "ONLINE must restore the book in the positive fake contract");
+        fake.set(f::Option::FullOrderLogSnapshotNoTransactions);
+        fake.enqueue({.kind = f::EventKind::Close, .stream_code = cgate::kFullOrderLogStreamCode});
+        for (unsigned i = 0; i < 10 && failures() < 4; ++i) {
+            require(!recovering.poll(false), "ONLINE must reset, not merely pause, the three-strike counter");
+            now += std::chrono::seconds(1);
+        }
+        require(failures() == 4, "two new failures after ONLINE remain below the stop threshold");
+        require(!recovering.stop(), "streak-reset cleanup");
+        scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogSnapshotNoTransactions)] = "";
         config.full_order_log_handler = nullptr;
         config.full_order_log_stream = {};
         scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogMultiMatching)] = "";

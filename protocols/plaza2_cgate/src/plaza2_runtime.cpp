@@ -899,8 +899,9 @@ struct Plaza2ListenerCallbackState {
     return {};
 }
 
-[[nodiscard]] Plaza2Error dispatch_listener_event(Plaza2ListenerCallbackState& state,
-                                                  const Plaza2ListenerEvent& event) {
+[[nodiscard]] Plaza2Error dispatch_listener_event(Plaza2ListenerCallbackState& state, Plaza2ListenerEvent event,
+                                                  std::size_t native_data_size) {
+    event.native_data_size = native_data_size;
     if (state.handler == nullptr) {
         return {};
     }
@@ -970,7 +971,7 @@ struct Plaza2ListenerCallbackState {
                                   : "",
                 .raw_tables = state->raw_tables,
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;
@@ -984,7 +985,7 @@ struct Plaza2ListenerCallbackState {
                 .stream_code = state->stream_code,
                 .close_reason = close_reason,
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;
@@ -994,7 +995,7 @@ struct Plaza2ListenerCallbackState {
                 .kind = Plaza2ListenerEventKind::TransactionBegin,
                 .stream_code = state->stream_code,
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;
@@ -1004,7 +1005,7 @@ struct Plaza2ListenerCallbackState {
                 .kind = Plaza2ListenerEventKind::TransactionCommit,
                 .stream_code = state->stream_code,
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;
@@ -1014,7 +1015,7 @@ struct Plaza2ListenerCallbackState {
                 .kind = Plaza2ListenerEventKind::Online,
                 .stream_code = state->stream_code,
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;
@@ -1031,7 +1032,7 @@ struct Plaza2ListenerCallbackState {
                 .stream_code = state->stream_code,
                 .unsigned_value = life_number,
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;
@@ -1063,7 +1064,7 @@ struct Plaza2ListenerCallbackState {
                 .table_index = payload.table_idx,
                 .raw_table = &state->raw_tables[static_cast<std::size_t>(plan - state->message_plans.data())],
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;
@@ -1076,7 +1077,7 @@ struct Plaza2ListenerCallbackState {
                 .stream_code = state->stream_code,
                 .text_value = text,
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;
@@ -1102,7 +1103,7 @@ struct Plaza2ListenerCallbackState {
                 .user_id = payload->user_id,
                 .raw_payload = raw_payload,
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;
@@ -1123,7 +1124,7 @@ struct Plaza2ListenerCallbackState {
                 .stream_code = kNoStreamCode,
                 .user_id = payload->user_id,
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;
@@ -1158,7 +1159,7 @@ struct Plaza2ListenerCallbackState {
                     .table_index = payload->msg_index,
                     .raw_table = &state->raw_tables[static_cast<std::size_t>(plan - state->message_plans.data())],
                 };
-                if (const auto error = dispatch_listener_event(*state, event); error)
+                if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error)
                     return fail(error);
                 return kCgErrOk;
             }
@@ -1258,7 +1259,7 @@ struct Plaza2ListenerCallbackState {
                 .table_index = payload->msg_index,
                 .raw_table = &state->raw_tables[static_cast<std::size_t>(plan - state->message_plans.data())],
             };
-            if (const auto error = dispatch_listener_event(*state, event); error) {
+            if (const auto error = dispatch_listener_event(*state, event, msg->data_size); error) {
                 return fail(error);
             }
             return kCgErrOk;

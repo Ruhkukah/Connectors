@@ -2220,7 +2220,9 @@ std::uint32_t emit_script(FakeListener& listener) {
         }
     }
 
-    if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk) {
+    const bool unframed = listener.stream_code == kFullOrderLogStreamCode &&
+                          (fake_flag(Option::FullOrderLogSnapshotNoTransactions) || fol_runner_profile == "unframed");
+    if (const auto result = unframed ? kCgErrOk : emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk) {
         return result;
     }
     if (emit_clear_deleted_inside_transaction() && !listener.message_plans.empty()) {
@@ -2396,7 +2398,7 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
     if (profile.empty())
         return kCgErrOk;
     if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" && profile != "invalid" &&
-        profile != "recovery")
+        profile != "recovery" && profile != "unframed")
         return kCgErrInvalidArgument;
     scenario = {};
     scenario.spectra912_refdata_schema = true;

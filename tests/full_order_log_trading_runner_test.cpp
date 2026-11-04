@@ -282,6 +282,52 @@ int main(int argc, char** argv) {
                               client.errors().find("not a Full Order Log") != std::string::npos,
                           "FOL command client sent a trading command to an AGGR endpoint");
         }
+        {
+            const auto original_profile = contents(fixture.config_dir / "t1.ini");
+            test::write_text_file(fixture.config_dir / "t1.ini",
+                                  original_profile.substr(0, original_profile.find("[moex-fake-fol-runner]")) +
+                                      "[moex-fake-fol-runner]\nprofile=unframed\n");
+            for (const auto mode : {"qualify", "run"}) {
+                fs::remove(fixture.config_dir / "fol-native-posts.log");
+                const auto log = fs::path(std::string("unframed-") + mode + ".ndjson");
+                auto request = arguments(executable, fixture, log, std::string("unframed_") + mode);
+                if (std::string_view(mode) == "qualify")
+                    request = {executable,
+                               "plaza2",
+                               "qualify",
+                               "--offline-fake",
+                               "--runtime-root",
+                               fixture.root.string(),
+                               "--scheme-dir",
+                               fixture.scheme_dir.string(),
+                               "--config-dir",
+                               fixture.config_dir.string(),
+                               "--library-path",
+                               fixture.library_path.string(),
+                               "--expected-release",
+                               "SPECTRA9.12.0",
+                               "--env-settings-var",
+                               "MOEX_FOL_RUNNER_SETTINGS",
+                               "--software-key-env",
+                               "MOEX_FOL_RUNNER_KEY",
+                               "--isin-id",
+                               "1001",
+                               "--instance-id",
+                               "unframed_qualify",
+                               "--dtc-port",
+                               std::to_string(20000 + ::getpid() % 30000)};
+                Process child(request, std::string("unframed-") + mode);
+                test::require(child.wait() != 0, "three-strike FOL process must exit non-zero in both modes");
+                const auto output = child.errors() + child.output() + contents(log);
+                test::require(output.find("3 identical row-validation failures before ONLINE") != std::string::npos &&
+                                  output.find("row outside transaction") != std::string::npos,
+                              "FOL executable did not retain the exact fatal reason: " + output);
+                test::require(!fs::exists(fixture.config_dir / "fol-native-posts.log") &&
+                                  !fs::exists(log.string() + ".sock"),
+                              "unframed diagnostic posted or failed to clean its command socket");
+            }
+            test::write_text_file(fixture.config_dir / "t1.ini", original_profile);
+        }
         for (const auto mode : {"fresh", "quiet", "invalid", "dead"}) {
             // Each actual executable starts its own fake-runtime instance and isolated journal namespace.
             fs::remove(fixture.config_dir / "fol-control");

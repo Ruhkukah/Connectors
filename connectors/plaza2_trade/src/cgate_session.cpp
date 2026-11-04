@@ -5,6 +5,7 @@
 #include "moex/plaza2/cgate/cgate_logging.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -216,6 +217,45 @@ struct CgateSession::Impl {
     struct FullOrderLogEvents final : cg::Plaza2ListenerEventHandler {
         Impl& owner;
         std::optional<std::chrono::steady_clock::time_point> activity;
+        std::array<std::uint64_t, 11> event_counts{};
+        std::uint64_t cycle{}, event_position{};
+        bool cycle_open{}, online_seen{}, failed_this_cycle{};
+        unsigned strikes{};
+        std::string last_failure;
+        Plaza2Error fatal;
+        void diagnostic(const cg::Plaza2ListenerEvent& event) {
+            using enum cg::Plaza2ListenerEventKind;
+            if (event.kind == Open || (!cycle_open && event.kind != Close)) {
+                if (cycle_open)
+                    summary();
+                ++cycle;
+                event_counts.fill(0);
+                event_position = 0;
+                cycle_open = true;
+                online_seen = failed_this_cycle = false;
+            }
+            if (!cycle_open)
+                return; // Native and synthetic CLOSE may both arrive for one cycle.
+            const auto kind = static_cast<unsigned>(event.kind);
+            ++event_counts[std::min<std::size_t>(kind, event_counts.size() - 1)];
+            if (++event_position <= 64)
+                owner.log("full_order_log_event",
+                          "{\"cycle\":" + std::to_string(cycle) + ",\"position\":" + std::to_string(event_position) +
+                              ",\"kind\":" + std::to_string(kind) +
+                              ",\"table\":" + json_quote(event.raw_table ? event.raw_table->name : "unspecified") +
+                              ",\"data_size\":" + std::to_string(event.native_data_size) + "}");
+            if (event.kind == Close)
+                summary();
+        }
+        void summary() {
+            std::string counts;
+            for (auto count : event_counts)
+                counts += (counts.empty() ? "" : ",") + std::to_string(count);
+            owner.log("full_order_log_cycle_totals", "{\"cycle\":" + std::to_string(cycle) +
+                                                         ",\"events\":" + std::to_string(event_position) +
+                                                         ",\"counts\":[" + counts + "]}");
+            cycle_open = false;
+        }
         explicit FullOrderLogEvents(Impl& value) : owner(value) {}
         bool wants_raw_replication(std::string_view table) const noexcept override {
             return owner.config.full_order_log_handler->wants_raw_replication(table);
@@ -238,7 +278,35 @@ struct CgateSession::Impl {
             using enum cg::Plaza2ListenerEventKind;
             if (event.kind == Open || event.kind == Close)
                 activity.reset();
+            diagnostic(event);
             const auto error = owner.config.full_order_log_handler->on_plaza2_listener_event(event);
+            if (!error && event.kind == Online) {
+                online_seen = true;
+                strikes = 0;
+                last_failure.clear();
+            }
+            if (error && !online_seen && !failed_this_cycle) {
+                failed_this_cycle = true;
+                if (event.kind == StreamData && error.code == Plaza2ErrorCode::DecodeFailed) {
+                    // Sequence positions may vary with filtered rows; compare the stable validation reason.
+                    const auto signature = error.message.substr(0, error.message.find(" event_position="));
+                    strikes = signature == last_failure ? strikes + 1 : 1;
+                    last_failure = signature;
+                    owner.log("full_order_log_row_failure",
+                              "{\"strikes\":" + std::to_string(strikes) + ",\"reason\":" + json_quote(signature) + "}");
+                    if (strikes == 3) {
+                        fatal = {
+                            .code = Plaza2ErrorCode::DecodeFailed,
+                            .message =
+                                "Full Order Log stopped after 3 identical row-validation failures before ONLINE: " +
+                                signature};
+                        owner.log("full_order_log_fatal", "{\"reason\":" + json_quote(fatal.message) + "}");
+                    }
+                } else {
+                    strikes = 0;
+                    last_failure.clear();
+                }
+            }
             if (!error && (event.kind == StreamData || event.kind == TransactionCommit))
                 activity = owner.now();
             return error;
@@ -451,6 +519,8 @@ struct CgateSession::Impl {
             observe(observed_publisher, Closed, "publisher");
     }
     void close_listener(Listener& listener) {
+        if (listener.config.stream_code == cg::kFullOrderLogStreamCode && full_order_log_events.cycle_open)
+            full_order_log_events.diagnostic({.kind = cg::Plaza2ListenerEventKind::Close});
         const auto error = listener.object.close();
         operation("listener", "close", error, listener.config.stream_code);
         if (!error)
@@ -728,8 +798,7 @@ struct CgateSession::Impl {
         matching_id = resolved;
         if (std::none_of(listeners.begin(), listeners.end(),
                          [](const auto& l) { return l.config.stream_code == cg::kFullOrderLogStreamCode; }))
-            return add_listener(config.full_order_log_stream,
-                                config.read_only_market_data ? *config.full_order_log_handler : full_order_log_events);
+            return add_listener(config.full_order_log_stream, full_order_log_events);
         return {};
     }
     bool trading_ready(const Plaza2TradeEncodedCommand& command) const {
@@ -1180,6 +1249,11 @@ struct CgateSession::Impl {
                 last_error = error.message;
             for (auto& l : listeners) {
                 supervise_listener(l);
+                if (full_order_log_events.fatal) {
+                    recovery.operation = Plaza2SessionOperation::Failed;
+                    recovery.cause = full_order_log_events.fatal;
+                    return recovery.cause;
+                }
                 if (config.full_order_log_handler &&
                     l.object.last_callback_error().code == Plaza2ErrorCode::IncompatibleScheme &&
                     (l.handler == &bridge || l.handler == config.full_order_log_handler ||
@@ -1274,6 +1348,11 @@ struct CgateSession::Impl {
                 }
                 break;
             }
+        }
+        if (full_order_log_events.fatal) {
+            recovery.operation = Plaza2SessionOperation::Failed;
+            recovery.cause = full_order_log_events.fatal;
+            return recovery.cause;
         }
         if (auto error = synchronize_public_deals(); error)
             last_error = error.message;

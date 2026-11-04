@@ -69,6 +69,7 @@ enum class Option : std::uint32_t {
     FreshPosAnchor,
     FullFill,
     FullOrderLogRefdata,
+    FullOrderLogSnapshotNoTransactions,
     FullOrderLogMultiMatching,
     IdentityConflict,
     ListenerOpenNoService,

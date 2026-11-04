@@ -577,8 +577,35 @@ static void publication_lag() {
                 metrics.lag_last_ns >= publication_finished_ns - exchange_ns,
             "exchange-to-commit lag includes publication and its delayed crossed callback");
 }
+static void unframed_snapshot_diagnostics() {
+    using namespace full_order_log_test;
+    using Kind = Plaza2ListenerEventKind;
+    Harness h;
+    const auto snapshot = row(h.schema[0], 1, 11, 100000, 2);
+    auto error = h.book.on_plaza2_listener_event(snapshot.event());
+    require(
+        error.code == Plaza2ErrorCode::DecodeFailed &&
+            error.message.find("row outside transaction table=orders online_seen=no event_kind=4 event_position=2") !=
+                std::string::npos,
+        "unframed snapshot must refuse with transaction and event-position diagnostics");
+    require(!h.book.valid() && h.book.order_count() == 0, "diagnostic must not admit an unframed row");
+    h.open();
+    h.online();
+    error = h.book.on_plaza2_listener_event(snapshot.event());
+    require(error.message.find("online_seen=yes") != std::string::npos, "diagnostic records ONLINE seen");
+    h.open();
+    h.begin();
+    auto short_row = snapshot.event();
+    short_row.raw_payload = short_row.raw_payload.first(127);
+    error = h.book.on_plaza2_listener_event(short_row);
+    require(error.message.find("row size table=orders actual=127 expected=128") != std::string::npos &&
+                error.message.find("outside transaction") == std::string::npos,
+            "short framed row must report actual/expected size separately");
+    require(!h.book.valid() && h.book.order_count() == 0, "short row stays hidden");
+}
 int main() {
     try {
+        unframed_snapshot_diagnostics();
         semantics();
         committed_source_session();
         session_rollover_deletions();

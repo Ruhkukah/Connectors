@@ -214,6 +214,8 @@ struct Plaza2ListenerEvent {
     std::size_t table_index{0};
     std::span<const Plaza2RawTableBinding> raw_tables{};
     const Plaza2RawTableBinding* raw_table{nullptr};
+    // Metadata only; native byte count, including control messages without a raw row span.
+    std::size_t native_data_size{0};
 };
 
 class Plaza2ListenerEventHandler {

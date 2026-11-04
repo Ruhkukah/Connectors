@@ -2,6 +2,10 @@
 
 All times are Europe/Moscow. This is a one-day internal TEST plan, not certification or authority to start. **Nothing runs tonight. Each block requires a separate owner start message; no timer, wake-up, cron, at or systemd schedule is installed.** PR68, the certified AGGR binaries, their configs and state remain untouched. Use only the reviewed PR70 FOL executable and its separate immutable release. No PROD or T1 fallback.
 
+## 4 November hold after read-only failure
+
+The original-profile full-link retry passed SOFTWARE_AUTH and committed REFDATA/matching ID1, but the composite repeatedly failed `invalid row transaction or size` before ONLINE. **B/C/D remain unstarted/on hold until a valid read-only book is demonstrated.** No order or read-only restart is implied by the old timetable. See [the diagnostic review](FULL_ORDER_LOG_DIAGNOSTIC_REVIEW_20261104.md). The diagnostic release retains strict transaction/size admission and needs its own separately authorized qualify-only run (<=5 minutes, explicit absolute TERM deadline, full vendor links). Existing298d9b1e deployment inputs are historical; future commands must select the new reviewed diagnostic manifest explicitly.
+
 ## Schedule and block boundaries
 
 MOEX's [current T0 schedule](https://www.moex.com/s438), checked3November, lists07:00–10:00 morning trading,10:00–10:19:45 opening auction,10:20–14:00 main,14:00–16:00 evening,15:00 settlement and16:00 mark-to-market; weekdays are ordinary T0 days. This is the current schedule endpoint; the older `/a550` page has different weekend wording. A clock time does not prove the system is up or a selected instrument is tradable. Recheck current notices and native session/instrument state on4November. Never start the ORDLOG router before the trading system starts; do not probe the exchange before07:00.

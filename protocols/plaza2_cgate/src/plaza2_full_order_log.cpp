@@ -129,7 +129,8 @@ struct Plaza2FullOrderLog::Impl {
     BoundField info_life, info_publication;
     std::size_t info_index{};
     FullOrderLogMetrics metrics;
-    std::uint64_t epoch{}, life{}, initial_life{}, info_log_life{}, pending_log_life{};
+    std::uint64_t epoch{}, life{}, initial_life{}, info_log_life{}, pending_log_life{}, event_position{};
+    bool online_seen{};
     bool have_life{}, have_info{}, pending_info{}, bound{}, online{}, transaction{}, valid{}, waiting_snapshot{},
         snapshot_seen{};
     Clock::time_point committed_at{};
@@ -244,7 +245,14 @@ struct Plaza2FullOrderLog::Impl {
             ++metrics.rows_filtered;
             return;
         }
-        require(transaction && e.raw_payload.size() >= b.row_size, "invalid row transaction or size");
+        if (!transaction)
+            require(false, "row outside transaction table=" + e.raw_table->name +
+                               " online_seen=" + (online_seen ? "yes" : "no") +
+                               " event_kind=" + std::to_string(static_cast<unsigned>(e.kind)) +
+                               " event_position=" + std::to_string(event_position));
+        if (e.raw_payload.size() < b.row_size)
+            require(false, "row size table=" + e.raw_table->name + " actual=" + std::to_string(e.raw_payload.size()) +
+                               " expected=" + std::to_string(b.row_size));
         const auto id = read<std::int64_t>(e, b.order), rev = read<std::int64_t>(e, b.rev),
                    row_id = read<std::int64_t>(e, b.row);
         const auto act = read<std::int64_t>(e, b.act);
@@ -409,6 +417,11 @@ void Plaza2FullOrderLog::on_plaza2_listener_error(const Plaza2Error&) noexcept {
 }
 Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEvent& e) {
     auto& p = *impl_;
+    if (e.kind == Plaza2ListenerEventKind::Open) {
+        p.event_position = 0;
+        p.online_seen = false;
+    }
+    ++p.event_position;
     try {
         using Kind = Plaza2ListenerEventKind;
         switch (e.kind) {
@@ -449,6 +462,7 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
                 on_commit(*this);
             break;
         case Kind::Online:
+            p.online_seen = true;
             if (!p.waiting_snapshot || p.snapshot_seen)
                 p.online = true;
             break; // visibility waits for the following commit
