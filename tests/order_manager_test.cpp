@@ -234,6 +234,48 @@ void ambiguity() {
     manager.on_reply(999999, {.msgid = 179, .order_id = 999}, OrderManager::Clock::time_point{});
     require(manager.orders().at("uncertain").state == OrderState::Cancelled, "unknown reply altered order state");
 }
+void recovered_unknown_execution_baseline() {
+    Fixture f;
+    f.config.ext_id_begin = 100;
+    f.config.ext_id_end = 200;
+    f.config.ext_id_range_configured = true;
+    auto manager = f.manager();
+    ManagedOrder seed;
+    seed.request = request("old-process", 5);
+    seed.ext_id = 150;
+    auto snapshot = row(seed, 9911, 3, 1);
+    snapshot.from_trade_repl = false;
+    snapshot.from_user_book = true;
+    snapshot.private_amount = 5;
+    snapshot.private_amount_rest = 3;
+    snapshot.private_action = 1;
+    observe(manager, snapshot, true);
+    const std::string key = "recovered:100:9911";
+    require(manager.orders().at(key).instance_owned && !manager.orders().at(key).execution_baseline_known &&
+                manager.orders().at(key).executed == 0 && manager.orders().at(key).remaining == 3,
+            "reconstruction invented historical executions or lost actual resting quantity");
+    require(manager.move(key, "101", 5).find("fill baseline") != std::string::npos,
+            "Move must refuse an unknown lifetime execution baseline");
+    fill(manager, 9911, 99101, 1);
+    fill(manager, 9911, 99101, 1);
+    require(manager.orders().at(key).executed == 1 && !manager.orders().at(key).execution_baseline_known,
+            "actual user_deal must be credited exactly once despite unknown historical baseline");
+    f.ready = false;
+    manager.set_kill_switch(true);
+    require(manager.cancel(key).empty(), "unknown execution baseline or kill switch blocked risk-reducing cancel");
+    f.poll(manager, 0);
+    require(f.sent.size() == 1 && f.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder,
+            "recovered cancellation did not reach publisher without market-entry readiness");
+    manager.on_reply(f.sent.back().id, {.msgid = 177, .amount = 2}, OrderManager::Clock::time_point{});
+    auto terminal = row(seed, 9911, 0, 0);
+    observe(manager, terminal);
+    require(manager.orders().at(key).state == OrderState::Cancelled && manager.orders().at(key).remaining == 0,
+            "replication did not confirm recovered cancellation");
+    fill(manager, 9911, 99102, 1);
+    fill(manager, 9911, 99102, 1);
+    require(manager.orders().at(key).executed == 2 && manager.orders().at(key).state == OrderState::Cancelled,
+            "late actual fills after cancellation were blocked or double counted");
+}
 void day_and_restart() {
     Fixture f;
     auto manager = f.manager();
@@ -2172,6 +2214,7 @@ int main() {
         burst();
         cancels();
         ambiguity();
+        recovered_unknown_execution_baseline();
         day_and_restart();
         reconstruction_prefers_matching_trade_evidence();
         risk();
