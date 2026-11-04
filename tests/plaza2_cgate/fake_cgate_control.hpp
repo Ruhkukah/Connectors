@@ -70,6 +70,7 @@ enum class Option : std::uint32_t {
     FullFill,
     FullOrderLogRefdata,
     FullOrderLogSnapshotNoTransactions,
+    FullOrderLogConsumesInfo,
     FullOrderLogSnapshotShortRow,
     FullOrderLogUnframedOnlineRow,
     FullOrderLogMultiMatching,

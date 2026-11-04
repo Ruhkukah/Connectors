@@ -400,11 +400,13 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
             }
             if (e.kind == Kind::Online) {
                 online_ = true;
-                if (book_ && unframed_snapshot_ && book_->valid()) {
+                if (book_ && book_->valid()) {
                     committed_ = pending_;
                     committed_lastrec_ = pending_lastrec_;
                     if (!progress_needed_ && have_info_ && info_done_ && pending_lastrec_ && !fenced_)
                         window_.record(side, committed_, digest(levels(), ids_));
+                    else
+                        ++unanchored_commits; // ONLINE proves a book, not an exposed exact life/revision anchor.
                     published_at_online_ = true;
                     unframed_snapshot_ = false;
                 }

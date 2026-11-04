@@ -2240,6 +2240,9 @@ std::uint32_t emit_script(FakeListener& listener) {
         }
     }
     for (const auto& message : script) {
+        if (listener.stream_code == kFullOrderLogStreamCode && fake_flag(Option::FullOrderLogConsumesInfo) &&
+            message.table_code == TableCode::kFortsUserorderbookReplInfo)
+            continue; // The real composite uses info for binding without delivering an application row.
         if (fake_flag(Option::UserorderbookPeriodicRefresh) &&
             (message.table_code == TableCode::kFortsUserorderbookReplOrders ||
              message.table_code == TableCode::kFortsUserorderbookReplMultilegOrders)) {

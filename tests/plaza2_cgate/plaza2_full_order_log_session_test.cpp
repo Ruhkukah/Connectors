@@ -506,12 +506,14 @@ int main(int argc, char** argv) {
         scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogSnapshotNoTransactions)] = "1";
         fake.configure(scenario);
         operation_logs.clear();
+        fake.set(f::Option::FullOrderLogConsumesInfo);
         CgateSession snapshot_session(config);
         require(!snapshot_session.start(), "native-shaped snapshot start");
         for (unsigned i = 0; i < 5 && !book.valid(); ++i)
             require(!snapshot_session.poll(false), "unframed snapshot must reach ONLINE");
         require(book.valid() && book.order_count() == 2,
                 "unframed rows publish at ONLINE, without a later fake commit");
+        require(!book.committed_log_lifenum().has_value(), "hidden info does not fabricate a comparison anchor");
         fake.enqueue({.kind = f::EventKind::Begin, .stream_code = cgate::kFullOrderLogStreamCode});
         for (unsigned i = 0; i < 40; ++i)
             fake.enqueue({.kind = f::EventKind::Row,

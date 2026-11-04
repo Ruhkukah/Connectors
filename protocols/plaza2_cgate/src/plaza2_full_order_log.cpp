@@ -131,7 +131,7 @@ struct Plaza2FullOrderLog::Impl {
     std::size_t info_index{};
     FullOrderLogMetrics metrics;
     std::uint64_t epoch{}, life{}, initial_life{}, info_log_life{}, pending_log_life{}, event_position{};
-    bool online_seen{}, unframed_snapshot{}, skip_empty_online_commit{};
+    bool online_seen{}, unframed_snapshot{}, snapshot_framed{}, skip_empty_online_commit{};
     bool have_life{}, have_info{}, pending_info{}, bound{}, online{}, transaction{}, valid{}, waiting_snapshot{},
         snapshot_seen{};
     Clock::time_point committed_at{};
@@ -170,7 +170,7 @@ struct Plaza2FullOrderLog::Impl {
             b.touched = b.crossed = false;
         }
         valid = online = transaction = have_info = pending_info = snapshot_seen = false;
-        online_seen = unframed_snapshot = skip_empty_online_commit = false;
+        online_seen = unframed_snapshot = snapshot_framed = skip_empty_online_commit = false;
         info_log_life = pending_log_life = 0;
         committed_at = {};
         ++epoch;
@@ -420,12 +420,14 @@ void Plaza2FullOrderLog::reset(bool require_snapshot) {
     impl_->clear();
     impl_->waiting_snapshot = require_snapshot;
     impl_->transaction = transaction;
+    impl_->snapshot_framed = transaction;
     if (on_invalidate)
         on_invalidate();
 }
 void Plaza2FullOrderLog::on_plaza2_listener_error(const Plaza2Error&) noexcept {
     try {
         reset();
+        impl_->bound = false;
     } catch (...) {
     }
 }
@@ -467,6 +469,8 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
         }
         case Kind::TransactionBegin:
             require(!p.transaction && p.bound, "invalid transaction begin");
+            if (!p.online_seen)
+                p.snapshot_framed = true;
             p.transaction = true;
             break;
         case Kind::StreamData:
@@ -489,12 +493,17 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
                 on_commit(*this);
             break;
         case Kind::Online:
+            require(p.bound, "ONLINE without bound OPEN");
+            if (p.online_seen && p.online)
+                break;
             p.online_seen = true;
-            p.online = (!p.waiting_snapshot || p.snapshot_seen) &&
-                       (!p.unframed_snapshot || (p.snapshot_seen && (p.pending_info || p.have_info)));
+            p.online = !p.waiting_snapshot || p.snapshot_seen || !p.snapshot_framed;
             if (!p.online)
-                p.waiting_snapshot = true;
-            if (p.unframed_snapshot && p.online) {
+                break;
+            // p2ordbook consumes info.trades_rev to bind the legs internally.
+            // Its ONLINE is completion authority even when no info callback is exposed.
+            p.snapshot_seen = true;
+            if (p.unframed_snapshot || !p.snapshot_framed) {
                 const bool transaction = p.transaction;
                 p.commit(*this);
                 p.transaction = transaction;
@@ -547,12 +556,14 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
         }
     } catch (const std::bad_alloc&) {
         reset();
+        p.bound = false;
         return failure("Full Order Log bounded storage exhausted; fresh snapshot required");
     } catch (const std::exception& ex) {
         auto error = failure(ex.what());
         if (e.kind == Plaza2ListenerEventKind::Open)
             error.code = Plaza2ErrorCode::IncompatibleScheme;
         reset();
+        p.bound = false;
         return error;
     }
     return {};

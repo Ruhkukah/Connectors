@@ -112,6 +112,15 @@ int main() {
             empty.control(empty.composite, Plaza2ListenerEventKind::Close);
             expect(!empty.book.valid() && empty.window.states[0].empty(), "probe discards interrupted snapshot");
         }
+        {
+            Fixture internal_info;
+            internal_info.open(internal_info.composite);
+            internal_info.send(internal_info.composite, row(internal_info.schema[0], 101, 11, 10000000, 3).event());
+            internal_info.control(internal_info.composite, Plaza2ListenerEventKind::Online);
+            expect(internal_info.book.valid() && internal_info.window.states[0].empty() &&
+                       internal_info.composite.unanchored_commits > 0,
+                   "ONLINE completes composite without exposed info; exact comparison stays UNALIGNED");
+        }
         Fixture f;
         f.begin(f.composite);
         f.log(101, 4);

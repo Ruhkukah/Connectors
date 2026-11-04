@@ -117,8 +117,8 @@ int main() {
         recovery.begin();
         recovery.add(2, 11, 1677721700000LL, 1);
         recovery.commit();
-        require(!recover_source.status_snapshot().valid && recovery.book.revision(11) == 2,
-                "collision at old revision");
+        const auto collision_revision = recovery.book.revision(11);
+        require(!recover_source.status_snapshot().valid && collision_revision > 0, "collision at old revision");
         recovery.control(Plaza2ListenerEventKind::Close);
         recovery.open();
         // Keep the observer's old collision token until the new epoch reaches
@@ -133,13 +133,15 @@ int main() {
         recovery.online();
         recovery.begin();
         recovery.commit();
-        // Snapshot TN_COMMITs no longer publish revisions. Add one actual online
-        // change so the new epoch deliberately reuses the old collision revision2.
-        recovery.begin();
-        recovery.add(5, 11, 8000000, 1);
-        recovery.commit();
+        // Build to the same old revision without letting the observer see any
+        // intermediate epoch/revision token; retain the epoch-only negative control.
+        for (unsigned n = 0; recovery.book.revision(11) < collision_revision && n < 8; ++n) {
+            recovery.begin();
+            recovery.add(5 + n, 11, 8000000 - n * 100000, 1);
+            recovery.commit();
+        }
         recover_source.committed();
-        require(recovery.book.revision(11) == 2 && recover_source.status_snapshot().valid,
+        require(recovery.book.revision(11) == collision_revision && recover_source.status_snapshot().valid,
                 "new stream epoch clears cached collision even at the same book revision");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

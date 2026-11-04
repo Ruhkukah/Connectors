@@ -661,8 +661,36 @@ static void unframed_snapshot_diagnostics() {
     incomplete.online();
     incomplete.begin();
     incomplete.commit();
-    require(!incomplete.book.valid() && incomplete.book.levels(11, true).empty(),
-            "ONLINE without completed info never publishes an incomplete snapshot");
+    require(incomplete.book.valid() && incomplete.book.levels(11, true).at(100000) == 2,
+            "optional publication0 callback does not veto CGate's authoritative ONLINE");
+    Harness internal_info;
+    std::size_t native_publications{};
+    internal_info.book.on_commit = [&](const auto&) { ++native_publications; };
+    internal_info.clear(0, INT64_MAX);
+    internal_info.clear(1, INT64_MAX);
+    internal_info.apply(row(internal_info.schema[0], 1, 11, 100000, 2));
+    require(!internal_info.book.valid() && internal_info.book.levels(11, true).empty(), "no early publication");
+    internal_info.online();
+    require(internal_info.book.valid() && native_publications == 1 &&
+                !internal_info.book.committed_log_lifenum().has_value(),
+            "ONLINE completes a no-info snapshot without inventing a log life");
+    internal_info.online();
+    require(native_publications == 1, "duplicate ONLINE does not republish");
+    Harness framed_no_info;
+    framed_no_info.begin();
+    framed_no_info.apply(row(framed_no_info.schema[0], 1, 11, 100000, 2));
+    framed_no_info.commit();
+    framed_no_info.online();
+    require(!framed_no_info.book.valid(), "fully framed no-info snapshot retains next-commit visibility");
+    framed_no_info.begin();
+    framed_no_info.commit();
+    require(framed_no_info.book.valid(), "fully framed snapshot does not require an info callback");
+    Harness native_empty;
+    native_empty.clear(0, INT64_MAX);
+    native_empty.clear(1, INT64_MAX);
+    native_empty.online();
+    require(native_empty.book.valid() && native_empty.book.order_count() == 0,
+            "empty no-info snapshot completes at ONLINE");
     Harness short_row;
     auto payload = row(short_row.schema[0], 1, 11, 100000, 2);
     auto event = payload.event();
@@ -674,6 +702,8 @@ static void unframed_snapshot_diagnostics() {
     error = short_row.book.on_plaza2_listener_event(info(short_row, 1, -1).event());
     require(error.message.find("invalid snapshot info") != std::string::npos,
             "negative trades_rev cannot complete an unframed snapshot");
+    error = short_row.book.on_plaza2_listener_event({.kind = Kind::Online});
+    require(error && !short_row.book.valid(), "ONLINE after a rejected row cannot bypass a fresh bound OPEN");
 }
 int main() {
     try {
