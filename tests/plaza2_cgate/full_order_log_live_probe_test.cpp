@@ -72,6 +72,14 @@ struct Fixture {
 } // namespace
 int main() {
     try {
+        const std::vector<std::string> secrets{"fake-key", "fake-key-long", "fake-credential", ""};
+        const std::string context = "reference listener failed; probe interrupted";
+        expect(redact_probe_error(context, secrets) == context, "non-secret failure context must remain visible");
+        const auto redacted =
+            redact_probe_error("key=fake-key-long credential=fake-credential; fake-key-long; cause=0xA006", secrets);
+        expect(redacted == "key=[REDACTED] credential=[REDACTED]; [REDACTED]; cause=0xA006",
+               "loaded fake secrets, repeats and overlapping values must be redacted without hiding the cause");
+        expect(redact_probe_error(context, {}) == context, "no loaded secret must not suppress diagnostics");
         {
             Fixture native;
             native.open(native.composite);

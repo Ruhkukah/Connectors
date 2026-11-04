@@ -27,6 +27,7 @@ void check(const moex::plaza2::cgate::Plaza2Error& e) {
 int main(int argc, char** argv) {
     namespace cg = moex::plaza2::cgate;
     using namespace full_order_log_probe;
+    std::vector<std::string> secret_values;
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--help") {
             std::cout << "full_order_log_live_probe --live --matching-id N --seconds 1800\n"
@@ -91,8 +92,12 @@ int main(int argc, char** argv) {
             config.connection_settings.substr(app_start, config.connection_settings.find(';', app_start) - app_start);
         require(app != trading_instance, "probe and trading instance IDs must differ");
         const auto key = cg::load_plaza2_credentials(config.software_key);
+        if (key && !key->value.empty())
+            secret_values.push_back(key->value);
         require(key && !key->value.empty(), "configured CGate software key source is missing");
         const auto credentials = cg::load_plaza2_credentials(config.credentials);
+        if (credentials && !credentials->value.empty())
+            secret_values.push_back(credentials->value);
         const auto replace = [](std::string& text, const std::string& token, const std::string& value) {
             for (auto at = text.find(token); at != std::string::npos; at = text.find(token, at + value.size()))
                 text.replace(at, token.size(), value);
@@ -213,7 +218,7 @@ int main(int argc, char** argv) {
                    ? 4
                    : 3; // Observations cannot qualify absent exact post-clear proof and the required live run.
     } catch (const std::exception& e) {
-        std::cerr << cg::redact_plaza2_setting_value(e.what()) << '\n';
+        std::cerr << redact_probe_error(e.what(), secret_values) << '\n';
         return 2;
     }
 }

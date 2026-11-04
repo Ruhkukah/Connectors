@@ -23,6 +23,23 @@ inline void require(bool ok, const char* text) {
     if (!ok)
         throw std::invalid_argument(text);
 }
+// Keep diagnostic context; redact only values actually loaded as secrets.
+inline std::string redact_probe_error(std::string_view message, std::span<const std::string> secrets) {
+    std::string output;
+    output.reserve(message.size());
+    for (std::size_t at = 0; at < message.size();) {
+        std::size_t matched{};
+        for (const auto& secret : secrets)
+            if (!secret.empty() && message.substr(at).starts_with(secret))
+                matched = std::max(matched, secret.size());
+        if (matched) {
+            output += "[REDACTED]";
+            at += matched;
+        } else
+            output += message[at++];
+    }
+    return output;
+}
 inline std::string digest(const Levels& levels, std::span<const std::int32_t> ids) {
     std::string text = "full_order_log_probe_exact_d16_5_v1\n";
     for (auto id : ids)
