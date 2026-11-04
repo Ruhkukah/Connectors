@@ -1,5 +1,7 @@
 # Full Order Log questionnaire — internal draft, 4 November 2026
 
+**Crash recovery:** a reconstructed/recovered order is cancel-only: Move is blocked while `execution_baseline_known=false`. Cancel it by its recovered identity; do not resend Add or infer historical fills from remaining quantity. Actual validated fills continue to be accounted exactly once. A new order needs fresh entry readiness and the writer/session gate.
+
 Not submitted to MOEX. This is separate from certified AGGR/PR68. The internal T0 checks are not Full Order Log certification or the coordinated100,000msg/s R7 test. Owner/reviewer must choose whether the application submitted for certification includes order entry, then copy the corresponding exact inventory into the official questionnaire.
 
 ## Application and isolation

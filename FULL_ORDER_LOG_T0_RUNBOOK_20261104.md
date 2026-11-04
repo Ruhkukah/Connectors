@@ -1,5 +1,7 @@
 # Full Order Log T0 — Wednesday 4 November 2026 — UNARMED
 
+**Crash recovery:** a reconstructed/recovered order is cancel-only: Move is blocked while `execution_baseline_known=false`. Cancel it by its recovered identity; do not resend Add or infer historical fills from remaining quantity. Actual validated fills continue to be accounted exactly once. A new order needs fresh entry readiness and the writer/session gate.
+
 All times are Europe/Moscow. This is a one-day internal TEST plan, not certification or authority to start. **Nothing runs tonight. Each block requires a separate owner start message; no timer, wake-up, cron, at or systemd schedule is installed.** PR68, the certified AGGR binaries, their configs and state remain untouched. Use only the reviewed PR70 FOL executable and its separate immutable release. No PROD or T1 fallback.
 
 ## 4 November hold after read-only failure
