@@ -628,10 +628,15 @@ struct CgateSession::Impl {
         if (config.full_order_log_cancel_only &&
             (config.runtime.environment != cg::Plaza2Environment::Test || !config.allow_orders ||
              config.read_only_market_data || !config.full_order_log_stream.settings.empty() ||
-             config.full_order_log_handler || config.full_order_log_authority ||
+             config.full_order_log_handler || config.full_order_log_oi_handler || config.full_order_log_authority ||
              !config.aggr20_stream.settings.empty() || !config.public_deals_stream.settings.empty()))
             return invalid(
                 "FullOrderLog cancel-only requires explicit TEST order authority and no market-data listeners");
+        if (config.full_order_log_oi_handler &&
+            (!config.full_order_log_handler || config.full_order_log_stream.settings.empty() ||
+             !config.public_deals_stream.settings.empty() || !config.aggr20_stream.settings.empty() ||
+             !config.public_deals_stream.open_settings.empty()))
+            return invalid("FullOrderLog OI requires FOL authority and no duplicate DEALS/AGGR stream");
         if (!config.public_deals_stream.settings.empty() &&
             (!config.read_only_market_data || config.public_deals_target_isin_id <= 0 ||
              config.public_deals_target_isin_id > std::numeric_limits<std::int32_t>::max()))
@@ -775,6 +780,13 @@ struct CgateSession::Impl {
         if (!config.aggr20_stream.settings.empty())
             if (auto error = add_listener(config.aggr20_stream, aggr); error)
                 return error;
+        if (config.full_order_log_oi_handler) {
+            const CgateStreamConfig oi{StreamCode::kFortsDealsRepl,
+                                       cg::required_replication_listener_settings(StreamCode::kFortsDealsRepl),
+                                       {}};
+            if (auto error = add_listener(oi, *config.full_order_log_oi_handler); error)
+                return error;
+        }
         // DEALS has immutable target IDs. Its listener must wait for committed
         // current-session metadata instead of opening a zero-session bridge.
         if (!config.read_only_market_data) {
@@ -1309,7 +1321,7 @@ struct CgateSession::Impl {
                 if (config.full_order_log_handler &&
                     l.object.last_callback_error().code == Plaza2ErrorCode::IncompatibleScheme &&
                     (l.handler == &bridge || l.handler == config.full_order_log_handler ||
-                     l.handler == &full_order_log_events)) {
+                     l.handler == &full_order_log_events || l.handler == config.full_order_log_oi_handler)) {
                     recovery.operation = Plaza2SessionOperation::Failed;
                     recovery.cause = l.object.last_callback_error();
                     return recovery.cause;

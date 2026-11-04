@@ -1,0 +1,249 @@
+#include "full_order_log_capture_format.hpp"
+#include <algorithm>
+#include <array>
+#include <fcntl.h>
+#include <map>
+#include <unordered_map>
+#include <unistd.h>
+#include "moex/plaza2/cgate/plaza2_full_order_log_oi.hpp"
+
+namespace moex::plaza2::cgate {
+using namespace capture_format;
+namespace {
+// DBN v3 MBO wire layout. Source: databento/dbn record.rs and encode/dbn/sync.rs.
+struct Mbo {
+    std::uint8_t length{14}, rtype{0xa0};
+    std::uint16_t publisher{};
+    std::uint32_t instrument{};
+    std::uint64_t event{}, id{};
+    std::int64_t price{};
+    std::uint32_t size{};
+    std::uint8_t flags{}, channel{};
+    char action{}, side{};
+    std::uint64_t recv{};
+    std::int32_t delta{INT32_MAX};
+    std::uint32_t sequence{};
+};
+static_assert(sizeof(Mbo) == 56 && offsetof(Mbo, recv) == 40);
+struct OiStat {
+    std::uint8_t length{20}, rtype{0x18};
+    std::uint16_t publisher{};
+    std::uint32_t instrument{};
+    std::uint64_t event{}, recv{}, reference{};
+    std::int64_t price{INT64_MAX}, quantity{};
+    std::uint32_t sequence{};
+    std::int32_t delta{INT32_MAX};
+    std::uint16_t type{9}, channel{};
+    std::uint8_t update{1}, flags{};
+    std::array<std::uint8_t, 18> reserved{};
+};
+static_assert(sizeof(OiStat) == 80 && offsetof(OiStat, quantity) == 40);
+class Output {
+    std::filesystem::path path, temporary;
+    int fd{-1};
+
+  public:
+    explicit Output(const std::filesystem::path& p)
+        : path(p), temporary(p.string() + ".partial-" + std::to_string(::getpid())) {
+        require(!std::filesystem::exists(p), "DBN output already exists");
+        fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        require(fd >= 0, "DBN temporary output open failed");
+    }
+    ~Output() {
+        if (fd >= 0)
+            ::close(fd);
+        ::unlink(temporary.c_str());
+    }
+    void write(const void* bytes, std::size_t length) {
+        auto* p = static_cast<const char*>(bytes);
+        while (length) {
+            const auto n = ::write(fd, p, length);
+            if (n < 0 && errno == EINTR)
+                continue;
+            require(n > 0, "DBN write failed");
+            p += n;
+            length -= n;
+        }
+    }
+    void publish() {
+        require(sync_data(fd) == 0, "DBN sync failed");
+        require(::link(temporary.c_str(), path.c_str()) == 0, "DBN output already exists or publish failed");
+        const auto parent = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
+        const int d = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        const bool ok = d >= 0 && ::fsync(d) == 0;
+        if (d >= 0)
+            ::close(d);
+        require(ok, "DBN directory sync failed");
+    }
+};
+Mbo mbo(const FullOrderLogOrder& order, char action, std::uint64_t moment, std::uint64_t recv, std::uint8_t flags = 0) {
+    require(order.isin > 0 && order.id > 0 && order.remaining > 0 && order.remaining < UINT32_MAX,
+            "DBN quantity/identity cannot represent MOEX row");
+    require(order.price > INT64_MIN / 10000 && order.price < INT64_MAX / 10000, "DBN price overflow");
+    Mbo m;
+    m.instrument = order.isin;
+    m.event = moment ? moment : UINT64_MAX;
+    m.id = order.id;
+    m.price = order.price * 10000;
+    m.size = order.remaining;
+    m.action = action;
+    m.side = order.bid ? 'B' : 'A';
+    m.recv = recv;
+    m.flags = flags;
+    if (moment > recv)
+        m.flags |= 8;
+    return m;
+}
+} // namespace
+FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path& directory,
+                                                     const std::filesystem::path& output) {
+    const auto checked = read_full_order_log_capture(directory, [](const auto&) {});
+    Output file(output);
+    // Minimal 128-byte DBN v3 mixed metadata. Numeric MOEX ISIN IDs, local publisher=0.
+    std::array<std::byte, 128> metadata{};
+    std::memcpy(metadata.data(), "DBN\3", 4);
+    const auto put = [&]<class T>(std::size_t offset, T value) {
+        std::memcpy(metadata.data() + offset, &value, sizeof value);
+    };
+    put(4, std::uint32_t{120});
+    put(24, std::uint16_t{UINT16_MAX}); // Mixed MBO + Statistics.
+    std::memcpy(metadata.data() + 8, "MOEX.FOL", 8);
+    put(34, UINT64_MAX);
+    put(53, std::uint16_t{71});
+    file.write(metadata.data(), metadata.size());
+    Plaza2FullOrderLog book(checked.isins);
+    std::unordered_map<std::int64_t, FullOrderLogOrder> state;
+    std::vector<Mbo> pending;
+    bool initialized{}, committed{}, invalidated{};
+    std::uint64_t valid{}, last_count{}, sequence{};
+    book.on_commit = [&](const auto& b) {
+        committed = true;
+        ++valid;
+        last_count = b.order_count();
+    };
+    book.on_invalidate = [&] {
+        invalidated = true;
+        initialized = false;
+        state.clear();
+        pending.clear();
+    };
+    const auto flush = [&](const FullOrderLogCaptureRecord& r) {
+        std::map<std::uint32_t, std::size_t> last;
+        for (std::size_t i = 0; i < pending.size(); ++i)
+            last[pending[i].instrument] = i;
+        for (std::size_t i = 0; i < pending.size(); ++i) {
+            auto& m = pending[i];
+            require(++sequence < UINT32_MAX, "DBN sequence exhausted; split export");
+            m.sequence = sequence;
+            m.recv = r.utc_ns;
+            if (last[m.instrument] == i)
+                m.flags |= 128;
+            file.write(&m, sizeof m);
+        }
+        pending.clear();
+    };
+    const auto reset = [&](const FullOrderLogCaptureRecord& r, std::uint8_t flags) {
+        for (auto isin : checked.isins) {
+            Mbo m;
+            m.instrument = isin;
+            m.event = UINT64_MAX;
+            m.price = INT64_MAX;
+            m.action = 'R';
+            m.side = 'N';
+            m.recv = r.utc_ns;
+            m.flags = flags;
+            pending.push_back(m);
+        }
+    };
+    const auto change = [&](std::int64_t id, const FullOrderLogCaptureRecord& r) {
+        const auto after = book.inspect_staged_order_for_replay(id);
+        const auto before = state.find(id);
+        auto moment = book.exchange_moment_ns(after ? after->isin : before != state.end() ? before->second.isin : 0);
+        if (r.event.kind == Plaza2ListenerEventKind::StreamData && r.event.raw_table)
+            for (const auto& f : r.event.raw_table->fields)
+                if (f.name == "moment_ns")
+                    moment = load<std::uint64_t>(r.event.raw_payload, f.offset);
+        if (!after) {
+            if (before != state.end()) {
+                pending.push_back(mbo(before->second, 'C', moment, r.utc_ns));
+                state.erase(before);
+            }
+        } else {
+            if (before == state.end())
+                pending.push_back(mbo(*after, 'A', moment, r.utc_ns));
+            else if (after->remaining != before->second.remaining || after->price != before->second.price ||
+                     after->bid != before->second.bid)
+                pending.push_back(mbo(*after, 'M', moment, r.utc_ns));
+            state.insert_or_assign(id, *after);
+        }
+        require(pending.size() <= 1000000, "DBN transaction exceeds bounded export buffer");
+    };
+    FullOrderLogOpenInterest oi(checked.isins);
+    const FullOrderLogCaptureRecord* current{};
+    std::uint64_t oi_updates{};
+    oi.on_update = [&](const auto& v) {
+        require(v.quantity < INT64_MAX, "DBN OI quantity conflicts with undefined sentinel");
+        require(++sequence < UINT32_MAX, "DBN sequence exhausted; split export");
+        OiStat stat;
+        stat.instrument = v.isin;
+        stat.event = v.moment_ns;
+        stat.recv = current->utc_ns;
+        stat.reference = v.moment_ns;
+        stat.quantity = v.quantity;
+        stat.sequence = sequence;
+        file.write(&stat, sizeof stat);
+        ++oi_updates;
+    };
+    auto result = read_full_order_log_capture(directory, [&](const auto& r) {
+        current = &r;
+        if (r.event.stream_code == generated::StreamCode::kFortsDealsRepl) {
+            if (const auto error = oi.on_plaza2_listener_event(r.event); error)
+                throw std::runtime_error(error.message);
+            return;
+        }
+        committed = false;
+        invalidated = false;
+        std::optional<std::int64_t> id;
+        const auto& e = r.event;
+        if (initialized && e.kind == Plaza2ListenerEventKind::StreamData && e.raw_table &&
+            (e.raw_table->name == "orders" || e.raw_table->name == "orders_log"))
+            for (const auto& f : e.raw_table->fields)
+                if (f.name == "public_order_id")
+                    id = load<std::int64_t>(e.raw_payload, f.offset);
+        if (const auto error = book.on_plaza2_listener_event(e); error)
+            throw std::runtime_error("DBN replay: " + error.message);
+        if (invalidated) {
+            reset(r, 4);
+            flush(r);
+        }
+        if (initialized && id)
+            change(*id, r);
+        if (initialized && e.kind == Plaza2ListenerEventKind::ClearDeleted) {
+            std::vector<std::int64_t> ids;
+            ids.reserve(state.size());
+            for (const auto& [key, value] : state)
+                ids.push_back(key);
+            for (auto key : ids)
+                change(key, r);
+        }
+        if (committed) {
+            if (!initialized) {
+                pending.clear();
+                reset(r, 32);
+                book.inspect_staged_orders_for_replay([&](const auto& o) {
+                    state.insert_or_assign(o.id, o);
+                    pending.push_back(mbo(o, 'A', book.exchange_moment_ns(o.isin), r.utc_ns, 32));
+                });
+                initialized = true;
+            }
+            flush(r);
+        }
+    });
+    require(pending.empty(), "DBN archive ends with uncommitted book changes");
+    result.open_interest_updates = oi_updates;
+    result.valid_commits = valid;
+    result.last_valid_order_count = last_count;
+    file.publish();
+    return result;
+}
+} // namespace moex::plaza2::cgate

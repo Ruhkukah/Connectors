@@ -34,6 +34,8 @@ jobs:
             esac
             clang-format --dry-run --Werror "$source"
           done < <(git diff --name-only --diff-filter=ACMR -z "$base" HEAD -- '*.cpp' '*.hpp')
+      - name: Install Zstd development files
+        run: sudo apt-get update && sudo apt-get install -y libzstd-dev
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
@@ -53,7 +55,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install clang
-        run: sudo apt-get update && sudo apt-get install -y clang
+        run: sudo apt-get update && sudo apt-get install -y clang libzstd-dev
       - name: Configure
         env:
           CC: clang

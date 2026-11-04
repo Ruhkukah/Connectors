@@ -1,5 +1,6 @@
 #include "full_order_log_dtc_loop.hpp"
 #include "full_order_log_operator.hpp"
+#include "full_order_log_capture_options.hpp"
 #include "moex/connector_host/operator_config.hpp"
 #include <atomic>
 #include <charconv>
@@ -45,6 +46,10 @@ int main(int argc, char** argv) {
                          "  --trading-router HOST:PORT (default 127.0.0.1:4101; must differ from --router)\n"
                          "  --offline-fake --run-ms N (offline tests; no live authorization inferred)\n"
                          "  --dtc-depth N (default 20; up to 20000 per side; NumLevels=0 uses that cap)\n"
+                         "  --capture-dir NEW_DIR [--capture-max-bytes N] [--capture-min-free-bytes N]\n"
+                         "  Lossless selected FOL rows; defaults: 4GiB budget, 10GiB free-space reserve.\n"
+                         "  Offline export: moex_fol_archive export-dbn CAPTURE_DIR NEW_OUTPUT.dbn\n"
+                         "  Includes restricted public OI listener FORTS_DEALS_REPL;tables=deal.\n"
                          "DTC is read-only. No accounts, positions or market-by-order on DTC.\n"
                          "plaza2 run --live|--offline-fake --allow-orders [operator/risk options]\n"
                          "  TEST-only ORDLOG account: private reconciliation and orders on the FOL connection.\n"
@@ -55,6 +60,7 @@ int main(int argc, char** argv) {
                       << moex::connector_host::operator_help();
             return 0;
         }
+        moex::connector_host::FullOrderLogCaptureFlags capture_flags;
         bool offline = false, live = false;
         std::string trading_instance, trading_router = "127.0.0.1:4101";
         std::uint32_t base_port = 11300, run_ms = 0, depth_levels = 20;
@@ -63,6 +69,8 @@ int main(int argc, char** argv) {
         std::vector<std::string_view> arguments;
         for (int i = 1; i < argc; ++i) {
             const std::string_view key = argv[i];
+            if (capture_flags.consume(key, i, argc, argv))
+                continue;
             if (key == "--offline-fake")
                 offline = true;
             else if (key == "--live")
@@ -79,6 +87,7 @@ int main(int argc, char** argv) {
             } else
                 arguments.push_back(key);
         }
+        capture_flags.validate();
         if (offline == live)
             throw std::invalid_argument("select --live or --offline-fake");
         if (live && trading_instance.empty())
@@ -104,7 +113,17 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("invalid bounded ISIN universe or DTC port range");
         std::vector<std::int32_t> ids(request.config.isin_ids.begin(), request.config.isin_ids.end());
         cg::Plaza2FullOrderLog book(ids);
+        std::unique_ptr<cg::FullOrderLogCapture> capture;
+        if (!capture_flags.options.directory.empty())
+            capture = std::make_unique<cg::FullOrderLogCapture>(capture_flags.options, ids, book);
+        cg::FullOrderLogOpenInterest open_interest(ids);
+        open_interest.before_event = [&](const auto& e) { return capture ? capture->record(e) : cg::Plaza2Error{}; };
+        open_interest.before_error = [&](const auto& e) {
+            if (capture)
+                capture->record_error(moex::plaza2::generated::StreamCode::kFortsDealsRepl, e);
+        };
         auto& transport = request.config.transport.host;
+        transport.full_order_log_oi_handler = &open_interest;
         transport.mode =
             offline ? moex::plaza2_trade::CgateSessionMode::OfflineFake : moex::plaza2_trade::CgateSessionMode::Live;
         transport.aggr20_stream = {};
@@ -114,7 +133,8 @@ int main(int argc, char** argv) {
         transport.full_order_log_stream = {.stream_code = cg::kFullOrderLogStreamCode,
                                            .settings =
                                                cg::full_order_log_listener_settings(transport.runtime.scheme_dir)};
-        transport.full_order_log_handler = &book;
+        transport.full_order_log_handler =
+            capture ? static_cast<cg::Plaza2ListenerEventHandler*>(capture.get()) : &book;
         transport.event_log = [](std::string_view event, std::string_view detail) {
             std::cerr << event << ' ' << detail << '\n';
         };
@@ -174,6 +194,7 @@ int main(int argc, char** argv) {
                       << " lag_sum_ns=" << metrics.lag_sum_ns << " crossed_transitions=" << metrics.crossed_transitions
                       << " metadata_refreshes=" << loop.metadata_refreshes << " polls=" << loop.polls << '\n'
                       << std::flush;
+            moex::connector_host::report_full_order_log_open_interest(open_interest, ids);
             rate_at = now;
             rows_at = metrics.rows_total;
             loop.metrics.reset_interval();
@@ -181,12 +202,18 @@ int main(int argc, char** argv) {
         while (!stop_requested.load(std::memory_order_relaxed) &&
                (!run_ms || std::chrono::steady_clock::now() - start < std::chrono::milliseconds(run_ms))) {
             loop.poll();
+            if (capture)
+                capture->poll();
             if (std::chrono::steady_clock::now() - rate_at >=
                 moex::connector_host::FullOrderLogDtcMetrics::report_interval)
                 report();
         }
         report();
         loop.stop();
+        if (capture) {
+            capture->finish();
+            moex::connector_host::report_full_order_log_capture(*capture);
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

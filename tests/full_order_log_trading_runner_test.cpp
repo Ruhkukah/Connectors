@@ -1,4 +1,5 @@
 #include "plaza2_runtime_test_support.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_capture.hpp"
 #include "command_socket.hpp"
 #include "scope_exit.hpp"
 
@@ -285,6 +286,23 @@ int main(int argc, char** argv) {
             test::require(client.wait() == 2 && received == std::vector<std::string>{"status"} &&
                               client.errors().find("not a Full Order Log") != std::string::npos,
                           "FOL command client sent a trading command to an AGGR endpoint");
+        }
+        {
+            const fs::path log{"capture-writer.ndjson"};
+            auto request = arguments(executable, fixture, log, "fol_capture_writer");
+            const auto capture = root / "writer-capture";
+            request.insert(request.end(), {"--capture-dir", capture.string(), "--capture-min-free-bytes", "0"});
+            Process owner(request, "capture-writer");
+            wait_status(owner, log, [](const auto& status) {
+                return status.find("\"order_entry_ready\":true") != std::string::npos;
+            });
+            command(executable, log, "kill on", "capture-kill");
+            command(executable, log, "quit", "capture-quit");
+            test::require(owner.wait() == 0, "recorder writer did not drain: " + owner.errors());
+            const auto replay = moex::plaza2::cgate::replay_full_order_log_capture(capture);
+            test::require(replay.valid_commits > 0 && replay.open_interest_updates > 0 &&
+                              owner.output().find("capture_failed=0") != std::string::npos,
+                          "actual writer recording/replay failed");
         }
         {
             const fs::path log{"crash-startup.ndjson"};

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "command_socket.hpp"
+#include "full_order_log_capture_options.hpp"
+#include <csignal>
 #include "full_order_log_dtc_loop.hpp"
 #include "operator_program.hpp"
 #include "moex/connector_host/full_order_log_trading.hpp"
@@ -12,11 +14,15 @@ namespace moex::connector_host {
 inline int full_order_log_operator(int argc, char** argv,
                                    const std::function<std::string(std::string_view)>& endpoint) {
     const bool run = std::string_view(argv[2]) == "run";
+    FullOrderLogCaptureFlags capture_flags;
+    bool capture_stop_requested{};
     bool offline{}, live{}, cancel_only{};
     std::string trading_instance, trading_router{"127.0.0.1:4101"};
     std::vector<std::string> args{argv[0]};
     for (int i = 1; i < argc; ++i) {
         const std::string_view key = argv[i];
+        if (capture_flags.consume(key, i, argc, argv))
+            continue;
         if (key == "--offline-fake")
             offline = true;
         else if (key == "--live")
@@ -30,6 +36,9 @@ inline int full_order_log_operator(int argc, char** argv,
         } else
             args.emplace_back(key);
     }
+    capture_flags.validate();
+    if (!capture_flags.options.directory.empty() && (!run || cancel_only))
+        throw std::invalid_argument("capture requires FOL run or qualify; not cmd/cancel-only");
     const auto has = [&](std::string_view key) { return std::ranges::find(args, key) != args.end(); };
     const auto default_option = [&](const char* key, const char* value) {
         if (!has(key)) {
@@ -49,6 +58,8 @@ inline int full_order_log_operator(int argc, char** argv,
         default_option("--instance-id", "moex_full_order_log");
     }
     std::unique_ptr<plaza2::cgate::Plaza2FullOrderLog> book;
+    std::unique_ptr<plaza2::cgate::FullOrderLogCapture> capture;
+    std::unique_ptr<plaza2::cgate::FullOrderLogOpenInterest> open_interest;
     FullOrderLogDtcMetrics native;
     auto rate_at = std::chrono::steady_clock::now();
     std::uint64_t rows_at{};
@@ -68,6 +79,8 @@ inline int full_order_log_operator(int argc, char** argv,
                   << " clear_deleted_events=" << m.clear_deleted_events
                   << " clear_deleted_erased=" << m.clear_deleted_erased << '\n'
                   << std::flush;
+        if (open_interest)
+            report_full_order_log_open_interest(*open_interest, book->instruments());
         rows_at = m.rows_total;
         rate_at = std::chrono::steady_clock::now();
         native.reset_interval();
@@ -100,6 +113,7 @@ inline int full_order_log_operator(int argc, char** argv,
         if (cancel_only) {
             session.full_order_log_stream = {};
             session.full_order_log_handler = nullptr;
+            session.full_order_log_oi_handler = nullptr;
             session.full_order_log_authority = {};
             config.orders.risk.kill_switch = true;
             return;
@@ -108,7 +122,17 @@ inline int full_order_log_operator(int argc, char** argv,
         session.collect_poll_metrics = true;
         session.full_order_log_stream = {.stream_code = cg::kFullOrderLogStreamCode,
                                          .settings = cg::full_order_log_listener_settings(session.runtime.scheme_dir)};
-        session.full_order_log_handler = book.get();
+        if (!capture_flags.options.directory.empty())
+            capture = std::make_unique<cg::FullOrderLogCapture>(capture_flags.options, config.isin_ids, *book);
+        session.full_order_log_handler =
+            capture ? static_cast<cg::Plaza2ListenerEventHandler*>(capture.get()) : book.get();
+        open_interest = std::make_unique<cg::FullOrderLogOpenInterest>(config.isin_ids);
+        open_interest->before_event = [&](const auto& e) { return capture ? capture->record(e) : cg::Plaza2Error{}; };
+        open_interest->before_error = [&](const auto& e) {
+            if (capture)
+                capture->record_error(moex::plaza2::generated::StreamCode::kFortsDealsRepl, e);
+        };
+        session.full_order_log_oi_handler = open_interest.get();
         session.full_order_log_authority = [&](std::int32_t isin) {
             return make_full_order_log_trading_authority(*book, isin);
         };
@@ -119,6 +143,17 @@ inline int full_order_log_operator(int argc, char** argv,
     hooks.after_poll = [&](CgateTradingHost& host) {
         if (!book)
             return;
+        if (capture && !capture_stop_requested) {
+            try {
+                capture->poll();
+            } catch (const std::exception& e) {
+                capture_stop_requested = true;
+                host.set_kill_switch(true);
+                book->reset(true);
+                std::cerr << e.what() << "; capture failed, entering normal SIGTERM cancel drain\n";
+                std::raise(SIGTERM);
+            }
+        }
         native.observe(host.last_poll_metrics());
         if (std::chrono::steady_clock::now() - rate_at >= FullOrderLogDtcMetrics::report_interval)
             report();
@@ -134,6 +169,11 @@ inline int full_order_log_operator(int argc, char** argv,
         pointers.push_back(arg.data());
     const auto result = operator_program(static_cast<int>(pointers.size()), pointers.data(), hooks);
     report();
-    return result;
+    if (capture) {
+        if (result == 0 && !capture_stop_requested)
+            capture->finish();
+        report_full_order_log_capture(*capture);
+    }
+    return capture_stop_requested ? 3 : result;
 }
 } // namespace moex::connector_host

@@ -81,6 +81,8 @@ struct CgateSessionConfig {
     // An externally owned consumer runs on this session's CGate owner thread.
     CgateStreamConfig full_order_log_stream;
     plaza2::cgate::Plaza2ListenerEventHandler* full_order_log_handler{nullptr};
+    // Optional FOL-only public OI consumer; null preserves the certified trading listener set.
+    plaza2::cgate::Plaza2ListenerEventHandler* full_order_log_oi_handler{nullptr};
     // Required only for explicit TEST order entry alongside the composite feed.
     std::function<FullOrderLogTradingAuthority(std::int32_t)> full_order_log_authority;
     // Empty uses system_clock; injectable for offline future-clock tolerance tests.

@@ -123,3 +123,14 @@ target_compile_features(moex_plaza2_cgate_full_order_log PUBLIC cxx_std_20)
 install(FILES schema/full_order_log/online.ini schema/full_order_log/snapshot.ini
     schema/full_order_log/manifest.json schema/full_order_log/README.md
     DESTINATION share/moex/plaza2/cgate/schema/full_order_log)
+
+# FOL-only optional recorder/exporter; no Zstd linkage is added to moexctl or AGGR.
+find_path(MOEX_ZSTD_INCLUDE_DIR zstd.h REQUIRED)
+find_library(MOEX_ZSTD_LIBRARY NAMES zstd REQUIRED)
+find_package(Threads REQUIRED)
+add_library(moex_full_order_log_capture STATIC
+    src/plaza2_full_order_log_capture.cpp src/plaza2_full_order_log_archive.cpp src/plaza2_full_order_log_dbn.cpp src/plaza2_full_order_log_oi.cpp)
+target_include_directories(moex_full_order_log_capture PRIVATE "${MOEX_ZSTD_INCLUDE_DIR}")
+target_link_libraries(moex_full_order_log_capture PUBLIC moex_plaza2_cgate_full_order_log PRIVATE "${MOEX_ZSTD_LIBRARY}" Threads::Threads)
+
+target_compile_definitions(moex_full_order_log_capture PRIVATE MOEX_CAPTURE_SOURCE_SHA="${MOEX_SOURCE_GIT_SHA}")

@@ -636,4 +636,16 @@ bool Plaza2FullOrderLog::inspect_committed_orders(const std::function<void(const
         visitor({id, order.price, order.quantity, impl_->isins[order.instrument], order.session, order.bid});
     return true;
 }
+std::optional<FullOrderLogOrder> Plaza2FullOrderLog::inspect_staged_order_for_replay(std::int64_t id) const {
+    const auto i = impl_->orders.find(id);
+    if (i == impl_->orders.end())
+        return std::nullopt;
+    const auto& o = i->second;
+    return FullOrderLogOrder{id, o.price, o.quantity, impl_->isins[o.instrument], o.session, o.bid};
+}
+void Plaza2FullOrderLog::inspect_staged_orders_for_replay(
+    const std::function<void(const FullOrderLogOrder&)>& visitor) const {
+    for (const auto& [id, o] : impl_->orders)
+        visitor({id, o.price, o.quantity, impl_->isins[o.instrument], o.session, o.bid});
+}
 } // namespace moex::plaza2::cgate

@@ -165,3 +165,17 @@ After certification and an approved merge, the merged trading binary must first 
 ## Kairos PR111
 
 PR111 remains OPEN and unmerged at `a5bbda87fdf5c1ca339507ac5923ee78eaa3b82d` on the MOEX branch stack, with no attached GitHub checks. Existing evidence records 453 data tests passed (7 ignored), 24 focused DTC tests and a release application check. Those historical tests were not rerun for this Connector-only rebase. Owner approval is required before merge.
+
+## Recorder / public OI extension (PR70 only)
+
+The owner requested lossless selected-instrument Zstd recording, offline DBN export and public open interest. This source change is not a deployment, native qualification, permission to merge into PR68, or a change to installed certified binaries.
+
+Shared files in this extension:
+
+| File | Behavior with no FOL OI handler configured | Evidence |
+|---|---|---|
+| `connectors/plaza2_trade/include/moex/plaza2_trade/cgate_session.hpp` | Adds a null-default optional handler pointer. This changes the compiled configuration layout; it is not a binary-neutral claim. Existing callers do not request OI. | Unchanged `connector_host_test` and session tests; explicit null-handler case in `full_order_log_oi_session_test`. |
+| `connectors/plaza2_trade/src/cgate_session.cpp` | New validation, one restricted `FORTS_DEALS_REPL;tables=deal` listener and scheme-failure handling are gated by that non-null pointer. No OI branch runs for the AGGR profile; its existing `public_deals_stream` path is unchanged. Cancel-only explicitly refuses this handler. | `full_order_log_oi_session_test` verifies FOL-only routing, exact URL, rejection without FOL, and no DEALS opens when null. Unchanged `plaza2_full_order_log_session_test` verifies certified five-table REFDATA when FOL is absent; unchanged `connector_host_test` verifies the normal read-side inventory. |
+| `protocols/plaza2_cgate/include/moex/plaza2/cgate/plaza2_full_order_log.hpp` and `src/plaza2_full_order_log.cpp` | Add offline-only point/full staged-order inspection methods. No normal session, admission, commit or trading path calls them. The exporter uses point inspection for ordinary changes and full enumeration only on a fresh snapshot. | Existing FOL semantics tests plus recorder/DBN replay tests. |
+
+No runtime, private-state projection or order-manager source is changed by this extension. Recorder, OI consumer and DBN implementation have their own FOL-only target; Zstd is not linked into moexctl/AGGR. The certified trading executable remains built from its certified line only. Any future merged trading build still needs the previously required post-certification live passive/fill/restart/shutdown checks before trading use.

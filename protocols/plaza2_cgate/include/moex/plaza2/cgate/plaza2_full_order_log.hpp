@@ -72,6 +72,9 @@ class Plaza2FullOrderLog final : public Plaza2ListenerEventHandler {
     // Diagnostic, owner-thread only. Refuse inspection during an uncommitted frame.
     // No copy or iteration occurs on the ordinary publication path.
     bool inspect_committed_orders(const std::function<void(const FullOrderLogOrder&)>& visitor) const;
+    // Offline exporter only: point inspection includes staged state and must never authorize trading.
+    [[nodiscard]] std::optional<FullOrderLogOrder> inspect_staged_order_for_replay(std::int64_t id) const;
+    void inspect_staged_orders_for_replay(const std::function<void(const FullOrderLogOrder&)>& visitor) const;
     std::function<void(const Plaza2FullOrderLog&)> on_commit;
     std::function<void()> on_invalidate;
     std::function<void(std::int32_t, bool)> on_crossed;

@@ -24,13 +24,18 @@ Online client scheme contains exactly `orders_log,sys_events`; snapshot client s
 - `protocols/plaza2_cgate/schema/full_order_log/snapshot.ini`, sectionOrdBook, SHA-2562479cfc9ca726a3303a9df88fa937a4c3f7c4e8f6743d4c81cdf6f3e6808ef44.
 - `manifest.json` records exact vendor schemetool makesrc --output-format ini --tables commands and tool/source hashes. Published TEST9.12 source: [forts_scheme.ini](https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/Scheme/9.12.0/forts_scheme.ini), SHA-256 f600dbd66c631246d7b386371ce09447ab82c95d2967dfc3df1ceb25a7322c87. Published schemes are distinguished from negotiated native OPEN receipts.
 
+## Recorder/OI source revision (offline until separately approved)
+
+The new FOL source adds opt-in lossless Zstd recording and offline DBN v3 export, plus `p2repl://FORTS_DEALS_REPL;tables=deal` for open interest in reader/writer mode. It leaves installed/native pins unchanged; the old pin above does **not** include OI. Cancel-only still opens no public market-data streams. Snapshot OI is hidden until ONLINE; subsequent per-trade observations are exposed at transaction commit. `xpos` remains a signed 64-bit market quantity, with `moment_ns`, `sess_id`, `isin_id`, `id_deal` and replication identities validated from OPEN. No OI is inferred from order quantities. The whole selected public deal row is retained if recording is enabled. No additional heartbeat, multileg or COMMON table is requested. No writer order or risk authority is taken from OI.
+
 ## Other restricted listeners
 
-Every p2repl listener uses an explicit tables= selection; no client scheme= is combined with it. Lists below are from required_replication_tables plus the FOL-only REFDATA extension. AGGR and public DEALS listeners are disabled in FOL mode.
+Every p2repl listener uses an explicit tables= selection; no client scheme= is combined with it. Lists below are from required_replication_tables plus the FOL-only REFDATA extension. AGGR is disabled in FOL mode. The recorder/OI revision adds one restricted public DEALS listener for open interest; this source change is not deployed or natively qualified.
 
 | Stream URL | Tables | Use |
 |---|---|---|
 | p2repl://FORTS_REFDATA_REPL | session,fut_instruments,fut_sess_contents,fut_vcb,sys_messages,instr2matching_map | FOL reader/writer metadata and matching resolution |
+| p2repl://FORTS_DEALS_REPL | deal | FOL-only public open interest (`xpos`), replication identity, session/instrument and observation time; lossless selected rows and DBN Statistics export |
 | p2repl://FORTS_SESSIONSTATE_REPL | session_state | Session authority/readiness |
 | p2repl://FORTS_INSTRUMENTSTATE_REPL | instrument_state,sys_events | Current instrument state/readiness |
 | p2repl://FORTS_TRADE_REPL | orders_log,user_deal,heartbeat,sys_events | Writer/cancel-only private reconciliation |
