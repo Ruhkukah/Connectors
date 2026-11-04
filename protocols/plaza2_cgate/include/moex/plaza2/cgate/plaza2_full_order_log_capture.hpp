@@ -2,6 +2,7 @@
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
 
 namespace moex::plaza2::cgate {
+enum class FullOrderLogCaptureEndStatus : std::uint64_t { Clean = 0, HostNonzero = 1, CaptureFailed = 2 };
 struct FullOrderLogCaptureOptions {
     std::filesystem::path directory;
     std::uint64_t max_bytes{4ULL << 30}, min_free_bytes{10ULL << 30};
@@ -30,7 +31,7 @@ class FullOrderLogCapture final : public Plaza2ListenerEventHandler {
     void record_error(generated::StreamCode stream, const Plaza2Error& error) noexcept;
     void poll();
     // Call only after the host has stopped. A missing end record is an incomplete capture.
-    void finish();
+    void finish(FullOrderLogCaptureEndStatus status = FullOrderLogCaptureEndStatus::Clean, int host_status = 0);
     FullOrderLogCaptureMetrics metrics() const noexcept;
 
   private:
@@ -46,16 +47,22 @@ struct FullOrderLogArchiveSummary {
     std::vector<std::int32_t> isins;
     std::string source_sha;
     std::uint64_t records{}, rows{}, commits{}, valid_commits{}, last_valid_order_count{}, stored_bytes{},
-        open_interest_rows{}, open_interest_updates{}, listener_errors{};
+        open_interest_rows{}, open_interest_updates{}, listener_errors{}, last_good_sequence{};
+    bool truncated{}, end_record_present{};
+    FullOrderLogCaptureEndStatus end_status{FullOrderLogCaptureEndStatus::Clean};
+    int host_status{};
 };
 // Offline only. Refuses missing/duplicate/reordered segments, damaged frames and unclean EOF.
 // Visitor borrows all spans for the duration of the call only; schema lifetime ends at next OPEN.
 FullOrderLogArchiveSummary
 read_full_order_log_capture(const std::filesystem::path& directory,
-                            const std::function<void(const FullOrderLogCaptureRecord&)>& visitor);
-FullOrderLogArchiveSummary replay_full_order_log_capture(const std::filesystem::path& directory);
+                            const std::function<void(const FullOrderLogCaptureRecord&)>& visitor,
+                            bool allow_incomplete = false);
+FullOrderLogArchiveSummary replay_full_order_log_capture(const std::filesystem::path& directory,
+                                                         bool allow_incomplete = false);
 // Derived DBN v3 MBO book changes plus public OI Statistics (A/M/C/R), never fabricated trade prints.
 // Creates a new file exclusively, publishes it only after complete archive validation.
 FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path& directory,
-                                                     const std::filesystem::path& output);
+                                                     const std::filesystem::path& output,
+                                                     bool allow_incomplete = false);
 } // namespace moex::plaza2::cgate

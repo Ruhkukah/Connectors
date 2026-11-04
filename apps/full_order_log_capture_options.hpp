@@ -6,8 +6,14 @@
 namespace moex::connector_host {
 struct FullOrderLogCaptureFlags {
     plaza2::cgate::FullOrderLogCaptureOptions options;
-    bool budget_set{};
+    bool budget_set{}, open_interest{};
     bool consume(std::string_view key, int& i, int argc, char** argv) {
+        if (key == "--open-interest") {
+            if (open_interest)
+                throw std::invalid_argument("duplicate --open-interest");
+            open_interest = true;
+            return true;
+        }
         if (key != "--capture-dir" && key != "--capture-max-bytes" && key != "--capture-min-free-bytes")
             return false;
         if (++i == argc)

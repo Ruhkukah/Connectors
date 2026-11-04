@@ -81,7 +81,10 @@ struct FolRunnerOrder {
     std::string price{"102500"};
     bool present{}, cancelled{};
     std::uint64_t revision{};
-} fol_runner_order;
+};
+std::array<FolRunnerOrder, 2> fol_runner_orders;
+auto& fol_runner_order = fol_runner_orders[0];
+std::int64_t fol_runner_reply_id{20003};
 std::deque<fixture::Event> queued_events;
 std::vector<fixture::PostedCommand> posted_commands;
 std::unordered_map<StreamCode, std::uint64_t> listener_opens;
@@ -345,7 +348,9 @@ std::vector<std::byte> make_trade_reply(std::string_view message_name) {
     std::memcpy(payload.data() + 4, message.data(), std::min<std::size_t>(message.size(), 254));
     if (add) {
         const auto* id_text = option(Option::PubReplyOrderId);
-        const auto order_id = id_text == nullptr ? std::int64_t{20003} : std::strtoll(id_text, nullptr, 10);
+        const auto order_id = id_text == nullptr
+                                  ? (fol_runner_profile.empty() ? std::int64_t{20003} : fol_runner_reply_id)
+                                  : std::strtoll(id_text, nullptr, 10);
         write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message), order_id);
     } else if (move) {
         write_reply_scalar(payload, offsetof(official_cgate99::FORTS_MSG176, order_id1), std::int64_t{20004});
@@ -1645,11 +1650,15 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
         const auto table = stream_code == StreamCode::kFortsTradeRepl ? kFortsTradeReplOrdersLog
                                                                       : kFortsUserorderbookReplOrdersCurrentday;
         std::erase_if(script, [&](const auto& row) { return row.table_code == table; });
-        if (fol_runner_order.present) {
+        for (const auto& fol_runner_order : fol_runner_orders) {
+            if (!fol_runner_order.present)
+                continue;
             const auto base = base_script_for_stream(stream_code);
             auto row = *std::ranges::find_if(base, [&](const auto& value) { return value.table_code == table; });
             row.rev += static_cast<std::int64_t>(fol_runner_order.revision);
             for (auto& field : row.fields) {
+                if (const auto* d = FindFieldByCode(field.field_code); d && d->field_name == "replID")
+                    field.signed_value = fol_runner_order.id;
                 switch (field.field_code) {
                 case kFortsTradeReplOrdersLogPublicOrderId:
                 case kFortsUserorderbookReplOrdersCurrentdayPublicOrderId:
@@ -2423,7 +2432,10 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
     fol_runner_profile = profile;
     fol_runner_posts = ini.parent_path() / "fol-native-posts.log";
     fol_runner_control = ini.parent_path() / "fol-control";
-    fol_runner_order = {};
+    fol_runner_orders = {};
+    fol_runner_orders[1].id = 20006;
+    fol_runner_orders[1].ext_id = 101;
+    fol_runner_reply_id = 20003;
     fol_runner_order.present = profile == "recovery";
     fol_runner_next_activity = {};
     return kCgErrOk;
@@ -2531,7 +2543,17 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
     if (!fol_runner_profile.empty()) {
         std::ifstream control(fol_runner_control);
         std::string profile;
-        if (std::getline(control, profile) && profile != fol_runner_profile) {
+        if (std::getline(control, profile) && profile == "capture-fail") {
+            // Explicit offline fixture injection: an oversized capture control record.
+            // Private channels continue normally so the real writer can cancel-drain.
+            std::filesystem::remove(fol_runner_control);
+            const std::string oversized(2 * 1024 * 1024, 'x');
+            for (auto* listener : connection->listeners)
+                if (listener && listener->stream_code == kFullOrderLogStreamCode)
+                    return emit_simple_message(*listener, kCgMsgP2replReplState, const_cast<char*>(oversized.c_str()),
+                                               oversized.size() + 1);
+        }
+        if (!profile.empty() && profile != fol_runner_profile) {
             if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" &&
                 profile != "invalid")
                 return kCgErrInvalidArgument;
@@ -3554,12 +3576,15 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
         if (name == "AddOrder" && bytes && posted->data_size == sizeof(official_cgate99::AddOrder)) {
             official_cgate99::AddOrder wire{};
             std::memcpy(&wire, bytes, sizeof(wire));
+            auto& fol_runner_order = fol_runner_orders[wire.ext_id == 101 ? 1 : 0];
             valid = !fol_runner_order.present && wire.isin_id == 1001 && wire.dir == 1 && wire.amount == 1 &&
-                    text(wire.price) == "102500" && wire.ext_id == 100 && text(wire.broker_code) == "BRK1" &&
-                    text(wire.client_code) == "C01";
+                    text(wire.price) == "102500" && (wire.ext_id == 100 || wire.ext_id == 101) &&
+                    text(wire.broker_code) == "BRK1" && text(wire.client_code) == "C01";
             if (valid) {
                 fol_runner_order.present = true;
                 fol_runner_order.ext_id = wire.ext_id;
+                fol_runner_reply_id = fol_runner_order.id;
+                ++fol_runner_order.revision;
             }
         } else if (name == "MoveOrder" && bytes && posted->data_size == sizeof(official_cgate99::MoveOrder)) {
             official_cgate99::MoveOrder wire{};
@@ -3573,9 +3598,12 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
         } else if (name == "DelOrder" && bytes && posted->data_size == sizeof(official_cgate99::DelOrder)) {
             official_cgate99::DelOrder wire{};
             std::memcpy(&wire, bytes, sizeof(wire));
-            valid = fol_runner_order.present && wire.order_id == fol_runner_order.id;
-            if (valid)
-                fol_runner_order.cancelled = true;
+            for (auto& order : fol_runner_orders)
+                if (order.present && wire.order_id == order.id) {
+                    valid = true;
+                    order.cancelled = true;
+                    ++order.revision;
+                }
         }
         std::ofstream journal(fol_runner_posts, std::ios::app);
         journal << name << " wire_valid=" << valid << " bytes=" << posted->data_size << '\n';

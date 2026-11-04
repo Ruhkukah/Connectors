@@ -96,8 +96,8 @@ Mbo mbo(const FullOrderLogOrder& order, char action, std::uint64_t moment, std::
 }
 } // namespace
 FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path& directory,
-                                                     const std::filesystem::path& output) {
-    const auto checked = read_full_order_log_capture(directory, [](const auto&) {});
+                                                     const std::filesystem::path& output, bool allow_incomplete) {
+    const auto checked = read_full_order_log_capture(directory, [](const auto&) {}, allow_incomplete);
     Output file(output);
     // Minimal 128-byte DBN v3 mixed metadata. Numeric MOEX ISIN IDs, local publisher=0.
     std::array<std::byte, 128> metadata{};
@@ -180,6 +180,7 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
     };
     FullOrderLogOpenInterest oi(checked.isins);
     const FullOrderLogCaptureRecord* current{};
+    FullOrderLogCaptureRecord last_record{};
     std::uint64_t oi_updates{};
     oi.on_update = [&](const auto& v) {
         require(v.quantity < INT64_MAX, "DBN OI quantity conflicts with undefined sentinel");
@@ -194,52 +195,62 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
         file.write(&stat, sizeof stat);
         ++oi_updates;
     };
-    auto result = read_full_order_log_capture(directory, [&](const auto& r) {
-        current = &r;
-        if (r.event.stream_code == generated::StreamCode::kFortsDealsRepl) {
-            if (const auto error = oi.on_plaza2_listener_event(r.event); error)
-                throw std::runtime_error(error.message);
-            return;
-        }
-        committed = false;
-        invalidated = false;
-        std::optional<std::int64_t> id;
-        const auto& e = r.event;
-        if (initialized && e.kind == Plaza2ListenerEventKind::StreamData && e.raw_table &&
-            (e.raw_table->name == "orders" || e.raw_table->name == "orders_log"))
-            for (const auto& f : e.raw_table->fields)
-                if (f.name == "public_order_id")
-                    id = load<std::int64_t>(e.raw_payload, f.offset);
-        if (const auto error = book.on_plaza2_listener_event(e); error)
-            throw std::runtime_error("DBN replay: " + error.message);
-        if (invalidated) {
-            reset(r, 4);
-            flush(r);
-        }
-        if (initialized && id)
-            change(*id, r);
-        if (initialized && e.kind == Plaza2ListenerEventKind::ClearDeleted) {
-            std::vector<std::int64_t> ids;
-            ids.reserve(state.size());
-            for (const auto& [key, value] : state)
-                ids.push_back(key);
-            for (auto key : ids)
-                change(key, r);
-        }
-        if (committed) {
-            if (!initialized) {
-                pending.clear();
-                reset(r, 32);
-                book.inspect_staged_orders_for_replay([&](const auto& o) {
-                    state.insert_or_assign(o.id, o);
-                    pending.push_back(mbo(o, 'A', book.exchange_moment_ns(o.isin), r.utc_ns, 32));
-                });
-                initialized = true;
+    auto result = read_full_order_log_capture(
+        directory,
+        [&](const auto& r) {
+            current = &r;
+            last_record.utc_ns = r.utc_ns;
+            if (r.event.stream_code == generated::StreamCode::kFortsDealsRepl) {
+                if (const auto error = oi.on_plaza2_listener_event(r.event); error)
+                    throw std::runtime_error(error.message);
+                return;
             }
-            flush(r);
-        }
-    });
-    require(pending.empty(), "DBN archive ends with uncommitted book changes");
+            committed = false;
+            invalidated = false;
+            std::optional<std::int64_t> id;
+            const auto& e = r.event;
+            if (initialized && e.kind == Plaza2ListenerEventKind::StreamData && e.raw_table &&
+                (e.raw_table->name == "orders" || e.raw_table->name == "orders_log"))
+                for (const auto& f : e.raw_table->fields)
+                    if (f.name == "public_order_id")
+                        id = load<std::int64_t>(e.raw_payload, f.offset);
+            if (const auto error = book.on_plaza2_listener_event(e); error)
+                throw std::runtime_error("DBN replay: " + error.message);
+            if (invalidated || r.listener_error) {
+                reset(r, 4);
+                flush(r);
+            }
+            if (initialized && id)
+                change(*id, r);
+            if (initialized && e.kind == Plaza2ListenerEventKind::ClearDeleted) {
+                std::vector<std::int64_t> ids;
+                ids.reserve(state.size());
+                for (const auto& [key, value] : state)
+                    ids.push_back(key);
+                for (auto key : ids)
+                    change(key, r);
+            }
+            if (committed) {
+                if (!initialized) {
+                    pending.clear();
+                    reset(r, 32);
+                    book.inspect_staged_orders_for_replay([&](const auto& o) {
+                        state.insert_or_assign(o.id, o);
+                        pending.push_back(mbo(o, 'A', book.exchange_moment_ns(o.isin), r.utc_ns, 32));
+                    });
+                    initialized = true;
+                }
+                flush(r);
+            }
+        },
+        allow_incomplete);
+    if (result.truncated) {
+        // Never expose staged changes from a cut-off transaction. Withdraw the last book.
+        pending.clear();
+        reset(last_record, 4);
+        flush(last_record);
+    } else
+        require(pending.empty(), "DBN archive ends with uncommitted book changes");
     result.open_interest_updates = oi_updates;
     result.valid_commits = valid;
     result.last_valid_order_count = last_count;

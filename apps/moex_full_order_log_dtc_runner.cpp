@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
                          "  --capture-dir NEW_DIR [--capture-max-bytes N] [--capture-min-free-bytes N]\n"
                          "  Lossless selected FOL rows; defaults: 4GiB budget, 10GiB free-space reserve.\n"
                          "  Offline export: moex_fol_archive export-dbn CAPTURE_DIR NEW_OUTPUT.dbn\n"
-                         "  Includes restricted public OI listener FORTS_DEALS_REPL;tables=deal.\n"
+                         "  --open-interest: opt-in FORTS_DEALS_REPL;tables=deal (default off).\n"
                          "DTC is read-only. No accounts, positions or market-by-order on DTC.\n"
                          "plaza2 run --live|--offline-fake --allow-orders [operator/risk options]\n"
                          "  TEST-only ORDLOG account: private reconciliation and orders on the FOL connection.\n"
@@ -123,7 +123,7 @@ int main(int argc, char** argv) {
                 capture->record_error(moex::plaza2::generated::StreamCode::kFortsDealsRepl, e);
         };
         auto& transport = request.config.transport.host;
-        transport.full_order_log_oi_handler = &open_interest;
+        transport.full_order_log_oi_handler = capture_flags.open_interest ? &open_interest : nullptr;
         transport.mode =
             offline ? moex::plaza2_trade::CgateSessionMode::OfflineFake : moex::plaza2_trade::CgateSessionMode::Live;
         transport.aggr20_stream = {};
@@ -161,60 +161,76 @@ int main(int argc, char** argv) {
         };
         std::signal(SIGINT, stop_signal);
         std::signal(SIGTERM, stop_signal);
-        loop.start();
-        for (std::size_t i = 0; i < ids.size(); ++i)
-            std::cout << "isin=" << book.instruments()[i] << " dtc_port=" << loop.server(i).port()
-                      << " symbol_id=" << i + 1 << " source_mode=" << (offline ? "offline_fake" : "live_test") << '\n';
-        std::cout << "book_memory_bytes=" << book.memory_bytes()
-                  << " max_queue_bytes_per_isin=4194304 dtc_depth_per_side=" << depth_levels << '\n'
-                  << std::flush;
-        const auto start = std::chrono::steady_clock::now();
-        auto rate_at = start;
-        std::uint64_t rows_at = book.metrics().rows_total;
-        const auto report = [&] {
-            const auto now = std::chrono::steady_clock::now();
-            const auto metrics = book.metrics();
-            const auto life = book.committed_log_lifenum();
-            const auto elapsed = std::chrono::duration<double>(now - rate_at).count();
-            const auto& native = loop.metrics;
-            std::cout << "metrics_interval_seconds=" << elapsed << " callbacks=" << native.callbacks
-                      << " callbacks_per_second=" << (elapsed > 0 ? native.callbacks / elapsed : 0)
-                      << " full_order_log_attributed_callbacks=" << native.full_order_log_attributed_callbacks
-                      << " unattributed_callbacks=" << native.unattributed_callbacks
-                      << " cg_conn_process_calls=" << native.process_calls
-                      << " cg_conn_process_loop_max_ns=" << native.cg_conn_process_loop_max_ns
-                      << " rows_per_second=" << (elapsed > 0 ? (metrics.rows_total - rows_at) / elapsed : 0)
-                      << " info_life_available=" << life.has_value() << " info_trades_lifenum=" << life.value_or(0)
-                      << " book_valid=" << book.valid() << " rows_total=" << metrics.rows_total
-                      << " ignored_executions=" << metrics.ignored_executions
-                      << " excluded_adds=" << metrics.excluded_adds << " lag_samples=" << metrics.lag_samples
-                      << " lag_last_ns=" << metrics.lag_last_ns << " lag_max_ns=" << metrics.lag_max_ns
-                      << " clear_deleted_events=" << metrics.clear_deleted_events
-                      << " clear_deleted_erased=" << metrics.clear_deleted_erased
-                      << " lag_sum_ns=" << metrics.lag_sum_ns << " crossed_transitions=" << metrics.crossed_transitions
-                      << " metadata_refreshes=" << loop.metadata_refreshes << " polls=" << loop.polls << '\n'
+        int result{};
+        try {
+            loop.start();
+            for (std::size_t i = 0; i < ids.size(); ++i)
+                std::cout << "isin=" << book.instruments()[i] << " dtc_port=" << loop.server(i).port()
+                          << " symbol_id=" << i + 1 << " source_mode=" << (offline ? "offline_fake" : "live_test")
+                          << '\n';
+            std::cout << "book_memory_bytes=" << book.memory_bytes()
+                      << " max_queue_bytes_per_isin=4194304 dtc_depth_per_side=" << depth_levels << '\n'
                       << std::flush;
-            moex::connector_host::report_full_order_log_open_interest(open_interest, ids);
-            rate_at = now;
-            rows_at = metrics.rows_total;
-            loop.metrics.reset_interval();
-        };
-        while (!stop_requested.load(std::memory_order_relaxed) &&
-               (!run_ms || std::chrono::steady_clock::now() - start < std::chrono::milliseconds(run_ms))) {
-            loop.poll();
-            if (capture)
-                capture->poll();
-            if (std::chrono::steady_clock::now() - rate_at >=
-                moex::connector_host::FullOrderLogDtcMetrics::report_interval)
-                report();
+            const auto start = std::chrono::steady_clock::now();
+            auto rate_at = start;
+            std::uint64_t rows_at = book.metrics().rows_total;
+            const auto report = [&] {
+                const auto now = std::chrono::steady_clock::now();
+                const auto metrics = book.metrics();
+                const auto life = book.committed_log_lifenum();
+                const auto elapsed = std::chrono::duration<double>(now - rate_at).count();
+                const auto& native = loop.metrics;
+                std::cout << "metrics_interval_seconds=" << elapsed << " callbacks=" << native.callbacks
+                          << " callbacks_per_second=" << (elapsed > 0 ? native.callbacks / elapsed : 0)
+                          << " full_order_log_attributed_callbacks=" << native.full_order_log_attributed_callbacks
+                          << " unattributed_callbacks=" << native.unattributed_callbacks
+                          << " cg_conn_process_calls=" << native.process_calls
+                          << " cg_conn_process_loop_max_ns=" << native.cg_conn_process_loop_max_ns
+                          << " rows_per_second=" << (elapsed > 0 ? (metrics.rows_total - rows_at) / elapsed : 0)
+                          << " info_life_available=" << life.has_value() << " info_trades_lifenum=" << life.value_or(0)
+                          << " book_valid=" << book.valid() << " rows_total=" << metrics.rows_total
+                          << " ignored_executions=" << metrics.ignored_executions
+                          << " excluded_adds=" << metrics.excluded_adds << " lag_samples=" << metrics.lag_samples
+                          << " lag_last_ns=" << metrics.lag_last_ns << " lag_max_ns=" << metrics.lag_max_ns
+                          << " clear_deleted_events=" << metrics.clear_deleted_events
+                          << " clear_deleted_erased=" << metrics.clear_deleted_erased
+                          << " lag_sum_ns=" << metrics.lag_sum_ns
+                          << " crossed_transitions=" << metrics.crossed_transitions
+                          << " metadata_refreshes=" << loop.metadata_refreshes << " polls=" << loop.polls << '\n'
+                          << std::flush;
+                if (capture_flags.open_interest)
+                    moex::connector_host::report_full_order_log_open_interest(open_interest, ids);
+                rate_at = now;
+                rows_at = metrics.rows_total;
+                loop.metrics.reset_interval();
+            };
+            while (!stop_requested.load(std::memory_order_relaxed) &&
+                   (!run_ms || std::chrono::steady_clock::now() - start < std::chrono::milliseconds(run_ms))) {
+                loop.poll();
+                if (capture)
+                    capture->poll();
+                if (std::chrono::steady_clock::now() - rate_at >=
+                    moex::connector_host::FullOrderLogDtcMetrics::report_interval)
+                    report();
+            }
+            report();
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << '\n';
+            result = 2;
         }
-        report();
-        loop.stop();
+        try {
+            loop.stop();
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << '\n';
+            result = 2;
+        }
         if (capture) {
-            capture->finish();
+            capture->finish(result ? cg::FullOrderLogCaptureEndStatus::HostNonzero
+                                   : cg::FullOrderLogCaptureEndStatus::Clean,
+                            result);
             moex::connector_host::report_full_order_log_capture(*capture);
         }
-        return 0;
+        return result;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 2;

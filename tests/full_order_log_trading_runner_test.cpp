@@ -65,6 +65,9 @@ class Process {
             }
         }
     }
+    void terminate() {
+        test::require(alive() && ::kill(pid_, SIGTERM) == 0, "signal owned offline fixture");
+    }
     void crash() {
         test::require(alive() && ::kill(pid_, SIGKILL) == 0, "cannot crash owned offline FOL fixture");
         test::require(wait() == 128 + SIGKILL, "offline FOL crash did not preserve signal exit");
@@ -291,7 +294,8 @@ int main(int argc, char** argv) {
             const fs::path log{"capture-writer.ndjson"};
             auto request = arguments(executable, fixture, log, "fol_capture_writer");
             const auto capture = root / "writer-capture";
-            request.insert(request.end(), {"--capture-dir", capture.string(), "--capture-min-free-bytes", "0"});
+            request.insert(request.end(),
+                           {"--capture-dir", capture.string(), "--capture-min-free-bytes", "0", "--open-interest"});
             Process owner(request, "capture-writer");
             wait_status(owner, log, [](const auto& status) {
                 return status.find("\"order_entry_ready\":true") != std::string::npos;
@@ -303,6 +307,46 @@ int main(int argc, char** argv) {
             test::require(replay.valid_commits > 0 && replay.open_interest_updates > 0 &&
                               owner.output().find("capture_failed=0") != std::string::npos,
                           "actual writer recording/replay failed");
+        }
+        {
+            fs::remove(fixture.config_dir / "fol-native-posts.log");
+            const fs::path log{"capture-failure.ndjson"};
+            const auto capture = root / "writer-capture-failure";
+            auto request = arguments(executable, fixture, log, "fol_capture_failure");
+            request.insert(request.end(), {"--capture-dir", capture.string(), "--capture-min-free-bytes", "0"});
+            Process owner(request, "capture-failure");
+            auto status = wait_status(
+                owner, log, [](const auto& s) { return s.find("\"order_entry_ready\":true") != std::string::npos; });
+            test::require(status.find("FORTS_DEALS_REPL") == std::string::npos,
+                          "default writer must not open OI listener");
+            for (const auto id : {"failure_one", "failure_two"}) {
+                test::require(command(executable, log, std::string("place ") + id + " 1001 buy 1 102500 day", id)
+                                      .find("\"ok\":true") != std::string::npos,
+                              "failure fixture Add");
+                wait_status(owner, log, [&](const auto& s) {
+                    return occurrences(s, "\"state\":\"Working\"") == (std::string_view(id) == "failure_one" ? 1 : 2);
+                });
+            }
+            test::write_text_file(fixture.config_dir / "fol-control", "capture-fail\n");
+            test::require(owner.wait() == 3, "recorder failure writer must exit 3: " + owner.errors());
+            const auto journal = contents(log);
+            const auto native = contents(fixture.config_dir / "fol-native-posts.log");
+            test::require(
+                occurrences(native, "AddOrder wire_valid=1") == 2 &&
+                    occurrences(native, "DelOrder wire_valid=1") == 2 && occurrences(native, "wire_valid=0") == 0 &&
+                    occurrences(journal, "\"state\":\"Cancelled\"") >= 2 &&
+                    journal.find("\"enabled\":true") != std::string::npos &&
+                    journal.find("\"outcome\":\"completed\"") != std::string::npos &&
+                    journal.find("\"working_orders\":false") != std::string::npos &&
+                    owner.errors().find("capture failed, entering normal SIGTERM cancel drain") != std::string::npos,
+                "recorder failure must kill and confirm two cancels with completed drain: " + journal);
+            test::require(!fs::exists(log.string() + ".sock"), "failure writer socket removed");
+            test::require(fs::file_size(capture / "stop-status.folend") == 40,
+                          "failed capture has reserved stop record");
+            std::ifstream stop(capture / "stop-status.folend", std::ios::binary);
+            std::array<std::uint64_t, 5> record{};
+            stop.read(reinterpret_cast<char*>(record.data()), sizeof record);
+            test::require(record[2] == 2 && record[3] == 3, "capture-failed stop status and exit recorded");
         }
         {
             const fs::path log{"crash-startup.ndjson"};
@@ -332,6 +376,48 @@ int main(int argc, char** argv) {
                           "same-state FOL restart required manual stale socket removal");
             test::require(contents(log).find("\"event\":\"command\"") == std::string::npos,
                           "offline stale-socket test submitted an order");
+        }
+        {
+            const auto capture = root / "qualify-term-capture";
+            Process owner({executable,
+                           "plaza2",
+                           "qualify",
+                           "--offline-fake",
+                           "--runtime-root",
+                           fixture.root.string(),
+                           "--scheme-dir",
+                           fixture.scheme_dir.string(),
+                           "--config-dir",
+                           fixture.config_dir.string(),
+                           "--library-path",
+                           fixture.library_path.string(),
+                           "--expected-release",
+                           "SPECTRA9.12.0",
+                           "--env-settings-var",
+                           "MOEX_FOL_RUNNER_SETTINGS",
+                           "--software-key-env",
+                           "MOEX_FOL_RUNNER_KEY",
+                           "--isin-id",
+                           "1001",
+                           "--instance-id",
+                           "qualify_term",
+                           "--dtc-port",
+                           std::to_string(20000 + ::getpid() % 30000),
+                           "--capture-dir",
+                           capture.string(),
+                           "--capture-min-free-bytes",
+                           "0"},
+                          "qualify-term");
+            const auto deadline = std::chrono::steady_clock::now() + 10s;
+            while (owner.alive() && owner.output().find("first_valid_commit=1") == std::string::npos &&
+                   std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(10ms);
+            test::require(owner.output().find("first_valid_commit=1") != std::string::npos, "qualify reached ONLINE");
+            owner.terminate();
+            test::require(owner.wait() == 0, "TERM qualify returns zero: " + owner.errors());
+            const auto replay = moex::plaza2::cgate::replay_full_order_log_capture(capture);
+            test::require(!replay.truncated && replay.host_status == 0 && replay.valid_commits > 0,
+                          "TERM qualify writes clean end");
         }
         {
             const auto original_profile = contents(fixture.config_dir / "t1.ini");
@@ -367,12 +453,18 @@ int main(int argc, char** argv) {
                                "unframed_qualify",
                                "--dtc-port",
                                std::to_string(20000 + ::getpid() % 30000)};
+                const auto capture = root / (std::string("nonzero-") + mode);
+                request.insert(request.end(), {"--capture-dir", capture.string(), "--capture-min-free-bytes", "0"});
                 Process child(request, std::string("unframed-") + mode);
                 test::require(child.wait() != 0, "three-strike FOL process must exit non-zero in both modes");
                 const auto output = child.errors() + child.output() + contents(log);
                 test::require(output.find("3 identical row-validation failures") != std::string::npos &&
                                   output.find("row size table=orders") != std::string::npos,
                               "FOL executable did not retain the exact fatal reason: " + output);
+                const auto end = moex::plaza2::cgate::read_full_order_log_capture(capture, [](const auto&) {}, true);
+                test::require(end.truncated && end.host_status != 0 &&
+                                  end.end_status == moex::plaza2::cgate::FullOrderLogCaptureEndStatus::HostNonzero,
+                              "nonzero executable stop carries host status");
                 test::require(!fs::exists(fixture.config_dir / "fol-native-posts.log") &&
                                   !fs::exists(log.string() + ".sock"),
                               "unframed diagnostic posted or failed to clean its command socket");

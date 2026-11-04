@@ -151,6 +151,99 @@ int main() {
                     "damaged export not published");
         }
         {
+            auto recover = o;
+            recover.directory = root / "reopen";
+            Plaza2FullOrderLog b(ids);
+            FullOrderLogCapture c(recover, ids, b);
+            const auto emit = [&](Plaza2ListenerEvent e) {
+                e.stream_code = kFullOrderLogStreamCode;
+                require(!c.on_plaza2_listener_event(e), "recovery callback");
+            };
+            emit({.kind = Kind::Open, .raw_tables = schema});
+            emit(row(schema[0], 1, 11, 1234567, 10).event());
+            emit({.kind = Kind::Online});
+            c.on_plaza2_listener_error({.code = Plaza2ErrorCode::CallbackFailed,
+                                        .runtime_code = 0xA006,
+                                        .message = "offline listener timeout"});
+            emit({.kind = Kind::Open, .raw_tables = schema});
+            emit(row(schema[0], 2, 11, 1234567, 7).event());
+            emit({.kind = Kind::Online});
+            c.finish();
+            require(refused([&] { replay_full_order_log_capture(recover.directory); }), "strict error marker refused");
+            const auto replay = replay_full_order_log_capture(recover.directory, true);
+            require(replay.truncated && replay.listener_errors == 1 && replay.valid_commits == 2 &&
+                        replay.last_valid_order_count == 1 && replay.last_good_sequence > 0,
+                    "explicit recovery replays fresh snapshot after error");
+            const auto out = root / "reopen.dbn";
+            export_full_order_log_dbn(recover.directory, out, true);
+            const auto v = bytes(out);
+            unsigned snapshots{}, bad_resets{};
+            for (std::size_t at = 128; at < v.size(); at += 56) {
+                if (v[at + 38] == 'R' && (static_cast<unsigned char>(v[at + 36]) & 4))
+                    ++bad_resets;
+                if (v[at + 38] == 'A' && (static_cast<unsigned char>(v[at + 36]) & 32))
+                    ++snapshots;
+            }
+            require(snapshots == 2 && bad_resets >= 1, "error withdraws DBN then exports fresh snapshot");
+        }
+        {
+            // A complete nonzero host stop carries status, rather than masquerading as a crash.
+            auto bad = o;
+            bad.directory = root / "host-nonzero";
+            Plaza2FullOrderLog b(ids);
+            FullOrderLogCapture c(bad, ids, b);
+            require(!c.on_plaza2_listener_event(
+                        {.kind = Kind::Open, .stream_code = kFullOrderLogStreamCode, .raw_tables = schema}),
+                    "nonzero OPEN");
+            c.finish(FullOrderLogCaptureEndStatus::HostNonzero, 7);
+            const auto result = read_full_order_log_capture(bad.directory, [](const auto&) {}, true);
+            require(result.truncated && result.host_status == 7 &&
+                        result.end_status == FullOrderLogCaptureEndStatus::HostNonzero,
+                    "nonzero status preserved");
+            require(refused([&] { replay_full_order_log_capture(bad.directory); }), "strict rejects host-nonzero");
+        }
+        {
+            // Stop at the verified chunk boundary; no staged half-transaction is exported.
+            auto cut = o;
+            cut.directory = root / "prefix";
+            Plaza2FullOrderLog b(ids);
+            {
+                FullOrderLogCapture c(cut, ids, b);
+                const auto emit = [&](Plaza2ListenerEvent e) {
+                    e.stream_code = kFullOrderLogStreamCode;
+                    require(!c.on_plaza2_listener_event(e), "prefix callback");
+                };
+                emit({.kind = Kind::Open, .raw_tables = schema});
+                emit(row(schema[0], 1, 11, 1234567, 10).event());
+                emit({.kind = Kind::Online});
+                std::this_thread::sleep_for(std::chrono::milliseconds(3));
+                c.poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                emit({.kind = Kind::TransactionBegin});
+                emit(row(schema[2], 1, 11, 1234567, 3, 1, 100).event());
+                // Destructor drains complete bytes, but deliberately no clean end/commit.
+            }
+            require(refused([&] { replay_full_order_log_capture(cut.directory); }), "strict missing end");
+            const auto summary = replay_full_order_log_capture(cut.directory, true);
+            require(summary.truncated && summary.valid_commits == 1 && summary.last_good_sequence > 1,
+                    "incomplete replay exposes committed prefix only");
+            const auto out = root / "prefix.dbn";
+            export_full_order_log_dbn(cut.directory, out, true);
+            const auto data = bytes(out);
+            require(data[data.size() - 56 + 38] == 'R' && (static_cast<unsigned char>(data[data.size() - 56 + 36]) & 4),
+                    "truncated export withdraws book");
+            std::vector<fs::path> segments;
+            for (const auto& p : fs::directory_iterator(cut.directory))
+                if (p.path().extension() == ".folz")
+                    segments.push_back(p.path());
+            std::sort(segments.begin(), segments.end());
+            fs::resize_file(segments.back(), fs::file_size(segments.back()) - 1);
+            const auto recovered = replay_full_order_log_capture(cut.directory, true);
+            require(recovered.truncated && recovered.last_good_sequence < summary.last_good_sequence &&
+                        recovered.valid_commits == 1,
+                    "damaged final chunk entirely ignored");
+        }
+        {
             auto bad = o;
             bad.directory = root / "invalid-row";
             Plaza2FullOrderLog b(ids);
@@ -166,6 +259,8 @@ int main() {
             c.finish();
             require(refused([&] { replay_full_order_log_capture(bad.directory); }),
                     "validation-failed capture not passed off as valid replay");
+            require(refused([&] { replay_full_order_log_capture(bad.directory, true); }),
+                    "allow-incomplete does not relax row validation");
         }
         {
             auto bad = o;

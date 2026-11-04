@@ -37,6 +37,8 @@ inline int full_order_log_operator(int argc, char** argv,
             args.emplace_back(key);
     }
     capture_flags.validate();
+    if (capture_flags.open_interest && (!run || cancel_only))
+        throw std::invalid_argument("--open-interest requires FOL run/qualify; not cmd/cancel-only");
     if (!capture_flags.options.directory.empty() && (!run || cancel_only))
         throw std::invalid_argument("capture requires FOL run or qualify; not cmd/cancel-only");
     const auto has = [&](std::string_view key) { return std::ranges::find(args, key) != args.end(); };
@@ -126,13 +128,17 @@ inline int full_order_log_operator(int argc, char** argv,
             capture = std::make_unique<cg::FullOrderLogCapture>(capture_flags.options, config.isin_ids, *book);
         session.full_order_log_handler =
             capture ? static_cast<cg::Plaza2ListenerEventHandler*>(capture.get()) : book.get();
-        open_interest = std::make_unique<cg::FullOrderLogOpenInterest>(config.isin_ids);
-        open_interest->before_event = [&](const auto& e) { return capture ? capture->record(e) : cg::Plaza2Error{}; };
-        open_interest->before_error = [&](const auto& e) {
-            if (capture)
-                capture->record_error(moex::plaza2::generated::StreamCode::kFortsDealsRepl, e);
-        };
-        session.full_order_log_oi_handler = open_interest.get();
+        if (capture_flags.open_interest) {
+            open_interest = std::make_unique<cg::FullOrderLogOpenInterest>(config.isin_ids);
+            open_interest->before_event = [&](const auto& e) {
+                return capture ? capture->record(e) : cg::Plaza2Error{};
+            };
+            open_interest->before_error = [&](const auto& e) {
+                if (capture)
+                    capture->record_error(moex::plaza2::generated::StreamCode::kFortsDealsRepl, e);
+            };
+            session.full_order_log_oi_handler = open_interest.get();
+        }
         session.full_order_log_authority = [&](std::int32_t isin) {
             return make_full_order_log_trading_authority(*book, isin);
         };
@@ -151,7 +157,9 @@ inline int full_order_log_operator(int argc, char** argv,
                 host.set_kill_switch(true);
                 book->reset(true);
                 std::cerr << e.what() << "; capture failed, entering normal SIGTERM cancel drain\n";
-                std::raise(SIGTERM);
+                // Process-directed signal also reaches the macOS sigwait thread.
+                if (::kill(::getpid(), SIGTERM) != 0)
+                    throw std::runtime_error("cannot request capture-failure shutdown");
             }
         }
         native.observe(host.last_poll_metrics());
@@ -170,8 +178,15 @@ inline int full_order_log_operator(int argc, char** argv,
     const auto result = operator_program(static_cast<int>(pointers.size()), pointers.data(), hooks);
     report();
     if (capture) {
-        if (result == 0 && !capture_stop_requested)
-            capture->finish();
+        try {
+            capture->finish(capture_stop_requested ? plaza2::cgate::FullOrderLogCaptureEndStatus::CaptureFailed
+                            : result               ? plaza2::cgate::FullOrderLogCaptureEndStatus::HostNonzero
+                                                   : plaza2::cgate::FullOrderLogCaptureEndStatus::Clean,
+                            capture_stop_requested ? 3 : result);
+        } catch (const std::exception& e) {
+            capture_stop_requested = true;
+            std::cerr << "capture finalization failed: " << e.what() << '\n';
+        }
         report_full_order_log_capture(*capture);
     }
     return capture_stop_requested ? 3 : result;

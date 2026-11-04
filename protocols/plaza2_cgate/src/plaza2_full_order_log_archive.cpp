@@ -53,7 +53,8 @@ namespace moex::plaza2::cgate {
 using namespace capture_format;
 FullOrderLogArchiveSummary
 read_full_order_log_capture(const std::filesystem::path& directory,
-                            const std::function<void(const FullOrderLogCaptureRecord&)>& visitor) {
+                            const std::function<void(const FullOrderLogCaptureRecord&)>& visitor,
+                            bool allow_incomplete) {
     std::vector<std::filesystem::path> files;
     for (const auto& p : std::filesystem::directory_iterator(directory))
         if (p.path().extension() == ".folz") {
@@ -73,28 +74,58 @@ read_full_order_log_capture(const std::filesystem::path& directory,
     for (const auto& path : files) {
         std::ifstream file(path, std::ios::binary);
         FileHeader header;
-        exact(file, &header, sizeof header);
-        require(std::memcmp(header.magic, "MOEXFOL2", 8) == 0 && header.version == 2 && header.block_limit >= 4096 &&
-                    header.block_limit <= 4 * 1024 * 1024,
-                "capture header invalid");
-        if (!segment)
-            identity = header.identity;
-        require(header.identity == identity && header.segment == ++segment,
-                "capture segment missing/reordered/foreign");
+        try {
+            exact(file, &header, sizeof header);
+            require(std::memcmp(header.magic, "MOEXFOL2", 8) == 0 && header.version == 2 &&
+                        header.block_limit >= 4096 && header.block_limit <= 4 * 1024 * 1024,
+                    "capture header invalid");
+            if (!segment)
+                identity = header.identity;
+            require(header.identity == identity && header.segment == ++segment,
+                    "capture segment missing/reordered/foreign");
+        } catch (const std::exception&) {
+            if (!allow_incomplete || !sequence)
+                throw;
+            result.truncated = true;
+            break;
+        }
         result.stored_bytes += std::filesystem::file_size(path);
         while (file.peek() != EOF) {
             require(!ended, "capture data after clean end");
             ChunkHeader chunk;
-            exact(file, &chunk, sizeof chunk);
-            require(chunk.raw_bytes && chunk.raw_bytes <= header.block_limit && chunk.compressed_bytes &&
-                        chunk.compressed_bytes <= ZSTD_compressBound(header.block_limit) &&
-                        chunk.first_sequence == sequence + 1 && chunk.records,
-                    "capture chunk invalid");
-            std::vector<std::byte> compressed(chunk.compressed_bytes), raw(chunk.raw_bytes);
-            exact(file, compressed.data(), compressed.size());
-            const auto n = ZSTD_decompress(raw.data(), raw.size(), compressed.data(), compressed.size());
-            require(!ZSTD_isError(n) && n == raw.size() && checksum(raw) == chunk.checksum,
-                    "capture chunk integrity failed");
+            std::vector<std::byte> raw;
+            try {
+                exact(file, &chunk, sizeof chunk);
+                require(chunk.raw_bytes && chunk.raw_bytes <= header.block_limit && chunk.compressed_bytes &&
+                            chunk.compressed_bytes <= ZSTD_compressBound(header.block_limit) &&
+                            chunk.first_sequence == sequence + 1 && chunk.records,
+                        "capture chunk invalid");
+                std::vector<std::byte> compressed(chunk.compressed_bytes);
+                raw.resize(chunk.raw_bytes);
+                exact(file, compressed.data(), compressed.size());
+                const auto n = ZSTD_decompress(raw.data(), raw.size(), compressed.data(), compressed.size());
+                require(!ZSTD_isError(n) && n == raw.size() && checksum(raw) == chunk.checksum,
+                        "capture chunk integrity failed");
+                // Verify the ENTIRE chunk before exposing any record to replay/export.
+                std::span<const std::byte> verify = raw;
+                std::uint64_t count{}, next = sequence;
+                while (!verify.empty()) {
+                    const auto h = load<RecordHeader>(verify);
+                    verify = verify.subspan(sizeof h);
+                    const std::uint64_t size =
+                        static_cast<std::uint64_t>(h.payload_bytes) + h.null_bytes + h.schema_bytes;
+                    require(h.sequence == ++next && size <= verify.size(), "capture record framing invalid");
+                    verify = verify.subspan(size);
+                    require(h.kind != end_kind || verify.empty(), "capture footer misplaced");
+                    ++count;
+                }
+                require(count == chunk.records, "capture chunk record count mismatch");
+            } catch (const std::exception&) {
+                if (!allow_incomplete || !sequence)
+                    throw;
+                result.truncated = true;
+                break;
+            }
             std::span<const std::byte> rest = raw;
             std::uint64_t count{};
             while (!rest.empty()) {
@@ -125,9 +156,12 @@ read_full_order_log_capture(const std::filesystem::path& directory,
                 }
                 require(!result.isins.empty(), "capture missing manifest");
                 if (h.kind == end_kind) {
-                    require(h.unsigned_value <= 1 && h.source_sequence >= source && rest.empty(),
+                    require(h.unsigned_value <= 2 && h.source_sequence >= source && rest.empty(),
                             "capture ended after validation error or invalid footer");
+                    result.end_status = static_cast<FullOrderLogCaptureEndStatus>(h.unsigned_value);
+                    result.host_status = h.signed_value;
                     ended = true;
+                    result.end_record_present = true;
                     continue;
                 }
                 require(
@@ -179,17 +213,47 @@ read_full_order_log_capture(const std::filesystem::path& directory,
                 visitor(record);
             }
             require(count == chunk.records, "capture chunk record count mismatch");
+            result.last_good_sequence = sequence;
         }
+        if (result.truncated)
+            break;
         require(!file.bad(), "capture read failed");
     }
-    require(ended, "capture incomplete: no durable clean end");
+    const auto stop_path = directory / "stop-status.folend";
+    if (std::filesystem::exists(stop_path)) {
+        require(!std::filesystem::is_symlink(stop_path) && std::filesystem::is_regular_file(stop_path),
+                "capture stop record is not a regular file");
+        std::ifstream stop(stop_path, std::ios::binary);
+        StopRecord record;
+        stop.read(reinterpret_cast<char*>(&record), sizeof record);
+        const bool verified =
+            stop.gcount() == sizeof record && stop.peek() == EOF && std::memcmp(record.magic, "MOEXEND2", 8) == 0 &&
+            record.identity == identity && record.status <= 2 &&
+            record.checksum == checksum(std::as_bytes(std::span(&record, 1)).first(offsetof(StopRecord, checksum)));
+        if (verified) {
+            result.end_record_present = true;
+            require(!ended || (result.end_status == static_cast<FullOrderLogCaptureEndStatus>(record.status) &&
+                               result.host_status == static_cast<int>(record.host_status)),
+                    "capture conflicting end records");
+            result.end_status = static_cast<FullOrderLogCaptureEndStatus>(record.status);
+            result.host_status = static_cast<int>(record.host_status);
+        } else {
+            require(allow_incomplete, "capture missing/torn stop record");
+            result.truncated = true;
+        }
+    }
+    result.truncated = result.truncated || !ended || result.listener_errors ||
+                       result.end_status != FullOrderLogCaptureEndStatus::Clean;
+    require(allow_incomplete || !result.truncated,
+            "capture incomplete: missing clean end, nonzero status or listener error");
     return result;
 }
-FullOrderLogArchiveSummary replay_full_order_log_capture(const std::filesystem::path& directory) {
+FullOrderLogArchiveSummary replay_full_order_log_capture(const std::filesystem::path& directory,
+                                                         bool allow_incomplete) {
     std::unique_ptr<Plaza2FullOrderLog> book;
     std::uint64_t valid{}, orders{};
     // Universe comes from the manifest; load it with the first OPEN's first pass.
-    auto manifest = read_full_order_log_capture(directory, [](const auto&) {});
+    auto manifest = read_full_order_log_capture(directory, [](const auto&) {}, allow_incomplete);
     book = std::make_unique<Plaza2FullOrderLog>(manifest.isins);
     FullOrderLogOpenInterest oi(manifest.isins);
     std::uint64_t oi_updates{};
@@ -198,13 +262,16 @@ FullOrderLogArchiveSummary replay_full_order_log_capture(const std::filesystem::
         ++valid;
         orders = b.order_count();
     };
-    auto result = read_full_order_log_capture(directory, [&](const auto& record) {
-        if (const auto error =
-                (record.event.stream_code == kFullOrderLogStreamCode ? book->on_plaza2_listener_event(record.event)
-                                                                     : oi.on_plaza2_listener_event(record.event));
-            error)
-            throw std::runtime_error(error.message);
-    });
+    auto result = read_full_order_log_capture(
+        directory,
+        [&](const auto& record) {
+            if (const auto error =
+                    (record.event.stream_code == kFullOrderLogStreamCode ? book->on_plaza2_listener_event(record.event)
+                                                                         : oi.on_plaza2_listener_event(record.event));
+                error)
+                throw std::runtime_error(error.message);
+        },
+        allow_incomplete);
     result.open_interest_updates = oi_updates;
     result.valid_commits = valid;
     result.last_valid_order_count = orders;

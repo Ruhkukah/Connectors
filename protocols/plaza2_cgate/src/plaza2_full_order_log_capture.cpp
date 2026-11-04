@@ -29,7 +29,7 @@ struct FullOrderLogCapture::Impl {
     std::string error;
     std::thread worker;
     std::uint64_t sequence{}, source_sequence{}, filtered{}, logical{}, queue_peak{}, last_flush{}, identity{};
-    int directory_fd{-1}, fd{-1};
+    int directory_fd{-1}, fd{-1}, stop_fd{-1};
     std::uint64_t segment{}, segment_size{};
     bool finished{}, validation_failed{};
     Impl(FullOrderLogCaptureOptions o, std::span<const std::int32_t> ids, Plaza2ListenerEventHandler& d)
@@ -65,6 +65,15 @@ struct FullOrderLogCapture::Impl {
             }
             space();
             identity = utc_ns() ^ (static_cast<std::uint64_t>(::getpid()) << 32);
+            stop_fd =
+                ::openat(directory_fd, "stop-status.folend", O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+            require(stop_fd >= 0, "capture stop record open failed");
+            // Reserve the small stop record before data collection; a later budget failure
+            // can still record host shutdown independently of the failed data queue.
+            std::array<std::byte, sizeof(StopRecord)> reserved{};
+            require(::write(stop_fd, reserved.data(), reserved.size()) == static_cast<ssize_t>(reserved.size()) &&
+                        sync_data(stop_fd) == 0 && ::fsync(directory_fd) == 0,
+                    "capture stop record reserve failed");
             last_flush = mono_ns();
             std::vector<std::byte> metadata;
             append(metadata, static_cast<std::uint32_t>(isins.size()));
@@ -81,6 +90,8 @@ struct FullOrderLogCapture::Impl {
             enqueue({.kind = manifest_kind}, metadata, {}, {});
             worker = std::thread([this] { run(); });
         } catch (...) {
+            if (stop_fd >= 0)
+                ::close(stop_fd);
             ::close(directory_fd);
             directory_fd = -1;
             throw;
@@ -88,8 +99,19 @@ struct FullOrderLogCapture::Impl {
     }
     ~Impl() {
         drain();
+        if (stop_fd >= 0)
+            ::close(stop_fd);
         if (directory_fd >= 0)
             ::close(directory_fd);
+    }
+    void stop_record(FullOrderLogCaptureEndStatus status, int host_status) {
+        StopRecord record;
+        record.identity = identity;
+        record.status = static_cast<std::uint64_t>(status);
+        record.host_status = static_cast<std::uint64_t>(host_status);
+        record.checksum = checksum(std::as_bytes(std::span(&record, 1)).first(offsetof(StopRecord, checksum)));
+        require(::pwrite(stop_fd, &record, sizeof record, 0) == sizeof record && sync_data(stop_fd) == 0,
+                "capture stop record sync failed");
     }
     void fail(std::string message) noexcept {
         try {
@@ -212,7 +234,7 @@ struct FullOrderLogCapture::Impl {
                     // observing it; the earlier empty-queue load may predate that publish.
                     if (closing.load(std::memory_order_acquire) && t == head.load(std::memory_order_acquire))
                         break;
-                    std::this_thread::sleep_for(std::chrono::microseconds(100));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 } else {
                     auto& b = queue[t % queue.size()];
                     const auto size = ZSTD_compressCCtx(context, compressed.data(), compressed.size(), b.bytes.data(),
@@ -350,17 +372,28 @@ void FullOrderLogCapture::poll() {
         }
     }
 }
-void FullOrderLogCapture::finish() {
+void FullOrderLogCapture::finish(FullOrderLogCaptureEndStatus status, int host_status) {
     auto& p = *impl_;
     if (p.finished) {
         p.check();
         return;
     }
-    p.check();
-    p.enqueue({.unsigned_value = p.validation_failed ? 1ULL : 0ULL, .kind = end_kind}, {}, {}, {});
-    p.finished = true;
-    p.drain();
-    p.check();
+    try {
+        p.check();
+        if (p.validation_failed && status == FullOrderLogCaptureEndStatus::Clean)
+            status = FullOrderLogCaptureEndStatus::HostNonzero;
+        p.enqueue({.unsigned_value = static_cast<std::uint64_t>(status), .signed_value = host_status, .kind = end_kind},
+                  {}, {}, {});
+        p.finished = true;
+        p.drain();
+        p.check();
+        p.stop_record(status, host_status);
+    } catch (const std::exception& e) {
+        p.fail(e.what());
+        p.drain();
+        p.stop_record(FullOrderLogCaptureEndStatus::CaptureFailed, host_status ? host_status : 3);
+        p.check();
+    }
 }
 FullOrderLogCaptureMetrics FullOrderLogCapture::metrics() const noexcept {
     const auto& p = *impl_;

@@ -20,6 +20,11 @@ struct RecordHeader {
     std::uint32_t kind{}, stream{}, table_code{}, table_index{}, clear_flags{}, close_reason{};
     std::uint32_t payload_bytes{}, null_bytes{}, schema_bytes{}, native_data_size{};
 };
+struct StopRecord {
+    char magic[8]{'M', 'O', 'E', 'X', 'E', 'N', 'D', '2'};
+    std::uint64_t identity{}, status{}, host_status{}, checksum{};
+};
+static_assert(sizeof(StopRecord) == 40);
 struct ChunkHeader {
     std::uint32_t raw_bytes{}, compressed_bytes{};
     std::uint64_t checksum{}, records{}, first_sequence{};
