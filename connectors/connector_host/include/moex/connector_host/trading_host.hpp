@@ -44,6 +44,9 @@ class CgateTradingHost {
     void record_operator_input(std::string_view line, std::string_view channel = "stdin");
     void record_local_refusal(std::string_view line, std::string_view error, std::string_view channel = "stdin");
     [[nodiscard]] std::string status() const;
+    [[nodiscard]] bool identity_lock_held() const noexcept {
+        return journal_.identity_lock_held();
+    }
     [[nodiscard]] const plaza2_trade::CgatePollMetrics& last_poll_metrics() const noexcept {
         return session_.last_poll_metrics();
     }

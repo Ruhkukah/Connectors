@@ -64,6 +64,10 @@ class Process {
             }
         }
     }
+    void crash() {
+        test::require(alive() && ::kill(pid_, SIGKILL) == 0, "cannot crash owned offline FOL fixture");
+        test::require(wait() == 128 + SIGKILL, "offline FOL crash did not preserve signal exit");
+    }
     bool alive() {
         if (!reaped_ && ::waitpid(pid_, &status_, WNOHANG) == pid_)
             reaped_ = true;
@@ -281,6 +285,35 @@ int main(int argc, char** argv) {
             test::require(client.wait() == 2 && received == std::vector<std::string>{"status"} &&
                               client.errors().find("not a Full Order Log") != std::string::npos,
                           "FOL command client sent a trading command to an AGGR endpoint");
+        }
+        {
+            const fs::path log{"crash-startup.ndjson"};
+            const auto request = arguments(executable, fixture, log, "fol_crash_startup");
+            const fs::path socket{log.string() + ".sock"};
+            Process first(request, "crash-first");
+            wait_status(first, log, [](const auto& status) {
+                return status.find("\"reconstructing\":false") != std::string::npos;
+            });
+            struct stat before {
+            }, after{};
+            test::require(::lstat(socket.c_str(), &before) == 0, "owned socket missing before offline crash");
+            {
+                Process duplicate(request, "crash-duplicate");
+                test::require(duplicate.wait() != 0 && ::lstat(socket.c_str(), &after) == 0 &&
+                                  before.st_ino == after.st_ino && before.st_dev == after.st_dev,
+                              "live identity owner did not protect its socket");
+            }
+            first.crash();
+            test::require(fs::exists(socket), "SIGKILL fixture did not leave a stale socket");
+            Process recovered(request, "crash-recovered");
+            wait_status(recovered, log, [](const auto& status) {
+                return status.find("\"reconstructing\":false") != std::string::npos;
+            });
+            command(executable, log, "quit", "crash-recovered-quit");
+            test::require(recovered.wait() == 0 && !fs::exists(socket),
+                          "same-state FOL restart required manual stale socket removal");
+            test::require(contents(log).find("\"event\":\"command\"") == std::string::npos,
+                          "offline stale-socket test submitted an order");
         }
         {
             const auto original_profile = contents(fixture.config_dir / "t1.ini");

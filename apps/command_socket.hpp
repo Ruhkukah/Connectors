@@ -98,7 +98,7 @@ inline bool owned_peer(int fd, uid_t owner = ::geteuid()) {
     return ::getpeereid(fd, &uid, &gid) == 0 && uid == owner;
 #endif
 }
-inline void remove_stale(const std::filesystem::path& path, const sockaddr_un& address) {
+inline void remove_stale(const std::filesystem::path& path, const sockaddr_un& address, bool identity_lock_held) {
     struct stat original {};
     if (::lstat(path.c_str(), &original) < 0) {
         if (errno == ENOENT)
@@ -107,6 +107,8 @@ inline void remove_stale(const std::filesystem::path& path, const sockaddr_un& a
     }
     if (!S_ISSOCK(original.st_mode) || original.st_uid != ::geteuid())
         throw std::runtime_error("existing command endpoint is not an owned socket");
+    if (!identity_lock_held)
+        throw std::runtime_error("stale command cleanup requires the exclusive identity state lock");
     const auto probe = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (probe < 0)
         throw std::runtime_error("cannot probe existing command socket");
@@ -139,7 +141,7 @@ inline void wait(int fd, short events, std::chrono::steady_clock::time_point dea
 // The host calls poll on its CGate owner thread. A disconnected/idle client cannot block replication.
 class CommandSocket {
   public:
-    explicit CommandSocket(std::filesystem::path path) : path_(std::move(path)) {
+    explicit CommandSocket(std::filesystem::path path, bool identity_lock_held = false) : path_(std::move(path)) {
         const auto address = command_socket_detail::address(path_);
         fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd_ < 0)
@@ -149,7 +151,7 @@ class CommandSocket {
             unlink_endpoint();
         });
         command_socket_detail::nonblocking(fd_);
-        command_socket_detail::remove_stale(path_, address);
+        command_socket_detail::remove_stale(path_, address, identity_lock_held);
         {
             const auto previous_mask = ::umask(0177);
             ScopeExit restore_mask([&] { ::umask(previous_mask); });

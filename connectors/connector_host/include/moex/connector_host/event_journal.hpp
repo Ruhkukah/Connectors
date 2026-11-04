@@ -35,6 +35,9 @@ class EventJournal {
     [[nodiscard]] JournalReservation reservations() const noexcept {
         return reservations_;
     }
+    [[nodiscard]] bool identity_lock_held() const noexcept {
+        return state_lock_fd_ >= 0;
+    }
     // The checkpoint's exclusive ceiling is unchanged after a failed block
     // extension. Storage-failed cancellation may use only this durable range.
     [[nodiscard]] bool user_id_reserved(std::uint32_t id) const noexcept {

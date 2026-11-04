@@ -340,7 +340,9 @@ int moex::connector_host::operator_program(int argc, char** argv, const Operator
             CgateTradingHost host(std::move(config));
             ScopeExit report([&] { host.report_outstanding_orders(std::cerr); });
             ScopeExit shutdown([&] { (void)host.stop(); });
-            CommandSocket socket(socket_path);
+            // Host construction already acquired the exclusive journal/state locks.
+            // A refused connection plus those locks proves the old same-state writer is gone.
+            CommandSocket socket(socket_path, host.identity_lock_held());
             if (const auto error = host.start()) {
                 std::cerr << error.message << '\n';
                 return 3;
