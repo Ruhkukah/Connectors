@@ -31,7 +31,7 @@ struct FullOrderLogCapture::Impl {
     std::uint64_t sequence{}, source_sequence{}, filtered{}, logical{}, queue_peak{}, last_flush{}, identity{};
     int directory_fd{-1}, fd{-1}, stop_fd{-1};
     std::uint64_t segment{}, segment_size{};
-    bool finished{}, validation_failed{};
+    bool finished{};
     Impl(FullOrderLogCaptureOptions o, std::span<const std::int32_t> ids, Plaza2ListenerEventHandler& d)
         : options(std::move(o)), downstream(d), isins(ids.begin(), ids.end()) {
         require(!isins.empty() && isins.size() <= 64, "capture requires 1..64 selected instruments");
@@ -346,7 +346,6 @@ Plaza2Error FullOrderLogCapture::on_plaza2_listener_event(const Plaza2ListenerEv
 }
 void FullOrderLogCapture::record_error(generated::StreamCode stream, const Plaza2Error& error) noexcept {
     auto& p = *impl_;
-    p.validation_failed = true;
     ++p.source_sequence;
     try {
         p.enqueue(
@@ -380,8 +379,6 @@ void FullOrderLogCapture::finish(FullOrderLogCaptureEndStatus status, int host_s
     }
     try {
         p.check();
-        if (p.validation_failed && status == FullOrderLogCaptureEndStatus::Clean)
-            status = FullOrderLogCaptureEndStatus::HostNonzero;
         p.enqueue({.unsigned_value = static_cast<std::uint64_t>(status), .signed_value = host_status, .kind = end_kind},
                   {}, {}, {});
         p.finished = true;

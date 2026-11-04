@@ -172,7 +172,8 @@ int main() {
             require(refused([&] { replay_full_order_log_capture(recover.directory); }), "strict error marker refused");
             const auto replay = replay_full_order_log_capture(recover.directory, true);
             require(replay.truncated && replay.listener_errors == 1 && replay.valid_commits == 2 &&
-                        replay.last_valid_order_count == 1 && replay.last_good_sequence > 0,
+                        replay.last_valid_order_count == 1 && replay.last_good_sequence > 0 &&
+                        replay.end_status == FullOrderLogCaptureEndStatus::Clean && replay.host_status == 0,
                     "explicit recovery replays fresh snapshot after error");
             const auto out = root / "reopen.dbn";
             export_full_order_log_dbn(recover.directory, out, true);
