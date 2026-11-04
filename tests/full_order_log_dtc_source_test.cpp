@@ -121,6 +121,9 @@ int main() {
                 "collision at old revision");
         recovery.control(Plaza2ListenerEventKind::Close);
         recovery.open();
+        // Keep the observer's old collision token until the new epoch reaches
+        // the same revision; observing revision1 would hide an epoch-only bug.
+        recovery.book.on_commit = {};
         recovery.begin();
         recovery.add(3, 11, 10000000, 1);
         recovery.commit();
@@ -135,6 +138,7 @@ int main() {
         recovery.begin();
         recovery.add(5, 11, 8000000, 1);
         recovery.commit();
+        recover_source.committed();
         require(recovery.book.revision(11) == 2 && recover_source.status_snapshot().valid,
                 "new stream epoch clears cached collision even at the same book revision");
     } catch (const std::exception& error) {
