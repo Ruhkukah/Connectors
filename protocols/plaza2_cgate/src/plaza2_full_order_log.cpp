@@ -629,4 +629,11 @@ std::size_t Plaza2FullOrderLog::memory_bytes() const noexcept {
 std::size_t Plaza2FullOrderLog::order_count() const noexcept {
     return impl_->committed_count;
 }
+bool Plaza2FullOrderLog::inspect_committed_orders(const std::function<void(const FullOrderLogOrder&)>& visitor) const {
+    if (!impl_->valid || impl_->transaction || impl_->dirty_levels)
+        return false;
+    for (const auto& [id, order] : impl_->orders)
+        visitor({id, order.price, order.quantity, impl_->isins[order.instrument], order.session, order.bid});
+    return true;
+}
 } // namespace moex::plaza2::cgate

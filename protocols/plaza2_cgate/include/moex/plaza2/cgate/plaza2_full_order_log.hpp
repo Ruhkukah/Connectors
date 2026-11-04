@@ -30,6 +30,11 @@ struct FullOrderLogMetrics {
     std::uint64_t life_events{}, crossed_transitions{}, lag_samples{}, lag_last_ns{}, lag_max_ns{}, lag_sum_ns{};
     std::uint64_t exchange_ahead_of_clock{}, clear_deleted_events{}, clear_deleted_erased{};
 };
+struct FullOrderLogOrder {
+    std::int64_t id{}, price{}, remaining{};
+    std::int32_t isin{}, session{};
+    bool bid{};
+};
 // Single-owner composite consumer. Orders and level nodes use a bounded,
 // reusable arena; unframed snapshots publish at complete ONLINE, then rows
 // require transactions and published levels change only at TN_COMMIT.
@@ -64,6 +69,9 @@ class Plaza2FullOrderLog final : public Plaza2ListenerEventHandler {
     [[nodiscard]] const LevelMap& levels(std::int32_t isin, bool bid) const;
     [[nodiscard]] std::size_t memory_bytes() const noexcept;
     [[nodiscard]] std::size_t order_count() const noexcept;
+    // Diagnostic, owner-thread only. Refuse inspection during an uncommitted frame.
+    // No copy or iteration occurs on the ordinary publication path.
+    bool inspect_committed_orders(const std::function<void(const FullOrderLogOrder&)>& visitor) const;
     std::function<void(const Plaza2FullOrderLog&)> on_commit;
     std::function<void()> on_invalidate;
     std::function<void(std::int32_t, bool)> on_crossed;

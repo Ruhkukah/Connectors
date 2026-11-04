@@ -120,7 +120,10 @@ int main(int argc, char** argv) {
         std::sort(ids.begin(), ids.end());
         cg::Plaza2FullOrderLog book(ids);
         Window window(4096, &std::cout);
-        Observer composite(window, ids, &book, 200000, &std::cout), reference(window, ids, nullptr, 200000, &std::cout);
+        ContentWindow content(2000, 4096, &std::cout);
+        Observer composite(window, ids, &book, 200000, &std::cout, 512, &content),
+            reference(window, ids, nullptr, 200000, &std::cout, 512, &content);
+        content.resample = [&] { composite.sample_content(); };
         cg::Plaza2Env env;
         check(env.open(config.runtime));
         cg::Plaza2Connection connection;
@@ -169,6 +172,7 @@ int main(int argc, char** argv) {
             require(state != 1, "composite listener failed; probe interrupted");
             check(raw.state(state));
             require(state != 1, "reference listener failed; probe interrupted");
+            content.poll();
             const auto now = std::chrono::steady_clock::now();
             if (now >= next) {
                 const auto m = book.metrics();
@@ -196,25 +200,30 @@ int main(int argc, char** argv) {
         const bool current = book.valid() && composite_active && reference_active && connection_active;
         const auto unresolved_raw = std::count_if(window.states[1].begin(), window.states[1].end(),
                                                   [](const auto& item) { return !item.second.paired; });
-        std::cout
-            << "{\"kind\":\"probe_result\",\"elapsed_seconds\":" << elapsed << ",\"matched\":" << window.matched
-            << ",\"mismatched\":" << window.mismatched << ",\"ambiguous\":" << window.ambiguous
-            << ",\"history_evictions\":" << window.evicted << ",\"raw_snapshots\":" << window.raw_snapshots
-            << ",\"composite_commits\":" << window.composite_commits << ",\"p9_events\":" << composite.p9_events
-            << ",\"p9_erased\":" << composite.p9_erased << ",\"unresolved_raw_publications\":" << unresolved_raw
-            << ",\"unanchored_log_commits\":" << composite.unanchored_commits
-            << ",\"unresolved_raw_retired\":" << window.unresolved_raw_retired
-            << ",\"composite_active\":" << (composite_active ? "true" : "false")
-            << ",\"reference_active\":" << (reference_active ? "true" : "false")
-            << ",\"connection_active\":" << (connection_active ? "true" : "false")
-            << ",\"duration_complete\":" << (elapsed >= seconds ? "true" : "false")
-            << ",\"current\":" << (current ? "true" : "false")
-            << ",\"comparison_scope\":\"exact_committed_orders_log_cutovers\",\"p9_qualified\":false,\"complete\":false"
-            << "}\n";
+        std::cout << "{\"kind\":\"probe_result\",\"elapsed_seconds\":" << elapsed << ",\"matched\":" << window.matched
+                  << ",\"mismatched\":" << window.mismatched << ",\"ambiguous\":" << window.ambiguous
+                  << ",\"history_evictions\":" << window.evicted << ",\"raw_snapshots\":" << window.raw_snapshots
+                  << ",\"composite_commits\":" << window.composite_commits << ",\"p9_events\":" << composite.p9_events
+                  << ",\"p9_erased\":" << composite.p9_erased << ",\"unresolved_raw_publications\":" << unresolved_raw
+                  << ",\"unanchored_log_commits\":" << composite.unanchored_commits
+                  << ",\"unresolved_raw_retired\":" << window.unresolved_raw_retired
+                  << ",\"composite_active\":" << (composite_active ? "true" : "false")
+                  << ",\"reference_active\":" << (reference_active ? "true" : "false")
+                  << ",\"connection_active\":" << (connection_active ? "true" : "false")
+                  << ",\"duration_complete\":" << (elapsed >= seconds ? "true" : "false")
+                  << ",\"current\":" << (current ? "true" : "false")
+                  << ",\"content_observations\":" << content.observations << ",\"content_equal\":" << content.matched
+                  << ",\"content_different\":" << content.different << ",\"content_unresolved\":" << content.unresolved
+                  << ",\"content_pending\":" << content.pending.size()
+                  << ",\"content_history_evictions\":" << content.evictions
+                  << ",\"arrival_tolerance_ms\":" << content.tolerance_ms
+                  << ",\"comparison_scope\":\"order_id_remaining_sets_with_arrival_tolerance\",\"same_revision_"
+                     "proven\":false,\"p9_qualified\":false,\"complete\":false"
+                  << "}\n";
         check(raw.close());
         check(full.close());
         check(connection.close());
-        return window.mismatched
+        return window.mismatched || content.different
                    ? 4
                    : 3; // Observations cannot qualify absent exact post-clear proof and the required live run.
     } catch (const std::exception& e) {

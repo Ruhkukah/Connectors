@@ -11,9 +11,12 @@ struct Fixture {
     std::vector<Plaza2RawTableBinding> schema;
     std::array<std::int32_t, 1> ids{11};
     Window window{64};
+    ContentWindow content{2000, 64};
     Plaza2FullOrderLog book{ids, 100, 100};
-    Observer composite{window, ids, &book, 100}, reference{window, ids, nullptr, 100};
+    Observer composite{window, ids, &book, 100, nullptr, 512, &content},
+        reference{window, ids, nullptr, 100, nullptr, 512, &content};
     Fixture() {
+        content.resample = [&] { composite.sample_content(); };
         const auto base = tables();
         schema.assign(base.begin(), base.end());
         open(composite);
@@ -128,6 +131,78 @@ int main() {
             expect(internal_info.book.valid() && internal_info.window.states[0].empty() &&
                        internal_info.composite.unanchored_commits > 0,
                    "ONLINE completes composite without exposed info; exact comparison stays UNALIGNED");
+        }
+        {
+            ContentWindow w(20, 8);
+            w.record(11, "before", 100);
+            w.raw(11, "after", 105, 110);
+            expect(w.matched == 0 && w.pending.size() == 1, "in-flight publication waits for tolerance");
+            w.record(11, "after", 125);
+            expect(w.matched == 1 && w.pending.empty(), "later committed content inside tolerance aligns");
+            w.raw(11, "wrong", 200, 205);
+            w.poll(226);
+            expect(w.different == 1, "persistent content difference is reported after grace, not hidden");
+            w.raw(22, "after", 230, 235);
+            w.poll(256);
+            expect(w.unresolved == 1, "a different ISIN must not match");
+            w.raw(11, "after", 300, 305);
+            expect(w.matched == 2, "quiet committed books remain comparable");
+            w.retire();
+            w.raw(11, "after", 310, 315);
+            w.poll(336);
+            expect(w.unresolved == 2, "retired lifecycle state cannot match a new publication");
+            ContentWindow bounded(20, 1);
+            bounded.record(11, "old", 10);
+            bounded.raw(11, "missing", 11, 12);
+            bounded.record(11, "new", 13);
+            expect(bounded.unresolved == 1 && bounded.different == 0 && bounded.evictions == 1,
+                   "history eviction cannot be reported as a definite difference");
+            bounded.raw(11, "lost", 11, 14);
+            bounded.poll(35);
+            expect(bounded.unresolved == 2 && bounded.different == 0,
+                   "a publication arriving after history loss remains unresolved");
+            OrderSet a{{1, {2, 100, 7, true}}}, b{{2, {2, 100, 7, true}}};
+            expect(order_set_digest(a) != order_set_digest(b), "equal levels with different IDs cannot match");
+            b = a;
+            b.at(1) = {1, 100, 7, true};
+            expect(order_set_digest(a) != order_set_digest(b), "remaining quantity participates in content");
+        }
+        {
+            Fixture no_info;
+            no_info.open(no_info.composite);
+            const auto before_online = no_info.content.matched;
+            no_info.send(no_info.composite, row(no_info.schema[0], 101, 11, 10000000, 3).event());
+            no_info.control(no_info.composite, Plaza2ListenerEventKind::Online);
+            no_info.raw(200, 3);
+            expect(no_info.content.matched == before_online + 1,
+                   "actual no-info ONLINE snapshot compares by order content");
+            const auto matches = no_info.content.matched;
+            no_info.begin(no_info.composite);
+            no_info.log(201, 2);
+            bool visited = false;
+            expect(!no_info.book.inspect_committed_orders([&](const auto&) { visited = true; }) && !visited,
+                   "diagnostic inspection never leaks a partially applied transaction");
+            no_info.raw(201, 2);
+            expect(no_info.content.matched == matches, "uncommitted content does not match");
+            no_info.commit(no_info.composite);
+            expect(no_info.content.matched == matches + 1, "committed update compares without composite info");
+        }
+        {
+            Fixture dirty;
+            dirty.send(dirty.composite, {.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                         .signed_value = 31,
+                                         .table_index = dirty.schema[0].index,
+                                         .raw_table = &dirty.schema[0]});
+            bool visited = false;
+            expect(!dirty.book.inspect_committed_orders([&](const auto&) { visited = true; }) && !visited,
+                   "out-of-frame administrative changes stay hidden until the next commit");
+            dirty.begin(dirty.composite);
+            dirty.commit(dirty.composite);
+            const auto before = dirty.content.matched;
+            dirty.content.retire();
+            dirty.raw(500, 0);
+            expect(dirty.content.matched == before + 1,
+                   "raw publication can resample a quiet valid committed empty book after cohort retirement");
         }
         Fixture f;
         f.begin(f.composite);
@@ -257,8 +332,7 @@ int main() {
         bound.record(0, {1, 3}, "d");
         expect(bound.states[0].size() == 2 && bound.evicted == 1, "comparison history is bounded");
         expect(digest({}, f.ids) != digest({{{11, true, 10000000}, 1}}, f.ids), "empty digest is distinct");
-        std::cout
-            << "PASS exact committed orders_log cutovers, LastRec, filtering, UNALIGNED, admin fences and lifecycle\n";
+        std::cout << "PASS order content arrival windows, no-info ONLINE, exact cutovers, filtering and lifecycle\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

@@ -1,4 +1,5 @@
 #pragma once
+#include "full_order_log_content_comparison.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
 #include "moex/plaza2/cgate/plaza2_decimal.hpp"
 #include <algorithm>
@@ -153,12 +154,15 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     struct Order {
         std::int32_t isin;
         bool bid;
-        std::int64_t price, quantity, revision;
+        std::int64_t price, quantity, revision, public_id;
+        std::int32_t session;
     };
     struct OrderBinding {
-        cg::Plaza2RawFieldBinding row, rev, act, isin, dir, price, rest, status;
+        cg::Plaza2RawFieldBinding row, rev, act, isin, dir, price, rest, status, public_id, session;
     };
     Window& window_;
+    ContentWindow* content_{};
+    std::int64_t raw_begin_{};
     cg::Plaza2FullOrderLog* book_;
     std::vector<std::int32_t> ids_;
     std::unordered_map<std::int64_t, Order> orders_;
@@ -173,6 +177,8 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     std::uint64_t diagnostic_limit_, diagnostics_{}, generation_{};
     void retire_generation() {
         // Native table revisions may restart without a different log life; neither old peer may survive.
+        if (content_)
+            content_->retire();
         window_.retire(0);
         window_.retire(1);
         generation_ = ++window_.generation;
@@ -207,7 +213,9 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                            field(t, "dir", "i1", 1),
                            field(t, "price", "d16.5", 11),
                            field(t, "public_amount_rest", "i8", 8),
-                           field(t, "xstatus", "i8", 8)};
+                           field(t, "xstatus", "i8", 8),
+                           field(t, "public_order_id", "i8", 8),
+                           field(t, "sess_id", "i4", 4)};
             } else if (book_ && t.name == "orders_log") {
                 log = true;
                 log_index_ = t.index;
@@ -301,18 +309,36 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
         if (!qty)
             return;
         require(orders_.size() < order_capacity_, "bounded reference order capacity exhausted");
-        orders_.emplace(row, Order{isin, dir == 1, *price, qty, rev});
+        const auto public_id = read<std::int64_t>(e, fields_.public_id);
+        const auto session = read<std::int32_t>(e, fields_.session);
+        require(public_id > 0 && session > 0, "invalid reference public order identity");
+        orders_.emplace(row, Order{isin, dir == 1, *price, qty, rev, public_id, session});
     }
 
   public:
     std::uint64_t p9_events{}, p9_erased{}, clear_events{}, unanchored_commits{};
     Observer(Window& window, std::span<const std::int32_t> ids, cg::Plaza2FullOrderLog* book = nullptr,
-             std::size_t capacity = 200000, std::ostream* output = nullptr, std::uint64_t diagnostic_limit = 512)
-        : window_(window), book_(book), ids_(ids.begin(), ids.end()), order_capacity_(capacity), output_(output),
-          diagnostic_limit_(diagnostic_limit) {
+             std::size_t capacity = 200000, std::ostream* output = nullptr, std::uint64_t diagnostic_limit = 512,
+             ContentWindow* content = nullptr)
+        : window_(window), content_(content), book_(book), ids_(ids.begin(), ids.end()), order_capacity_(capacity),
+          output_(output), diagnostic_limit_(diagnostic_limit) {
         std::sort(ids_.begin(), ids_.end());
         require(!ids_.empty() && capacity > 0, "invalid probe universe or capacity");
         orders_.reserve(capacity);
+    }
+    void sample_content() {
+        if (!content_ || !book_)
+            return;
+        std::map<std::int32_t, OrderSet> sets;
+        for (auto isin : ids_)
+            sets[isin];
+        if (book_->inspect_committed_orders([&](const cg::FullOrderLogOrder& o) {
+                sets.at(o.isin).emplace(o.id, std::tuple{o.remaining, o.price, o.session, o.bid});
+            })) {
+            const auto at = ContentWindow::now();
+            for (const auto& [isin, orders] : sets)
+                content_->record(isin, order_set_digest(orders), at);
+        }
     }
     bool wants_raw_replication(std::string_view) const noexcept override {
         return true;
@@ -326,6 +352,7 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     void on_plaza2_listener_error(const cg::Plaza2Error& error) noexcept override {
         try {
             orders_.clear();
+            raw_begin_ = 0;
             transaction_ = info_done_ = have_info_ = online_ = fenced_ = log_started_ = false;
             unframed_snapshot_ = published_at_online_ = false;
             committed_ = pending_ = {};
@@ -344,6 +371,7 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 progress_needed_ = true;
             }
             if (e.kind == Kind::Open) {
+                raw_begin_ = 0;
                 bind(e.raw_tables);
                 retire_generation();
                 orders_.clear();
@@ -356,6 +384,8 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
             if (e.kind == Kind::TransactionBegin) {
                 require(!transaction_, "nested probe transaction");
                 transaction_ = true;
+                if (!book_ && !raw_begin_)
+                    raw_begin_ = ContentWindow::now();
                 if (!book_ || online_) {
                     pending_ = committed_;
                     pending_lastrec_ = committed_lastrec_;
@@ -443,8 +473,24 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                     ++unanchored_commits;
                 published_at_online_ = false;
             }
+            if (content_ && book_ && (e.kind == Kind::Online || e.kind == Kind::TransactionCommit))
+                sample_content();
+            if (content_ && !book_ && e.kind == Kind::TransactionCommit && have_info_ && info_done_) {
+                std::map<std::int32_t, OrderSet> sets;
+                for (auto isin : ids_)
+                    sets[isin];
+                for (const auto& [row, o] : orders_)
+                    require(
+                        sets.at(o.isin).emplace(o.public_id, std::tuple{o.quantity, o.price, o.session, o.bid}).second,
+                        "duplicate reference public order ID");
+                const auto at = ContentWindow::now();
+                for (const auto& [isin, orders] : sets)
+                    content_->raw(isin, order_set_digest(orders), raw_begin_ ? raw_begin_ : at, at);
+                raw_begin_ = 0;
+            }
             if (e.kind == Kind::Close || (!book_ && e.kind == Kind::LifeNum)) {
                 orders_.clear();
+                raw_begin_ = 0;
                 transaction_ = info_done_ = have_info_ = online_ = false;
                 unframed_snapshot_ = published_at_online_ = false;
                 committed_ = pending_ = {};
