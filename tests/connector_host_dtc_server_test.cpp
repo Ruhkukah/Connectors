@@ -700,10 +700,15 @@ void manual_trading_reconnect(bool deferred) {
     }
     Harness h(std::move(c));
     mark_live_refdata_proven(h.source);
+    const auto await = [&](const auto& ready) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (!ready() && !h.eof && std::chrono::steady_clock::now() < deadline)
+            h.pump(1);
+    };
     const auto logon = [&] {
         h.logon(true, "kairos", "private-fixture", true, true);
         h.send(h.definition_request());
-        h.pump(15);
+        await([&] { return h.count(507) != 0; });
         check(h.count(507) == 1, "authenticated endpoint resolves current security definition");
         h.got.clear();
     };
@@ -869,20 +874,27 @@ void manual_trading_reconnect(bool deferred) {
     txt(wrong, 1, "9021");
     txt(wrong, 2, "other-client-id");
     txt(wrong, 3, "FAKE002");
+    h.got.clear();
     h.send(packet(203, wrong));
-    h.pump(15);
-    check(cancelled == 0, "an unrelated account or client ID cannot cancel");
+    await([&] { return h.count(301) != 0; });
+    check(cancelled == 0 && Read(h.first(301).payload).n.at(11) == 9,
+          "an unrelated account or client ID cannot cancel");
     if (deferred) {
         hold_add = true;
         add(0, "stalled-add");
+        await([&] { return deferred_commands[0].has_value(); });
         check(deferred_commands[0] && submitted == 1, "the fixture holds the in-flight Add");
     }
+    h.got.clear();
     h.send(packet(203, cancel));
-    h.pump(15);
-    check(cancelled == 1, "individual cancellation bypasses a stalled Add on the same connection");
+    await([&] { return cancelled == 1 && h.count(301) != 0; });
+    check(cancelled == 1 && (!deferred || deferred_commands[0]) && Read(h.first(301).payload).n.at(11) == 3,
+          "individual cancellation bypasses a stalled Add on the same connection");
     if (deferred) {
+        h.got.clear();
         hold_add = false;
-        h.pump(15); // Release the simulated owner error without accepting a new Add.
+        await([&] { return !deferred_commands[0] && h.count(301) != 0; });
+        check(Read(h.first(301).payload).n.at(11) == 8, "stalled Add rejects only after the Cancel completes");
     }
     h.got.clear();
     add(true, "robot-123");
@@ -902,7 +914,7 @@ void manual_trading_reconnect(bool deferred) {
     txt(robot_cancel, 1, "9022");
     txt(robot_cancel, 2, "robot-123");
     h.send(packet(203, robot_cancel));
-    h.pump(15);
+    await([&] { return cancelled == 2; });
     check(cancelled == 2, "robot-origin DTC Del stays available");
     h.source.incremental = true;
     h.source.state.full_order_log = true;
@@ -912,13 +924,13 @@ void manual_trading_reconnect(bool deferred) {
     h.got.clear();
     h.source.state.source_snapshot_version += 20;
     h.server.resync_market();
-    h.pump(35);
+    await([&] { return h.count(145) >= 2; });
     check(h.count(145) == 2 && Read(h.first(145).payload).n.at(13) == h.source.state.source_snapshot_version &&
               h.count(5) == 0 && !h.eof && lost == 1,
           "producer overflow replaces depth without closing authenticated trading connection");
     h.got.clear();
     h.source.state.source_snapshot_version += 5;
-    h.pump(35);
+    await([&] { return h.count(145) >= 2; });
     check(h.count(145) == 2 && Read(h.first(145).payload).n.at(13) == h.source.state.source_snapshot_version &&
               h.count(5) == 0 && !h.eof,
           "coalesced committed versions also resnapshot without dropping trading");
@@ -939,12 +951,12 @@ void manual_trading_reconnect(bool deferred) {
     h.connect();
     logon();
     check(::shutdown(h.fd, SHUT_WR) == 0, "test client write-side EOF");
-    h.pump(20);
+    await([&] { return h.eof; });
     check(h.eof && lost == 3, "authenticated transport EOF arms loss notification");
     h.connect();
     logon();
     h.send({2, 0, 1, 0});
-    h.pump(20);
+    await([&] { return h.eof; });
     check(h.eof && lost == 4, "malformed wire frame arms authenticated loss notification");
     h.connect();
     logon();
@@ -960,7 +972,7 @@ void manual_trading_reconnect(bool deferred) {
     }
     check(h.server.queued_bytes() > 0, "write-timeout fixture queued an unsent response");
     std::this_thread::sleep_for(std::chrono::milliseconds(180));
-    h.pump(15);
+    await([&] { return h.eof; });
     check(h.eof && lost == 5, "write timeout arms authenticated loss notification");
     h.connect();
     logon();
@@ -968,7 +980,7 @@ void manual_trading_reconnect(bool deferred) {
     for (unsigned i = 0; i < 800; ++i)
         accounts.insert(accounts.end(), one_query.begin(), one_query.end());
     h.send(accounts);
-    h.pump(15);
+    await([&] { return h.eof; });
     check(h.eof && lost == 6, "wire backpressure arms authenticated loss notification");
 }
 void live_test_late_refdata_after_logon() {
