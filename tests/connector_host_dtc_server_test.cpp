@@ -615,8 +615,7 @@ void manual_trading_reconnect(bool deferred) {
     auto c = config();
     c.idle_timeout = std::chrono::milliseconds(30);
     c.write_timeout = std::chrono::milliseconds(150);
-    c.max_queued_bytes = 4096;
-    c.max_write_bytes_per_poll = 64;
+    c.max_queued_bytes = 8192;
     c.source_mode = DtcSourceMode::LiveTest;
     c.require_local_auth = true;
     c.local_username = "kairos";
@@ -951,7 +950,8 @@ void manual_trading_reconnect(bool deferred) {
     logon();
     Bytes accounts;
     const auto one_query = packet(400, {});
-    for (unsigned i = 0; i < 100; ++i)
+    // Exceed one production-sized write without exceeding the output queue.
+    for (unsigned i = 0; i < 300; ++i)
         accounts.insert(accounts.end(), one_query.begin(), one_query.end());
     h.send(accounts);
     for (unsigned i = 0; i < 100 && h.server.queued_bytes() == 0; ++i) {

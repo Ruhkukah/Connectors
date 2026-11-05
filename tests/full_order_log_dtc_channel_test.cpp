@@ -51,7 +51,7 @@ void ring_concurrency() {
     FolDtcChannel<Row, 7> ring;
     constexpr std::uint64_t total = 50'000;
     std::latch start(2);
-    std::jthread producer([&] {
+    std::thread producer([&] {
         start.arrive_and_wait();
         for (std::uint64_t n = 1; n <= total; ++n) {
             Row row{n, std::vector<std::uint64_t>(8, n)};
@@ -109,7 +109,7 @@ void private_concurrency() {
     Worker worker;
     constexpr std::uint64_t total = 20'000;
     std::latch first_published(1), first_read(1);
-    std::jthread producer([&] {
+    std::thread producer([&] {
         for (std::uint64_t n = 1; n <= total; ++n) {
             const auto qty = static_cast<std::int64_t>(n);
             auto state = std::make_unique<Worker::Private>();
