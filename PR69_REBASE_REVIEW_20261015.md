@@ -49,6 +49,8 @@ Production footprint against the current PR68 base: 1,500 gross added C++ lines 
 
 ## No-handler assessment of every shared production file
 
+The table below describes the October PR69 snapshot. The later PR70 change at `f38f9739` changes shared `apps/moexctl.cpp` behavior even without a FOL handler. See [the PR70 shared operator follow-up](FULL_ORDER_LOG_WRITE_REVIEW_20261103.md#pr70-shared-operator-follow-up) before rebuilding AGGR from PR70.
+
 Baseline B is PR68 `986f1dce89a9471bd0a6a24df7b9500e0bf949af`; reviewed code H is PR69 `e2a6962551f094384b175a37e0eae6b2d95bcdd0`. No-handler means the ordinary legacy configuration: a null `full_order_log_handler`, empty new stream settings and no new CLI option. Null handler alone is not a universal feature switch.
 
 **No PR68 test proves exhaustive neutrality of the merged binary.** The table distinguishes declaration-only source conclusions, conditional legacy functional behavior and concrete unconditional effects. The exact tests below prove only the listed old contracts in their tested fixtures. They do not prove unchanged C++ ABI, instructions, allocations, CPU/RSS, native schema behavior or trading latency. The separate baseline validation used original PR68 fixtures as well as original test sources; ordinary PR69 runs include modified fake fixtures.

@@ -25,6 +25,12 @@ The native FOL capability check permits write mode only with TEST, explicit orde
 
 No production flag or DTC order-entry relaxation was added. Missing inputs are refused before owner files or native handles are opened. The binding source is the restricted20October ORDLOG native USER/REFDATA/PART capture, re-read on3November; the private deployment record retains the evidence hashes and split broker/client binding. It proves that AGGR and ORDLOG share the same T0 account, not native order acceptance. ID allocation remains separate from AGGR state. See the4November runbook for registration, account-wide limits and the prohibition on concurrent AGGR/FOL trading.
 
+## PR70 shared operator follow-up
+
+The accepted source `4c23d81b` includes the `f38f9739` change to `apps/moexctl.cpp`. A plain `quit` refused because working orders remain now engages the kill switch. The process stays available for cancels under the existing guards. The FOL DTC frontend stays live until shutdown commits. The kill-switch behavior belongs to the shared operator command and applies to an AGGR binary rebuilt from PR70, including a build with no FOL handler or frontend hooks. The certified AGGR binaries stay pinned to PR68.
+
+The offline DTC worker regression in `tests/full_order_log_dtc_worker_case.hpp` checks refusal, the kill switch, and subsequent cancellation. Native validation of a rebuilt AGGR executable remains separate.
+
 ## Admission and final native post
 
 Add/Move require the existing current private streams, session/instrument state, POS-anchored TRADE reconstruction, publisher/reply and risk gates. In addition, the composite FOL listener must be ACTIVE and its committed book must be valid, two-sided and uncrossed, with positive quantities, epoch and revision. The committed order session must equal the current committed private session. Liveness is the last successfully handled FOL stream row or transaction commit, at most30s old on the owner steady clock; filtered other-instrument rows and sys_events count, empty `cg_conn_process` calls do not. A valid quiet instrument is not rejected merely because its own last order/commit timestamp is old. `moment_ns` must be available and cannot be more than1second ahead of host UTC; this is a bounded tolerance, not a clock-correction claim. The same proof is checked immediately before native Add/Move posting.
