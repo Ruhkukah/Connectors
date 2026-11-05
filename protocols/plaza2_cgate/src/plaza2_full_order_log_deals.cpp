@@ -67,7 +67,7 @@ struct FullOrderLogDeals::Impl {
     struct Target {
         std::unique_ptr<Plaza2PublicDealsBridge> bridge;
         std::int32_t session{};
-        std::uint64_t epoch{}, cursor{};
+        std::uint64_t cursor{};
         bool touched{};
     };
     struct Slot {
@@ -81,7 +81,8 @@ struct FullOrderLogDeals::Impl {
     std::map<std::int32_t, Slot> slots;
     std::array<Binding, specs.size()> fields{};
     std::size_t table{}, row_size{};
-    std::uint64_t life{}, next_epoch{};
+    std::uint64_t life{};
+    std::uint32_t generation{};
     bool bound{}, online{}, transaction{}, online_pending{};
 
     void clear() noexcept {
@@ -139,19 +140,22 @@ struct FullOrderLogDeals::Impl {
         transaction = true;
     }
 
-    std::uint64_t new_epoch() {
-        check(next_epoch != UINT64_MAX, "DEALS trade generation exhausted");
-        return ++next_epoch;
+    void advance_generation() {
+        check(generation != UINT32_MAX, "DEALS trade generation exhausted");
+        ++generation;
+    }
+
+    std::uint64_t epoch(std::int32_t session) const {
+        return (std::uint64_t{generation} << 32) | static_cast<std::uint32_t>(session);
     }
 
     void publish_online() {
+        advance_generation();
         online = true;
         online_pending = false;
         for (auto& [isin, slot] : slots) {
             if (slot.current.bridge)
                 deliver(*slot.current.bridge, control(Kind::Online));
-            else
-                slot.current.epoch = new_epoch();
         }
     }
 
@@ -168,7 +172,7 @@ struct FullOrderLogDeals::Impl {
                     auto delta = target->bridge->snapshot(target->cursor);
                     target->cursor = delta.last_sequence;
                     for (auto& trade : delta.trades) {
-                        trade.stream_epoch = target->epoch;
+                        trade.stream_epoch = epoch(target->session);
                         published.push_back(std::move(trade));
                     }
                 }
@@ -206,9 +210,7 @@ struct FullOrderLogDeals::Impl {
             target = {};
         check(!target.bridge || target.session == session, "multiple DEALS session transitions in one transaction");
         if (!target.bridge) {
-            target = {.bridge = std::make_unique<Plaza2PublicDealsBridge>(isin, session),
-                      .session = session,
-                      .epoch = slot.current.bridge || !slot.current.epoch ? new_epoch() : slot.current.epoch};
+            target = {.bridge = std::make_unique<Plaza2PublicDealsBridge>(isin, session), .session = session};
             deliver(*target.bridge, control(Kind::LifeNum, life));
             deliver(*target.bridge, control(Kind::Open));
             if (online)
@@ -346,14 +348,18 @@ Plaza2PublicDealsSnapshot FullOrderLogDeals::snapshot(std::int32_t isin, std::ui
     if (!impl_->online || found == impl_->slots.end())
         return {};
     const auto& target = found->second.current;
-    if (!target.bridge)
-        return {.online = true, .valid = true, .stream_epoch = target.epoch, .lifenum = impl_->life};
-    if (expected_session > 0 && target.session != expected_session)
+    if (expected_session > 0 && target.session > expected_session)
         return {};
+    // REFDATA can establish the current session before an instrument trades.
+    // The empty cursor and its first committed print share the same epoch.
+    const auto session = expected_session > 0 ? expected_session : target.session;
+    const auto epoch = impl_->epoch(session);
+    if (!target.bridge || target.session < session)
+        return {.online = true, .valid = true, .stream_epoch = epoch, .lifenum = impl_->life};
     auto result = target.bridge->snapshot(after);
-    result.stream_epoch = target.epoch;
+    result.stream_epoch = epoch;
     for (auto& trade : result.trades)
-        trade.stream_epoch = target.epoch;
+        trade.stream_epoch = epoch;
     return result;
 }
 } // namespace moex::plaza2::cgate

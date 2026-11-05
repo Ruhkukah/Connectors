@@ -1,5 +1,6 @@
 #include "full_order_log_test_support.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_capture.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_deals.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_oi.hpp"
 #include <filesystem>
 #include <fstream>
@@ -50,6 +51,29 @@ static void test_trade_export(const fs::path& root) {
         r.set("moment", moex::plaza2::public_wire::Time{2023, 11, 15, 1, 13, 20, 0});
         return r;
     };
+    FullOrderLogDeals live_trades(ids);
+    const auto send = [&](Plaza2ListenerEvent event) {
+        event.stream_code = generated::StreamCode::kFortsDealsRepl;
+        require(!live_trades.on_event(event), "trade session transition event");
+    };
+    send({.kind = K::LifeNum, .unsigned_value = 1});
+    send({.kind = K::Open, .raw_tables = std::span(&t, 1)});
+    send(print(1).event());
+    send({.kind = K::Online});
+    const auto quiet = live_trades.snapshot(11, 0, 322);
+    require(quiet.online && quiet.valid && quiet.stream_epoch != 0 && quiet.last_sequence == 0 && quiet.trades.empty(),
+            "a quiet current session advertises a fresh empty trade cursor despite older history");
+    auto first = print(2);
+    first.set("sess_id", std::int32_t{322});
+    send({.kind = K::TransactionBegin});
+    send(first.event());
+    require(live_trades.snapshot(11, 0, 322).trades.empty(), "first print remains hidden before commit");
+    send({.kind = K::TransactionCommit});
+    const auto ready = live_trades.snapshot(11, 0, 322);
+    require(ready.stream_epoch == quiet.stream_epoch && ready.trades.size() == 1 &&
+                ready.trades.front().sequence == 1 && !live_trades.snapshot(11, 0, 321).valid,
+            "first print preserves the new session cursor and withdraws the previous session");
+
     Plaza2FullOrderLog book(ids);
     FullOrderLogCaptureOptions options;
     options.directory = root / "trades";
