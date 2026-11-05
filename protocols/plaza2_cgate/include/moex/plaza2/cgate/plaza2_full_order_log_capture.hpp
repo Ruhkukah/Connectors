@@ -1,5 +1,6 @@
 #pragma once
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
 
 namespace moex::plaza2::cgate {
 enum class FullOrderLogCaptureEndStatus : std::uint64_t { Clean = 0, HostNonzero = 1, CaptureFailed = 2 };
@@ -29,6 +30,7 @@ class FullOrderLogCapture final : public Plaza2ListenerEventHandler {
     // Same owner thread, additional restricted public DEALS recorder tap.
     Plaza2Error record(const Plaza2ListenerEvent& event);
     void record_error(generated::StreamCode stream, const Plaza2Error& error) noexcept;
+    void record_refdata(const FullOrderLogRefdataValue& value);
     void poll();
     // Call only after the host has stopped. A missing end record is an incomplete capture.
     void finish(FullOrderLogCaptureEndStatus status = FullOrderLogCaptureEndStatus::Clean, int host_status = 0);
@@ -46,9 +48,13 @@ struct FullOrderLogCaptureRecord {
 struct FullOrderLogArchiveSummary {
     std::vector<std::int32_t> isins;
     std::string source_sha;
+    std::string refdata_sha256; // Empty for captures without a verified REFDATA sidecar.
+    std::string dbn_sha256;     // Set when the export has a pinned REFDATA companion.
+    std::uint64_t capture_identity{};
     std::uint64_t records{}, rows{}, commits{}, valid_commits{}, last_valid_order_count{}, stored_bytes{},
         open_interest_rows{}, open_interest_updates{}, listener_errors{}, last_good_sequence{};
-    std::uint64_t trade_prints{}; // DBN export only.
+    std::uint64_t trade_prints{};             // DBN export only.
+    std::uint64_t refdata_unjoined_records{}; // DBN records before or between current REFDATA observations.
     bool truncated{}, end_record_present{};
     FullOrderLogCaptureEndStatus end_status{FullOrderLogCaptureEndStatus::Clean};
     int host_status{};

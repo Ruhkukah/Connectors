@@ -1,5 +1,7 @@
 #include "full_order_log_test_support.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_capture.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
+#include "moex/plaza2/cgate/plaza2_text.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -19,6 +21,99 @@ static bool refused(const auto& action) {
 static auto bytes(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     return std::vector<char>(std::istreambuf_iterator<char>(f), {});
+}
+static void test_refdata_join(const fs::path& root, FullOrderLogCaptureOptions options) {
+    namespace g = moex::plaza2::generated;
+    const auto schema = tables();
+    const std::array<std::int32_t, 2> ids{11, 22};
+    Plaza2FullOrderLog book(ids, 1024, 256);
+    options.directory = root / "refdata";
+    FullOrderLogCapture capture(options, ids, book);
+    FullOrderLogRefdataValue first{
+        .isin_id = 11,
+        .available = true,
+        .isin = "TEST-FUT-11",
+        .short_code = "F11",
+        .min_step = "0.00005",
+        .decimals = 5,
+        .sess_id = 321,
+        .instrument_source = {g::StreamCode::kFortsRefdataRepl, g::TableCode::kFortsRefdataReplFutSessContents, 100, 7,
+                              true},
+        .session_source = {g::StreamCode::kFortsRefdataRepl, g::TableCode::kFortsRefdataReplSession, 50, 7, true},
+    };
+    capture.record_refdata(first);
+    const auto emit = [&](Plaza2ListenerEvent event) {
+        event.stream_code = kFullOrderLogStreamCode;
+        require(!capture.on_plaza2_listener_event(event), "record REFDATA join fixture");
+    };
+    emit({.kind = Kind::Open, .raw_tables = schema});
+    emit(row(schema[0], 1, 11, 1234565, 10, 1, 1).event());
+    emit(row(schema[0], 2, 22, 1234500, 5, 1, 2).event());
+    emit({.kind = Kind::Online});
+    first.instrument_source.repl_rev = 101;
+    first.min_step = "0.00010";
+    capture.record_refdata(first);
+    auto second = first;
+    second.isin_id = 22;
+    second.isin = "TEST-FUT-22";
+    second.short_code = "F22";
+    second.instrument_source.repl_rev = 102;
+    capture.record_refdata(second);
+    emit({.kind = Kind::TransactionBegin});
+    emit(row(schema[2], 1, 11, 1234565, 3, 1, 3).event());
+    emit({.kind = Kind::TransactionCommit});
+    emit({.kind = Kind::Close});
+    capture.finish();
+
+    const auto dbn = root / "refdata.dbn";
+    const auto report = export_full_order_log_dbn(options.directory, dbn);
+    const auto tsv_bytes = bytes(options.directory / kFullOrderLogRefdataFilename);
+    const std::string tsv(tsv_bytes.begin(), tsv_bytes.end());
+    const auto rows = parse_full_order_log_refdata(tsv);
+    require(rows.size() == 3 && rows[0].min_step == "0.00005" && rows[1].min_step == "0.00010" &&
+                rows[1].effective_after_sequence == rows[2].effective_after_sequence,
+            "sidecar retains metadata revisions and sequence ties");
+    require(report.refdata_sha256 == plaza2_sha256_hex(tsv) && report.dbn_sha256 == plaza2_sha256_file(dbn) &&
+                report.refdata_unjoined_records == 3,
+            "strict export pins DBN and capture sidecar and counts the uncovered prefix");
+    const auto companion_bytes = bytes(dbn.string() + ".refdata.json");
+    const std::string companion(companion_bytes.begin(), companion_bytes.end());
+    require(companion.find("\"dbn_sha256\":\"" + report.dbn_sha256 + "\"") != std::string::npos &&
+                companion.find("\"capture_refdata_sha256\":\"" + report.refdata_sha256 + "\"") != std::string::npos &&
+                companion.find("\"dbn_instrument_ids\":[11,22]") != std::string::npos &&
+                companion.find("\"effective_after_dbn_sequence\":[0,6,6]") != std::string::npos &&
+                companion.find("\"refdata_tsv\":" + text::json_quote_utf8(tsv)) != std::string::npos,
+            "export companion carries exact source sidecar and causal DBN boundaries");
+    const std::array<std::uint32_t, 3> effective_after{0, 6, 6};
+    const auto data = bytes(dbn);
+    std::size_t unjoined{}, joined{};
+    for (std::size_t at = 128; at < data.size(); at += 56) {
+        require(data.size() - at >= 56 && data[at] == 14, "join fixture record framing");
+        std::uint32_t instrument{}, sequence{};
+        std::memcpy(&instrument, data.data() + at + 4, sizeof instrument);
+        std::memcpy(&sequence, data.data() + at + 52, sizeof sequence);
+        const FullOrderLogRefdataRow* metadata = nullptr;
+        for (std::size_t i = 0; i < rows.size(); ++i)
+            if (static_cast<std::uint32_t>(rows[i].isin_id) == instrument && sequence > effective_after[i])
+                metadata = &rows[i];
+        if (metadata) {
+            require(metadata->isin == (instrument == 11 ? "TEST-FUT-11" : "TEST-FUT-22") && metadata->sess_id == 321 &&
+                        metadata->instrument_source.present,
+                    "DBN instrument joins the effective instrument and session provenance");
+            ++joined;
+        } else {
+            require(instrument == 22 && sequence <= 6, "only startup rows can lack current REFDATA in this fixture");
+            ++unjoined;
+        }
+    }
+    require(joined > 0 && unjoined == report.refdata_unjoined_records, "as-of join never fills the earlier prefix");
+    const auto tampered = root / "refdata-tampered";
+    fs::copy(options.directory, tampered, fs::copy_options::recursive);
+    std::ofstream(tampered / kFullOrderLogRefdataFilename, std::ios::app) << "tamper\n";
+    const auto bad_dbn = root / "refdata-tampered.dbn";
+    require(refused([&] { export_full_order_log_dbn(tampered, bad_dbn, true); }) && !fs::exists(bad_dbn) &&
+                !fs::exists(bad_dbn.string() + ".refdata.json"),
+            "even explicit incomplete recovery refuses a broken REFDATA pin before publication");
 }
 int main() {
     try {
@@ -92,6 +187,9 @@ int main() {
         const auto dbn = root / "orders.dbn";
         const auto exported = export_full_order_log_dbn(o.directory, dbn);
         require(exported.valid_commits == 1001, "DBN export committed points");
+        require(exported.refdata_sha256.empty() && !fs::exists(dbn.string() + ".refdata.json"),
+                "legacy capture exports without an invented sidecar");
+        test_refdata_join(root, o);
         auto data = bytes(dbn);
         require(data.size() > 128 && std::string_view(data.data(), 4) == std::string_view("DBN\3", 4) &&
                     (data.size() - 128) % 56 == 0,

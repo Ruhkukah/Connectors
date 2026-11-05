@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <mutex>
+#include <map>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <thread>
@@ -23,10 +24,12 @@ struct FullOrderLogCapture::Impl {
     Plaza2ListenerEventHandler& downstream;
     std::vector<std::int32_t> isins;
     std::vector<Block> queue;
-    std::atomic<std::uint64_t> head{}, tail{}, stored{}, syncs{}, sync_max{};
+    std::atomic<std::uint64_t> head{}, tail{}, stored{}, budget_used{}, syncs{}, sync_max{};
     std::atomic_bool closing{}, failed{};
     std::mutex error_mutex;
     std::string error;
+    std::string refdata;
+    std::map<std::int32_t, FullOrderLogRefdataValue> last_refdata;
     std::thread worker;
     std::uint64_t sequence{}, source_sequence{}, filtered{}, logical{}, queue_peak{}, last_flush{}, identity{};
     int directory_fd{-1}, fd{-1}, stop_fd{-1};
@@ -186,8 +189,14 @@ struct FullOrderLogCapture::Impl {
         if (::fstatvfs(directory_fd, &s) || static_cast<long double>(s.f_bavail) * s.f_frsize < options.min_free_bytes)
             throw std::runtime_error("FullOrderLog capture free-space limit");
     }
+    void reserve_disk_bytes(std::size_t bytes) {
+        auto used = budget_used.load(std::memory_order_relaxed);
+        do {
+            require(bytes <= options.max_bytes - used, "FullOrderLog capture disk budget exhausted");
+        } while (!budget_used.compare_exchange_weak(used, used + bytes, std::memory_order_relaxed));
+    }
     void write_all(const void* data, std::size_t length) {
-        require(length <= options.max_bytes - stored.load(), "FullOrderLog capture disk budget exhausted");
+        reserve_disk_bytes(length);
         const auto* p = static_cast<const char*>(data);
         while (length) {
             auto n = ::write(fd, p, length);
@@ -199,6 +208,28 @@ struct FullOrderLogCapture::Impl {
             stored.fetch_add(n, std::memory_order_relaxed);
             segment_size += n;
         }
+    }
+    std::string write_refdata() {
+        if (refdata.empty())
+            return {};
+        space();
+        const auto digest = plaza2_sha256_hex(refdata);
+        const auto sidecar = ::openat(directory_fd, kFullOrderLogRefdataFilename.data(),
+                                      O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        require(sidecar >= 0, "FullOrderLog REFDATA sidecar open failed");
+        auto remaining = std::string_view(refdata);
+        while (!remaining.empty()) {
+            const auto n = ::write(sidecar, remaining.data(), remaining.size());
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n <= 0)
+                break;
+            remaining.remove_prefix(static_cast<std::size_t>(n));
+        }
+        const auto synced = remaining.empty() && sync_data(sidecar) == 0;
+        const auto closed = ::close(sidecar) == 0;
+        require(synced && closed && ::fsync(directory_fd) == 0, "FullOrderLog REFDATA sidecar sync failed");
+        return digest;
     }
     void sync() {
         const auto start = mono_ns();
@@ -371,6 +402,30 @@ void FullOrderLogCapture::poll() {
         }
     }
 }
+void FullOrderLogCapture::record_refdata(const FullOrderLogRefdataValue& value) {
+    auto& p = *impl_;
+    try {
+        p.check();
+        require(!p.finished && std::binary_search(p.isins.begin(), p.isins.end(), value.isin_id),
+                "REFDATA outside selected FullOrderLog capture");
+        const auto previous = p.last_refdata.find(value.isin_id);
+        if (previous != p.last_refdata.end() && previous->second == value)
+            return;
+        const FullOrderLogRefdataRow row{value, p.sequence, utc_ns(), mono_ns()};
+        const auto line = serialize_full_order_log_refdata_row(row);
+        const auto header_bytes = p.refdata.empty() ? kFullOrderLogRefdataHeader.size() : 0;
+        const auto bytes = header_bytes + line.size();
+        require(bytes <= kFullOrderLogRefdataMaxBytes - p.refdata.size(), "FullOrderLog REFDATA sidecar limit");
+        p.reserve_disk_bytes(bytes);
+        if (header_bytes)
+            p.refdata = kFullOrderLogRefdataHeader;
+        p.refdata += line;
+        p.last_refdata.insert_or_assign(value.isin_id, value);
+    } catch (const std::exception& e) {
+        p.fail(e.what());
+        throw;
+    }
+}
 void FullOrderLogCapture::finish(FullOrderLogCaptureEndStatus status, int host_status) {
     auto& p = *impl_;
     if (p.finished) {
@@ -379,8 +434,9 @@ void FullOrderLogCapture::finish(FullOrderLogCaptureEndStatus status, int host_s
     }
     try {
         p.check();
+        const auto digest = p.write_refdata();
         p.enqueue({.unsigned_value = static_cast<std::uint64_t>(status), .signed_value = host_status, .kind = end_kind},
-                  {}, {}, {});
+                  std::as_bytes(std::span(digest.data(), digest.size())), {}, {});
         p.finished = true;
         p.drain();
         p.check();

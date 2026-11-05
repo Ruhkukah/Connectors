@@ -3,10 +3,14 @@
 #include <array>
 #include <fcntl.h>
 #include <map>
+#include <set>
+#include <sys/stat.h>
 #include <unordered_map>
 #include <unistd.h>
 #include "moex/plaza2/cgate/plaza2_full_order_log_deals.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_oi.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
+#include "moex/plaza2/cgate/plaza2_text.hpp"
 
 namespace moex::plaza2::cgate {
 using namespace capture_format;
@@ -40,12 +44,13 @@ struct OiStat {
 };
 static_assert(sizeof(OiStat) == 80 && offsetof(OiStat, quantity) == 40);
 class Output {
-    std::filesystem::path path, temporary;
+    std::filesystem::path path, temporary, parent;
     int fd{-1};
 
   public:
     explicit Output(const std::filesystem::path& p)
-        : path(p), temporary(p.string() + ".partial-" + std::to_string(::getpid())) {
+        : path(p), temporary(p.string() + ".partial-" + std::to_string(::getpid())),
+          parent(p.has_parent_path() ? p.parent_path() : std::filesystem::path(".")) {
         require(!std::filesystem::exists(p), "DBN output already exists");
         fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
         require(fd >= 0, "DBN temporary output open failed");
@@ -69,12 +74,31 @@ class Output {
     void publish() {
         require(sync_data(fd) == 0, "DBN sync failed");
         require(::link(temporary.c_str(), path.c_str()) == 0, "DBN output already exists or publish failed");
-        const auto parent = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
+        if (!sync_parent()) {
+            unpublish();
+            throw std::runtime_error("DBN directory sync failed");
+        }
+    }
+    std::string sha256() const {
+        return plaza2_sha256_file(temporary);
+    }
+    void unpublish() noexcept {
+        struct stat owned {
+        }, linked{};
+        if (::fstat(fd, &owned) == 0 && ::lstat(path.c_str(), &linked) == 0 && owned.st_dev == linked.st_dev &&
+            owned.st_ino == linked.st_ino) {
+            ::unlink(path.c_str());
+            (void)sync_parent();
+        }
+    }
+
+  private:
+    bool sync_parent() const noexcept {
         const int d = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         const bool ok = d >= 0 && ::fsync(d) == 0;
         if (d >= 0)
             ::close(d);
-        require(ok, "DBN directory sync failed");
+        return ok;
     }
 };
 Mbo mbo(const FullOrderLogOrder& order, char action, std::uint64_t moment, std::uint64_t recv, std::uint8_t flags = 0) {
@@ -123,10 +147,68 @@ bool has_trade_schema(const Plaza2ListenerEvent& e) {
         });
     });
 }
+
+struct RefdataJoin {
+    std::string tsv;
+    std::vector<FullOrderLogRefdataRow> rows;
+    std::vector<std::uint64_t> effective_after_dbn_sequence;
+    std::set<std::int32_t> instruments, known;
+    std::map<std::int32_t, bool> available;
+    std::size_t next{};
+    std::uint64_t unjoined{};
+
+    void advance(std::uint64_t archive_sequence, std::uint64_t dbn_sequence) {
+        while (next < rows.size() && rows[next].effective_after_sequence < archive_sequence) {
+            const auto& row = rows[next++];
+            effective_after_dbn_sequence.push_back(dbn_sequence);
+            available[row.isin_id] = row.available;
+            if (row.available)
+                known.insert(row.isin_id);
+        }
+    }
+
+    void observe(std::uint32_t instrument) {
+        if (tsv.empty())
+            return;
+        const auto id = static_cast<std::int32_t>(instrument);
+        instruments.insert(id);
+        if (!available[id])
+            ++unjoined;
+    }
+
+    std::string companion(const FullOrderLogArchiveSummary& summary) const {
+        require(effective_after_dbn_sequence.size() == rows.size(), "DBN REFDATA mapping incomplete");
+        require(std::ranges::includes(known, instruments), "DBN instrument has no pinned REFDATA mapping");
+        std::string ids, boundaries;
+        for (const auto instrument : instruments) {
+            if (!ids.empty())
+                ids += ',';
+            ids += std::to_string(instrument);
+        }
+        for (const auto boundary : effective_after_dbn_sequence) {
+            if (!boundaries.empty())
+                boundaries += ',';
+            boundaries += std::to_string(boundary);
+        }
+        return "{\"format\":\"MOEX.FOL.DBN.REFDATA.1\",\"dbn_sha256\":" + text::json_quote_utf8(summary.dbn_sha256) +
+               ",\"capture_identity\":\"" + std::to_string(summary.capture_identity) + "\"" +
+               ",\"capture_source_sha\":" + text::json_quote_utf8(summary.source_sha) +
+               ",\"capture_last_good_sequence\":" + std::to_string(summary.last_good_sequence) +
+               ",\"capture_refdata_sha256\":" + text::json_quote_utf8(summary.refdata_sha256) +
+               ",\"dbn_instrument_ids\":[" + ids + "]" + ",\"effective_after_dbn_sequence\":[" + boundaries + "]" +
+               ",\"unjoined_dbn_records\":" + std::to_string(unjoined) +
+               ",\"refdata_tsv\":" + text::json_quote_utf8(tsv) + "}\n";
+    }
+};
 } // namespace
 FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path& directory,
                                                      const std::filesystem::path& output, bool allow_incomplete) {
     const auto checked = read_full_order_log_capture(directory, [](const auto&) {}, allow_incomplete);
+    RefdataJoin refdata;
+    if (!checked.refdata_sha256.empty()) {
+        refdata.tsv = read_pinned_refdata(directory, checked.refdata_sha256);
+        refdata.rows = parse_full_order_log_refdata(refdata.tsv);
+    }
     Output file(output);
     // Minimal 128-byte DBN v3 mixed metadata. Numeric MOEX ISIN IDs, local publisher=0.
     std::array<std::byte, 128> metadata{};
@@ -145,6 +227,10 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
     std::vector<Mbo> pending;
     bool initialized{}, committed{}, invalidated{};
     std::uint64_t valid{}, last_count{}, sequence{};
+    const auto write_record = [&](const auto& record) {
+        refdata.observe(record.instrument);
+        file.write(&record, sizeof record);
+    };
     book.on_commit = [&](const auto& b) {
         committed = true;
         ++valid;
@@ -167,7 +253,7 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
             m.recv = r.utc_ns;
             if (last[m.instrument] == i)
                 m.flags |= 128;
-            file.write(&m, sizeof m);
+            write_record(m);
         }
         pending.clear();
     };
@@ -224,19 +310,20 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
         stat.reference = v.moment_ns;
         stat.quantity = v.quantity;
         stat.sequence = sequence;
-        file.write(&stat, sizeof stat);
+        write_record(stat);
         ++oi_updates;
     };
     deals.on_trade = [&](const auto& trade) {
         auto m = trade_mbo(trade, current->utc_ns);
         require(++sequence < UINT32_MAX, "DBN sequence exhausted; split export");
         m.sequence = static_cast<std::uint32_t>(sequence);
-        file.write(&m, sizeof m);
+        write_record(m);
         ++trade_prints;
     };
     auto result = read_full_order_log_capture(
         directory,
         [&](const auto& r) {
+            refdata.advance(r.sequence, sequence);
             current = &r;
             last_record.utc_ns = r.utc_ns;
             if (r.event.stream_code == generated::StreamCode::kFortsDealsRepl) {
@@ -317,7 +404,29 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
     result.trade_prints = trade_prints;
     result.valid_commits = valid;
     result.last_valid_order_count = last_count;
-    file.publish();
+    require(result.capture_identity == checked.capture_identity && result.source_sha == checked.source_sha &&
+                result.last_good_sequence == checked.last_good_sequence && result.isins == checked.isins &&
+                result.refdata_sha256 == checked.refdata_sha256,
+            "capture changed during DBN export");
+    if (refdata.tsv.empty()) {
+        file.publish();
+    } else {
+        // Rows observed after the final capture callback still belong to the
+        // source sidecar. They become effective after the last DBN record.
+        refdata.advance(result.last_good_sequence, sequence);
+        result.refdata_unjoined_records = refdata.unjoined;
+        result.dbn_sha256 = file.sha256();
+        const auto companion = refdata.companion(result);
+        Output metadata_file(output.string() + ".refdata.json");
+        metadata_file.write(companion.data(), companion.size());
+        metadata_file.publish();
+        try {
+            file.publish();
+        } catch (...) {
+            metadata_file.unpublish();
+            throw;
+        }
+    }
     return result;
 }
 } // namespace moex::plaza2::cgate

@@ -115,6 +115,7 @@ class FullOrderLogDtcLoop {
         return *sources_.at(i);
     }
     std::function<void()> on_queued_commit;
+    std::function<void(const ConnectorHostMarketDataSnapshot&)> on_metadata;
     std::uint64_t polls{}, metadata_refreshes{};
     FullOrderLogDtcMetrics metrics;
 
@@ -132,9 +133,12 @@ class FullOrderLogDtcLoop {
             return;
         metadata_key_ = key;
         refresh_at_ = now + std::chrono::seconds(1);
-        for (std::size_t i = 0; i < sources_.size(); ++i)
-            sources_[i]->update_metadata(
-                dtc::make_dtc_market_data_snapshot(host_.market_data_snapshot(book_.instruments()[i])));
+        for (std::size_t i = 0; i < sources_.size(); ++i) {
+            const auto snapshot = host_.market_data_snapshot(book_.instruments()[i]);
+            if (on_metadata)
+                on_metadata(snapshot);
+            sources_[i]->update_metadata(dtc::make_dtc_market_data_snapshot(snapshot));
+        }
         ++metadata_refreshes;
     }
 };

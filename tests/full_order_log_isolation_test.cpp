@@ -1,5 +1,7 @@
 #include "plaza2_cgate/plaza2_runtime_test_support.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_capture.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
 #include "scope_exit.hpp"
 #include "command_socket.hpp"
 #include "command_input.hpp"
@@ -217,8 +219,10 @@ void test_shared_deals_wire(std::vector<std::string> arguments, const test::Runt
     // Run the actual qualifier and LiveTest 507 validation against the test
     // driver's in-process fake CGate library. The only socket is DTC loopback.
     std::erase(arguments, "--offline-fake");
-    arguments.insert(arguments.end(), {"--live", "--trading-instance-id", "offline_isolation_trade", "--open-interest",
-                                       "--run-ms", "12000"});
+    const auto capture = root / "deals-wire-capture";
+    arguments.insert(arguments.end(),
+                     {"--live", "--trading-instance-id", "offline_isolation_trade", "--open-interest", "--capture-dir",
+                      capture.string(), "--capture-min-free-bytes", "0", "--run-ms", "12000"});
     {
         std::ofstream ini(fixture.config_dir / "t1.ini", std::ios::app);
         ini << "\n[moex-fake-fol-runner]\nprofile=deals-wire\n";
@@ -335,6 +339,25 @@ void test_shared_deals_wire(std::vector<std::string> arguments, const test::Runt
         oi = line.find("oi_isin=1001 oi_online=1 oi_available=1 oi_quantity=124") != std::string::npos;
     }
     require(md.wait() == 0, "same DEALS listener updated OI and released cleanly without an order");
+    namespace cg = moex::plaza2::cgate;
+    const auto archive = cg::replay_full_order_log_capture(capture);
+    require(archive.refdata_sha256.size() == 64, "strict replay validates the qualifier's pinned REFDATA sidecar");
+    std::ifstream refdata(capture / cg::kFullOrderLogRefdataFilename, std::ios::binary);
+    const std::string contents((std::istreambuf_iterator<char>(refdata)), {});
+    const auto rows = cg::parse_full_order_log_refdata(contents);
+    const auto observed = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.available; });
+    require(observed != rows.end() && observed->isin_id == 1001 && observed->isin == "RTS-6.26" &&
+                observed->short_code == "RIH6" && std::stod(observed->min_step) == 250 && observed->decimals == 2 &&
+                observed->sess_id == 321 && observed->effective_utc_ns > 0 && observed->effective_monotonic_ns > 0 &&
+                observed->instrument_source.present && observed->session_source.present,
+            "sidecar retains the selected instrument's observed committed REFDATA and source identities");
+    const auto dbn = root / "deals-wire.dbn";
+    const auto exported = cg::export_full_order_log_dbn(capture, dbn);
+    require(exported.trade_prints == 3, "export includes two committed prints before subscription and one after, got " +
+                                            std::to_string(exported.trade_prints));
+    require(exported.refdata_sha256 == archive.refdata_sha256 && exported.dbn_sha256.size() == 64 &&
+                std::filesystem::is_regular_file(dbn.string() + ".refdata.json"),
+            "export pins committed REFDATA from the same qualifier capture");
 }
 
 } // namespace

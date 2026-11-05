@@ -96,4 +96,5 @@ inline std::vector<std::byte> encode_schema(std::span<const Plaza2RawTableBindin
     return out;
 }
 std::vector<Plaza2RawTableBinding> decode_schema(std::span<const std::byte> bytes);
+std::string read_pinned_refdata(const std::filesystem::path& directory, std::string_view sha256);
 } // namespace moex::plaza2::cgate::capture_format

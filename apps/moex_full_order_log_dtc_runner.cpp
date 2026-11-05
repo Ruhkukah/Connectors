@@ -1,6 +1,7 @@
 #include "full_order_log_dtc_loop.hpp"
 #include "full_order_log_operator.hpp"
 #include "full_order_log_capture_options.hpp"
+#include "full_order_log_refdata_tap.hpp"
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_deals.hpp"
 #include <atomic>
@@ -118,6 +119,7 @@ int main(int argc, char** argv) {
         std::unique_ptr<cg::FullOrderLogCapture> capture;
         if (!capture_flags.options.directory.empty())
             capture = std::make_unique<cg::FullOrderLogCapture>(capture_flags.options, ids, book);
+        moex::connector_host::FullOrderLogRefdataTap refdata(ids);
         cg::FullOrderLogOpenInterest open_interest(ids);
         std::unique_ptr<cg::FullOrderLogDeals> deals;
         if (capture_flags.open_interest)
@@ -150,9 +152,11 @@ int main(int argc, char** argv) {
         transport.event_log = [](std::string_view event, std::string_view detail) {
             std::cerr << event << ' ' << detail << '\n';
         };
-        transport.listener_event_log = [&book](const cg::Plaza2ListenerEvent& event) {
+        transport.listener_event_log = [&](const cg::Plaza2ListenerEvent& event) {
             if (event.stream_code == cg::kFullOrderLogStreamCode && book.should_log_listener_event(event))
                 moex::connector_host::log_full_order_log_listener_event(std::cerr, event);
+            if (capture)
+                refdata.on_event(event);
         };
         moex::connector_host::ConnectorHost host(std::move(request.config));
         moex::connector_host::FullOrderLogDtcLoop loop(
@@ -161,6 +165,8 @@ int main(int argc, char** argv) {
              .source_mode = offline ? dtc::DtcSourceMode::Replay : dtc::DtcSourceMode::LiveTest,
              .max_queued_bytes = 4 * 1024 * 1024,
              .max_depth_levels = depth_levels});
+        if (capture)
+            loop.on_metadata = [&](const auto& snapshot) { capture->record_refdata(refdata.value(snapshot)); };
         if (deals)
             for (std::size_t i = 0; i < ids.size(); ++i)
                 loop.source(i).set_public_deals_reader([&, isin = book.instruments()[i]](auto after, auto session) {

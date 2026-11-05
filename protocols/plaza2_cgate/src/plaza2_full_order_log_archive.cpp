@@ -4,9 +4,25 @@
 #include <set>
 #include <map>
 #include "moex/plaza2/cgate/plaza2_full_order_log_oi.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
 #include <zstd.h>
 
 namespace moex::plaza2::cgate::capture_format {
+std::string read_pinned_refdata(const std::filesystem::path& directory, std::string_view sha256) {
+    const auto path = directory / kFullOrderLogRefdataFilename;
+    require(std::filesystem::is_regular_file(std::filesystem::symlink_status(path)),
+            "capture REFDATA sidecar missing or not a regular file");
+    const auto size = std::filesystem::file_size(path);
+    require(size > 0 && size <= kFullOrderLogRefdataMaxBytes, "capture REFDATA sidecar size invalid");
+    std::ifstream file(path, std::ios::binary);
+    std::string text(static_cast<std::size_t>(size), '\0');
+    file.read(text.data(), static_cast<std::streamsize>(text.size()));
+    require(file.gcount() == static_cast<std::streamsize>(size) && file.peek() == EOF && !file.bad(),
+            "capture REFDATA sidecar read failed");
+    require(plaza2_sha256_hex(text) == sha256, "capture REFDATA sidecar SHA-256 mismatch");
+    return text;
+}
+
 std::vector<Plaza2RawTableBinding> decode_schema(std::span<const std::byte> bytes) {
     const auto integer = [&]() {
         const auto result = load<std::uint32_t>(bytes);
@@ -80,7 +96,7 @@ read_full_order_log_capture(const std::filesystem::path& directory,
                         header.block_limit >= 4096 && header.block_limit <= 4 * 1024 * 1024,
                     "capture header invalid");
             if (!segment)
-                identity = header.identity;
+                result.capture_identity = identity = header.identity;
             require(header.identity == identity && header.segment == ++segment,
                     "capture segment missing/reordered/foreign");
         } catch (const std::exception&) {
@@ -156,8 +172,17 @@ read_full_order_log_capture(const std::filesystem::path& directory,
                 }
                 require(!result.isins.empty(), "capture missing manifest");
                 if (h.kind == end_kind) {
-                    require(h.unsigned_value <= 2 && h.source_sequence >= source && rest.empty(),
+                    require(h.unsigned_value <= 2 && h.source_sequence >= source && rest.empty() && nulls.empty() &&
+                                schema.empty(),
                             "capture ended after validation error or invalid footer");
+                    if (!payload.empty()) {
+                        result.refdata_sha256.assign(reinterpret_cast<const char*>(payload.data()), payload.size());
+                        require(result.refdata_sha256.size() == 64 &&
+                                    std::ranges::all_of(
+                                        result.refdata_sha256,
+                                        [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }),
+                                "capture REFDATA pin invalid");
+                    }
                     result.end_status = static_cast<FullOrderLogCaptureEndStatus>(h.unsigned_value);
                     result.host_status = h.signed_value;
                     ended = true;
@@ -241,6 +266,16 @@ read_full_order_log_capture(const std::filesystem::path& directory,
             require(allow_incomplete, "capture missing/torn stop record");
             result.truncated = true;
         }
+    }
+    if (!result.refdata_sha256.empty()) {
+        const auto rows = parse_full_order_log_refdata(read_pinned_refdata(directory, result.refdata_sha256));
+        for (const auto& row : rows)
+            require(std::ranges::binary_search(result.isins, row.isin_id) && row.effective_after_sequence > 0 &&
+                        row.effective_after_sequence < result.last_good_sequence,
+                    "capture REFDATA sidecar references an invalid instrument or capture sequence");
+    } else if (ended) {
+        require(!std::filesystem::exists(std::filesystem::symlink_status(directory / kFullOrderLogRefdataFilename)),
+                "capture has an unpinned REFDATA sidecar");
     }
     result.truncated = result.truncated || !ended || result.listener_errors ||
                        result.end_status != FullOrderLogCaptureEndStatus::Clean;
