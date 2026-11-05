@@ -2,6 +2,8 @@ add_library(moex_plaza2_cgate_metadata STATIC
     src/plaza2_metadata.cpp)
 
 if(BUILD_TESTING)
+    # The fake CGate shared library links this static target.
+    set_target_properties(moex_plaza2_cgate_metadata PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_sources(moex_plaza2_cgate_metadata PRIVATE src/plaza2_field_read_audit.cpp)
     target_compile_definitions(moex_plaza2_cgate_metadata PUBLIC MOEX_CGATE_FIELD_READ_AUDIT=1)
 endif()
