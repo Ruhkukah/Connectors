@@ -77,6 +77,20 @@ inline FullOrderLogRecoveryCursor read_recovery_cursor(std::span<const std::byte
     require(valid_recovery_cursor(cursor), "invalid ORDLOG recovery cursor");
     return cursor;
 }
+inline bool valid_composite_open(std::string_view value) {
+    constexpr std::string_view ordlog = "p2ordbook://FORTS_ORDLOG_REPL", ordbook = "snapshot=FORTS_ORDBOOK_REPL";
+    const auto split = value.find(';');
+    if (split == value.npos || !value.starts_with(ordlog) || split < ordlog.size())
+        return false;
+    const auto matching = value.substr(ordlog.size(), split - ordlog.size());
+    if (!matching.empty()) {
+        if (!matching.starts_with("_MATCH") || matching.size() < 7 || matching.size() > 9 || matching[6] < '1' ||
+            matching[6] > '9' || matching.find_first_not_of("0123456789", 6) != value.npos)
+            return false;
+    }
+    const auto snapshot = value.substr(split + 1);
+    return snapshot.starts_with(ordbook) && snapshot.substr(ordbook.size()) == matching;
+}
 inline std::uint64_t checksum(std::span<const std::byte> bytes) {
     std::uint64_t result = 14695981039346656037ULL;
     for (auto b : bytes)

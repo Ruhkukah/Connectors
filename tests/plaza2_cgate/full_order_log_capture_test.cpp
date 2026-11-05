@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <thread>
+#include <tuple>
 #include <unistd.h>
 using namespace full_order_log_test;
 namespace fs = std::filesystem;
@@ -36,43 +37,66 @@ static void test_backfill(const fs::path& root, FullOrderLogCaptureOptions optio
         record(capture, row(schema[2], 1, 11, 1234565, qty, 1, rev).event());
         record(capture, {.kind = Kind::TransactionCommit});
     };
-    const auto original = root / "backfill-original";
-    options.directory = original;
-    {
+    constexpr std::string_view composite = "p2ordbook://FORTS_ORDLOG_REPL_MATCH2;snapshot=FORTS_ORDBOOK_REPL_MATCH2";
+    const auto primary_fixture = [&](std::string_view name, std::string_view service, int left_life, int right_life,
+                                     bool notify_after_online = false) {
+        const auto directory = root / name;
+        options.directory = directory;
         FullOrderLogCapture capture(options, ids, book);
-        const auto open = [&] {
-            record(capture, {.kind = Kind::Open, .raw_tables = schema});
-            Row info(schema[1]);
-            info.set("publication_state", std::int8_t{1});
-            info.set("trades_lifenum", std::int64_t{7});
-            record(capture, info.event());
+        const auto open = [&](std::int64_t life) {
+            record(capture, {.kind = Kind::Open, .text_value = service, .raw_tables = schema});
+            if (life) {
+                Row info(schema[1]);
+                info.set("publication_state", std::int8_t{1});
+                info.set("trades_lifenum", life);
+                record(capture, info.event());
+            }
             record(capture, {.kind = Kind::Online});
         };
-        open();
+        open(left_life);
         frame(capture, 101);
         frame(capture, 104);
         record(capture, {.kind = Kind::TransactionBegin});
         record(capture, row(schema[2], 1, 11, 1234565, 3, 1, 105).event());
         capture.record_error(kFullOrderLogStreamCode, {.code = Plaza2ErrorCode::RuntimeCallFailed});
-        open();
+        open(right_life);
+        if (notify_after_online)
+            record(capture, {.kind = Kind::LifeNum, .unsigned_value = 7});
         frame(capture, 111);
         record(capture, {.kind = Kind::Close});
         capture.finish();
-    }
-    const auto plan = plan_full_order_log_backfill(original, 2, 7);
+        return directory;
+    };
+    const auto original = primary_fixture("backfill-original", composite, 7, 7);
+    const auto plan = plan_full_order_log_backfill(original, 2);
     require(plan.listener_settings == "p2repl://FORTS_ORDLOG_REPL_MATCH2;tables=orders_log" &&
-                plan.open_settings == "mode=snapshot+online;lifenum=7;rev.orders_log=101" &&
+                plan.open_settings == "mode=snapshot+online;lifenum=7;rev.orders_log=101" && plan.ordlog_lifenum == 7 &&
                 plan.start.revision == 101 && plan.left.revision == 104 && plan.right.revision == 111 &&
                 plan.left.commit_sequence < plan.reopen_sequence && plan.reopen_sequence < plan.right.commit_sequence,
-            "plan uses earlier durable commit and excludes interrupted frame");
+            "plan derives generation and uses earlier durable commit, excluding interrupted frame");
     require(refused([&] { plan_full_order_log_backfill(original, 2, 8); }),
-            "independently supplied life conflicts with recorded info");
+            "supplied life conflicts with recorded info");
+    require(refused([&] { plan_full_order_log_backfill(original, 1); }),
+            "supplied matching conflicts with recorded services");
+    for (const auto [name, left, right, notify] : {std::tuple{"no-left-life", 0, 7, false},
+                                                   {"no-right-life", 7, 0, false},
+                                                   {"changed-life", 7, 8, false},
+                                                   {"online-life", 7, 7, true}}) {
+        const auto invalid = primary_fixture(name, composite, left, right, notify);
+        require(refused([&] { plan_full_order_log_backfill(invalid, 2); }),
+                "missing, conflicting or invalidated composite generation refused");
+    }
+    const auto unsuffixed =
+        primary_fixture("unsuffixed", "p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL", 7, 7);
+    require(refused([&] { plan_full_order_log_backfill(unsuffixed, 2); }), "legacy unsuffixed archive refused");
+    const auto unproven = primary_fixture("unproven", {}, 7, 7);
+    require(refused([&] { plan_full_order_log_backfill(unproven, 2); }), "unproven legacy archive refused");
     const auto primary = read_full_order_log_capture(original, [](const auto&) {}, true);
     require(primary.truncated && primary.fol_coverage.opens == 2 && primary.fol_coverage.listener_errors == 1 &&
                 primary.deals_coverage.opens == 0 && primary.deals_coverage.listener_errors == 0,
             "FOL coverage remains incomplete independently from DEALS");
-    for (const auto kind :
-         {"good", "wrong-life", "different-row", "missing-right", "collector", "wrong-request", "collector-stale"}) {
+    for (const auto kind : {"good", "wrong-life", "different-row", "missing-right", "missing-left", "collector",
+                            "wrong-request", "collector-stale"}) {
         options.directory = root / (std::string("backfill-") + kind);
         const std::string_view mode(kind);
         const bool collector = mode == "collector" || mode == "wrong-request" || mode == "collector-stale";
@@ -88,13 +112,15 @@ static void test_backfill(const fs::path& root, FullOrderLogCaptureOptions optio
             record(capture, {.kind = Kind::Open, .raw_tables = std::span(schema).subspan(2, 1)});
             if (!collector)
                 record(capture, {.kind = Kind::LifeNum, .unsigned_value = mode == "wrong-life" ? 8u : 7u});
-            frame(capture, 104, mode == "different-row" ? 4 : 3);
+            if (mode != "missing-left")
+                frame(capture, 104, mode == "different-row" ? 4 : 3);
             frame(capture, 105);
             if (mode != "missing-right")
                 frame(capture, 111);
-            record(capture, {.kind = Kind::Online});
-            if (!collector)
+            if (!collector) {
+                record(capture, {.kind = Kind::Online});
                 record(capture, {.kind = Kind::Close});
+            }
             capture.finish();
         }
         const auto check = [&] {
@@ -103,7 +129,20 @@ static void test_backfill(const fs::path& root, FullOrderLogCaptureOptions optio
         if (mode == "good" || mode == "collector") {
             const auto result = check();
             require(result.recovery_capture_identity != plan.capture_identity && result.committed_rows_between == 1,
-                    "distinct clean capture overlaps both committed boundaries");
+                    "distinct clean capture overlaps both committed boundaries before ONLINE");
+            const auto evidence_only = [](const auto& fn) {
+                try {
+                    fn();
+                    return false;
+                } catch (const std::exception& error) {
+                    return std::string_view(error.what()).find("use check-backfill") != std::string_view::npos;
+                }
+            };
+            require(evidence_only([&] { replay_full_order_log_capture(options.directory); }),
+                    "recovery evidence has explicit replay refusal");
+            const auto output = root / "recovery.dbn";
+            require(evidence_only([&] { export_full_order_log_dbn(options.directory, output); }) && !fs::exists(output),
+                    "recovery evidence has explicit export refusal");
         } else
             require(refused(check), "unproved overlap refused");
     }

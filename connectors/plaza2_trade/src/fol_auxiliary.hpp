@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <stdexcept>
 #include <string_view>
@@ -104,8 +105,10 @@ class Projection final : public cg::Plaza2ListenerEventHandler {
     };
     using Rows = std::map<std::pair<std::size_t, std::int64_t>, Row>;
 
-    Projection(std::vector<Table> tables, std::string account, std::vector<std::int64_t> instruments)
-        : tables_(std::move(tables)), account_(std::move(account)), instruments_(std::move(instruments)) {}
+    Projection(std::vector<Table> tables, std::string account, std::vector<std::int64_t> instruments,
+               std::function<Clock::time_point()> now = Clock::now)
+        : tables_(std::move(tables)), account_(std::move(account)), instruments_(std::move(instruments)),
+          now_(std::move(now)) {}
 
     bool wants_raw_replication(std::string_view) const noexcept override {
         return true;
@@ -149,7 +152,7 @@ class Projection final : public cg::Plaza2ListenerEventHandler {
                 break;
             case Kind::ReplState:
                 if (online_ && !transaction_)
-                    committed_at_ = Clock::now();
+                    committed_at_ = now_();
                 break;
             case Kind::StreamData:
                 if (online_ && !transaction_)
@@ -213,6 +216,7 @@ class Projection final : public cg::Plaza2ListenerEventHandler {
     std::vector<Table> tables_;
     std::string account_;
     std::vector<std::int64_t> instruments_;
+    std::function<Clock::time_point()> now_;
     std::map<std::size_t, BoundTable> bindings_;
     Rows rows_;
     std::map<std::pair<std::size_t, std::int64_t>, std::int64_t> tombstones_;
@@ -309,17 +313,15 @@ class Projection final : public cg::Plaza2ListenerEventHandler {
         if (id <= 0 || revision <= 0)
             throw std::invalid_argument("invalid auxiliary replication identity");
         const auto key = std::pair{plan.table, static_cast<std::int64_t>(id)};
-        if (action) {
+        if (action || (!spec.account_field.empty() && read_named(spec.account_field) != account_) ||
+            (spec.selected_instrument &&
+             std::ranges::find(instruments_, std::stoll(read_named("isin_id"))) == instruments_.end())) {
+            // A newer revision can move a previously selected row out of scope.
             if (rows_.contains(key) || tombstones_.contains(key) ||
                 std::ranges::any_of(pending_, [&](const auto& item) { return item.key == key; }))
                 append({key, {revision, {}}, true});
             return;
         }
-        if (!spec.account_field.empty() && read_named(spec.account_field) != account_)
-            return;
-        if (spec.selected_instrument &&
-            std::ranges::find(instruments_, std::stoll(read_named("isin_id"))) == instruments_.end())
-            return;
         Values values;
         for (const auto& field : plan.fields) {
             const auto name = field.field.name;
@@ -358,9 +360,69 @@ class Projection final : public cg::Plaza2ListenerEventHandler {
         if (rows_.size() + tombstones_.size() > 8192)
             throw std::invalid_argument("auxiliary snapshot exceeds row budget");
         pending_.clear();
-        committed_at_ = Clock::now();
+        committed_at_ = now_();
     }
 };
+
+inline std::string_view value(const Projection::Row& row, std::string_view name) {
+    const auto it = row.values.find(name);
+    return it == row.values.end() ? std::string_view{} : std::string_view(it->second);
+}
+
+inline std::int64_t integer_value(std::string_view text) {
+    if (text.empty())
+        return 0;
+    std::int64_t result{};
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), result);
+    return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() ? result : 0;
+}
+
+// An unrecognized runtime scheme may be newer. Require the environment row
+// unless the version explicitly predates its introduction in SPECTRA 9.12.
+inline bool environment_row_required(std::string_view release) noexcept {
+    constexpr std::string_view prefix = "SPECTRA";
+    if (!release.starts_with(prefix))
+        return true;
+    release.remove_prefix(prefix.size());
+    const auto major_end = release.find('.');
+    if (major_end == std::string_view::npos)
+        return true;
+    const auto major_token = release.substr(0, major_end);
+    release.remove_prefix(major_end + 1);
+    const auto minor_token = release.substr(0, release.find('.'));
+    if (minor_token.empty() || minor_token.find_first_not_of("0123456789") != std::string_view::npos)
+        return true;
+    const auto major = integer_value(major_token);
+    const auto minor = integer_value(minor_token);
+    return major <= 0 || major > 9 || (major == 9 && minor >= 12);
+}
+
+inline bool environment_matches(const Projection::Row& row, cg::Plaza2Environment expected) {
+    const auto id = value(row, "environment_id");
+    const auto name = value(row, "environment_name");
+    switch (expected) {
+    case cg::Plaza2Environment::Test:
+        return id == "2" && name == "MXFOPREP";
+    case cg::Plaza2Environment::Prod:
+        return id == "1" && name == "MXFOPROD";
+    }
+    return false;
+}
+
+inline std::string_view login_cod_state(const Projection& projection, std::int64_t utc) {
+    std::string_view state = "unknown";
+    for (const auto& [key, row] : projection.rows()) {
+        const auto start = integer_value(value(row, "start_date"));
+        const auto end = integer_value(value(row, "end_date"));
+        const auto flags = value(row, "sma_flags");
+        if (!start || utc < start || (end && utc > end) || flags.empty())
+            continue;
+        if (state != "unknown")
+            return "unknown";
+        state = integer_value(flags) & 1 ? "enabled" : "disabled";
+    }
+    return state;
+}
 
 } // namespace fol_auxiliary
 } // namespace moex::plaza2_trade

@@ -40,21 +40,25 @@ void print_coverage(const cg::FullOrderLogArchiveStreamCoverage& coverage) {
 }
 
 void backfill(int argc, char** argv, bool checking) {
-    const int base = checking ? 6 : 5;
-    if (argc != base && argc != base + 1)
-        throw std::invalid_argument("expected capture path(s), verified MATCH_ID ORDLOG_LIFENUM [REOPEN_SEQUENCE]");
-    const auto matching = positive<std::int32_t>(argv[base - 2]);
-    const auto life = positive<std::uint64_t>(argv[base - 1]);
-    const auto reopen = argc > base ? positive<std::uint64_t>(argv[base]) : 0;
+    const int base = checking ? 5 : 4;
+    if (argc < base || argc > base + 2)
+        throw std::invalid_argument("expected capture path(s), MATCH_ID [ORDLOG_LIFENUM [REOPEN_SEQUENCE]]");
+    const auto matching = positive<std::int32_t>(argv[base - 1]);
+    const auto life =
+        argc > base && std::string_view(argv[base]) != "--reopen-sequence" ? positive<std::uint64_t>(argv[base]) : 0;
+    const auto reopen = argc == base + 2 ? positive<std::uint64_t>(argv[base + 1]) : 0;
+    if (argc == base + 1 && !life)
+        throw std::invalid_argument("missing reopen sequence");
     if (checking) {
         const auto check = cg::check_full_order_log_backfill(argv[2], argv[3], matching, life, reopen);
-        std::cout << "{\"result\":\"committed_overlap_verified\",\"recovery_capture_identity\":\""
-                  << check.recovery_capture_identity << "\",\"committed_rows_between\":" << check.committed_rows_between
-                  << ',';
+        std::cout
+            << "{\"result\":\"committed_overlap_verified\",\"archive_repaired\":false,\"recovery_capture_identity\":\""
+            << check.recovery_capture_identity << "\",\"committed_rows_between\":" << check.committed_rows_between
+            << ',';
         print_plan(check.plan);
     } else {
         const auto plan = cg::plan_full_order_log_backfill(argv[2], matching, life, reopen);
-        std::cout << "{\"result\":\"planned\",";
+        std::cout << "{\"result\":\"planned\",\"archive_repaired\":false,";
         print_plan(plan);
     }
     std::cout << "}\n";
@@ -66,9 +70,10 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--help") {
             std::cout << "moex_fol_archive replay CAPTURE_DIR\nmoex_fol_archive export-dbn CAPTURE_DIR "
                          "NEW_OUTPUT.dbn\n"
-                         "moex_fol_archive plan-backfill CAPTURE_DIR MATCH_ID ORDLOG_LIFENUM [REOPEN_SEQUENCE]\n"
-                         "moex_fol_archive check-backfill CAPTURE_DIR RECOVERY_DIR MATCH_ID ORDLOG_LIFENUM "
-                         "[REOPEN_SEQUENCE]\n"
+                         "moex_fol_archive plan-backfill CAPTURE_DIR MATCH_ID [ORDLOG_LIFENUM [REOPEN_SEQUENCE]]\n"
+                         "moex_fol_archive check-backfill CAPTURE_DIR RECOVERY_DIR MATCH_ID "
+                         "[ORDLOG_LIFENUM [REOPEN_SEQUENCE]]\n"
+                         "Use --reopen-sequence N after MATCH_ID to derive LifeNum for a specific reopen.\n"
                          "Optional --allow-incomplete for replay/export-dbn: verified prefix only; JSON reports "
                          "truncated/last_good_sequence.\ntrade_prints counts DBN export records and is reported "
                          "only for export-dbn.\nOffline only; no runtime, credentials or connections.\n";
@@ -98,7 +103,8 @@ int main(int argc, char** argv) {
             s = cg::export_full_order_log_dbn(argv[2], argv[3], allow_incomplete);
         else
             throw std::invalid_argument("invalid archive command");
-        std::cout << "{\"records\":" << s.records << ",\"rows\":" << s.rows << ",\"valid_commits\":" << s.valid_commits
+        std::cout << "{\"capture_identity\":\"" << s.capture_identity << "\",\"records\":" << s.records
+                  << ",\"rows\":" << s.rows << ",\"valid_commits\":" << s.valid_commits
                   << ",\"last_valid_order_count\":" << s.last_valid_order_count
                   << ",\"open_interest_rows\":" << s.open_interest_rows;
         if (exporting)

@@ -339,6 +339,10 @@ int moex::connector_host::operator_program(int argc, char** argv, const Operator
             const bool allow_orders = config.session.allow_orders;
             CgateTradingHost host(std::move(config));
             ScopeExit report([&] { host.report_outstanding_orders(std::cerr); });
+            ScopeExit join_frontend([&] {
+                if (hooks.join_frontend)
+                    hooks.join_frontend();
+            });
             ScopeExit shutdown([&] { (void)host.stop(); });
             ScopeExit stop_frontend([&] {
                 if (hooks.before_stop)

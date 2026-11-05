@@ -169,9 +169,8 @@ inline int full_order_log_operator(int argc, char** argv,
                 throw std::invalid_argument("DTC trading requires one selected FOL instrument");
             dtc_trading =
                 std::make_unique<FullOrderLogTradingDtc>(config, dtc_port, dtc_secret, !dtc_keep_orders_on_disconnect);
-            config.orders.reserve_dtc_identity = [&](auto key, auto ext_id, auto automated) {
-                dtc_trading->reserve(key, ext_id, automated);
-            };
+            config.async_dtc_persistence = true;
+            config.orders.dtc_connection_current = [&] { return dtc_trading->entry_connection_current(); };
             if (capture_flags.open_interest)
                 dtc_deals = std::make_unique<cg::FullOrderLogDeals>(config.isin_ids);
         }
@@ -217,6 +216,10 @@ inline int full_order_log_operator(int argc, char** argv,
         if (dtc_trading)
             dtc_trading->stop();
     };
+    hooks.join_frontend = [&] {
+        if (dtc_trading)
+            dtc_trading->join();
+    };
     hooks.after_poll = [&](CgateTradingHost& host) {
         if (!book)
             return;
@@ -246,7 +249,9 @@ inline int full_order_log_operator(int argc, char** argv,
     std::vector<char*> pointers;
     for (auto& arg : args)
         pointers.push_back(arg.data());
-    const auto result = operator_program(static_cast<int>(pointers.size()), pointers.data(), hooks);
+    auto result = operator_program(static_cast<int>(pointers.size()), pointers.data(), hooks);
+    if (dtc_trading && dtc_trading->failed())
+        result = 3;
     report();
     if (capture) {
         try {

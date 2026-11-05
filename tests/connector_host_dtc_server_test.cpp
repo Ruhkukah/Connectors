@@ -609,16 +609,17 @@ void live_test_metadata_and_auth() {
     correct.logon(true, "local-user", "local-password");
     check(correct.count(2) == 1, "dedicated local DTC credentials permit valid logon");
 }
-void manual_trading_reconnect() {
+void manual_trading_reconnect(bool deferred) {
     using moex::connector_host::OrderState;
     using moex::plaza2_trade::Plaza2TradeSide;
     auto c = config();
+    c.idle_timeout = std::chrono::milliseconds(30);
     c.source_mode = DtcSourceMode::LiveTest;
     c.require_local_auth = true;
     c.local_username = "kairos";
     c.local_password = "private-fixture";
     DtcTradingSnapshot snapshot{.position = 0, .orders_current = true, .fills_current = true};
-    unsigned submitted{}, moved{}, cancelled{}, lost{}, reconciled{};
+    unsigned submitted{}, moved{}, cancelled{}, lost{}, client_lost{}, reconciled{};
     std::vector<DtcOwnFill> fills;
     std::optional<DtcOwnBalance> balance;
     c.trading = DtcTradingHooks{
@@ -660,7 +661,36 @@ void manual_trading_reconnect() {
                 return std::string{};
             },
         .disconnected = [&] { ++lost; },
-        .reconciled = [&] { ++reconciled; }};
+        .reconciled = [&] { ++reconciled; },
+        .client_lost = [&] { ++client_lost; }};
+    std::optional<DtcTradeCommand> deferred_command;
+    if (deferred) {
+        auto place = std::move(c.trading->place);
+        auto move = std::move(c.trading->move);
+        auto cancel = std::move(c.trading->cancel);
+        c.trading->submit = [&](DtcTradeCommand command) {
+            if (deferred_command)
+                return false;
+            deferred_command = std::move(command);
+            return true;
+        };
+        c.trading->take_result = [&, place = std::move(place), move = std::move(move),
+                                  cancel = std::move(cancel)]() -> std::optional<std::string> {
+            auto command = std::exchange(deferred_command, std::nullopt);
+            if (!command)
+                return std::nullopt;
+            switch (command->kind) {
+            case DtcTradeCommand::Kind::Add:
+                return place(std::move(command->client_id), command->side, command->ioc, std::move(command->price),
+                             command->quantity, command->automated);
+            case DtcTradeCommand::Kind::Move:
+                return move(command->server_id, std::move(command->price), command->quantity);
+            case DtcTradeCommand::Kind::Cancel:
+                return cancel(command->server_id);
+            }
+            return "unexpected DTC command";
+        };
+    }
     Harness h(std::move(c));
     mark_live_refdata_proven(h.source);
     const auto logon = [&] {
@@ -768,17 +798,42 @@ void manual_trading_reconnect() {
                      .price = "123.45",
                      .timestamp_seconds = 1800000000,
                      .quantity = 1,
+                     .exchange_time_ns = 1'800'000'000'123'000'000,
                      .side = Plaza2TradeSide::Buy});
     h.got.clear();
     h.pump(80);
     auto fill = Read(h.first(301).payload);
-    check(fill.n[11] == 5 && fill.d[19] == 1 && fill.d[24] == 1 && fill.s[25] == "321:77:1",
-          "committed partial fill carries its stable execution identity");
+    check(fill.n[11] == 5 && fill.d[19] == 1 && fill.d[24] == 1 && fill.s[25] == "321:77:1" &&
+              std::bit_cast<std::uint64_t>(fill.d.at(23)) == 1'800'000'000'123,
+          "committed partial fill carries stable execution identity and milliseconds");
+    h.got.clear();
+    Bytes history;
+    num(history, 1, 80);
+    num(history, 3, 1);
+    h.send(packet(303, history));
+    h.pump(15);
+    check(std::bit_cast<std::uint64_t>(Read(h.first(304).payload).d.at(9)) == 1'800'000'000,
+          "historical fill retains the protocol's seconds unit");
     h.got.clear();
     Bytes replace;
     txt(replace, 1, "9021");
     txt(replace, 2, "abc-123");
     dbl(replace, 3, 123.46);
+    h.send(packet(204, replace));
+    h.pump(15);
+    check(moved == 0 && Read(h.first(301).payload).n.at(11) == 10,
+          "present replacement price without Price1IsSet is rejected");
+    h.got.clear();
+    Bytes no_change;
+    txt(no_change, 1, "9021");
+    txt(no_change, 2, "abc-123");
+    num(no_change, 6, 1);
+    txt(no_change, 13, "123.45000");
+    h.send(packet(204, no_change));
+    h.pump(15);
+    check(moved == 0 && Read(h.first(301).payload).n.at(11) == 10,
+          "identical prices with different textual precision are a no-op");
+    h.got.clear();
     num(replace, 6, 1);
     h.send(packet(204, replace));
     h.pump(15);
@@ -796,7 +851,10 @@ void manual_trading_reconnect() {
     query(305, 83);
     h.got.clear();
     add(false);
-    check(submitted == 1 && Read(h.first(301).payload).n[11] == 8, "duplicate ClientOrderID is rejected on reconnect");
+    const Read duplicate(h.first(301).payload);
+    check(submitted == 1 && duplicate.n.at(11) == 3 && duplicate.n.at(10) == 10 && duplicate.s.at(7) == "9021" &&
+              duplicate.s.at(27) == "duplicate ClientOrderID; no new order",
+          "duplicate ClientOrderID reports the existing order on reconnect");
     Bytes cancel;
     txt(cancel, 1, "9021");
     txt(cancel, 2, "abc-123");
@@ -830,6 +888,25 @@ void manual_trading_reconnect() {
     h.send(packet(203, robot_cancel));
     h.pump(15);
     check(cancelled == 2, "robot-origin DTC Del stays available");
+    h.got.clear();
+    snapshot.orders_current = false;
+    snapshot.position.reset();
+    h.pump(80);
+    add(0, "transient-reject");
+    check(submitted == 2 && Read(h.first(301).payload).n.at(11) == 8 && h.count(5) == 0 && !h.eof,
+          "transient private transaction fences Add without losing DTC session");
+    snapshot.orders_current = true;
+    snapshot.position = 0;
+    ++snapshot.generation;
+    h.got.clear();
+    h.pump(80);
+    check(h.count(5) == 1 && Read(h.first(5).payload).n.at(2) == 0 && h.eof && client_lost == 0,
+          "new private generation permits reconnect without arming the client-loss sweep");
+    h.connect();
+    logon();
+    check(::shutdown(h.fd, SHUT_WR) == 0, "test client write-side EOF");
+    h.pump(20);
+    check(h.eof && client_lost == 1, "authenticated transport EOF arms client-loss notification");
 }
 void live_test_late_refdata_after_logon() {
     auto c = config();
@@ -1540,7 +1617,8 @@ int main(int argc, char** argv) {
     }
     replay_roundtrip();
     live_test_metadata_and_auth();
-    manual_trading_reconnect();
+    manual_trading_reconnect(false);
+    manual_trading_reconnect(true);
     live_test_late_refdata_after_logon();
     revoke_and_reconnect();
     definition_revocation();

@@ -747,6 +747,18 @@ OrderManager::Command OrderManager::encode(tr::Plaza2TradeCommandRequest request
     return result;
 }
 std::string OrderManager::place(OrderRequest request) {
+    return place_impl(std::move(request), nullptr);
+}
+DtcAddPreparation OrderManager::prepare_dtc_add(OrderRequest request) {
+    if (pending_dtc_add_)
+        return {.error = "another DTC Add is awaiting persistence"};
+    DtcAddPreparation result;
+    result.error = place_impl(std::move(request), &result.ext_id);
+    return result;
+}
+std::string OrderManager::place_impl(OrderRequest request, std::int32_t* prepared_ext) {
+    if (request.dtc_origin != (prepared_ext != nullptr))
+        return "DTC Add requires durable preparation";
     AddPathTiming add_path;
     auto* timing = config_.measure_add_path ? &add_path : nullptr;
     const auto started = stage_now(timing);
@@ -766,6 +778,9 @@ std::string OrderManager::place(OrderRequest request) {
         return error;
     if (config_.next_ext_id > config_.ext_id_end)
         return "instance ext_id range exhausted";
+    if ((prepared_ext && !config_.ids_reserved) ||
+        (config_.ids_reserved && !config_.ids_reserved(config_.next_ext_id, config_.next_user_id)))
+        return "DTC command IDs are awaiting durable reservation";
     const auto ext = config_.next_ext_id++;
     tr::AddOrderRequest add;
     add.broker_code = config_.broker_code;
@@ -781,24 +796,18 @@ std::string OrderManager::place(OrderRequest request) {
     add.compliance_id = request.automated ? "R" : "M";
     try {
         auto command = encode(add, request.client_order_id, timing);
-        if (request.dtc_origin) {
-            if (!config_.reserve_dtc_identity)
-                return "DTC identity journal is unavailable";
-            config_.reserve_dtc_identity(request.client_order_id, ext, request.automated);
-            command.dtc_origin = true;
-        }
         const auto queue_started = stage_now(timing);
         const auto terms_before = add_path.session_terms_ns;
-        ManagedOrder order{.request = std::move(request), .ext_id = ext, .instance_owned = true};
-        order.sess_id = terms(order.request.isin_id, timing)->sess_id;
-        order.remaining = order.request.quantity;
-        const auto key = order.request.client_order_id;
-        orders_.emplace(key, std::move(order));
-        used_client_ids_.insert(key);
-        advance_session(orders_.at(key).sess_id);
-        ext_index_[ext] = key;
-        adds_.push_back(std::move(command));
-        changed(key);
+        const auto session = terms(request.isin_id, timing);
+        if (!session)
+            return "current session terms are unavailable";
+        if (prepared_ext) {
+            command.dtc_origin = true;
+            pending_dtc_add_.emplace(PendingDtcAdd{std::move(request), std::move(command), ext, session->sess_id});
+            *prepared_ext = ext;
+            return {};
+        }
+        queue_add(std::move(request), std::move(command), ext, session->sess_id);
         if (timing) {
             timing->queue_ns += stage_now(timing) - queue_started - (timing->session_terms_ns - terms_before);
             timing->manager_place_ns = stage_now(timing) - started;
@@ -808,6 +817,36 @@ std::string OrderManager::place(OrderRequest request) {
     } catch (const std::invalid_argument& error) {
         return error.what();
     }
+}
+std::string OrderManager::finish_dtc_add(std::int32_t ext_id, bool persisted) {
+    if (!pending_dtc_add_ || pending_dtc_add_->ext_id != ext_id)
+        return "DTC Add was fenced before venue dispatch";
+    auto pending = std::move(*pending_dtc_add_);
+    pending_dtc_add_.reset();
+    if (!persisted)
+        return "DTC identity could not be durably reserved";
+    const auto& request = pending.request;
+    if (used_client_ids_.contains(request.client_order_id))
+        return "client order id already used";
+    if (auto error = check_risk(request, 1); !error.empty())
+        return error;
+    const auto session = terms(request.isin_id, nullptr);
+    if (!session || session->sess_id != pending.session)
+        return "DTC Add session changed during persistence";
+    queue_add(std::move(pending.request), std::move(pending.command), ext_id, pending.session);
+    return {};
+}
+void OrderManager::queue_add(OrderRequest request, Command command, std::int32_t ext, std::int32_t session) {
+    ManagedOrder order{.request = std::move(request), .ext_id = ext, .instance_owned = true};
+    order.sess_id = session;
+    order.remaining = order.request.quantity;
+    const auto key = order.request.client_order_id;
+    orders_.emplace(key, std::move(order));
+    used_client_ids_.insert(key);
+    advance_session(session);
+    ext_index_[ext] = key;
+    adds_.push_back(std::move(command));
+    changed(key);
 }
 void OrderManager::discard_recovery_cancel(ManagedOrder& order) {
     order.absence_reply = false;
@@ -1020,6 +1059,7 @@ void OrderManager::set_kill_switch(bool enabled) {
 }
 
 void OrderManager::fence_dtc_entry() {
+    pending_dtc_add_.reset();
     for (auto queued = adds_.begin(); queued != adds_.end();) {
         if (!queued->dtc_origin) {
             ++queued;
@@ -1298,6 +1338,10 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
         throttled_ = false;
         if (logging_failed_ && add_or_move)
             break;
+        if (command.dtc_origin && config_.dtc_connection_current && !config_.dtc_connection_current()) {
+            fence_dtc_entry();
+            continue;
+        }
         if (timing)
             timing->dispatch_ns +=
                 stage_now(timing) - dispatch_started - selection_ready_ns - dispatch_risk_ns - dispatch_terms_ns;

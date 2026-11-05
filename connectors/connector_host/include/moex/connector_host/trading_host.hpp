@@ -10,6 +10,7 @@
 
 namespace moex::connector_host {
 struct TradingHostConfig {
+    bool async_dtc_persistence{};
     plaza2_trade::CgateSessionConfig session;
     OrderManagerConfig orders;
     std::vector<std::int32_t> isin_ids;
@@ -36,7 +37,10 @@ class CgateTradingHost {
     [[nodiscard]] std::string cancel(std::string_view client_order_id);
     [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity,
                                    bool dtc_origin = false);
+    [[nodiscard]] DtcAddPreparation prepare_dtc_add(OrderRequest request);
+    [[nodiscard]] std::string finish_dtc_add(std::int32_t ext_id, bool persisted);
     void fence_dtc_entry();
+    void set_dtc_cancel_alert(std::string error);
     [[nodiscard]] bool dtc_snapshot_ready() const;
     [[nodiscard]] bool dtc_fill_history_current() const;
     [[nodiscard]] std::optional<plaza2_trade::CgateFullOrderLogBalance> dtc_balance() const;
@@ -98,7 +102,7 @@ class CgateTradingHost {
     bool stopped_{};
     bool link_was_active_{}, link_lost_{};
     plaza2::cgate::Plaza2Error stop_error_;
-    std::string log_error_;
+    std::string log_error_, dtc_cancel_alert_;
     std::string identifier_reservation_;
     bool journal_failed_{};
     bool storage_recovery_requested_{};

@@ -17,6 +17,7 @@ struct DtcOwnOrder {
 struct DtcOwnFill {
     std::string server_id, native_id, execution_id, price;
     std::int64_t timestamp_seconds{}, quantity{};
+    std::uint64_t exchange_time_ns{};
     plaza2_trade::Plaza2TradeSide side{};
 };
 
@@ -32,6 +33,15 @@ struct DtcOwnBalance {
     friend bool operator==(const DtcOwnBalance&, const DtcOwnBalance&) = default;
 };
 
+struct DtcTradeCommand {
+    enum class Kind { Add, Move, Cancel } kind;
+    std::string client_id, server_id, price;
+    plaza2_trade::Plaza2TradeSide side{};
+    std::int32_t quantity{};
+    bool ioc{}, automated{};
+    std::uint64_t snapshot_generation{}, source_epoch{};
+};
+
 struct DtcTradingHooks {
     std::string account;
     std::function<DtcTradingSnapshot()> snapshot;
@@ -41,6 +51,10 @@ struct DtcTradingHooks {
     std::function<std::string(std::string_view, std::string, std::int32_t)> move;
     std::function<std::string(std::string_view)> cancel;
     std::function<void()> disconnected, reconciled;
+    std::function<void()> client_lost;
+    // A deferred bridge accepts at most one owner command until its result is consumed.
+    std::function<bool(DtcTradeCommand)> submit;
+    std::function<std::optional<std::string>()> take_result;
 };
 
 } // namespace moex::connector_host::dtc

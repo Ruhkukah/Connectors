@@ -1,6 +1,7 @@
 #pragma once
 
-#include "moex/connector_host/dtc_read_only_server.hpp"
+#include "full_order_log_dtc_identity.hpp"
+#include "full_order_log_dtc_worker.hpp"
 #include "moex/connector_host/full_order_log_dtc.hpp"
 #include "moex/connector_host/trading_host.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_deals.hpp"
@@ -8,7 +9,9 @@
 #include <array>
 #include <cerrno>
 #include <charconv>
+#include <csignal>
 #include <fcntl.h>
+#include <iostream>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -21,186 +24,286 @@ class FullOrderLogTradingDtc {
         : port_(port), cancel_after_disconnect_(cancel_after_disconnect), isin_(config.isin_ids.front()),
           account_(config.orders.broker_code + config.orders.client_code),
           account_type_(config.orders.client_code.empty() ? 1 : 2), login_(config.orders.login_from),
-          ext_begin_(config.orders.ext_id_begin), ext_end_(config.orders.ext_id_end), secret_(read_secret(secret)) {
-        auto path = config.identity_state_path;
-        if (path.empty())
-            path = config.journal_path.parent_path() / (config.session.publisher_name + ".state");
-        ledger_ = path.string() + ".dtc";
-    }
+          secret_(read_secret(secret)), identity_(config) {}
     ~FullOrderLogTradingDtc() {
         stop();
-        if (ledger_fd_ >= 0)
-            ::close(ledger_fd_);
+        join();
     }
 
     void start(CgateTradingHost& host, plaza2::cgate::Plaza2FullOrderLog& book,
                const plaza2::cgate::FullOrderLogDeals* deals) {
         host_ = &host;
-        open_ledger();
+        identity_.start();
         source_ = std::make_unique<dtc::DtcFullOrderLogSource>(book, isin_, dtc::DtcMarketDataSnapshot{}, 40);
+        source_->configure_depth_limit(20);
         if (deals)
             source_->set_public_deals_reader(
                 [deals, isin = isin_](auto after, auto session) { return deals->snapshot(isin, after, session); });
-        dtc::DtcTradingHooks hooks;
-        hooks.account = account_;
-        hooks.snapshot = [&] { return snapshot(); };
-        hooks.fills = [&] { return fills(); };
-        hooks.balance = [&]() -> std::optional<dtc::DtcOwnBalance> {
-            const auto value = host_->dtc_balance();
-            if (!value)
-                return std::nullopt;
-            return dtc::DtcOwnBalance{value->free_kopecks, value->blocked_kopecks, value->total_kopecks};
-        };
-        hooks.place = [&](std::string id, auto side, bool ioc, std::string price, std::int32_t qty, bool automated) {
-            if (!ready())
-                return std::string("DTC entry is fenced");
-            if (keys_.contains(id))
-                return std::string("duplicate ClientOrderID");
-            const auto key = "dtc:" + id;
-            const auto line = "place " + key;
-            host_->record_operator_input(line, automated ? "dtc_automated" : "dtc");
-            return report(line, host_->place({.client_order_id = key,
-                                              .isin_id = isin_,
-                                              .side = side,
-                                              .type = ioc ? plaza2_trade::Plaza2TradeOrderType::Ioc
-                                                          : plaza2_trade::Plaza2TradeOrderType::Limit,
-                                              .price = std::move(price),
-                                              .quantity = qty,
-                                              .dtc_origin = true,
-                                              .automated = automated}));
-        };
-        hooks.move = [&](std::string_view server_id, std::string price, std::int32_t qty) {
-            if (!ready())
-                return std::string("DTC entry is fenced");
-            const auto* order = find(server_id);
-            if (!order)
-                return std::string("DTC order identity unavailable");
-            if (ids_.at(order->ext_id).automated)
-                return std::string("DTC cancel-replace lacks automation provenance; cancel remains available");
-            const auto line = "move " + order->request.client_order_id;
-            host_->record_operator_input(line, "dtc");
-            return report(line, host_->move(order->request.client_order_id, std::move(price), qty, true));
-        };
-        hooks.cancel = [&](std::string_view server_id) {
-            const auto* order = find(server_id);
-            if (!order || order->order_id <= 0)
-                return std::string("native DTC order identity unavailable");
-            return cancel(*order);
-        };
-        hooks.disconnected = [&] {
-            if (!host_)
-                return;
-            try {
-                host_->fence_dtc_entry();
-                if (cancel_after_disconnect_ && !disconnected_at_)
-                    disconnected_at_ = Clock::now();
-            } catch (...) {
-                // Do not let socket teardown interrupt normal host shutdown.
-                try {
-                    host_->set_kill_switch(true);
-                } catch (...) {
-                }
-            }
-        };
-        hooks.reconciled = [&] {
-            if (disconnected_at_ && Clock::now() - *disconnected_at_ < std::chrono::seconds(10))
-                disconnected_at_.reset();
-        };
-        server_ = std::make_unique<dtc::DtcReadOnlyServer>(
-            *source_, dtc::DtcReadOnlyServerConfig{.port = port_,
-                                                   .source_mode = dtc::DtcSourceMode::LiveTest,
-                                                   .symbol_id = 1,
-                                                   .max_queued_bytes = 1024 * 1024,
-                                                   .require_local_auth = true,
-                                                   .local_username = "kairos",
-                                                   .local_password = std::move(secret_),
-                                                   .trading = std::move(hooks)});
-        std::string error;
-        if (!server_->start(error))
-            throw std::runtime_error(error);
+        worker_.start(port_, std::move(secret_), account_, deals != nullptr);
     }
     void stop() noexcept {
-        if (server_)
-            server_->stop();
+        worker_.request_stop();
+        identity_.request_stop();
+        if (host_)
+            try {
+                host_->fence_dtc_entry();
+            } catch (...) {
+            }
         host_ = nullptr;
     }
-    void poll(std::uint64_t version, std::uint64_t epoch) {
-        if (disconnected_at_ && Clock::now() - *disconnected_at_ >= std::chrono::seconds(10) &&
-            host_->dtc_snapshot_ready()) {
-            bool outstanding = false;
-            for (const auto& [_, order] : host_->dtc_orders()) {
-                if (!owns(order) || terminal(order.state))
-                    continue;
-                outstanding = true;
-                if (!order.cancel_requested && order.order_id > 0 &&
-                    (order.state == OrderState::Working || order.state == OrderState::PartFilled) &&
-                    disconnect_cancel_attempts_.insert(order.ext_id).second)
-                    (void)cancel(order);
-            }
-            if (!outstanding) {
-                disconnected_at_.reset();
-                disconnect_cancel_attempts_.clear();
-            }
-        }
-        const auto now = Clock::now();
-        const auto metadata = host_->dtc_private_state().metadata_revision();
-        if (metadata != metadata_ || epoch != epoch_ || now >= refresh_at_) {
-            source_->update_metadata(dtc::make_dtc_market_data_snapshot(host_->dtc_market_data(isin_)));
-            metadata_ = metadata;
-            refresh_at_ = now + std::chrono::seconds(1);
-        }
-        if (version != version_ || epoch != epoch_) {
-            source_->committed();
-            version_ = version;
-            epoch_ = epoch;
-        }
-        server_->poll();
+    void join() noexcept {
+        worker_.join();
+        identity_.join();
     }
-    void reserve(std::string_view key, std::int32_t ext, bool automated) {
-        const std::string id(key.substr(4));
-        if (ledger_fd_ < 0 || keys_.contains(id) || ids_.contains(ext) || ids_.size() >= capacity_)
-            throw std::invalid_argument("DTC identity already used or identity ledger full");
-        const auto fd = ::openat(ledger_fd_, id.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-        if (fd < 0)
-            throw std::invalid_argument("DTC identity could not be reserved");
-        const auto line = ledger_record(ext, automated);
-        const bool synced = ::write(fd, line.data(), line.size()) == static_cast<ssize_t>(line.size()) &&
-                            ::fsync(fd) == 0 && ::fsync(ledger_fd_) == 0;
-        ::close(fd);
-        if (!synced)
-            throw std::invalid_argument("DTC identity could not be durably reserved");
-        keys_.insert(id);
-        ids_.emplace(ext, Identity{id, automated});
+    void poll(std::uint64_t version, std::uint64_t epoch) {
+        try {
+            poll_owner(version, epoch);
+        } catch (...) {
+            failed_ = true;
+            worker_.request_stop();
+            identity_.request_stop();
+            try {
+                host_->fence_dtc_entry();
+            } catch (...) {
+            }
+            try {
+                host_->set_kill_switch(true);
+            } catch (...) {
+            }
+            std::cerr << "FOL DTC owner failure; entering normal SIGTERM cancel drain\n";
+            if (::kill(::getpid(), SIGTERM) != 0)
+                throw;
+        }
+    }
+    [[nodiscard]] bool failed() const noexcept {
+        return failed_;
+    }
+    [[nodiscard]] bool entry_connection_current() const noexcept {
+        return host_ && !failed_ && worker_.running() && !disconnected_at_ && worker_.connection() == connection_ &&
+               worker_.reconciled() == connection_ &&
+               worker_.reconciled_generation() == host_->dtc_snapshot_generation();
     }
 
   private:
-    using Clock = std::chrono::steady_clock;
-    static constexpr std::size_t capacity_ = 65536;
+    using Clock = FullOrderLogDtcWorker::Clock;
+    using Command = dtc::DtcTradeCommand;
     static constexpr std::size_t max_report_ = 4096;
+    struct PendingAdd {
+        std::int32_t ext_id;
+        std::uint64_t connection, generation, epoch;
+        std::string line;
+    };
+
     std::uint16_t port_;
     bool cancel_after_disconnect_;
     std::int32_t isin_;
     std::string account_;
     std::int8_t account_type_;
-    std::string login_;
-    std::int32_t ext_begin_, ext_end_;
-    std::string secret_;
-    std::filesystem::path ledger_;
-    int ledger_fd_{-1};
-    std::set<std::string> keys_;
-    struct Identity {
-        std::string client_id;
-        bool automated;
-    };
-    std::map<std::int32_t, Identity> ids_;
+    std::string login_, secret_;
+    FullOrderLogDtcIdentity identity_;
+    FullOrderLogDtcWorker worker_;
     CgateTradingHost* host_{};
     std::unique_ptr<dtc::DtcFullOrderLogSource> source_;
-    std::unique_ptr<dtc::DtcReadOnlyServer> server_;
+    std::optional<PendingAdd> pending_add_;
     std::optional<Clock::time_point> disconnected_at_;
-    std::set<std::int32_t> disconnect_cancel_attempts_;
-    Clock::time_point refresh_at_{};
-    std::uint64_t version_{}, epoch_{}, metadata_{};
+    std::map<std::int32_t, Clock::time_point> disconnect_cancel_attempts_;
+    std::shared_ptr<const std::vector<dtc::DtcOwnFill>> cached_fills_;
+    Clock::time_point refresh_at_{}, private_at_{}, observed_loss_{};
+    std::uint64_t version_{}, epoch_{}, metadata_{}, connection_{1};
+    plaza2::cgate::Plaza2PublicDealsSnapshot deals_header_;
+    bool retry_market_{true}, history_current_{}, failed_{};
+    std::tuple<std::size_t, std::int32_t, std::int64_t, std::int64_t> history_key_{};
 
+    void poll_owner(std::uint64_t version, std::uint64_t epoch) {
+        if (failed_)
+            return;
+        if (!worker_.running())
+            throw std::runtime_error("FOL DTC worker stopped");
+        const auto now = Clock::now();
+        const auto connection = worker_.connection();
+        const auto loss = worker_.disconnected_at();
+        if (connection != connection_ ||
+            (pending_add_ &&
+             (pending_add_->epoch != epoch || pending_add_->generation != host_->dtc_snapshot_generation()))) {
+            host_->fence_dtc_entry();
+            connection_ = connection;
+        }
+        if (loss != observed_loss_) {
+            observed_loss_ = loss;
+            if (cancel_after_disconnect_ && !disconnected_at_)
+                disconnected_at_ = loss;
+        }
+        if (disconnected_at_ && worker_.reconciled() == connection_) {
+            const auto reconciled = worker_.reconciled_at();
+            if (reconciled >= *disconnected_at_ && reconciled - *disconnected_at_ < std::chrono::seconds(10)) {
+                disconnected_at_.reset();
+                disconnect_cancel_attempts_.clear();
+            }
+        }
+        sweep(now);
+        if (auto ack = identity_.take()) {
+            if (!pending_add_ || pending_add_->ext_id != ack->ext_id)
+                throw std::logic_error("DTC identity reply has no matching owner command");
+            auto pending = std::exchange(pending_add_, std::nullopt);
+            if (pending->connection != worker_.connection() || pending->epoch != epoch ||
+                pending->generation != host_->dtc_snapshot_generation() || !ready()) {
+                host_->fence_dtc_entry();
+                complete(report(pending->line, "DTC authority changed before Add was posted"), now);
+            } else {
+                complete(report(pending->line, host_->finish_dtc_add(ack->ext_id, ack->persisted)), now);
+            }
+        }
+        if (auto pending = worker_.take_command())
+            apply(std::move(*pending), epoch, now);
+        if (now >= private_at_)
+            publish_private(now);
+        publish_market(version, epoch, now);
+    }
+    void apply(FullOrderLogDtcWorker::Command pending, std::uint64_t epoch, Clock::time_point now) {
+        auto& command = pending.value;
+        if (pending.connection != worker_.connection()) {
+            complete("DTC session closed before dispatch", now);
+            return;
+        }
+        if (command.kind != Command::Kind::Cancel &&
+            (!ready() || command.source_epoch != epoch ||
+             command.snapshot_generation != host_->dtc_snapshot_generation())) {
+            complete("DTC entry is fenced", now);
+            return;
+        }
+        if (command.kind == Command::Kind::Add) {
+            if (identity_.contains(command.client_id)) {
+                complete("duplicate ClientOrderID", now);
+                return;
+            }
+            const auto key = "dtc:" + command.client_id;
+            const auto line = "place " + key;
+            host_->record_operator_input(line, command.automated ? "dtc_automated" : "dtc");
+            auto prepared = host_->prepare_dtc_add({.client_order_id = key,
+                                                    .isin_id = isin_,
+                                                    .side = command.side,
+                                                    .type = command.ioc ? plaza2_trade::Plaza2TradeOrderType::Ioc
+                                                                        : plaza2_trade::Plaza2TradeOrderType::Limit,
+                                                    .price = std::move(command.price),
+                                                    .quantity = command.quantity,
+                                                    .dtc_origin = true,
+                                                    .automated = command.automated});
+            if (!prepared.error.empty()) {
+                complete(report(line, std::move(prepared.error)), now);
+                return;
+            }
+            if (auto error = identity_.submit(key, prepared.ext_id, command.automated); !error.empty()) {
+                (void)host_->finish_dtc_add(prepared.ext_id, false);
+                complete(report(line, std::move(error)), now);
+                return;
+            }
+            pending_add_ = PendingAdd{prepared.ext_id, pending.connection, command.snapshot_generation, epoch, line};
+            return;
+        }
+        const auto* order = find(command.server_id, command.client_id);
+        if (!order || order->order_id <= 0) {
+            complete("native DTC order identity unavailable", now);
+            return;
+        }
+        if (command.kind == Command::Kind::Cancel) {
+            complete(cancel(*order), now);
+            return;
+        }
+        if (identity_.by_ext(order->ext_id)->automated) {
+            complete("DTC cancel-replace lacks automation provenance; cancel remains available", now);
+            return;
+        }
+        const auto line = "move " + order->request.client_order_id;
+        host_->record_operator_input(line, "dtc");
+        complete(
+            report(line, host_->move(order->request.client_order_id, std::move(command.price), command.quantity, true)),
+            now);
+    }
+    void complete(std::string result, Clock::time_point now) {
+        publish_private(now);
+        worker_.complete(std::move(result));
+    }
+    void sweep(Clock::time_point now) {
+        if (!disconnected_at_ || now - *disconnected_at_ < std::chrono::seconds(10) || !host_->dtc_snapshot_ready())
+            return;
+        bool outstanding = false;
+        for (const auto& [_, order] : host_->dtc_orders()) {
+            if (!owns(order) || terminal(order.state))
+                continue;
+            outstanding = true;
+            if (order.cancel_requested || order.order_id <= 0 ||
+                (order.state != OrderState::Working && order.state != OrderState::PartFilled))
+                continue;
+            auto& retry = disconnect_cancel_attempts_[order.ext_id];
+            if (now < retry)
+                continue;
+            retry = now + std::chrono::seconds(1);
+            if (auto error = cancel(order); !error.empty()) {
+                host_->record_local_refusal("DTC disconnect cancel needs operator attention", error, "dtc");
+                host_->set_dtc_cancel_alert(std::move(error));
+            }
+        }
+        if (!outstanding) {
+            disconnected_at_.reset();
+            disconnect_cancel_attempts_.clear();
+            host_->set_dtc_cancel_alert({});
+        }
+    }
+    void publish_private(Clock::time_point now) {
+        auto state = std::make_unique<FullOrderLogDtcWorker::Private>();
+        state->snapshot = snapshot();
+        const auto trades = host_->dtc_private_state().own_trades();
+        const auto key = trades.empty() ? decltype(history_key_){}
+                                        : decltype(history_key_){trades.size(), trades.back().sess_id,
+                                                                 trades.back().id_deal, trades.back().repl_rev};
+        if (state->snapshot.fills_current != history_current_ || key != history_key_) {
+            auto rows = fills();
+            cached_fills_ = rows ? std::make_shared<const std::vector<dtc::DtcOwnFill>>(std::move(*rows)) : nullptr;
+            history_current_ = state->snapshot.fills_current;
+            history_key_ = key;
+        }
+        state->fills = cached_fills_;
+        if (const auto balance = host_->dtc_balance())
+            state->balance =
+                dtc::DtcOwnBalance{balance->free_kopecks, balance->blocked_kopecks, balance->total_kopecks};
+        worker_.publish(std::move(state));
+        private_at_ = now + std::chrono::milliseconds(25);
+    }
+    void publish_market(std::uint64_t version, std::uint64_t epoch, Clock::time_point now) {
+        const auto metadata = host_->dtc_private_state().metadata_revision();
+        const bool metadata_refresh = metadata != metadata_ || epoch != epoch_ || now >= refresh_at_;
+        if (metadata_refresh) {
+            source_->update_metadata(dtc::make_dtc_market_data_snapshot(host_->dtc_market_data(isin_)));
+            metadata_ = metadata;
+            refresh_at_ = now + std::chrono::seconds(1);
+        }
+        const auto header = source_->public_deals(UINT64_MAX);
+        const bool deals_changed = header.stream_epoch != deals_header_.stream_epoch ||
+                                   header.last_sequence != deals_header_.last_sequence ||
+                                   header.online != deals_header_.online || header.valid != deals_header_.valid ||
+                                   header.lifenum != deals_header_.lifenum;
+        const bool book_changed = version != version_ || epoch != epoch_;
+        if (!book_changed && !metadata_refresh && !deals_changed && !retry_market_)
+            return;
+        auto deals = deals_changed && header.valid
+                         ? source_->public_deals(
+                               header.stream_epoch == deals_header_.stream_epoch ? deals_header_.last_sequence : 0)
+                         : header;
+        FullOrderLogDtcWorker::Market frame;
+        if (book_changed) {
+            source_->committed();
+            const auto changes = source_->depth_changes();
+            frame.changes.assign(changes.begin(), changes.end());
+        }
+        frame.snapshot = source_->snapshot();
+        const bool too_many_deals = deals.trades.size() > 2048;
+        frame.deals = std::move(deals);
+        version_ = version;
+        epoch_ = epoch;
+        retry_market_ = !worker_.publish(std::move(frame));
+        if (!retry_market_ || too_many_deals)
+            deals_header_ = header;
+    }
     static std::string read_secret(const std::filesystem::path& path) {
         const auto fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
         struct stat info {};
@@ -223,65 +326,21 @@ class FullOrderLogTradingDtc {
             throw std::invalid_argument("invalid DTC secret");
         return result;
     }
-    std::string ledger_record(std::int32_t ext, bool automated) const {
-        return std::to_string(ext) + '\n' + std::to_string(isin_) + '\n' + account_ + '\n' + login_ +
-               (automated ? "\nR\n" : "\nM\n");
-    }
-    void open_ledger() {
-        const auto parent = ledger_.parent_path().empty() ? std::filesystem::path(".") : ledger_.parent_path();
-        if (::mkdir(ledger_.c_str(), 0700) != 0 && errno != EEXIST)
-            throw std::runtime_error("cannot create DTC identity ledger");
-        const auto parent_fd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        const bool parent_synced = parent_fd >= 0 && ::fsync(parent_fd) == 0;
-        if (parent_fd >= 0)
-            ::close(parent_fd);
-        ledger_fd_ = ::open(ledger_.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-        struct stat info {};
-        if (!parent_synced || ledger_fd_ < 0 || ::fstat(ledger_fd_, &info) != 0 || info.st_uid != ::geteuid() ||
-            (info.st_mode & 0777) != 0700)
-            throw std::runtime_error("DTC identity ledger must be owned and mode 0700");
-        for (const auto& entry : std::filesystem::directory_iterator(ledger_)) {
-            const auto id = entry.path().filename().string();
-            if (ids_.size() >= capacity_ || id.empty() || id.size() > 64 ||
-                id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") !=
-                    std::string::npos)
-                throw std::runtime_error("invalid DTC identity ledger entry");
-            const auto fd = ::openat(ledger_fd_, id.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-            struct stat stat {};
-            std::array<char, 256> bytes{};
-            const bool valid = fd >= 0 && ::fstat(fd, &stat) == 0 && S_ISREG(stat.st_mode) &&
-                               stat.st_uid == ::geteuid() && (stat.st_mode & 0777) == 0600;
-            const auto size = valid ? ::read(fd, bytes.data(), bytes.size()) : -1;
-            if (fd >= 0)
-                ::close(fd);
-            if (size <= 0 || size >= static_cast<ssize_t>(bytes.size()))
-                throw std::runtime_error("invalid or incomplete DTC identity record");
-            const std::string_view line(bytes.data(), static_cast<std::size_t>(size));
-            const auto end = line.find('\n');
-            const auto automated = line.ends_with("\nR\n");
-            std::int32_t ext{};
-            if (end == std::string_view::npos ||
-                std::from_chars(line.data(), line.data() + end, ext).ec != std::errc{} || ext < ext_begin_ ||
-                ext > ext_end_ || ledger_record(ext, automated) != line ||
-                !ids_.emplace(ext, Identity{id, automated}).second)
-                throw std::runtime_error("DTC identity ledger does not match account, login or ID range");
-            keys_.insert(id);
-        }
-    }
     static std::string native_view_id(std::int32_t session, std::int64_t native) {
         return "native:" + std::to_string(session) + ":" + std::to_string(native);
     }
     bool owns(const ManagedOrder& order) const {
-        return order.instance_owned && order.request.isin_id == isin_ && ids_.contains(order.ext_id);
+        return order.instance_owned && order.request.isin_id == isin_ && identity_.by_ext(order.ext_id);
     }
-    const ManagedOrder* find(std::string_view server_id) const {
+    const ManagedOrder* find(std::string_view server_id, std::string_view client_id) const {
         for (const auto& [_, order] : host_->dtc_orders())
-            if (owns(order) && server_id == std::to_string(order.ext_id))
+            if (owns(order) && server_id == std::to_string(order.ext_id) &&
+                client_id == identity_.by_ext(order.ext_id)->client_id)
                 return &order;
         return nullptr;
     }
     bool ready() const {
-        return !disconnected_at_ && host_->dtc_entry_ready(isin_);
+        return entry_connection_current() && host_->dtc_entry_ready(isin_);
     }
     std::string report(std::string_view line, std::string error) {
         if (!error.empty())
@@ -314,7 +373,7 @@ class FullOrderLogTradingDtc {
                 out.orders_current = false;
                 break;
             }
-            out.orders.push_back({.client_id = dtc_owned ? ids_.at(order.ext_id).client_id : std::string{},
+            out.orders.push_back({.client_id = dtc_owned ? identity_.by_ext(order.ext_id)->client_id : std::string{},
                                   .server_id = dtc_owned            ? std::to_string(order.ext_id)
                                                : order.order_id > 0 ? native_view_id(order.sess_id, order.order_id)
                                                                     : "view:" + key,
@@ -329,7 +388,7 @@ class FullOrderLogTradingDtc {
                                   .remaining = order.remaining,
                                   .fill_baseline_known = order.execution_baseline_known,
                                   .dtc_owned = dtc_owned,
-                                  .automated = dtc_owned && ids_.at(order.ext_id).automated});
+                                  .automated = dtc_owned && identity_.by_ext(order.ext_id)->automated});
         }
         return out;
     }
@@ -350,7 +409,7 @@ class FullOrderLogTradingDtc {
                     incomplete = true;
                     return;
                 }
-                const bool dtc_owned = login == login_ && ids_.contains(ext);
+                const bool dtc_owned = login == login_ && identity_.by_ext(ext);
                 if (!dtc_owned && native <= 0) {
                     incomplete = true;
                     return;
@@ -362,6 +421,7 @@ class FullOrderLogTradingDtc {
                                 .price = fill.price,
                                 .timestamp_seconds = static_cast<std::int64_t>(fill.moment_ns / 1000000000ULL),
                                 .quantity = fill.amount,
+                                .exchange_time_ns = fill.moment_ns,
                                 .side = side});
             };
             append(fill.ext_id_buy, fill.private_order_id_buy, fill.code_buy, fill.login_buy,

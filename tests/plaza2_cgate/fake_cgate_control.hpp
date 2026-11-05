@@ -154,9 +154,14 @@ enum class Option : std::uint32_t {
     ZeroPosition,
     PublisherLayoutOffsetMismatch,
     ReplyLayoutTypeMismatch,
+    FolRiskStreams,
     Count
 };
 // Scenario controls are local to one explicitly loaded fake runtime, never process environment.
+inline constexpr auto kFolRiskPart = static_cast<generated::StreamCode>(0xF0111001u);
+inline constexpr auto kFolRiskProhibition = static_cast<generated::StreamCode>(0xF0111002u);
+inline constexpr auto kFolRiskUser = static_cast<generated::StreamCode>(0xF0111003u);
+inline constexpr auto kFolRiskEnvironment = static_cast<generated::StreamCode>(0xF0111004u);
 struct Scenario {
     bool continuous_input{false};
     bool suppress_auto_replies{false};

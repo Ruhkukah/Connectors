@@ -2,6 +2,8 @@
 #include "moex/plaza2/cgate/plaza2_full_order_log_capture.hpp"
 #include "command_socket.hpp"
 #include "scope_exit.hpp"
+#include "dtc_test_wire.hpp"
+#include "moex/connector_host/dtc_market_data.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -11,6 +13,9 @@
 #include <iostream>
 #include <string>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -215,6 +220,7 @@ std::size_t occurrences(std::string_view value, std::string_view needle) {
 
 #include "full_order_log_command_cases.hpp"
 #include "full_order_log_recovery_cases.hpp"
+#include "full_order_log_dtc_worker_case.hpp"
 
 int main(int argc, char** argv) {
     if (argc != 3 && argc != 4)
@@ -243,7 +249,9 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_FOL_RUNNER_LOGIN", "fol-offline-owner", 1);
         if (argc == 4) {
             const std::string_view test_case = argv[3];
-            if (test_case == "outages")
+            if (test_case == "dtc-worker")
+                test_fol_dtc_worker(executable, fixture);
+            else if (test_case == "outages")
                 test_fol_outages(executable, fixture);
             else if (test_case == "restart")
                 test_fol_restart(executable, fixture);

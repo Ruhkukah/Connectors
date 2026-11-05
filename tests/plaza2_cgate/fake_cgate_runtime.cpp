@@ -94,7 +94,8 @@ std::int32_t fol_matrix_cancelled_count{};
 enum class MatrixBulk { Idle, ReplyPending, Yield };
 MatrixBulk fol_matrix_bulk{};
 bool fol_matrix_profile() {
-    return fol_runner_profile == "matrix" || fol_runner_profile == "matrix-five";
+    return fol_runner_profile == "matrix" || fol_runner_profile == "matrix-five" ||
+           fol_runner_profile == "matrix-dtc" || fol_runner_profile == "matrix-dtc-recovery";
 }
 std::deque<fixture::Event> queued_events;
 std::vector<fixture::PostedCommand> posted_commands;
@@ -1143,12 +1144,14 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                         {.field_code = kFortsRefdataReplFutVcbCurr, .kind = Text, .text = "RUB"},
                         {.field_code = kFortsRefdataReplFutVcbBoardMd, .kind = Text, .text = "RFUD"}}});
     }
-    if (stream_code == StreamCode::kFortsRefdataRepl && fol_runner_profile == "deals-wire") {
+    if (stream_code == StreamCode::kFortsRefdataRepl &&
+        (fol_runner_profile == "deals-wire" || fol_runner_profile == "matrix-dtc" ||
+         fol_runner_profile == "matrix-dtc-recovery")) {
         using enum FieldCode;
         using enum TableCode;
         const auto now = static_cast<std::uint64_t>(std::time(nullptr));
         for (auto& row : script) {
-            if (row.table_code == kFortsRefdataReplSession) {
+            if (row.table_code == kFortsRefdataReplSession && fol_runner_profile == "deals-wire") {
                 find_field(row, kFortsRefdataReplSessionBegin)->unsigned_value = now - 60;
                 find_field(row, kFortsRefdataReplSessionEnd)->unsigned_value = now + 3600;
             }
@@ -1762,13 +1765,41 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                 }
             }
             script.push_back(std::move(row));
+            if (fol_runner_profile == "matrix-dtc" && stream_code == StreamCode::kFortsTradeRepl &&
+                fol_runner_order.filled) {
+                auto deal = *std::ranges::find_if(
+                    base, [](const auto& value) { return value.table_code == kFortsTradeReplUserDeal; });
+                deal.rev = 10000 + static_cast<std::int64_t>(fol_runner_order.revision);
+                find_field(deal, kFortsTradeReplUserDealIdDeal)->signed_value = 90000 + fol_runner_order.ext_id;
+                find_field(deal, kFortsTradeReplUserDealXamount)->signed_value = fol_runner_order.amount;
+                find_field(deal, kFortsTradeReplUserDealPrice)->text = fol_runner_order.price;
+                find_field(deal, kFortsTradeReplUserDealPublicOrderIdBuy)->signed_value = fol_runner_order.id - 10000;
+                find_field(deal, kFortsTradeReplUserDealPrivateOrderIdBuy)->signed_value = fol_runner_order.id;
+                find_field(deal, kFortsTradeReplUserDealPrivateOrderIdSell)->signed_value = 0;
+                find_field(deal, kFortsTradeReplUserDealCodeBuy)->text = "BRK1C01";
+                find_field(deal, kFortsTradeReplUserDealLoginBuy)->text = "fol-offline-owner";
+                const auto seconds = std::time(nullptr);
+                find_field(deal, kFortsTradeReplUserDealMoment)->signed_value = seconds;
+                find_field(deal, kFortsTradeReplUserDealMomentNs)->unsigned_value =
+                    static_cast<std::uint64_t>(seconds) * 1'000'000'000 + 123'000'000;
+                deal.fields.push_back({.field_code = kFortsTradeReplUserDealExtIdBuy,
+                                       .kind = FakeValueKind::SignedInteger,
+                                       .signed_value = fol_runner_order.ext_id});
+                script.push_back(std::move(deal));
+            }
         }
     }
     std::erase_if(script, [](const auto& row) { return row.table_code == scenario.omitted_schema_table; });
     return script;
 }
 
+bool raw_ordlog(std::string_view settings) {
+    return settings.starts_with("p2repl://FORTS_ORDLOG_REPL_MATCH") && settings.ends_with(";tables=orders_log");
+}
+
 StreamCode stream_code_from_settings(std::string_view settings) {
+    if (raw_ordlog(settings))
+        return kFullOrderLogStreamCode;
     if (settings.starts_with("p2ordbook://FORTS_ORDLOG_REPL") &&
         settings.find(";snapshot=FORTS_ORDBOOK_REPL") != std::string_view::npos)
         return kFullOrderLogStreamCode;
@@ -2033,7 +2064,7 @@ bool filter_listener_tables(FakeListener& listener) {
     }
     std::vector<std::string> client_tables;
     ClientTables client_fields;
-    if (listener.stream_code == kFullOrderLogStreamCode) {
+    if (listener.stream_code == kFullOrderLogStreamCode && !raw_ordlog(listener.settings)) {
         if (requested ||
             !read_client_schema(listener.settings, "online.scheme", "ORDLOG", client_tables, client_fields) ||
             !read_client_schema(listener.settings, "snapshot.scheme", "OrdBook", client_tables, client_fields))
@@ -2052,8 +2083,9 @@ bool filter_listener_tables(FakeListener& listener) {
         const auto end = remaining.find(',');
         const auto name = remaining.substr(0, end);
         if (name.empty() || std::find(names.begin(), names.end(), name) != names.end() ||
-            std::none_of(TablesForStream(listener.stream_code).begin(), TablesForStream(listener.stream_code).end(),
-                         [&](const auto& table) { return table.table_name == name; }))
+            (!(raw_ordlog(listener.settings) && name == "orders_log") &&
+             std::none_of(TablesForStream(listener.stream_code).begin(), TablesForStream(listener.stream_code).end(),
+                          [&](const auto& table) { return table.table_name == name; })))
             return false;
         names.push_back(name);
         if (end == std::string_view::npos)
@@ -2246,7 +2278,11 @@ std::uint32_t emit_reply_message(FakeListener& listener, const FakeReply& reply)
     return listener.callback(listener.connection, &listener, &message, listener.callback_data);
 }
 
+#include "fake_fol_risk_streams.hpp"
+
 std::uint32_t emit_script(FakeListener& listener) {
+    if (is_fol_risk_stream(listener.stream_code))
+        return emit_fol_risk_snapshot(listener);
     const auto script = script_for_stream(listener.stream_code);
     if (fake_flag(Option::SchemeExtraTable) && !listener.tables_filtered) {
         std::byte byte{};
@@ -2483,7 +2519,8 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
         return kCgErrOk;
     if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" && profile != "invalid" &&
         profile != "recovery" && profile != "deals-wire" && profile != "unframed" && profile != "short-snapshot" &&
-        profile != "unframed-online" && profile != "matrix" && profile != "matrix-five")
+        profile != "unframed-online" && profile != "matrix" && profile != "matrix-five" && profile != "matrix-dtc" &&
+        profile != "matrix-dtc-recovery")
         return kCgErrInvalidArgument;
     scenario = {};
     scenario.spectra912_refdata_schema = true;
@@ -2503,6 +2540,10 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
     fol_matrix_cancelled_count = 0;
     fol_matrix_bulk = MatrixBulk::Idle;
     fol_runner_order.present = profile == "recovery";
+    if (profile == "matrix-dtc-recovery") {
+        fol_runner_order = {.id = 20007, .ext_id = 102, .price = "102250", .present = true, .revision = 2};
+        fol_matrix_next_id = 20008;
+    }
     if (profile == "matrix-five")
         for (std::int32_t i = 0; i < 5; ++i)
             fol_runner_orders[i] = {.id = fol_matrix_next_id++, .ext_id = 100 + i, .present = true, .revision = 1};
@@ -3418,6 +3459,13 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
         *lsnptr = listener;
         return kCgErrOk;
     }
+    if (fake_flag(Option::FolRiskStreams) && configure_fol_risk_stream(*listener)) {
+        connection->listeners.push_back(listener);
+        ++listener_handles[listener->stream_code];
+        last_listener_settings[listener->stream_code] = listener->settings;
+        *lsnptr = listener;
+        return kCgErrOk;
+    }
     listener->stream_code = stream_code_from_settings(listener->settings);
     if (listener->stream_code != kFullOrderLogStreamCode && FindStreamByCode(listener->stream_code) == nullptr) {
         delete listener;
@@ -3678,7 +3726,11 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
             result != kCgErrOk)
             return result;
     }
-    if (typed->stream_code == StreamCode::kFortsTradeRepl) {
+    const bool recovery = raw_ordlog(typed->settings);
+    // Raw recovery tests drive explicitly committed rows and close boundaries.
+    if (recovery)
+        typed->script_emitted = true;
+    if (typed->stream_code == StreamCode::kFortsTradeRepl || recovery) {
         const auto server =
             scenario.trade_server_lifenum ? scenario.trade_server_lifenum : typed->connection->trade_lifenum;
         std::optional<std::uint32_t> requested;

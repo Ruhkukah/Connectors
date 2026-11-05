@@ -204,6 +204,8 @@ struct RefdataJoin {
 FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path& directory,
                                                      const std::filesystem::path& output, bool allow_incomplete) {
     const auto checked = read_full_order_log_capture(directory, [](const auto&) {}, allow_incomplete);
+    require(!checked.recovery_cursor && !checked.orders_log_only,
+            "ORDLOG recovery capture is overlap evidence; use check-backfill instead of DBN export");
     RefdataJoin refdata;
     if (!checked.refdata_sha256.empty()) {
         refdata.tsv = read_pinned_refdata(directory, checked.refdata_sha256);

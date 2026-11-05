@@ -68,7 +68,7 @@ struct FullOrderLogArchiveSummary {
     std::uint64_t refdata_unjoined_records{}; // DBN records before or between current REFDATA observations.
     FullOrderLogArchiveStreamCoverage fol_coverage, deals_coverage;
     std::optional<FullOrderLogRecoveryCursor> recovery_cursor;
-    bool truncated{}, end_record_present{};
+    bool orders_log_only{}, truncated{}, end_record_present{};
     FullOrderLogCaptureEndStatus end_status{FullOrderLogCaptureEndStatus::Clean};
     int host_status{};
 };

@@ -233,6 +233,8 @@ read_full_order_log_capture(const std::filesystem::path& directory,
                 if (e.kind == Plaza2ListenerEventKind::Open) {
                     tables = decode_schema(schema);
                     e.raw_tables = tables;
+                    result.orders_log_only |= e.stream_code == kFullOrderLogStreamCode && tables.size() == 1 &&
+                                              tables.front().name == "orders_log";
                 } else
                     require(schema.empty(), "capture schema outside OPEN");
                 if (e.kind == Plaza2ListenerEventKind::StreamData || e.kind == Plaza2ListenerEventKind::ClearDeleted) {
@@ -241,8 +243,13 @@ read_full_order_log_capture(const std::filesystem::path& directory,
                     require(t != tables.end(), "capture unknown table index");
                     e.raw_table = &*t;
                 }
-                if (e.kind == Plaza2ListenerEventKind::ReplState)
+                if (e.kind == Plaza2ListenerEventKind::ReplState ||
+                    (e.kind == Plaza2ListenerEventKind::Open && e.stream_code == kFullOrderLogStreamCode &&
+                     !payload.empty())) {
                     e.text_value = {reinterpret_cast<const char*>(payload.data()), payload.size()};
+                    if (e.kind == Plaza2ListenerEventKind::Open)
+                        require(valid_composite_open(e.text_value), "invalid FOL Open service provenance");
+                }
                 ++result.records;
                 if (e.kind == Plaza2ListenerEventKind::StreamData)
                     ++result.rows;
@@ -305,6 +312,8 @@ FullOrderLogArchiveSummary replay_full_order_log_capture(const std::filesystem::
     std::uint64_t valid{}, orders{};
     // Universe comes from the manifest; load it with the first OPEN's first pass.
     auto manifest = read_full_order_log_capture(directory, [](const auto&) {}, allow_incomplete);
+    require(!manifest.recovery_cursor && !manifest.orders_log_only,
+            "ORDLOG recovery capture is overlap evidence; use check-backfill instead of replay");
     book = std::make_unique<Plaza2FullOrderLog>(manifest.isins);
     FullOrderLogOpenInterest oi(manifest.isins);
     std::uint64_t oi_updates{};

@@ -277,14 +277,27 @@ int main(int argc, char** argv) {
         require(book.valid() && fake.listener_settings(cgate::kFullOrderLogStreamCode) ==
                                     cgate::full_order_log_listener_settings(fixture.scheme_dir, 4),
                 "single matching remap must rebuild a fresh composite snapshot on the new service");
+        const auto matching4_opens = fake.opens(cgate::kFullOrderLogStreamCode);
         fake.enqueue({.kind = f::EventKind::ListenerError, .stream_code = generated::StreamCode::kFortsRefdataRepl});
         pump(2);
-        require(!book.valid() && !session.full_order_log_matching_id(),
-                "REFDATA authority loss must fence full log immediately");
+        require(book.valid() && session.full_order_log_matching_id() == 4 &&
+                    fake.opens(cgate::kFullOrderLogStreamCode) == matching4_opens &&
+                    session.full_order_log_auxiliary_status().find("\"matching_current\":false") != std::string::npos,
+                "REFDATA authority loss must fence entry without retiring the current route");
         now += std::chrono::seconds(1);
         pump();
-        require(book.valid() && session.full_order_log_matching_id() == 3,
-                "fresh REFDATA must restore matching before composite publication");
+        require(book.valid() && session.full_order_log_matching_id() == 3 &&
+                    fake.opens(cgate::kFullOrderLogStreamCode) == matching4_opens + 1,
+                "a different committed matching on the fresh REFDATA snapshot changes the route");
+        const auto matching3_opens = fake.opens(cgate::kFullOrderLogStreamCode);
+        fake.enqueue({.kind = f::EventKind::ListenerError, .stream_code = generated::StreamCode::kFortsRefdataRepl});
+        pump(2);
+        now += std::chrono::seconds(1);
+        pump();
+        require(book.valid() && session.full_order_log_matching_id() == 3 &&
+                    fake.opens(cgate::kFullOrderLogStreamCode) == matching3_opens &&
+                    session.full_order_log_auxiliary_status().find("\"matching_current\":true") != std::string::npos,
+                "same-matching REFDATA recovery restores authority without rebuilding the composite");
         fake.enqueue(
             {.kind = f::EventKind::LifeNum, .stream_code = generated::StreamCode::kFortsRefdataRepl, .value = 7});
         pump();
@@ -303,9 +316,10 @@ int main(int argc, char** argv) {
                                  {.field_code = kFortsSessionstateReplSessionStatePublicState, .signed_value = 1}}});
         fake.enqueue({.kind = f::EventKind::Commit, .stream_code = status_stream});
         pump();
-        require(session.private_state().current_session_id() == 322 && !session.full_order_log_matching_id() &&
-                    !book.valid(),
-                "rollover missing REFDATA must wait and fence without exiting");
+        require(session.private_state().current_session_id() == 322 && session.full_order_log_matching_id() == 3 &&
+                    book.valid() &&
+                    session.full_order_log_auxiliary_status().find("\"matching_current\":false") != std::string::npos,
+                "rollover missing REFDATA must fence entry without retiring the existing route");
         const auto rollover_opens = fake.opens(cgate::kFullOrderLogStreamCode);
         now += std::chrono::seconds(2);
         pump(20);
@@ -325,8 +339,10 @@ int main(int argc, char** argv) {
                                   .text = "RTS"}}});
         fake.enqueue({.kind = f::EventKind::Commit, .stream_code = ref_stream});
         pump();
-        require(session.full_order_log_matching_id() == 3 && book.valid(),
-                "new committed rollover terms resume the composite snapshot");
+        require(session.full_order_log_matching_id() == 3 && book.valid() &&
+                    fake.opens(cgate::kFullOrderLogStreamCode) == rollover_opens &&
+                    session.full_order_log_auxiliary_status().find("\"matching_current\":true") != std::string::npos,
+                "same-matching rollover terms restore route authority without a composite reopen");
         enqueue(f::EventKind::LifeNum, 0, cgate::kNoTableCode, 8);
         pump();
         require(!book.valid() && book.order_count() == 0 && book.needs_fresh_snapshot(),

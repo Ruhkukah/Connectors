@@ -345,7 +345,11 @@ Plaza2Error FullOrderLogCapture::record(const Plaza2ListenerEvent& e) {
             std::vector<std::byte> schema;
             if (e.kind == Plaza2ListenerEventKind::Open)
                 schema = encode_schema(e.raw_tables);
-            const auto payload = e.kind == Plaza2ListenerEventKind::ReplState
+            const bool composite_open =
+                e.kind == Plaza2ListenerEventKind::Open && e.stream_code == kFullOrderLogStreamCode;
+            if (composite_open && !e.text_value.empty())
+                require(valid_composite_open(e.text_value), "invalid FOL Open service provenance");
+            const auto payload = composite_open || e.kind == Plaza2ListenerEventKind::ReplState
                                      ? std::as_bytes(std::span(e.text_value.data(), e.text_value.size()))
                                      : e.raw_payload;
             require(e.table_index <= UINT32_MAX && e.native_data_size <= UINT32_MAX, "capture event metadata overflow");

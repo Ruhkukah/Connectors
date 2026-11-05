@@ -174,6 +174,102 @@ void test_projection() {
     require(!projection.online() && projection.rows().empty(), "listener error clears projection authority");
 }
 
+void test_login_cod() {
+    RawRow user("user", 0);
+    user.add("login", "c20", 21);
+    user.add("sma_flags", "i4", 4);
+    user.add("start_date", "t", sizeof(moex::plaza2::public_wire::Time));
+    user.add("end_date", "t", sizeof(moex::plaza2::public_wire::Time));
+    user.scalar("start_date",
+                moex::plaza2::public_wire::Time{.year = 1970, .month = 1, .day = 1, .hour = 3, .second = 10});
+    user.scalar("end_date",
+                moex::plaza2::public_wire::Time{.year = 1970, .month = 1, .day = 1, .hour = 3, .minute = 1});
+    Projection projection(
+        {{"user", {{"login", "c20"}, {"sma_flags", "i4"}, {"start_date", "t"}, {"end_date", "t"}}, "login"}},
+        "configured_login", {});
+    const auto open = Event{.kind = Kind::Open, .raw_tables = std::span(&user.table, 1)};
+    const auto commit_row = [&] {
+        send(projection, {.kind = Kind::TransactionBegin});
+        send(projection, user.event());
+        send(projection, {.kind = Kind::TransactionCommit});
+    };
+
+    send(projection, open);
+    user.revision(1, 1);
+    user.text("login", "configured_login");
+    user.scalar("sma_flags", std::int32_t{2});
+    send(projection, user.event());
+    require(login_cod_state(projection, 20) == "unknown", "uncommitted login cannot authorize entry");
+    user.revision(2, 2);
+    user.text("login", "other_login");
+    user.scalar("sma_flags", std::int32_t{1});
+    send(projection, user.event());
+    send(projection, {.kind = Kind::Online});
+    require(login_cod_state(projection, 9) == "unknown" && login_cod_state(projection, 20) == "disabled" &&
+                login_cod_state(projection, 61) == "unknown",
+            "COD must use only bit zero of the selected currently effective login");
+
+    user.revision(1, 3);
+    user.text("login", "configured_login");
+    user.scalar("sma_flags", std::int32_t{3});
+    send(projection, {.kind = Kind::TransactionBegin});
+    send(projection, user.event());
+    require(login_cod_state(projection, 20) == "disabled", "pending COD update must remain hidden");
+    send(projection, {.kind = Kind::TransactionCommit});
+    require(login_cod_state(projection, 20) == "enabled", "committed COD change must fence entry");
+
+    user.revision(1, 4);
+    user.text("login", "other_login");
+    commit_row();
+    require(login_cod_state(projection, 20) == "unknown", "out-of-scope revision must withdraw prior login authority");
+    user.revision(1, 3);
+    user.text("login", "configured_login");
+    commit_row();
+    require(login_cod_state(projection, 20) == "unknown", "older revision cannot resurrect a replaced login");
+
+    user.revision(1, 5);
+    commit_row();
+    user.revision(3, 6);
+    commit_row();
+    require(login_cod_state(projection, 20) == "unknown", "multiple effective selected rows must fence entry");
+    const auto cleared = projection.on_plaza2_listener_event(
+        {.kind = Kind::ClearDeleted, .signed_value = INT64_MAX, .table_index = user.table.index});
+    require(cleared && !projection.online() && login_cod_state(projection, 20) == "unknown",
+            "whole-table clear must invalidate COD before resnapshot");
+}
+
+void test_environment_contract() {
+    using cg::Plaza2Environment;
+    require(!environment_row_required("SPECTRA9.9.0") && environment_row_required("SPECTRA9.12.0") &&
+                environment_row_required("SPECTRA10.3.0") && environment_row_required("SPECTRA9.unknown") &&
+                environment_row_required(""),
+            "the environment witness is required from 9.12 and for unrecognized schemes");
+    const Projection::Row test{.values = {{"environment_id", "2"}, {"environment_name", "MXFOPREP"}}};
+    const Projection::Row prod{.values = {{"environment_id", "1"}, {"environment_name", "MXFOPROD"}}};
+    const Projection::Row mixed{.values = {{"environment_id", "2"}, {"environment_name", "MXFOPROD"}}};
+    require(environment_matches(test, Plaza2Environment::Test) && environment_matches(prod, Plaza2Environment::Prod) &&
+                !environment_matches(prod, Plaza2Environment::Test) &&
+                !environment_matches(test, Plaza2Environment::Prod) &&
+                !environment_matches(mixed, Plaza2Environment::Test),
+            "environment identity must match both fields for the configured runtime environment");
+}
+
+void test_empty_prohibition_snapshot() {
+    RawRow prohibition("prohibition", 0);
+    prohibition.add("client_code", "c7", 8);
+    prohibition.add("type", "i4", 4);
+    Projection projection({{"prohibition", {{"client_code", "c7"}, {"type", "i4"}}, "client_code"}}, "CLIENT1", {});
+    const auto open = Event{.kind = Kind::Open, .raw_tables = std::span(&prohibition.table, 1)};
+    send(projection, open);
+    require(!projection.online(), "empty state before ONLINE is unavailable");
+    send(projection, {.kind = Kind::Online});
+    require(projection.online() && projection.rows().empty(), "empty ONLINE snapshot is current authority");
+    send(projection, {.kind = Kind::Close});
+    require(!projection.online() && projection.rows().empty(), "closed empty snapshot loses authority");
+    send(projection, open);
+    require(!projection.online(), "reopen must await fresh snapshot");
+}
+
 void test_schema_refusal() {
     auto common = common_row();
     Projection projection({{"common", {{"best_buy_native", "d16.5"}}, {}, true}}, {}, {11});
@@ -213,6 +309,9 @@ int main() {
     try {
         test_decimal_bytes();
         test_projection();
+        test_login_cod();
+        test_environment_contract();
+        test_empty_prohibition_snapshot();
         test_schema_refusal();
         return 0;
     } catch (const std::exception& error) {

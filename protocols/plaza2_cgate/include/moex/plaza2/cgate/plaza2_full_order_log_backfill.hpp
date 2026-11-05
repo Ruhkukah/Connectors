@@ -28,11 +28,12 @@ struct FullOrderLogBackfillCheck {
     std::uint64_t recovery_capture_identity{}, committed_rows_between{};
 };
 
-// Matching and ORDLOG life are independently verified inputs for both primary
-// boundary generations. A composite LifeNum callback does not identify its leg.
+// Both primary generations must record the requested matching and the same
+// committed ORDLOG LifeNum. A supplied LifeNum is an additional assertion.
 // A zero reopen sequence selects the first recorded FOL reopen.
 FullOrderLogBackfillPlan plan_full_order_log_backfill(const std::filesystem::path& capture, std::int32_t matching_id,
-                                                      std::uint64_t ordlog_lifenum, std::uint64_t reopen_sequence = 0);
+                                                      std::uint64_t ordlog_lifenum = 0,
+                                                      std::uint64_t reopen_sequence = 0);
 
 // Recovery must be a separate, clean, single-table p2repl evidence capture for
 // the specified matching, using the same selected instrument set. This checks
@@ -47,5 +48,6 @@ FullOrderLogBackfillCheck check_full_order_log_backfill(const std::filesystem::p
 FullOrderLogBackfillCheck
 collect_full_order_log_backfill(const FullOrderLogBackfillPlan& plan, FullOrderLogCaptureOptions capture,
                                 const Plaza2Settings& runtime, std::string_view connection_settings,
-                                std::chrono::seconds timeout, const std::function<bool()>& stopped);
+                                std::chrono::seconds timeout, std::chrono::sys_seconds not_after,
+                                const std::function<bool()>& stopped);
 } // namespace moex::plaza2::cgate

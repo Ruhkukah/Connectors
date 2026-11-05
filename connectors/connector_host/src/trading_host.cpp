@@ -351,9 +351,12 @@ void validate_trading_host_config(const TradingHostConfig& config) {
 }
 CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     : config_(checked_config(std::move(config))), owner_(std::this_thread::get_id()),
-      journal_(config_.journal_path, identity_path(config_)), session_(session_config()) {
+      journal_(config_.journal_path, identity_path(config_), 8 * 1024 * 1024, config_.async_dtc_persistence),
+      session_(session_config()) {
     auto orders = config_.orders;
     orders.measure_add_path = config_.measure_timings;
+    if (config_.async_dtc_persistence)
+        orders.ids_reserved = [this](auto ext, auto user) { return journal_.ids_reserved(ext, user); };
     const auto reservations = journal_.reservations();
     orders.next_ext_id = std::max({orders.next_ext_id, orders.ext_id_begin, reservations.next_ext_id});
     orders.next_user_id = std::max(orders.next_user_id, reservations.next_user_id);
@@ -1088,9 +1091,30 @@ std::string CgateTradingHost::cancel_all(std::int32_t isin) {
         dispatch_commands();
     return error;
 }
+DtcAddPreparation CgateTradingHost::prepare_dtc_add(OrderRequest request) {
+    assert_owner();
+    if (!config_.async_dtc_persistence || !dtc_entry_ready(request.isin_id))
+        return {.error = "DTC entry is fenced"};
+    return orders_->prepare_dtc_add(std::move(request));
+}
+std::string CgateTradingHost::finish_dtc_add(std::int32_t ext_id, bool persisted) {
+    assert_owner();
+    if (persisted && (config_.isin_ids.size() != 1 || !dtc_entry_ready(config_.isin_ids.front()))) {
+        orders_->fence_dtc_entry();
+        return "DTC entry was fenced during persistence";
+    }
+    auto error = orders_->finish_dtc_add(ext_id, persisted);
+    if (error.empty())
+        dispatch_commands();
+    return error;
+}
 void CgateTradingHost::fence_dtc_entry() {
     assert_owner();
     orders_->fence_dtc_entry();
+}
+void CgateTradingHost::set_dtc_cancel_alert(std::string error) {
+    assert_owner();
+    dtc_cancel_alert_ = std::move(error);
 }
 bool CgateTradingHost::dtc_snapshot_ready() const {
     assert_owner();
@@ -1303,26 +1327,28 @@ std::string CgateTradingHost::status() const {
                            ",\"quantity\":" + std::to_string(level->volume) + "}"
                      : "null";
     };
-    std::string result = "{\"version\":\"1.0.0\",\"queued\":" + std::to_string(orders_->queued()) +
-                         ",\"reconstructing\":" + boolean(rebuilding_) +
-                         ",\"cgate_key_check_failed\":" + boolean(session_.recovery_status().key_check_failed) +
-                         ",\"sess_id\":" + std::to_string(sess) + ",\"log_error\":" + json_string(log_error_) +
-                         ",\"journal_failed\":" + boolean(journal_failed_) +
-                         ",\"cancel_only\":" + boolean(!log_error_.empty()) +
-                         ",\"operator_action_required\":" + boolean(orders_->operator_action_required()) +
-                         ",\"transport\":" + transport_fields(session_, config_.session) +
-                         ",\"configuration\":{\"allow_orders\":" + boolean(config_.session.allow_orders) +
-                         ",\"sole_instance\":" + boolean(config_.orders.sole_instance) +
-                         ",\"login_configured\":" + boolean(!config_.orders.login_from.empty()) +
-                         ",\"ext_id_begin\":" + std::to_string(config_.orders.ext_id_begin) +
-                         ",\"ext_id_end\":" + std::to_string(config_.orders.ext_id_end) +
-                         ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
-                         ",\"measure_timings\":" + boolean(config_.measure_timings) +
-                         ",\"risk\":" + configured_risk_fields(config_) + "}";
+    std::string result =
+        "{\"version\":\"1.0.0\",\"queued\":" + std::to_string(orders_->queued()) +
+        ",\"reconstructing\":" + boolean(rebuilding_) +
+        ",\"cgate_key_check_failed\":" + boolean(session_.recovery_status().key_check_failed) +
+        ",\"sess_id\":" + std::to_string(sess) + ",\"log_error\":" + json_string(log_error_) +
+        ",\"journal_failed\":" + boolean(journal_failed_) + ",\"cancel_only\":" + boolean(!log_error_.empty()) +
+        ",\"operator_action_required\":" + boolean(orders_->operator_action_required() || !dtc_cancel_alert_.empty()) +
+        ",\"transport\":" + transport_fields(session_, config_.session) +
+        ",\"configuration\":{\"allow_orders\":" + boolean(config_.session.allow_orders) +
+        ",\"sole_instance\":" + boolean(config_.orders.sole_instance) +
+        ",\"login_configured\":" + boolean(!config_.orders.login_from.empty()) +
+        ",\"ext_id_begin\":" + std::to_string(config_.orders.ext_id_begin) +
+        ",\"ext_id_end\":" + std::to_string(config_.orders.ext_id_end) +
+        ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
+        ",\"measure_timings\":" + boolean(config_.measure_timings) + ",\"risk\":" + configured_risk_fields(config_) +
+        "}";
     if (!config_.session.full_order_log_stream.settings.empty())
         result += ",\"market_data_source\":\"full_order_log\"";
     if (config_.session.full_order_log_advisory)
         result += ",\"fol_auxiliary\":" + session_.full_order_log_auxiliary_status();
+    if (config_.async_dtc_persistence)
+        result += ",\"dtc_cancel_alert\":" + json_string(dtc_cancel_alert_);
     if (config_.session.full_order_log_cancel_only)
         result += ",\"execution_mode\":\"full_order_log_cancel_only\"";
     const auto anchor = session_.trade_replay_anchor_used();

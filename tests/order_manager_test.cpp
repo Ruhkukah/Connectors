@@ -1430,25 +1430,43 @@ void ext_identity_and_relist() {
 }
 void dtc_fence_preserves_cli_and_native_orders() {
     Fixture f;
-    std::vector<std::pair<std::string, std::int32_t>> durable;
-    std::vector<bool> automated;
-    f.config.reserve_dtc_identity = [&](auto id, auto ext, auto robot) {
-        durable.emplace_back(id, ext);
-        automated.push_back(robot);
-    };
+    bool ids_reserved{};
+    f.config.ids_reserved = [&](auto, auto) { return ids_reserved; };
     auto manager = f.manager();
     auto dtc = request("dtc:a");
     dtc.dtc_origin = true;
-    require(manager.place(dtc).empty() && durable.size() == 1 && f.sent.empty(),
-            "DTC identity was not reserved before dispatch");
+    require(manager.place(dtc) != "" && !manager.prepare_dtc_add(dtc).error.empty(),
+            "DTC accepted without durable command IDs");
+    ids_reserved = true;
+    auto prepared = manager.prepare_dtc_add(dtc);
+    require(prepared.error.empty() && prepared.ext_id > 0, "DTC Add was not prepared");
+    f.poll(manager, 0);
+    require(f.sent.empty() && manager.orders().empty(), "DTC Add reached dispatch before persistence");
+    manager.fence_dtc_entry();
+    require(!manager.finish_dtc_add(prepared.ext_id, true).empty(), "late completion rearmed fenced DTC Add");
+    dtc.client_order_id = "dtc:failed";
+    prepared = manager.prepare_dtc_add(dtc);
+    require(prepared.error.empty() && !manager.finish_dtc_add(prepared.ext_id, false).empty(),
+            "DTC Add accepted after persistence failure");
+    dtc.client_order_id = "dtc:risk";
+    prepared = manager.prepare_dtc_add(dtc);
+    manager.set_kill_switch(true);
+    require(prepared.error.empty() && !manager.finish_dtc_add(prepared.ext_id, true).empty(),
+            "DTC Add skipped current risk check after persistence");
+    manager.set_kill_switch(false);
+    dtc.client_order_id = "dtc:a";
+    prepared = manager.prepare_dtc_add(dtc);
+    require(prepared.error.empty() && manager.finish_dtc_add(prepared.ext_id, true).empty(),
+            "DTC Add did not queue after persistence");
     require(manager.place(request("cli")).empty(), "CLI Add refused");
     manager.fence_dtc_entry();
     f.poll(manager, 0);
     require(f.sent.size() == 1 && manager.orders().at("dtc:a").state == OrderState::Cancelled,
             "disconnect failed to fence queued DTC Add independently of CLI");
-    require(manager.place(dtc) != "", "unsent DTC identity was released for reuse");
+    require(!manager.prepare_dtc_add(dtc).error.empty(), "unsent DTC identity was released for reuse");
     dtc.client_order_id = "dtc:b";
-    require(manager.place(dtc).empty(), "second DTC Add refused");
+    prepared = manager.prepare_dtc_add(dtc);
+    require(prepared.error.empty() && manager.finish_dtc_add(prepared.ext_id, true).empty(), "second DTC Add refused");
     f.poll(manager, 1000);
     manager.on_reply(f.sent.back().id, {.msgid = 179, .order_id = 1501},
                      OrderManager::Clock::time_point{} + std::chrono::milliseconds(1000));
@@ -1461,8 +1479,9 @@ void dtc_fence_preserves_cli_and_native_orders() {
             "disconnect lost or moved a posted native order");
     dtc.client_order_id = "dtc:robot";
     dtc.automated = true;
-    require(manager.place(dtc).empty() && automated == std::vector<bool>{false, false, true},
-            "automated Add did not reserve provenance before native dispatch");
+    prepared = manager.prepare_dtc_add(dtc);
+    require(prepared.error.empty() && manager.finish_dtc_add(prepared.ext_id, true).empty(),
+            "automated Add was not admitted after durable preparation");
     f.poll(manager, 3000);
     require(f.sent.size() == 3 && wire<official_cgate99::AddOrder>(f.sent[1]).compliance_id[0] == 'M' &&
                 wire<official_cgate99::AddOrder>(f.sent[2]).compliance_id[0] == 'R',
