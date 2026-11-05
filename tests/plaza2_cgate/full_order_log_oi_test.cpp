@@ -33,6 +33,88 @@ static Row deal(const Plaza2RawTableBinding& t, std::int64_t rev, std::int64_t o
     r.set("moment_ns", std::uint64_t{1700000000000000000ULL} + rev);
     return r;
 }
+static void test_trade_export(const fs::path& root) {
+    const std::array<std::int32_t, 1> ids{11};
+    auto t = deal_schema();
+    t.fields.insert(t.fields.end(), {{"xamount", "i8", 56, 8, 8},
+                                     {"price", "d16.5", 64, 11, 9},
+                                     {"moment", "t", 76, 10, 10},
+                                     {"nosystem", "i1", 86, 1, 11},
+                                     {"xstatus_buy", "i8", 88, 8, 12},
+                                     {"xstatus_sell", "i8", 96, 8, 13}});
+    t.row_size = 104;
+    auto print = [&](std::int64_t rev) {
+        auto r = deal(t, rev, 1000 + rev);
+        r.set("xamount", std::int64_t{3});
+        r.price(1234567);
+        r.set("moment", moex::plaza2::public_wire::Time{2023, 11, 15, 1, 13, 20, 0});
+        return r;
+    };
+    Plaza2FullOrderLog book(ids);
+    FullOrderLogCaptureOptions options;
+    options.directory = root / "trades";
+    options.min_free_bytes = 0;
+    FullOrderLogCapture capture(options, ids, book);
+    const auto emit = [&](Plaza2ListenerEvent e) {
+        e.stream_code = generated::StreamCode::kFortsDealsRepl;
+        require(!capture.record(e), "capture trade event");
+    };
+    auto snapshot = print(1), live = print(2), unknown_side = print(3), nonsystem = print(4), interrupted = print(5);
+    live.set("xstatus_buy", std::int64_t{0x20000000000});
+    live.set("xstatus_sell", std::int64_t{0x40000000000});
+    nonsystem.set("nosystem", std::int8_t{1});
+    emit({.kind = K::LifeNum, .unsigned_value = 1});
+    emit({.kind = K::Open, .raw_tables = std::span(&t, 1)});
+    emit({.kind = K::TransactionBegin});
+    emit(snapshot.event());
+    emit({.kind = K::TransactionCommit});
+    emit({.kind = K::Online});
+    emit({.kind = K::TransactionBegin});
+    emit(snapshot.event());
+    emit(live.event());
+    emit(live.event());
+    emit(unknown_side.event());
+    emit(nonsystem.event());
+    emit({.kind = K::TransactionCommit});
+    emit({.kind = K::TransactionBegin});
+    emit(interrupted.event());
+    emit({.kind = K::Close});
+    capture.finish();
+
+    const auto path = root / "trades.dbn";
+    const auto report = export_full_order_log_dbn(options.directory, path);
+    require(report.trade_prints == 2, "only unique committed online system trade prints exported");
+    std::uint64_t live_commit_receipt{};
+    read_full_order_log_capture(options.directory, [&](const auto& r) {
+        if (r.event.kind == K::TransactionCommit)
+            live_commit_receipt = r.utc_ns;
+    });
+    std::ifstream file(path, std::ios::binary);
+    std::vector<char> data(std::istreambuf_iterator<char>(file), {});
+    const auto read = [&]<class T>(std::size_t at) {
+        T v;
+        std::memcpy(&v, data.data() + at, sizeof v);
+        return v;
+    };
+    std::vector<char> sides;
+    for (std::size_t at = 128; at < data.size();) {
+        const auto size = static_cast<unsigned char>(data[at]) * 4u;
+        require(size && at + size <= data.size(), "trade DBN record size");
+        if (static_cast<unsigned char>(data[at + 1]) == 0xa0 && data[at + 38] == 'T') {
+            require(size == 56 && read.template operator()<std::uint32_t>(at + 4) == 11 &&
+                        read.template operator()<std::uint64_t>(at + 16) == 0 &&
+                        read.template operator()<std::int64_t>(at + 24) == 12345670000LL &&
+                        read.template operator()<std::uint32_t>(at + 32) == 3 &&
+                        (static_cast<unsigned char>(data[at + 36]) & 128) &&
+                        read.template operator()<std::uint64_t>(at + 8) == 1700000000000000002ULL + sides.size() &&
+                        read.template operator()<std::uint64_t>(at + 40) == live_commit_receipt,
+                    "trade MBO payload, timestamp and flags");
+            sides.push_back(data[at + 39]);
+        }
+        at += size;
+    }
+    require(sides == std::vector<char>{'B', 'N'}, "DBN side preserves verified aggressor and unknown");
+}
 int main() {
     try {
         const std::array<std::int32_t, 1> ids{11};
@@ -119,7 +201,7 @@ int main() {
                 "selected raw OI rows and committed replay");
         const auto path = root / "mixed.dbn";
         const auto exported = export_full_order_log_dbn(o.directory, path);
-        require(exported.open_interest_updates == 3, "OI export update count");
+        require(exported.open_interest_updates == 3 && exported.trade_prints == 0, "legacy OI-only export");
         std::ifstream file(path, std::ios::binary);
         std::vector<char> data(std::istreambuf_iterator<char>(file), {});
         require(std::string_view(data.data(), 4) == std::string_view("DBN\3", 4), "DBN v3 preserves i8 statistics");
@@ -141,6 +223,7 @@ int main() {
             at += size;
         }
         require(values == observed, "DBN OI values remain signed 64-bit and causal");
+        test_trade_export(root);
         std::cout << "OI schema/64-bit/snapshot/commit/selection/interruption/mixed DBN checks passed at " << root
                   << '\n';
         return 0;

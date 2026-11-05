@@ -3,6 +3,8 @@
 #include "scope_exit.hpp"
 #include "command_socket.hpp"
 #include "command_input.hpp"
+#include "dtc_test_wire.hpp"
+#include "moex/connector_host/dtc_market_data.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -208,6 +210,133 @@ std::string remote_command(const std::string& executable, const std::filesystem:
     return response;
 }
 
+void test_shared_deals_wire(std::vector<std::string> arguments, const test::RuntimeFixturePaths& fixture,
+                            const std::filesystem::path& root) {
+    using namespace dtc_test_wire;
+    namespace dtc = moex::connector_host::dtc;
+    // Run the actual qualifier and LiveTest 507 validation against the test
+    // driver's in-process fake CGate library. The only socket is DTC loopback.
+    std::erase(arguments, "--offline-fake");
+    arguments.insert(arguments.end(), {"--live", "--trading-instance-id", "offline_isolation_trade", "--open-interest",
+                                       "--run-ms", "12000"});
+    {
+        std::ofstream ini(fixture.config_dir / "t1.ini", std::ios::app);
+        ini << "\n[moex-fake-fol-runner]\nprofile=deals-wire\n";
+        require(ini.good(), "select the deterministic fake DEALS profile");
+    }
+    const auto diagnostics = root / "deals-wire.err";
+    Child md(arguments, diagnostics);
+    const auto receipt = md.line();
+    const auto port_start = receipt.find("dtc_port=");
+    require(port_start != std::string::npos, "actual FOL qualifier DTC startup receipt");
+    const auto port = std::stoi(receipt.substr(port_start + 9));
+    while (md.line().find("first_valid_commit=1") == std::string::npos) {
+    }
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    require(fd >= 0, "create Kairos-equivalent DTC client");
+    moex::connector_host::ScopeExit close_fd([&] { ::close(fd); });
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(static_cast<std::uint16_t>(port));
+    require(::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0,
+            "connect to actual qualifier on loopback");
+    const auto send = [&](unsigned type, const Bytes& body) {
+        const auto bytes = packet(type, body);
+        for (std::size_t i = 0; i < bytes.size();) {
+            const auto n = ::send(fd, bytes.data() + i, bytes.size() - i, 0);
+            require(n > 0, "write DTC request");
+            i += static_cast<std::size_t>(n);
+        }
+    };
+    dtc::DtcFrameDecoder decoder;
+    std::vector<dtc::DtcFrame> frames;
+    const auto count = [&](unsigned type) {
+        return std::count_if(frames.begin(), frames.end(), [&](const auto& f) { return f.message_type == type; });
+    };
+    const auto drain = [&](std::chrono::milliseconds timeout, unsigned until = 0) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline && (!until || !count(until))) {
+            pollfd poll_fd{.fd = fd, .events = POLLIN};
+            if (::poll(&poll_fd, 1, 10) <= 0)
+                continue;
+            std::array<std::uint8_t, 8192> buffer{};
+            const auto n = ::recv(fd, buffer.data(), buffer.size(), 0);
+            require(n > 0, "DTC disconnected before verification");
+            std::string error;
+            require(decoder.append(std::span(buffer.data(), static_cast<std::size_t>(n)), frames, error), error);
+        }
+    };
+    const auto wait_for = [&](unsigned type) {
+        drain(2s, type);
+        const auto found =
+            std::find_if(frames.begin(), frames.end(), [&](const auto& f) { return f.message_type == type; });
+        require(found != frames.end(), "missing DTC response type " + std::to_string(type));
+        return WireMessage(found->payload);
+    };
+    send(6, {8, 0, 0, 0, 4, 0, 0, 0, 'D', 'T', 'C', 0});
+    drain(2s, 7);
+    require(count(7) == 1, "DTC protobuf encoding negotiated");
+    Bytes request;
+    put_integer(request, 1, 8);
+    put_integer(request, 7, 10);
+    send(1, request);
+    const auto logon = wait_for(2);
+    require(logon.number(20) == 1 && logon.number(15) == 1 && logon.number(8) == 0,
+            "qualifier advertises trades and depth with no order entry");
+    request.clear();
+    put_integer(request, 1, 41);
+    put_text(request, 2, "RTS-6.26");
+    put_text(request, 3, "MOEX_SPECTRA");
+    send(506, request);
+    const auto definition = wait_for(507);
+    require(definition.number(35) == 321 && definition.number(33) == 1001,
+            "trade and depth use the same committed REFDATA instrument/session");
+    request.clear();
+    put_integer(request, 1, 1);
+    put_integer(request, 2, 1);
+    put_text(request, 3, "RTS-6.26");
+    put_text(request, 4, "MOEX_SPECTRA");
+    send(101, request);
+    put_integer(request, 5, 20);
+    send(102, request);
+    (void)wait_for(145);
+    drain(100ms);
+    require(count(103) == 0 && count(107) == 0 && count(145) > 0,
+            "Kairos-equivalent depth/trade subscription starts without replaying DEALS history");
+
+    const auto control = fixture.config_dir / "fol-control";
+    const auto inject = [&](std::string_view event) {
+        const auto pending = control.string() + ".next";
+        {
+            std::ofstream out(pending);
+            out << event << '\n';
+            require(out.good(), "write fake DEALS control");
+        }
+        std::filesystem::rename(pending, control);
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (std::filesystem::exists(control) && md.alive() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(2ms);
+        require(!std::filesystem::exists(control) && md.alive(), "qualifier consumed fake DEALS control");
+    };
+    inject("deal-stage");
+    drain(100ms);
+    require(count(107) == 0, "uncommitted DEALS row remains invisible");
+    inject("deal-commit");
+    const auto print = wait_for(107);
+    drain(100ms);
+    require(count(107) == 1 && print.string(8) == "9100" && print.number(16) == 321 && print.number(17) == 1001 &&
+                print.real64(3) == 102500.125 && print.real64(4) == 3.0,
+            "committed print crosses the actual DTC wire exactly once with its source identity, price and quantity");
+    md.signal(SIGTERM);
+    bool oi = false;
+    while (!oi) {
+        const auto line = md.line();
+        oi = line.find("oi_isin=1001 oi_online=1 oi_available=1 oi_quantity=124") != std::string::npos;
+    }
+    require(md.wait() == 0, "same DEALS listener updated OI and released cleanly without an order");
+}
+
 } // namespace
 int main(int argc, char** argv) {
     try {
@@ -252,6 +381,7 @@ int main(int argc, char** argv) {
                                          "--offline-fake",
                                          "--dtc-port",
                                          "11398"};
+        const auto deals_wire_args = md_args;
         auto prod_args = md_args;
         prod_args.insert(prod_args.end(), {"--environment", "prod"});
         Child prod_refused(prod_args, root / "prod-refused.err");
@@ -339,7 +469,8 @@ int main(int argc, char** argv) {
         Child overflow(md_args, root / "overflow.err");
         overflow.close_input();
         test::require(overflow.wait() == 2, "native i4 ISIN overflow must be rejected");
-        std::cout << "stalled and failed separate MD process leaves trading responsive: PASS\n";
+        test_shared_deals_wire(deals_wire_args, fixture, root);
+        std::cout << "FOL isolation and single-listener trades, depth and OI wire checks: PASS\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

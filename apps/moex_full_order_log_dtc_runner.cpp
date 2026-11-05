@@ -2,6 +2,7 @@
 #include "full_order_log_operator.hpp"
 #include "full_order_log_capture_options.hpp"
 #include "moex/connector_host/operator_config.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_deals.hpp"
 #include <atomic>
 #include <charconv>
 #include <csignal>
@@ -39,25 +40,26 @@ int main(int argc, char** argv) {
             (std::string_view(argv[2]) == "run" || std::string_view(argv[2]) == "cmd"))
             return moex::connector_host::full_order_log_operator(argc, argv, router_endpoint);
         if (argc == 2 && std::string_view(argv[1]) == "--help") {
-            std::cout << "moex_full_order_log_dtc_runner plaza2 qualify [read-only runtime options]\n"
-                         "  --dtc-port N (default 11300, consecutive loopback ports for configured ISINs)\n"
-                         "  --live --trading-instance-id NAME (MOEX/broker entitlement is the owner responsibility)\n"
-                         "  --router HOST:PORT (default 127.0.0.1:4102; separate order-log router/login)\n"
-                         "  --trading-router HOST:PORT (default 127.0.0.1:4101; must differ from --router)\n"
-                         "  --offline-fake --run-ms N (offline tests; no live authorization inferred)\n"
-                         "  --dtc-depth N (default 20; up to 20000 per side; NumLevels=0 uses that cap)\n"
-                         "  --capture-dir NEW_DIR [--capture-max-bytes N] [--capture-min-free-bytes N]\n"
-                         "  Lossless selected FOL rows; defaults: 4GiB budget, 10GiB free-space reserve.\n"
-                         "  Offline export: moex_fol_archive export-dbn CAPTURE_DIR NEW_OUTPUT.dbn\n"
-                         "  --open-interest: opt-in FORTS_DEALS_REPL;tables=deal (default off).\n"
-                         "DTC is read-only. No accounts, positions or market-by-order on DTC.\n"
-                         "plaza2 run --live|--offline-fake --allow-orders [operator/risk options]\n"
-                         "  TEST-only ORDLOG account: private reconciliation and orders on the FOL connection.\n"
-                         "  Explicit measured --clock-offset-us and all operator risk/identity options required.\n"
-                         "  Limits: quantity/position <=2, open orders/rate <=5; no DTC server in run mode.\n"
-                         "  --cancel-only: private-state recovery, no FOL/AGGR; Add/Move always refused.\n"
-                         "plaza2 cmd --command-socket PATH \"COMMAND\" (FOL endpoint only)\n"
-                      << moex::connector_host::operator_help();
+            std::cout
+                << "moex_full_order_log_dtc_runner plaza2 qualify [read-only runtime options]\n"
+                   "  --dtc-port N (default 11300, consecutive loopback ports for configured ISINs)\n"
+                   "  --live --trading-instance-id NAME (MOEX/broker entitlement is the owner responsibility)\n"
+                   "  --router HOST:PORT (default 127.0.0.1:4102; separate order-log router/login)\n"
+                   "  --trading-router HOST:PORT (default 127.0.0.1:4101; must differ from --router)\n"
+                   "  --offline-fake --run-ms N (offline tests; no live authorization inferred)\n"
+                   "  --dtc-depth N (default 20; up to 20000 per side; NumLevels=0 uses that cap)\n"
+                   "  --capture-dir NEW_DIR [--capture-max-bytes N] [--capture-min-free-bytes N]\n"
+                   "  Lossless selected FOL rows; defaults: 4GiB budget, 10GiB free-space reserve.\n"
+                   "  Offline export: moex_fol_archive export-dbn CAPTURE_DIR NEW_OUTPUT.dbn\n"
+                   "  --open-interest: OI and live DTC trades from one FORTS_DEALS_REPL;tables=deal (default off).\n"
+                   "DTC is read-only. No accounts, positions or market-by-order on DTC.\n"
+                   "plaza2 run --live|--offline-fake --allow-orders [operator/risk options]\n"
+                   "  TEST-only ORDLOG account: private reconciliation and orders on the FOL connection.\n"
+                   "  Explicit measured --clock-offset-us and all operator risk/identity options required.\n"
+                   "  Limits: quantity/position <=2, open orders/rate <=5; no DTC server in run mode.\n"
+                   "  --cancel-only: private-state recovery, no FOL/AGGR; Add/Move always refused.\n"
+                   "plaza2 cmd --command-socket PATH \"COMMAND\" (FOL endpoint only)\n"
+                << moex::connector_host::operator_help();
             return 0;
         }
         moex::connector_host::FullOrderLogCaptureFlags capture_flags;
@@ -117,8 +119,18 @@ int main(int argc, char** argv) {
         if (!capture_flags.options.directory.empty())
             capture = std::make_unique<cg::FullOrderLogCapture>(capture_flags.options, ids, book);
         cg::FullOrderLogOpenInterest open_interest(ids);
-        open_interest.before_event = [&](const auto& e) { return capture ? capture->record(e) : cg::Plaza2Error{}; };
+        std::unique_ptr<cg::FullOrderLogDeals> deals;
+        if (capture_flags.open_interest)
+            deals = std::make_unique<cg::FullOrderLogDeals>(ids);
+        open_interest.before_event = [&](const auto& e) {
+            if (capture)
+                if (const auto error = capture->record(e); error)
+                    return error;
+            return deals ? deals->on_event(e) : cg::Plaza2Error{};
+        };
         open_interest.before_error = [&](const auto& e) {
+            if (deals)
+                deals->on_error(e);
             if (capture)
                 capture->record_error(moex::plaza2::generated::StreamCode::kFortsDealsRepl, e);
         };
@@ -149,6 +161,11 @@ int main(int argc, char** argv) {
              .source_mode = offline ? dtc::DtcSourceMode::Replay : dtc::DtcSourceMode::LiveTest,
              .max_queued_bytes = 4 * 1024 * 1024,
              .max_depth_levels = depth_levels});
+        if (deals)
+            for (std::size_t i = 0; i < ids.size(); ++i)
+                loop.source(i).set_public_deals_reader([&, isin = book.instruments()[i]](auto after, auto session) {
+                    return deals->snapshot(isin, after, session);
+                });
         bool first_valid_commit = false;
         loop.on_queued_commit = [&] {
             if (!first_valid_commit) {

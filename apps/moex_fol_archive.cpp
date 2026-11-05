@@ -29,7 +29,7 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("invalid archive command");
         std::cout << "{\"records\":" << s.records << ",\"rows\":" << s.rows << ",\"valid_commits\":" << s.valid_commits
                   << ",\"last_valid_order_count\":" << s.last_valid_order_count
-                  << ",\"open_interest_rows\":" << s.open_interest_rows
+                  << ",\"open_interest_rows\":" << s.open_interest_rows << ",\"trade_prints\":" << s.trade_prints
                   << ",\"open_interest_updates\":" << s.open_interest_updates << ",\"stored_bytes\":" << s.stored_bytes
                   << ",\"truncated\":" << (s.truncated ? "true" : "false")
                   << ",\"last_good_sequence\":" << s.last_good_sequence

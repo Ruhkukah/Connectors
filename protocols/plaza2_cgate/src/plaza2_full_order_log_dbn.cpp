@@ -5,6 +5,7 @@
 #include <map>
 #include <unordered_map>
 #include <unistd.h>
+#include "moex/plaza2/cgate/plaza2_full_order_log_deals.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_oi.hpp"
 
 namespace moex::plaza2::cgate {
@@ -94,6 +95,34 @@ Mbo mbo(const FullOrderLogOrder& order, char action, std::uint64_t moment, std::
         m.flags |= 8;
     return m;
 }
+Mbo trade_mbo(const Plaza2PublicDeal& trade, std::uint64_t recv) {
+    require(trade.isin_id > 0 && trade.isin_id <= UINT32_MAX && trade.quantity > 0 && trade.quantity < UINT32_MAX,
+            "DBN quantity/identity cannot represent MOEX trade");
+    require(trade.price_scaled > 0 && trade.price_scaled <= INT64_MAX / 10000, "DBN trade price overflow");
+    require(trade.moment_ns != 0 && trade.moment_ns != UINT64_MAX, "DBN trade timestamp unavailable");
+    require(trade.at_bid_or_ask >= 0 && trade.at_bid_or_ask <= 2, "DBN trade aggressor out of range");
+    Mbo m;
+    m.instrument = static_cast<std::uint32_t>(trade.isin_id);
+    m.event = trade.moment_ns;
+    // DEALS has a deal identifier. A print without a verified aggressor order ID uses zero.
+    m.price = trade.price_scaled * 10000;
+    m.size = static_cast<std::uint32_t>(trade.quantity);
+    m.action = 'T';
+    m.side = trade.at_bid_or_ask == 2 ? 'B' : trade.at_bid_or_ask == 1 ? 'A' : 'N';
+    m.recv = recv;
+    m.flags = 128 | (trade.moment_ns > recv ? 8 : 0);
+    return m;
+}
+bool has_trade_schema(const Plaza2ListenerEvent& e) {
+    // Older captures may describe OI alone. Treat any trade field as an
+    // attempt at the trade schema and let the bridge validate the full binding.
+    return std::ranges::any_of(e.raw_tables, [](const auto& table) {
+        return std::ranges::any_of(table.fields, [](const auto& f) {
+            return f.name == "price" || f.name == "xamount" || f.name == "nosystem" || f.name == "moment" ||
+                   f.name == "xstatus_buy" || f.name == "xstatus_sell";
+        });
+    });
+}
 } // namespace
 FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path& directory,
                                                      const std::filesystem::path& output, bool allow_incomplete) {
@@ -179,9 +208,12 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
         require(pending.size() <= 1000000, "DBN transaction exceeds bounded export buffer");
     };
     FullOrderLogOpenInterest oi(checked.isins);
+    FullOrderLogDeals deals(checked.isins);
+    bool trade_schema{};
+    std::optional<std::uint64_t> pending_deals_life;
     const FullOrderLogCaptureRecord* current{};
     FullOrderLogCaptureRecord last_record{};
-    std::uint64_t oi_updates{};
+    std::uint64_t oi_updates{}, trade_prints{};
     oi.on_update = [&](const auto& v) {
         require(v.quantity < INT64_MAX, "DBN OI quantity conflicts with undefined sentinel");
         require(++sequence < UINT32_MAX, "DBN sequence exhausted; split export");
@@ -195,6 +227,13 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
         file.write(&stat, sizeof stat);
         ++oi_updates;
     };
+    deals.on_trade = [&](const auto& trade) {
+        auto m = trade_mbo(trade, current->utc_ns);
+        require(++sequence < UINT32_MAX, "DBN sequence exhausted; split export");
+        m.sequence = static_cast<std::uint32_t>(sequence);
+        file.write(&m, sizeof m);
+        ++trade_prints;
+    };
     auto result = read_full_order_log_capture(
         directory,
         [&](const auto& r) {
@@ -203,6 +242,29 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
             if (r.event.stream_code == generated::StreamCode::kFortsDealsRepl) {
                 if (const auto error = oi.on_plaza2_listener_event(r.event); error)
                     throw std::runtime_error(error.message);
+                const auto send_deals = [&](const Plaza2ListenerEvent& e) {
+                    if (const auto error = deals.on_event(e); error)
+                        throw std::runtime_error("DBN replay: " + error.message);
+                };
+                if (r.event.kind == Plaza2ListenerEventKind::LifeNum && !trade_schema)
+                    pending_deals_life = r.event.unsigned_value;
+                if (r.event.kind == Plaza2ListenerEventKind::Open) {
+                    const bool previous_trade_schema = trade_schema;
+                    trade_schema = has_trade_schema(r.event);
+                    if (previous_trade_schema && !trade_schema)
+                        send_deals({.kind = Plaza2ListenerEventKind::Close, .stream_code = r.event.stream_code});
+                    if (trade_schema && pending_deals_life)
+                        send_deals({.kind = Plaza2ListenerEventKind::LifeNum,
+                                    .stream_code = r.event.stream_code,
+                                    .unsigned_value = *pending_deals_life});
+                    pending_deals_life.reset();
+                }
+                if (trade_schema)
+                    send_deals(r.event);
+                if (r.event.kind == Plaza2ListenerEventKind::Close) {
+                    pending_deals_life.reset();
+                    trade_schema = false;
+                }
                 return;
             }
             committed = false;
@@ -252,6 +314,7 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
     } else
         require(pending.empty(), "DBN archive ends with uncommitted book changes");
     result.open_interest_updates = oi_updates;
+    result.trade_prints = trade_prints;
     result.valid_commits = valid;
     result.last_valid_order_count = last_count;
     file.publish();

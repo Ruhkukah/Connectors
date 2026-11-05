@@ -26,7 +26,7 @@ Online client scheme contains exactly `orders_log,sys_events`; snapshot client s
 
 ## Recorder/OI source revision (offline until separately approved)
 
-The new FOL source adds opt-in lossless Zstd recording and offline DBN v3 export, plus opt-in `--open-interest` for `p2repl://FORTS_DEALS_REPL;tables=deal` in reader/writer mode (default off). Declare this table only for a run using that flag. It leaves installed/native pins unchanged; the old pin above does **not** include OI. Cancel-only still opens no public market-data streams. Snapshot OI is hidden until ONLINE; subsequent per-trade observations are exposed at transaction commit. `xpos` remains a signed 64-bit market quantity, with `moment_ns`, `sess_id`, `isin_id`, `id_deal` and replication identities validated from OPEN. No OI is inferred from order quantities. The whole selected public deal row is retained if recording is enabled. No additional heartbeat, multileg or COMMON table is requested. No writer order or risk authority is taken from OI.
+The new FOL source adds opt-in lossless Zstd recording and offline DBN v3 export, plus opt-in `--open-interest` for `p2repl://FORTS_DEALS_REPL;tables=deal` in reader/writer mode (default off). Declare this table only for a run using that flag. It leaves installed/native pins unchanged; the old pin above does **not** include OI. Cancel-only still opens no public market-data streams. Snapshot OI is hidden until ONLINE; subsequent per-trade observations are exposed at transaction commit. `xpos` remains a signed 64-bit market quantity, with `moment_ns`, `sess_id`, `isin_id`, `id_deal` and replication identities validated from OPEN. No OI is inferred from order quantities. The whole selected public deal row is retained if recording is enabled. No additional heartbeat, multileg or COMMON table is requested. No writer order or risk authority is taken from OI. In read-only qualify mode the same DEALS listener supplies committed public trade prints to Kairos. Startup snapshot trades are withheld from the live subscription. The DTC server waits for current DEALS and depth before granting combined display authority.
 
 ## Other restricted listeners
 
@@ -35,7 +35,7 @@ Every p2repl listener uses an explicit tables= selection; no client scheme= is c
 | Stream URL | Tables | Use |
 |---|---|---|
 | p2repl://FORTS_REFDATA_REPL | session,fut_instruments,fut_sess_contents,fut_vcb,sys_messages,instr2matching_map | FOL reader/writer metadata and matching resolution |
-| p2repl://FORTS_DEALS_REPL | deal | Optional --open-interest only: public open interest (`xpos`), replication identity, session/instrument and observation time; lossless selected rows and DBN Statistics export |
+| p2repl://FORTS_DEALS_REPL | deal | Optional --open-interest only: public open interest (`xpos`), replication identity, session/instrument and observation time; live DTC trade prints, lossless selected rows and DBN trade/Statistics export |
 | p2repl://FORTS_SESSIONSTATE_REPL | session_state | Session authority/readiness |
 | p2repl://FORTS_INSTRUMENTSTATE_REPL | instrument_state,sys_events | Current instrument state/readiness |
 | p2repl://FORTS_TRADE_REPL | orders_log,user_deal,heartbeat,sys_events | Writer/cancel-only private reconciliation |

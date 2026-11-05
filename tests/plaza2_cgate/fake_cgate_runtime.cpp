@@ -1119,6 +1119,25 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                         {.field_code = kFortsRefdataReplFutVcbCurr, .kind = Text, .text = "RUB"},
                         {.field_code = kFortsRefdataReplFutVcbBoardMd, .kind = Text, .text = "RFUD"}}});
     }
+    if (stream_code == StreamCode::kFortsRefdataRepl && fol_runner_profile == "deals-wire") {
+        using enum FieldCode;
+        using enum TableCode;
+        const auto now = static_cast<std::uint64_t>(std::time(nullptr));
+        for (auto& row : script) {
+            if (row.table_code == kFortsRefdataReplSession) {
+                find_field(row, kFortsRefdataReplSessionBegin)->unsigned_value = now - 60;
+                find_field(row, kFortsRefdataReplSessionEnd)->unsigned_value = now + 3600;
+            }
+            if (row.table_code == kFortsRefdataReplFutInstruments)
+                row.fields.push_back({.field_code = kFortsRefdataReplFutInstrumentsStepPriceCurr,
+                                      .kind = FakeValueKind::Text,
+                                      .text = "12.5"});
+            if (row.table_code == kFortsRefdataReplFutSessContents)
+                row.fields.push_back({.field_code = kFortsRefdataReplFutSessContentsStepPriceCurr,
+                                      .kind = FakeValueKind::Text,
+                                      .text = "12.5"});
+        }
+    }
     if (stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::FullOrderLogRefdata) &&
         full_refdata_count > 1) {
         const auto first = *std::find_if(script.begin(), script.end(), [](const auto& row) {
@@ -2420,7 +2439,8 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
     if (profile.empty())
         return kCgErrOk;
     if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" && profile != "invalid" &&
-        profile != "recovery" && profile != "unframed" && profile != "short-snapshot" && profile != "unframed-online")
+        profile != "recovery" && profile != "deals-wire" && profile != "unframed" && profile != "short-snapshot" &&
+        profile != "unframed-online")
         return kCgErrInvalidArgument;
     scenario = {};
     scenario.spectra912_refdata_schema = true;
@@ -2552,6 +2572,27 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
                 if (listener && listener->stream_code == kFullOrderLogStreamCode)
                     return emit_simple_message(*listener, kCgMsgP2replReplState, const_cast<char*>(oversized.c_str()),
                                                oversized.size() + 1);
+        }
+        if (fol_runner_profile == "deals-wire" && (profile == "deal-stage" || profile == "deal-commit")) {
+            std::filesystem::remove(fol_runner_control);
+            for (auto* listener : connection->listeners) {
+                if (!listener || listener->stream_code != StreamCode::kFortsDealsRepl)
+                    continue;
+                if (profile == "deal-commit")
+                    return emit_simple_message(*listener, kCgMsgTnCommit);
+                auto row = script_for_stream(StreamCode::kFortsDealsRepl).front();
+                row.rev = 100;
+                find_field(row, FieldCode::kFortsDealsReplDealReplId)->signed_value = 100;
+                find_field(row, FieldCode::kFortsDealsReplDealReplRev)->signed_value = 100;
+                find_field(row, FieldCode::kFortsDealsReplDealIdDeal)->signed_value = 9100;
+                find_field(row, FieldCode::kFortsDealsReplDealXpos)->signed_value = 124;
+                find_field(row, FieldCode::kFortsDealsReplDealXstatusBuy)->signed_value = 0x20000000000LL;
+                find_field(row, FieldCode::kFortsDealsReplDealXstatusSell)->signed_value = 0x40000000000LL;
+                if (const auto error = emit_simple_message(*listener, kCgMsgTnBegin))
+                    return error;
+                return emit_stream_message(*listener, row);
+            }
+            return kCgErrIncorrectState;
         }
         if (!profile.empty() && profile != fol_runner_profile) {
             if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" &&

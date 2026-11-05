@@ -48,6 +48,7 @@ struct FullOrderLogArchiveSummary {
     std::string source_sha;
     std::uint64_t records{}, rows{}, commits{}, valid_commits{}, last_valid_order_count{}, stored_bytes{},
         open_interest_rows{}, open_interest_updates{}, listener_errors{}, last_good_sequence{};
+    std::uint64_t trade_prints{}; // DBN export only.
     bool truncated{}, end_record_present{};
     FullOrderLogCaptureEndStatus end_status{FullOrderLogCaptureEndStatus::Clean};
     int host_status{};
@@ -60,7 +61,7 @@ read_full_order_log_capture(const std::filesystem::path& directory,
                             bool allow_incomplete = false);
 FullOrderLogArchiveSummary replay_full_order_log_capture(const std::filesystem::path& directory,
                                                          bool allow_incomplete = false);
-// Derived DBN v3 MBO book changes plus public OI Statistics (A/M/C/R), never fabricated trade prints.
+// Derived DBN v3 MBO book changes and committed public DEALS prints, plus OI Statistics.
 // Creates a new file exclusively, publishes it only after complete archive validation.
 FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path& directory,
                                                      const std::filesystem::path& output,

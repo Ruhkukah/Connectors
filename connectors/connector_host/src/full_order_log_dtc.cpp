@@ -13,6 +13,11 @@ DtcFullOrderLogSource::DtcFullOrderLogSource(const plaza2::cgate::Plaza2FullOrde
             side.reserve(max_changes / 2);
     update_metadata(std::move(metadata));
 }
+plaza2::cgate::Plaza2PublicDealsSnapshot DtcFullOrderLogSource::public_deals(std::uint64_t after_sequence) const {
+    if (!public_deals_reader_ || !metadata_.refdata_metadata_current || metadata_.session_id <= 0)
+        return {};
+    return public_deals_reader_(after_sequence, metadata_.session_id);
+}
 void DtcFullOrderLogSource::update_metadata(DtcMarketDataSnapshot metadata) {
     metadata.levels.clear();
     metadata.isin_id = isin_;
@@ -85,6 +90,12 @@ DtcMarketDataSnapshot DtcFullOrderLogSource::status_snapshot() const {
     out.book_snapshot_current = book_.valid() && !out.crossed_book;
     out.market_data_display_allowed = out.transport_active && out.refdata_metadata_current && book_.valid() &&
                                       !out.crossed_book && wire_prices_valid_;
+    // Kairos subscribes to prints when depth authority first becomes displayable.
+    // For a combined feed, wait for the committed DEALS generation as well.
+    if (out.market_data_display_allowed && public_deals_reader_) {
+        const auto deals = public_deals(UINT64_MAX);
+        out.market_data_display_allowed = deals.valid && deals.online && deals.lifenum && deals.stream_epoch;
+    }
     out.source_consistent = out.target_authoritative = out.valid = out.market_data_display_allowed;
     out.source_snapshot_hash = 0;
     out.session_ready_witness_kind = SessionReadyWitnessKind::None;
