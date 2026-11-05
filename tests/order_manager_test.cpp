@@ -996,6 +996,120 @@ void uncertain_cancels_preserve_identity_and_budget() {
             "authoritative bulk terminal row did not stop retries");
 }
 
+void native_timeout_and_system_reply_outcomes() {
+    using Kind = tr::Plaza2TradeCommandKind;
+    const auto time = [](int ms) { return OrderManager::Clock::time_point{} + std::chrono::milliseconds(ms); };
+    for (const bool system_error : {false, true}) {
+        const auto fail = [&](OrderManager& manager, std::uint32_t id, int ms) {
+            if (system_error)
+                manager.on_reply(id, {.msgid = 100, .code = -17, .message = "system error"}, time(ms));
+            else
+                manager.on_timeout(id, time(ms));
+        };
+        const auto place = [](Fixture& fixture, OrderManager& manager) {
+            require(manager.place(request("reply-outcome")).empty(), "reply outcome fixture Add refused");
+            fixture.poll(manager, 0);
+            require(fixture.sent.size() == 1 && fixture.sent.back().kind == Kind::AddOrder,
+                    "reply outcome fixture failed to post Add");
+        };
+        const auto working = [&](Fixture& fixture, OrderManager& manager) {
+            place(fixture, manager);
+            manager.on_reply(fixture.sent.back().id, {.msgid = 179, .order_id = 81001}, time(0));
+        };
+        {
+            Fixture fixture;
+            auto manager = fixture.manager();
+            place(fixture, manager);
+            const auto add = fixture.sent.back();
+            fail(manager, add.id, 100);
+            fixture.poll(manager, 101);
+            require(fixture.sent.size() == 2 && fixture.sent.back().kind == Kind::DelUserOrders &&
+                        wire<official_cgate99::DelUserOrders>(fixture.sent.back()).ext_id ==
+                            wire<official_cgate99::AddOrder>(add).ext_id &&
+                        manager.orders().at("reply-outcome").state == OrderState::Unknown,
+                    "uncertain Add was resent or recovery lost its external identity");
+        }
+        {
+            Fixture fixture;
+            auto manager = fixture.manager();
+            working(fixture, manager);
+            require(manager.move("reply-outcome", "101", 2).empty(), "reply outcome fixture Move refused");
+            fixture.poll(manager, 1);
+            require(fixture.sent.size() == 2 && fixture.sent.back().kind == Kind::MoveOrder,
+                    "reply outcome fixture failed to post Move");
+            fail(manager, fixture.sent.back().id, 100);
+            fixture.poll(manager, 5000);
+            const auto& order = manager.orders().at("reply-outcome");
+            require(fixture.sent.size() == 2 && order.order_id == 81001 && order.state == OrderState::Unknown &&
+                        !order.cancel_requested,
+                    "uncertain Move was resent or implicitly cancelled instead of retaining correlation");
+        }
+        {
+            Fixture fixture;
+            auto manager = fixture.manager();
+            working(fixture, manager);
+            require(manager.cancel("reply-outcome").empty(), "reply outcome fixture Del refused");
+            fixture.poll(manager, 1);
+            const auto cancel = fixture.sent.back();
+            require(fixture.sent.size() == 2 && cancel.kind == Kind::DelOrder,
+                    "reply outcome fixture failed to post known-ID Del");
+            fail(manager, cancel.id, 100);
+            fixture.poll(manager, 1099);
+            require(fixture.sent.size() == 2, "known-ID Del ignored the retry delay");
+            fixture.poll(manager, 1100);
+            require(fixture.sent.size() == 3 && fixture.sent.back().kind == Kind::DelOrder &&
+                        fixture.sent.back().id != cancel.id && fixture.sent.back().payload == cancel.payload,
+                    "known-ID Del did not retry using the same wire target and a fresh correlation ID");
+            observe(manager, row(manager.orders().at("reply-outcome"), 81001, 0, 0));
+            manager.on_reply(fixture.sent.back().id, {.msgid = 177, .code = 14}, time(1101));
+            fixture.poll(manager, 5000);
+            require(fixture.sent.size() == 3 && manager.orders().at("reply-outcome").state == OrderState::Cancelled &&
+                        !manager.cancellations_pending(),
+                    "late order-not-found reply retried a replicated terminal cancellation");
+        }
+        {
+            Fixture fixture;
+            fixture.config.sole_instance = true;
+            auto manager = fixture.manager();
+            require(manager.cancel_all(42).empty(), "reply outcome fixture DelUserOrders refused");
+            fixture.poll(manager, 0);
+            require(fixture.sent.size() == 1 && fixture.sent.back().kind == Kind::DelUserOrders,
+                    "reply outcome fixture failed to post DelUserOrders");
+            for (int attempt = 1; attempt <= 3; ++attempt) {
+                const auto current = fixture.sent.back();
+                fail(manager, current.id, attempt * 1100 - 1000);
+                fixture.poll(manager, attempt * 1100);
+                if (attempt < 3)
+                    require(fixture.sent.size() == static_cast<std::size_t>(attempt + 1) &&
+                                fixture.sent.back().kind == Kind::DelUserOrders &&
+                                fixture.sent.back().id != current.id && fixture.sent.back().payload == current.payload,
+                            "uncertain DelUserOrders lost its bounded scope or failed to retry");
+            }
+            require(fixture.sent.size() == 3 && manager.operator_action_required(),
+                    "DelUserOrders exceeded its three uncertain outcomes or hid operator action");
+        }
+    }
+}
+
+void add_flood_rejects_original_and_pauses_next_command() {
+    Fixture fixture;
+    auto manager = fixture.manager();
+    require(manager.place(request("flooded-add")).empty(), "Add flood fixture refused");
+    fixture.poll(manager, 0);
+    manager.on_reply(fixture.sent.at(0).id, {.msgid = 99, .penalty_remain = 2000}, OrderManager::Clock::time_point{});
+    require(manager.orders().at("flooded-add").state == OrderState::Rejected,
+            "Add flood did not resolve the original as rejected");
+    require(manager.place(request("after-add-flood")).empty(), "independent Add after flood was refused");
+    fixture.poll(manager, 1999);
+    require(fixture.sent.size() == 1, "Add flood did not pause the publisher for penalty_remain");
+    fixture.poll(manager, 2000);
+    require(fixture.sent.size() == 2 && fixture.sent.back().id != fixture.sent.front().id &&
+                manager.orders().at("flooded-add").state == OrderState::Rejected &&
+                wire<official_cgate99::AddOrder>(fixture.sent.back()).ext_id ==
+                    manager.orders().at("after-add-flood").ext_id,
+            "Add flood retried the rejected order or failed to release the next command");
+}
+
 void cancel_during_move() {
     Fixture f;
     auto manager = f.manager();
@@ -1086,7 +1200,7 @@ void confirmed_add_without_reply() {
                             [](auto command) { return command.kind == tr::Plaza2TradeCommandKind::DelOrder; }),
             "official179 did not preserve the ambiguous Add's cancellation intent");
 }
-void cancelled_order_during_move() {
+void terminal_orders_survive_late_command_rejections() {
     Fixture f;
     auto manager = f.manager();
     require(manager.place(request("cancelled-before-move")).empty(), "queued cancelled Add refused");
@@ -1098,18 +1212,32 @@ void cancelled_order_during_move() {
     require(manager.orders().at("cancelled-before-move").state == OrderState::Cancelled && f.sent.size() == 1,
             "queued Move survived authoritative cancellation");
 
-    Fixture posted;
-    auto other = posted.manager();
-    require(other.place(request("cancelled-with-move")).empty(), "posted cancelled Add refused");
-    posted.poll(other, 0);
-    other.on_reply(posted.sent.front().id, {.msgid = 179, .order_id = 1002}, OrderManager::Clock::time_point{});
-    require(other.move("cancelled-with-move", "101", 2).empty(), "posted cancelled Move refused");
-    posted.poll(other, 1000);
-    observe(other, row(other.orders().at("cancelled-with-move"), 1002, 0, 0));
-    other.on_reply(posted.sent.back().id, {.msgid = 176, .code = 17, .message = "order already removed"},
-                   OrderManager::Clock::time_point{} + std::chrono::milliseconds(1001));
-    require(other.orders().at("cancelled-with-move").state == OrderState::Cancelled,
-            "rejected Move resurrected an authoritatively cancelled order");
+    for (const bool moving : {false, true})
+        for (const bool filled : {false, true}) {
+            Fixture posted;
+            auto other = posted.manager();
+            const auto* key = "terminal-race";
+            require(other.place(request(key)).empty(), "terminal race seed Add refused");
+            posted.poll(other, 0);
+            other.on_reply(posted.sent.front().id, {.msgid = 179, .order_id = 1002}, OrderManager::Clock::time_point{});
+            require((moving ? other.move(key, "101", 2) : other.cancel(key)).empty(), "terminal race request refused");
+            posted.poll(other, 1000);
+            const auto kind = moving ? tr::Plaza2TradeCommandKind::MoveOrder : tr::Plaza2TradeCommandKind::DelOrder;
+            require(posted.sent.size() == 2 && posted.sent.back().kind == kind,
+                    "terminal race fixture omitted the in-flight command");
+            if (filled)
+                fill(other, 1002, 1, 3);
+            observe(other, row(other.orders().at(key), 1002, 0, filled ? 2 : 0));
+            other.on_reply(posted.sent.back().id,
+                           {.msgid = moving ? 176 : 177, .code = moving ? 50 : 14, .message = "order not found"},
+                           OrderManager::Clock::time_point{} + std::chrono::milliseconds(1001));
+            posted.poll(other, 5000);
+            const auto& order = other.orders().at(key);
+            require(posted.sent.size() == 2 && order.order_id == 1002 && order.remaining == 0 &&
+                        order.state == (filled ? OrderState::Filled : OrderState::Cancelled) &&
+                        order.executed == (filled ? 3 : 0),
+                    "late not-found reply retried or changed an authoritatively terminal order");
+        }
 }
 void flood_does_not_exhaust_cancel_budget() {
     for (const bool recovery : {false, true}) {
@@ -2227,12 +2355,14 @@ int main() {
         mass_cancel_supersedes_delayed_flood_replies();
         cancel_all_and_move_failures();
         uncertain_cancels_preserve_identity_and_budget();
+        native_timeout_and_system_reply_outcomes();
         moex::connector_host::transport_retry_warning_regression<Fixture>();
         cancel_during_move();
         replication_during_move();
         confirmed_add_without_reply();
-        cancelled_order_during_move();
+        terminal_orders_survive_late_command_rejections();
         flood_does_not_exhaust_cancel_budget();
+        add_flood_rejects_original_and_pauses_next_command();
         recovery_bounds_and_wire();
         ext_identity_and_relist();
         move_fill_accounting();

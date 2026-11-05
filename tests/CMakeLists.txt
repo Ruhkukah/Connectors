@@ -148,6 +148,13 @@ if(MOEX_BUILD_APPS)
     add_test(NAME full_order_log_trading_runner_test COMMAND full_order_log_trading_runner_test
         "$<TARGET_FILE:moex_full_order_log_dtc_runner>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
     set_tests_properties(full_order_log_trading_runner_test PROPERTIES LABELS "integration;plaza2;sanitizer" TIMEOUT 90)
+    foreach(case outages restart command-matrix mass-cancel-matrix rate-matrix)
+        string(REPLACE "-" "_" test_name "${case}")
+        add_test(NAME full_order_log_writer_${test_name}_test COMMAND full_order_log_trading_runner_test
+            "$<TARGET_FILE:moex_full_order_log_dtc_runner>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>" "${case}")
+        set_tests_properties(full_order_log_writer_${test_name}_test PROPERTIES
+            LABELS "integration;plaza2;sanitizer" TIMEOUT 60)
+    endforeach()
     moex_test_target(full_order_log_runner_test_driver full_order_log_runner_test_driver.cpp moex_connector_host)
     target_sources(full_order_log_runner_test_driver PRIVATE "${MOEX_SOURCE_ROOT}/apps/moexctl.cpp")
     moex_test_target(full_order_log_isolation_test full_order_log_isolation_test.cpp plaza2_runtime_test_support moex_connector_host moex_full_order_log_capture)

@@ -213,8 +213,11 @@ std::size_t occurrences(std::string_view value, std::string_view needle) {
 }
 } // namespace
 
+#include "full_order_log_command_cases.hpp"
+#include "full_order_log_recovery_cases.hpp"
+
 int main(int argc, char** argv) {
-    if (argc != 3)
+    if (argc != 3 && argc != 4)
         return 2;
     try {
         std::signal(SIGPIPE, SIG_IGN);
@@ -238,6 +241,17 @@ int main(int argc, char** argv) {
         ::setenv("MOEX_FOL_RUNNER_BROKER", "BRK1", 1);
         ::setenv("MOEX_FOL_RUNNER_CLIENT", "C01", 1);
         ::setenv("MOEX_FOL_RUNNER_LOGIN", "fol-offline-owner", 1);
+        if (argc == 4) {
+            const std::string_view test_case = argv[3];
+            if (test_case == "outages")
+                test_fol_outages(executable, fixture);
+            else if (test_case == "restart")
+                test_fol_restart(executable, fixture);
+            else if (!run_fol_command_case(test_case, executable, fixture))
+                throw std::invalid_argument("unknown FOL writer fixture case");
+            std::cout << "PASS offline FOL writer " << test_case << '\n';
+            return 0;
+        }
         unsigned index{};
         for (const auto option : {"--login-env", "--ext-id-range", "--max-commands-per-second", "--max-quantity",
                                   "--max-open-orders", "--max-notional", "--max-position", "--clock-offset-us"}) {

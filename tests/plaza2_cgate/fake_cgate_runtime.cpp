@@ -23,6 +23,7 @@
 #include <map>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -76,15 +77,24 @@ fixture::Scenario scenario;
 std::string fol_runner_profile;
 std::filesystem::path fol_runner_posts, fol_runner_control;
 std::chrono::steady_clock::time_point fol_runner_next_activity{};
+bool fol_runner_wrong_session{};
 struct FolRunnerOrder {
     std::int64_t id{20003}, ext_id{100};
     std::string price{"102500"};
-    bool present{}, cancelled{};
+    std::int32_t dir{1}, amount{1};
+    bool present{}, cancelled{}, filled{};
     std::uint64_t revision{};
 };
-std::array<FolRunnerOrder, 2> fol_runner_orders;
+std::array<FolRunnerOrder, 10> fol_runner_orders;
 auto& fol_runner_order = fol_runner_orders[0];
 std::int64_t fol_runner_reply_id{20003};
+std::int64_t fol_matrix_next_id{};
+std::int32_t fol_matrix_cancelled_count{};
+enum class MatrixBulk { Idle, ReplyPending, Yield };
+MatrixBulk fol_matrix_bulk{};
+bool fol_matrix_profile() {
+    return fol_runner_profile == "matrix" || fol_runner_profile == "matrix-five";
+}
 std::deque<fixture::Event> queued_events;
 std::vector<fixture::PostedCommand> posted_commands;
 std::unordered_map<StreamCode, std::uint64_t> listener_opens;
@@ -353,11 +363,12 @@ std::vector<std::byte> make_trade_reply(std::string_view message_name) {
                                   : std::strtoll(id_text, nullptr, 10);
         write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message), order_id);
     } else if (move) {
-        write_reply_scalar(payload, offsetof(official_cgate99::FORTS_MSG176, order_id1), std::int64_t{20004});
+        const auto id = fol_matrix_profile() ? fol_runner_reply_id : std::int64_t{20004};
+        write_reply_scalar(payload, offsetof(official_cgate99::FORTS_MSG176, order_id1), id);
         write_reply_scalar(payload, offsetof(official_cgate99::FORTS_MSG176, order_id2), std::int64_t{20005});
     } else {
-        write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message),
-                           static_cast<std::int32_t>(recovery ? 1 : 0));
+        const auto count = fol_matrix_profile() ? fol_matrix_cancelled_count : recovery ? 1 : 0;
+        write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message), count);
     }
     return payload;
 }
@@ -1082,7 +1093,8 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                      {.field_code = kFortsUserorderbookReplOrdersReplRev, .signed_value = 20 + side},
                      {.field_code = kFortsUserorderbookReplOrdersPublicOrderId, .signed_value = 9000 + side},
                      {.field_code = kFortsUserorderbookReplOrdersIsinId, .signed_value = 1001},
-                     {.field_code = kFortsUserorderbookReplOrdersSessId, .signed_value = session},
+                     {.field_code = kFortsUserorderbookReplOrdersSessId,
+                      .signed_value = session - static_cast<int>(fol_runner_wrong_session)},
                      {.field_code = kFortsUserorderbookReplOrdersPublicAmountRest, .signed_value = side == 1 ? 7 : 9},
                      {.field_code = kFortsUserorderbookReplOrdersDir, .signed_value = side},
                      {.field_code = kFortsUserorderbookReplOrdersPrice,
@@ -1707,19 +1719,24 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
                 case kFortsTradeReplOrdersLogPrivateAmount:
                 case kFortsUserorderbookReplOrdersCurrentdayPublicAmount:
                 case kFortsUserorderbookReplOrdersCurrentdayPrivateAmount:
+                    field.signed_value = fol_runner_order.amount;
+                    break;
                 case kFortsTradeReplOrdersLogDir:
                 case kFortsUserorderbookReplOrdersCurrentdayDir:
-                    field.signed_value = 1;
+                    field.signed_value = fol_runner_order.dir;
                     break;
                 case kFortsTradeReplOrdersLogPublicAmountRest:
                 case kFortsTradeReplOrdersLogPrivateAmountRest:
                 case kFortsUserorderbookReplOrdersCurrentdayPublicAmountRest:
                 case kFortsUserorderbookReplOrdersCurrentdayPrivateAmountRest:
+                    field.signed_value =
+                        fol_runner_order.cancelled || fol_runner_order.filled ? 0 : fol_runner_order.amount;
+                    break;
                 case kFortsTradeReplOrdersLogPublicAction:
                 case kFortsTradeReplOrdersLogPrivateAction:
                 case kFortsUserorderbookReplOrdersCurrentdayPublicAction:
                 case kFortsUserorderbookReplOrdersCurrentdayPrivateAction:
-                    field.signed_value = fol_runner_order.cancelled ? 0 : 1;
+                    field.signed_value = fol_runner_order.filled ? 2 : fol_runner_order.cancelled ? 0 : 1;
                     break;
                 case kFortsTradeReplOrdersLogIdDeal:
                     field.signed_value = 0;
@@ -2422,6 +2439,7 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
     fol_runner_profile.clear();
     fol_runner_posts.clear();
     fol_runner_control.clear();
+    fol_runner_wrong_session = false;
     const auto begin = settings.find("ini=");
     if (begin == std::string_view::npos)
         return kCgErrOk;
@@ -2440,7 +2458,7 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
         return kCgErrOk;
     if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" && profile != "invalid" &&
         profile != "recovery" && profile != "deals-wire" && profile != "unframed" && profile != "short-snapshot" &&
-        profile != "unframed-online")
+        profile != "unframed-online" && profile != "matrix" && profile != "matrix-five")
         return kCgErrInvalidArgument;
     scenario = {};
     scenario.spectra912_refdata_schema = true;
@@ -2456,7 +2474,13 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
     fol_runner_orders[1].id = 20006;
     fol_runner_orders[1].ext_id = 101;
     fol_runner_reply_id = 20003;
+    fol_matrix_next_id = 20003;
+    fol_matrix_cancelled_count = 0;
+    fol_matrix_bulk = MatrixBulk::Idle;
     fol_runner_order.present = profile == "recovery";
+    if (profile == "matrix-five")
+        for (std::int32_t i = 0; i < 5; ++i)
+            fol_runner_orders[i] = {.id = fol_matrix_next_id++, .ext_id = 100 + i, .present = true, .revision = 1};
     fol_runner_next_activity = {};
     return kCgErrOk;
 }
@@ -2520,6 +2544,16 @@ std::uint32_t cg_conn_open(void* conn, const char*) {
     if (!g_env_open || conn == nullptr) {
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
     }
+    if (fake_flag(Option::ConnectionOpenFail) && !fol_runner_profile.empty()) {
+        std::ifstream control(fol_runner_control);
+        std::string action;
+        // The session does not call cg_conn_process while its connection is down.
+        if (std::getline(control, action) && action == "router-up") {
+            clear_option(Option::ConnectionOpenFail);
+            clear_option(Option::ConnectionError);
+            std::filesystem::remove(fol_runner_control);
+        }
+    }
     auto* connection = static_cast<FakeConnection*>(conn);
     if (fake_flag(Option::ConnectionOpenFail)) {
         connection->state = kStateError;
@@ -2560,6 +2594,10 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
     }
     ++process_calls;
     auto* connection = static_cast<FakeConnection*>(conn);
+    if (fol_matrix_bulk == MatrixBulk::Yield) {
+        fol_matrix_bulk = MatrixBulk::Idle;
+        return kCgErrTimeout;
+    }
     if (!fol_runner_profile.empty()) {
         std::ifstream control(fol_runner_control);
         std::string profile;
@@ -2593,6 +2631,57 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
                 return emit_stream_message(*listener, row);
             }
             return kCgErrIncorrectState;
+        }
+        const auto set_fault = [&](Option option, bool enabled) {
+            if (enabled)
+                scenario.options[static_cast<std::size_t>(option)] = "1";
+            else
+                clear_option(option);
+        };
+        if (profile == "router-down" || profile == "router-up") {
+            set_fault(Option::ConnectionOpenFail, profile == "router-down");
+            set_fault(Option::ConnectionError, profile == "router-down");
+            std::filesystem::remove(fol_runner_control);
+            profile.clear();
+        } else if (profile == "publisher-down" || profile == "publisher-up") {
+            set_fault(Option::PublisherError, profile == "publisher-down");
+            std::filesystem::remove(fol_runner_control);
+            profile.clear();
+        }
+        if (profile == "fol-lifenum" || profile == "fol-clear" || profile == "trade-begin") {
+            std::filesystem::remove(fol_runner_control);
+            if (profile == "fol-lifenum")
+                queued_events.push_back(
+                    {.kind = fixture::EventKind::LifeNum, .stream_code = kFullOrderLogStreamCode, .value = 8});
+            else if (profile == "fol-clear")
+                queued_events.push_back({.kind = fixture::EventKind::ClearDeleted,
+                                         .stream_code = kFullOrderLogStreamCode,
+                                         .table_code = TableCode::kFortsUserorderbookReplOrders,
+                                         .revision = std::numeric_limits<std::int64_t>::max()});
+            else
+                queued_events.push_back(
+                    {.kind = fixture::EventKind::Begin, .stream_code = StreamCode::kFortsTradeRepl});
+            profile.clear();
+        }
+        if (profile == "fol-pause" || profile == "fol-resume" || profile == "fol-wrong-session" ||
+            profile == "fol-current-session") {
+            std::filesystem::remove(fol_runner_control);
+            if (profile == "fol-resume") {
+                clear_option(Option::ListenerOpenNoService);
+                profile.clear();
+            } else {
+                fol_runner_wrong_session = profile == "fol-wrong-session";
+                if (profile == "fol-pause")
+                    scenario.options[static_cast<std::size_t>(Option::ListenerOpenNoService)] = "p2ordbook://";
+                for (auto* listener : connection->listeners)
+                    if (listener && listener->stream_code == kFullOrderLogStreamCode &&
+                        listener->state == kStateActive) {
+                        listener->state = kStateError;
+                        std::uint32_t reason = profile == "fol-pause" ? 0xA006 : 0;
+                        return emit_simple_message(*listener, kCgMsgClose, &reason, sizeof reason);
+                    }
+                return kCgErrOk;
+            }
         }
         if (!profile.empty() && profile != fol_runner_profile) {
             if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" &&
@@ -3246,6 +3335,15 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
         return kCgErrTimeout;
     }
 
+    if (fol_matrix_bulk == MatrixBulk::ReplyPending) {
+        // The owner drains several CGate calls per poll. Yield after 186 so
+        // private cancellation rows commit after its reply watermark.
+        fol_matrix_bulk = MatrixBulk::Yield;
+        for (auto* listener : connection->listeners)
+            if (listener && (listener->stream_code == StreamCode::kFortsTradeRepl ||
+                             listener->stream_code == StreamCode::kFortsUserorderbookRepl))
+                listener->script_emitted = false;
+    }
     connection->pending_replies.clear();
     connection->script_emitted = true;
     return kCgErrOk;
@@ -3597,6 +3695,86 @@ std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void
     return kCgErrOk;
 }
 
+static bool fol_matrix_apply(std::string_view name, const CgMsgData& posted, std::ostream& details) {
+    const auto text = [](const auto& field) { return std::string(field, strnlen(field, sizeof(field))); };
+    const auto decode = [&](auto& wire) {
+        if (!posted.data || posted.data_size != sizeof(wire))
+            return false;
+        std::memcpy(&wire, posted.data, sizeof(wire));
+        return text(wire.broker_code) == "BRK1";
+    };
+    const auto working = [](const auto& order) { return order.present && !order.cancelled && !order.filled; };
+    fol_matrix_cancelled_count = 0;
+    if (name == "AddOrder") {
+        official_cgate99::AddOrder wire{};
+        if (!decode(wire) || wire.isin_id != 1001 || text(wire.client_code) != "C01" || wire.dir < 1 || wire.dir > 2 ||
+            wire.type < 1 || wire.type > 2 || wire.amount != 1 || wire.ext_id < 100 || wire.ext_id >= 110)
+            return false;
+        auto& order = fol_runner_orders[wire.ext_id - 100];
+        if (order.present)
+            return false;
+        const auto price = text(wire.price);
+        order = {.id = fol_matrix_next_id++,
+                 .ext_id = wire.ext_id,
+                 .price = price,
+                 .dir = wire.dir,
+                 .amount = wire.amount,
+                 .present = true,
+                 .cancelled = wire.type == 2,
+                 .filled = price == "103000",
+                 .revision = 1};
+        fol_runner_reply_id = order.id;
+        details << " dir=" << wire.dir << " type=" << wire.type << " price=" << price << " id=" << order.id;
+        return true;
+    }
+    if (name == "MoveOrder") {
+        official_cgate99::MoveOrder wire{};
+        if (!decode(wire) || wire.isin_id != 1001 || text(wire.client_code) != "C01" || wire.regime != 3 ||
+            wire.amount1 != 1 || wire.order_id2 != 0)
+            return false;
+        const auto order = std::ranges::find_if(fol_runner_orders, [&](const auto& entry) {
+            return working(entry) && entry.id == wire.order_id1 && entry.ext_id == wire.ext_id1;
+        });
+        if (order == fol_runner_orders.end())
+            return false;
+        order->id = fol_matrix_next_id++;
+        order->price = text(wire.price1);
+        ++order->revision;
+        fol_runner_reply_id = order->id;
+        details << " target=" << wire.order_id1 << " price=" << order->price << " id=" << order->id;
+        return true;
+    }
+    if (name == "DelOrder") {
+        official_cgate99::DelOrder wire{};
+        if (!decode(wire) || wire.isin_id != 1001 || text(wire.client_code) != "C01")
+            return false;
+        const auto order =
+            std::ranges::find_if(fol_runner_orders, [&](const auto& e) { return working(e) && e.id == wire.order_id; });
+        if (order == fol_runner_orders.end())
+            return false;
+        order->cancelled = true;
+        ++order->revision;
+        fol_matrix_cancelled_count = 1;
+        details << " target=" << wire.order_id;
+        return true;
+    }
+    if (name == "DelUserOrders") {
+        official_cgate99::DelUserOrders wire{};
+        if (!decode(wire) || wire.isin_id != 1001 || text(wire.code) != "C01" || wire.buy_sell != 3 ||
+            wire.instrument_mask != 1 || wire.ext_id != 0)
+            return false;
+        for (auto& order : fol_runner_orders)
+            if (working(order)) {
+                order.cancelled = true;
+                ++order.revision;
+                ++fol_matrix_cancelled_count;
+            }
+        details << " isin=" << wire.isin_id << " ext_id=" << wire.ext_id << " cancelled=" << fol_matrix_cancelled_count;
+        return true;
+    }
+    return false;
+}
+
 std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
     last_post_started_steady_ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -3614,7 +3792,11 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
         const std::string_view name = posted->msg_name ? posted->msg_name : "";
         const auto text = [](const auto& field) { return std::string(field, strnlen(field, sizeof(field))); };
         bool valid{};
-        if (name == "AddOrder" && bytes && posted->data_size == sizeof(official_cgate99::AddOrder)) {
+        std::ostringstream details;
+        if (fol_matrix_profile()) {
+            valid = fol_matrix_apply(name, *posted, details);
+            details << " post_ns=" << last_post_started_steady_ns;
+        } else if (name == "AddOrder" && bytes && posted->data_size == sizeof(official_cgate99::AddOrder)) {
             official_cgate99::AddOrder wire{};
             std::memcpy(&wire, bytes, sizeof(wire));
             auto& fol_runner_order = fol_runner_orders[wire.ext_id == 101 ? 1 : 0];
@@ -3647,17 +3829,22 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
                 }
         }
         std::ofstream journal(fol_runner_posts, std::ios::app);
-        journal << name << " wire_valid=" << valid << " bytes=" << posted->data_size << '\n';
+        journal << name << " wire_valid=" << valid << " bytes=" << posted->data_size << details.str() << '\n';
         journal.flush();
         if (!valid || !journal)
             result = kCgErrInvalidArgument;
         else {
-            ++fol_runner_order.revision;
-            auto* connection = static_cast<FakePublisher*>(publisher)->connection;
-            for (auto* listener : connection->listeners)
-                if (listener && (listener->stream_code == StreamCode::kFortsTradeRepl ||
-                                 listener->stream_code == StreamCode::kFortsUserorderbookRepl))
-                    listener->script_emitted = false;
+            if (!fol_matrix_profile())
+                ++fol_runner_order.revision;
+            if (fol_matrix_profile() && name == "DelUserOrders") {
+                fol_matrix_bulk = MatrixBulk::ReplyPending;
+            } else {
+                auto* connection = static_cast<FakePublisher*>(publisher)->connection;
+                for (auto* listener : connection->listeners)
+                    if (listener && (listener->stream_code == StreamCode::kFortsTradeRepl ||
+                                     listener->stream_code == StreamCode::kFortsUserorderbookRepl))
+                        listener->script_emitted = false;
+            }
         }
     }
     posted_commands.push_back(
