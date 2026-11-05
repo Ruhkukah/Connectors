@@ -41,6 +41,7 @@ foreach(name IN ITEMS plaza2_runtime_probe_test
         plaza2_runtime_adapter_test plaza2_runtime_listener_test plaza2_schema_contract_test)
     moex_runtime_test(${name} plaza2_cgate/${name}.cpp)
 endforeach()
+target_link_libraries(plaza2_runtime_adapter_test PRIVATE moex_plaza2_trade_codec)
 target_link_libraries(plaza2_schema_contract_test PRIVATE moex_plaza2_cgate_bridge)
 moex_runtime_test(connector_host_test connector_host_test.cpp moex_connector_host)
 
@@ -65,6 +66,8 @@ endforeach()
 foreach(name IN ITEMS plaza2_trade_fake_session_test plaza2_trade_fake_session_replication_test)
     moex_test(${name} plaza2_trade/${name}.cpp moex_plaza2_trade_fake_session moex_plaza2_cgate_private_state)
 endforeach()
+moex_test(fol_auxiliary_test plaza2_trade/fol_auxiliary_test.cpp moex_plaza2_cgate_runtime)
+target_include_directories(fol_auxiliary_test PRIVATE "${MOEX_SOURCE_ROOT}/connectors/plaza2_trade/src")
 moex_test(plaza2_public_deals_test plaza2_cgate/plaza2_public_deals_test.cpp moex_plaza2_cgate_aggr20_md)
 moex_test(plaza2_publisher_rate_test plaza2_cgate/plaza2_publisher_rate_test.cpp moex_plaza2_cgate_metadata)
 foreach(name IN ITEMS connector_host_dtc_protocol_test connector_host_dtc_server_test)
@@ -124,7 +127,7 @@ add_executable(plaza2_full_order_log_test plaza2_cgate/plaza2_full_order_log_tes
 target_link_libraries(plaza2_full_order_log_test PRIVATE moex_plaza2_cgate_full_order_log)
 add_test(NAME plaza2_full_order_log_test COMMAND plaza2_full_order_log_test)
 
-moex_runtime_test(plaza2_full_order_log_session_test plaza2_cgate/plaza2_full_order_log_session_test.cpp moex_plaza2_trade_session moex_plaza2_cgate_full_order_log)
+moex_runtime_test(plaza2_full_order_log_session_test plaza2_cgate/plaza2_full_order_log_session_test.cpp moex_plaza2_trade_session moex_full_order_log_capture)
 
 moex_test_target(full_order_log_live_probe plaza2_cgate/full_order_log_live_probe.cpp moex_connector_host)
 moex_test(full_order_log_live_probe_test plaza2_cgate/full_order_log_live_probe_test.cpp moex_connector_host)

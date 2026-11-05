@@ -1,6 +1,7 @@
 #pragma once
 
 #include "moex/connector_host/dtc_market_data.hpp"
+#include "moex/connector_host/dtc_trading.hpp"
 
 #include <chrono>
 #include <memory>
@@ -67,6 +68,7 @@ struct DtcReadOnlyServerConfig {
     bool require_local_auth{false};
     std::string local_username;
     std::string local_password;
+    std::optional<DtcTradingHooks> trading; // authenticated FOL TEST only
 };
 
 // POSIX TCP, one bounded client, always binds 127.0.0.1. No worker threads:
@@ -75,8 +77,8 @@ struct DtcReadOnlyServerConfig {
 // itself must be bounded/nonblocking. It emits complete replacement depth
 // snapshots and committed public-trade events. Call poll regularly (e.g. every
 // 1-10ms).
-// Unknown requests (including ALL trading/account operations) get LOGOFF with
-// DoNotReconnect and are disconnected. No execution dependency is present.
+// Trading/account operations require an authenticated, explicitly configured
+// owner-thread FOL TEST handler. Read-only callers retain the original behavior.
 class DtcReadOnlyServer final {
   public:
     explicit DtcReadOnlyServer(DtcMarketDataSource& source, DtcReadOnlyServerConfig config = {});

@@ -6,7 +6,10 @@ namespace moex::connector_host {
 
 struct OperatorProgramHooks {
     std::function<void(TradingHostConfig&)> configure;
+    std::function<void(CgateTradingHost&)> before_start;
     std::function<void(CgateTradingHost&)> after_poll;
+    std::function<void(CgateTradingHost&)> before_input;
+    std::function<void()> before_stop;
     std::function<void(const std::filesystem::path&)> verify_command_endpoint;
 };
 

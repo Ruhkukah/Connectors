@@ -752,6 +752,10 @@ std::string OrderManager::place(OrderRequest request) {
     const auto started = stage_now(timing);
     if (request.client_order_id.starts_with("recovered:"))
         return "client order id prefix recovered: is reserved for native recovery";
+    if (request.client_order_id.starts_with("dtc:") != request.dtc_origin)
+        return "dtc: client order IDs are reserved for authenticated DTC";
+    if (request.automated && !request.dtc_origin)
+        return "automated Add requires authenticated DTC";
     if (request.client_order_id.empty() || used_client_ids_.contains(request.client_order_id))
         return "client order id empty or already used";
     const auto risk_started = stage_now(timing);
@@ -774,9 +778,15 @@ std::string OrderManager::place(OrderRequest request) {
     add.comment = request.comment;
     add.ext_id = ext;
     add.is_check_limit = 0;
-    add.compliance_id = "M";
+    add.compliance_id = request.automated ? "R" : "M";
     try {
         auto command = encode(add, request.client_order_id, timing);
+        if (request.dtc_origin) {
+            if (!config_.reserve_dtc_identity)
+                return "DTC identity journal is unavailable";
+            config_.reserve_dtc_identity(request.client_order_id, ext, request.automated);
+            command.dtc_origin = true;
+        }
         const auto queue_started = stage_now(timing);
         const auto terms_before = add_path.session_terms_ns;
         ManagedOrder order{.request = std::move(request), .ext_id = ext, .instance_owned = true};
@@ -895,7 +905,7 @@ std::string OrderManager::cancel(std::string_view client_id) {
         enqueue_cancel(order, true);
     return {};
 }
-std::string OrderManager::move(std::string_view client_id, std::string price, std::int32_t quantity) {
+std::string OrderManager::move(std::string_view client_id, std::string price, std::int32_t quantity, bool dtc_origin) {
     const auto found = orders_.find(std::string(client_id));
     if (found == orders_.end())
         return "unknown client order id";
@@ -928,6 +938,7 @@ std::string OrderManager::move(std::string_view client_id, std::string price, st
     request.is_check_limit = 0;
     request.compliance_id = "M";
     auto command = encode(request, found->first);
+    command.dtc_origin = dtc_origin;
     command.replacement_price = std::move(price);
     command.replacement_quantity = quantity;
     move_reservations_[found->first] = {
@@ -1006,6 +1017,28 @@ std::string OrderManager::cancel_all(std::int32_t isin) {
 void OrderManager::set_kill_switch(bool enabled) {
     config_.risk.kill_switch = enabled;
     emit("kill_switch", enabled ? "{\"enabled\":true}" : "{\"enabled\":false}");
+}
+
+void OrderManager::fence_dtc_entry() {
+    for (auto queued = adds_.begin(); queued != adds_.end();) {
+        if (!queued->dtc_origin) {
+            ++queued;
+            continue;
+        }
+        const auto key = queued->key;
+        auto& order = orders_.at(key);
+        if (queued->encoded.command_kind == Kind::AddOrder) {
+            order.state = OrderState::Cancelled;
+            order.remaining = 0;
+        } else {
+            move_reservations_.erase(key);
+            if (order.state == OrderState::PendingReplace)
+                order.state = order.executed > 0 ? OrderState::PartFilled : OrderState::Working;
+        }
+        order.last_error = "DTC disconnected before venue dispatch";
+        queued = adds_.erase(queued);
+        changed(key);
+    }
 }
 
 void OrderManager::complete_timeout(Command command, Clock::time_point now) {

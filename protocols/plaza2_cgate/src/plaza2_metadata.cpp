@@ -473,7 +473,39 @@ const TableDescriptor* FindTableByCode(TableCode table_code) {
     return nullptr;
 }
 
+const FieldDescriptor* ExtendedLotVolumeField(TableCode table_code) noexcept {
+    static constexpr FieldDescriptor session{FieldCode::kFortsRefdataReplFutSessContentsXlotVolume,
+                                             "xlot_volume",
+                                             "d16.8",
+                                             ValueClass::kDecimal,
+                                             10,
+                                             16,
+                                             8,
+                                             false};
+    static constexpr FieldDescriptor instrument{FieldCode::kFortsRefdataReplFutInstrumentsXlotVolume,
+                                                "xlot_volume",
+                                                "d16.8",
+                                                ValueClass::kDecimal,
+                                                10,
+                                                16,
+                                                8,
+                                                false};
+    switch (table_code) {
+    case TableCode::kFortsRefdataReplFutSessContents:
+        return &session;
+    case TableCode::kFortsRefdataReplFutInstruments:
+        return &instrument;
+    default:
+        return nullptr;
+    }
+}
+
 const FieldDescriptor* FindFieldByCode(FieldCode field_code) {
+    for (const auto table : {TableCode::kFortsRefdataReplFutSessContents, TableCode::kFortsRefdataReplFutInstruments}) {
+        const auto* field = ExtendedLotVolumeField(table);
+        if (field->field_code == field_code)
+            return field;
+    }
     for (const auto& descriptor : kFieldDescriptors) {
         if (descriptor.field_code == field_code) {
             return &descriptor;

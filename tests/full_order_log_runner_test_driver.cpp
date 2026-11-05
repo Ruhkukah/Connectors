@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
                 std::ranges::any_of(std::span(argv, argc),
                                     [](const char* arg) { return std::string_view(arg) == "--open-interest"; }) &&
                 (control.opens(deals) != 1 ||
-                 control.listener_settings(deals) != "p2repl://FORTS_DEALS_REPL;tables=deal" ||
+                 control.listener_settings(deals) != "p2repl://FORTS_DEALS_REPL_MATCH3;tables=deal" ||
                  !control.commands().empty())) {
                 std::cerr << "FOL must share one restricted DEALS listener and submit zero orders\n";
                 return 1;

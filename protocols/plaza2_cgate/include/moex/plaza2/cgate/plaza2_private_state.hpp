@@ -104,6 +104,7 @@ struct FutureSessionTerms {
     std::optional<SessionDecimal> raw_limit_up;
     std::optional<SessionDecimal> raw_limit_down;
     std::optional<SessionDecimal> min_step;
+    std::optional<std::int64_t> lot_volume_units; // Exact d16.8 units per contract.
     std::int64_t repl_id{0};
     SourceRowProvenance source;
     FuturePriceBounds bounds;
@@ -181,6 +182,7 @@ struct InstrumentSnapshot {
     std::int32_t inst_term{0};
     std::int32_t roundto{0};
     std::int32_t lot_volume{0};
+    std::optional<std::int64_t> lot_volume_units; // Exact d16.8 units per contract.
     std::int32_t trade_mode_id{0};
     std::int32_t state{0};
     bool current_session_member{false};

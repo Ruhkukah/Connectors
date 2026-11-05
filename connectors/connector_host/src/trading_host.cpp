@@ -850,6 +850,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
             user_book_online = stream.online && stream.snapshot_complete;
     const auto changes = session_.take_private_row_changes();
     reconcile_reload_ |= changes.regular_trade_history_reloaded;
+    dtc_fill_history_gap_ |= dtc_snapshot_generation_ != 0 && changes.regular_trade_history_truncated;
     if (changes.regular_trade_history_truncated)
         orders_->invalidate_execution_baselines();
     for (const auto& event : session_.take_reply_events()) {
@@ -902,6 +903,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
                 reconcile_reload_ = false;
             }
             rebuilding_ = false;
+            ++dtc_snapshot_generation_;
         }
     } else {
         orders_->observe_orders(changes.orders);
@@ -1050,7 +1052,7 @@ std::string CgateTradingHost::cancel(std::string_view key) {
         dispatch_commands();
     return error;
 }
-std::string CgateTradingHost::move(std::string_view key, std::string price, std::int32_t quantity) {
+std::string CgateTradingHost::move(std::string_view key, std::string price, std::int32_t quantity, bool dtc_origin) {
     assert_owner();
     if (config_.session.full_order_log_cancel_only)
         return "FullOrderLog cancel-only recovery refuses Move";
@@ -1061,7 +1063,7 @@ std::string CgateTradingHost::move(std::string_view key, std::string price, std:
         return "FullOrderLog Move requires a live stream and valid committed two-sided current-session book";
     if (order != orders_->orders().end() && !order_entry_ready(session_, order->second.request.isin_id))
         return "Move requires continuous trading; opening-auction Move is prohibited";
-    auto error = orders_->move(key, std::move(price), quantity);
+    auto error = orders_->move(key, std::move(price), quantity, dtc_origin);
     if (error.empty())
         dispatch_commands();
     return error;
@@ -1085,6 +1087,38 @@ std::string CgateTradingHost::cancel_all(std::int32_t isin) {
     if (isin > 0)
         dispatch_commands();
     return error;
+}
+void CgateTradingHost::fence_dtc_entry() {
+    assert_owner();
+    orders_->fence_dtc_entry();
+}
+bool CgateTradingHost::dtc_snapshot_ready() const {
+    assert_owner();
+    const auto& data = session_.private_state();
+    const auto health = session_.runtime_health();
+    return cancellation_snapshot_ready() && session_.trade_replay_anchor_ready() && health.private_active &&
+           !data.connector_health().transaction_open && log_error_.empty();
+}
+bool CgateTradingHost::dtc_fill_history_current() const {
+    return !dtc_fill_history_gap_ && dtc_snapshot_ready();
+}
+std::optional<plaza2_trade::CgateFullOrderLogBalance> CgateTradingHost::dtc_balance() const {
+    assert_owner();
+    return session_.full_order_log_balance();
+}
+ConnectorHostMarketDataSnapshot CgateTradingHost::dtc_market_data(std::int32_t isin) const {
+    assert_owner();
+    return project_connector_market_data(session_, isin, true, utc_seconds(), !log_error_.empty());
+}
+bool CgateTradingHost::dtc_entry_ready(std::int32_t isin) const {
+    assert_owner();
+    return dtc_snapshot_ready() && !shutdown_cancellation_requested_ && session_.full_order_log_entry_ready(isin) &&
+           order_entry_ready(session_, isin) &&
+           std::none_of(orders_->orders().begin(), orders_->orders().end(), [&](const auto& entry) {
+               const auto& order = entry.second;
+               return order.request.isin_id == isin &&
+                      (order.state == OrderState::Unknown || order.operator_action_required || order.add_unconfirmed);
+           });
 }
 bool CgateTradingHost::cancellation_snapshot_ready() const {
     const auto streams = session_.private_state().stream_health();
@@ -1287,6 +1321,8 @@ std::string CgateTradingHost::status() const {
                          ",\"risk\":" + configured_risk_fields(config_) + "}";
     if (!config_.session.full_order_log_stream.settings.empty())
         result += ",\"market_data_source\":\"full_order_log\"";
+    if (config_.session.full_order_log_advisory)
+        result += ",\"fol_auxiliary\":" + session_.full_order_log_auxiliary_status();
     if (config_.session.full_order_log_cancel_only)
         result += ",\"execution_mode\":\"full_order_log_cancel_only\"";
     const auto anchor = session_.trade_replay_anchor_used();

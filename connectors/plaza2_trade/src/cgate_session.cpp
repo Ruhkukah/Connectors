@@ -1,6 +1,8 @@
 #include "moex/plaza2_trade/cgate_session.hpp"
+#include "fol_auxiliary.hpp"
 #include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 #include "moex/plaza2/cgate/plaza2_private_state_bridge.hpp"
 #include "moex/plaza2/cgate/cgate_logging.hpp"
 
@@ -372,8 +374,18 @@ struct CgateSession::Impl {
         std::optional<std::chrono::steady_clock::time_point> snapshot_wait;
         bool scheme_incompatible{};
         std::optional<std::uint32_t> observed_state;
+        bool advisory{}, matching_scoped{};
     };
+    struct Auxiliary {
+        std::string_view name, url;
+        bool matching_scoped{};
+        fol_auxiliary::Projection data;
+        std::chrono::steady_clock::time_point retry{};
+        Plaza2Error create_error;
+    };
+    static constexpr auto auxiliary_code = static_cast<StreamCode>(0xF0110002u);
     CgateSessionConfig config;
+    std::vector<std::unique_ptr<Auxiliary>> auxiliary;
     cg::Plaza2RuntimeProbeReport probe;
     cg::Plaza2Env env;
     cg::Plaza2Connection connection;
@@ -383,6 +395,9 @@ struct CgateSession::Impl {
     AnchoredTradeEvents anchored_trade_events{bridge};
     std::optional<std::pair<std::uint64_t, std::int32_t>> matching_refdata;
     std::optional<std::int8_t> matching_id;
+    std::int32_t matching_day{};
+    std::chrono::steady_clock::time_point matching_retry{}, fol_deals_retry{};
+    Plaza2Error publisher_layout_failure;
     cg::Plaza2Aggr20BookProjector book;
     cg::Plaza2Aggr20ListenerBridge aggr{book, 0};
     struct PublicDealsTarget {
@@ -414,6 +429,8 @@ struct CgateSession::Impl {
     std::optional<std::uint32_t> observed_connection, observed_publisher;
     explicit Impl(CgateSessionConfig c)
         : config(std::move(c)), book({}, config.market_data_isin_ids), rate(config.publisher_messages_per_second) {
+        if (config.full_order_log_advisory)
+            configure_auxiliary();
         replies.penalty = [this](std::uint32_t ms) {
             if (config.publisher_rate_owner == PublisherRateOwner::Session)
                 rate.penalize(now_ms(), ms);
@@ -563,6 +580,7 @@ struct CgateSession::Impl {
     }
     void close_publisher() {
         publisher_warmed = false;
+        publisher_layout_failure = {};
         if (!publisher.is_created())
             return;
         const auto error = publisher.close();
@@ -625,6 +643,10 @@ struct CgateSession::Impl {
         if (config.read_only_market_data &&
             (config.allow_orders || !config.publisher_settings.empty() || !config.p2mqreply_settings.empty()))
             return invalid("read-only CGate session cannot configure order entry");
+        if (config.full_order_log_partitioned &&
+            (config.market_data_isin_ids.empty() ||
+             (!config.full_order_log_handler && !config.full_order_log_cancel_only)))
+            return invalid("partitioned FullOrderLog requires selected instruments and an explicit FOL mode");
         if (config.full_order_log_cancel_only &&
             (config.runtime.environment != cg::Plaza2Environment::Test || !config.allow_orders ||
              config.read_only_market_data || !config.full_order_log_stream.settings.empty() ||
@@ -735,16 +757,153 @@ struct CgateSession::Impl {
         }
         return {};
     }
-    Plaza2Error add_listener(CgateStreamConfig c, cg::Plaza2ListenerEventHandler& handler) {
+    void configure_auxiliary() {
+        using fol_auxiliary::Table;
+        const auto add = [&](std::string_view name, std::string_view url, bool match, std::vector<Table> tables,
+                             std::string account = {}) {
+            auxiliary.push_back(std::unique_ptr<Auxiliary>(
+                new Auxiliary{name, url, match, {std::move(tables), std::move(account), config.market_data_isin_ids}}));
+        };
+        add("common", "p2repl://FORTS_COMMON_REPL;tables=common", true,
+            {{"common",
+              {{"sess_id", "i4"},
+               {"best_buy_native", "d16.5"},
+               {"best_sell_native", "d16.5"},
+               {"xamount_buy_native", "i8"},
+               {"xamount_sell_native", "i8"},
+               {"xpos", "i8"},
+               {"settlement_price", "d16.5", true},
+               {"settlement_price_open", "d16.5", true}},
+              {},
+              true}});
+        add("schedule", "p2repl://FORTS_REFDATA_REPL;tables=trade_periods,discrete_auction", false,
+            {{"trade_periods",
+              {{"sess_id", "i4"},
+               {"trade_period_id", "i8"},
+               {"trade_period_type", "i8"},
+               {"trade_period_begin", "t"},
+               {"trade_period_end", "t"},
+               {"trade_period_name", "c255"}}},
+             {"discrete_auction",
+              {{"sess_id", "i4"},
+               {"trade_period_id", "i8"},
+               {"add_order_start", "t"},
+               {"add_order_finish_from", "t"},
+               {"add_order_finish_till", "t"}}}});
+        add("rates", "p2repl://MOEX_RATES_REPL;tables=curr_online", false,
+            {{"curr_online", {{"rate_id", "i4"}, {"value", "d16.5"}, {"moment", "t"}}}});
+        add("index", "p2repl://RTS_INDEX_REPL;tables=rts_index", false,
+            {{"rts_index", {{"name", "c25"}, {"value_highprec", "d18.6"}, {"moment", "t"}}}});
+        add("spectra_environment", "p2repl://FORTS_REFDATA_REPL;tables=spectra_environment", false,
+            {{"spectra_environment", {{"environment_id", "i4"}, {"environment_name", "c8"}}}});
+        if (!config.full_order_log_login.empty())
+            add("cod", "p2repl://FORTS_REFDATA_REPL;tables=user", false,
+                {{"user", {{"login", "c20"}, {"sma_flags", "i4"}, {"start_date", "t"}, {"end_date", "t"}}, "login"}},
+                config.full_order_log_login);
+        if (!config.full_order_log_login.empty())
+            add("transaction_fees", "p2repl://FORTS_TNPENALTY_REPL;tables=fee_tn,fee_all", false,
+                {{"fee_tn",
+                  {{"p2login", "c64"},
+                   {"sess_id", "i4"},
+                   {"time", "i8"},
+                   {"tn_type", "i4"},
+                   {"err_code", "i4"},
+                   {"count", "i4"},
+                   {"num_orders", "i4"}},
+                  "p2login"},
+                 {"fee_all",
+                  {{"p2login", "c64"}, {"sess_id", "i4"}, {"time", "i8"}, {"points", "i4"}, {"fee", "d16.2"}},
+                  "p2login"}},
+                config.full_order_log_login);
+        if (config.full_order_log_account.empty())
+            return;
+        add("part_balance", "p2repl://FORTS_PART_REPL;tables=part", false,
+            {{"part",
+              {{"client_code", "c7"}, {"money_free", "d26.2"}, {"money_blocked", "d26.2"}, {"money_amount", "d26.2"}},
+              "client_code"}},
+            config.full_order_log_account);
+        add("variation_margin", "p2repl://FORTS_VM_REPL;tables=fut_vm", true,
+            {{"fut_vm",
+              {{"client_code", "c7"}, {"sess_id", "i4"}, {"vm", "d16.5"}, {"vm_at_settl", "d16.5"}},
+              "client_code",
+              true}},
+            config.full_order_log_account);
+        add("prohibitions", "p2repl://FORTS_PROHIBITION_REPL;tables=prohibition", false,
+            {{"prohibition", {{"client_code", "c7"}, {"type", "i4"}}, "client_code"}}, config.full_order_log_account);
+        add("margin_without_orders", "p2repl://FORTS_RMT_REPL;tables=rmt_im", false,
+            {{"rmt_im",
+              {{"client_code", "c7"},
+               {"sess_id", "i4"},
+               {"im_time", "t"},
+               {"rmt_im", "d16.2"},
+               {"rmt_posrisk", "d16.2"},
+               {"rmt_posrisk_at_settl", "d16.2"}},
+              "client_code"}},
+            config.full_order_log_account);
+        add("clearing", "p2repl://FORTS_CLR_REPL;tables=fut_sess_settl,money_clearing,fut_pos,clr_rate,sys_events",
+            false,
+            {{"fut_sess_settl", {{"sess_id", "i4"}, {"settl_price", "d16.5"}, {"date_clr", "t"}}, {}, true},
+             {"money_clearing",
+              {{"client_code", "c7"}, {"amount_end", "d21.2"}, {"vm", "d16.2"}, {"date_money_clearing", "t"}},
+              "client_code"},
+             {"fut_pos",
+              {{"client_code", "c7"}, {"sess_id", "i4"}, {"xpos_end", "i8"}, {"date_money_clearing", "t"}},
+              "client_code",
+              true},
+             {"clr_rate", {{"sess_id", "i4"}, {"rate_id", "i4"}, {"rate", "d16.5"}, {"moment", "t"}}},
+             {"sys_events", {{"event_id", "i8"}, {"sess_id", "i4"}, {"event_type", "i4"}, {"server_time", "t"}}}},
+            config.full_order_log_account);
+    }
+    Plaza2Error add_listener(CgateStreamConfig c, cg::Plaza2ListenerEventHandler& handler, bool advisory = false,
+                             bool matching_scoped = false) {
         Listener listener;
         listener.config = std::move(c);
         listener.handler = &handler;
+        listener.advisory = advisory;
+        listener.matching_scoped = matching_scoped;
+        const auto layouts = config.validate_order_message_layouts && &handler == &replies
+                                 ? trade_reply_layouts()
+                                 : std::span<const cg::Plaza2MessageLayout>{};
         if (auto error = listener.object.create(connection, listener.config.stream_code,
-                                                render(listener.config.settings), &handler);
+                                                render(listener.config.settings), &handler, layouts);
             error)
             return error;
+        const auto& url = listener.config.settings;
+        if (config.full_order_log_partitioned && url.starts_with("p2repl://"))
+            log("full_order_log_subscription", "{\"settings\":" + json_quote(url) + "}");
         listeners.push_back(std::move(listener));
         return {};
+    }
+    void ensure_auxiliary_streams() {
+        if (auxiliary.empty())
+            return;
+        for (auto& source : auxiliary) {
+            if ((source->matching_scoped && !matching_id) || now() < source->retry ||
+                std::ranges::any_of(listeners, [&](const auto& l) { return l.handler == &source->data; }))
+                continue;
+            auto url = std::string(source->url);
+            if (source->matching_scoped)
+                url = match_service(std::move(url), *matching_id);
+            const auto error = add_listener({auxiliary_code, std::move(url), "mode=snapshot+online"}, source->data,
+                                            true, source->matching_scoped);
+            if (error) {
+                source->retry = now() + config.recovery_retry_interval;
+                if (source->create_error.message != error.message)
+                    log("full_order_log_advisory_unavailable",
+                        "{\"source\":" + json_quote(source->name) + ",\"error\":" + json_quote(error.message) + "}");
+            }
+            source->create_error = error;
+        }
+    }
+    static bool partitioned_stream(StreamCode code) {
+        return code == StreamCode::kFortsTradeRepl || code == StreamCode::kFortsPosRepl ||
+               code == StreamCode::kFortsUserorderbookRepl || code == StreamCode::kFortsDealsRepl ||
+               code == cg::kFullOrderLogStreamCode;
+    }
+    static std::string match_service(std::string settings, std::int8_t match) {
+        const auto end = settings.find(';');
+        settings.insert(end == std::string::npos ? settings.size() : end, "_MATCH" + std::to_string(match));
+        return settings;
     }
     Plaza2Error create_streams() {
         auto streams = config.private_streams;
@@ -762,14 +921,17 @@ struct CgateSession::Impl {
             codes.push_back(s.stream_code);
         if (auto error = bridge.reset(codes); error)
             return error;
-        bridge.require_full_order_log_refdata(config.full_order_log_handler != nullptr);
+        bridge.require_full_order_log_refdata(config.full_order_log_handler || config.full_order_log_partitioned);
         if (auto error = bridge.begin_run(); error)
             return error;
         listeners.reserve(streams.size() + 3);
         for (auto& stream : streams) {
-            if (config.full_order_log_handler && stream.stream_code == StreamCode::kFortsRefdataRepl)
+            if ((config.full_order_log_handler || config.full_order_log_partitioned) &&
+                stream.stream_code == StreamCode::kFortsRefdataRepl)
                 stream.settings =
                     cg::required_replication_listener_settings(stream.stream_code) + ",instr2matching_map";
+            if (config.full_order_log_partitioned && partitioned_stream(stream.stream_code))
+                continue;
             if (config.trade_replay_from_pos_anchor && stream.stream_code == StreamCode::kFortsTradeRepl) {
                 deferred_trade = stream;
                 continue;
@@ -780,7 +942,7 @@ struct CgateSession::Impl {
         if (!config.aggr20_stream.settings.empty())
             if (auto error = add_listener(config.aggr20_stream, aggr); error)
                 return error;
-        if (config.full_order_log_oi_handler) {
+        if (config.full_order_log_oi_handler && !config.full_order_log_partitioned) {
             const CgateStreamConfig oi{StreamCode::kFortsDealsRepl,
                                        cg::required_replication_listener_settings(StreamCode::kFortsDealsRepl),
                                        {}};
@@ -802,34 +964,95 @@ struct CgateSession::Impl {
         streams_created = true;
         return {};
     }
+    Plaza2Error retire_matching_streams() {
+        fol_deals_retry = {};
+        deferred_trade.reset();
+        anchor.reset();
+        for (auto& listener : listeners) {
+            if (!listener.matching_scoped && !partitioned_stream(listener.config.stream_code))
+                continue;
+            invalidate(listener);
+            if (auto error = listener.object.destroy(); error)
+                return error;
+        }
+        std::erase_if(listeners, [](const auto& listener) {
+            return listener.matching_scoped || partitioned_stream(listener.config.stream_code);
+        });
+        return {};
+    }
+    Plaza2Error create_matching_streams(std::int8_t match) {
+        for (auto stream : config.private_streams) {
+            if (!partitioned_stream(stream.stream_code))
+                continue;
+            stream.settings = match_service(std::move(stream.settings), match);
+            if (config.trade_replay_from_pos_anchor && stream.stream_code == StreamCode::kFortsTradeRepl) {
+                deferred_trade = std::move(stream);
+                continue;
+            }
+            if (auto error = add_listener(std::move(stream), bridge); error)
+                return error;
+        }
+        if (!config.full_order_log_stream.settings.empty()) {
+            auto composite = config.full_order_log_stream;
+            composite.settings = cg::full_order_log_listener_settings(config.runtime.scheme_dir, match);
+            log("full_order_log_composite_subscription", "{\"settings\":" + json_quote(composite.settings) + "}");
+            if (auto error = add_listener(std::move(composite), full_order_log_events); error)
+                return error;
+        }
+        log("full_order_log_matching_services", "{\"matching_id\":" + std::to_string(match) + ",\"session_id\":" +
+                                                    std::to_string(projection.current_session_id()) + "}");
+        return {};
+    }
+    void ensure_matching_deals() {
+        if (!config.full_order_log_partitioned || !config.full_order_log_oi_handler || !matching_id ||
+            now() < fol_deals_retry || std::ranges::any_of(listeners, [&](const auto& l) {
+                return l.handler == config.full_order_log_oi_handler;
+            }))
+            return;
+        const auto code = StreamCode::kFortsDealsRepl;
+        if (const auto error =
+                add_listener({code, match_service(cg::required_replication_listener_settings(code), *matching_id), {}},
+                             *config.full_order_log_oi_handler);
+            error) {
+            fol_deals_retry = now() + config.recovery_retry_interval;
+            log("full_order_log_advisory_unavailable",
+                "{\"source\":\"deals\",\"error\":" + json_quote(error.message) + "}");
+        }
+    }
     Plaza2Error resolve_full_order_log() {
-        if (!config.full_order_log_handler || config.full_order_log_stream.settings.empty())
+        if (!config.full_order_log_partitioned &&
+            (!config.full_order_log_handler || config.full_order_log_stream.settings.empty()))
             return {};
-        const auto fence = [&] {
+        const auto fence = [&]() -> Plaza2Error {
             if (!matching_id)
-                return;
-            for (auto& l : listeners)
-                if (l.config.stream_code == cg::kFullOrderLogStreamCode && l.object.is_created())
-                    invalidate(l);
+                return {};
             matching_id.reset();
+            matching_day = 0;
+            if (config.full_order_log_partitioned)
+                return retire_matching_streams();
+            for (auto& listener : listeners)
+                if (listener.config.stream_code == cg::kFullOrderLogStreamCode && listener.object.is_created())
+                    invalidate(listener);
+            return {};
         };
         if (!stream_online(StreamCode::kFortsRefdataRepl)) {
-            fence();
             matching_refdata.reset();
-            return {};
+            return fence();
         }
         const auto day = projection.current_session_id();
         const auto token = std::pair{projection.refdata_revision(), day};
-        if (matching_refdata == token)
+        if (matching_refdata == token || now() < matching_retry)
             return {};
         matching_refdata = token;
         const auto waiting = [&](std::string reason) {
-            fence();
+            if (auto error = fence(); error)
+                return error;
             log("full_order_log_matching_wait", "{\"reason\":" + json_quote(reason) + "}");
             return Plaza2Error{};
         };
         const auto fail_full = [&](std::string reason) {
-            fence();
+            if (auto error = fence(); error)
+                return error;
             return invalid(std::move(reason));
         };
         std::optional<std::int8_t> resolved;
@@ -850,20 +1073,203 @@ struct CgateSession::Impl {
             if (matches.empty())
                 return waiting("missing instr2matching_map for " + contract->base_contract_code);
             for (const auto& row : matches) {
+                if (row.matching_id <= 0)
+                    return fail_full("FullOrderLog matching ID is not positive");
                 if (resolved && *resolved != row.matching_id)
                     return fail_full("FullOrderLog instruments span more than one matching ID");
                 resolved = row.matching_id;
             }
         }
-        if (matching_id && matching_id != resolved)
-            fence();
+        if (!resolved)
+            return waiting("no configured instrument matching");
+        if (matching_id && (matching_id != resolved || (config.full_order_log_partitioned && matching_day != day)))
+            if (auto error = fence(); error)
+                return error;
+        if (config.full_order_log_partitioned && !matching_id) {
+            if (auto error = create_matching_streams(*resolved); error) {
+                if (auto cleanup = retire_matching_streams(); cleanup)
+                    return cleanup;
+                if (error.runtime_code == 131073)
+                    return error;
+                matching_refdata.reset();
+                matching_retry = now() + config.recovery_retry_interval;
+                this->waiting(error, Plaza2RecoveryWaitState::WaitingForService, "matching streams");
+                return {};
+            }
+            matching_day = day;
+        }
         if (matching_id != resolved)
             log("full_order_log_matching", "{\"matching_id\":" + std::to_string(*resolved) + "}");
         matching_id = resolved;
-        if (std::none_of(listeners.begin(), listeners.end(),
-                         [](const auto& l) { return l.config.stream_code == cg::kFullOrderLogStreamCode; }))
+        if (!config.full_order_log_partitioned && std::none_of(listeners.begin(), listeners.end(), [](const auto& l) {
+                return l.config.stream_code == cg::kFullOrderLogStreamCode;
+            }))
             return add_listener(config.full_order_log_stream, full_order_log_events);
         return {};
+    }
+    const Auxiliary* auxiliary_source(std::string_view name) const noexcept {
+        const auto source = std::ranges::find_if(auxiliary, [&](const auto& entry) { return entry->name == name; });
+        return source == auxiliary.end() ? nullptr : source->get();
+    }
+    static std::string_view value(const fol_auxiliary::Projection::Row& row, std::string_view name) {
+        const auto it = row.values.find(name);
+        return it == row.values.end() ? std::string_view{} : std::string_view(it->second);
+    }
+    static std::int64_t integer_value(std::string_view value) {
+        if (value.empty())
+            return 0;
+        std::int64_t result{};
+        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+        return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() ? result : 0;
+    }
+    std::string_view cod_state() const {
+        if (config.full_order_log_login.empty())
+            return "not_configured";
+        const auto* source = auxiliary_source("cod");
+        if (!source || !source->data.online())
+            return "unknown";
+        const auto utc =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        std::string_view result = "unknown";
+        for (const auto& [key, row] : source->data.rows()) {
+            const auto start = integer_value(value(row, "start_date"));
+            const auto end = integer_value(value(row, "end_date"));
+            const auto flags = value(row, "sma_flags");
+            if (!start || utc < start || (end && utc > end) || flags.empty())
+                continue;
+            if (result != "unknown")
+                return "unknown";
+            result = integer_value(flags) & 1 ? "enabled" : "disabled";
+        }
+        return result;
+    }
+    static bool fresh(const Auxiliary* source) noexcept {
+        if (!source || !source->data.online() ||
+            source->data.committed_at() == fol_auxiliary::Projection::Clock::time_point{})
+            return false;
+        const auto now = fol_auxiliary::Projection::Clock::now();
+        return now >= source->data.committed_at() && now - source->data.committed_at() <= std::chrono::seconds(30);
+    }
+    std::optional<CgateFullOrderLogBalance> balance() const noexcept {
+        const auto* source = auxiliary_source("part_balance");
+        if (!fresh(source) || source->data.rows().size() != 1)
+            return std::nullopt;
+        const auto& row = source->data.rows().begin()->second;
+        const auto free = cg::parse_fixed_point(value(row, "money_free"), 2, true);
+        const auto blocked = cg::parse_fixed_point(value(row, "money_blocked"), 2, true);
+        const auto total = cg::parse_fixed_point(value(row, "money_amount"), 2, true);
+        if (!free || !blocked || !total)
+            return std::nullopt;
+        return CgateFullOrderLogBalance{*free, *blocked, *total};
+    }
+    bool environment_conflicts() const noexcept {
+        const auto* environment = auxiliary_source("spectra_environment");
+        if (!environment || !environment->data.online() || environment->data.rows().empty())
+            return false;
+        const auto& rows = environment->data.rows();
+        const auto& row = rows.begin()->second;
+        return rows.size() != 1 || value(row, "environment_id") != "2" || value(row, "environment_name") != "MXFOPREP";
+    }
+    std::string_view account_risk_refusal() const noexcept {
+        if (environment_conflicts())
+            return "REFDATA Spectra environment conflicts with TEST";
+        if (config.full_order_log_min_free_kopecks) {
+            const auto amount = balance();
+            if (!amount)
+                return "PART balance is unavailable or stale";
+            if (amount->free_kopecks < *config.full_order_log_min_free_kopecks)
+                return "PART free money is below the configured floor";
+        }
+        if (config.full_order_log_check_prohibitions) {
+            const auto* source = auxiliary_source("prohibitions");
+            if (!fresh(source))
+                return "account prohibition feed is unavailable or stale";
+            // Deliberately conservative until all venue group and priority rules are supported.
+            for (const auto& [key, row] : source->data.rows())
+                if (value(row, "type") != "0")
+                    return "account has a prohibition row";
+        }
+        return {};
+    }
+    std::string auxiliary_status() const {
+        const auto risk_refusal = account_risk_refusal();
+        std::string out = "{\"venue_cod\":" + json_quote(cod_state()) +
+                          ",\"account_risk_refusal\":" + (risk_refusal.empty() ? "null" : json_quote(risk_refusal));
+        const auto session = projection.current_session_id();
+        for (const auto& source : auxiliary) {
+            if (source->name == "cod")
+                continue;
+            const auto& data = source->data;
+            const fol_auxiliary::Projection::Row* clearing_marker = nullptr;
+            if (data.online() && source->name == "clearing")
+                for (const auto& [key, row] : data.rows())
+                    if (data.table_name(key.first) == "sys_events" && value(row, "event_type") == "3" && session > 0 &&
+                        integer_value(value(row, "sess_id")) == session && integer_value(value(row, "event_id")) > 0 &&
+                        (!clearing_marker || row.revision > clearing_marker->revision))
+                        clearing_marker = &row;
+            const auto active = std::ranges::find_if(
+                listeners, [&](const auto& listener) { return listener.handler == &source->data; });
+            const auto& error = active == listeners.end() ? source->create_error : active->object.last_callback_error();
+            out += "," + json_quote(source->name) + ":{\"online\":" + (data.online() ? "true" : "false") +
+                   ",\"stale\":" + (fresh(source.get()) ? "false" : "true") +
+                   ",\"life_num\":" + std::to_string(data.life());
+            if (error)
+                out += ",\"error\":" + json_quote(error.message);
+            if (source->name == "clearing")
+                out += ",\"ready_event_id\":" +
+                       (clearing_marker ? std::string(value(*clearing_marker, "event_id")) : "null");
+            out += ",\"rows\":[";
+            bool first = true;
+            if (data.online() && (source->name != "clearing" || clearing_marker))
+                for (const auto& [key, row] : data.rows()) {
+                    const auto table = data.table_name(key.first);
+                    if (table == "sys_events" ||
+                        (!value(row, "sess_id").empty() && integer_value(value(row, "sess_id")) != session))
+                        continue;
+                    if (clearing_marker) {
+                        const auto stamp_field = table == "clr_rate"         ? "moment"
+                                                 : table == "fut_sess_settl" ? "date_clr"
+                                                                             : "date_money_clearing";
+                        const auto stamp = integer_value(value(row, stamp_field));
+                        const auto marker_time = integer_value(value(*clearing_marker, "server_time"));
+                        constexpr auto seconds_per_day = 86400, moscow_offset_seconds = 10800;
+                        if (row.commit_sequence > clearing_marker->commit_sequence || stamp <= 0 || marker_time <= 0 ||
+                            stamp > marker_time ||
+                            (stamp + moscow_offset_seconds) / seconds_per_day !=
+                                (marker_time + moscow_offset_seconds) / seconds_per_day)
+                            continue;
+                    }
+                    if (!first)
+                        out += ',';
+                    first = false;
+                    out += "{\"table\":" + json_quote(table) + ",\"revision\":" + std::to_string(row.revision);
+                    for (const auto& [field, field_value] : row.values)
+                        out += "," + json_quote(field) + ":" + json_quote(field_value);
+                    if (source->name == "common") {
+                        const auto current = value(row, "settlement_price");
+                        const auto legacy = value(row, "settlement_price_open");
+                        const auto effective = current.empty() ? legacy : current;
+                        if (!effective.empty() && (legacy.empty() || current.empty() || current == legacy))
+                            out += ",\"effective_settlement_price\":" + json_quote(effective);
+                        else if (!effective.empty())
+                            out += ",\"settlement_price_conflict\":true";
+                    }
+                    if (source->name == "common" && config.full_order_log_authority) {
+                        const auto authority = config.full_order_log_authority(
+                            static_cast<std::int32_t>(integer_value(value(row, "isin_id"))));
+                        const auto bid = plaza2::private_state::parse_session_decimal(value(row, "best_buy_native"));
+                        const auto ask = plaza2::private_state::parse_session_decimal(value(row, "best_sell_native"));
+                        if (authority.valid && authority.session_id == session && bid && ask)
+                            out += std::string(",\"native_touch_equal_at_sample\":") +
+                                   (authority.best_bid == bid->units && authority.best_ask == ask->units ? "true"
+                                                                                                         : "false");
+                    }
+                    out += '}';
+                }
+            out += "]}";
+        }
+        return out + '}';
     }
     bool trading_ready(const Plaza2TradeEncodedCommand& command) const {
         for (auto code :
@@ -1112,7 +1518,8 @@ struct CgateSession::Impl {
             if (listener.object.last_callback_error()) {
                 const auto& callback_error = listener.object.last_callback_error();
                 last_error = callback_error.message;
-                listener.scheme_incompatible = callback_error.code == Plaza2ErrorCode::IncompatibleScheme;
+                listener.scheme_incompatible =
+                    !listener.advisory && callback_error.code == Plaza2ErrorCode::IncompatibleScheme;
             } else if (error)
                 last_error = error.message;
             log("listener_recovery",
@@ -1146,7 +1553,18 @@ struct CgateSession::Impl {
                 deals->reset();
             if (listener.handler == &anchored_trade_events)
                 anchored_trade_events.opening(static_cast<std::uint64_t>(anchor->trades_lifenum));
-            const auto e = listener.object.open(render(listener.config.open_settings));
+            auto settings = render(listener.config.open_settings);
+            if (config.full_order_log_partitioned && deferred_trade &&
+                listener.config.stream_code == StreamCode::kFortsDealsRepl &&
+                listener.handler == config.full_order_log_oi_handler) {
+                const auto* pos = pos_anchor_health();
+                if (!pos)
+                    return;
+                // Only deal is subscribed, so no heartbeat revision is requested.
+                settings = "mode=snapshot+online;lifenum=" + std::to_string(pos->last_trades_lifenum) +
+                           ";rev.deal=" + std::to_string(pos->last_trades_rev);
+            }
+            const auto e = listener.object.open(settings);
             operation("listener", "open", e, listener.config.stream_code);
             if (e) {
                 last_error = e.message;
@@ -1166,15 +1584,22 @@ struct CgateSession::Impl {
         if (publisher.is_created())
             if (publisher.state(out.publisher))
                 out.valid = false;
-        out.private_active = streams_created;
+        if (out.publisher == Active && config.validate_order_message_layouts)
+            out.publisher = publisher_layout_failure ? Error : publisher_warmed ? Active : Opening;
+        out.private_active = streams_created && (!config.full_order_log_partitioned || matching_id.has_value());
         for (const auto& listener : listeners) {
             std::uint32_t state = Closed;
             static_cast<void>(listener.object.state(state));
             if (listener.object.last_callback_error())
                 state = Error;
             const auto code = listener.config.stream_code;
+            if (listener.advisory)
+                continue;
             if (code == cg::kNoStreamCode)
-                out.reply = state;
+                out.reply = state == Active && config.validate_order_message_layouts &&
+                                    !listener.object.message_layouts_validated()
+                                ? Opening
+                                : state;
             else if (code == StreamCode::kFortsAggrRepl)
                 out.aggr = state;
             else if (code == StreamCode::kFortsDealsRepl)
@@ -1307,6 +1732,15 @@ struct CgateSession::Impl {
                     return {};
                 }
             }
+            if (config.full_order_log_partitioned) {
+                if (auto error = resolve_full_order_log(); error) {
+                    recovery.operation = Plaza2SessionOperation::Failed;
+                    recovery.cause = error;
+                    return error;
+                }
+            }
+            ensure_matching_deals();
+            ensure_auxiliary_streams();
             if (auto error = open_anchored_trade(); error)
                 last_error = error.message;
             if (auto error = synchronize_public_deals(); error)
@@ -1321,7 +1755,7 @@ struct CgateSession::Impl {
                 if (config.full_order_log_handler &&
                     l.object.last_callback_error().code == Plaza2ErrorCode::IncompatibleScheme &&
                     (l.handler == &bridge || l.handler == config.full_order_log_handler ||
-                     l.handler == &full_order_log_events || l.handler == config.full_order_log_oi_handler)) {
+                     l.handler == &full_order_log_events || l.handler == &anchored_trade_events)) {
                     recovery.operation = Plaza2SessionOperation::Failed;
                     recovery.cause = l.object.last_callback_error();
                     return recovery.cause;
@@ -1339,6 +1773,7 @@ struct CgateSession::Impl {
                     publisher_retry = now() + config.recovery_retry_interval;
                 } else if (pub_state == Closed && now() >= publisher_retry) {
                     publisher_warmed = false;
+                    publisher_layout_failure = {};
                     const auto e = publisher.open(config.publisher_open_settings);
                     operation("publisher", "open", e);
                     if (e) {
@@ -1351,14 +1786,20 @@ struct CgateSession::Impl {
                         pub_state = Closed;
                     }
                 }
-                if (pub_state == Active && !publisher_warmed) {
-                    const auto e = publisher.prewarm_by_message_name("AddOrder");
-                    operation("publisher", "prewarm", e);
+                if (pub_state == Active && !publisher_warmed && !publisher_layout_failure) {
+                    if (config.validate_order_message_layouts) {
+                        publisher_layout_failure = publisher.validate_message_layouts(trade_request_layouts());
+                        operation("publisher", "validate_layout", publisher_layout_failure);
+                    }
+                    const auto e =
+                        publisher_layout_failure ? Plaza2Error{} : publisher.prewarm_by_message_name("AddOrder");
+                    if (!publisher_layout_failure)
+                        operation("publisher", "prewarm", e);
                     if (e) {
                         last_error = e.message;
                         close_publisher();
                         publisher_retry = now() + config.recovery_retry_interval;
-                    } else {
+                    } else if (!publisher_layout_failure) {
                         publisher_warmed = true;
                     }
                 }
@@ -1452,6 +1893,8 @@ struct CgateSession::Impl {
         if (auto error = retire_public_deals(); error)
             return error;
         for (auto& l : listeners) {
+            if (l.advisory)
+                static_cast<void>(l.handler->on_plaza2_listener_event({.kind = cg::Plaza2ListenerEventKind::Close}));
             close_listener(l);
             static_cast<void>(l.object.destroy());
         }
@@ -1467,6 +1910,9 @@ struct CgateSession::Impl {
         streams_created = false;
         anchor.reset();
         matching_id.reset();
+        fol_deals_retry = {};
+        matching_day = 0;
+        matching_retry = {};
         matching_refdata.reset();
         full_order_log_events.activity.reset();
         deferred_trade.reset();
@@ -1531,11 +1977,21 @@ const cg::Plaza2Aggr20BookProjector& CgateSession::aggr20_projector() const noex
 cg::Plaza2PublicDealsSnapshot CgateSession::public_deals_snapshot(std::uint64_t after) const {
     return impl_->public_deals_snapshot(after);
 }
+std::string CgateSession::full_order_log_auxiliary_status() const {
+    return impl_->auxiliary_status();
+}
+std::optional<CgateFullOrderLogBalance> CgateSession::full_order_log_balance() const noexcept {
+    return impl_->balance();
+}
 std::uint64_t CgateSession::market_data_metadata_revision() const noexcept {
     return impl_->projection.metadata_revision();
 }
 bool CgateSession::full_order_log_entry_ready(std::int64_t isin_id) const noexcept {
     if (impl_->config.full_order_log_cancel_only)
+        return false;
+    if (!impl_->config.full_order_log_login.empty() && impl_->cod_state() != "disabled")
+        return false;
+    if (!impl_->account_risk_refusal().empty())
         return false;
     if (impl_->config.full_order_log_stream.settings.empty())
         return true;
@@ -1544,6 +2000,15 @@ bool CgateSession::full_order_log_entry_ready(std::int64_t isin_id) const noexce
     try {
         if (runtime_health().full_order_log != Active)
             return false;
+        if (impl_->config.full_order_log_partitioned && impl_->config.allow_orders) {
+            const auto life = impl_->projection.refdata_lifenum();
+            const auto day = impl_->projection.current_session_id();
+            const auto terms =
+                life ? impl_->projection.find_future_session_terms(static_cast<std::int32_t>(isin_id), day, *life)
+                     : std::nullopt;
+            if (!terms || !terms->lot_volume_units)
+                return false;
+        }
         const auto now = impl_->now();
         const auto activity = impl_->full_order_log_events.activity;
         if (!activity || now < *activity || now - *activity > std::chrono::seconds(30))
@@ -1639,10 +2104,23 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
         out.validation_error = invalid("command name or id is outside declared command scope");
         return out;
     }
+    if (impl_->environment_conflicts()) {
+        out.validation_error = invalid("REFDATA Spectra environment conflicts with TEST");
+        return out;
+    }
     bool required_private = true;
     if (command.command_kind == Plaza2TradeCommandKind::AddOrder ||
         command.command_kind == Plaza2TradeCommandKind::MoveOrder) {
         const auto proof_started = impl_->config.collect_poll_metrics ? ns(std::chrono::steady_clock::now()) : 0;
+        if (!impl_->config.full_order_log_login.empty() && impl_->cod_state() != "disabled") {
+            out.validation_error = invalid("FullOrderLog entry requires current login COD disabled; state=" +
+                                           std::string(impl_->cod_state()));
+            return out;
+        }
+        if (const auto risk_refusal = impl_->account_risk_refusal(); !risk_refusal.empty()) {
+            out.validation_error = invalid(std::string(risk_refusal));
+            return out;
+        }
         if (command.isin_id && !full_order_log_entry_ready(*command.isin_id)) {
             out.validation_error =
                 invalid("FullOrderLog entry requires a live stream and valid committed two-sided current-session book");
@@ -1659,6 +2137,10 @@ cg::Plaza2PublisherMessageResult CgateSession::post_command(const Plaza2TradeEnc
                                 h.private_states[found - h.private_streams.begin()] == Active &&
                                 impl_->stream_online(code);
         }
+    }
+    if (impl_->publisher_layout_failure) {
+        out.validation_error = impl_->publisher_layout_failure;
+        return out;
     }
     if (impl_->recovery.operation == Plaza2SessionOperation::Failed || !impl_->config.allow_orders ||
         impl_->config.read_only_market_data || !command.validation.ok() || !user_id || h.connection != Active ||

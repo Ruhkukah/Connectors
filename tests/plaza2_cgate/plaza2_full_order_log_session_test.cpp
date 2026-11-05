@@ -1,5 +1,6 @@
 #include "moex/plaza2_trade/cgate_session.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_oi.hpp"
 #include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
@@ -31,6 +32,7 @@ int main(int argc, char** argv) {
         config.runtime.env_open_settings = "ini=config/t1.ini;key=00000000";
         config.connection_settings = "p2tcp://127.0.0.1:4101;app_name=full-order-log-test";
         config.read_only_market_data = true;
+        config.full_order_log_partitioned = true;
         config.process_timeout_ms = 0;
         config.recovery_now = [&] { return now; };
         config.private_streams = {
@@ -39,6 +41,7 @@ int main(int argc, char** argv) {
              "mode=snapshot+online"}};
         config.market_data_isin_ids = {1001};
         const auto canonical_url = cgate::full_order_log_listener_settings(fixture.scheme_dir);
+        const auto match3_url = cgate::full_order_log_listener_settings(fixture.scheme_dir, 3);
         config.full_order_log_stream = {cgate::kFullOrderLogStreamCode, canonical_url, ""};
         config.full_order_log_handler = &book;
         std::vector<std::string> operation_logs;
@@ -132,7 +135,7 @@ int main(int argc, char** argv) {
                     "FORTS_REFDATA_REPL;tables=session,fut_instruments,fut_sess_contents,fut_vcb,sys_messages,"
                     "instr2matching_map",
                 "FullLog alone must append matching to the reviewed REFDATA server subscription");
-        require(fake.listener_settings(cgate::kFullOrderLogStreamCode) == canonical_url &&
+        require(fake.listener_settings(cgate::kFullOrderLogStreamCode) == match3_url &&
                     full_log_tables == std::vector<std::string>{"info", "orders", "orders_log", "sys_events"},
                 "both client INIs must negotiate exactly the four composite tables with no tables selector");
         require(session.private_state().instruments().size() == 5000, "realistic REFDATA bootstrap size");
@@ -242,7 +245,7 @@ int main(int argc, char** argv) {
         require(fake.opens(cgate::kFullOrderLogStreamCode) == opens + 1 && book.valid() && book.order_count() == 2,
                 "ERROR must reopen a fresh composite snapshot");
         require(fake.listener_open_settings(cgate::kFullOrderLogStreamCode).find("replstate") == std::string::npos &&
-                    fake.listener_settings(cgate::kFullOrderLogStreamCode) == canonical_url &&
+                    fake.listener_settings(cgate::kFullOrderLogStreamCode) == match3_url &&
                     full_log_tables == std::vector<std::string>{"info", "orders", "orders_log", "sys_events"},
                 "fresh composite recovery must retain both client schemas and never pass replay keys");
         // A committed single-partition remap fences the book and rebuilds it.
@@ -265,13 +268,15 @@ int main(int argc, char** argv) {
                     session.market_data_metadata_revision() == before_remap,
                 "uncommitted REFDATA remap must preserve matching/book/metadata");
         fake.enqueue({.kind = f::EventKind::Commit, .stream_code = generated::StreamCode::kFortsRefdataRepl});
-        pump();
+        pump(1);
         require(session.market_data_metadata_revision() != before_remap, "metadata token changes at commit");
         require(session.full_order_log_matching_id() == 4 && !book.valid(),
                 "matching remap must fence the old public book");
         now += std::chrono::seconds(1);
         pump();
-        require(book.valid(), "single matching remap must rebuild a fresh composite snapshot");
+        require(book.valid() && fake.listener_settings(cgate::kFullOrderLogStreamCode) ==
+                                    cgate::full_order_log_listener_settings(fixture.scheme_dir, 4),
+                "single matching remap must rebuild a fresh composite snapshot on the new service");
         fake.enqueue({.kind = f::EventKind::ListenerError, .stream_code = generated::StreamCode::kFortsRefdataRepl});
         pump(2);
         require(!book.valid() && !session.full_order_log_matching_id(),
@@ -542,7 +547,21 @@ int main(int argc, char** argv) {
         require(!online_fault.stop(), "post-ONLINE framing fault cleanup");
         scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogSnapshotNoTransactions)] = "";
         scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogUnframedOnlineRow)] = "";
+        fake.configure(scenario);
+        fake.set(f::Option::DealsBadScheme);
+        cgate::FullOrderLogOpenInterest oi(ids);
+        config.full_order_log_oi_handler = &oi;
+        CgateSession optional_deals(config);
+        require(!optional_deals.start(), "optional DEALS schema failure start");
+        for (int i = 0; i < 7; ++i)
+            require(!optional_deals.poll(false), "optional DEALS schema failure must not stop FOL");
+        require(book.valid() && optional_deals.runtime_health().public_deals != 3 &&
+                    fake.opens(generated::StreamCode::kFortsDealsRepl) == 1,
+                "FOL remains valid while incompatible DEALS is disabled");
+        require(!optional_deals.stop(), "optional DEALS cleanup");
+        config.full_order_log_oi_handler = nullptr;
         config.full_order_log_handler = nullptr;
+        config.full_order_log_partitioned = false;
         config.full_order_log_stream = {};
         scenario.options[static_cast<std::size_t>(f::Option::FullOrderLogMultiMatching)] = "";
         fake.configure(scenario);

@@ -2415,6 +2415,28 @@ struct Plaza2PrivateStateProjector::Impl {
         session.margin_call_fix_schedule = row.i64(FieldCode::kFortsRefdataReplSessionMarginCallFixSchedule);
     }
 
+    static std::optional<std::int64_t> lot_volume_units(const RowReader& row, FieldCode legacy_code,
+                                                        FieldCode extended_code) noexcept {
+        const auto* legacy = row.find(legacy_code);
+        if (legacy && (legacy->kind != projection::ValueKind::kSignedInteger || legacy->signed_value < 0 ||
+                       legacy->signed_value > std::numeric_limits<std::int32_t>::max()))
+            return std::nullopt;
+        // The deprecated integer field can be zero when only fractional units are defined.
+        const auto old_units = legacy && legacy->signed_value > 0
+                                   ? std::optional{legacy->signed_value * cgate::kPlaza2LotVolumeScale}
+                                   : std::nullopt;
+        const auto* extended = row.find(extended_code);
+        if (!extended)
+            return old_units;
+        if (extended->kind != projection::ValueKind::kDecimal && extended->kind != projection::ValueKind::kString)
+            return std::nullopt;
+        const auto exact =
+            cgate::parse_fixed_point(extended->text_value, cgate::kPlaza2LotVolumeFractionalDigits, false, 16);
+        if (!exact || *exact <= 0 || (old_units && exact != old_units))
+            return std::nullopt;
+        return exact;
+    }
+
     void apply_future_instrument_row(const projection::EventSpec& event, const RowReader& row) {
         auto& instruments = ensure_staged_instruments();
         const auto isin_id = row.i32(FieldCode::kFortsRefdataReplFutInstrumentsIsinId);
@@ -2429,6 +2451,8 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.inst_term = row.i32(FieldCode::kFortsRefdataReplFutInstrumentsInstTerm);
         instrument.roundto = row.i32(FieldCode::kFortsRefdataReplFutInstrumentsRoundto);
         instrument.lot_volume = row.i32(FieldCode::kFortsRefdataReplFutInstrumentsLotVolume);
+        instrument.lot_volume_units = lot_volume_units(row, FieldCode::kFortsRefdataReplFutInstrumentsLotVolume,
+                                                       FieldCode::kFortsRefdataReplFutInstrumentsXlotVolume);
         instrument.trade_mode_id = row.i32(FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId);
         instrument.signs = row.i32(FieldCode::kFortsRefdataReplFutInstrumentsSigns);
         instrument.is_spread = row.boolean(FieldCode::kFortsRefdataReplFutInstrumentsIsSpread);
@@ -2483,6 +2507,8 @@ struct Plaza2PrivateStateProjector::Impl {
         instrument.inst_term = row.i32(FieldCode::kFortsRefdataReplFutSessContentsInstTerm);
         instrument.roundto = row.i32(FieldCode::kFortsRefdataReplFutSessContentsRoundto);
         instrument.lot_volume = row.i32(FieldCode::kFortsRefdataReplFutSessContentsLotVolume);
+        instrument.lot_volume_units = lot_volume_units(row, FieldCode::kFortsRefdataReplFutSessContentsLotVolume,
+                                                       FieldCode::kFortsRefdataReplFutSessContentsXlotVolume);
         instrument.trade_mode_id = row.i32(FieldCode::kFortsRefdataReplFutSessContentsTradeModeId);
         instrument.state = row.i32(FieldCode::kFortsRefdataReplFutSessContentsState);
         instrument.signs = row.i32(FieldCode::kFortsRefdataReplFutSessContentsSigns);
@@ -2518,6 +2544,7 @@ struct Plaza2PrivateStateProjector::Impl {
                 .raw_limit_up = decimal(FieldCode::kFortsRefdataReplFutSessContentsLimitUp),
                 .raw_limit_down = decimal(FieldCode::kFortsRefdataReplFutSessContentsLimitDown),
                 .min_step = decimal(FieldCode::kFortsRefdataReplFutSessContentsMinStep),
+                .lot_volume_units = instrument.lot_volume_units,
                 .repl_id = row.i64(FieldCode::kFortsRefdataReplFutSessContentsReplId),
                 .source = {.stream_code = StreamCode::kFortsRefdataRepl,
                            .table_code = TableCode::kFortsRefdataReplFutSessContents,

@@ -23,3 +23,4 @@ moex_add_app(moex_full_order_log_dtc_runner moex_full_order_log_dtc_runner.cpp m
 target_sources(moex_full_order_log_dtc_runner PRIVATE "${MOEX_SOURCE_ROOT}/apps/moexctl.cpp")
 target_link_libraries(moex_full_order_log_dtc_runner PRIVATE moex_full_order_log_capture)
 moex_add_app(moex_fol_archive moex_fol_archive.cpp moex_full_order_log_capture)
+moex_add_app(moex_fol_backfill_collector moex_fol_backfill_collector.cpp moex_full_order_log_capture)

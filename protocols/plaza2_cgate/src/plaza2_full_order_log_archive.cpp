@@ -159,7 +159,12 @@ read_full_order_log_capture(const std::filesystem::path& directory,
                     require(sequence == 1 && h.source_sequence == 0 && h.schema_bytes == 0 && h.null_bytes == 0,
                             "capture manifest misplaced");
                     const auto ids = load<std::uint32_t>(payload);
-                    require(ids > 0 && ids <= 64 && payload.size() == 44 + ids * 4, "capture universe invalid");
+                    const auto base_size = 44 + ids * 4;
+                    require(ids > 0 && ids <= 64 &&
+                                (payload.size() == base_size || payload.size() == base_size + recovery_cursor_bytes),
+                            "capture universe invalid");
+                    if (payload.size() > base_size)
+                        result.recovery_cursor = read_recovery_cursor(payload.subspan(base_size));
                     for (std::uint32_t i = 0; i < ids; ++i)
                         result.isins.push_back(load<std::int32_t>(payload, 4 + i * 4));
                     result.source_sha.assign(reinterpret_cast<const char*>(payload.data() + 4 + ids * 4), 40);
@@ -201,8 +206,19 @@ read_full_order_log_capture(const std::filesystem::path& directory,
                 e.kind = h.kind == error_kind ? Plaza2ListenerEventKind::Close
                                               : static_cast<Plaza2ListenerEventKind>(h.kind);
                 record.listener_error = h.kind == error_kind;
-                if (record.listener_error)
+                auto& coverage = h.stream == static_cast<std::uint32_t>(kFullOrderLogStreamCode)
+                                     ? result.fol_coverage
+                                     : result.deals_coverage;
+                if (record.listener_error) {
                     ++result.listener_errors;
+                    ++coverage.listener_errors;
+                } else {
+                    coverage.opens += e.kind == Plaza2ListenerEventKind::Open;
+                    coverage.onlines += e.kind == Plaza2ListenerEventKind::Online;
+                    coverage.closes += e.kind == Plaza2ListenerEventKind::Close;
+                    coverage.life_notifications += e.kind == Plaza2ListenerEventKind::LifeNum;
+                    coverage.clear_deleted += e.kind == Plaza2ListenerEventKind::ClearDeleted;
+                }
                 e.stream_code = static_cast<generated::StreamCode>(h.stream);
                 e.table_code = static_cast<generated::TableCode>(h.table_code);
                 e.table_index = h.table_index;

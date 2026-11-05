@@ -41,26 +41,30 @@ int main(int argc, char** argv) {
             (std::string_view(argv[2]) == "run" || std::string_view(argv[2]) == "cmd"))
             return moex::connector_host::full_order_log_operator(argc, argv, router_endpoint);
         if (argc == 2 && std::string_view(argv[1]) == "--help") {
-            std::cout
-                << "moex_full_order_log_dtc_runner plaza2 qualify [read-only runtime options]\n"
-                   "  --dtc-port N (default 11300, consecutive loopback ports for configured ISINs)\n"
-                   "  --live --trading-instance-id NAME (MOEX/broker entitlement is the owner responsibility)\n"
-                   "  --router HOST:PORT (default 127.0.0.1:4102; separate order-log router/login)\n"
-                   "  --trading-router HOST:PORT (default 127.0.0.1:4101; must differ from --router)\n"
-                   "  --offline-fake --run-ms N (offline tests; no live authorization inferred)\n"
-                   "  --dtc-depth N (default 20; up to 20000 per side; NumLevels=0 uses that cap)\n"
-                   "  --capture-dir NEW_DIR [--capture-max-bytes N] [--capture-min-free-bytes N]\n"
-                   "  Lossless selected FOL rows; defaults: 4GiB budget, 10GiB free-space reserve.\n"
-                   "  Offline export: moex_fol_archive export-dbn CAPTURE_DIR NEW_OUTPUT.dbn\n"
-                   "  --open-interest: OI and live DTC trades from one FORTS_DEALS_REPL;tables=deal (default off).\n"
-                   "DTC is read-only. No accounts, positions or market-by-order on DTC.\n"
-                   "plaza2 run --live|--offline-fake --allow-orders [operator/risk options]\n"
-                   "  TEST-only ORDLOG account: private reconciliation and orders on the FOL connection.\n"
-                   "  Explicit measured --clock-offset-us and all operator risk/identity options required.\n"
-                   "  Limits: quantity/position <=2, open orders/rate <=5; no DTC server in run mode.\n"
-                   "  --cancel-only: private-state recovery, no FOL/AGGR; Add/Move always refused.\n"
-                   "plaza2 cmd --command-socket PATH \"COMMAND\" (FOL endpoint only)\n"
-                << moex::connector_host::operator_help();
+            std::cout << "moex_full_order_log_dtc_runner plaza2 qualify [read-only runtime options]\n"
+                         "  --dtc-port N (default 11300, consecutive loopback ports for configured ISINs)\n"
+                         "  --live --trading-instance-id NAME (MOEX/broker entitlement is the owner responsibility)\n"
+                         "  --router HOST:PORT (default 127.0.0.1:4102; separate order-log router/login)\n"
+                         "  --trading-router HOST:PORT (default 127.0.0.1:4101; must differ from --router)\n"
+                         "  --offline-fake --run-ms N (offline tests; no live authorization inferred)\n"
+                         "  --dtc-depth N (default 20; up to 20000 per side; NumLevels=0 uses that cap)\n"
+                         "  --capture-dir NEW_DIR [--capture-max-bytes N] [--capture-min-free-bytes N]\n"
+                         "  Lossless selected FOL rows; defaults: 4GiB budget, 10GiB free-space reserve.\n"
+                         "  Offline export: moex_fol_archive export-dbn CAPTURE_DIR NEW_OUTPUT.dbn\n"
+                         "  --open-interest: OI and live DTC trades from one FORTS_DEALS_REPL_MATCH<n>;tables=deal "
+                         "(default off).\n"
+                         "Qualify DTC is read-only.\n"
+                         "plaza2 run --live|--offline-fake --allow-orders [operator/risk options]\n"
+                         "  TEST-only ORDLOG account: private reconciliation and orders on the FOL connection.\n"
+                         "  Explicit measured --clock-offset-us and all operator risk/identity options required.\n"
+                         "  Limits: quantity/position <=2, open orders/rate <=5.\n"
+                         "  Optional DTC: --dtc-trading-port N --dtc-trading-secret-file PATH (mode 0600).\n"
+                         "  DTC supports manual and automated Add; replace only on manual orders.\n"
+                         "  --dtc-keep-orders-on-disconnect: disable the default ten-second DTC order cancellation.\n"
+                         "  Optional account gates: --min-free-money-rub RUB --check-account-prohibitions.\n"
+                         "  --cancel-only: private-state recovery, no FOL/AGGR; Add/Move always refused.\n"
+                         "plaza2 cmd --command-socket PATH \"COMMAND\" (FOL endpoint only)\n"
+                      << moex::connector_host::operator_help();
             return 0;
         }
         moex::connector_host::FullOrderLogCaptureFlags capture_flags;
@@ -137,6 +141,8 @@ int main(int argc, char** argv) {
                 capture->record_error(moex::plaza2::generated::StreamCode::kFortsDealsRepl, e);
         };
         auto& transport = request.config.transport.host;
+        transport.full_order_log_partitioned = true;
+        transport.full_order_log_advisory = !offline;
         transport.full_order_log_oi_handler = capture_flags.open_interest ? &open_interest : nullptr;
         transport.mode =
             offline ? moex::plaza2_trade::CgateSessionMode::OfflineFake : moex::plaza2_trade::CgateSessionMode::Live;

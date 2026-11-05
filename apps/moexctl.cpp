@@ -340,6 +340,12 @@ int moex::connector_host::operator_program(int argc, char** argv, const Operator
             CgateTradingHost host(std::move(config));
             ScopeExit report([&] { host.report_outstanding_orders(std::cerr); });
             ScopeExit shutdown([&] { (void)host.stop(); });
+            ScopeExit stop_frontend([&] {
+                if (hooks.before_stop)
+                    hooks.before_stop();
+            });
+            if (hooks.before_start)
+                hooks.before_start(host);
             // Host construction already acquired the exclusive journal/state locks.
             // A refused connection plus those locks proves the old same-state writer is gone.
             CommandSocket socket(socket_path, host.identity_lock_held());
@@ -375,6 +381,11 @@ int moex::connector_host::operator_program(int argc, char** argv, const Operator
                 // A signal received during CGate polling is consumed before
                 // another operator command can enter the host.
                 signal_shutdown();
+                if (drain.requested) {
+                    if (hooks.before_stop)
+                        hooks.before_stop();
+                } else if (hooks.before_input)
+                    hooks.before_input(host);
                 socket.poll(
                     [&](std::string line, std::int64_t receipt) {
                         signal_shutdown();

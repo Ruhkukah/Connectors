@@ -309,6 +309,20 @@ class Plaza2Connection {
     void* handle_{nullptr};
 };
 
+struct Plaza2MessageFieldLayout {
+    std::string_view name;
+    std::string_view type_token;
+    std::size_t offset;
+    std::size_t size;
+};
+
+struct Plaza2MessageLayout {
+    std::string_view name;
+    std::uint32_t id;
+    std::size_t size;
+    std::span<const Plaza2MessageFieldLayout> fields;
+};
+
 class Plaza2Listener {
   public:
     Plaza2Listener();
@@ -321,14 +335,17 @@ class Plaza2Listener {
     Plaza2Listener& operator=(const Plaza2Listener&) = delete;
 
     [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, std::string_view settings);
+    // The optional reply layout contract must outlive the listener.
     [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, generated::StreamCode stream_code,
-                                     std::string_view settings, Plaza2ListenerEventHandler* handler);
+                                     std::string_view settings, Plaza2ListenerEventHandler* handler,
+                                     std::span<const Plaza2MessageLayout> layouts = {});
     [[nodiscard]] Plaza2Error open(std::string_view settings);
     void clear_callback_error() noexcept;
     [[nodiscard]] Plaza2Error close();
     [[nodiscard]] Plaza2Error destroy();
     [[nodiscard]] Plaza2Error state(std::uint32_t& out_state) const;
     [[nodiscard]] bool is_created() const noexcept;
+    [[nodiscard]] bool message_layouts_validated() const noexcept;
     [[nodiscard]] const Plaza2Error& last_callback_error() const noexcept;
 
   private:
@@ -376,6 +393,7 @@ class Plaza2Publisher {
 
     [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, std::string_view settings);
     [[nodiscard]] Plaza2Error open(std::string_view settings);
+    [[nodiscard]] Plaza2Error validate_message_layouts(std::span<const Plaza2MessageLayout> layouts) const;
     // Allocate/free only: no payload, ID, reply registration or exchange post.
     [[nodiscard]] Plaza2Error prewarm_by_message_name(std::string_view message_name);
     [[nodiscard]] Plaza2PublisherMessageResult

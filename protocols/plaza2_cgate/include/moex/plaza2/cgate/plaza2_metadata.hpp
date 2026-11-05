@@ -430,6 +430,7 @@ enum class FieldCode : std::uint32_t {
     kFortsRefdataReplFutSessContentsRoundto = 0x8AE22F95u,
     kFortsRefdataReplFutSessContentsMinStep = 0xB4D33B47u,
     kFortsRefdataReplFutSessContentsLotVolume = 0xAF4230AEu,
+    kFortsRefdataReplFutSessContentsXlotVolume = 0xBEFFE6FDu,
     kFortsRefdataReplFutSessContentsStepPrice = 0xEF807F2Cu,
     kFortsRefdataReplFutSessContentsLastTradeDate = 0x0956CD32u,
     kFortsRefdataReplFutSessContentsIsSpread = 0x5BD0E1CAu,
@@ -459,6 +460,7 @@ enum class FieldCode : std::uint32_t {
     kFortsRefdataReplFutInstrumentsRoundto = 0x7C7354EEu,
     kFortsRefdataReplFutInstrumentsMinStep = 0x613E0F12u,
     kFortsRefdataReplFutInstrumentsLotVolume = 0x9A5295F7u,
+    kFortsRefdataReplFutInstrumentsXlotVolume = 0x381BB05Au,
     kFortsRefdataReplFutInstrumentsStepPrice = 0x7E39B195u,
     kFortsRefdataReplFutInstrumentsLastTradeDate = 0xF2537869u,
     kFortsRefdataReplFutInstrumentsIsSpread = 0x078AA2CDu,
@@ -591,6 +593,7 @@ const TypeDescriptor* FindTypeByToken(std::string_view type_token);
 const StreamDescriptor* FindStreamByCode(StreamCode stream_code);
 const TableDescriptor* FindTableByCode(TableCode table_code);
 const FieldDescriptor* FindFieldByCode(FieldCode field_code);
+const FieldDescriptor* ExtendedLotVolumeField(TableCode table_code) noexcept;
 std::span<const TableDescriptor> TablesForStream(StreamCode stream_code);
 std::span<const FieldDescriptor> FieldsForTable(TableCode table_code, bool include_matching = false);
 

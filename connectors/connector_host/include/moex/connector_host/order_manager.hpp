@@ -36,6 +36,7 @@ struct OrderRequest {
     plaza2_trade::Plaza2TradeOrderType type{plaza2_trade::Plaza2TradeOrderType::Limit};
     std::string price, comment;
     std::int32_t quantity{};
+    bool dtc_origin{}, automated{};
 };
 
 struct ManagedOrder {
@@ -94,6 +95,7 @@ struct OrderManagerConfig {
     // Injectable only for offline assertions that disabled profiling never reads
     // a clock. An empty hook uses steady_clock.
     std::function<std::uint64_t()> stage_timing_now;
+    std::function<void(std::string_view, std::int32_t, bool)> reserve_dtc_identity;
 };
 
 struct AddPathTiming {
@@ -136,9 +138,11 @@ class OrderManager {
                  PositionAnchor position_anchor = {});
     [[nodiscard]] std::string place(OrderRequest request);
     [[nodiscard]] std::string cancel(std::string_view client_order_id);
-    [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity);
+    [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity,
+                                   bool dtc_origin = false);
     [[nodiscard]] std::string cancel_all(std::int32_t isin_id);
     void set_kill_switch(bool enabled);
+    void fence_dtc_entry();
     void poll(Clock::time_point now, std::int64_t utc_seconds);
     void on_reply(std::uint32_t user_id, const plaza2_trade::Plaza2TradeDecodedReply& reply, Clock::time_point now,
                   std::uint64_t trade_commit_sequence = 0);
@@ -179,7 +183,7 @@ class OrderManager {
         std::uint32_t user_id{};
         std::int64_t target_order_id{};
         std::int64_t sent_utc_seconds{};
-        bool acknowledged{}, transport_retry_warned{}, wait_for_trading{};
+        bool acknowledged{}, transport_retry_warned{}, wait_for_trading{}, dtc_origin{};
         std::uint32_t business_failures{}, uncertain_outcomes{};
         std::int32_t submitted_session{};
         AddPathTiming add_path;

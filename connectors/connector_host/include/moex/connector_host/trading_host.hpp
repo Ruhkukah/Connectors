@@ -34,7 +34,23 @@ class CgateTradingHost {
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] std::string place(OrderRequest request, std::int64_t socket_receipt_steady_ns = 0);
     [[nodiscard]] std::string cancel(std::string_view client_order_id);
-    [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity);
+    [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity,
+                                   bool dtc_origin = false);
+    void fence_dtc_entry();
+    [[nodiscard]] bool dtc_snapshot_ready() const;
+    [[nodiscard]] bool dtc_fill_history_current() const;
+    [[nodiscard]] std::optional<plaza2_trade::CgateFullOrderLogBalance> dtc_balance() const;
+    [[nodiscard]] std::uint64_t dtc_snapshot_generation() const noexcept {
+        return dtc_snapshot_generation_;
+    }
+    [[nodiscard]] bool dtc_entry_ready(std::int32_t isin) const;
+    [[nodiscard]] ConnectorHostMarketDataSnapshot dtc_market_data(std::int32_t isin) const;
+    [[nodiscard]] const auto& dtc_orders() const noexcept {
+        return orders_->orders();
+    }
+    [[nodiscard]] const auto& dtc_private_state() const noexcept {
+        return session_.private_state();
+    }
     [[nodiscard]] std::string cancel_all(std::int32_t isin_id);
     void request_shutdown_cancellation(std::int32_t isin_id);
     [[nodiscard]] bool shutdown_reconciliation_pending() const;
@@ -74,6 +90,8 @@ class CgateTradingHost {
     plaza2_trade::CgateSession session_;
     std::unique_ptr<OrderManager> orders_;
     bool rebuilding_{true};
+    bool dtc_fill_history_gap_{};
+    std::uint64_t dtc_snapshot_generation_{};
     bool shutdown_cancellation_requested_{};
     std::vector<std::int32_t> shutdown_scopes_;
     bool reconcile_reload_{};

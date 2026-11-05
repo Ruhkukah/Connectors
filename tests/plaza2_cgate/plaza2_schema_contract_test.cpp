@@ -23,7 +23,7 @@ struct IgnoreRows final : Plaza2ListenerEventHandler {
 struct RefdataProjection final : Plaza2ListenerEventHandler {
     private_state::Plaza2PrivateStateProjector projector;
     Plaza2PrivateStateBridge bridge{projector};
-    bool opened{}, online{}, session_row{}, uncommitted_hidden{};
+    bool opened{}, online{}, session_row{}, instrument_xlot{}, uncommitted_hidden{};
     std::size_t row_size{};
 
     RefdataProjection() {
@@ -35,6 +35,12 @@ struct RefdataProjection final : Plaza2ListenerEventHandler {
         opened |= event.kind == Plaza2ListenerEventKind::Open;
         online |= event.kind == Plaza2ListenerEventKind::Online;
         const auto result = bridge.on_plaza2_listener_event(event);
+        if (event.kind == Plaza2ListenerEventKind::StreamData &&
+            event.table_code == generated::TableCode::kFortsRefdataReplFutInstruments) {
+            instrument_xlot = std::any_of(event.fields.begin(), event.fields.end(), [](const auto& field) {
+                return field.field_code == generated::FieldCode::kFortsRefdataReplFutInstrumentsXlotVolume;
+            });
+        }
         if (event.kind == Plaza2ListenerEventKind::StreamData &&
             event.table_code == generated::TableCode::kFortsRefdataReplFutSessContents) {
             session_row = true;
@@ -51,9 +57,13 @@ struct RefdataProjection final : Plaza2ListenerEventHandler {
 };
 
 static void require_refdata_projection(Plaza2Connection& connection, const test::fake::Control& fake, bool spectra912,
-                                       generated::FieldCode unused_mutation = {}, std::string_view unused_type = {}) {
+                                       generated::FieldCode unused_mutation = {}, std::string_view unused_type = {},
+                                       std::int32_t legacy_lot = 1, std::string_view extended_lot = "1",
+                                       std::optional<std::int64_t> expected_lot = 100'000'000) {
     test::fake::Scenario scenario;
     scenario.spectra912_refdata_schema = spectra912;
+    scenario.refdata_legacy_lot_volume = legacy_lot;
+    scenario.refdata_xlot_volume = extended_lot;
     scenario.mutated_schema_field = unused_mutation;
     scenario.omit_schema_field = unused_mutation != generated::FieldCode{} && unused_type.empty();
     scenario.schema_field_type = unused_type;
@@ -73,6 +83,7 @@ static void require_refdata_projection(Plaza2Connection& connection, const test:
             "versioned REFDATA must OPEN, reach ONLINE and project only after commit");
     require(handler.row_size == (spectra912 ? test::kSpectra912FutureSessionRowSize : 540),
             "versioned REFDATA row length differs from vendor layout");
+    require(handler.instrument_xlot == spectra912, "fut_instruments did not bind the versioned xlot_volume field");
     const auto terms = handler.projector.find_future_session_terms(1001);
     const auto dec = private_state::parse_session_decimal;
     require(terms && terms->sess_id == 321 && terms->repl_id == 3101 && terms->source.repl_rev == 3 &&
@@ -86,6 +97,8 @@ static void require_refdata_projection(Plaza2Connection& connection, const test:
         std::find_if(instruments.begin(), instruments.end(), [](const auto& value) { return value.isin_id == 1001; });
     require(instrument != instruments.end() && instrument->state == 1,
             "reordered 9.12 state field was not decoded at its negotiated offset");
+    require(terms->lot_volume_units == expected_lot && instrument->lot_volume_units == expected_lot,
+            "versioned REFDATA did not project exact lot volume or fence only the conflicting instrument");
 }
 
 static std::size_t require_captured_schema_subset() {
@@ -279,6 +292,13 @@ int main(int argc, char** argv) {
         // rejects it at OPEN on the removed settlement_price_open field.
         require_refdata_projection(connection, fake, true);
         require_refdata_projection(connection, fake, false);
+        using enum generated::FieldCode;
+        require_refdata_projection(connection, fake, true, {}, {}, 0, "0.12345678", 12'345'678);
+        require_refdata_projection(connection, fake, true, kFortsRefdataReplFutSessContentsLotVolume, {}, 1,
+                                   "0.00000001", 1);
+        require_refdata_projection(connection, fake, true, kFortsRefdataReplFutSessContentsXlotVolume);
+        require_refdata_projection(connection, fake, true, {}, {}, 1, "0.12345678", std::nullopt);
+        require_refdata_projection(connection, fake, true, {}, {}, 1, "invalid", std::nullopt);
         const auto obsolete = static_cast<generated::FieldCode>(0x8453894Eu);
         require_refdata_projection(connection, fake, false, obsolete);
         require_refdata_projection(connection, fake, false, obsolete, "invalid_type");
@@ -329,7 +349,8 @@ int main(int argc, char** argv) {
                 continue; // Public DEALS qualification is deferred.
             for (const auto& field : generated::FieldsForTable(table.table_code)) {
                 for (const bool spectra912 : {false, true}) {
-                    if (spectra912 && table.table_code != generated::TableCode::kFortsRefdataReplFutSessContents)
+                    if (spectra912 && table.table_code != generated::TableCode::kFortsRefdataReplFutSessContents &&
+                        table.table_code != generated::TableCode::kFortsRefdataReplFutInstruments)
                         continue;
                     for (const bool missing : {true, false}) {
                         test::fake::Scenario scenario;
@@ -347,6 +368,12 @@ int main(int argc, char** argv) {
                             (void)connection.process(0);
                         const auto& error = listener.last_callback_error();
                         const auto label = std::string(table.table_name) + "." + std::string(field.field_name);
+                        if (spectra912 && missing &&
+                            (field.field_code == kFortsRefdataReplFutSessContentsLotVolume ||
+                             field.field_code == kFortsRefdataReplFutInstrumentsLotVolume)) {
+                            require(!opened && !error, "9.12 xlot_volume must be sufficient at OPEN");
+                            continue;
+                        }
                         require((opened.code == Plaza2ErrorCode::IncompatibleScheme ||
                                  error.code == Plaza2ErrorCode::IncompatibleScheme) &&
                                     (opened.message + error.message).find(label) != std::string::npos,
@@ -357,6 +384,22 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        test::fake::Scenario bad_extended_lot;
+        bad_extended_lot.spectra912_refdata_schema = true;
+        bad_extended_lot.mutated_schema_field = kFortsRefdataReplFutSessContentsXlotVolume;
+        bad_extended_lot.schema_field_type = "i4";
+        fake.configure(bad_extended_lot);
+        Plaza2Listener listener;
+        require(!listener.create(connection, generated::StreamCode::kFortsRefdataRepl,
+                                 required_replication_listener_settings(generated::StreamCode::kFortsRefdataRepl),
+                                 &handler),
+                "create REFDATA listener for invalid xlot_volume");
+        const auto opened = listener.open("mode=snapshot+online");
+        for (int i = 0; i < 8 && !listener.last_callback_error(); ++i)
+            (void)connection.process(0);
+        require((opened.message + listener.last_callback_error().message).find("fut_sess_contents.xlot_volume") !=
+                    std::string::npos,
+                "retyped xlot_volume accepted at OPEN");
         fake.configure({});
         std::cout << "validated " << captured_fields << " captured fields and " << checked
                   << " missing/retyped field cases\n";

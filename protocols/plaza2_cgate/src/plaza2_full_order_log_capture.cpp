@@ -90,6 +90,8 @@ struct FullOrderLogCapture::Impl {
 #endif
             std::memcpy(sha.data(), source.data(), std::min(sha.size(), source.size()));
             append_bytes(metadata, sha.data(), sha.size());
+            if (options.recovery_cursor)
+                append_recovery_cursor(metadata, *options.recovery_cursor);
             enqueue({.kind = manifest_kind}, metadata, {}, {});
             worker = std::thread([this] { run(); });
         } catch (...) {

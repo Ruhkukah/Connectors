@@ -182,6 +182,11 @@ void test_fol_restart(const std::string& executable, const test::RuntimeFixtureP
                       status.find("\"client_order_id\":\"recovered:321:20003\",\"order_id\":20003,"
                                   "\"instance_owned\":true,\"ext_id\":100") != std::string::npos,
                   "same-journal restart did not recover the owned exchange identity: " + status);
+    const auto recovery_log = contents(log);
+    for (const auto* service :
+         {"FORTS_TRADE_REPL_MATCH3;", "FORTS_POS_REPL_MATCH3;", "FORTS_USERORDERBOOK_REPL_MATCH3;"})
+        test::require(recovery_log.find(service) != std::string::npos,
+                      std::string("writer/recovery did not open partitioned private service ") + service);
     const auto refused = command(executable, log, "move recovered:321:20003 1 102000", "transaction-move-refused");
     test::require(refused.find("cancel-only recovery refuses Move") != std::string::npos &&
                       occurrences(contents(native), "bytes=") == 1,

@@ -89,6 +89,13 @@ struct CgateSessionConfig {
     std::function<std::uint64_t()> full_order_log_utc_now_ns;
     // Immutable TEST recovery without market-data listeners; never Add/Move.
     bool full_order_log_cancel_only{false};
+    // FOL uses one committed matching across public data and private recovery.
+    bool full_order_log_partitioned{false};
+    bool validate_order_message_layouts{false};
+    bool full_order_log_advisory{false};
+    std::string full_order_log_login, full_order_log_account;
+    std::optional<std::int64_t> full_order_log_min_free_kopecks;
+    bool full_order_log_check_prohibitions{};
     // Optional exact AGGR20 sys_events session identity. Zero accepts a
     // non-zero current session id and is suitable only before refdata
     // negotiation has supplied the target session.
@@ -199,6 +206,10 @@ struct Plaza2RecoveryStatus {
     Plaza2TransportHealth health;
 };
 
+struct CgateFullOrderLogBalance {
+    std::int64_t free_kopecks{}, blocked_kopecks{}, total_kopecks{};
+};
+
 class CgateSession final {
   public:
     explicit CgateSession(CgateSessionConfig config);
@@ -227,6 +238,8 @@ class CgateSession final {
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;
     [[nodiscard]] std::optional<std::int8_t> full_order_log_matching_id() const noexcept;
     [[nodiscard]] std::uint64_t market_data_metadata_revision() const noexcept;
+    [[nodiscard]] std::string full_order_log_auxiliary_status() const;
+    [[nodiscard]] std::optional<CgateFullOrderLogBalance> full_order_log_balance() const noexcept;
     // Freshness follows successful FOL stream callbacks (30s), not quiet-ISIN age.
     // Exchange timestamps may lead UTC by at most one second.
     [[nodiscard]] bool full_order_log_entry_ready(std::int64_t isin_id) const noexcept;

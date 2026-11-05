@@ -9,6 +9,8 @@
 namespace moex::plaza2::cgate::capture_format {
 static_assert(std::endian::native == std::endian::little);
 inline constexpr std::uint32_t manifest_kind = 0xfffffffd, end_kind = 0xfffffffe, error_kind = 0xffffffff;
+inline constexpr std::string_view recovery_cursor_magic = "ORDREC01";
+inline constexpr std::size_t recovery_cursor_bytes = 44;
 struct FileHeader {
     char magic[8]{'M', 'O', 'E', 'X', 'F', 'O', 'L', '2'};
     std::uint32_t version{2}, block_limit{};
@@ -50,6 +52,30 @@ inline void append_bytes(std::vector<std::byte>& bytes, const void* data, std::s
     bytes.resize(at + size);
     if (size)
         std::memcpy(bytes.data() + at, data, size);
+}
+inline bool valid_recovery_cursor(const FullOrderLogRecoveryCursor& cursor) {
+    return cursor.original_identity && cursor.reopen_sequence && cursor.life_number &&
+           cursor.life_number <= UINT32_MAX && cursor.revision > 0 && cursor.matching_id > 0 &&
+           cursor.matching_id <= INT8_MAX;
+}
+inline void append_recovery_cursor(std::vector<std::byte>& bytes, const FullOrderLogRecoveryCursor& cursor) {
+    require(valid_recovery_cursor(cursor), "invalid ORDLOG recovery cursor");
+    append_bytes(bytes, recovery_cursor_magic.data(), recovery_cursor_magic.size());
+    append(bytes, cursor.original_identity);
+    append(bytes, cursor.reopen_sequence);
+    append(bytes, cursor.life_number);
+    append(bytes, cursor.revision);
+    append(bytes, cursor.matching_id);
+}
+inline FullOrderLogRecoveryCursor read_recovery_cursor(std::span<const std::byte> bytes) {
+    require(bytes.size() == recovery_cursor_bytes &&
+                std::memcmp(bytes.data(), recovery_cursor_magic.data(), recovery_cursor_magic.size()) == 0,
+            "invalid ORDLOG recovery cursor manifest");
+    FullOrderLogRecoveryCursor cursor{load<std::uint64_t>(bytes, 8), load<std::uint64_t>(bytes, 16),
+                                      load<std::uint64_t>(bytes, 24), load<std::int64_t>(bytes, 32),
+                                      load<std::int32_t>(bytes, 40)};
+    require(valid_recovery_cursor(cursor), "invalid ORDLOG recovery cursor");
+    return cursor;
 }
 inline std::uint64_t checksum(std::span<const std::byte> bytes) {
     std::uint64_t result = 14695981039346656037ULL;

@@ -58,9 +58,41 @@ The questionnaire must state the order message families actually enabled/tested:
 
 ## Diagnostic-only comparison and display
 
-The separate read-only comparison probe opens the restricted composite URL above with both stream names explicitly suffixed `_MATCH<matching_id>`, plus `p2repl://FORTS_ORDBOOK_REPL_MATCH<matching_id>;tables=orders,info`. This differs from the current unsuffixed writer URL. It has a unique app_name, no publisher and zero order posts. It requires exact exposed life/revision alignment; otherwise comparisons are UNALIGNED. This diagnostic connection must be declared if included in a certification session; it is not silently added to the production application's questionnaire inventory.
+The separate read-only comparison probe opens the restricted composite URL above with both stream names explicitly suffixed `_MATCH<matching_id>`, plus `p2repl://FORTS_ORDBOOK_REPL_MATCH<matching_id>;tables=orders,info`. This differs from the current unsuffixed writer URL. It has a unique app_name, no publisher and zero order posts. It compares selected order IDs and remaining quantities against committed composite states in a bounded observation window and reports ambiguous or differing snapshots separately. This diagnostic connection must be declared if included in a certification session; it is not silently added to the production application's questionnaire inventory.
 
 DTC display binds localhost only, depth20 by default, with FullOrderLog authority envelope and atomic positional-level batches. Kairos end-to-end validation remains conditional on the reviewed PR111 build and recorded live evidence; do not claim it from connector-only tests.
+
+## Partitioned candidate inventory
+
+The earlier sections describe the historical native pin. This source revision resolves exactly one matching ID for the selected instruments before opening any partitioned listener. It uses the matching suffix on both public composite services and retains the client file section names `ORDLOG` and `OrdBook`. The two client schemes retain their table selection and digests. The base REFDATA, SESSIONSTATE, INSTRUMENTSTATE and required PART event subscriptions retain their unsuffixed service names.
+
+| Mode | Service | Tables or scheme sections |
+|---|---|---|
+| Qualify and writer | `p2ordbook://FORTS_ORDLOG_REPL_MATCH<n>;snapshot=FORTS_ORDBOOK_REPL_MATCH<n>` | Restricted client schemes as above |
+| Qualify and writer with `--open-interest` | `p2repl://FORTS_DEALS_REPL_MATCH<n>` | `deal`. Writer starts from matching POS `info` LifeNum and deal revision |
+| Writer and cancel-only | `p2repl://FORTS_TRADE_REPL_MATCH<n>` | `orders_log,user_deal,heartbeat,sys_events` |
+| Writer and cancel-only | `p2repl://FORTS_USERORDERBOOK_REPL_MATCH<n>` | `orders,info` |
+| Writer and cancel-only | `p2repl://FORTS_POS_REPL_MATCH<n>` | `position,info` |
+| Native qualifier and writer | `p2repl://FORTS_COMMON_REPL_MATCH<n>` | `common`. Compare the native-liquidity bid and ask as an advisory sample |
+| Native writer | `p2repl://FORTS_REFDATA_REPL` | Separate `user` listener. Detect COD for the exact configured login |
+| Native writer | `p2repl://FORTS_PART_REPL` | Separate `part` balance listener with independent health |
+| Native writer | `p2repl://FORTS_VM_REPL_MATCH<n>` | Advisory `fut_vm` for the account and selected futures |
+| Native writer | `p2repl://FORTS_PROHIBITION_REPL` | Advisory `prohibition` for the configured account. Enables local enforcement with `--check-account-prohibitions` |
+| Native writer | `p2repl://FORTS_RMT_REPL` | Advisory `rmt_im` for the configured account |
+| Native writer | `p2repl://FORTS_TNPENALTY_REPL` | Advisory `fee_tn,fee_all` for the configured login |
+| Native qualifier and writer | `p2repl://FORTS_REFDATA_REPL` | Separate advisory `trade_periods,discrete_auction` and `spectra_environment` listeners |
+| Native qualifier and writer | `p2repl://MOEX_RATES_REPL` and `p2repl://RTS_INDEX_REPL` | Advisory `curr_online` and `rts_index`, respectively |
+| Native writer | `p2repl://FORTS_CLR_REPL` | `fut_sess_settl,money_clearing,fut_pos,clr_rate,sys_events` |
+
+When committed reference authority or its matching changes, the candidate fences the affected data and private reconciliation until fresh same-matching anchors and snapshots are available. The publisher and reply listener retain their separate reviewed service names. Trading requires validated live command and reply descriptors. The writer refuses Add and Move when the current trading login's COD state is enabled or unknown. Cancel-only remains available with current private authority and validated message layouts.
+
+The optional `--min-free-money-rub` and `--check-account-prohibitions` gates require an online snapshot and replication activity within 30 seconds. Any applicable nonzero prohibition row for the configured account fences entry conservatively. The venue still enforces its full group, priority and side-specific rules. Both local checks apply to Add and Move. The account balance listener remains independent of the required PART `sys_events` listener.
+
+REFDATA lot volume uses exact scale-eight units. An available extended value must agree with any available legacy integer value. An absent extended field can fall back to a positive legacy integer. Missing or inconsistent lot volume fences entry for that instrument. Exchange order quantities remain whole contracts, and DTC displays the lot volume as a float.
+
+Optional Kairos trading uses an authenticated, loopback DTC endpoint on the writer. It exposes one instrument and uses the same CGate owner and order manager as CLI orders. Reconciliation restores current private state before enabling DTC entry. Manual and automated Adds carry `M` and `R` respectively. Automated orders can be cancelled. Replace is limited to manual orders because DTC CancelReplace carries no automation flag. DTC exposes fresh account balances from PART, with VM available separately in connector status. By default, after ten seconds without a fully reconciled DTC session, it individually cancels working orders placed through that endpoint when the private state is available. `--dtc-keep-orders-on-disconnect` disables those cancels. DTC currently runs bounded socket work on the owner loop. Report the actual DTC options, timing, and cancellation policy if this mode is submitted.
+
+Backfill planning and overlap verification are separate from the live application. The candidate TEST-only collector uses `p2repl://FORTS_ORDLOG_REPL_MATCH<n>;tables=orders_log` with an independently verified LifeNum and earlier committed revision. Declare that subscription only for a separately qualified collector.
 
 ## To complete before submission
 

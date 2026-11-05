@@ -4,12 +4,19 @@
 
 namespace moex::plaza2::cgate {
 enum class FullOrderLogCaptureEndStatus : std::uint64_t { Clean = 0, HostNonzero = 1, CaptureFailed = 2 };
+struct FullOrderLogRecoveryCursor {
+    std::uint64_t original_identity{}, reopen_sequence{}, life_number{};
+    std::int64_t revision{};
+    std::int32_t matching_id{};
+    bool operator==(const FullOrderLogRecoveryCursor&) const = default;
+};
 struct FullOrderLogCaptureOptions {
     std::filesystem::path directory;
     std::uint64_t max_bytes{4ULL << 30}, min_free_bytes{10ULL << 30};
     std::size_t block_bytes{1 << 20}, queue_blocks{32};
     std::chrono::milliseconds flush_interval{200}, sync_interval{1000};
     std::uint64_t segment_bytes{32ULL << 20};
+    std::optional<FullOrderLogRecoveryCursor> recovery_cursor;
 };
 struct FullOrderLogCaptureMetrics {
     std::uint64_t records{}, filtered{}, logical_bytes{}, stored_bytes{}, syncs{}, sync_max_ns{}, queue_peak{};
@@ -45,6 +52,10 @@ struct FullOrderLogCaptureRecord {
     Plaza2ListenerEvent event;
     bool listener_error{};
 };
+struct FullOrderLogArchiveStreamCoverage {
+    std::uint64_t opens{}, onlines{}, closes{}, listener_errors{};
+    std::uint64_t life_notifications{}, clear_deleted{};
+};
 struct FullOrderLogArchiveSummary {
     std::vector<std::int32_t> isins;
     std::string source_sha;
@@ -55,6 +66,8 @@ struct FullOrderLogArchiveSummary {
         open_interest_rows{}, open_interest_updates{}, listener_errors{}, last_good_sequence{};
     std::uint64_t trade_prints{};             // DBN export only.
     std::uint64_t refdata_unjoined_records{}; // DBN records before or between current REFDATA observations.
+    FullOrderLogArchiveStreamCoverage fol_coverage, deals_coverage;
+    std::optional<FullOrderLogRecoveryCursor> recovery_cursor;
     bool truncated{}, end_record_present{};
     FullOrderLogCaptureEndStatus end_status{FullOrderLogCaptureEndStatus::Clean};
     int host_status{};

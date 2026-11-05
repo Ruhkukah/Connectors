@@ -1,4 +1,5 @@
 #include "full_order_log_test_support.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_backfill.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_capture.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
@@ -21,6 +22,91 @@ static bool refused(const auto& action) {
 static auto bytes(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     return std::vector<char>(std::istreambuf_iterator<char>(f), {});
+}
+static void test_backfill(const fs::path& root, FullOrderLogCaptureOptions options) {
+    const auto schema = tables();
+    const std::array<std::int32_t, 1> ids{11};
+    Plaza2FullOrderLog book(ids, 1024, 256);
+    const auto record = [](FullOrderLogCapture& capture, Plaza2ListenerEvent e) {
+        e.stream_code = kFullOrderLogStreamCode;
+        require(!capture.record(e), "backfill fixture recorder");
+    };
+    const auto frame = [&](FullOrderLogCapture& capture, std::int64_t rev, std::int64_t qty = 3) {
+        record(capture, {.kind = Kind::TransactionBegin});
+        record(capture, row(schema[2], 1, 11, 1234565, qty, 1, rev).event());
+        record(capture, {.kind = Kind::TransactionCommit});
+    };
+    const auto original = root / "backfill-original";
+    options.directory = original;
+    {
+        FullOrderLogCapture capture(options, ids, book);
+        const auto open = [&] {
+            record(capture, {.kind = Kind::Open, .raw_tables = schema});
+            Row info(schema[1]);
+            info.set("publication_state", std::int8_t{1});
+            info.set("trades_lifenum", std::int64_t{7});
+            record(capture, info.event());
+            record(capture, {.kind = Kind::Online});
+        };
+        open();
+        frame(capture, 101);
+        frame(capture, 104);
+        record(capture, {.kind = Kind::TransactionBegin});
+        record(capture, row(schema[2], 1, 11, 1234565, 3, 1, 105).event());
+        capture.record_error(kFullOrderLogStreamCode, {.code = Plaza2ErrorCode::RuntimeCallFailed});
+        open();
+        frame(capture, 111);
+        record(capture, {.kind = Kind::Close});
+        capture.finish();
+    }
+    const auto plan = plan_full_order_log_backfill(original, 2, 7);
+    require(plan.listener_settings == "p2repl://FORTS_ORDLOG_REPL_MATCH2;tables=orders_log" &&
+                plan.open_settings == "mode=snapshot+online;lifenum=7;rev.orders_log=101" &&
+                plan.start.revision == 101 && plan.left.revision == 104 && plan.right.revision == 111 &&
+                plan.left.commit_sequence < plan.reopen_sequence && plan.reopen_sequence < plan.right.commit_sequence,
+            "plan uses earlier durable commit and excludes interrupted frame");
+    require(refused([&] { plan_full_order_log_backfill(original, 2, 8); }),
+            "independently supplied life conflicts with recorded info");
+    const auto primary = read_full_order_log_capture(original, [](const auto&) {}, true);
+    require(primary.truncated && primary.fol_coverage.opens == 2 && primary.fol_coverage.listener_errors == 1 &&
+                primary.deals_coverage.opens == 0 && primary.deals_coverage.listener_errors == 0,
+            "FOL coverage remains incomplete independently from DEALS");
+    for (const auto kind :
+         {"good", "wrong-life", "different-row", "missing-right", "collector", "wrong-request", "collector-stale"}) {
+        options.directory = root / (std::string("backfill-") + kind);
+        const std::string_view mode(kind);
+        const bool collector = mode == "collector" || mode == "wrong-request" || mode == "collector-stale";
+        options.recovery_cursor.reset();
+        if (collector)
+            options.recovery_cursor =
+                FullOrderLogRecoveryCursor{plan.capture_identity, plan.reopen_sequence, plan.ordlog_lifenum,
+                                           plan.start.revision, mode == "wrong-request" ? 3 : 2};
+        {
+            FullOrderLogCapture capture(options, ids, book);
+            if (mode == "collector-stale")
+                record(capture, {.kind = Kind::LifeNum, .unsigned_value = 8u});
+            record(capture, {.kind = Kind::Open, .raw_tables = std::span(schema).subspan(2, 1)});
+            if (!collector)
+                record(capture, {.kind = Kind::LifeNum, .unsigned_value = mode == "wrong-life" ? 8u : 7u});
+            frame(capture, 104, mode == "different-row" ? 4 : 3);
+            frame(capture, 105);
+            if (mode != "missing-right")
+                frame(capture, 111);
+            record(capture, {.kind = Kind::Online});
+            if (!collector)
+                record(capture, {.kind = Kind::Close});
+            capture.finish();
+        }
+        const auto check = [&] {
+            return check_full_order_log_backfill(original, options.directory, 2, 7, plan.reopen_sequence);
+        };
+        if (mode == "good" || mode == "collector") {
+            const auto result = check();
+            require(result.recovery_capture_identity != plan.capture_identity && result.committed_rows_between == 1,
+                    "distinct clean capture overlaps both committed boundaries");
+        } else
+            require(refused(check), "unproved overlap refused");
+    }
 }
 static void test_refdata_join(const fs::path& root, FullOrderLogCaptureOptions options) {
     namespace g = moex::plaza2::generated;
@@ -190,6 +276,7 @@ int main() {
         require(exported.refdata_sha256.empty() && !fs::exists(dbn.string() + ".refdata.json"),
                 "legacy capture exports without an invented sidecar");
         test_refdata_join(root, o);
+        test_backfill(root, o);
         auto data = bytes(dbn);
         require(data.size() > 128 && std::string_view(data.data(), 4) == std::string_view("DBN\3", 4) &&
                     (data.size() - 128) % 56 == 0,

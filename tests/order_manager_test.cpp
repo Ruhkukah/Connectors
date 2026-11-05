@@ -1428,6 +1428,47 @@ void ext_identity_and_relist() {
                          [](const auto& line) { return line.find("\"state\":\"Cancelled\"") != std::string::npos; }),
             "transactional relist published an intermediate terminal state");
 }
+void dtc_fence_preserves_cli_and_native_orders() {
+    Fixture f;
+    std::vector<std::pair<std::string, std::int32_t>> durable;
+    std::vector<bool> automated;
+    f.config.reserve_dtc_identity = [&](auto id, auto ext, auto robot) {
+        durable.emplace_back(id, ext);
+        automated.push_back(robot);
+    };
+    auto manager = f.manager();
+    auto dtc = request("dtc:a");
+    dtc.dtc_origin = true;
+    require(manager.place(dtc).empty() && durable.size() == 1 && f.sent.empty(),
+            "DTC identity was not reserved before dispatch");
+    require(manager.place(request("cli")).empty(), "CLI Add refused");
+    manager.fence_dtc_entry();
+    f.poll(manager, 0);
+    require(f.sent.size() == 1 && manager.orders().at("dtc:a").state == OrderState::Cancelled,
+            "disconnect failed to fence queued DTC Add independently of CLI");
+    require(manager.place(dtc) != "", "unsent DTC identity was released for reuse");
+    dtc.client_order_id = "dtc:b";
+    require(manager.place(dtc).empty(), "second DTC Add refused");
+    f.poll(manager, 1000);
+    manager.on_reply(f.sent.back().id, {.msgid = 179, .order_id = 1501},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(1000));
+    require(manager.move("dtc:b", "101", 3, true).empty(), "DTC Move refused");
+    manager.fence_dtc_entry();
+    f.poll(manager, 2000);
+    const auto& order = manager.orders().at("dtc:b");
+    require(f.sent.size() == 2 && order.state == OrderState::Working && order.order_id == 1501 &&
+                order.request.price == "100",
+            "disconnect lost or moved a posted native order");
+    dtc.client_order_id = "dtc:robot";
+    dtc.automated = true;
+    require(manager.place(dtc).empty() && automated == std::vector<bool>{false, false, true},
+            "automated Add did not reserve provenance before native dispatch");
+    f.poll(manager, 3000);
+    require(f.sent.size() == 3 && wire<official_cgate99::AddOrder>(f.sent[1]).compliance_id[0] == 'M' &&
+                wire<official_cgate99::AddOrder>(f.sent[2]).compliance_id[0] == 'R',
+            "DTC Add used the wrong native compliance classification");
+}
+
 void move_fill_accounting() {
     Fixture f;
     auto manager = f.manager();
@@ -2366,6 +2407,7 @@ int main() {
         recovery_bounds_and_wire();
         ext_identity_and_relist();
         move_fill_accounting();
+        dtc_fence_preserves_cli_and_native_orders();
         deferred_fill_identity();
         eligible_commands_and_logging();
         aggregate_risk();

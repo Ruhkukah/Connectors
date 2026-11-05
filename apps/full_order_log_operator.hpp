@@ -4,8 +4,10 @@
 #include "full_order_log_capture_options.hpp"
 #include <csignal>
 #include "full_order_log_dtc_loop.hpp"
+#include "full_order_log_trading_dtc.hpp"
 #include "operator_program.hpp"
 #include "moex/connector_host/full_order_log_trading.hpp"
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 #include <iostream>
 
 namespace moex::connector_host {
@@ -17,6 +19,10 @@ inline int full_order_log_operator(int argc, char** argv,
     FullOrderLogCaptureFlags capture_flags;
     bool capture_stop_requested{};
     bool offline{}, live{}, cancel_only{};
+    std::uint16_t dtc_port{};
+    std::filesystem::path dtc_secret;
+    bool dtc_keep_orders_on_disconnect{}, check_prohibitions{};
+    std::optional<std::int64_t> minimum_free_kopecks;
     std::string trading_instance, trading_router{"127.0.0.1:4101"};
     std::vector<std::string> args{argv[0]};
     for (int i = 1; i < argc; ++i) {
@@ -29,7 +35,28 @@ inline int full_order_log_operator(int argc, char** argv,
             live = true;
         else if (key == "--cancel-only")
             cancel_only = true;
-        else if (key == "--trading-instance-id" || key == "--trading-router") {
+        else if (key == "--check-account-prohibitions")
+            check_prohibitions = true;
+        else if (key == "--min-free-money-rub") {
+            if (++i == argc)
+                throw std::invalid_argument("missing FOL minimum free money");
+            minimum_free_kopecks = plaza2::cgate::parse_fixed_point(argv[i], 2, false);
+            if (!minimum_free_kopecks)
+                throw std::invalid_argument("invalid FOL minimum free money in rubles");
+        } else if (key == "--dtc-keep-orders-on-disconnect")
+            dtc_keep_orders_on_disconnect = true;
+        else if (key == "--dtc-trading-port" || key == "--dtc-trading-secret-file") {
+            if (++i == argc)
+                throw std::invalid_argument("missing FOL DTC trading option value");
+            if (key == "--dtc-trading-secret-file")
+                dtc_secret = argv[i];
+            else {
+                const std::string_view value = argv[i];
+                const auto parsed = std::from_chars(value.data(), value.data() + value.size(), dtc_port);
+                if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !dtc_port)
+                    throw std::invalid_argument("invalid FOL DTC trading port");
+            }
+        } else if (key == "--trading-instance-id" || key == "--trading-router") {
             if (++i == argc)
                 throw std::invalid_argument("missing FOL operator option value");
             (key == "--trading-instance-id" ? trading_instance : trading_router) = argv[i];
@@ -37,6 +64,11 @@ inline int full_order_log_operator(int argc, char** argv,
             args.emplace_back(key);
     }
     capture_flags.validate();
+    if ((minimum_free_kopecks || check_prohibitions) && (!run || cancel_only || offline))
+        throw std::invalid_argument("FOL account risk options require a native writer");
+    if ((dtc_port || !dtc_secret.empty() || dtc_keep_orders_on_disconnect) &&
+        (!run || cancel_only || !dtc_port || dtc_secret.empty()))
+        throw std::invalid_argument("DTC trading requires FOL run, a loopback port and a private secret file");
     if (capture_flags.open_interest && (!run || cancel_only))
         throw std::invalid_argument("--open-interest requires FOL run/qualify; not cmd/cancel-only");
     if (!capture_flags.options.directory.empty() && (!run || cancel_only))
@@ -62,6 +94,8 @@ inline int full_order_log_operator(int argc, char** argv,
     std::unique_ptr<plaza2::cgate::Plaza2FullOrderLog> book;
     std::unique_ptr<plaza2::cgate::FullOrderLogCapture> capture;
     std::unique_ptr<plaza2::cgate::FullOrderLogOpenInterest> open_interest;
+    std::unique_ptr<plaza2::cgate::FullOrderLogDeals> dtc_deals;
+    std::unique_ptr<FullOrderLogTradingDtc> dtc_trading;
     FullOrderLogDtcMetrics native;
     auto rate_at = std::chrono::steady_clock::now();
     std::uint64_t rows_at{};
@@ -112,6 +146,8 @@ inline int full_order_log_operator(int argc, char** argv,
         session.public_deals_stream = {};
         session.process_timeout_ms = 1;
         session.full_order_log_cancel_only = cancel_only;
+        session.full_order_log_partitioned = true;
+        session.validate_order_message_layouts = true;
         if (cancel_only) {
             session.full_order_log_stream = {};
             session.full_order_log_handler = nullptr;
@@ -120,7 +156,25 @@ inline int full_order_log_operator(int argc, char** argv,
             config.orders.risk.kill_switch = true;
             return;
         }
+        if (!offline) {
+            session.full_order_log_advisory = true;
+            session.full_order_log_login = config.orders.login_from;
+            session.full_order_log_account = config.orders.broker_code + config.orders.client_code;
+            session.full_order_log_min_free_kopecks = minimum_free_kopecks;
+            session.full_order_log_check_prohibitions = check_prohibitions;
+        }
         book = std::make_unique<cg::Plaza2FullOrderLog>(config.isin_ids);
+        if (dtc_port) {
+            if (config.isin_ids.size() != 1)
+                throw std::invalid_argument("DTC trading requires one selected FOL instrument");
+            dtc_trading =
+                std::make_unique<FullOrderLogTradingDtc>(config, dtc_port, dtc_secret, !dtc_keep_orders_on_disconnect);
+            config.orders.reserve_dtc_identity = [&](auto key, auto ext_id, auto automated) {
+                dtc_trading->reserve(key, ext_id, automated);
+            };
+            if (capture_flags.open_interest)
+                dtc_deals = std::make_unique<cg::FullOrderLogDeals>(config.isin_ids);
+        }
         session.collect_poll_metrics = true;
         session.full_order_log_stream = {.stream_code = cg::kFullOrderLogStreamCode,
                                          .settings = cg::full_order_log_listener_settings(session.runtime.scheme_dir)};
@@ -131,9 +185,14 @@ inline int full_order_log_operator(int argc, char** argv,
         if (capture_flags.open_interest) {
             open_interest = std::make_unique<cg::FullOrderLogOpenInterest>(config.isin_ids);
             open_interest->before_event = [&](const auto& e) {
-                return capture ? capture->record(e) : cg::Plaza2Error{};
+                if (capture)
+                    if (auto error = capture->record(e); error)
+                        return error;
+                return dtc_deals ? dtc_deals->on_event(e) : cg::Plaza2Error{};
             };
             open_interest->before_error = [&](const auto& e) {
+                if (dtc_deals)
+                    dtc_deals->on_error(e);
                 if (capture)
                     capture->record_error(moex::plaza2::generated::StreamCode::kFortsDealsRepl, e);
             };
@@ -145,6 +204,18 @@ inline int full_order_log_operator(int argc, char** argv,
         book->on_crossed = [](std::int32_t isin, bool crossed) {
             std::cerr << "FullOrderLog crossed isin=" << isin << " crossed=" << crossed << '\n';
         };
+    };
+    hooks.before_start = [&](CgateTradingHost& host) {
+        if (dtc_trading)
+            dtc_trading->start(host, *book, dtc_deals.get());
+    };
+    hooks.before_input = [&](CgateTradingHost&) {
+        if (dtc_trading)
+            dtc_trading->poll(book->revision(book->instruments().front()), book->epoch());
+    };
+    hooks.before_stop = [&] {
+        if (dtc_trading)
+            dtc_trading->stop();
     };
     hooks.after_poll = [&](CgateTradingHost& host) {
         if (!book)

@@ -1,4 +1,5 @@
 #include "moex/connector_host/connector_host.hpp"
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 #include <algorithm>
 #include <array>
@@ -184,26 +185,31 @@ ConnectorHostSnapshot ConnectorHost::snapshot() const {
     return out;
 }
 ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t isin_id) const {
-    ConnectorHostMarketDataSnapshot out;
-    const auto& host = impl_->host;
     const auto& config = impl_->config;
+    const auto now = config.market_data_now ? config.market_data_now() : std::chrono::system_clock::now();
+    return project_connector_market_data(
+        impl_->host, isin_id, !config.transport.host.full_order_log_stream.settings.empty(),
+        std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count(),
+        impl_->state == ConnectorHostState::Failed, config.target_underlying_board, config.target_currency);
+}
+ConnectorHostMarketDataSnapshot project_connector_market_data(const plaza2_trade::CgateSession& host,
+                                                              std::int64_t isin_id, bool full_order_log,
+                                                              std::int64_t now_seconds, bool failed,
+                                                              std::string_view target_underlying_board,
+                                                              std::string_view target_currency) {
+    ConnectorHostMarketDataSnapshot out;
     const auto& data = host.private_state();
-    const auto& health = host.runtime_health();
+    const auto health = host.runtime_health();
     const auto status = host.aggr_status();
     out.connector_generation = host.recovery_status().generation;
     out.market_data_authority_epoch = status.stream_epoch;
     out.stream_epoch = status.stream_epoch;
     out.target_isin_id = isin_id;
-    const auto now_seconds =
-        std::chrono::duration_cast<std::chrono::seconds>(
-            (config.market_data_now ? config.market_data_now() : std::chrono::system_clock::now()).time_since_epoch())
-            .count();
     out.target_session_id = current_session_id(host.private_state(), now_seconds);
-    out.underlying_board = config.target_underlying_board;
+    out.underlying_board = target_underlying_board;
     // These are explicit operator bindings until an unambiguous committed
     // fut_vcb join supplies the source values below.
-    out.currency = config.target_currency;
-    const bool full_order_log = !config.transport.host.full_order_log_stream.settings.empty();
+    out.currency = target_currency;
     out.transport_active = full_order_log ? host.started() && health.connection == 3 && health.full_order_log == 3
                                           : host.started() && health.aggr == 3 && status.transport_active;
     out.snapshot_complete = status.snapshot_complete;
@@ -238,8 +244,17 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
                 .instrument_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplFutSessContents,
                                               out.target_isin_id)
                 .value_or(ps::SourceRowProvenance{});
-        if (instrument.lot_volume > 0)
-            out.contract_size = std::to_string(instrument.lot_volume);
+        if (const auto lot = instrument.lot_volume_units) {
+            const auto whole = *lot / cg::kPlaza2LotVolumeScale;
+            const auto fractional = *lot % cg::kPlaza2LotVolumeScale;
+            out.contract_size = std::to_string(whole);
+            if (fractional != 0) {
+                auto digits = std::to_string(cg::kPlaza2LotVolumeScale + fractional).substr(1);
+                while (digits.back() == '0')
+                    digits.pop_back();
+                out.contract_size += "." + digits;
+            }
+        }
         out.currency_value_per_increment = instrument.step_price_curr;
         out.refdata_vcb_join_current = instrument.future_vcb_join_status == ps::FutureVcbJoinStatus::Resolved;
         out.refdata_vcb_join_ambiguous = instrument.future_vcb_join_status == ps::FutureVcbJoinStatus::Ambiguous;
@@ -247,9 +262,9 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
             out.underlying_board = instrument.future_vcb_board_md;
             out.currency = instrument.future_vcb_currency;
             out.future_vcb_provenance = instrument.future_vcb_provenance;
-            if (!config.target_underlying_board.empty() && config.target_underlying_board != out.underlying_board)
+            if (!target_underlying_board.empty() && target_underlying_board != out.underlying_board)
                 operator_binding_conflict = true;
-            if (!config.target_currency.empty() && config.target_currency != out.currency)
+            if (!target_currency.empty() && target_currency != out.currency)
                 operator_binding_conflict = true;
             out.refdata_board_proven = !out.underlying_board.empty() && out.underlying_board.size() <= 128 &&
                                        cg::text::valid_utf8(out.underlying_board);
@@ -297,8 +312,7 @@ ConnectorHostMarketDataSnapshot ConnectorHost::market_data_snapshot(std::int64_t
     out.session_provenance =
         data.session_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplSession, out.target_session_id)
             .value_or(ps::SourceRowProvenance{});
-    const bool healthy =
-        host.started() && impl_->state != ConnectorHostState::Failed && health.valid && health.connection == 3;
+    const bool healthy = host.started() && !failed && health.valid && health.connection == 3;
     const bool identity_current = out.target_session_id > 0 && target_instrument_refdata_current &&
                                   online_stream(data, health, StreamCode::kFortsRefdataRepl) &&
                                   online_stream(data, health, StreamCode::kFortsSessionstateRepl) &&

@@ -152,6 +152,8 @@ enum class Option : std::uint32_t {
     WrongPositionAccountType,
     WrongSchemeOverride,
     ZeroPosition,
+    PublisherLayoutOffsetMismatch,
+    ReplyLayoutTypeMismatch,
     Count
 };
 // Scenario controls are local to one explicitly loaded fake runtime, never process environment.
@@ -166,6 +168,8 @@ struct Scenario {
     std::uint32_t trade_server_lifenum{0};
     std::uint32_t listener_create_result{0}, publisher_create_result{0};
     bool spectra912_refdata_schema{false};
+    std::int32_t refdata_legacy_lot_volume{1};
+    std::string refdata_xlot_volume{"1"};
     generated::StreamCode unrecognized_schema_stream{};
     generated::FieldCode mutated_schema_field{};
     generated::TableCode omitted_schema_table{};

@@ -52,11 +52,13 @@ void real(Bytes& out, unsigned field, float n) {
     for (unsigned i = 0; i < 4; ++i)
         out.push_back(static_cast<std::uint8_t>(bits >> (8 * i)));
 }
-void real64(Bytes& out, unsigned field, double n) {
+void fixed64(Bytes& out, unsigned field, std::uint64_t bits) {
     varint(out, field * 8 + 1);
-    auto bits = std::bit_cast<std::uint64_t>(n);
     for (unsigned i = 0; i < 8; ++i)
         out.push_back(static_cast<std::uint8_t>(bits >> (8 * i)));
+}
+void real64(Bytes& out, unsigned field, double n) {
+    fixed64(out, field, std::bit_cast<std::uint64_t>(n));
 }
 Bytes frame(std::uint16_t type, const Bytes& payload) {
     const auto size = payload.size() + 4;
@@ -111,7 +113,8 @@ struct Proto {
                 auto len = f.wire == 1 ? 8U : 4U;
                 if (len > b.size() - pos)
                     throw std::runtime_error("truncated protobuf fixed field");
-                pos += len;
+                for (unsigned i = 0; i < len; ++i)
+                    f.n |= std::uint64_t(b[pos++]) << (8 * i);
             } else
                 throw std::runtime_error("unsupported protobuf wire type");
             fields[static_cast<unsigned>(tag >> 3)] = std::move(f);
@@ -125,6 +128,17 @@ struct Proto {
             throw std::runtime_error("wrong protobuf integer type");
         return it->second.n;
     }
+    std::uint64_t fixed(unsigned key) const {
+        auto it = fields.find(key);
+        if (it == fields.end())
+            return 0;
+        if (it->second.wire != 1)
+            throw std::runtime_error("wrong protobuf fixed64 type");
+        return it->second.n;
+    }
+    double decimal(unsigned key) const {
+        return std::bit_cast<double>(fixed(key));
+    }
     std::string text(unsigned key) const {
         auto it = fields.find(key);
         if (it == fields.end())
@@ -134,6 +148,54 @@ struct Proto {
         return it->second.s;
     }
 };
+std::optional<std::int32_t> trade_quantity(double n) {
+    if (!std::isfinite(n) || n < 0 || n > INT32_MAX || std::trunc(n) != n)
+        return std::nullopt;
+    return static_cast<std::int32_t>(n);
+}
+bool trade_client_id(std::string_view id) {
+    return !id.empty() && id.size() <= 64 &&
+           id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") ==
+               std::string_view::npos;
+}
+std::optional<std::string> trade_price(double n, const std::string& exact) {
+    if (!exact.empty()) {
+        const auto value = plaza2::private_state::parse_session_decimal(exact);
+        if (!value || value->units <= 0 ||
+            (n != 0 && n != std::numeric_limits<double>::max() && static_cast<double>(value->units) / 100000.0 != n))
+            return std::nullopt;
+        return exact;
+    }
+    if (!std::isfinite(n) || n <= 0 || n >= 1e10)
+        return std::nullopt;
+    const auto units = std::llround(n * 100000.0);
+    if (static_cast<double>(units) / 100000.0 != n)
+        return std::nullopt;
+    return std::to_string(units / 100000) + "." + std::to_string(100000 + units % 100000).substr(1);
+}
+unsigned order_status(OrderState state) {
+    switch (state) {
+    case OrderState::PendingNew:
+        return 2;
+    case OrderState::Working:
+        return 4;
+    case OrderState::PendingReplace:
+        return 5;
+    case OrderState::PendingCancel:
+        return 6;
+    case OrderState::Filled:
+        return 7;
+    case OrderState::Cancelled:
+        return 8;
+    case OrderState::Rejected:
+        return 9;
+    case OrderState::PartFilled:
+        return 10;
+    case OrderState::Unknown:
+        return 0;
+    }
+    return 0;
+}
 unsigned witness_number(SessionReadyWitnessKind a) {
     using Kind = SessionReadyWitnessKind;
     switch (a) {
@@ -199,6 +261,11 @@ struct DtcReadOnlyServer::Impl {
     std::size_t sent{};
     bool negotiated{}, logged_on{}, closing{}, definition{}, depth_subscribed{}, trade_subscribed{};
     bool definitions_capability_advertised{};
+    std::optional<std::uint64_t> orders_generation, positions_generation;
+    std::set<std::string> delivered_fills;
+    std::map<std::string, DtcOwnOrder> last_own_orders;
+    std::optional<std::int64_t> last_own_position;
+    std::optional<DtcOwnBalance> last_balance;
     std::uint32_t symbol_id{};
     std::uint32_t trade_symbol_id{};
     std::size_t depth_limit{};
@@ -216,7 +283,7 @@ struct DtcReadOnlyServer::Impl {
     std::size_t pending_definition_response_end{};
     bool pending_definition_response{};
     std::uint64_t completed_definition_responses{};
-    Clock::time_point last_read{}, last_write{}, last_heartbeat{};
+    Clock::time_point last_read{}, last_write{}, last_heartbeat{}, next_own_poll{}, next_balance_poll{};
     std::chrono::seconds heartbeat{10};
 
     Impl(DtcMarketDataSource& s, DtcReadOnlyServerConfig c)
@@ -231,10 +298,24 @@ struct DtcReadOnlyServer::Impl {
                                           config.local_password.size() > kMaxLocalCredentialBytes ||
                                           !utf8(config.local_username) || !utf8(config.local_password)))
             throw std::invalid_argument("invalid bounded DTC local credentials");
+        if (config.trading && (!config.require_local_auth || config.source_mode != DtcSourceMode::LiveTest ||
+                               config.trading->account.empty() || !config.trading->snapshot || !config.trading->place ||
+                               !config.trading->move || !config.trading->cancel || !config.trading->fills ||
+                               !config.trading->disconnected || !config.trading->reconciled))
+            throw std::invalid_argument("DTC trading requires authenticated TEST owner hooks");
         symbol_id = config.symbol_id;
     }
     void disconnect() {
+        const bool notify = config.trading && logged_on;
         close_fd(client);
+        orders_generation.reset();
+        positions_generation.reset();
+        delivered_fills.clear();
+        last_own_orders.clear();
+        last_own_position.reset();
+        next_own_poll = {};
+        last_balance.reset();
+        next_balance_poll = {};
         decoder.reset();
         output.clear();
         sent = 0;
@@ -251,6 +332,12 @@ struct DtcReadOnlyServer::Impl {
         batch = version = epoch = authority_epoch = 0;
         trade_stream_epoch = trade_cursor = trade_delivery_sequence = 0;
         trade_output_ranges.clear();
+        if (notify) {
+            try {
+                config.trading->disconnected();
+            } catch (...) {
+            }
+        }
     }
     bool queue(std::uint16_t type, const Bytes& body) {
         auto bytes = frame(type, body);
@@ -379,7 +466,8 @@ struct DtcReadOnlyServer::Impl {
                 ";authority=" + std::string(session_ready_witness_kind_name(s.session_ready_witness_kind)) +
                 ";transport_active=" + (s.transport_active ? "true" : "false") +
                 ";snapshot_current=" + (usable(s) ? "true" : "false") +
-                ";order_entry_allowed=false;accounts=false;positions=false;orders=false");
+                (config.trading ? ";order_entry_allowed=false;accounts=true;positions=true;orders=true"
+                                : ";order_entry_allowed=false;accounts=false;positions=false;orders=false"));
         queue(701, p);
     }
     bool authority(const DtcMarketDataSnapshot& s, std::uint64_t empty_batch = 0) {
@@ -735,6 +823,363 @@ struct DtcReadOnlyServer::Impl {
         trade_cursor = next_capture_sequence;
         trade_delivery_sequence = next_delivery_sequence;
     }
+    bool trade_reconciled(std::uint64_t generation) const noexcept {
+        return config.trading && orders_generation == generation && positions_generation == generation;
+    }
+    void trade_reconciliation_completed(std::uint64_t generation) {
+        if (!trade_reconciled(generation))
+            return;
+        delivered_fills.clear();
+        if (const auto fills = config.trading->fills())
+            for (const auto& fill : *fills)
+                delivered_fills.insert(fill.execution_id);
+        config.trading->reconciled();
+    }
+    bool trade_definition_current() const {
+        if (!accepted_definition)
+            return false;
+        const auto current = definition_validation(source.status_snapshot());
+        return current.definition && current.definition->definition_version == accepted_definition->definition_version;
+    }
+    std::string trade_symbol() const {
+        return accepted_definition ? accepted_definition->symbol : std::string{};
+    }
+    bool trade_account(std::string_view requested) const {
+        return requested.empty() || requested == config.trading->account;
+    }
+    bool send_trade_reject(std::uint16_t type, std::uint64_t id, std::string reason) {
+        Bytes body;
+        integer(body, 1, id);
+        str(body, 2, reason);
+        return queue(type, body);
+    }
+    bool send_order(const DtcOwnOrder& order, unsigned reason, std::uint64_t request = 0, std::size_t total = 1,
+                    std::size_t index = 1, bool empty = false, const DtcOwnFill* fill = nullptr) {
+        Bytes body;
+        integer(body, 1, request);
+        integer(body, 2, total);
+        integer(body, 3, index);
+        str(body, 4, trade_symbol());
+        str(body, 5, std::string(kDtcMoexSpectraExchange));
+        str(body, 7, order.server_id);
+        str(body, 8, order.client_id);
+        str(body, 9, order.native_id);
+        integer(body, 10, order_status(order.state));
+        integer(body, 11, reason);
+        integer(body, 12, 2);
+        integer(body, 13, static_cast<unsigned>(order.side));
+        if (const auto price = plaza2::private_state::parse_session_decimal(order.price))
+            real64(body, 14, static_cast<double>(price->units) / 100000.0);
+        integer(body, 16, order.ioc ? 4 : 1);
+        real64(body, 18, static_cast<double>(order.quantity));
+        if (order.fill_baseline_known)
+            real64(body, 19, static_cast<double>(order.filled));
+        real64(body, 20, static_cast<double>(order.remaining));
+        if (fill) {
+            if (const auto price = plaza2::private_state::parse_session_decimal(fill->price))
+                real64(body, 22, static_cast<double>(price->units) / 100000.0);
+            fixed64(body, 23, static_cast<std::uint64_t>(fill->timestamp_seconds));
+            real64(body, 24, static_cast<double>(fill->quantity));
+            str(body, 25, fill->execution_id);
+        }
+        str(body, 26, config.trading->account);
+        str(body, 27, order.error);
+        if (empty)
+            integer(body, 28, 1);
+        return queue(301, body);
+    }
+    bool send_position(std::int64_t position, std::uint64_t request, bool unsolicited) {
+        Bytes body;
+        integer(body, 1, request);
+        integer(body, 2, 1);
+        integer(body, 3, 1);
+        str(body, 4, trade_symbol());
+        str(body, 5, std::string(kDtcMoexSpectraExchange));
+        real64(body, 6, static_cast<double>(position));
+        str(body, 9, config.trading->account);
+        integer(body, 10, !unsolicited && position == 0);
+        integer(body, 11, unsolicited);
+        return queue(306, body);
+    }
+    bool send_balance(const DtcOwnBalance& balance, std::uint64_t request, bool unsolicited) {
+        Bytes body;
+        integer(body, 1, request);
+        real64(body, 2, static_cast<double>(balance.total_kopecks) / 100.0);
+        real64(body, 3, static_cast<double>(balance.free_kopecks) / 100.0);
+        str(body, 4, "RUB");
+        str(body, 5, config.trading->account);
+        real64(body, 7, static_cast<double>(balance.blocked_kopecks) / 100.0);
+        integer(body, 8, 1);
+        integer(body, 9, 1);
+        integer(body, 11, unsolicited);
+        if (!queue(600, body))
+            return false;
+        last_balance = balance;
+        return true;
+    }
+    void publish_balance() {
+        if (!logged_on || closing || !config.trading || !config.trading->balance)
+            return;
+        const auto now = Clock::now();
+        if (now < next_balance_poll)
+            return;
+        next_balance_poll = now + std::chrono::milliseconds(250);
+        const auto balance = config.trading->balance();
+        if (!balance)
+            last_balance.reset();
+        else if (balance != last_balance)
+            send_balance(*balance, 0, true);
+    }
+    bool trading_frame(std::uint16_t type, const Proto& p) {
+        if (!config.trading)
+            return false;
+        const auto& trading = *config.trading;
+        if (type == 400) {
+            Bytes body;
+            integer(body, 1, 1);
+            integer(body, 2, 1);
+            str(body, 3, trading.account);
+            integer(body, 4, p.number(1));
+            queue(401, body);
+            return true;
+        }
+        if (type == 601) {
+            const auto request = p.number(1);
+            if (!trade_account(p.text(2))) {
+                send_trade_reject(602, request, "invalid trade account");
+                return true;
+            }
+            const auto balance = trading.balance ? trading.balance() : std::nullopt;
+            if (balance) {
+                send_balance(*balance, request, false);
+            } else {
+                last_balance.reset();
+                send_trade_reject(602, request, "current PART account balance unavailable");
+            }
+            return true;
+        }
+        if (type != 300 && type != 305 && type != 303 && type != 208 && type != 203 && type != 204)
+            return false;
+        const auto state = trading.snapshot();
+        if (type == 300) {
+            const auto request = p.number(1);
+            const auto target = p.text(3);
+            if (!trade_definition_current() || !state.orders_current || !trade_account(p.text(4))) {
+                orders_generation.reset();
+                send_trade_reject(302, request, "current order snapshot unavailable");
+                return true;
+            }
+            std::vector<const DtcOwnOrder*> open;
+            for (const auto& order : state.orders)
+                if (!terminal(order.state) && (target.empty() || target == order.server_id))
+                    open.push_back(&order);
+            if (open.empty()) {
+                if (!send_order({}, 1, request, 1, 1, true))
+                    return true;
+            }
+            for (std::size_t i = 0; i < open.size(); ++i)
+                if (!send_order(*open[i], 1, request, open.size(), i + 1))
+                    return true;
+            if (target.empty()) {
+                last_own_orders.clear();
+                for (const auto& order : state.orders)
+                    last_own_orders.emplace(order.server_id, order);
+                const bool was_reconciled = trade_reconciled(state.generation);
+                orders_generation = state.generation;
+                if (!was_reconciled)
+                    trade_reconciliation_completed(state.generation);
+            }
+            return true;
+        }
+        if (type == 305) {
+            const auto request = p.number(1);
+            if (!trade_definition_current() || !state.position || !trade_account(p.text(2))) {
+                positions_generation.reset();
+                send_trade_reject(307, request, "current position snapshot unavailable");
+                return true;
+            }
+            if (send_position(*state.position, request, false)) {
+                last_own_position = state.position;
+                const bool was_reconciled = trade_reconciled(state.generation);
+                positions_generation = state.generation;
+                if (!was_reconciled)
+                    trade_reconciliation_completed(state.generation);
+            }
+            return true;
+        }
+        if (type == 303) {
+            const auto request = p.number(1);
+            if (!trade_definition_current() || !state.fills_current || !trade_account(p.text(4)) || p.number(3) != 1 ||
+                p.fixed(5)) {
+                send_trade_reject(308, request, "only the current verified fill history is available");
+                return true;
+            }
+            auto fills = trading.fills();
+            if (!fills) {
+                send_trade_reject(308, request, "fill history unavailable");
+                return true;
+            }
+            const auto target = p.text(2);
+            if (!target.empty())
+                std::erase_if(*fills, [&](const auto& fill) { return fill.server_id != target; });
+            const auto total = std::max<std::size_t>(1, fills->size());
+            for (std::size_t i = 0; i < total; ++i) {
+                Bytes body;
+                integer(body, 1, request);
+                integer(body, 2, total);
+                integer(body, 3, i + 1);
+                str(body, 12, trading.account);
+                if (fills->empty()) {
+                    integer(body, 14, 1);
+                } else {
+                    const auto& fill = (*fills)[i];
+                    const auto price = plaza2::private_state::parse_session_decimal(fill.price);
+                    if (!price) {
+                        disconnect();
+                        return true;
+                    }
+                    str(body, 4, trade_symbol());
+                    str(body, 5, std::string(kDtcMoexSpectraExchange));
+                    str(body, 6, fill.server_id);
+                    integer(body, 7, static_cast<unsigned>(fill.side));
+                    real64(body, 8, static_cast<double>(price->units) / 100000.0);
+                    fixed64(body, 9, static_cast<std::uint64_t>(fill.timestamp_seconds));
+                    real64(body, 10, static_cast<double>(fill.quantity));
+                    str(body, 11, fill.execution_id);
+                    str(body, 20, fill.native_id);
+                }
+                if (!queue(304, body))
+                    return true;
+            }
+            return true;
+        }
+        const bool add = type == 208, move = type == 204;
+        const auto client_id = p.text(add ? 4 : 2);
+        const auto server_id = add ? std::string{} : p.text(1);
+        const auto order = std::find_if(state.orders.begin(), state.orders.end(), [&](const auto& own) {
+            return own.client_id == client_id && own.server_id == server_id;
+        });
+        const auto refuse = [&](std::string reason) {
+            DtcOwnOrder reply = order == state.orders.end() ? DtcOwnOrder{} : *order;
+            reply.client_id = client_id;
+            if (add)
+                reply.state = OrderState::Rejected;
+            else if (order == state.orders.end())
+                reply.state = OrderState::Unknown;
+            reply.error = std::move(reason);
+            send_order(reply, add ? 8 : move ? 10 : 9);
+            return true;
+        };
+        if (!trade_account(p.text(add ? 3 : move ? 12 : 3)))
+            return refuse("invalid trade account");
+        if ((add || move) && (!trade_reconciled(state.generation) || !state.orders_current || !state.position ||
+                              !trade_definition_current()))
+            return refuse("reconcile open orders and positions before entry");
+        if (add) {
+            const auto side = p.number(6), tif = p.number(10);
+            const auto price = trade_price(p.decimal(7), p.text(17));
+            const auto qty = trade_quantity(p.decimal(9));
+            if (p.text(1) != trade_symbol() || p.text(2) != kDtcMoexSpectraExchange || p.number(5) != 2 ||
+                (side != 1 && side != 2) || (tif != 1 && tif != 4) || p.fixed(11) || p.number(12) > 1 || p.number(13) ||
+                p.number(15) || p.decimal(16) ||
+                (p.decimal(8) != 0 && p.decimal(8) != std::numeric_limits<double>::max()) || !p.text(18).empty() ||
+                p.decimal(19) || !price || !qty || *qty == 0 || !trade_client_id(client_id))
+                return refuse("Day/IOC single limit order required");
+            if (const auto error = trading.place(client_id, static_cast<plaza2_trade::Plaza2TradeSide>(side), tif == 4,
+                                                 *price, *qty, p.number(12) == 1);
+                !error.empty())
+                return refuse(error);
+        } else {
+            if (order == state.orders.end() || !order->dtc_owned || terminal(order->state))
+                return refuse("unknown, read-only or terminal DTC order");
+            if (!move) {
+                if (const auto error = trading.cancel(server_id); !error.empty())
+                    return refuse(error);
+            } else {
+                if (order->automated)
+                    return refuse("DTC cancel-replace has no automation flag for this order; cancel remains available");
+                if (p.number(7) || p.number(9) || p.number(10) || p.number(11) || !p.text(14).empty() ||
+                    p.number(6) > 1)
+                    return refuse("unsupported cancel-replace fields");
+                const auto qty = trade_quantity(p.decimal(5));
+                const auto price =
+                    p.number(6) ? trade_price(p.decimal(3), p.text(13)) : std::optional<std::string>{order->price};
+                if (!qty || !price || !order->fill_baseline_known || order->quantity > INT32_MAX)
+                    return refuse("invalid replacement or incomplete execution baseline");
+                const auto quantity = *qty ? *qty : static_cast<std::int32_t>(order->quantity);
+                if (quantity == order->quantity && *price == order->price) {
+                    send_order(*order, 7);
+                    return true;
+                }
+                if (const auto error = trading.move(server_id, *price, quantity); !error.empty())
+                    return refuse(error);
+            }
+        }
+        const auto next = trading.snapshot();
+        const auto updated = std::find_if(next.orders.begin(), next.orders.end(),
+                                          [&](const auto& own) { return own.client_id == client_id; });
+        if (updated != next.orders.end()) {
+            const auto reason = add && updated->state == OrderState::Rejected ? 8 : 3;
+            if (send_order(*updated, reason))
+                last_own_orders.insert_or_assign(updated->server_id, *updated);
+        }
+        return true;
+    }
+    void publish_own_state() {
+        const auto now = Clock::now();
+        if (!logged_on || closing || !orders_generation || !positions_generation || now < next_own_poll)
+            return;
+        next_own_poll = now + std::chrono::milliseconds(50);
+        const auto state = config.trading->snapshot();
+        if (!state.orders_current || !state.position || !trade_reconciled(state.generation)) {
+            reject("private state changed; fresh trading session required");
+            return;
+        }
+        std::optional<std::vector<DtcOwnFill>> fills;
+        bool inspected_fills = false;
+        for (const auto& order : state.orders) {
+            const auto prior = last_own_orders.find(order.server_id);
+            if (prior != last_own_orders.end() && prior->second == order)
+                continue;
+            unsigned reason = 3;
+            if (prior != last_own_orders.end()) {
+                if (order.state == OrderState::Working && prior->second.state == OrderState::PendingNew)
+                    reason = 2;
+                if ((order.state == OrderState::Working || order.state == OrderState::PartFilled) &&
+                    prior->second.state == OrderState::PendingReplace)
+                    reason = order.native_id != prior->second.native_id ? 7 : order.error.empty() ? 3 : 10;
+                if ((order.state == OrderState::Working || order.state == OrderState::PartFilled) &&
+                    prior->second.state == OrderState::PendingCancel && !order.error.empty())
+                    reason = 9;
+                if (order.state == OrderState::Cancelled)
+                    reason = 6;
+                if (order.state == OrderState::Rejected)
+                    reason = 8;
+            }
+            bool reported_fill = false;
+            if (order.fill_baseline_known && order.filled > 0 &&
+                (prior == last_own_orders.end() || order.filled > prior->second.filled)) {
+                if (!inspected_fills) {
+                    fills = config.trading->fills();
+                    inspected_fills = true;
+                }
+                if (fills)
+                    for (const auto& fill : *fills)
+                        if (fill.server_id == order.server_id && delivered_fills.insert(fill.execution_id).second) {
+                            if (!send_order(order, order.state == OrderState::Filled ? 4 : 5, 0, 1, 1, false, &fill))
+                                return;
+                            reported_fill = true;
+                        }
+            }
+            if (!reported_fill && !send_order(order, reason))
+                return;
+        }
+        last_own_orders.clear();
+        for (const auto& order : state.orders)
+            last_own_orders.emplace(order.server_id, order);
+        if (last_own_position != state.position && send_position(*state.position, 0, true))
+            last_own_position = state.position;
+    }
     void handle(const DtcFrame& f) {
         if (!negotiated) {
             // Official binary EncodingRequest: int32 version, int32 encoding,
@@ -789,11 +1234,12 @@ struct DtcReadOnlyServer::Impl {
             integer(reply, 1, 8);
             integer(reply, 2, 1);
             str(reply, 3,
-                config.source_mode == DtcSourceMode::LiveTest ? "Read-only live TEST; trading disabled"
-                                                              : "Read-only replay; trading disabled");
+                config.trading                                  ? "MOEX FOL TEST trading"
+                : config.source_mode == DtcSourceMode::LiveTest ? "Read-only live TEST; trading disabled"
+                                                                : "Read-only replay; trading disabled");
             str(reply, 6, config.source_mode == DtcSourceMode::LiveTest ? "MOEX live TEST DTC" : "MOEX replay DTC");
             for (auto field : {7U, 8U, 9U, 10U, 13U, 17U, 19U})
-                integer(reply, field, 0);
+                integer(reply, field, config.trading && (field == 8 || field == 10));
             // LOGON advertises implemented application capability, not
             // current metadata readiness. Each 506 is gated by fresh source
             // validation so a cold connection can become usable later.
@@ -807,9 +1253,9 @@ struct DtcReadOnlyServer::Impl {
                 pending_wire_logon_capabilities = {
                     .response_fully_written_to_socket = false,
                     .market_depth_updates_best_bid_and_ask = 0,
-                    .trading_is_supported = 0,
+                    .trading_is_supported = config.trading ? 1U : 0U,
                     .oco_orders_supported = 0,
-                    .order_cancel_replace_supported = 0,
+                    .order_cancel_replace_supported = config.trading ? 1U : 0U,
                     .security_definitions_supported = definitions_capability_advertised ? 1U : 0U,
                     .historical_price_data_supported = 0,
                     .resubscribe_when_market_data_feed_available = 1,
@@ -830,6 +1276,8 @@ struct DtcReadOnlyServer::Impl {
             disconnect();
             return;
         }
+        if (trading_frame(f.message_type, p))
+            return;
         if (f.message_type == 506) {
             auto s = source.snapshot();
             const auto validated = definition_validation(s);
@@ -963,7 +1411,8 @@ struct DtcReadOnlyServer::Impl {
             snapshot(source.snapshot());
             return;
         }
-        reject("Read-only DTC: trading, accounts and unsupported requests prohibited");
+        reject(config.trading ? "unsupported DTC request"
+                              : "Read-only DTC: trading, accounts and unsupported requests prohibited");
     }
     void poll() {
         if (listener < 0)
@@ -1120,6 +1569,8 @@ bool DtcReadOnlyServer::start(std::string& error) {
 void DtcReadOnlyServer::poll() {
     try {
         impl_->poll();
+        impl_->publish_own_state();
+        impl_->publish_balance();
     } catch (...) {
         // Covers request handling and subscribed polling/projection alike,
         // including sources that throw a non-std exception. Never propagate

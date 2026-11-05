@@ -1,9 +1,9 @@
 #include "moex/connector_host/dtc_market_data.hpp"
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 
 #include <algorithm>
 #include <bit>
-#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -405,19 +405,18 @@ DtcSecurityDefinitionValidation validate_dtc_security_definition(const DtcMarket
             return unavailable("current futures description is missing, oversized, or invalid UTF-8");
         definition.description = snapshot.description;
         definition.currency = snapshot.currency;
-        if (!positive_float(snapshot.contract_size, definition.contract_size))
-            return unavailable("current fut_instruments.lot_volume is missing or invalid");
-        std::uint32_t lot_units{};
-        const auto lot_parse = std::from_chars(
-            snapshot.contract_size.data(), snapshot.contract_size.data() + snapshot.contract_size.size(), lot_units);
-        if (lot_parse.ec != std::errc{} ||
-            lot_parse.ptr != snapshot.contract_size.data() + snapshot.contract_size.size() || lot_units == 0)
-            return unavailable("current fut_instruments.lot_volume is not a positive whole contract-unit count");
-        const auto exact_contract_size = static_cast<float>(lot_units);
-        if (static_cast<double>(exact_contract_size) != static_cast<double>(lot_units))
+        constexpr auto scale = plaza2::cgate::kPlaza2LotVolumeScale;
+        const auto lot = plaza2::cgate::parse_fixed_point(snapshot.contract_size,
+                                                          plaza2::cgate::kPlaza2LotVolumeFractionalDigits, false);
+        if (!lot || *lot <= 0 || *lot / scale > std::numeric_limits<std::uint32_t>::max())
+            return unavailable("current futures lot volume is missing or invalid");
+        const auto display_size = static_cast<double>(*lot) / scale;
+        definition.contract_size = static_cast<float>(display_size);
+        // Keep the legacy whole-number exactness check. DTC float32 is only
+        // a display projection for fractions; the definition retains exact text.
+        if (*lot % scale == 0 && definition.contract_size != display_size)
             return unavailable(
                 "current fut_instruments.lot_volume cannot be represented exactly by DTC float32 ContractSize");
-        definition.contract_size = exact_contract_size;
         definition.contract_size_source = snapshot.contract_size;
         if (!positive_float(snapshot.currency_value_per_increment, definition.currency_value_per_increment))
             return unavailable("current fut_instruments.step_price_curr is missing or not positive finite DTC float32");

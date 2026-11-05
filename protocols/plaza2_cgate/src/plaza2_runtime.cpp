@@ -52,6 +52,7 @@ constexpr std::uint32_t kCgErrServiceUnavailable = 36866;
 
 constexpr std::uint32_t kCgKeyName = 2;
 constexpr std::uint32_t kCgPubNeedReply = 1;
+constexpr std::uint32_t kCgStateActive = 3;
 
 constexpr std::uint32_t kCgMsgOpen = 0x100;
 constexpr std::uint32_t kCgMsgClose = 0x101;
@@ -128,6 +129,7 @@ struct RuntimeApi {
     CgResult (*pub_close)(void* publisher){nullptr};
     CgResult (*pub_destroy)(void* publisher){nullptr};
     CgResult (*pub_getstate)(void* publisher, std::uint32_t* state){nullptr};
+    CgResult (*pub_getscheme)(void* publisher, void** schemeptr){nullptr};
     CgResult (*pub_msgnew)(void* publisher, std::uint32_t id_type, const void* id, void** msgptr){nullptr};
     CgResult (*pub_post)(void* publisher, void* msg, std::uint32_t flags){nullptr};
     CgResult (*pub_msgfree)(void* publisher, void* msg){nullptr};
@@ -215,6 +217,50 @@ struct CgSchemeDesc {
     CgMessageDesc* messages;
     CgValuePair* hints;
 };
+
+[[nodiscard]] Plaza2Error incompatible_message_layout(std::string_view name, std::string_view reason) {
+    return {.code = Plaza2ErrorCode::IncompatibleScheme,
+            .message = "incompatible CGate message layout " + std::string(name) + ": " + std::string(reason)};
+}
+
+[[nodiscard]] Plaza2Error validate_runtime_message_layouts(const CgSchemeDesc* scheme,
+                                                           std::span<const Plaza2MessageLayout> layouts) {
+    if (!scheme || !scheme->messages)
+        return incompatible_message_layout("scheme", "no message descriptors");
+    for (const auto& expected : layouts) {
+        const CgMessageDesc* match = nullptr;
+        std::size_t count = 0;
+        for (auto* message = scheme->messages; message; message = message->next) {
+            if (++count > scheme->num_messages)
+                return incompatible_message_layout("scheme", "invalid message descriptor list");
+            const auto name = message->name ? std::string_view(message->name) : std::string_view{};
+            if (name != expected.name && message->id != expected.id)
+                continue;
+            if (name != expected.name || message->id != expected.id || match)
+                return incompatible_message_layout(expected.name, "message name or ID mismatch");
+            match = message;
+        }
+        if (count != scheme->num_messages)
+            return incompatible_message_layout("scheme", "invalid message descriptor count");
+        if (!match)
+            return incompatible_message_layout(expected.name, "missing message");
+        if (match->size != expected.size || match->num_fields != expected.fields.size())
+            return incompatible_message_layout(expected.name, "message size or field count mismatch");
+
+        const auto* field = match->fields;
+        for (const auto& item : expected.fields) {
+            if (!field || !field->name || item.name != field->name || !field->type || item.type_token != field->type ||
+                item.offset != field->offset || item.size != field->size) {
+                return incompatible_message_layout(expected.name,
+                                                   std::string(item.name) + " name, type, offset or size mismatch");
+            }
+            field = field->next;
+        }
+        if (field)
+            return incompatible_message_layout(expected.name, "invalid field descriptor list");
+    }
+    return {};
+}
 
 struct CgMsg {
     std::uint32_t type;
@@ -559,6 +605,7 @@ load_runtime_api(const std::filesystem::path& library_path, std::vector<std::str
     load_optional_symbol("cg_pub_close", api->pub_close);
     load_optional_symbol("cg_pub_destroy", api->pub_destroy);
     load_optional_symbol("cg_pub_getstate", api->pub_getstate);
+    load_optional_symbol("cg_pub_getscheme", api->pub_getscheme);
     load_optional_symbol("cg_pub_msgnew", api->pub_msgnew);
     load_optional_symbol("cg_pub_post", api->pub_post);
     load_optional_symbol("cg_pub_msgfree", api->pub_msgfree);
@@ -731,6 +778,7 @@ struct Plaza2ListenerCallbackState {
     Plaza2ListenerEventHandler* handler{nullptr};
     void* listener_handle{nullptr};
     bool scheme_loaded{false};
+    std::span<const Plaza2MessageLayout> expected_layouts;
     std::vector<RuntimeMessagePlan> message_plans;
     std::vector<Plaza2RawTableBinding> raw_tables;
     std::vector<Plaza2DecodedFieldValue> decoded_fields;
@@ -743,7 +791,7 @@ struct Plaza2ListenerCallbackState {
     if (state.scheme_loaded) {
         return {};
     }
-    if (state.stream_code == kNoStreamCode) {
+    if (state.stream_code == kNoStreamCode && state.expected_layouts.empty()) {
         state.scheme_loaded = true;
         return {};
     }
@@ -764,6 +812,12 @@ struct Plaza2ListenerCallbackState {
     }
 
     const auto* scheme = static_cast<CgSchemeDesc*>(raw_scheme);
+    if (!state.expected_layouts.empty()) {
+        if (auto error = validate_runtime_message_layouts(scheme, state.expected_layouts); error)
+            return error;
+        state.scheme_loaded = true;
+        return {};
+    }
     if (scheme == nullptr || scheme->messages == nullptr) {
         return {
             .code = Plaza2ErrorCode::IncompatibleScheme,
@@ -801,6 +855,8 @@ struct Plaza2ListenerCallbackState {
         }
         const auto required_fields = state.handler ? state.handler->replication_fields(table->table_code)
                                                    : generated::FieldsForTable(table->table_code);
+        const auto* extended_lot = generated::ExtendedLotVolumeField(table->table_code);
+        bool has_extended_lot = false;
         auto* field = message->fields;
         std::size_t ordinal = 0;
         while (field != nullptr) {
@@ -811,6 +867,17 @@ struct Plaza2ListenerCallbackState {
                     descriptor = &candidate;
                     break;
                 }
+            }
+            if (extended_lot && field_name == extended_lot->field_name) {
+                if (has_extended_lot || !field->type || extended_lot->type_token != field->type ||
+                    field->size != extended_lot->storage_size_bytes || field->offset > message->size ||
+                    field->size > message->size - field->offset) {
+                    return {.code = Plaza2ErrorCode::IncompatibleScheme,
+                            .message = "INCOMPATIBLE_SCHEME " + message_name +
+                                       ".xlot_volume expected=one in-bounds d16.8 field"};
+                }
+                has_extended_lot = true;
+                descriptor = extended_lot;
             }
             if (descriptor == nullptr) {
                 ++ordinal;
@@ -857,8 +924,12 @@ struct Plaza2ListenerCallbackState {
         for (const auto& expected : required_fields) {
             const auto actual = std::find_if(plan.fields.begin(), plan.fields.end(),
                                              [&](const auto& f) { return f.field_code == expected.field_code; });
+            const bool legacy_lot = extended_lot && expected.field_name == "lot_volume";
+            if (actual == plan.fields.end() && legacy_lot && has_extended_lot)
+                continue;
             if (actual == plan.fields.end() || actual->type_token != expected.type_token ||
-                actual->offset > message->size || actual->size > message->size - actual->offset ||
+                (legacy_lot && actual->size != expected.storage_size_bytes) || actual->offset > message->size ||
+                actual->size > message->size - actual->offset ||
                 std::count_if(plan.fields.begin(), plan.fields.end(),
                               [&](const auto& f) { return f.field_code == expected.field_code; }) != 1) {
                 return {.code = Plaza2ErrorCode::IncompatibleScheme,
@@ -977,6 +1048,8 @@ struct Plaza2ListenerCallbackState {
             return kCgErrOk;
         }
         case kCgMsgClose: {
+            if (!state->expected_layouts.empty())
+                state->scheme_loaded = false;
             const auto close_reason = msg->data != nullptr && msg->data_size >= sizeof(std::uint32_t)
                                           ? read_unaligned<std::uint32_t>(msg->data)
                                           : 0U;
@@ -1095,6 +1168,14 @@ struct Plaza2ListenerCallbackState {
                 payload->data == nullptr
                     ? std::span<const std::byte>{}
                     : std::span<const std::byte>{static_cast<const std::byte*>(payload->data), payload->data_size};
+            if (!state->expected_layouts.empty()) {
+                if (!state->scheme_loaded)
+                    return fail(incompatible_message_layout("reply", "reply arrived before layout validation"));
+                const auto expected =
+                    std::ranges::find(state->expected_layouts, payload->msg_id, &Plaza2MessageLayout::id);
+                if (expected != state->expected_layouts.end() && raw_payload.size() != expected->size)
+                    return fail(incompatible_message_layout(expected->name, "reply payload size mismatch"));
+            }
             const auto event = Plaza2ListenerEvent{
                 .kind = Plaza2ListenerEventKind::StreamData,
                 .stream_code = kNoStreamCode,
@@ -1219,7 +1300,10 @@ struct Plaza2ListenerCallbackState {
                     if (const auto error = convert_runtime_field_to_string(*state->shared->api, field.type_token,
                                                                            field_ptr, state->text_storage.back());
                         error) {
-                        return fail(error);
+                        if (field.name != "xlot_volume")
+                            return fail(error);
+                        // Retain an invalid value so the projector fences only this instrument.
+                        state->text_storage.back().clear();
                     }
                     decoded.text_value = state->text_storage.back();
                     break;
@@ -1720,7 +1804,8 @@ Plaza2Error Plaza2Listener::create(Plaza2Connection& connection, std::string_vie
 }
 
 Plaza2Error Plaza2Listener::create(Plaza2Connection& connection, generated::StreamCode stream_code,
-                                   std::string_view settings, Plaza2ListenerEventHandler* handler) {
+                                   std::string_view settings, Plaza2ListenerEventHandler* handler,
+                                   std::span<const Plaza2MessageLayout> layouts) {
     if (!connection.shared_ || !connection.shared_->api || connection.handle_ == nullptr) {
         return {
             .code = Plaza2ErrorCode::AdapterState,
@@ -1742,6 +1827,9 @@ Plaza2Error Plaza2Listener::create(Plaza2Connection& connection, generated::Stre
             .message = "listener settings must be provided explicitly in Phase 3C",
         };
     }
+    if (!layouts.empty() && (stream_code != kNoStreamCode || !handler))
+        return {.code = Plaza2ErrorCode::InvalidConfiguration,
+                .message = "reply layout validation requires an untyped listener with a callback"};
 
     shared_ = connection.shared_;
     callback_state_.reset();
@@ -1750,6 +1838,7 @@ Plaza2Error Plaza2Listener::create(Plaza2Connection& connection, generated::Stre
         callback_state_->shared = shared_;
         callback_state_->stream_code = stream_code;
         callback_state_->handler = handler;
+        callback_state_->expected_layouts = layouts;
     }
 
     void* raw_handle = nullptr;
@@ -1784,12 +1873,16 @@ Plaza2Error Plaza2Listener::open(std::string_view settings) {
             .message = "listener open requires a created listener",
         };
     }
+    if (callback_state_ && !callback_state_->expected_layouts.empty())
+        callback_state_->scheme_loaded = false;
     const std::string copied_settings(settings);
     return translate_plaza2_result(
         "cg_lsn_open", shared_->api->lsn_open(handle_, copied_settings.empty() ? nullptr : copied_settings.c_str()));
 }
 
 Plaza2Error Plaza2Listener::close() {
+    if (callback_state_ && !callback_state_->expected_layouts.empty())
+        callback_state_->scheme_loaded = false;
     if (!shared_ || !shared_->api || handle_ == nullptr) {
         return {};
     }
@@ -1823,6 +1916,11 @@ Plaza2Error Plaza2Listener::state(std::uint32_t& out_state) const {
 
 bool Plaza2Listener::is_created() const noexcept {
     return handle_ != nullptr;
+}
+
+bool Plaza2Listener::message_layouts_validated() const noexcept {
+    return callback_state_ && !callback_state_->expected_layouts.empty() && callback_state_->scheme_loaded &&
+           !callback_state_->last_error;
 }
 
 Plaza2Publisher::~Plaza2Publisher() {
@@ -1889,6 +1987,23 @@ Plaza2Error Plaza2Publisher::open(std::string_view settings) {
     const std::string copied_settings(settings);
     return translate_plaza2_result(
         "cg_pub_open", shared_->api->pub_open(handle_, copied_settings.empty() ? nullptr : copied_settings.c_str()));
+}
+
+Plaza2Error Plaza2Publisher::validate_message_layouts(std::span<const Plaza2MessageLayout> layouts) const {
+    std::uint32_t current_state{};
+    if (auto error = state(current_state); error)
+        return error;
+    if (current_state != kCgStateActive || layouts.empty())
+        return {.code = Plaza2ErrorCode::AdapterState,
+                .message = "publisher layout validation requires an active publisher and a layout contract"};
+    if (!shared_->api->pub_getscheme)
+        return {.code = Plaza2ErrorCode::SymbolLoadFailed,
+                .message = "loaded CGate runtime does not expose cg_pub_getscheme"};
+
+    void* scheme = nullptr;
+    if (auto error = translate_plaza2_result("cg_pub_getscheme", shared_->api->pub_getscheme(handle_, &scheme)); error)
+        return error;
+    return validate_runtime_message_layouts(static_cast<const CgSchemeDesc*>(scheme), layouts);
 }
 
 Plaza2Error Plaza2Publisher::prewarm_by_message_name(std::string_view message_name) {

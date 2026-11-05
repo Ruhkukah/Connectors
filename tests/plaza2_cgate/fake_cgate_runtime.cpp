@@ -9,6 +9,7 @@
 #include "moex/plaza2/cgate/plaza2_metadata.hpp"
 
 #include <fstream>
+#include <initializer_list>
 #include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 #include <algorithm>
 #include <array>
@@ -202,6 +203,7 @@ struct FakePublisher {
     std::uint32_t state{kStateClosed};
     FakeConnection* connection{nullptr};
     std::string settings;
+    std::unique_ptr<OwnedScheme> scheme;
 };
 
 struct FakePublisherMessage {
@@ -257,21 +259,25 @@ std::string copy_c_string(const char* value, std::size_t size) {
     return std::string(value, count);
 }
 
-std::optional<moex::plaza2::public_wire::Bcd16_5> encode_d16_5(std::string_view text) {
-    const auto scaled = moex::plaza2::cgate::parse_fixed_point(text, moex::plaza2::cgate::kPlaza2D16_5FractionalDigits,
-                                                               true, moex::plaza2::cgate::kPlaza2D16_5DecimalPrecision);
+template <unsigned FractionalDigits>
+std::optional<std::array<std::uint8_t, 10 + FractionalDigits % 2>> encode_decimal(std::string_view text) {
+    const auto scaled = moex::plaza2::cgate::parse_fixed_point(text, FractionalDigits, true, 16);
     if (!scaled.has_value())
         return std::nullopt;
 
     const auto magnitude =
         *scaled < 0 ? static_cast<std::uint64_t>(-(*scaled + 1)) + 1U : static_cast<std::uint64_t>(*scaled);
-    auto encoded = moex::plaza2::public_wire::Bcd16_5{5, 16};
-    auto base100 = magnitude * 10U;
+    std::array<std::uint8_t, 10 + FractionalDigits % 2> encoded{FractionalDigits, 16};
+    auto base100 = magnitude * (FractionalDigits % 2 == 0 ? 1U : 10U);
     for (std::size_t index = encoded.size(); index-- > 2;)
         encoded[index] = static_cast<std::uint8_t>(base100 % 100U), base100 /= 100U;
     if (*scaled < 0)
         encoded[2] |= 0x80U;
     return encoded;
+}
+
+auto encode_d16_5(std::string_view text) {
+    return encode_decimal<5>(text);
 }
 
 std::optional<std::string> format_d16_5(const moex::plaza2::public_wire::Bcd16_5& bytes) {
@@ -583,7 +589,10 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .signed_value = 2},
                         {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsLotVolume,
                          .kind = SignedInteger,
-                         .signed_value = 1},
+                         .signed_value = scenario.refdata_legacy_lot_volume},
+                        {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsXlotVolume,
+                         .kind = Text,
+                         .text = scenario.refdata_xlot_volume},
                         {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId,
                          .kind = SignedInteger,
                          .signed_value = 4},
@@ -643,7 +652,10 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .text = "10000"},
                         {.field_code = FieldCode::kFortsRefdataReplFutSessContentsLotVolume,
                          .kind = SignedInteger,
-                         .signed_value = 1},
+                         .signed_value = scenario.refdata_legacy_lot_volume},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsXlotVolume,
+                         .kind = Text,
+                         .text = scenario.refdata_xlot_volume},
                         {.field_code = FieldCode::kFortsRefdataReplFutSessContentsTradeModeId,
                          .kind = SignedInteger,
                          .signed_value = 4},
@@ -1757,7 +1769,8 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
 }
 
 StreamCode stream_code_from_settings(std::string_view settings) {
-    if (settings.starts_with("p2ordbook://FORTS_ORDLOG_REPL;snapshot=FORTS_ORDBOOK_REPL"))
+    if (settings.starts_with("p2ordbook://FORTS_ORDLOG_REPL") &&
+        settings.find(";snapshot=FORTS_ORDBOOK_REPL") != std::string_view::npos)
         return kFullOrderLogStreamCode;
     if (settings.find(std::string_view{"FORTS_AGGR5_REPL"}) != std::string_view::npos ||
         settings.find(std::string_view{"FORTS_AGGR20_REPL"}) != std::string_view::npos ||
@@ -1844,10 +1857,14 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
         plan.message_name = message->name;
 
         std::size_t offset = 0;
-        const bool spectra912 = scenario.spectra912_refdata_schema &&
-                                message_script.table_code == TableCode::kFortsRefdataReplFutSessContents;
-        const auto server_fields = spectra912 ? moex::plaza2::test::spectra912_future_session_schema()
-                                              : moex::plaza2::test::server_schema_fields(message_script.table_code);
+        const bool spectra912_session = scenario.spectra912_refdata_schema &&
+                                        message_script.table_code == TableCode::kFortsRefdataReplFutSessContents;
+        const bool spectra912_instruments = scenario.spectra912_refdata_schema &&
+                                            message_script.table_code == TableCode::kFortsRefdataReplFutInstruments;
+        const auto server_fields = spectra912_session ? moex::plaza2::test::spectra912_future_session_schema()
+                                   : spectra912_instruments
+                                       ? moex::plaza2::test::spectra912_future_instruments_schema()
+                                       : moex::plaza2::test::server_schema_fields(message_script.table_code);
         for (const auto& descriptor : server_fields) {
             const auto* field = &descriptor;
             if (field == nullptr) {
@@ -1900,8 +1917,11 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             message->fields.push_back(std::move(owned_field));
         }
 
-        offset = std::max(offset, spectra912 ? moex::plaza2::test::kSpectra912FutureSessionRowSize
-                                             : moex::plaza2::test::server_schema_row_size(message_script.table_code));
+        const auto native_size = spectra912_session ? moex::plaza2::test::kSpectra912FutureSessionRowSize
+                                 : spectra912_instruments
+                                     ? moex::plaza2::test::kSpectra912FutureInstrumentsRowSize
+                                     : moex::plaza2::test::server_schema_row_size(message_script.table_code);
+        offset = std::max(offset, native_size);
         if (fake_flag(Option::SchemeExtraTable)) {
             auto field = std::make_unique<OwnedField>();
             field->name = "future_field";
@@ -2114,11 +2134,16 @@ void write_field_value(std::vector<std::byte>& buffer, const FieldPlan& plan, co
     case ValueClass::kFixedString:
     case ValueClass::kDecimal:
     case ValueClass::kFloatingPoint: {
-        if (plan.type_token == "d16.5") {
-            std::memset(dest, 0, plan.size);
-            if (const auto encoded = encode_d16_5(value.text); encoded.has_value() && plan.size == encoded->size()) {
-                std::memcpy(dest, encoded->data(), encoded->size());
-            }
+        if (plan.type_token == "d16.5" || plan.type_token == "d16.8") {
+            const auto write_decimal = [&](const auto& encoded) {
+                std::memset(dest, 0, plan.size);
+                if (encoded && plan.size == encoded->size())
+                    std::memcpy(dest, encoded->data(), encoded->size());
+            };
+            if (plan.type_token == "d16.5")
+                write_decimal(encode_d16_5(value.text));
+            else
+                write_decimal(encode_decimal<8>(value.text));
             break;
         }
         std::memset(dest, 0, plan.size);
@@ -2144,7 +2169,7 @@ std::vector<std::byte> encode_message_payload(const MessagePlan& plan, const Fak
     std::memset(buffer.data(), 0, buffer.size());
     // Unscripted decimals still carry a valid vendor BCD zero value.
     for (const auto& field : plan.fields)
-        if (field.type_token == "d16.5")
+        if (field.type_token == "d16.5" || field.type_token == "d16.8")
             write_field_value(buffer, field, {.text = "0"});
 
     for (const auto& scripted_field : message.fields) {
@@ -3449,6 +3474,95 @@ std::uint32_t cg_lsn_destroy(void* listener) {
     return kCgErrOk;
 }
 
+struct FakeLayoutField {
+    const char* name;
+    const char* type;
+    std::size_t offset;
+    std::size_t size;
+};
+
+static void add_fake_message_layout(OwnedScheme& scheme, std::string_view name, std::uint32_t id, std::size_t size,
+                                    std::initializer_list<FakeLayoutField> fields) {
+    auto message = std::make_unique<OwnedMessage>();
+    message->name = name;
+    message->desc.name = message->name.data();
+    message->desc.id = id;
+    message->desc.size = size;
+    message->desc.align = 4;
+    for (const auto& field : fields) {
+        auto owned = std::make_unique<OwnedField>();
+        owned->name = field.name;
+        owned->type_token = field.type;
+        owned->desc.name = owned->name.data();
+        owned->desc.type = owned->type_token.data();
+        owned->desc.offset = field.offset;
+        owned->desc.size = field.size;
+        if (!message->fields.empty())
+            message->fields.back()->desc.next = &owned->desc;
+        message->fields.push_back(std::move(owned));
+    }
+    message->desc.fields = &message->fields.front()->desc;
+    message->desc.num_fields = message->fields.size();
+    if (!scheme.messages.empty())
+        scheme.messages.back()->desc.next = &message->desc;
+    scheme.messages.push_back(std::move(message));
+    scheme.desc.messages = &scheme.messages.front()->desc;
+    scheme.desc.num_messages = scheme.messages.size();
+    scheme.desc.scheme_type = 1;
+}
+
+static std::unique_ptr<OwnedScheme> fake_trading_scheme(bool reply) {
+    auto scheme = std::make_unique<OwnedScheme>();
+#define FAKE_FIELD(message, field, token)                                                                              \
+    FakeLayoutField {                                                                                                  \
+        #field, token, offsetof(official_cgate99::message, field), sizeof(official_cgate99::message::field)            \
+    }
+#define FAKE_LAYOUT(message, ...)                                                                                      \
+    add_fake_message_layout(*scheme, #message, official_cgate99::message##_msgid, sizeof(official_cgate99::message),   \
+                            {__VA_ARGS__})
+    if (reply) {
+        FAKE_LAYOUT(FORTS_MSG176, FAKE_FIELD(FORTS_MSG176, code, "i4"), FAKE_FIELD(FORTS_MSG176, message, "c255"),
+                    FAKE_FIELD(FORTS_MSG176, order_id1, "i8"), FAKE_FIELD(FORTS_MSG176, order_id2, "i8"));
+        FAKE_LAYOUT(FORTS_MSG177, FAKE_FIELD(FORTS_MSG177, code, "i4"), FAKE_FIELD(FORTS_MSG177, message, "c255"),
+                    FAKE_FIELD(FORTS_MSG177, amount, "i4"));
+        FAKE_LAYOUT(FORTS_MSG179, FAKE_FIELD(FORTS_MSG179, code, "i4"), FAKE_FIELD(FORTS_MSG179, message, "c255"),
+                    FAKE_FIELD(FORTS_MSG179, order_id, "i8"));
+        FAKE_LAYOUT(FORTS_MSG186, FAKE_FIELD(FORTS_MSG186, code, "i4"), FAKE_FIELD(FORTS_MSG186, message, "c255"),
+                    FAKE_FIELD(FORTS_MSG186, num_orders, "i4"));
+        FAKE_LAYOUT(FORTS_MSG99, FAKE_FIELD(FORTS_MSG99, queue_size, "i4"),
+                    FAKE_FIELD(FORTS_MSG99, penalty_remain, "i4"), FAKE_FIELD(FORTS_MSG99, message, "c128"));
+        FAKE_LAYOUT(FORTS_MSG100, FAKE_FIELD(FORTS_MSG100, code, "i4"), FAKE_FIELD(FORTS_MSG100, message, "c255"));
+    } else {
+        FAKE_LAYOUT(AddOrder, FAKE_FIELD(AddOrder, broker_code, "c4"), FAKE_FIELD(AddOrder, isin_id, "i4"),
+                    FAKE_FIELD(AddOrder, client_code, "c3"), FAKE_FIELD(AddOrder, dir, "i4"),
+                    FAKE_FIELD(AddOrder, type, "i4"), FAKE_FIELD(AddOrder, amount, "i4"),
+                    FAKE_FIELD(AddOrder, price, "c17"), FAKE_FIELD(AddOrder, comment, "c20"),
+                    FAKE_FIELD(AddOrder, broker_to, "c20"), FAKE_FIELD(AddOrder, ext_id, "i4"),
+                    FAKE_FIELD(AddOrder, is_check_limit, "i4"), FAKE_FIELD(AddOrder, date_exp, "c8"),
+                    FAKE_FIELD(AddOrder, dont_check_money, "i4"), FAKE_FIELD(AddOrder, match_ref, "c10"),
+                    FAKE_FIELD(AddOrder, ncc_request, "i1"), FAKE_FIELD(AddOrder, compliance_id, "c1"));
+        FAKE_LAYOUT(DelOrder, FAKE_FIELD(DelOrder, broker_code, "c4"), FAKE_FIELD(DelOrder, order_id, "i8"),
+                    FAKE_FIELD(DelOrder, ncc_request, "i1"), FAKE_FIELD(DelOrder, client_code, "c3"),
+                    FAKE_FIELD(DelOrder, isin_id, "i4"));
+        FAKE_LAYOUT(MoveOrder, FAKE_FIELD(MoveOrder, broker_code, "c4"), FAKE_FIELD(MoveOrder, regime, "i4"),
+                    FAKE_FIELD(MoveOrder, order_id1, "i8"), FAKE_FIELD(MoveOrder, amount1, "i4"),
+                    FAKE_FIELD(MoveOrder, price1, "c17"), FAKE_FIELD(MoveOrder, ext_id1, "i4"),
+                    FAKE_FIELD(MoveOrder, order_id2, "i8"), FAKE_FIELD(MoveOrder, amount2, "i4"),
+                    FAKE_FIELD(MoveOrder, price2, "c17"), FAKE_FIELD(MoveOrder, ext_id2, "i4"),
+                    FAKE_FIELD(MoveOrder, is_check_limit, "i4"), FAKE_FIELD(MoveOrder, ncc_request, "i1"),
+                    FAKE_FIELD(MoveOrder, client_code, "c3"), FAKE_FIELD(MoveOrder, isin_id, "i4"),
+                    FAKE_FIELD(MoveOrder, compliance_id, "c1"));
+        FAKE_LAYOUT(DelUserOrders, FAKE_FIELD(DelUserOrders, broker_code, "c4"),
+                    FAKE_FIELD(DelUserOrders, buy_sell, "i4"), FAKE_FIELD(DelUserOrders, non_system, "i4"),
+                    FAKE_FIELD(DelUserOrders, code, "c3"), FAKE_FIELD(DelUserOrders, base_contract_code, "c25"),
+                    FAKE_FIELD(DelUserOrders, ext_id, "i4"), FAKE_FIELD(DelUserOrders, isin_id, "i4"),
+                    FAKE_FIELD(DelUserOrders, instrument_mask, "i1"));
+    }
+#undef FAKE_LAYOUT
+#undef FAKE_FIELD
+    return scheme;
+}
+
 std::uint32_t cg_lsn_open(void* listener, const char* settings) {
     auto* typed = static_cast<FakeListener*>(listener);
     if (const auto result = configured_result(Option::ListenerOpenResult); result != kCgErrOk)
@@ -3550,6 +3664,14 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
         return kCgErrOk;
     }
     typed->state = kStateActive;
+    if (typed->reply_listener) {
+        typed->scheme = fake_trading_scheme(true);
+        if (fake_flag(Option::ReplyLayoutTypeMismatch)) {
+            auto& field = *typed->scheme->messages.front()->fields.front();
+            field.type_token = "u4";
+            field.desc.type = field.type_token.data();
+        }
+    }
     if (typed->stream_code == StreamCode::kFortsDealsRepl && fake_flag(Option::DealsLifeNumBeforeOpen)) {
         CgDataLifeNum life{.life_number = fake_flag(Option::FreshPosAnchor) ? 8u : 7u, .flags = 0};
         if (const auto result = emit_simple_message(*typed, kCgMsgP2replLifenum, &life, sizeof(life));
@@ -3640,7 +3762,11 @@ std::uint32_t cg_pub_open(void* publisher, const char* settings) {
     if (publisher == nullptr) {
         return kCgErrInvalidArgument;
     }
-    static_cast<FakePublisher*>(publisher)->state = kStateActive;
+    auto* typed = static_cast<FakePublisher*>(publisher);
+    typed->state = kStateActive;
+    typed->scheme = fake_trading_scheme(false);
+    if (fake_flag(Option::PublisherLayoutOffsetMismatch))
+        ++typed->scheme->messages.front()->fields.front()->desc.offset;
     return kCgErrOk;
 }
 
@@ -3670,6 +3796,16 @@ std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
     *state = fake_flag(Option::PublisherClosed)  ? kStateClosed
              : fake_flag(Option::PublisherError) ? kStateError
                                                  : static_cast<FakePublisher*>(publisher)->state;
+    return kCgErrOk;
+}
+
+std::uint32_t cg_pub_getscheme(void* publisher, void** schemeptr) {
+    if (publisher == nullptr || schemeptr == nullptr)
+        return kCgErrInvalidArgument;
+    auto* typed = static_cast<FakePublisher*>(publisher);
+    if (typed->state != kStateActive || !typed->scheme)
+        return kCgErrIncorrectState;
+    *schemeptr = &typed->scheme->desc;
     return kCgErrOk;
 }
 
@@ -3982,6 +4118,20 @@ std::uint32_t cg_getstr(const char* type, const void* data, char* buffer, std::s
         if (!formatted.has_value())
             return kCgErrInvalidArgument;
         text = *formatted;
+    } else if (type && std::string_view(type) == "d16.8") {
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        if (bytes[0] != 8 || bytes[1] != 16)
+            return kCgErrInvalidArgument;
+        std::uint64_t units{};
+        for (std::size_t i = 2; i < 10; ++i) {
+            const auto pair = i == 2 ? (bytes[i] & 0x7FU) : bytes[i];
+            if (pair > 99)
+                return kCgErrInvalidArgument;
+            units = units * 100 + pair;
+        }
+        const auto scale = moex::plaza2::cgate::kPlaza2LotVolumeScale;
+        text = (bytes[2] & 0x80U ? "-" : "") + std::to_string(units / scale) + "." +
+               std::to_string(scale + units % scale).substr(1);
     } else if (type &&
                (std::string_view(type) == "i8" || std::string_view(type) == "i4" || std::string_view(type) == "i1")) {
         if (std::string_view(type) == "i8") {

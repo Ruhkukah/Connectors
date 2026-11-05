@@ -338,7 +338,13 @@ void test_shared_deals_wire(std::vector<std::string> arguments, const test::Runt
         const auto line = md.line();
         oi = line.find("oi_isin=1001 oi_online=1 oi_available=1 oi_quantity=124") != std::string::npos;
     }
-    require(md.wait() == 0, "same DEALS listener updated OI and released cleanly without an order");
+    const auto status = md.wait();
+    if (status != 0) {
+        std::ifstream native(diagnostics);
+        const std::string trace{std::istreambuf_iterator<char>(native), std::istreambuf_iterator<char>()};
+        throw std::runtime_error("DEALS qualifier exit " + std::to_string(status) + ": " +
+                                 trace.substr(trace.size() > 2000 ? trace.size() - 2000 : 0));
+    }
     namespace cg = moex::plaza2::cgate;
     const auto archive = cg::replay_full_order_log_capture(capture);
     require(archive.refdata_sha256.size() == 64, "strict replay validates the qualifier's pinned REFDATA sidecar");
