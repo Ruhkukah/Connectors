@@ -76,3 +76,40 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -m unittest discover -s scripts/test_rehearsal -p 'test_*.py'
+
+  dtc-thread-sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install Clang and ThreadSanitizer
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-rt-dev libzstd-dev
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+      - name: Build
+        run: >-
+          cmake --build build-tsan --parallel 2 --target
+          connector_host_dtc_server_test event_journal_test order_manager_test
+          full_order_log_trading_runner_test full_order_log_dtc_channel_test
+          full_order_log_dtc_identity_test
+      - name: Test
+        env:
+          TSAN_OPTIONS: halt_on_error=1:exitcode=66
+        run: |
+          # LLVM 18 TSan needs a compatible shadow-memory layout on Ubuntu 24.04.
+          previous=$(sysctl -n vm.mmap_rnd_bits)
+          if [ "$previous" -gt 28 ]; then
+            sudo sysctl -w vm.mmap_rnd_bits=28
+            trap 'sudo sysctl -w "vm.mmap_rnd_bits=$previous"' EXIT
+          fi
+          ctest --test-dir build-tsan --output-on-failure --no-tests=error \
+            -R '^(connector_host_dtc_server_test|event_journal_test|order_manager_test|full_order_log_writer_dtc_worker_test|full_order_log_dtc_channel_test|full_order_log_dtc_identity_test)$'

@@ -17,13 +17,15 @@ void test_fol_dtc_worker(const std::string& executable, const test::RuntimeFixtu
     ::close(reserve_port);
     const fs::path log{"dtc-worker.ndjson"};
     const fs::path secret{"dtc-worker.secret"};
+    const fs::path state{"dtc-worker.state"};
     const auto ini = fixture.config_dir / "t1.ini";
-    test::write_text_file(ini, contents(ini) + "profile=matrix-dtc\n");
+    test::write_text_file(ini, contents(ini) + "profile=matrix-dtc\ndtc-ledger=" + state.string() + ".dtc\n");
     test::write_text_file(secret, "offline-dtc-fixture\n");
     ::chmod(secret.c_str(), 0600);
     auto request = arguments(executable, fixture, log, "fol_dtc_worker");
-    request.insert(request.end(), {"--dtc-trading-port", std::to_string(ntohs(address.sin_port)),
-                                   "--dtc-trading-secret-file", secret.string()});
+    request.insert(request.end(),
+                   {"--state", state.string(), "--dtc-trading-port", std::to_string(ntohs(address.sin_port)),
+                    "--dtc-trading-secret-file", secret.string()});
     auto owner = std::make_unique<Process>(request, "dtc-worker-owner");
     wait_status(*owner, log, writer_ready);
     int fd = -1;
@@ -128,13 +130,13 @@ void test_fol_dtc_worker(const std::string& executable, const test::RuntimeFixtu
         for (unsigned i = 0; i < 8; ++i)
             out.push_back(static_cast<std::uint8_t>(bits >> (8 * i)));
     };
-    const auto place = [&](std::string_view key, std::string_view price) {
+    const auto place = [&](std::string_view key, std::string_view price, unsigned side = 1) {
         Bytes add;
         put_text(add, 1, symbol);
         put_text(add, 2, dtc::kDtcMoexSpectraExchange);
         put_text(add, 4, key);
         put_integer(add, 5, 2);
-        put_integer(add, 6, 1);
+        put_integer(add, 6, side);
         put_double(add, 9, 1);
         put_integer(add, 10, 1);
         put_text(add, 17, price);
@@ -201,12 +203,87 @@ void test_fol_dtc_worker(const std::string& executable, const test::RuntimeFixtu
     const auto elapsed = std::chrono::steady_clock::now() - latest_loss;
     test::require(elapsed >= 9500ms && elapsed < 14s, "client loss sweep did not reset and rearm after reconnect");
     owner->terminate();
-    test::require(owner->wait() == 0, "DTC worker did not stop with fake owner");
+    test::require(owner->wait() == 0, "DTC worker did not stop with fake owner: " + owner->errors());
     const auto posts = contents(posts_path);
-    test::require(occurrences(posts, "AddOrder wire_valid=1") == 3 &&
+    test::require(occurrences(posts, "ledger_before_post=1") == 3 && occurrences(posts, "AddOrder wire_valid=1") == 3 &&
                       occurrences(posts, "MoveOrder wire_valid=1") == 2 &&
                       occurrences(posts, "DelOrder wire_valid=1") == 2 &&
                       contents(log).find("\"event\":\"trade\"") != std::string::npos,
                   "DTC worker did not exercise native Add/Move/Del and user_deal exactly once");
+
+    const fs::path stall{"dtc-identity-stall"}, fault_log{"dtc-faults.ndjson"}, fault_state{"dtc-faults.state"};
+    test::write_text_file(ini, contents(ini) + "profile=matrix-dtc\ndtc-ledger=dtc-faults.state.dtc\n");
+    auto faults = arguments(executable, fixture, fault_log, "fol_dtc_faults");
+    faults.insert(faults.end(),
+                  {"--state", fault_state.string(), "--dtc-trading-port", std::to_string(ntohs(address.sin_port)),
+                   "--dtc-trading-secret-file", secret.string()});
+    test::require(::setenv("MOEX_FOL_OFFLINE_IDENTITY_STALL_FILE", stall.c_str(), 1) == 0,
+                  "set offline identity fault fixture");
+    owner = std::make_unique<Process>(faults, "dtc-worker-faults");
+    ::unsetenv("MOEX_FOL_OFFLINE_IDENTITY_STALL_FILE");
+    wait_status(*owner, fault_log, writer_ready);
+    connect();
+    place("cancel-during-stall", "102500");
+    const auto cancel_stable = std::string(order("cancel-during-stall", 4).string(7));
+    place("quit-refused", "103750", 2);
+    const auto quit_stable = std::string(order("quit-refused", 4).string(7));
+    const auto cancel_order = [&](std::string_view key, std::string_view id) {
+        Bytes body;
+        put_text(body, 1, id);
+        put_text(body, 2, key);
+        send(packet(203, body));
+    };
+    test::write_text_file(stall, "hold the offline persistence worker\n");
+    const auto stall_at = std::chrono::steady_clock::now();
+    place("stalled-identity", "102500");
+    wait_status(*owner, fault_log, [&](const auto&) {
+        return contents(fault_log).find("place dtc:stalled-identity") != std::string::npos;
+    });
+    std::this_thread::sleep_for(50ms);
+    cancel_order("cancel-during-stall", cancel_stable);
+    order("cancel-during-stall", 8);
+    test::require(std::chrono::steady_clock::now() - stall_at < 2s,
+                  "native cancel was delayed behind the persistence timeout");
+    const auto failed_add = order("stalled-identity", 9);
+    test::require(failed_add.string(27).find("identity persistence timed out") != std::string_view::npos,
+                  "stalled Add did not return the bounded persistence error");
+    wait_status(*owner, fault_log, [](const auto& s) { return s.find("\"dtc_identity_failed\":true") != s.npos; });
+    fs::remove(stall);
+    wait_status(*owner, fault_log, [&](const auto&) { return fs::exists("dtc-faults.state.dtc/stalled-identity"); });
+    test::require(occurrences(contents(posts_path), "AddOrder wire_valid=1") == 5,
+                  "late durable identity ACK posted the timed-out order");
+
+    const auto refused = host::send_command(fault_log.string() + ".sock", "quit");
+    test::require(refused.find("working orders remain; use quit --force") != std::string::npos,
+                  "ordinary quit did not refuse a working order");
+    wait_status(*owner, fault_log, [&](const auto&) {
+        const auto journal = contents(fault_log);
+        const auto kill = journal.find("\"event\":\"kill_switch\"");
+        return kill != journal.npos && journal.find("\"enabled\":true", kill) != journal.npos;
+    });
+
+    const auto hold_del = fixture.config_dir / "fol-hold-del";
+    test::write_text_file(hold_del, "fixture rejection\n");
+    cancel_order("quit-refused", quit_stable);
+    wait_status(*owner, fault_log, [&](const auto&) {
+        return contents(posts_path).find("fixture_cancel_rejected=1") != std::string::npos;
+    });
+    const auto draining = host::send_command(fault_log.string() + ".sock", "quit");
+    test::require(draining.find("\"draining\":true") != std::string::npos,
+                  "quit fixture did not enter the pending-cancel drain");
+    wait_status(
+        *owner, fault_log,
+        [&](const auto&) {
+            return owner->output().find("cancellations incomplete or working orders remain") != std::string::npos;
+        },
+        12s);
+    fs::remove(hold_del);
+    place("fenced-after-quit", "102500");
+    order("fenced-after-quit", 9);
+    cancel_order("quit-refused", quit_stable);
+    order("quit-refused", 8);
+    disconnect();
+    owner->terminate();
+    test::require(owner->wait() == 0, "refused quit left a broken owner or working orders: " + owner->errors());
 }
 } // namespace

@@ -28,6 +28,18 @@ struct FullOrderLogBackfillCheck {
     std::uint64_t recovery_capture_identity{}, committed_rows_between{};
 };
 
+struct FullOrderLogBackfillOpens {
+    struct Generation {
+        std::uint64_t sequence{};
+        std::string service_pair;
+    };
+    std::uint64_t capture_identity{};
+    std::vector<Generation> generations;
+    bool truncated{}, end_record_present{};
+};
+
+FullOrderLogBackfillOpens list_full_order_log_opens(const std::filesystem::path& capture);
+
 // Both primary generations must record the requested matching and the same
 // committed ORDLOG LifeNum. A supplied LifeNum is an additional assertion.
 // A zero reopen sequence selects the first recorded FOL reopen.
@@ -43,7 +55,7 @@ FullOrderLogBackfillCheck check_full_order_log_backfill(const std::filesystem::p
                                                         std::int32_t matching_id, std::uint64_t ordlog_lifenum,
                                                         std::uint64_t reopen_sequence = 0);
 
-// The caller holds the writer's existing identity lock. The collector creates
+// The caller holds the router lock and writer's existing identity lock. The collector creates
 // one TEST-only read-only connection and a new recovery artifact.
 FullOrderLogBackfillCheck
 collect_full_order_log_backfill(const FullOrderLogBackfillPlan& plan, FullOrderLogCaptureOptions capture,

@@ -1116,6 +1116,13 @@ void CgateTradingHost::set_dtc_cancel_alert(std::string error) {
     assert_owner();
     dtc_cancel_alert_ = std::move(error);
 }
+void CgateTradingHost::set_dtc_identity_status(bool failed, std::size_t quarantined) {
+    assert_owner();
+    if (failed && !dtc_identity_failed_)
+        orders_->fence_dtc_entry();
+    dtc_identity_failed_ |= failed;
+    dtc_identity_quarantined_ = quarantined;
+}
 bool CgateTradingHost::dtc_snapshot_ready() const {
     assert_owner();
     const auto& data = session_.private_state();
@@ -1136,8 +1143,8 @@ ConnectorHostMarketDataSnapshot CgateTradingHost::dtc_market_data(std::int32_t i
 }
 bool CgateTradingHost::dtc_entry_ready(std::int32_t isin) const {
     assert_owner();
-    return dtc_snapshot_ready() && !shutdown_cancellation_requested_ && session_.full_order_log_entry_ready(isin) &&
-           order_entry_ready(session_, isin) &&
+    return dtc_snapshot_ready() && !dtc_identity_failed_ && !shutdown_cancellation_requested_ &&
+           session_.full_order_log_entry_ready(isin) && order_entry_ready(session_, isin) &&
            std::none_of(orders_->orders().begin(), orders_->orders().end(), [&](const auto& entry) {
                const auto& order = entry.second;
                return order.request.isin_id == isin &&
@@ -1327,28 +1334,31 @@ std::string CgateTradingHost::status() const {
                            ",\"quantity\":" + std::to_string(level->volume) + "}"
                      : "null";
     };
-    std::string result =
-        "{\"version\":\"1.0.0\",\"queued\":" + std::to_string(orders_->queued()) +
-        ",\"reconstructing\":" + boolean(rebuilding_) +
-        ",\"cgate_key_check_failed\":" + boolean(session_.recovery_status().key_check_failed) +
-        ",\"sess_id\":" + std::to_string(sess) + ",\"log_error\":" + json_string(log_error_) +
-        ",\"journal_failed\":" + boolean(journal_failed_) + ",\"cancel_only\":" + boolean(!log_error_.empty()) +
-        ",\"operator_action_required\":" + boolean(orders_->operator_action_required() || !dtc_cancel_alert_.empty()) +
-        ",\"transport\":" + transport_fields(session_, config_.session) +
-        ",\"configuration\":{\"allow_orders\":" + boolean(config_.session.allow_orders) +
-        ",\"sole_instance\":" + boolean(config_.orders.sole_instance) +
-        ",\"login_configured\":" + boolean(!config_.orders.login_from.empty()) +
-        ",\"ext_id_begin\":" + std::to_string(config_.orders.ext_id_begin) +
-        ",\"ext_id_end\":" + std::to_string(config_.orders.ext_id_end) +
-        ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
-        ",\"measure_timings\":" + boolean(config_.measure_timings) + ",\"risk\":" + configured_risk_fields(config_) +
-        "}";
+    std::string result = "{\"version\":\"1.0.0\",\"queued\":" + std::to_string(orders_->queued()) +
+                         ",\"reconstructing\":" + boolean(rebuilding_) +
+                         ",\"cgate_key_check_failed\":" + boolean(session_.recovery_status().key_check_failed) +
+                         ",\"sess_id\":" + std::to_string(sess) + ",\"log_error\":" + json_string(log_error_) +
+                         ",\"journal_failed\":" + boolean(journal_failed_) +
+                         ",\"cancel_only\":" + boolean(!log_error_.empty()) + ",\"operator_action_required\":" +
+                         boolean(orders_->operator_action_required() || !dtc_cancel_alert_.empty() ||
+                                 dtc_identity_failed_ || dtc_identity_quarantined_ != 0) +
+                         ",\"transport\":" + transport_fields(session_, config_.session) +
+                         ",\"configuration\":{\"allow_orders\":" + boolean(config_.session.allow_orders) +
+                         ",\"sole_instance\":" + boolean(config_.orders.sole_instance) +
+                         ",\"login_configured\":" + boolean(!config_.orders.login_from.empty()) +
+                         ",\"ext_id_begin\":" + std::to_string(config_.orders.ext_id_begin) +
+                         ",\"ext_id_end\":" + std::to_string(config_.orders.ext_id_end) +
+                         ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
+                         ",\"measure_timings\":" + boolean(config_.measure_timings) +
+                         ",\"risk\":" + configured_risk_fields(config_) + "}";
     if (!config_.session.full_order_log_stream.settings.empty())
         result += ",\"market_data_source\":\"full_order_log\"";
     if (config_.session.full_order_log_advisory)
         result += ",\"fol_auxiliary\":" + session_.full_order_log_auxiliary_status();
     if (config_.async_dtc_persistence)
-        result += ",\"dtc_cancel_alert\":" + json_string(dtc_cancel_alert_);
+        result += ",\"dtc_cancel_alert\":" + json_string(dtc_cancel_alert_) +
+                  ",\"dtc_identity_failed\":" + boolean(dtc_identity_failed_) +
+                  ",\"dtc_identity_quarantined_records\":" + std::to_string(dtc_identity_quarantined_);
     if (config_.session.full_order_log_cancel_only)
         result += ",\"execution_mode\":\"full_order_log_cancel_only\"";
     const auto anchor = session_.trade_replay_anchor_used();

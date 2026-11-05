@@ -1,5 +1,6 @@
 // Explicitly invoked native read-only qualification tool; no publisher or order APIs.
 #include "full_order_log_live_probe.hpp"
+#include "full_order_log_router_lock.hpp"
 #include "moex/connector_host/operator_config.hpp"
 #include <atomic>
 #include <charconv>
@@ -124,6 +125,7 @@ int main(int argc, char** argv) {
         Observer composite(window, ids, &book, 200000, &std::cout, 512, &content),
             reference(window, ids, nullptr, 200000, &std::cout, 512, &content);
         content.resample = [&] { composite.sample_content(); };
+        const moex::connector_host::FullOrderLogRouterLock router_lock(config.connection_settings);
         cg::Plaza2Env env;
         check(env.open(config.runtime));
         cg::Plaza2Connection connection;

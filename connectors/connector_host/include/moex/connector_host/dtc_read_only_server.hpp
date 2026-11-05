@@ -90,7 +90,8 @@ class DtcReadOnlyServer final {
     void poll();
     // Invoke synchronously at TN_COMMIT on the owner thread.
     void publish_depth_commit();
-    void disconnect_client() noexcept;
+    // Producer backlog was dropped. Replace the depth view, preserving the trading session.
+    void resync_market() noexcept;
     [[nodiscard]] std::uint64_t last_commit_to_queue_ns() const noexcept;
     void stop() noexcept;
     [[nodiscard]] std::uint16_t port() const noexcept;

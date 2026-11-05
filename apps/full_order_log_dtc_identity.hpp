@@ -3,10 +3,12 @@
 #include "moex/connector_host/trading_host.hpp"
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <condition_variable>
 #include <fcntl.h>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <set>
@@ -29,9 +31,12 @@ class FullOrderLogDtcIdentity {
         bool persisted{};
     };
 
-    explicit FullOrderLogDtcIdentity(const TradingHostConfig& config)
+    explicit FullOrderLogDtcIdentity(const TradingHostConfig& config, std::function<void()> before_persist = {})
         : isin_(config.isin_ids.front()), ext_begin_(config.orders.ext_id_begin), ext_end_(config.orders.ext_id_end),
-          account_(config.orders.broker_code + config.orders.client_code), login_(config.orders.login_from) {
+          account_(config.orders.broker_code + config.orders.client_code), login_(config.orders.login_from),
+          before_persist_(std::move(before_persist)) {
+        if (before_persist_ && config.session.mode != plaza2_trade::CgateSessionMode::OfflineFake)
+            throw std::invalid_argument("identity persistence injection requires OfflineFake");
         auto path = config.identity_state_path;
         if (path.empty())
             path = config.journal_path.parent_path() / (config.session.publisher_name + ".state");
@@ -56,9 +61,27 @@ class FullOrderLogDtcIdentity {
         if (!parent_synced || fd_ < 0 || ::fstat(fd_, &info) != 0 || info.st_uid != ::geteuid() ||
             (info.st_mode & 0777) != 0700)
             throw std::runtime_error("DTC identity ledger must be owned and mode 0700");
+        // A crash may leave a partial temporary record, never a partial final
+        // record. Keep the temporary name's key/ext_id consumed without adopting
+        // an order whose identity was never acknowledged to the owner.
+        std::vector<std::string> entries;
         for (const auto& entry : std::filesystem::directory_iterator(path_))
-            load(entry.path().filename().string());
+            entries.push_back(entry.path().filename().string());
+        for (const auto& entry : entries)
+            if (entry.starts_with(".pending-") || entry.starts_with(".quarantine-"))
+                quarantine(entry);
+            else
+                load(entry);
         worker_ = std::thread([this] { work(); });
+    }
+    void latch_failure() noexcept {
+        failed_.store(true, std::memory_order_release);
+    }
+    [[nodiscard]] bool failed() const noexcept {
+        return failed_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] std::size_t quarantined_records() const noexcept {
+        return quarantined_;
     }
     [[nodiscard]] bool contains(std::string_view id) const {
         return keys_.contains(id);
@@ -77,9 +100,12 @@ class FullOrderLogDtcIdentity {
                       (automated ? "\nR\n" : "\nM\n");
         {
             std::lock_guard lock(mutex_);
-            if (stopping_ || failed_ || busy_)
+            if (stopping_ || failed() || busy_)
                 return "DTC identity persistence is unavailable";
-            job_.emplace(Job{ext, {std::move(id), automated}, std::move(record)});
+            auto temporary = ".pending-" + std::to_string(ext) + '-' + id;
+            job_.emplace(Job{ext, {id, automated}, std::move(record), std::move(temporary)});
+            keys_.insert(id);
+            reserved_.insert(ext);
             busy_ = true;
         }
         changed_.notify_one();
@@ -95,11 +121,8 @@ class FullOrderLogDtcIdentity {
             completion_.reset();
             busy_ = false;
         }
-        if (result->persisted) {
-            keys_.insert(result->job.identity.client_id);
-            reserved_.insert(result->job.ext);
+        if (result->persisted)
             owned_.emplace(result->job.ext, std::move(result->job.identity));
-        }
         return Result{result->job.ext, result->persisted};
     }
     void request_stop() noexcept {
@@ -120,6 +143,7 @@ class FullOrderLogDtcIdentity {
         std::int32_t ext;
         Identity identity;
         std::string record;
+        std::string temporary;
     };
     struct Completion {
         Job job;
@@ -137,8 +161,11 @@ class FullOrderLogDtcIdentity {
     std::condition_variable changed_;
     std::optional<Job> job_;
     std::optional<Completion> completion_;
-    bool busy_{}, stopping_{}, failed_{};
+    bool busy_{}, stopping_{};
+    std::atomic<bool> failed_{};
+    std::size_t quarantined_{};
     std::thread worker_;
+    std::function<void()> before_persist_;
 
     static bool valid_id(std::string_view id) {
         return !id.empty() && id.size() <= 64 &&
@@ -151,6 +178,29 @@ class FullOrderLogDtcIdentity {
         if (parse.ec != std::errc{} || parse.ptr != text.data() + text.size() || result <= 0)
             throw std::runtime_error("invalid DTC identity record ID");
         return result;
+    }
+    void quarantine(const std::string& name) {
+        const bool pending = name.starts_with(".pending-");
+        const auto remainder = std::string_view(name).substr(pending ? 9 : 12);
+        const auto separator = remainder.find('-');
+        if (separator == std::string_view::npos || !valid_id(remainder.substr(separator + 1)))
+            throw std::runtime_error("invalid DTC temporary identity name");
+        const auto ext = parse_id(remainder.substr(0, separator));
+        const auto key = std::string(remainder.substr(separator + 1));
+        struct stat info {};
+        if (::fstatat(fd_, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(info.st_mode) ||
+            info.st_uid != ::geteuid() || (info.st_mode & 0777) != 0600)
+            throw std::runtime_error("invalid DTC temporary identity file");
+        if (pending) {
+            const auto target = ".quarantine-" + std::string(remainder);
+            struct stat existing {};
+            if (::fstatat(fd_, target.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT ||
+                ::renameat(fd_, name.c_str(), fd_, target.c_str()) != 0 || ::fsync(fd_) != 0)
+                throw std::runtime_error("cannot quarantine DTC temporary identity");
+        }
+        if (keys_.size() >= capacity_ || !keys_.insert(key).second || !reserved_.insert(ext).second)
+            throw std::runtime_error("conflicting quarantined DTC identity");
+        ++quarantined_;
     }
     void load(std::string id) {
         if (!valid_id(id) || keys_.size() >= capacity_)
@@ -182,13 +232,15 @@ class FullOrderLogDtcIdentity {
         const auto compliance = field();
         if (!rest.empty() || (compliance != "R" && compliance != "M") || !reserved_.insert(ext).second)
             throw std::runtime_error("invalid or conflicting DTC identity record");
-        keys_.insert(id);
+        if (!keys_.insert(id).second)
+            throw std::runtime_error("conflicting DTC identity key");
         if (isin == isin_ && ext >= ext_begin_ && ext <= ext_end_ && account == account_ && login == login_)
             owned_.emplace(ext, Identity{std::move(id), compliance == "R"});
     }
     bool persist(const Job& job) const noexcept {
         const auto& id = job.identity.client_id;
-        const auto fd = ::openat(fd_, id.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        const auto fd =
+            ::openat(fd_, job.temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
         if (fd < 0)
             return false;
         std::string_view remaining = job.record;
@@ -202,11 +254,13 @@ class FullOrderLogDtcIdentity {
         }
         const bool file_synced = remaining.empty() && ::fsync(fd) == 0;
         const bool closed = ::close(fd) == 0;
-        if (file_synced && closed && ::fsync(fd_) == 0)
-            return true;
-        if (::unlinkat(fd_, id.c_str(), 0) == 0)
-            (void)::fsync(fd_);
-        return false;
+        // The instance state lock excludes other writers. Never overwrite a
+        // pre-existing identity, even if an unexpected file appeared after load.
+        struct stat existing {};
+        if (!file_synced || !closed || ::fstatat(fd_, id.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0 ||
+            errno != ENOENT)
+            return false;
+        return ::renameat(fd_, job.temporary.c_str(), fd_, id.c_str()) == 0 && ::fsync(fd_) == 0;
     }
     void work() noexcept {
         for (;;) {
@@ -219,10 +273,18 @@ class FullOrderLogDtcIdentity {
                 job = std::move(job_);
                 job_.reset();
             }
-            const bool persisted = persist(*job);
+            bool persisted = false;
+            try {
+                if (before_persist_)
+                    before_persist_();
+                persisted = persist(*job);
+            } catch (...) {
+                // Test injections obey the same failure latch as disk failures.
+            }
             {
                 std::lock_guard lock(mutex_);
-                failed_ |= !persisted;
+                if (!persisted)
+                    latch_failure();
                 completion_.emplace(Completion{std::move(*job), persisted});
             }
         }

@@ -1,3 +1,4 @@
+#include "full_order_log_router_lock.hpp"
 #include "moex/plaza2/cgate/cgate_logging.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_backfill.hpp"
 
@@ -68,6 +69,8 @@ void require_idle_router() {
 #ifdef __linux__
     for (const auto* path : {"/proc/net/tcp", "/proc/net/tcp6"}) {
         std::ifstream sockets(path);
+        if (!sockets && std::string_view(path).ends_with("tcp6") && !fs::exists(path))
+            continue;
         std::string line;
         if (!std::getline(sockets, line) ||
             (line.find("rem_address") == line.npos && line.find("remote_address") == line.npos))
@@ -187,6 +190,8 @@ int main(int argc, char** argv) {
             cg::plan_full_order_log_backfill(primary, matching, life.empty() ? 0 : number<std::uint64_t>(life),
                                              reopen.empty() ? 0 : number<std::uint64_t>(reopen));
         const WriterLock lock(writer);
+        const moex::connector_host::FullOrderLogRouterLock router_lock(connection);
+        // The lock coordinates current clients. The scan detects older clients that predate it.
         require_idle_router();
         const auto proof =
             cg::collect_full_order_log_backfill(plan, {.directory = output}, runtime, connection,

@@ -85,7 +85,7 @@ struct PrimaryScanner {
     std::uint64_t requested_reopen{};
     Boundary previous, latest, first_in_frame, last_in_frame;
     std::uint64_t known_ordlog_life{}, staged_ordlog_life{};
-    bool open_seen{}, open{}, online{}, in_frame{};
+    bool open_seen{}, matching_open{}, open{}, online{}, in_frame{};
 
     void clear_frame() {
         first_in_frame = {};
@@ -122,11 +122,12 @@ struct PrimaryScanner {
         switch (e.kind) {
         case Kind::Open: {
             const auto matching = "_MATCH" + std::to_string(plan.matching_id);
-            require(e.text_value ==
-                        "p2ordbook://FORTS_ORDLOG_REPL" + matching + ";snapshot=FORTS_ORDBOOK_REPL" + matching,
-                    "backfill requires matching-suffixed composite Open provenance for the requested matching ID");
+            const bool next_matching =
+                e.text_value == "p2ordbook://FORTS_ORDLOG_REPL" + matching + ";snapshot=FORTS_ORDBOOK_REPL" + matching;
             require(!plan.reopen_sequence, "backfill selected reopen did not produce a committed right boundary");
             if (open_seen && (!requested_reopen || record.sequence == requested_reopen)) {
+                require(matching_open && next_matching,
+                        "backfill requires matching-suffixed composite Open provenance on both boundary generations");
                 require(previous.commit_sequence && latest.commit_sequence,
                         "backfill needs two committed ORDLOG transactions before the reopen");
                 verify_life();
@@ -138,6 +139,7 @@ struct PrimaryScanner {
             latest = {};
             close();
             open_seen = open = true;
+            matching_open = next_matching;
             known_ordlog_life = 0;
             break;
         }
@@ -343,17 +345,19 @@ class RecoveryCollector final : public Plaza2ListenerEventHandler {
         try {
             if (callback_failed_)
                 return {.code = Plaza2ErrorCode::DecodeFailed, .message = error_};
-            if (!closing)
-                check_budget();
-            require(++events_ <= 2000000, "backfill callback budget exhausted");
-            require(closing || event.kind != Kind::Close, "backfill listener closed before collector shutdown");
-            require(!closing || event.kind == Kind::Close || event.kind == Kind::ReplState,
-                    "backfill data delivered during collector shutdown");
             // cg_conn_process may deliver more events before returning to the owner.
             if (complete() && !closing && event.kind != Kind::LifeNum)
                 return {};
+            if (!closing && !complete())
+                check_budget();
+            require(++events_ <= 2000000, "backfill callback budget exhausted");
+            if (auto error = capture->record(event); error)
+                return error;
+            require(closing || event.kind != Kind::Close, "backfill listener closed before collector shutdown");
+            require(!closing || event.kind == Kind::Close || event.kind == Kind::ReplState,
+                    "backfill data delivered during collector shutdown");
             scan_.visit(event);
-            return capture->record(event);
+            return {};
         } catch (const std::exception& ex) {
             callback_failed_ = true;
             error_ = ex.what();
@@ -381,6 +385,22 @@ void check(const Plaza2Error& error) {
         throw std::runtime_error(error.message);
 }
 } // namespace
+
+FullOrderLogBackfillOpens list_full_order_log_opens(const std::filesystem::path& capture) {
+    FullOrderLogBackfillOpens opens;
+    const auto summary = read_full_order_log_capture(
+        capture,
+        [&](const auto& record) {
+            const auto& e = record.event;
+            if (e.stream_code == kFullOrderLogStreamCode && e.kind == Kind::Open)
+                opens.generations.push_back({record.sequence, std::string(e.text_value)});
+        },
+        true);
+    opens.capture_identity = summary.capture_identity;
+    opens.truncated = summary.truncated;
+    opens.end_record_present = summary.end_record_present;
+    return opens;
+}
 
 FullOrderLogBackfillPlan plan_full_order_log_backfill(const std::filesystem::path& capture, std::int32_t matching_id,
                                                       std::uint64_t ordlog_lifenum, std::uint64_t reopen_sequence) {
@@ -452,8 +472,11 @@ collect_full_order_log_backfill(const FullOrderLogBackfillPlan& plan, FullOrderL
         handler.check_callback();
         while (!handler.complete()) {
             handler.check_budget();
-            check(connection.process(1));
+            const auto process_error = connection.process(1);
             handler.check_callback();
+            if (handler.complete())
+                break;
+            check(process_error);
             check(connection.state(state));
             require(state == 3, "backfill connection interrupted");
             check(listener.state(state));
@@ -462,10 +485,14 @@ collect_full_order_log_backfill(const FullOrderLogBackfillPlan& plan, FullOrderL
             require(!recorder.metrics().failed, "backfill capture failed");
         }
         handler.closing = true;
-        check(listener.close());
+        check(listener.state(state));
+        if (state != 0)
+            check(listener.close());
         check(listener.destroy());
         handler.check_callback();
-        check(connection.close());
+        check(connection.state(state));
+        if (state != 0)
+            check(connection.close());
         check(connection.destroy());
         check(env.close());
     } catch (...) {

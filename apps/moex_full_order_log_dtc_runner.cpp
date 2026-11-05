@@ -2,6 +2,7 @@
 #include "full_order_log_operator.hpp"
 #include "full_order_log_capture_options.hpp"
 #include "full_order_log_refdata_tap.hpp"
+#include "full_order_log_router_lock.hpp"
 #include "moex/connector_host/operator_config.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_deals.hpp"
 #include <atomic>
@@ -118,6 +119,9 @@ int main(int argc, char** argv) {
         if (request.config.isin_ids.size() > 64 || depth_levels > 20000 || base_port > UINT16_MAX ||
             request.config.isin_ids.size() - 1 > UINT16_MAX - base_port)
             throw std::invalid_argument("invalid bounded ISIN universe or DTC port range");
+        std::optional<moex::connector_host::FullOrderLogRouterLock> router_lock;
+        if (!offline)
+            router_lock.emplace(connection);
         std::vector<std::int32_t> ids(request.config.isin_ids.begin(), request.config.isin_ids.end());
         cg::Plaza2FullOrderLog book(ids);
         std::unique_ptr<cg::FullOrderLogCapture> capture;

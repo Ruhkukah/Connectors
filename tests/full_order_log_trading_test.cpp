@@ -351,6 +351,27 @@ int main(int argc, char** argv) {
             require(!native.stop(), "native cancel-only stop");
         }
         configure();
+        {
+            auto config = configuration("identity-status");
+            config.async_dtc_persistence = true;
+            CgateTradingHost host(config);
+            warm(host);
+            require(place(host, "identity-cancel").empty(), "identity alert fixture Add");
+            pump(host, 2);
+            host.set_dtc_identity_status(false, 1);
+            require(host.status().find("\"dtc_identity_quarantined_records\":1") != std::string::npos &&
+                        host.status().find("\"operator_action_required\":true") != std::string::npos,
+                    "quarantine did not expose operator alert");
+            host.set_dtc_identity_status(true, 1);
+            host.set_dtc_identity_status(false, 1);
+            require(host.status().find("\"dtc_identity_failed\":true") != std::string::npos &&
+                        !host.dtc_entry_ready(1001),
+                    "identity failure not latched in status or entry");
+            require(host.cancel("identity-cancel").empty(), "identity failure blocked risk-reducing cancel");
+            pump(host, 3);
+            require(!host.stop(), "identity alert fixture stop");
+        }
+        configure();
         auto missing_host = configuration("missing-provider");
         missing_host.session.full_order_log_authority = {};
         bool host_refused{};

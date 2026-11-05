@@ -261,12 +261,13 @@ struct DtcReadOnlyServer::Impl {
     std::size_t sent{};
     bool negotiated{}, logged_on{}, closing{}, definition{}, depth_subscribed{}, trade_subscribed{};
     bool definitions_capability_advertised{};
+    bool market_resync_pending{}, trades_resync_pending{}, market_unavailable_notified{};
     std::optional<std::uint64_t> orders_generation, positions_generation;
     std::set<std::string> delivered_fills;
     std::map<std::string, DtcOwnOrder> last_own_orders;
     std::optional<std::int64_t> last_own_position;
     std::optional<DtcOwnBalance> last_balance;
-    std::optional<DtcTradeCommand> pending_trade_reply;
+    std::array<std::optional<DtcTradeCommand>, 2> pending_trade_replies;
     std::uint32_t symbol_id{};
     std::uint32_t trade_symbol_id{};
     std::size_t depth_limit{};
@@ -308,7 +309,7 @@ struct DtcReadOnlyServer::Impl {
             throw std::invalid_argument("DTC trading requires authenticated TEST owner hooks");
         symbol_id = config.symbol_id;
     }
-    void disconnect(bool client_loss = false) {
+    void disconnect() {
         const bool notify = config.trading && logged_on;
         close_fd(client);
         orders_generation.reset();
@@ -316,7 +317,8 @@ struct DtcReadOnlyServer::Impl {
         delivered_fills.clear();
         last_own_orders.clear();
         last_own_position.reset();
-        pending_trade_reply.reset();
+        for (auto& reply : pending_trade_replies)
+            reply.reset();
         next_own_poll = {};
         last_balance.reset();
         next_balance_poll = {};
@@ -325,6 +327,7 @@ struct DtcReadOnlyServer::Impl {
         sent = 0;
         negotiated = logged_on = closing = definition = depth_subscribed = trade_subscribed = false;
         definitions_capability_advertised = false;
+        market_resync_pending = trades_resync_pending = market_unavailable_notified = false;
         pending_wire_logon_capabilities = {};
         pending_logon_response_end = 0;
         pending_logon_response = false;
@@ -338,8 +341,6 @@ struct DtcReadOnlyServer::Impl {
         trade_output_ranges.clear();
         if (notify) {
             try {
-                if (client_loss && config.trading->client_lost)
-                    config.trading->client_lost();
                 config.trading->disconnected();
             } catch (...) {
             }
@@ -618,7 +619,8 @@ struct DtcReadOnlyServer::Impl {
     }
     void publish_depth_commit() {
         commit_to_queue_ns = 0;
-        if (client < 0 || !logged_on || closing || !depth_subscribed || !source.incremental_depth())
+        if (client < 0 || !logged_on || closing || !depth_subscribed || !source.incremental_depth() ||
+            market_resync_pending)
             return;
         const auto s = source.status_snapshot();
         if (!usable(s) || !accepted_definition || definition_validation(s).definition != accepted_definition ||
@@ -629,7 +631,11 @@ struct DtcReadOnlyServer::Impl {
         if (s.source_snapshot_version == version)
             return;
         if (version == UINT64_MAX || s.source_snapshot_version != version + 1) {
-            reject("FullOrderLog commit was missed; fresh snapshot required", &s);
+            if (config.trading) {
+                market_resync_pending = true;
+                market_unavailable_notified = false;
+            } else
+                reject("FullOrderLog commit was missed; fresh snapshot required", &s);
             return;
         }
         const auto changes = source.depth_changes();
@@ -670,7 +676,11 @@ struct DtcReadOnlyServer::Impl {
             staged.insert(staged.end(), f.begin(), f.end());
         }
         if (staged.size() > config.max_queued_bytes - output.size()) {
-            reject("FullOrderLog commit backpressure; fresh snapshot required", &s);
+            if (config.trading) {
+                market_resync_pending = true;
+                market_unavailable_notified = false;
+            } else
+                reject("FullOrderLog commit backpressure; fresh snapshot required", &s);
             return;
         }
         if (!staged.empty()) {
@@ -683,6 +693,33 @@ struct DtcReadOnlyServer::Impl {
                     std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - s.committed_at).count();
         }
         version = s.source_snapshot_version;
+    }
+    void resync_market() noexcept {
+        market_resync_pending |= depth_subscribed;
+        trades_resync_pending |= trade_subscribed;
+        market_unavailable_notified = false;
+    }
+    void poll_market_resync() {
+        // Finish any partially written wire frame and preserve queued order replies.
+        // A non-reading peer still hits the normal bounded socket timeout.
+        if (!output.empty())
+            return;
+        if (trades_resync_pending) {
+            trades_resync_pending = false;
+            retire_public_deals("public trade backlog lost; redefine the subscription", false);
+        }
+        if (!market_resync_pending || !depth_subscribed || client < 0)
+            return;
+        auto current = source.snapshot();
+        if (usable(current) && accepted_definition &&
+            definition_validation(current).definition == accepted_definition) {
+            market_resync_pending = false;
+            snapshot(current);
+        } else if (!market_unavailable_notified) {
+            current.market_data_display_allowed = false;
+            market_unavailable_notified = true;
+            authority(current);
+        }
     }
     void poll_public_deals() {
         if (!source.capabilities().market_data) {
@@ -938,13 +975,14 @@ struct DtcReadOnlyServer::Impl {
         else if (balance != last_balance)
             send_balance(*balance, 0, true);
     }
-    void publish_command_result() {
+    void publish_command_result(bool cancel) {
         if (!config.trading || !config.trading->take_result)
             return;
-        const auto error = config.trading->take_result();
-        if (!error || !pending_trade_reply)
+        const auto error = config.trading->take_result(cancel);
+        auto& pending = pending_trade_replies[cancel];
+        if (!error || !pending)
             return;
-        const auto reply = std::exchange(pending_trade_reply, std::nullopt);
+        const auto reply = std::exchange(pending, std::nullopt);
         if (!logged_on || closing)
             return;
         const auto state = config.trading->snapshot();
@@ -1123,9 +1161,11 @@ struct DtcReadOnlyServer::Impl {
         const auto defer = [&](DtcTradeCommand command) {
             if (command.kind != DtcTradeCommand::Kind::Cancel)
                 command.source_epoch = source.status_snapshot().stream_epoch;
-            if (pending_trade_reply || !trading.submit(command))
-                return refuse("DTC owner command already in progress");
-            pending_trade_reply = std::move(command);
+            const bool cancel = command.kind == DtcTradeCommand::Kind::Cancel;
+            auto& pending = pending_trade_replies[cancel];
+            if (pending || !trading.submit(command))
+                return refuse(cancel ? "DTC cancel already in progress" : "DTC entry command already in progress");
+            pending = std::move(command);
             return true;
         };
         if (add) {
@@ -1519,7 +1559,7 @@ struct DtcReadOnlyServer::Impl {
         const bool idle = now - last_read > idle_timeout;
         if (idle || (!output.empty() && now - last_write > config.write_timeout)) {
             error = "DTC session timeout";
-            disconnect(idle && !closing);
+            disconnect();
             return;
         }
         if (!closing) {
@@ -1527,11 +1567,11 @@ struct DtcReadOnlyServer::Impl {
             // Fixed per-poll I/O budget prevents a flooding peer starving owner.
             const auto n = ::recv(client, buffer.data(), buffer.size(), 0);
             if (n == 0) {
-                disconnect(true);
+                disconnect();
                 return;
             }
             if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-                disconnect(true);
+                disconnect();
                 return;
             }
             if (n > 0) {
@@ -1557,7 +1597,9 @@ struct DtcReadOnlyServer::Impl {
             }
             if (client < 0)
                 return;
-            if (logged_on && !closing && depth_subscribed) {
+            if (logged_on && !closing && (market_resync_pending || trades_resync_pending))
+                poll_market_resync();
+            if (logged_on && !closing && depth_subscribed && !market_resync_pending) {
                 auto s = source.status_snapshot();
                 if (!usable(s) || s.symbol != symbol || s.underlying_board != underlying_board || s.min_step != tick ||
                     s.isin_id != isin || !accepted_definition ||
@@ -1572,7 +1614,7 @@ struct DtcReadOnlyServer::Impl {
                         snapshot(s);
                 }
             }
-            if (client >= 0 && logged_on && !closing && trade_subscribed)
+            if (client >= 0 && logged_on && !closing && trade_subscribed && !trades_resync_pending)
                 poll_public_deals();
             if (logged_on && !closing && now - last_heartbeat >= heartbeat) {
                 queue(3, {});
@@ -1607,7 +1649,7 @@ struct DtcReadOnlyServer::Impl {
                     pending_definition_response = false;
                 }
             } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-                disconnect(!closing);
+                disconnect();
                 return;
             }
             if (sent == output.size()) {
@@ -1661,7 +1703,8 @@ bool DtcReadOnlyServer::start(std::string& error) {
 void DtcReadOnlyServer::poll() {
     try {
         impl_->poll();
-        impl_->publish_command_result();
+        impl_->publish_command_result(true);
+        impl_->publish_command_result(false);
         impl_->publish_own_state();
         impl_->publish_balance();
     } catch (...) {
@@ -1677,8 +1720,8 @@ void DtcReadOnlyServer::stop() noexcept {
     close_fd(impl_->listener);
     impl_->bound_port = 0;
 }
-void DtcReadOnlyServer::disconnect_client() noexcept {
-    impl_->disconnect();
+void DtcReadOnlyServer::resync_market() noexcept {
+    impl_->resync_market();
 }
 void DtcReadOnlyServer::publish_depth_commit() {
     try {

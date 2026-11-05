@@ -1,5 +1,6 @@
 #pragma once
 
+#include "full_order_log_dtc_channel.hpp"
 #include "moex/connector_host/dtc_read_only_server.hpp"
 
 #include <algorithm>
@@ -10,32 +11,6 @@
 #include <thread>
 
 namespace moex::connector_host {
-
-// Single-producer/single-consumer ring. The producer never waits for socket I/O.
-template <class T, std::size_t Slots> class FolDtcChannel {
-  public:
-    bool push(T value) {
-        const auto write = write_.load(std::memory_order_relaxed);
-        const auto next = (write + 1) % Slots;
-        if (next == read_.load(std::memory_order_acquire))
-            return false;
-        slots_[write] = std::move(value);
-        write_.store(next, std::memory_order_release);
-        return true;
-    }
-    std::optional<T> pop() {
-        const auto read = read_.load(std::memory_order_relaxed);
-        if (read == write_.load(std::memory_order_acquire))
-            return std::nullopt;
-        T value = std::move(slots_[read]);
-        read_.store((read + 1) % Slots, std::memory_order_release);
-        return value;
-    }
-
-  private:
-    std::array<T, Slots> slots_{};
-    std::atomic_size_t read_{}, write_{};
-};
 
 class FullOrderLogDtcWorker {
   public:
@@ -59,7 +34,6 @@ class FullOrderLogDtcWorker {
     ~FullOrderLogDtcWorker() {
         request_stop();
         join();
-        delete private_.exchange(nullptr);
     }
     void start(std::uint16_t port, std::string secret, std::string account, bool deals) {
         std::promise<std::string> startup;
@@ -82,22 +56,25 @@ class FullOrderLogDtcWorker {
     [[nodiscard]] bool running() const noexcept {
         return running_.load(std::memory_order_acquire);
     }
-    bool publish(Market market) {
-        market.generation = market_generation_.load(std::memory_order_relaxed);
-        if (market.deals.trades.size() <= 2048 && market_.push(std::move(market)))
-            return true;
-        market_generation_.fetch_add(1, std::memory_order_release);
-        return false;
+    void publish(Market market) {
+        market.generation = producer_generation_;
+        const bool trade_backlog = market.deals.trades.size() > 2048;
+        if (!trade_backlog && market_.try_move(market))
+            return;
+        market.deals.trades.clear();
+        market.generation = ++producer_generation_;
+        market_reset_.publish(std::make_unique<Market>(std::move(market)));
+        market_generation_.store(producer_generation_, std::memory_order_release);
     }
     void publish(std::unique_ptr<const Private> state) {
-        delete private_.exchange(state.release(), std::memory_order_acq_rel);
+        private_.publish(std::move(state));
     }
-    [[nodiscard]] std::optional<Command> take_command() {
-        return commands_.pop();
+    [[nodiscard]] std::optional<Command> take_command(bool cancel) {
+        return commands_[cancel].pop();
     }
-    void complete(std::string result) {
-        // One command is allowed in flight until the consumer reads its reply.
-        (void)results_.push(std::move(result));
+    void complete(bool cancel, std::string result) {
+        // One entry and one cancel can be in flight independently.
+        (void)results_[cancel].push(std::move(result));
     }
     [[nodiscard]] std::uint64_t connection() const noexcept {
         return connection_.load(std::memory_order_acquire);
@@ -109,13 +86,15 @@ class FullOrderLogDtcWorker {
         return reconciled_generation_.load(std::memory_order_relaxed);
     }
     [[nodiscard]] Clock::time_point reconciled_at() const noexcept {
-        return Clock::time_point{Clock::duration{reconciled_at_.load(std::memory_order_relaxed)}};
+        return Clock::time_point{Clock::duration{reconciled_at_.load(std::memory_order_acquire)}};
     }
     [[nodiscard]] Clock::time_point disconnected_at() const noexcept {
         return Clock::time_point{Clock::duration{disconnected_at_.load(std::memory_order_acquire)}};
     }
 
   private:
+    friend struct FolDtcWorkerStressAccess;
+
     class Source final : public dtc::DtcMarketDataSource {
       public:
         explicit Source(bool deals) : deals_enabled_(deals) {}
@@ -181,9 +160,11 @@ class FullOrderLogDtcWorker {
     };
 
     FolDtcChannel<Market, 129> market_;
-    FolDtcChannel<Command, 2> commands_;
-    FolDtcChannel<std::string, 2> results_;
-    std::atomic<const Private*> private_{};
+    std::array<FolDtcChannel<Command, 2>, 2> commands_;
+    std::array<FolDtcChannel<std::string, 2>, 2> results_;
+    FolDtcMailbox<const Private> private_;
+    FolDtcMailbox<Market> market_reset_;
+    std::uint64_t producer_generation_{};
     std::atomic_bool running_{};
     std::atomic_uint64_t market_generation_{}, connection_{1}, reconciled_{}, reconciled_generation_{};
     std::atomic<Clock::duration::rep> disconnected_at_{}, reconciled_at_{};
@@ -194,11 +175,11 @@ class FullOrderLogDtcWorker {
         bool started = false;
         try {
             Source source(deals);
-            bool command_in_flight = false;
+            std::array<bool, 2> command_in_flight{};
             std::unique_ptr<const Private> state = std::make_unique<Private>();
             const auto refresh_private = [&] {
-                if (auto* pending = private_.exchange(nullptr, std::memory_order_acq_rel))
-                    state.reset(pending);
+                if (auto pending = private_.take())
+                    state = std::move(pending);
             };
             dtc::DtcTradingHooks hooks;
             hooks.account = std::move(account);
@@ -209,26 +190,27 @@ class FullOrderLogDtcWorker {
                 return *state->fills;
             };
             hooks.balance = [&] { return state->balance; };
-            hooks.client_lost = [&] {
+            hooks.disconnected = [&] {
                 disconnected_at_.store(Clock::now().time_since_epoch().count(), std::memory_order_release);
+                connection_.fetch_add(1, std::memory_order_release);
             };
-            hooks.disconnected = [&] { connection_.fetch_add(1, std::memory_order_release); };
             hooks.reconciled = [&] {
                 reconciled_generation_.store(state->snapshot.generation, std::memory_order_relaxed);
-                reconciled_at_.store(Clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+                reconciled_at_.store(Clock::now().time_since_epoch().count(), std::memory_order_release);
                 reconciled_.store(connection(), std::memory_order_release);
             };
             hooks.submit = [&](dtc::DtcTradeCommand command) {
-                if (command_in_flight || !running_.load(std::memory_order_acquire))
+                const bool cancel = command.kind == dtc::DtcTradeCommand::Kind::Cancel;
+                if (command_in_flight[cancel] || !running_.load(std::memory_order_acquire))
                     return false;
-                command_in_flight = commands_.push({std::move(command), connection()});
-                return command_in_flight;
+                command_in_flight[cancel] = commands_[cancel].push({std::move(command), connection()});
+                return command_in_flight[cancel];
             };
-            hooks.take_result = [&] {
-                auto result = results_.pop();
+            hooks.take_result = [&](bool cancel) {
+                auto result = results_[cancel].pop();
                 if (result) {
                     refresh_private();
-                    command_in_flight = false;
+                    command_in_flight[cancel] = false;
                 }
                 return result;
             };
@@ -248,17 +230,27 @@ class FullOrderLogDtcWorker {
             startup.set_value({});
             started = true;
             std::uint64_t generation{};
+            std::optional<Market> future_market;
             while (running_.load(std::memory_order_acquire)) {
                 const auto newest = market_generation_.load(std::memory_order_acquire);
-                if (generation != newest) {
-                    server.disconnect_client();
-                    source.clear();
-                    generation = newest;
+                if (generation < newest) {
+                    if (auto reset = market_reset_.take()) {
+                        generation = reset->generation;
+                        source.clear();
+                        source.update(std::move(*reset));
+                        server.resync_market();
+                    }
                 }
                 for (std::size_t count = 0; count < 32; ++count) {
-                    auto market = market_.pop();
+                    if (market_generation_.load(std::memory_order_acquire) > generation)
+                        break;
+                    auto market = future_market ? std::exchange(future_market, std::nullopt) : market_.pop();
                     if (!market)
                         break;
+                    if (market->generation > generation) {
+                        future_market = std::move(market);
+                        break;
+                    }
                     if (market->generation != generation)
                         continue;
                     source.update(std::move(*market));

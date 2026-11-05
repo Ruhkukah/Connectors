@@ -76,7 +76,7 @@ using FakeFieldValue = fixture::Field;
 fixture::Scenario scenario;
 // Explicit INI opt-in for a separately exec'd fake FOL runner; never enabled by environment.
 std::string fol_runner_profile;
-std::filesystem::path fol_runner_posts, fol_runner_control;
+std::filesystem::path fol_runner_posts, fol_runner_control, fol_runner_dtc_ledger;
 std::chrono::steady_clock::time_point fol_runner_next_activity{};
 bool fol_runner_wrong_session{};
 struct FolRunnerOrder {
@@ -2500,6 +2500,7 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
     fol_runner_profile.clear();
     fol_runner_posts.clear();
     fol_runner_control.clear();
+    fol_runner_dtc_ledger.clear();
     fol_runner_wrong_session = false;
     const auto begin = settings.find("ini=");
     if (begin == std::string_view::npos)
@@ -2514,6 +2515,8 @@ std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
             section = line == "[moex-fake-fol-runner]";
         else if (section && line.starts_with("profile="))
             profile = line.substr(8);
+        else if (section && line.starts_with("dtc-ledger="))
+            fol_runner_dtc_ledger = line.substr(11);
     }
     if (profile.empty())
         return kCgErrOk;
@@ -3224,8 +3227,15 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
                                                      .timed_out = owned.timed_out});
             case fixture::EventKind::Begin:
                 return emit_simple_message(listener, kCgMsgTnBegin);
-            case fixture::EventKind::Commit:
-                return emit_simple_message(listener, kCgMsgTnCommit);
+            case fixture::EventKind::Commit: {
+                const auto result = emit_simple_message(listener, kCgMsgTnCommit);
+                if (result || !owned.value || !raw_ordlog(listener.settings))
+                    return result;
+                // Model a transport close in the same owner poll as the final commit.
+                listener.state = kStateClosed;
+                auto reason = static_cast<std::uint32_t>(owned.value);
+                return emit_simple_message(listener, kCgMsgClose, &reason, sizeof(reason));
+            }
             case fixture::EventKind::Online:
                 return emit_simple_message(listener, kCgMsgP2replOnline);
             case fixture::EventKind::Close: {
@@ -3883,7 +3893,21 @@ std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void
     return kCgErrOk;
 }
 
-static bool fol_matrix_apply(std::string_view name, const CgMsgData& posted, std::ostream& details) {
+static bool fol_dtc_ledger_has(const official_cgate99::AddOrder& wire) {
+    const auto expected = std::to_string(wire.ext_id) + '\n' + std::to_string(wire.isin_id) +
+                          "\nBRK1C01\nfol-offline-owner\n" + wire.compliance_id[0] + '\n';
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(fol_runner_dtc_ledger, error)) {
+        if (entry.path().filename().string().starts_with('.') || !entry.is_regular_file())
+            continue;
+        std::ifstream record(entry.path());
+        if (std::string(std::istreambuf_iterator<char>(record), {}) == expected)
+            return true;
+    }
+    return false;
+}
+
+static bool fol_matrix_apply(std::string_view name, const CgMsgData& posted, std::ostream& details, bool reject_del) {
     const auto text = [](const auto& field) { return std::string(field, strnlen(field, sizeof(field))); };
     const auto decode = [&](auto& wire) {
         if (!posted.data || posted.data_size != sizeof(wire))
@@ -3898,6 +3922,13 @@ static bool fol_matrix_apply(std::string_view name, const CgMsgData& posted, std
         if (!decode(wire) || wire.isin_id != 1001 || text(wire.client_code) != "C01" || wire.dir < 1 || wire.dir > 2 ||
             wire.type < 1 || wire.type > 2 || wire.amount != 1 || wire.ext_id < 100 || wire.ext_id >= 110)
             return false;
+        if (!fol_runner_dtc_ledger.empty()) {
+            // Observe the final record at cg_pub_post, before any order or post log mutation.
+            const auto recorded = fol_dtc_ledger_has(wire);
+            details << " ledger_before_post=" << recorded;
+            if (!recorded)
+                return false;
+        }
         auto& order = fol_runner_orders[wire.ext_id - 100];
         if (order.present)
             return false;
@@ -3940,10 +3971,14 @@ static bool fol_matrix_apply(std::string_view name, const CgMsgData& posted, std
             std::ranges::find_if(fol_runner_orders, [&](const auto& e) { return working(e) && e.id == wire.order_id; });
         if (order == fol_runner_orders.end())
             return false;
+        details << " target=" << wire.order_id;
+        if (reject_del) {
+            details << " fixture_cancel_rejected=1";
+            return true;
+        }
         order->cancelled = true;
         ++order->revision;
         fol_matrix_cancelled_count = 1;
-        details << " target=" << wire.order_id;
         return true;
     }
     if (name == "DelUserOrders") {
@@ -3976,13 +4011,16 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
     auto result = configured_result(Option::PubPostResult);
     const auto* posted = static_cast<CgMsgData*>(message);
     const auto* bytes = static_cast<const std::byte*>(posted->data);
+    bool reject_fixture_del = false;
     if (!fol_runner_profile.empty()) {
         const std::string_view name = posted->msg_name ? posted->msg_name : "";
         const auto text = [](const auto& field) { return std::string(field, strnlen(field, sizeof(field))); };
         bool valid{};
         std::ostringstream details;
         if (fol_matrix_profile()) {
-            valid = fol_matrix_apply(name, *posted, details);
+            reject_fixture_del =
+                name == "DelOrder" && std::filesystem::exists(fol_runner_control.parent_path() / "fol-hold-del");
+            valid = fol_matrix_apply(name, *posted, details, reject_fixture_del);
             details << " post_ns=" << last_post_started_steady_ns;
         } else if (name == "AddOrder" && bytes && posted->data_size == sizeof(official_cgate99::AddOrder)) {
             official_cgate99::AddOrder wire{};
@@ -4087,6 +4125,8 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
             }
         }
         auto reply_payload = make_trade_reply(message_name);
+        if (reject_fixture_del)
+            write_reply_scalar(reply_payload, 0, std::int32_t{99});
         if (reply_message_id == 99) {
             reply_payload.assign(140, std::byte{});
             write_reply_scalar(reply_payload, 0, std::int32_t{30});

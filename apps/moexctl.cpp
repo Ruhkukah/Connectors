@@ -98,6 +98,7 @@ std::string command(moex::connector_host::CgateTradingHost& host, ShutdownReques
                 return refusal(host, line, "usage: quit [--force]", channel);
             const bool force = key == "--force";
             if (!force && !host.has_pending_cancellations() && host.has_working_orders()) {
+                host.set_kill_switch(true);
                 host.record_shutdown_drain("quit", false);
                 return refusal(host, line, "working orders remain; use quit --force", channel);
             }
@@ -385,10 +386,9 @@ int moex::connector_host::operator_program(int argc, char** argv, const Operator
                 // A signal received during CGate polling is consumed before
                 // another operator command can enter the host.
                 signal_shutdown();
-                if (drain.requested) {
-                    if (hooks.before_stop)
-                        hooks.before_stop();
-                } else if (hooks.before_input)
+                // A quit may still be refused. Keep the frontend cancellable
+                // while the kill switch fences entry until shutdown commits.
+                if (hooks.before_input)
                     hooks.before_input(host);
                 socket.poll(
                     [&](std::string line, std::int64_t receipt) {
@@ -454,6 +454,9 @@ int moex::connector_host::operator_program(int argc, char** argv, const Operator
                                host.shutdown_reconciliation_pending();
                 break;
             }
+            if (hooks.before_stop)
+                hooks.before_stop();
+            stop_frontend.release();
             const auto error = host.stop();
             shutdown.release();
             if (error) {

@@ -614,12 +614,15 @@ void manual_trading_reconnect(bool deferred) {
     using moex::plaza2_trade::Plaza2TradeSide;
     auto c = config();
     c.idle_timeout = std::chrono::milliseconds(30);
+    c.write_timeout = std::chrono::milliseconds(150);
+    c.max_queued_bytes = 4096;
+    c.max_write_bytes_per_poll = 64;
     c.source_mode = DtcSourceMode::LiveTest;
     c.require_local_auth = true;
     c.local_username = "kairos";
     c.local_password = "private-fixture";
     DtcTradingSnapshot snapshot{.position = 0, .orders_current = true, .fills_current = true};
-    unsigned submitted{}, moved{}, cancelled{}, lost{}, client_lost{}, reconciled{};
+    unsigned submitted{}, moved{}, cancelled{}, lost{}, reconciled{};
     std::vector<DtcOwnFill> fills;
     std::optional<DtcOwnBalance> balance;
     c.trading = DtcTradingHooks{
@@ -661,24 +664,29 @@ void manual_trading_reconnect(bool deferred) {
                 return std::string{};
             },
         .disconnected = [&] { ++lost; },
-        .reconciled = [&] { ++reconciled; },
-        .client_lost = [&] { ++client_lost; }};
-    std::optional<DtcTradeCommand> deferred_command;
+        .reconciled = [&] { ++reconciled; }};
+    std::array<std::optional<DtcTradeCommand>, 2> deferred_commands;
+    bool hold_add = false;
     if (deferred) {
         auto place = std::move(c.trading->place);
         auto move = std::move(c.trading->move);
         auto cancel = std::move(c.trading->cancel);
         c.trading->submit = [&](DtcTradeCommand command) {
-            if (deferred_command)
+            auto& pending = deferred_commands[command.kind == DtcTradeCommand::Kind::Cancel];
+            if (pending)
                 return false;
-            deferred_command = std::move(command);
+            pending = std::move(command);
             return true;
         };
         c.trading->take_result = [&, place = std::move(place), move = std::move(move),
-                                  cancel = std::move(cancel)]() -> std::optional<std::string> {
-            auto command = std::exchange(deferred_command, std::nullopt);
+                                  cancel = std::move(cancel)](bool cancellation) -> std::optional<std::string> {
+            if (!cancellation && hold_add)
+                return std::nullopt;
+            auto command = std::exchange(deferred_commands[cancellation], std::nullopt);
             if (!command)
                 return std::nullopt;
+            if (command->client_id == "stalled-add")
+                return "simulated persistence timeout";
             switch (command->kind) {
             case DtcTradeCommand::Kind::Add:
                 return place(std::move(command->client_id), command->side, command->ioc, std::move(command->price),
@@ -865,9 +873,18 @@ void manual_trading_reconnect(bool deferred) {
     h.send(packet(203, wrong));
     h.pump(15);
     check(cancelled == 0, "an unrelated account or client ID cannot cancel");
+    if (deferred) {
+        hold_add = true;
+        add(0, "stalled-add");
+        check(deferred_commands[0] && submitted == 1, "the fixture holds the in-flight Add");
+    }
     h.send(packet(203, cancel));
     h.pump(15);
-    check(cancelled == 1, "individual cancellation uses the reconciled native order");
+    check(cancelled == 1, "individual cancellation bypasses a stalled Add on the same connection");
+    if (deferred) {
+        hold_add = false;
+        h.pump(15); // Release the simulated owner error without accepting a new Add.
+    }
     h.got.clear();
     add(true, "robot-123");
     check(submitted == 2 && snapshot.orders.back().automated && Read(h.first(301).payload).n[10] == 2,
@@ -888,6 +905,24 @@ void manual_trading_reconnect(bool deferred) {
     h.send(packet(203, robot_cancel));
     h.pump(15);
     check(cancelled == 2, "robot-origin DTC Del stays available");
+    h.source.incremental = true;
+    h.source.state.full_order_log = true;
+    h.got.clear();
+    h.subscribe();
+    check(h.count(145) == 2, "trading endpoint subscribed to depth before producer backlog");
+    h.got.clear();
+    h.source.state.source_snapshot_version += 20;
+    h.server.resync_market();
+    h.pump(35);
+    check(h.count(145) == 2 && Read(h.first(145).payload).n.at(13) == h.source.state.source_snapshot_version &&
+              h.count(5) == 0 && !h.eof && lost == 1,
+          "producer overflow replaces depth without closing authenticated trading connection");
+    h.got.clear();
+    h.source.state.source_snapshot_version += 5;
+    h.pump(35);
+    check(h.count(145) == 2 && Read(h.first(145).payload).n.at(13) == h.source.state.source_snapshot_version &&
+              h.count(5) == 0 && !h.eof,
+          "coalesced committed versions also resnapshot without dropping trading");
     h.got.clear();
     snapshot.orders_current = false;
     snapshot.position.reset();
@@ -900,13 +935,41 @@ void manual_trading_reconnect(bool deferred) {
     ++snapshot.generation;
     h.got.clear();
     h.pump(80);
-    check(h.count(5) == 1 && Read(h.first(5).payload).n.at(2) == 0 && h.eof && client_lost == 0,
-          "new private generation permits reconnect without arming the client-loss sweep");
+    check(h.count(5) == 1 && Read(h.first(5).payload).n.at(2) == 0 && h.eof && lost == 2,
+          "new private generation permits reconnect and reports logged-on loss");
     h.connect();
     logon();
     check(::shutdown(h.fd, SHUT_WR) == 0, "test client write-side EOF");
     h.pump(20);
-    check(h.eof && client_lost == 1, "authenticated transport EOF arms client-loss notification");
+    check(h.eof && lost == 3, "authenticated transport EOF arms loss notification");
+    h.connect();
+    logon();
+    h.send({2, 0, 1, 0});
+    h.pump(20);
+    check(h.eof && lost == 4, "malformed wire frame arms authenticated loss notification");
+    h.connect();
+    logon();
+    Bytes accounts;
+    const auto one_query = packet(400, {});
+    for (unsigned i = 0; i < 100; ++i)
+        accounts.insert(accounts.end(), one_query.begin(), one_query.end());
+    h.send(accounts);
+    for (unsigned i = 0; i < 100 && h.server.queued_bytes() == 0; ++i) {
+        h.server.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(h.server.queued_bytes() > 0, "write-timeout fixture queued an unsent response");
+    std::this_thread::sleep_for(std::chrono::milliseconds(180));
+    h.pump(15);
+    check(h.eof && lost == 5, "write timeout arms authenticated loss notification");
+    h.connect();
+    logon();
+    accounts.clear();
+    for (unsigned i = 0; i < 800; ++i)
+        accounts.insert(accounts.end(), one_query.begin(), one_query.end());
+    h.send(accounts);
+    h.pump(15);
+    check(h.eof && lost == 6, "wire backpressure arms authenticated loss notification");
 }
 void live_test_late_refdata_after_logon() {
     auto c = config();

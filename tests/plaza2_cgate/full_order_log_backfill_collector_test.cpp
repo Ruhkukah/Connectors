@@ -1,4 +1,5 @@
 #include "fake_cgate_control.hpp"
+#include "full_order_log_router_lock.hpp"
 #include "full_order_log_test_support.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_backfill.hpp"
 #include "plaza2_runtime_test_support.hpp"
@@ -23,7 +24,7 @@ void stop(int) {
     interrupted = 1;
 }
 
-void enqueue_frame(const f::Control& fake, std::int64_t rev) {
+void enqueue_frame(const f::Control& fake, std::int64_t rev, std::uint32_t trailing_close = 0) {
     using enum g::FieldCode;
     fake.enqueue({.kind = f::EventKind::Begin, .stream_code = stream});
     fake.enqueue({.kind = f::EventKind::Row,
@@ -34,7 +35,7 @@ void enqueue_frame(const f::Control& fake, std::int64_t rev) {
                              {.field_code = kFortsTradeReplOrdersLogReplRev, .signed_value = rev},
                              {.field_code = kFortsTradeReplOrdersLogSessId, .signed_value = 321},
                              {.field_code = kFortsTradeReplOrdersLogIsinId, .signed_value = isins.front()}}});
-    fake.enqueue({.kind = f::EventKind::Commit, .stream_code = stream});
+    fake.enqueue({.kind = f::EventKind::Commit, .stream_code = stream, .value = trailing_close});
 }
 
 struct Tap : cg::Plaza2ListenerEventHandler {
@@ -115,10 +116,31 @@ void write_primary(const fs::path& path, const cg::Plaza2Settings& runtime, cons
     primary.finish();
 }
 
+void test_router_lock(const fs::path& root) {
+    using moex::connector_host::FullOrderLogRouterLock;
+    const auto directory = root / "locks";
+    fs::create_directory(directory);
+    constexpr std::string_view alias = "p2tcp://localhost:04102;app_name=another";
+    {
+        const FullOrderLogRouterLock first(connection_settings, directory);
+        bool busy{};
+        try {
+            const FullOrderLogRouterLock second(alias, directory);
+        } catch (const std::exception& error) {
+            busy = std::string_view(error.what()).find("router already in use") != std::string_view::npos;
+        }
+        t::require(busy, "same port aliases contend for the connection lifetime");
+        const FullOrderLogRouterLock other("p2tcp://127.0.0.1:4103;app_name=another", directory);
+    }
+    t::require(fs::exists(directory / "moex-fol-router-4102.lock"), "release leaves lock inode intact");
+    const FullOrderLogRouterLock next(alias, directory);
+}
+
 int main(int argc, char** argv) {
     try {
         t::require(argc == 2, "fake runtime argument");
         const auto root = t::make_temp_directory("fol_backfill_collector");
+        test_router_lock(root);
         const auto fixture =
             t::materialize_runtime_fixture(root, argv[1], cg::Plaza2Environment::Test,
                                            t::build_vendor_like_runtime_scheme("SPECTRA 9.12.0", "9.12", "T1"));
@@ -151,6 +173,13 @@ int main(int argc, char** argv) {
                        fake.successful_closes()[1] == closes[1] + 1 && fake.successful_closes()[2] == closes[2] + 1,
                    "collector closes listener then connection without waiting for ONLINE");
 
+        // The right witness commits before a Close delivered by the same process call.
+        enqueue_frame(fake, 104);
+        enqueue_frame(fake, 111, 0xA006);
+        const auto closed = root / "closed";
+        t::require(collect(closed, deadline).committed_rows_between == 0 && fake.listener_handles(stream) == 0,
+                   "transport Close after completed overlap does not invalidate the proof");
+
         const auto expect_error = [&](const fs::path& output, std::string_view expected, std::chrono::sys_seconds limit,
                                       const std::function<bool()>& stopped = {}) {
             try {
@@ -177,8 +206,13 @@ int main(int argc, char** argv) {
         fake.enqueue({.kind = f::EventKind::ClearDeleted, .stream_code = stream, .table_code = table, .revision = 103});
         expect_error(root / "clear", "cleared after requested checkpoint", deadline);
         enqueue_frame(fake, 105);
-        expect_error(root / "left-overshoot", "passed the left witness", deadline);
+        const auto overshoot = root / "left-overshoot";
+        expect_error(overshoot, "passed the left witness", deadline);
         // The overshoot stops on the row rather than consuming its following commit.
+        const auto failed = cg::read_full_order_log_capture(overshoot, [](const auto&) {}, true);
+        t::require(failed.rows == 1 && failed.commits == 0 && failed.listener_errors == 1 &&
+                       failed.end_status == cg::FullOrderLogCaptureEndStatus::CaptureFailed,
+                   "the rejected selected row is retained before overlap validation");
         const auto expired = root / "expired";
         expect_error(expired, "deadline reached", floor<seconds>(system_clock::now()));
         t::require(!fs::exists(expired), "expired absolute deadline creates no capture");

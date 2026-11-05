@@ -39,12 +39,12 @@ static void test_backfill(const fs::path& root, FullOrderLogCaptureOptions optio
     };
     constexpr std::string_view composite = "p2ordbook://FORTS_ORDLOG_REPL_MATCH2;snapshot=FORTS_ORDBOOK_REPL_MATCH2";
     const auto primary_fixture = [&](std::string_view name, std::string_view service, int left_life, int right_life,
-                                     bool notify_after_online = false) {
+                                     bool notify_after_online = false, bool unrelated_prefix = false) {
         const auto directory = root / name;
         options.directory = directory;
         FullOrderLogCapture capture(options, ids, book);
-        const auto open = [&](std::int64_t life) {
-            record(capture, {.kind = Kind::Open, .text_value = service, .raw_tables = schema});
+        const auto open = [&](std::int64_t life, std::string_view pair) {
+            record(capture, {.kind = Kind::Open, .text_value = pair, .raw_tables = schema});
             if (life) {
                 Row info(schema[1]);
                 info.set("publication_state", std::int8_t{1});
@@ -53,13 +53,17 @@ static void test_backfill(const fs::path& root, FullOrderLogCaptureOptions optio
             }
             record(capture, {.kind = Kind::Online});
         };
-        open(left_life);
+        if (unrelated_prefix) {
+            open(9, "p2ordbook://FORTS_ORDLOG_REPL_MATCH1;snapshot=FORTS_ORDBOOK_REPL_MATCH1");
+            record(capture, {.kind = Kind::Close});
+        }
+        open(left_life, service);
         frame(capture, 101);
         frame(capture, 104);
         record(capture, {.kind = Kind::TransactionBegin});
         record(capture, row(schema[2], 1, 11, 1234565, 3, 1, 105).event());
         capture.record_error(kFullOrderLogStreamCode, {.code = Plaza2ErrorCode::RuntimeCallFailed});
-        open(right_life);
+        open(right_life, service);
         if (notify_after_online)
             record(capture, {.kind = Kind::LifeNum, .unsigned_value = 7});
         frame(capture, 111);
@@ -91,6 +95,18 @@ static void test_backfill(const fs::path& root, FullOrderLogCaptureOptions optio
     require(refused([&] { plan_full_order_log_backfill(unsuffixed, 2); }), "legacy unsuffixed archive refused");
     const auto unproven = primary_fixture("unproven", {}, 7, 7);
     require(refused([&] { plan_full_order_log_backfill(unproven, 2); }), "unproven legacy archive refused");
+    const auto mixed = primary_fixture("mixed-history", composite, 7, 7, false, true);
+    const auto opens = list_full_order_log_opens(mixed);
+    require(opens.generations.size() == 3 && opens.generations.front().service_pair != composite &&
+                opens.generations[1].service_pair == composite && opens.generations[2].service_pair == composite &&
+                opens.truncated && opens.end_record_present,
+            "list all original FOL Open sequences and exact provenance, including unrelated generations");
+    const auto selected = plan_full_order_log_backfill(mixed, 2, 0, opens.generations.back().sequence);
+    require(selected.capture_identity == opens.capture_identity &&
+                selected.reopen_sequence == opens.generations.back().sequence,
+            "explicit reopen selection checks matching provenance on its two boundaries only");
+    require(refused([&] { plan_full_order_log_backfill(mixed, 2); }),
+            "default selection still refuses a mismatched boundary");
     const auto primary = read_full_order_log_capture(original, [](const auto&) {}, true);
     require(primary.truncated && primary.fol_coverage.opens == 2 && primary.fol_coverage.listener_errors == 1 &&
                 primary.deals_coverage.opens == 0 && primary.deals_coverage.listener_errors == 0,

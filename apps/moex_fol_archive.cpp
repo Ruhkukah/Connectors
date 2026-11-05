@@ -1,5 +1,6 @@
 #include "moex/plaza2/cgate/plaza2_full_order_log_backfill.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_capture.hpp"
+#include "moex/plaza2/cgate/plaza2_text.hpp"
 #include <charconv>
 #include <iostream>
 
@@ -39,6 +40,20 @@ void print_coverage(const cg::FullOrderLogArchiveStreamCoverage& coverage) {
               << ",\"clear_deleted\":" << coverage.clear_deleted << '}';
 }
 
+void list_opens(const std::filesystem::path& capture) {
+    const auto result = cg::list_full_order_log_opens(capture);
+    std::cout << "{\"capture_identity\":\"" << result.capture_identity
+              << "\",\"truncated\":" << (result.truncated ? "true" : "false")
+              << ",\"end_record_present\":" << (result.end_record_present ? "true" : "false") << ",\"fol_opens\":[";
+    bool first = true;
+    for (const auto& open : result.generations) {
+        std::cout << (first ? "" : ",") << "{\"sequence\":" << open.sequence
+                  << ",\"service_pair\":" << cg::text::json_quote_utf8(open.service_pair) << "}";
+        first = false;
+    }
+    std::cout << "]}\n";
+}
+
 void backfill(int argc, char** argv, bool checking) {
     const int base = checking ? 5 : 4;
     if (argc < base || argc > base + 2)
@@ -70,6 +85,7 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--help") {
             std::cout << "moex_fol_archive replay CAPTURE_DIR\nmoex_fol_archive export-dbn CAPTURE_DIR "
                          "NEW_OUTPUT.dbn\n"
+                         "moex_fol_archive list-opens CAPTURE_DIR\n"
                          "moex_fol_archive plan-backfill CAPTURE_DIR MATCH_ID [ORDLOG_LIFENUM [REOPEN_SEQUENCE]]\n"
                          "moex_fol_archive check-backfill CAPTURE_DIR RECOVERY_DIR MATCH_ID "
                          "[ORDLOG_LIFENUM [REOPEN_SEQUENCE]]\n"
@@ -77,6 +93,10 @@ int main(int argc, char** argv) {
                          "Optional --allow-incomplete for replay/export-dbn: verified prefix only; JSON reports "
                          "truncated/last_good_sequence.\ntrade_prints counts DBN export records and is reported "
                          "only for export-dbn.\nOffline only; no runtime, credentials or connections.\n";
+            return 0;
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "list-opens") {
+            list_opens(argv[2]);
             return 0;
         }
         if (argc > 1 &&

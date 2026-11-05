@@ -780,7 +780,7 @@ std::string OrderManager::place_impl(OrderRequest request, std::int32_t* prepare
         return "instance ext_id range exhausted";
     if ((prepared_ext && !config_.ids_reserved) ||
         (config_.ids_reserved && !config_.ids_reserved(config_.next_ext_id, config_.next_user_id)))
-        return "DTC command IDs are awaiting durable reservation";
+        return "command IDs are awaiting durable reservation";
     const auto ext = config_.next_ext_id++;
     tr::AddOrderRequest add;
     add.broker_code = config_.broker_code;

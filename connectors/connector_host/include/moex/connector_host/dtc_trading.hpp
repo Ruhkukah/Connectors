@@ -51,10 +51,9 @@ struct DtcTradingHooks {
     std::function<std::string(std::string_view, std::string, std::int32_t)> move;
     std::function<std::string(std::string_view)> cancel;
     std::function<void()> disconnected, reconciled;
-    std::function<void()> client_lost;
-    // A deferred bridge accepts at most one owner command until its result is consumed.
+    // Cancel has its own lane so risk reduction never waits on Add persistence.
     std::function<bool(DtcTradeCommand)> submit;
-    std::function<std::optional<std::string>()> take_result;
+    std::function<std::optional<std::string>(bool cancel)> take_result;
 };
 
 } // namespace moex::connector_host::dtc

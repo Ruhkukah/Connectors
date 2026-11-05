@@ -1435,6 +1435,8 @@ void dtc_fence_preserves_cli_and_native_orders() {
     auto manager = f.manager();
     auto dtc = request("dtc:a");
     dtc.dtc_origin = true;
+    require(manager.place(request("cli-wait")) == "command IDs are awaiting durable reservation",
+            "operator Add used a misleading DTC-only persistence refusal");
     require(manager.place(dtc) != "" && !manager.prepare_dtc_add(dtc).error.empty(),
             "DTC accepted without durable command IDs");
     ids_reserved = true;

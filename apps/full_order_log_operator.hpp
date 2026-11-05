@@ -4,11 +4,14 @@
 #include "full_order_log_capture_options.hpp"
 #include <csignal>
 #include "full_order_log_dtc_loop.hpp"
+#include "full_order_log_router_lock.hpp"
 #include "full_order_log_trading_dtc.hpp"
 #include "operator_program.hpp"
 #include "moex/connector_host/full_order_log_trading.hpp"
 #include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
+#include <cstdlib>
 #include <iostream>
+#include <thread>
 
 namespace moex::connector_host {
 // The write mode uses the same operator loop and private reconciliation as
@@ -91,6 +94,7 @@ inline int full_order_log_operator(int argc, char** argv,
         default_option("--router", "127.0.0.1:4102");
         default_option("--instance-id", "moex_full_order_log");
     }
+    std::optional<FullOrderLogRouterLock> router_lock;
     std::unique_ptr<plaza2::cgate::Plaza2FullOrderLog> book;
     std::unique_ptr<plaza2::cgate::FullOrderLogCapture> capture;
     std::unique_ptr<plaza2::cgate::FullOrderLogOpenInterest> open_interest;
@@ -141,6 +145,8 @@ inline int full_order_log_operator(int argc, char** argv,
             std::ranges::any_of(config.orders.risk.max_position_by_isin,
                                 [](const auto& item) { return item.second > 2; }))
             throw std::invalid_argument("FOL TEST limits: 64 ISINs, quantity/position 2, open orders/rate 5");
+        if (!offline)
+            router_lock.emplace(connection);
         session.mode = offline ? plaza2_trade::CgateSessionMode::OfflineFake : plaza2_trade::CgateSessionMode::Live;
         session.aggr20_stream = {};
         session.public_deals_stream = {};
@@ -167,8 +173,15 @@ inline int full_order_log_operator(int argc, char** argv,
         if (dtc_port) {
             if (config.isin_ids.size() != 1)
                 throw std::invalid_argument("DTC trading requires one selected FOL instrument");
-            dtc_trading =
-                std::make_unique<FullOrderLogTradingDtc>(config, dtc_port, dtc_secret, !dtc_keep_orders_on_disconnect);
+            std::function<void()> before_persist;
+            if (offline)
+                if (const auto* marker = std::getenv("MOEX_FOL_OFFLINE_IDENTITY_STALL_FILE"))
+                    before_persist = [path = std::filesystem::path(marker)] {
+                        if (std::filesystem::exists(path))
+                            std::this_thread::sleep_for(std::chrono::seconds(3));
+                    };
+            dtc_trading = std::make_unique<FullOrderLogTradingDtc>(
+                config, dtc_port, dtc_secret, !dtc_keep_orders_on_disconnect, std::move(before_persist));
             config.async_dtc_persistence = true;
             config.orders.dtc_connection_current = [&] { return dtc_trading->entry_connection_current(); };
             if (capture_flags.open_interest)
