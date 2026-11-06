@@ -63,6 +63,7 @@ int main(int argc, char** argv) {
                          "  DTC supports manual and automated Add; replace only on manual orders.\n"
                          "  --dtc-keep-orders-on-disconnect: disable the default ten-second DTC order cancellation.\n"
                          "  Optional account gates: --min-free-money-rub RUB --check-account-prohibitions.\n"
+                         "  --environment-authority=configuration: live TEST writer, pinned legacy scheme only.\n"
                          "  --cancel-only: private-state recovery, no FOL/AGGR; Add/Move always refused.\n"
                          "plaza2 cmd --command-socket PATH \"COMMAND\" (FOL endpoint only)\n"
                       << moex::connector_host::operator_help();

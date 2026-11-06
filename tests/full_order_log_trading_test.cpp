@@ -3,6 +3,7 @@
 #include "moex/connector_host/trading_host.hpp"
 #include "fake_cgate_control.hpp"
 #include "plaza2_runtime_test_support.hpp"
+#include "plaza2_trade_test_support.hpp"
 #include "risk_limits_host_regression.hpp"
 #include <array>
 #include <cstdlib>
@@ -20,7 +21,7 @@ using test::require;
 
 int main(int argc, char** argv) {
     try {
-        require(argc == 2, "fake runtime required");
+        require(argc == 2 || argc == 3, "fake runtime and optional private pinned legacy scheme required");
         const auto root = test::make_temp_directory("full-order-log-trading");
         const auto fixture =
             test::materialize_runtime_fixture(root, argv[1], cg::Plaza2Environment::Test,
@@ -412,6 +413,96 @@ int main(int argc, char** argv) {
             require(!readonly.poll(false), "default FOL read-only poll");
         require(!readonly.publisher_open() && !readonly.p2mqreply_open(), "read-only FOL creates no order handles");
         require(!readonly.stop(), "read-only FOL stop");
+
+        auto environment_config = base.session;
+        environment_config.mode = tr::CgateSessionMode::Live;
+        environment_config.runtime.env_open_settings += ";log=p2:p2syslog";
+        environment_config.full_order_log_partitioned = true;
+        environment_config.full_order_log_advisory = true;
+        environment_config.full_order_log_legacy_configuration_authority = true;
+        auto offline_legacy = environment_config;
+        offline_legacy.mode = tr::CgateSessionMode::OfflineFake;
+        tr::CgateSession refused_offline(offline_legacy);
+        require(refused_offline.start().code == cg::Plaza2ErrorCode::InvalidConfiguration,
+                "legacy configuration authority must reject OfflineFake mode");
+        auto prod_legacy = environment_config;
+        prod_legacy.runtime.environment = cg::Plaza2Environment::Prod;
+        tr::CgateSession refused_prod(prod_legacy);
+        require(refused_prod.start().code == cg::Plaza2ErrorCode::InvalidConfiguration,
+                "legacy configuration authority must reject PROD");
+
+        const auto check_environment = [&](std::string_view profile, bool opt_in, std::string_view expected) {
+            configure();
+            control.set(fake::Option::FolRiskStreams, profile);
+            auto config = environment_config;
+            config.full_order_log_legacy_configuration_authority = opt_in;
+            std::vector<std::string> authority_events;
+            config.event_log = [&](std::string_view event, std::string_view fields) {
+                if (event == "full_order_log_environment_authority")
+                    authority_events.emplace_back(fields);
+            };
+            const auto authority = [](std::string_view mode) {
+                return "\"environment_authority\":\"" + std::string(mode) + '"';
+            };
+            tr::CgateSession session(config);
+            require(!session.start() && authority_events.size() == 1 &&
+                        authority_events.front().find(authority("none")) != std::string::npos,
+                    "FOL must journal no environment authority at startup");
+            const auto pump = [&] {
+                for (int n = 0; n < 20; ++n)
+                    require(!session.poll(false), "FOL environment fixture poll");
+            };
+            pump();
+            require(session.full_order_log_auxiliary_status().find(authority(expected)) != std::string::npos &&
+                        authority_events.back().find(authority(expected)) != std::string::npos,
+                    "unexpected FOL environment authority for " + std::string(profile));
+            if (expected == "venue_row")
+                require(authority_events.back().find(R"("environment_id":2,"environment_name":"MXFOPREP")") !=
+                            std::string::npos,
+                        "journal must include the validated TEST row identity");
+            if (expected == "none") {
+                auto add = tr::test_support::make_add_order();
+                add.isin_id = 1001;
+                auto move = tr::test_support::make_move_order();
+                move.isin_id = 1001;
+                auto del = tr::test_support::make_del_order();
+                del.isin_id = 1001;
+                const auto codec = tr::Plaza2TradeCodec{};
+                const auto added = session.post_command(codec.encode(add), 55001);
+                const auto moved = session.post_command(codec.encode(move), 55002);
+                require(!added.post_invoked && !moved.post_invoked &&
+                            added.validation_error.message.starts_with("REFDATA Spectra environment") &&
+                            moved.validation_error.message == added.validation_error.message &&
+                            session.post_command(codec.encode(del), 55003).post_invoked,
+                        "missing environment authority must fence native Add/Move and preserve Del");
+            } else {
+                const auto logged = authority_events.size();
+                pump();
+                require(authority_events.size() == logged,
+                        "unchanged environment authority must not be journaled again");
+                control.set(fake::Option::ConnDirectClosed);
+                require(!session.poll(false) &&
+                            session.full_order_log_auxiliary_status().find(authority("none")) != std::string::npos &&
+                            authority_events.back().find(authority("none")) != std::string::npos,
+                        "connection loss must revoke environment authority");
+                control.clear(fake::Option::ConnDirectClosed);
+            }
+            require(!session.stop(), "FOL environment fixture stop");
+        };
+        const auto legacy_synthetic = test::build_vendor_like_runtime_scheme("SPECTRA9.9.0", "9.9", "TEST");
+        test::write_text_file(fixture.scheme_path, legacy_synthetic);
+        check_environment("ready", true, "none");
+        test::write_text_file(fixture.scheme_path,
+                              test::build_vendor_like_runtime_scheme("SPECTRA9.12.0", "9.12", "TEST") +
+                                  "[dbscheme:REFDATA]\ntable=spectra_environment\n");
+        check_environment("ready", true, "venue_row");
+        check_environment("no-environment", true, "none");
+        check_environment("wrong-environment", true, "none");
+        if (argc == 3) {
+            std::filesystem::copy_file(argv[2], fixture.scheme_path, std::filesystem::copy_options::overwrite_existing);
+            check_environment("ready", false, "none");
+            check_environment("ready", true, "configuration_legacy_scheme");
+        }
         test::remove_tree(root);
         std::cout << "FOL write: admission, dispatch, invalidation and cancel isolation passed\n";
     } catch (const std::exception& error) {

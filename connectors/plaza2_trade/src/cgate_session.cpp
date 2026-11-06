@@ -25,6 +25,8 @@ using cg::Plaza2Error;
 using cg::Plaza2ErrorCode;
 using moex::plaza2::generated::StreamCode;
 constexpr std::uint32_t Closed = 0, Error = 1, Opening = 2, Active = 3, Unsupported = 131074, Timeout = 131075;
+constexpr std::string_view legacy_refdata_scheme_sha256 =
+    "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746";
 Plaza2Error invalid(std::string message) {
     return {.code = Plaza2ErrorCode::InvalidConfiguration, .message = std::move(message)};
 }
@@ -411,9 +413,15 @@ struct CgateSession::Impl {
         std::chrono::steady_clock::time_point retry{};
         Plaza2Error create_error;
     };
+    struct EnvironmentAuthority {
+        std::string_view name{"none"}, refusal{};
+        bool operator==(const EnvironmentAuthority&) const = default;
+    };
     static constexpr auto auxiliary_code = static_cast<StreamCode>(0xF0110002u);
     CgateSessionConfig config;
     std::vector<std::unique_ptr<Auxiliary>> auxiliary;
+    bool legacy_environment_scheme{};
+    std::optional<EnvironmentAuthority> reported_environment_authority;
     cg::Plaza2RuntimeProbeReport probe;
     cg::Plaza2Env env;
     cg::Plaza2Connection connection;
@@ -669,6 +677,12 @@ struct CgateSession::Impl {
         if (config.read_only_market_data &&
             (config.allow_orders || !config.publisher_settings.empty() || !config.p2mqreply_settings.empty()))
             return invalid("read-only CGate session cannot configure order entry");
+        if (config.full_order_log_legacy_configuration_authority &&
+            (config.mode != CgateSessionMode::Live || config.runtime.environment != cg::Plaza2Environment::Test ||
+             !config.allow_orders || config.read_only_market_data || config.full_order_log_cancel_only ||
+             !config.full_order_log_partitioned || !config.full_order_log_advisory || !config.full_order_log_handler ||
+             !config.full_order_log_authority))
+            return invalid("legacy configuration environment authority requires the TEST FullOrderLog writer");
         if (config.full_order_log_partitioned &&
             (config.market_data_isin_ids.empty() ||
              (!config.full_order_log_handler && !config.full_order_log_cancel_only)))
@@ -771,13 +785,19 @@ struct CgateSession::Impl {
             app_name = settings.substr(app + 9, settings.find(';', app + 9) - (app + 9));
         if (auto error = connection.create(env, settings); error)
             return error;
-        if (config.full_order_log_advisory)
-            configure_auxiliary(client_scheme_has_spectra_environment(probe.layout.scheme_path));
+        if (config.full_order_log_advisory) {
+            const bool environment_in_scheme = client_scheme_has_spectra_environment(probe.layout.scheme_path);
+            legacy_environment_scheme = config.full_order_log_legacy_configuration_authority &&
+                                        !environment_in_scheme &&
+                                        probe.runtime_scheme_sha256 == legacy_refdata_scheme_sha256;
+            configure_auxiliary(environment_in_scheme);
+        }
         initialized = true;
         recovery.operation = Plaza2SessionOperation::Starting;
         ++recovery.generation;
         log("runtime_identity", "{\"library_sha256\":\"" + probe.runtime_library_sha256 + "\",\"scheme_sha256\":\"" +
                                     probe.runtime_scheme_sha256 + "\"}");
+        report_environment_authority();
         // OPEN is asynchronous; ACTIVE and listener creation belong to subsequent polls.
         if (auto error = open_connection(); error) {
             waiting(error, Plaza2RecoveryWaitState::WaitingForRouter, "connection");
@@ -1056,14 +1076,14 @@ struct CgateSession::Impl {
                 "{\"source\":\"deals\",\"error\":" + json_quote(error.message) + "}");
         }
     }
-    bool refdata_current() const noexcept {
+    bool refdata_current(bool observed_only = false) const noexcept {
         if (!stream_online(StreamCode::kFortsRefdataRepl))
             return false;
         const auto listener = std::ranges::find_if(
             listeners, [](const auto& l) { return l.config.stream_code == StreamCode::kFortsRefdataRepl; });
         std::uint32_t state = Closed;
         return listener != listeners.end() && !listener->object.last_callback_error() &&
-               !listener->object.state(state) && state == Active;
+               (observed_only ? listener->observed_state == Active : !listener->object.state(state) && state == Active);
     }
     Plaza2Error resolve_full_order_log() {
         if (!config.full_order_log_partitioned &&
@@ -1164,12 +1184,14 @@ struct CgateSession::Impl {
         const auto found = std::ranges::find_if(listeners, [&](const auto& l) { return l.handler == &source.data; });
         return found == listeners.end() ? nullptr : &*found;
     }
-    bool auxiliary_current(const Auxiliary* source) const noexcept {
+    bool auxiliary_current(const Auxiliary* source, bool observed_only = false) const noexcept {
         if (!source || !source->data.online())
             return false;
         const auto* listener = auxiliary_listener(*source);
         if (!listener || listener->object.last_callback_error())
             return false;
+        if (observed_only)
+            return connection_was_active && observed_connection == Active && listener->observed_state == Active;
         std::uint32_t state = Closed;
         if (connection.state(state) || state != Active)
             return false;
@@ -1206,22 +1228,60 @@ struct CgateSession::Impl {
             return std::nullopt;
         return CgateFullOrderLogBalance{*free, *blocked, *total};
     }
-    std::string_view environment_refusal() const noexcept {
-        if (!config.full_order_log_advisory &&
-            !(config.mode == CgateSessionMode::Live && config.allow_orders && config.full_order_log_authority))
+    bool requires_environment_authority() const noexcept {
+        return config.full_order_log_advisory ||
+               (config.mode == CgateSessionMode::Live && config.allow_orders && config.full_order_log_authority);
+    }
+    EnvironmentAuthority environment_authority(bool observed_only = false) const noexcept {
+        if (!requires_environment_authority())
             return {};
+        constexpr EnvironmentAuthority missing{.refusal =
+                                                   "REFDATA Spectra environment lacks current snapshot authority"};
+        if (!initialized)
+            return missing;
         const auto* environment = auxiliary_source("spectra_environment");
-        if (!auxiliary_current(environment) || environment->data.rows().empty())
-            return "REFDATA Spectra environment lacks current snapshot authority";
+        if (!environment && legacy_environment_scheme && matching_current && projection.refdata_lifenum().value_or(0) &&
+            projection.current_session_id() > 0) {
+            std::uint32_t state = Closed;
+            const bool active = observed_only ? connection_was_active && observed_connection == Active
+                                              : !connection.state(state) && state == Active;
+            if (active && refdata_current(observed_only))
+                return {.name = "configuration_legacy_scheme"};
+        }
+        if (!auxiliary_current(environment, observed_only))
+            return missing;
         const auto& rows = environment->data.rows();
+        if (rows.empty())
+            return {.refusal = "REFDATA Spectra environment committed snapshot is empty"};
         const auto& row = rows.begin()->second;
         if (rows.size() != 1 || !fol_auxiliary::environment_matches(row, config.runtime.environment))
-            return "REFDATA Spectra environment conflicts with configured environment";
-        return {};
+            return {.refusal = "REFDATA Spectra environment conflicts with configured environment"};
+        return {.name = "venue_row"};
+    }
+    void report_environment_authority() {
+        if (!requires_environment_authority())
+            return;
+        auto current = environment_authority(true);
+        if (config.read_only_market_data && !auxiliary_source("spectra_environment") &&
+            connection_was_active && observed_connection == Active && refdata_current(true))
+            current.refusal = "spectra_environment not declared by client scheme";
+        if (reported_environment_authority == current)
+            return;
+        reported_environment_authority = current;
+        std::string fields = "{\"environment_authority\":" + json_quote(current.name) +
+                             ",\"reason\":" + (current.refusal.empty() ? "null" : json_quote(current.refusal));
+        if (current.name == "venue_row")
+            fields += config.runtime.environment == cg::Plaza2Environment::Test
+                          ? R"(,"environment_id":2,"environment_name":"MXFOPREP")"
+                          : R"(,"environment_id":1,"environment_name":"MXFOPROD")";
+        log("full_order_log_environment_authority", fields + '}');
     }
     std::string_view account_risk_refusal() const noexcept {
-        if (const auto reason = environment_refusal(); !reason.empty())
-            return reason;
+        return account_risk_refusal(environment_authority().refusal);
+    }
+    std::string_view account_risk_refusal(std::string_view environment_refusal) const noexcept {
+        if (!environment_refusal.empty())
+            return environment_refusal;
         if (config.full_order_log_min_free_kopecks) {
             const auto amount = balance();
             if (!amount)
@@ -1243,9 +1303,11 @@ struct CgateSession::Impl {
         return {};
     }
     std::string auxiliary_status() const {
-        const auto risk_refusal = account_risk_refusal();
+        const auto environment = environment_authority();
+        const auto risk_refusal = account_risk_refusal(environment.refusal);
         std::string out = "{\"venue_cod\":" + json_quote(cod_state()) +
-                          ",\"account_risk_refusal\":" + (risk_refusal.empty() ? "null" : json_quote(risk_refusal));
+                          ",\"account_risk_refusal\":" + (risk_refusal.empty() ? "null" : json_quote(risk_refusal)) +
+                          ",\"environment_authority\":" + json_quote(environment.name);
         if (config.full_order_log_partitioned)
             out += std::string(",\"matching_current\":") + (matching_current && refdata_current() ? "true" : "false");
         if (config.full_order_log_advisory && !auxiliary_source("spectra_environment"))
@@ -1715,6 +1777,8 @@ struct CgateSession::Impl {
         replies.expire(now());
         std::uint32_t state = Closed;
         if (auto error = connection.state(state); error) {
+            if (requires_environment_authority())
+                observed_connection.reset();
             if (auto retire_error = retire_public_deals(); retire_error)
                 last_error = retire_error.message;
             operation("connection", "getstate", error);
@@ -1969,6 +2033,11 @@ struct CgateSession::Impl {
         if (initialized)
             static_cast<void>(bridge.end_run());
         initialized = false;
+        if (reported_environment_authority) {
+            report_environment_authority();
+            reported_environment_authority.reset();
+        }
+        legacy_environment_scheme = false;
         streams_created = false;
         anchor.reset();
         matching_id.reset();
@@ -2001,7 +2070,10 @@ Plaza2Error CgateSession::start() {
     return e;
 }
 Plaza2Error CgateSession::poll(bool wait_for_data) {
-    return impl_->poll(wait_for_data);
+    auto error = impl_->poll(wait_for_data);
+    if (impl_->initialized)
+        impl_->report_environment_authority();
+    return error;
 }
 const CgatePollMetrics& CgateSession::last_poll_metrics() const noexcept {
     return impl_->poll_metrics;

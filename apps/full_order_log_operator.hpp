@@ -126,6 +126,7 @@ inline int full_order_log_operator(int argc, char** argv,
         native.reset_interval();
     };
     OperatorProgramHooks hooks;
+    hooks.allow_fol_configuration_authority = run && live && !offline && !cancel_only;
     hooks.configure = [&](TradingHostConfig& config) {
         namespace cg = plaza2::cgate;
         auto& session = config.session;

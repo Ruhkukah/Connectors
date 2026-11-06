@@ -5,6 +5,7 @@
 namespace moex::connector_host {
 
 struct OperatorProgramHooks {
+    bool allow_fol_configuration_authority{};
     std::function<void(TradingHostConfig&)> configure;
     std::function<void(CgateTradingHost&)> before_start;
     std::function<void(CgateTradingHost&)> after_poll;

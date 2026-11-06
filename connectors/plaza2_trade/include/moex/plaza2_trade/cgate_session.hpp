@@ -93,6 +93,8 @@ struct CgateSessionConfig {
     bool full_order_log_partitioned{false};
     bool validate_order_message_layouts{false};
     bool full_order_log_advisory{false};
+    // Explicit TEST writer policy for the pinned legacy REFDATA scheme.
+    bool full_order_log_legacy_configuration_authority{false};
     std::string full_order_log_login, full_order_log_account;
     std::optional<std::int64_t> full_order_log_min_free_kopecks;
     bool full_order_log_check_prohibitions{};

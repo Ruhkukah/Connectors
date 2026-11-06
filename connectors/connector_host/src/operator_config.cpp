@@ -130,7 +130,8 @@ Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs) 
     out.order.isin_id = static_cast<std::int32_t>(out.transport.target_isin_id);
     return out;
 }
-OperatorRequest parse_operator_arguments(std::span<const std::string_view> args) {
+OperatorRequest parse_operator_arguments(std::span<const std::string_view> args,
+                                         bool allow_fol_configuration_authority) {
     OperatorRequest out;
     if (args.size() == 1 && args[0] == "--help") {
         out.help = true;
@@ -142,7 +143,7 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
     std::map<std::string, std::string> values;
     std::set<std::string> flags;
     const std::set<std::string_view> flag_names{"--json", "--allow-orders", "--read-only-market-data",
-                                                "--public-deals"};
+                                                "--public-deals", kFolConfigurationAuthorityOption};
     const std::set<std::string_view> value_names{"--runtime-root",
                                                  "--scheme-dir",
                                                  "--config-dir",
@@ -180,6 +181,12 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
         const auto found = values.find(key);
         return found == values.end() ? fallback : found->second;
     };
+    const auto env = get("--environment", "test");
+    const bool configuration_authority = flags.contains(std::string(kFolConfigurationAuthorityOption));
+    if (configuration_authority &&
+        (!allow_fol_configuration_authority || out.command != "run" || env != "test" ||
+         !flags.contains("--allow-orders") || flags.contains("--read-only-market-data")))
+        throw std::invalid_argument("--environment-authority=configuration requires the live TEST FOL writer");
     const auto required = [&](const char* key) {
         auto value = get(key);
         if (value.empty())
@@ -205,13 +212,13 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args)
     }
     inputs.router = get("--router", "127.0.0.1:4101");
     inputs.publisher_name = get("--instance-id", "moex_connector");
-    const auto env = get("--environment", "test");
     if (env != "test" && env != "prod")
         throw std::invalid_argument("environment must be test or prod");
     inputs.environment =
         env == "test" ? plaza2::cgate::Plaza2Environment::Test : plaza2::cgate::Plaza2Environment::Prod;
     inputs.publisher_messages_per_second = integer<std::uint32_t>(get("--max-commands-per-second", "30"));
     out.config = build_plaza2_host_config(inputs);
+    out.config.transport.host.full_order_log_legacy_configuration_authority = configuration_authority;
     out.json = flags.contains("--json");
     out.wait_ms = integer<std::uint32_t>(get("--wait-ms", "10000"));
     return out;

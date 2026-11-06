@@ -4,6 +4,7 @@
 #include "scope_exit.hpp"
 #include "dtc_test_wire.hpp"
 #include "moex/connector_host/dtc_market_data.hpp"
+#include "moex/connector_host/operator_config.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -158,6 +159,53 @@ void erase_option(std::vector<std::string>& argv, std::string_view option) {
     test::require(found != argv.end() && found + 1 != argv.end(), "missing option in test fixture");
     argv.erase(found, found + 2);
 }
+void check_environment_authority_cli(const std::string& executable, const test::RuntimeFixturePaths& fixture) {
+    const auto flag = host::kFolConfigurationAuthorityOption;
+    std::vector<std::string_view> parsed_args{
+        "plaza2", "run", "--allow-orders", "--runtime-root", fixture.root.native(),
+        "--scheme-dir", fixture.scheme_dir.native(), "--config-dir", fixture.config_dir.native(),
+        "--env-settings-var", "MOEX_FOL_RUNNER_SETTINGS", "--broker-code-env", "MOEX_FOL_RUNNER_BROKER",
+        "--client-code-env", "MOEX_FOL_RUNNER_CLIENT", "--isin-id", "1001"};
+    const auto configured = [&] {
+        return host::parse_operator_arguments(parsed_args, true)
+            .config.transport.host.full_order_log_legacy_configuration_authority;
+    };
+    test::require(!configured(), "configuration authority must be opt-in");
+    parsed_args.push_back(flag);
+    test::require(configured(), "live TEST FOL parser must carry the explicit opt-in");
+    parsed_args.insert(parsed_args.end() - 1, "--instance-id");
+    test::require(!configured(), "an option-looking argument value must not grant authority");
+
+    const auto refuse = [&](std::vector<std::string> request, const std::string& label,
+                            std::string_view reason = "live TEST FOL writer") {
+        Process child(request, label);
+        test::require(child.wait() == 2 && child.errors().find(reason) != std::string::npos,
+                      "authority option did not fail closed in " + label + ": " + child.errors());
+        test::require(!fs::exists(label + ".ndjson") &&
+                          !fs::exists(fixture.config_dir / "fol-native-posts.log"),
+                      "authority refusal reached the journal or native post path");
+    };
+    auto request = arguments(executable, fixture, "authority-offline.ndjson", "fol_authority");
+    request.emplace_back(flag);
+    refuse(request, "authority-offline");
+
+    request = arguments(executable, fixture, "authority-cancel.ndjson", "fol_authority");
+    *std::ranges::find(request, "--offline-fake") = "--live";
+    request.insert(request.end(), {"--trading-instance-id", "aggr_authority", "--cancel-only", std::string(flag)});
+    refuse(request, "authority-cancel");
+
+    request = arguments(executable, fixture, "authority-prod.ndjson", "fol_authority");
+    *std::ranges::find(request, "--offline-fake") = "--live";
+    *(std::ranges::find(request, "--environment") + 1) = "prod";
+    request.insert(request.end(), {"--trading-instance-id", "aggr_authority", std::string(flag)});
+    refuse(request, "authority-prod");
+
+    refuse({executable, "plaza2", "qualify", "--offline-fake", std::string(flag)}, "authority-qualify");
+    refuse({executable, "plaza2", "cmd", "--log", "authority-cmd.ndjson", std::string(flag)}, "authority-cmd");
+    request = arguments(executable, fixture, "authority-malformed.ndjson", "fol_authority");
+    request.emplace_back("--environment-authority=venue");
+    refuse(request, "authority-malformed", "unknown option");
+}
 std::string command(const std::string& executable, const fs::path& log, const std::string& line,
                     const fs::path& label) {
     Process client({executable, "plaza2", "cmd", "--offline-fake", "--log", log.string(), line}, label);
@@ -260,6 +308,7 @@ int main(int argc, char** argv) {
             std::cout << "PASS offline FOL writer " << test_case << '\n';
             return 0;
         }
+        check_environment_authority_cli(executable, fixture);
         unsigned index{};
         for (const auto option : {"--login-env", "--ext-id-range", "--max-commands-per-second", "--max-quantity",
                                   "--max-open-orders", "--max-notional", "--max-position", "--clock-offset-us"}) {

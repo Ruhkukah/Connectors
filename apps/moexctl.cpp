@@ -266,13 +266,15 @@ int moex::connector_host::operator_program(int argc, char** argv, const Operator
             if (arguments.size() != 3)
                 throw std::invalid_argument("usage: moexctl plaza2 cmd [--log FILE | "
                                             "--command-socket PATH] \"COMMAND\"");
+            if (hooks.verify_command_endpoint && arguments[2] == kFolConfigurationAuthorityOption)
+                throw std::invalid_argument("--environment-authority=configuration requires the live TEST FOL writer");
             if (hooks.verify_command_endpoint)
                 hooks.verify_command_endpoint(socket_path);
             const auto response = send_command(socket_path, std::string(arguments[2]));
             std::cout << response << '\n' << std::flush;
             return response.find("\"ok\":false") == std::string::npos ? 0 : 2;
         }
-        const auto request = parse_operator_arguments(arguments);
+        const auto request = parse_operator_arguments(arguments, hooks.allow_fol_configuration_authority);
         if (request.help) {
             std::cout
                 << operator_help()

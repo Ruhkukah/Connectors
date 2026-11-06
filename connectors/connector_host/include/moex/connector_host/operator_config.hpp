@@ -3,6 +3,8 @@
 #include <filesystem>
 
 namespace moex::connector_host {
+inline constexpr std::string_view kFolConfigurationAuthorityOption{"--environment-authority=configuration"};
+
 struct OperatorRequest {
     Plaza2HostConfig config;
     std::string command;
@@ -25,6 +27,7 @@ struct Plaza2HostConfigInputs {
 };
 [[nodiscard]] std::pair<std::string, std::uint16_t> router_address(std::string_view router);
 [[nodiscard]] Plaza2HostConfig build_plaza2_host_config(const Plaza2HostConfigInputs& inputs);
-[[nodiscard]] OperatorRequest parse_operator_arguments(std::span<const std::string_view> arguments);
+[[nodiscard]] OperatorRequest parse_operator_arguments(std::span<const std::string_view> arguments,
+                                                       bool allow_fol_configuration_authority = false);
 [[nodiscard]] std::string_view operator_help() noexcept;
 } // namespace moex::connector_host
