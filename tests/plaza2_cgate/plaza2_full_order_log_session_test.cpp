@@ -65,8 +65,8 @@ int main(int argc, char** argv) {
                     require(event.raw_tables[i].index == i, "filtered composite table indices must be reindexed");
                     full_log_tables.push_back(event.raw_tables[i].name);
                 }
-                if (event.raw_tables.size() == 4)
-                    require(event.raw_tables[2].name == "orders" && event.raw_tables[3].name == "info",
+                if (event.raw_tables.size() == 5)
+                    require(event.raw_tables[3].name == "orders" && event.raw_tables[4].name == "info",
                             "client schema order must move snapshot indices before ClearDeleted probes");
                 std::ranges::sort(full_log_tables);
             }
@@ -136,8 +136,9 @@ int main(int argc, char** argv) {
                     "instr2matching_map",
                 "FullLog alone must append matching to the reviewed REFDATA server subscription");
         require(fake.listener_settings(cgate::kFullOrderLogStreamCode) == match3_url &&
-                    full_log_tables == std::vector<std::string>{"info", "orders", "orders_log", "sys_events"},
-                "both client INIs must negotiate exactly the four composite tables with no tables selector");
+                    full_log_tables ==
+                        std::vector<std::string>{"heartbeat", "info", "orders", "orders_log", "sys_events"},
+                "both client INIs must negotiate exactly the five composite tables with no tables selector");
         require(session.private_state().instruments().size() == 5000, "realistic REFDATA bootstrap size");
         const auto metadata_revision = session.market_data_metadata_revision();
         pump(100);
@@ -246,7 +247,8 @@ int main(int argc, char** argv) {
                 "ERROR must reopen a fresh composite snapshot");
         require(fake.listener_open_settings(cgate::kFullOrderLogStreamCode).find("replstate") == std::string::npos &&
                     fake.listener_settings(cgate::kFullOrderLogStreamCode) == match3_url &&
-                    full_log_tables == std::vector<std::string>{"info", "orders", "orders_log", "sys_events"},
+                    full_log_tables ==
+                        std::vector<std::string>{"heartbeat", "info", "orders", "orders_log", "sys_events"},
                 "fresh composite recovery must retain both client schemas and never pass replay keys");
         // A committed single-partition remap fences the book and rebuilds it.
         fake.enqueue({.kind = f::EventKind::Begin, .stream_code = generated::StreamCode::kFortsRefdataRepl});
@@ -388,7 +390,8 @@ int main(int argc, char** argv) {
         const auto online_path = fixture.scheme_dir / "full_order_log/online.ini";
         std::ifstream online_input(online_path);
         const std::string online_text((std::istreambuf_iterator<char>(online_input)), {});
-        for (const auto& omitted : {std::string("table=sys_events"), std::string("field=public_amount_rest,i8")}) {
+        for (const auto& omitted : {std::string("table=sys_events"), std::string("table=heartbeat"),
+                                    std::string("field=public_amount_rest,i8")}) {
             auto filtered = online_text;
             const auto at = filtered.find(omitted);
             require(at != std::string::npos, "vendor client schema contains required declaration");

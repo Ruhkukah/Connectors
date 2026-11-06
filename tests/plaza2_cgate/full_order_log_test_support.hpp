@@ -78,6 +78,15 @@ inline std::array<Plaza2RawTableBinding, 4> tables() {
                  .row_size = 8};
     return result;
 }
+inline Plaza2RawTableBinding heartbeat_table(std::size_t index = 4) {
+    return {.name = "heartbeat",
+            .fields = {{.name = "replID", .type_token = "i8", .offset = 0, .size = 8, .index = 0},
+                       {.name = "replRev", .type_token = "i8", .offset = 8, .size = 8, .index = 1},
+                       {.name = "replAct", .type_token = "i8", .offset = 16, .size = 8, .index = 2},
+                       {.name = "server_time", .type_token = "t", .offset = 24, .size = 10, .index = 3}},
+            .index = index,
+            .row_size = 36};
+}
 struct Row {
     std::array<std::byte, 128> wire{};
     std::vector<std::uint8_t> nulls;

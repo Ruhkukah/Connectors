@@ -261,6 +261,7 @@ int main() {
         const auto root = fs::temp_directory_path() / ("fol_capture_" + std::to_string(::getpid()));
         require(fs::create_directory(root), "unique capture test root");
         const auto schema = tables();
+        const std::array heartbeat_schema{schema[0], schema[1], schema[2], schema[3], heartbeat_table()};
         std::array<std::int32_t, 1> ids{11};
         Plaza2FullOrderLog book(ids, 1024, 256);
         FullOrderLogCaptureOptions o;
@@ -279,7 +280,7 @@ int main() {
             e.stream_code = kFullOrderLogStreamCode;
             require(!capture.on_plaza2_listener_event(e), "capture callback");
         };
-        send({.kind = Kind::Open, .raw_tables = schema});
+        send({.kind = Kind::Open, .raw_tables = heartbeat_schema});
         const auto selected = [&](const Row& r) {
             expected.emplace_back(r.event().raw_payload.begin(), r.event().raw_payload.end());
             nulls.push_back(r.nulls);
@@ -296,6 +297,17 @@ int main() {
         require(capture.metrics().stored_bytes > 32, "quiet partial block flush reaches disk worker");
         send({.kind = Kind::Online});
         require(book.valid(), "snapshot commits at ONLINE");
+        const auto snapshot_revision = book.revision(11);
+        Row heartbeat(heartbeat_schema.back());
+        heartbeat.set("replID", std::int64_t{1});
+        heartbeat.set("replRev", std::int64_t{3});
+        heartbeat.set("server_time", moex::plaza2::public_wire::Time{.year = 2026, .month = 11, .day = 6});
+        send({.kind = Kind::TransactionBegin});
+        selected(heartbeat);
+        send({.kind = Kind::TransactionCommit});
+        require(book.order_count() == 1 && book.levels(11, true).at(1234567) == 10 &&
+                    book.revision(11) == snapshot_revision,
+                "heartbeat commits without changing captured book state");
         for (int i = 0; i < 1000; ++i) {
             send({.kind = Kind::TransactionBegin});
             selected(row(schema[2], 1, 11, 1234567, 3 + i % 2, 1, 10 + i));
@@ -309,7 +321,7 @@ int main() {
         capture.finish();
         const auto m = capture.metrics();
         require(!m.failed && m.filtered == 1 && m.syncs > 0, "capture drained and synced without drops");
-        std::size_t seen{};
+        std::size_t seen{}, seen_heartbeats{};
         auto summary = read_full_order_log_capture(o.directory, [&](const auto& r) {
             if (r.event.kind == Kind::StreamData) {
                 require(seen < expected.size() && std::equal(r.event.raw_payload.begin(), r.event.raw_payload.end(),
@@ -318,16 +330,19 @@ int main() {
                 require(std::equal(r.event.raw_nulls.begin(), r.event.raw_nulls.end(), nulls[seen].begin(),
                                    nulls[seen].end()),
                         "null maps preserved");
+                if (r.event.raw_table->name == "heartbeat")
+                    ++seen_heartbeats;
                 ++seen;
             }
         });
-        require(seen == expected.size(), "all selected and excluded rows present");
+        require(seen == expected.size() && seen_heartbeats == 1, "all selected, excluded and heartbeat rows present");
         const auto replay = replay_full_order_log_capture(o.directory);
-        require(replay.valid_commits == 1001 && replay.last_valid_order_count == 1,
+        require(replay.valid_commits == 1002 && replay.last_valid_order_count == 1,
                 "replay uses exact book rules and committed visibility");
         const auto dbn = root / "orders.dbn";
         const auto exported = export_full_order_log_dbn(o.directory, dbn);
-        require(exported.valid_commits == 1001, "DBN export committed points");
+        require(exported.valid_commits == 1002 && exported.trade_prints == 0,
+                "DBN export sees the heartbeat commit without creating a trade");
         require(exported.refdata_sha256.empty() && !fs::exists(dbn.string() + ".refdata.json"),
                 "legacy capture exports without an invented sidecar");
         test_refdata_join(root, o);
@@ -382,8 +397,13 @@ int main() {
                 fs::resize_file(segments.back(), fs::file_size(segments.back()) - 1);
             else {
                 std::fstream file(segments.front(), std::ios::in | std::ios::out | std::ios::binary);
-                file.seekp(100);
-                file.put('\xff');
+                constexpr std::streamoff first_chunk_checksum = 32 + 8; // File header and chunk length fields.
+                file.seekg(first_chunk_checksum);
+                const int byte = file.get();
+                require(byte != std::char_traits<char>::eof(), "read first chunk checksum for corruption");
+                file.seekp(first_chunk_checksum);
+                file.put(static_cast<char>(byte ^ 1));
+                require(file.good(), "corrupt first chunk checksum");
             }
             require(refused([&] { replay_full_order_log_capture(dest); }), "damaged capture rejected");
             require(refused([&] { export_full_order_log_dbn(dest, root / (std::string(mode) + ".dbn")); }) &&

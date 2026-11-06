@@ -1,6 +1,7 @@
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
 #include "moex/plaza2/cgate/plaza2_decimal.hpp"
 #include <algorithm>
+#include <chrono>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -126,9 +127,9 @@ struct Plaza2FullOrderLog::Impl {
     std::vector<Instrument> books;
     std::size_t order_capacity, level_capacity, active_levels{}, dirty_levels{}, committed_count{};
     Binding log, snapshot;
-    BoundField info_life, info_publication, info_rev;
+    BoundField info_life, info_publication, info_rev, heartbeat_id, heartbeat_rev, heartbeat_act, heartbeat_time;
     std::size_t info_size{}, sys_index{}, sys_size{};
-    std::size_t info_index{};
+    std::size_t info_index{}, heartbeat_index{}, heartbeat_size{};
     FullOrderLogMetrics metrics;
     std::uint64_t epoch{}, life{}, initial_life{}, info_log_life{}, pending_log_life{}, event_position{};
     bool online_seen{}, unframed_snapshot{}, snapshot_framed{}, skip_empty_online_commit{};
@@ -224,10 +225,17 @@ struct Plaza2FullOrderLog::Impl {
         require(e.raw_table != nullptr, "missing row binding");
         const auto name = std::string_view(e.raw_table->name);
         const bool is_log = name == "orders_log", is_order = name == "orders";
+        const bool is_heartbeat = name == "heartbeat" && heartbeat_size != 0;
         const auto& b = is_log ? log : snapshot;
-        const auto expected_index = is_log || is_order ? b.index : name == "info" ? info_index : sys_index;
-        const auto expected_size = is_log || is_order ? b.row_size : name == "info" ? info_size : sys_size;
-        require(bound && (is_log || is_order || name == "info" || name == "sys_events") &&
+        const auto expected_index = is_log || is_order ? b.index
+                                    : name == "info"   ? info_index
+                                    : is_heartbeat     ? heartbeat_index
+                                                       : sys_index;
+        const auto expected_size = is_log || is_order ? b.row_size
+                                   : name == "info"   ? info_size
+                                   : is_heartbeat     ? heartbeat_size
+                                                      : sys_size;
+        require(bound && (is_log || is_order || name == "info" || name == "sys_events" || is_heartbeat) &&
                     e.table_index == expected_index,
                 "unknown table index");
         if (e.raw_payload.size() < expected_size)
@@ -237,6 +245,18 @@ struct Plaza2FullOrderLog::Impl {
             require(false, "row outside transaction table=" + e.raw_table->name +
                                " online_seen=yes event_kind=" + std::to_string(static_cast<unsigned>(e.kind)) +
                                " event_position=" + std::to_string(event_position));
+        if (is_heartbeat) {
+            require(read<std::int64_t>(e, heartbeat_id) >= 0 && read<std::int64_t>(e, heartbeat_rev) >= 0,
+                    "invalid heartbeat identity or revision");
+            if (!read<std::int64_t>(e, heartbeat_act)) {
+                using namespace std::chrono;
+                const auto time = read<public_wire::Time>(e, heartbeat_time);
+                const auto date = year{time.year} / month{time.month} / day{time.day};
+                require(date.ok() && time.hour < 24 && time.minute < 60 && time.second < 60 && time.msec < 1000,
+                        "invalid heartbeat server time");
+            }
+            return;
+        }
         if (!online_seen && !transaction)
             unframed_snapshot = true;
         if (online_seen)
@@ -446,11 +466,13 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
             p.bound = false;
             p.have_life = false;
             p.life = p.initial_life = 0;
-            require(e.raw_tables.size() == 4, "requires exactly orders_log, sys_events, orders and info");
+            require(e.raw_tables.size() == 4 || e.raw_tables.size() == 5,
+                    "requires orders_log, sys_events, orders and info, with optional heartbeat");
             const auto table = [&](std::string_view name) -> const Plaza2RawTableBinding& {
                 const auto i = std::find_if(e.raw_tables.begin(), e.raw_tables.end(),
                                             [&](const auto& t) { return t.name == name; });
-                require(i != e.raw_tables.end(), "requires orders_log, sys_events, orders and info");
+                if (i == e.raw_tables.end())
+                    require(false, "missing table: " + std::string(name));
                 return *i;
             };
             const auto& sys = table("sys_events");
@@ -464,6 +486,16 @@ Plaza2Error Plaza2FullOrderLog::on_plaza2_listener_event(const Plaza2ListenerEve
             p.info_life = field(info, "trades_lifenum", "i8", 8);
             p.info_publication = field(info, "publication_state", "i1", 1);
             p.info_index = info.index;
+            p.heartbeat_size = 0;
+            if (e.raw_tables.size() == 5) {
+                const auto& heartbeat = table("heartbeat");
+                p.heartbeat_id = field(heartbeat, "replID", "i8", 8);
+                p.heartbeat_rev = field(heartbeat, "replRev", "i8", 8);
+                p.heartbeat_act = field(heartbeat, "replAct", "i8", 8);
+                p.heartbeat_time = field(heartbeat, "server_time", "t", sizeof(public_wire::Time));
+                p.heartbeat_index = heartbeat.index;
+                p.heartbeat_size = heartbeat.row_size;
+            }
             p.bound = true;
             break;
         }

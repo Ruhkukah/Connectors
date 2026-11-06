@@ -98,6 +98,54 @@ static void semantics() {
             "ISIN filter precedes other field validation and filtered rows enter total rate");
 }
 
+static void heartbeat_rows() {
+    Harness h;
+    const auto& legacy = h.schema;
+    std::array schema{legacy[0], legacy[1], legacy[2], legacy[3], heartbeat_table()};
+    const auto open = [&] { return h.book.on_plaza2_listener_event({.kind = Kind::Open, .raw_tables = schema}); };
+    Row heartbeat(schema.back());
+    heartbeat.set("replID", std::int64_t{1});
+    heartbeat.set("replRev", std::int64_t{2});
+    heartbeat.set("server_time", moex::plaza2::public_wire::Time{.year = 2026, .month = 11, .day = 6});
+    require(!open(), "five-table heartbeat schema opens");
+    h.apply(row(legacy[0], 1, 11, 100000, 4));
+    h.apply(heartbeat);
+    require(!h.book.valid(), "pre-ONLINE heartbeat does not publish the snapshot");
+    h.online();
+    const auto revision = h.book.revision(11);
+    const auto market_rows = h.book.metrics().rows_total;
+    h.begin();
+    h.apply(heartbeat);
+    auto retired = heartbeat;
+    retired.set("replAct", std::int64_t{1});
+    retired.nulls[retired.field("server_time").index] = 1;
+    h.apply(retired);
+    h.commit();
+    require(h.book.valid() && h.book.order_count() == 1 && h.book.levels(11, true).at(100000) == 4 &&
+                h.book.revision(11) == revision && h.book.metrics().rows_total == market_rows,
+            "committed heartbeat and tombstone leave order state and counters unchanged");
+
+    require(h.book.on_plaza2_listener_event(heartbeat.event()).message.find("row outside transaction") !=
+                std::string::npos,
+            "post-ONLINE heartbeat requires transaction framing");
+    require(!open(), "heartbeat schema reopens after framing error");
+    auto malformed = heartbeat;
+    malformed.set("server_time", moex::plaza2::public_wire::Time{.year = 2026, .month = 2, .day = 30});
+    require(h.book.on_plaza2_listener_event(malformed.event()).message.find("invalid heartbeat server time") !=
+                std::string::npos,
+            "invalid server time is refused");
+    require(!open(), "heartbeat schema reopens after invalid timestamp");
+    auto short_row = heartbeat.event();
+    short_row.raw_payload = short_row.raw_payload.first(20);
+    require(h.book.on_plaza2_listener_event(short_row).message.find("row size table=heartbeat") != std::string::npos,
+            "short heartbeat payload is refused");
+    schema.back().fields.back().type_token = "i8";
+    require(open().code == Plaza2ErrorCode::IncompatibleScheme, "heartbeat must negotiate its server time as t");
+    h.open();
+    require(h.book.on_plaza2_listener_event(heartbeat.event()).message.find("unknown table index") != std::string::npos,
+            "legacy four-table schema does not retain a stale heartbeat binding");
+}
+
 static void committed_source_session() {
     Harness h;
     h.begin();
@@ -709,6 +757,7 @@ int main() {
     try {
         unframed_snapshot_diagnostics();
         semantics();
+        heartbeat_rows();
         committed_source_session();
         session_rollover_deletions();
         recovery();

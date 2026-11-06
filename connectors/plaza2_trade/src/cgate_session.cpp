@@ -340,6 +340,9 @@ struct CgateSession::Impl {
             const auto error = [&] {
                 if (event.kind != Open)
                     return owner.config.full_order_log_handler->on_plaza2_listener_event(event);
+                if (std::ranges::none_of(event.raw_tables, [](const auto& table) { return table.name == "heartbeat"; }))
+                    return Plaza2Error{.code = Plaza2ErrorCode::IncompatibleScheme,
+                                       .message = "FullOrderLog online schema requires heartbeat for stream liveness"};
                 auto bound = event;
                 bound.text_value = service_pair;
                 return owner.config.full_order_log_handler->on_plaza2_listener_event(bound);
@@ -391,7 +394,9 @@ struct CgateSession::Impl {
                     post_online_failure.clear();
                 }
             }
-            if (!error && (event.kind == StreamData || event.kind == TransactionCommit))
+            // ONLINE commits the initial snapshot. Subsequent activity must be committed,
+            // including heartbeat-only batches when the order book is quiet.
+            if (!error && online_seen && (event.kind == Online || event.kind == TransactionCommit))
                 activity = owner.now();
             return error;
         }

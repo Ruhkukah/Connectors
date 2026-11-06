@@ -37,7 +37,7 @@ std::vector<Plaza2RawTableBinding> decode_schema(std::span<const std::byte> byte
         return result;
     };
     const auto count = integer();
-    require(count > 0 && count <= 4, "capture invalid table count");
+    require(count > 0 && count <= 5, "capture invalid table count");
     std::vector<Plaza2RawTableBinding> result;
     std::set<std::uint32_t> indices;
     std::set<std::string> names;

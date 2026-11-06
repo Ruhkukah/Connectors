@@ -207,7 +207,7 @@ int main(int argc, char** argv) {
             require(canonical_url && (name != "MAX" || clear) && (name != "channel-close" || close),
                     "FOL URL and native clear/close lifecycle evidence must be retained");
         }
-        for (const auto activity : {"commit", "filtered-row", "sys_events"}) {
+        for (const auto activity : {"commit", "filtered-row", "sys_events", "heartbeat"}) {
             configure();
             CgateTradingHost host(configuration(std::string("quiet-") + activity));
             warm(host);
@@ -222,23 +222,35 @@ int main(int argc, char** argv) {
             if (std::string_view(activity) == "commit")
                 control.enqueue({.kind = fake::EventKind::Commit, .stream_code = cg::kFullOrderLogStreamCode});
             else
-                control.enqueue({.stream_code = cg::kFullOrderLogStreamCode,
-                                 .table_code = std::string_view(activity) == "filtered-row"
-                                                   ? gen::TableCode::kFortsTradeReplOrdersLog
-                                                   : gen::TableCode::kFortsTradeReplSysEvents,
-                                 .fields = {{.field_code = gen::FieldCode::kFortsTradeReplOrdersLogIsinId,
-                                             .signed_value = 999999}}});
+                control.enqueue(
+                    {.stream_code = cg::kFullOrderLogStreamCode,
+                     .table_code =
+                         std::string_view(activity) == "filtered-row" ? gen::TableCode::kFortsTradeReplOrdersLog
+                         : std::string_view(activity) == "heartbeat"  ? gen::TableCode::kFortsTradeReplHeartbeat
+                                                                      : gen::TableCode::kFortsTradeReplSysEvents,
+                     .fields = {{.field_code = gen::FieldCode::kFortsTradeReplOrdersLogIsinId, .signed_value = 999999},
+                                {.field_code = gen::FieldCode::kFortsTradeReplHeartbeatReplId, .signed_value = 31},
+                                {.field_code = gen::FieldCode::kFortsTradeReplHeartbeatReplRev, .signed_value = 31},
+                                {.field_code = gen::FieldCode::kFortsTradeReplHeartbeatServerTime,
+                                 .kind = fake::FieldKind::Timestamp,
+                                 .unsigned_value = 1700000007}}});
             pump(host, 3);
+            if (std::string_view(activity) != "commit") {
+                require(!place(host, "uncommitted-activity").empty(),
+                        "uncommitted heartbeat or data must not revive stream liveness");
+                control.enqueue({.kind = fake::EventKind::Commit, .stream_code = cg::kFullOrderLogStreamCode});
+                pump(host);
+            }
             require(book.revision(1001) == revision && place(host, "quiet").empty(),
                     "stream activity elsewhere must admit an unchanged quiet instrument's committed book");
             pump(host, 2);
             require(host.move("quiet", "102250", 1).empty(), "active stream must also allow quiet-instrument Move");
             pump(host, 2);
             require(host.cancel("quiet").empty(), "quiet instrument cancel");
-            if (std::string_view(activity) != "commit") {
-                control.enqueue({.kind = fake::EventKind::Commit, .stream_code = cg::kFullOrderLogStreamCode});
-                pump(host);
-            }
+            *frozen_now += std::chrono::seconds(31);
+            pump(host, 3);
+            require(!place(host, "heartbeat-stopped").empty(),
+                    "quiet book must stop admitting orders when committed stream activity stops");
             require(!host.stop(), "quiet FOL source stop");
         }
         for (const bool exchange : {false, true}) {

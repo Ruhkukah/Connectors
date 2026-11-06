@@ -12,22 +12,23 @@
       "section": "ORDLOG",
       "tables": [
         "orders_log",
+        "heartbeat",
         "sys_events"
       ],
       "command": [
-        "/tmp/moex-fol-scheme-projection-912-20261103/cgate/bin/schemetool",
+        "./schemetool",
         "makesrc",
         "--output-format",
         "ini",
         "--tables",
-        "orders_log,sys_events",
+        "orders_log,heartbeat,sys_events",
         "--output",
-        "/tmp/moex-fol-scheme-projection-912-20261103/online.ini",
-        "/tmp/moex-fol-scheme-projection-912-20261103/cgate/scheme/SPECTRA9.12.0/forts_scheme.ini",
+        "online.ini",
+        "forts_scheme.ini",
         "ORDLOG"
       ],
-      "sha256": "e9469c254ff52d895b304c147dfe95f7c5d1f003efec222273c1fec0702b4d78",
-      "bytes": 758
+      "sha256": "012943b1d16a3c7973daa0e6119befc37265bf7046b232a1885c84019204ec25",
+      "bytes": 957
     },
     {
       "name": "snapshot.ini",
@@ -37,19 +38,26 @@
         "info"
       ],
       "command": [
-        "/tmp/moex-fol-scheme-projection-912-20261103/cgate/bin/schemetool",
+        "./schemetool",
         "makesrc",
         "--output-format",
         "ini",
         "--tables",
         "orders,info",
         "--output",
-        "/tmp/moex-fol-scheme-projection-912-20261103/snapshot.ini",
-        "/tmp/moex-fol-scheme-projection-912-20261103/cgate/scheme/SPECTRA9.12.0/forts_scheme.ini",
+        "snapshot.ini",
+        "forts_scheme.ini",
         "OrdBook"
       ],
       "sha256": "2479cfc9ca726a3303a9df88fa937a4c3f7c4e8f6743d4c81cdf6f3e6808ef44",
       "bytes": 745
     }
-  ]
+  ],
+  "compatibility_projection": {
+    "source_kind": "SPECTRA9.9.0 vendor package cgate-test-9.9.1853",
+    "source_sha256": "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746",
+    "tool_sha256": "985b6710fc509637200fa7248b1082579af6f270f04f3f127b483e0eb854c4e1",
+    "online_sha256": "012943b1d16a3c7973daa0e6119befc37265bf7046b232a1885c84019204ec25",
+    "snapshot_sha256": "2479cfc9ca726a3303a9df88fa937a4c3f7c4e8f6743d4c81cdf6f3e6808ef44"
+  }
 }
