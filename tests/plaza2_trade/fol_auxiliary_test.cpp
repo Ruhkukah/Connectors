@@ -91,6 +91,41 @@ void test_decimal_bytes() {
             "settlement with odd integer precision must be exact");
 }
 
+void test_vendor_string_widths() {
+    RawRow schedule("trade_periods", 1);
+    schedule.add("trade_period_name", "c255", 256);
+    const std::string name(255, 'S');
+    schedule.text("trade_period_name", name);
+    schedule.revision(1, 2);
+
+    RawRow fee("fee_all", 2);
+    fee.add("p2login", "c64", 65);
+    fee.add("points", "i4", 4);
+    const std::string login(64, 'L');
+    fee.text("p2login", login);
+    fee.scalar("points", std::int32_t{3});
+    fee.revision(1, 2);
+
+    Projection projection({{"trade_periods", {{"trade_period_name", "c255"}}},
+                           {"fee_all", {{"p2login", "c64"}, {"points", "i4"}}, "p2login"}},
+                          login, {});
+    std::array schema{schedule.table, fee.table};
+    send(projection, {.kind = Kind::Open, .raw_tables = schema});
+    send(projection, schedule.event());
+    send(projection, fee.event());
+    send(projection, {.kind = Kind::Online});
+    require(projection.rows().at({0, 1}).values.at("trade_period_name") == name,
+            "schedule must retain all 255 characters");
+    const auto& fee_values = projection.rows().at({1, 1}).values;
+    require(fee_values.at("points") == "3" && !fee_values.contains("p2login"),
+            "fee must match all 64 login characters without publishing the login");
+
+    --schema.front().fields.back().size;
+    const auto error = projection.on_plaza2_listener_event({.kind = Kind::Open, .raw_tables = schema});
+    require(error.code == cg::Plaza2ErrorCode::IncompatibleScheme && !projection.online(),
+            "a c255 field still needs the full storage width");
+}
+
 void test_projection() {
     RawRow part("part", 8);
     part.add("client_code", "c7", 8);
@@ -308,6 +343,7 @@ void test_schema_refusal() {
 int main() {
     try {
         test_decimal_bytes();
+        test_vendor_string_widths();
         test_projection();
         test_login_cod();
         test_environment_contract();

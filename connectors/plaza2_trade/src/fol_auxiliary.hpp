@@ -39,20 +39,20 @@ inline std::size_t field_size(std::string_view type) {
         return 8;
     if (type == "t")
         return sizeof(plaza2::public_wire::Time);
-    const auto parse = [](std::string_view digits) {
+    const auto parse = [](std::string_view digits, unsigned max_width) {
         unsigned out{};
         const auto result = std::from_chars(digits.data(), digits.data() + digits.size(), out);
-        if (result.ec != std::errc{} || result.ptr != digits.data() + digits.size() || out > 32)
+        if (result.ec != std::errc{} || result.ptr != digits.data() + digits.size() || out > max_width)
             throw std::invalid_argument("unsupported auxiliary field width");
         return out;
     };
     if (type.starts_with('c'))
-        return parse(type.substr(1)) + 1;
+        return parse(type.substr(1), 255) + 1;
     if (type.starts_with('d')) {
         const auto dot = type.find('.');
         if (dot != std::string_view::npos) {
-            const auto precision = parse(type.substr(1, dot - 1));
-            const auto scale = parse(type.substr(dot + 1));
+            const auto precision = parse(type.substr(1, dot - 1), 32);
+            const auto scale = parse(type.substr(dot + 1), 32);
             if (precision > scale)
                 return 2 + (precision - scale + 1) / 2 + (scale + 1) / 2;
         }
