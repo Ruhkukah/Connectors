@@ -20,6 +20,7 @@ class Plaza2PrivateStateBridge final : public Plaza2ListenerEventHandler {
     explicit Plaza2PrivateStateBridge(private_state::Plaza2PrivateStateProjector& projector);
 
     [[nodiscard]] Plaza2Error reset(std::span<const generated::StreamCode> streams);
+    void require_full_order_log_refdata(bool required);
     [[nodiscard]] Plaza2Error begin_run();
     [[nodiscard]] Plaza2Error end_run();
     // Local reset before a fresh status snapshot; no fabricated exchange event.
@@ -29,6 +30,10 @@ class Plaza2PrivateStateBridge final : public Plaza2ListenerEventHandler {
     [[nodiscard]] const std::string& last_resync_reason() const noexcept;
     [[nodiscard]] const std::string& callback_error() const noexcept;
 
+    [[nodiscard]] std::span<const generated::FieldDescriptor>
+    replication_fields(generated::TableCode table) const noexcept override {
+        return generated::FieldsForTable(table, require_matching_);
+    }
     [[nodiscard]] Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) override;
 
   private:
@@ -71,6 +76,7 @@ class Plaza2PrivateStateBridge final : public Plaza2ListenerEventHandler {
     std::vector<projection::FieldValueSpec> field_storage_;
     std::string last_resync_reason_;
     std::string callback_error_;
+    bool require_matching_{};
 };
 
 } // namespace moex::plaza2::cgate

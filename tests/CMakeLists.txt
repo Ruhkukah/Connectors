@@ -41,6 +41,7 @@ foreach(name IN ITEMS plaza2_runtime_probe_test
         plaza2_runtime_adapter_test plaza2_runtime_listener_test plaza2_schema_contract_test)
     moex_runtime_test(${name} plaza2_cgate/${name}.cpp)
 endforeach()
+target_link_libraries(plaza2_runtime_adapter_test PRIVATE moex_plaza2_trade_codec)
 target_link_libraries(plaza2_schema_contract_test PRIVATE moex_plaza2_cgate_bridge)
 moex_runtime_test(connector_host_test connector_host_test.cpp moex_connector_host)
 
@@ -65,6 +66,8 @@ endforeach()
 foreach(name IN ITEMS plaza2_trade_fake_session_test plaza2_trade_fake_session_replication_test)
     moex_test(${name} plaza2_trade/${name}.cpp moex_plaza2_trade_fake_session moex_plaza2_cgate_private_state)
 endforeach()
+moex_test(fol_auxiliary_test plaza2_trade/fol_auxiliary_test.cpp moex_plaza2_cgate_runtime)
+target_include_directories(fol_auxiliary_test PRIVATE "${MOEX_SOURCE_ROOT}/connectors/plaza2_trade/src")
 moex_test(plaza2_public_deals_test plaza2_cgate/plaza2_public_deals_test.cpp moex_plaza2_cgate_aggr20_md)
 moex_test(plaza2_publisher_rate_test plaza2_cgate/plaza2_publisher_rate_test.cpp moex_plaza2_cgate_metadata)
 foreach(name IN ITEMS connector_host_dtc_protocol_test connector_host_dtc_server_test)
@@ -87,10 +90,14 @@ add_test(NAME dtc_runner_receipt_json COMMAND "${Python3_EXECUTABLE}"
 foreach(name IN ITEMS order_manager_test event_journal_test)
     moex_test(${name} ${name}.cpp moex_connector_host)
 endforeach()
+moex_test(full_order_log_dtc_channel_test full_order_log_dtc_channel_test.cpp moex_connector_host Threads::Threads)
+moex_test(full_order_log_dtc_identity_test full_order_log_dtc_identity_test.cpp moex_connector_host Threads::Threads)
+set_tests_properties(full_order_log_dtc_channel_test full_order_log_dtc_identity_test PROPERTIES TIMEOUT 20)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/trading_host_test.cpp")
     moex_runtime_test(trading_host_test trading_host_test.cpp moex_connector_host)
 endif()
 moex_runtime_test(command_latency_test command_latency_test.cpp moex_connector_host)
+moex_runtime_test(full_order_log_trading_test full_order_log_trading_test.cpp moex_connector_host)
 set_tests_properties(command_latency_test PROPERTIES TIMEOUT 60)
 moex_runtime_test(instrument_lookup_benchmark instrument_lookup_benchmark.cpp moex_connector_host)
 set_tests_properties(instrument_lookup_benchmark PROPERTIES TIMEOUT 60)
@@ -118,3 +125,61 @@ moex_test(plaza2_private_state_transaction_perf_test plaza2_cgate/plaza2_private
     moex_plaza2_cgate_bridge)
 target_compile_definitions(plaza2_private_state_transaction_perf_test PRIVATE
     MOEX_RELEASE_PERFORMANCE_ACCEPTANCE=$<CONFIG:Release>)
+
+add_executable(plaza2_full_order_log_test plaza2_cgate/plaza2_full_order_log_test.cpp)
+target_link_libraries(plaza2_full_order_log_test PRIVATE moex_plaza2_cgate_full_order_log)
+add_test(NAME plaza2_full_order_log_test COMMAND plaza2_full_order_log_test)
+
+moex_runtime_test(plaza2_full_order_log_session_test plaza2_cgate/plaza2_full_order_log_session_test.cpp moex_plaza2_trade_session moex_full_order_log_capture)
+
+moex_test_target(full_order_log_live_probe plaza2_cgate/full_order_log_live_probe.cpp moex_connector_host)
+moex_test(full_order_log_live_probe_test plaza2_cgate/full_order_log_live_probe_test.cpp moex_connector_host)
+add_test(NAME full_order_log_live_metrics_test COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/full_order_log_live_metrics_test.py")
+
+# Opt-in performance gate; the executable is available in every test build.
+moex_test_target(plaza2_full_order_log_benchmark plaza2_cgate/plaza2_full_order_log_benchmark.cpp
+    plaza2_runtime_test_support moex_connector_host)
+add_dependencies(plaza2_full_order_log_benchmark plaza2_fake_cgate_runtime)
+option(MOEX_ENABLE_PERF_TESTS "Include sustained Full Order Log perf acceptance in CTest" OFF)
+if(MOEX_ENABLE_PERF_TESTS)
+    add_test(NAME plaza2_full_order_log_perf COMMAND plaza2_full_order_log_benchmark
+        "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+    set_tests_properties(plaza2_full_order_log_perf PROPERTIES LABELS "perf;plaza2" TIMEOUT 120)
+endif()
+
+if(MOEX_BUILD_APPS)
+    moex_test_target(full_order_log_trading_runner_test full_order_log_trading_runner_test.cpp plaza2_runtime_test_support moex_connector_host)
+    add_dependencies(full_order_log_trading_runner_test moex_full_order_log_dtc_runner plaza2_fake_cgate_runtime)
+    add_test(NAME full_order_log_trading_runner_test COMMAND full_order_log_trading_runner_test
+        "$<TARGET_FILE:moex_full_order_log_dtc_runner>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+    set_tests_properties(full_order_log_trading_runner_test PROPERTIES LABELS "integration;plaza2;sanitizer" TIMEOUT 90)
+    foreach(case outages restart command-matrix mass-cancel-matrix rate-matrix dtc-worker)
+        string(REPLACE "-" "_" test_name "${case}")
+        add_test(NAME full_order_log_writer_${test_name}_test COMMAND full_order_log_trading_runner_test
+            "$<TARGET_FILE:moex_full_order_log_dtc_runner>" "$<TARGET_FILE:plaza2_fake_cgate_runtime>" "${case}")
+        set_tests_properties(full_order_log_writer_${test_name}_test PROPERTIES
+            LABELS "integration;plaza2;sanitizer" TIMEOUT 60)
+    endforeach()
+    moex_test_target(full_order_log_runner_test_driver full_order_log_runner_test_driver.cpp moex_connector_host)
+    target_sources(full_order_log_runner_test_driver PRIVATE "${MOEX_SOURCE_ROOT}/apps/moexctl.cpp")
+    moex_test_target(full_order_log_isolation_test full_order_log_isolation_test.cpp plaza2_runtime_test_support moex_connector_host moex_full_order_log_capture)
+    add_dependencies(full_order_log_isolation_test moexctl full_order_log_runner_test_driver plaza2_fake_cgate_runtime)
+    add_test(NAME full_order_log_isolation_test COMMAND full_order_log_isolation_test
+        "$<TARGET_FILE:moexctl>" "$<TARGET_FILE:full_order_log_runner_test_driver>"
+        "$<TARGET_FILE:plaza2_fake_cgate_runtime>")
+    set_tests_properties(full_order_log_isolation_test PROPERTIES LABELS "integration;plaza2;sanitizer" TIMEOUT 30)
+endif()
+
+moex_test(full_order_log_dtc_source_test full_order_log_dtc_source_test.cpp moex_connector_host)
+moex_test(full_order_log_dtc_metrics_test full_order_log_dtc_metrics_test.cpp moex_connector_host)
+if(TARGET full_order_log_runner_test_driver)
+    target_link_libraries(full_order_log_runner_test_driver PRIVATE moex_full_order_log_capture)
+endif()
+moex_test(full_order_log_capture_test plaza2_cgate/full_order_log_capture_test.cpp moex_full_order_log_capture)
+moex_runtime_test(full_order_log_backfill_collector_test plaza2_cgate/full_order_log_backfill_collector_test.cpp moex_full_order_log_capture)
+if(TARGET full_order_log_trading_runner_test)
+    target_link_libraries(full_order_log_trading_runner_test PRIVATE moex_full_order_log_capture)
+endif()
+moex_test(full_order_log_oi_test plaza2_cgate/full_order_log_oi_test.cpp moex_full_order_log_capture)
+moex_runtime_test(full_order_log_oi_session_test plaza2_cgate/full_order_log_oi_session_test.cpp moex_plaza2_trade_session moex_full_order_log_capture)

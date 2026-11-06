@@ -153,6 +153,11 @@ struct ConnectorHostMarketDataSnapshot {
 [[nodiscard]] std::string render_snapshot(const ConnectorHostSnapshot& snapshot, bool json);
 
 // Single-threaded owner. Callers receive values, never transport/projector pointers.
+[[nodiscard]] ConnectorHostMarketDataSnapshot
+project_connector_market_data(const plaza2_trade::CgateSession& host, std::int64_t isin_id, bool full_order_log,
+                              std::int64_t now_seconds, bool failed = false,
+                              std::string_view target_underlying_board = {}, std::string_view target_currency = {});
+
 class ConnectorHost final {
   public:
     explicit ConnectorHost(Plaza2HostConfig config);
@@ -165,6 +170,9 @@ class ConnectorHost final {
     [[nodiscard]] ConnectorHostSnapshot snapshot() const;
     [[nodiscard]] bool has_publisher_or_reply_handles() const noexcept;
     [[nodiscard]] ConnectorHostMarketDataSnapshot market_data_snapshot() const;
+    [[nodiscard]] std::uint64_t market_data_metadata_revision() const noexcept;
+    // Owner-thread diagnostics, borrowed until the next poll; contains no CGate handles.
+    [[nodiscard]] const plaza2_trade::CgatePollMetrics& last_poll_metrics() const noexcept;
     [[nodiscard]] bool public_deals_enabled() const noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;

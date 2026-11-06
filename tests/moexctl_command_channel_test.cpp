@@ -685,6 +685,14 @@ int main(int argc, char** argv) {
         test::require(::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0,
                       "stale socket fixture bind failed");
         ::close(fd); // The same owner crashed, leaving no listener on this socket inode.
+        bool no_lock_refused{};
+        try {
+            moex::connector_host::CommandSocket unowned(path);
+        } catch (const std::runtime_error&) {
+            no_lock_refused = true;
+        }
+        test::require(no_lock_refused && std::filesystem::exists(path),
+                      "stale endpoint removed without identity state ownership");
         auto arguments = run_arguments(executable, fixture, log, "cli_stale");
         arguments.insert(arguments.end(), {"--command-socket", path.string()});
         Child owner(arguments, root / "stale.err");

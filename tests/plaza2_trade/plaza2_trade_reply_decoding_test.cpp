@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -79,6 +80,62 @@ void test_error_decoding() {
             "nonzero system error code should be classified as system error");
 }
 
+// CGate 9.12.0.2144 packaged p2gate_en.html Appendix C, matching the Russian edition.
+// Archive SHA-256 73fb651459fdb1420f82f684e7c2fc3dbaa20dac085f9ff83fdc38fc35e16d61.
+// forts_messages.ini declares an i4 code, with no per-command list of possible values.
+// Injecting this global list tests the codec, independent of exchange applicability.
+constexpr std::int32_t kAppendixCReturnCodes[] = {
+    -1,    0,     1,     2,     3,     4,     5,     6,     7,     8,     9,     10,    12,    13,    14,    25,
+    26,    27,    28,    31,    32,    33,    34,    35,    36,    37,    38,    39,    40,    41,    42,    43,
+    44,    45,    46,    47,    48,    49,    50,    53,    54,    55,    56,    57,    58,    60,    61,    62,
+    63,    64,    65,    66,    67,    68,    69,    70,    71,    72,    73,    74,    75,    76,    77,    78,
+    79,    80,    81,    82,    85,    90,    95,    100,   105,   110,   115,   120,   125,   130,   135,   140,
+    310,   311,   312,   314,   315,   316,   317,   318,   320,   331,   332,   333,   335,   336,   337,   338,
+    339,   680,   681,   682,   3000,  3001,  3002,  3003,  4000,  4001,  4002,  4004,  4005,  4006,  4007,  4008,
+    4009,  4010,  4011,  4012,  4013,  4014,  4015,  4016,  4017,  4018,  4021,  4022,  4023,  4024,  4025,  4026,
+    4027,  4028,  4030,  4031,  4032,  4033,  4034,  4035,  4040,  4041,  4042,  4043,  4044,  4045,  4046,  4050,
+    4051,  4052,  4055,  4060,  4061,  4062,  4063,  4064,  4065,  4066,  4067,  4069,  4070,  4090,  4091,  4092,
+    4093,  4094,  4095,  4096,  4097,  4098,  4099,  4100,  4101,  4102,  4103,  4104,  4105,  4106,  4107,  4108,
+    4109,  4110,  4111,  4112,  4115,  4116,  4117,  4118,  4119,  4122,  4123,  4124,  4125,  4126,  4127,  4128,
+    4129,  4130,  4131,  4132,  4133,  4134,  4135,  4136,  4137,  4138,  4139,  4140,  4141,  4142,  4143,  4144,
+    4145,  4146,  4147,  4148,  4149,  4150,  4151,  4152,  4153,  4154,  4155,  4160,  4161,  4162,  4163,  4164,
+    4165,  4166,  4167,  4169,  4170,  4171,  4172,  4173,  4174,  4175,  4180,  4181,  4200,  4201,  4202,  4203,
+    4204,  4205,  4206,  4207,  4208,  4220,  4221,  4222,  4223,  4224,  4225,  4226,  4227,  4230,  4231,  4232,
+    4233,  4234,  4258,  4259,  4260,  4261,  4262,  4264,  4266,  4268,  4269,  4280,  4281,  4282,  4283,  4284,
+    4285,  4300,  4301,  4302,  4303,  4304,  4305,  5052,  5055,  5061,  5062,  5063,  5064,  5065,  5069,  5071,
+    5072,  5073,  5074,  10000, 10001, 10004, 10005, 10006, 20000, 20001, 20002, 20003, 20004, 20005, 20006, 20007,
+    20008, 20009, 20010, 20011, 20012, 20013, 20014, 20015, 20016, 20017, 20018, 20019, 20101, 20102, 20103, 20104,
+    20105, 20106, 20107, 20108, 20109, 20110, 20111, 20112, 20113, 20114, 20115, 20116, 20117, 20129, 20130, 30000,
+    30001, 30002, 40000, 40001, 40002, 40003, 40004, 40005, 40006, 40007,
+};
+
+void test_appendix_c_command_replies() {
+    using namespace moex::plaza2_trade::test_support;
+    const Plaza2TradeCodec codec;
+    const auto check = [&](std::int32_t msgid, const auto& wire) {
+        Plaza2TradeValidationResult validation;
+        const auto reply = codec.decode_reply(msgid, wire_bytes(wire), validation);
+        const auto expected =
+            wire.code == 0 ? Plaza2TradeReplyStatusCategory::Accepted : Plaza2TradeReplyStatusCategory::Rejected;
+        if (!validation.ok() || reply.msgid != msgid || reply.code != wire.code || reply.status != expected ||
+            reply.message != "reply code fixture")
+            throw std::runtime_error("incorrect command reply for message " + std::to_string(msgid) + " and code " +
+                                     std::to_string(wire.code));
+    };
+    const auto check_code = [&](std::int32_t code) {
+        using namespace official_cgate99;
+        check(FORTS_MSG179_msgid, FORTS_MSG179{.code = code, .message = "reply code fixture"});
+        check(FORTS_MSG176_msgid, FORTS_MSG176{.code = code, .message = "reply code fixture"});
+        check(FORTS_MSG177_msgid, FORTS_MSG177{.code = code, .message = "reply code fixture"});
+        check(FORTS_MSG186_msgid, FORTS_MSG186{.code = code, .message = "reply code fixture"});
+    };
+    for (const auto code : kAppendixCReturnCodes)
+        check_code(code);
+    // Signed i4 is open-ended. Code 99 must also remain an ordinary command error.
+    for (const auto code : {std::numeric_limits<std::int32_t>::min(), 99, std::numeric_limits<std::int32_t>::max()})
+        check_code(code);
+}
+
 void test_unknown_and_short_replies_fail_closed() {
     const Plaza2TradeCodec codec;
     Plaza2TradeValidationResult validation;
@@ -143,6 +200,7 @@ int main() {
         test_add_order_reply_decoding();
         test_move_reply_decoding();
         test_error_decoding();
+        test_appendix_c_command_replies();
         test_unknown_and_short_replies_fail_closed();
         test_excluded_command_replies_fail_closed();
         test_official_reply_layouts();
