@@ -415,7 +415,20 @@ struct CgateSession::Impl {
     };
     struct EnvironmentAuthority {
         std::string_view name{"none"}, refusal{};
+        std::int64_t environment_id{}, revision{};
+        std::uint64_t life_num{};
+        std::array<char, 9> environment_name{}; // c8 plus its terminator
+
         bool operator==(const EnvironmentAuthority&) const = default;
+
+        std::string venue_fields_json() const {
+            if (!environment_id)
+                return {};
+            return ",\"environment_id\":" + std::to_string(environment_id) +
+                   ",\"environment_name\":" + json_quote(environment_name.data()) +
+                   ",\"environment_repl_rev\":" + std::to_string(revision) +
+                   ",\"environment_life_num\":" + std::to_string(life_num);
+        }
     };
     static constexpr auto auxiliary_code = static_cast<StreamCode>(0xF0110002u);
     CgateSessionConfig config;
@@ -1256,7 +1269,12 @@ struct CgateSession::Impl {
         const auto& row = rows.begin()->second;
         if (rows.size() != 1 || !fol_auxiliary::environment_matches(row, config.runtime.environment))
             return {.refusal = "REFDATA Spectra environment conflicts with configured environment"};
-        return {.name = "venue_row"};
+        EnvironmentAuthority authority{.name = "venue_row",
+                                       .environment_id = integer_value(value(row, "environment_id")),
+                                       .revision = row.revision,
+                                       .life_num = environment->data.life()};
+        std::ranges::copy(value(row, "environment_name"), authority.environment_name.begin());
+        return authority;
     }
     void report_environment_authority() {
         if (!requires_environment_authority())
@@ -1269,11 +1287,8 @@ struct CgateSession::Impl {
             return;
         reported_environment_authority = current;
         std::string fields = "{\"environment_authority\":" + json_quote(current.name) +
-                             ",\"reason\":" + (current.refusal.empty() ? "null" : json_quote(current.refusal));
-        if (current.name == "venue_row")
-            fields += config.runtime.environment == cg::Plaza2Environment::Test
-                          ? R"(,"environment_id":2,"environment_name":"MXFOPREP")"
-                          : R"(,"environment_id":1,"environment_name":"MXFOPROD")";
+                             ",\"reason\":" + (current.refusal.empty() ? "null" : json_quote(current.refusal)) +
+                             current.venue_fields_json();
         log("full_order_log_environment_authority", fields + '}');
     }
     std::string_view account_risk_refusal() const noexcept {
@@ -1307,7 +1322,8 @@ struct CgateSession::Impl {
         const auto risk_refusal = account_risk_refusal(environment.refusal);
         std::string out = "{\"venue_cod\":" + json_quote(cod_state()) +
                           ",\"account_risk_refusal\":" + (risk_refusal.empty() ? "null" : json_quote(risk_refusal)) +
-                          ",\"environment_authority\":" + json_quote(environment.name);
+                          ",\"environment_authority\":" + json_quote(environment.name) +
+                          environment.venue_fields_json();
         if (config.full_order_log_partitioned)
             out += std::string(",\"matching_current\":") + (matching_current && refdata_current() ? "true" : "false");
         if (config.full_order_log_advisory && !auxiliary_source("spectra_environment"))

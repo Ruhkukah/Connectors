@@ -384,7 +384,7 @@ inline bool environment_matches(const Projection::Row& row, cg::Plaza2Environmen
     const auto name = value(row, "environment_name");
     switch (expected) {
     case cg::Plaza2Environment::Test:
-        return id == "2" && name == "MXFOPREP";
+        return (id == "2" && name == "MXFOPREP") || (id == "7" && name == "MXFOT1");
     case cg::Plaza2Environment::Prod:
         return id == "1" && name == "MXFOPROD";
     }

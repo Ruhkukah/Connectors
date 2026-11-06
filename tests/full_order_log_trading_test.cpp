@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdlib>
 #include <fstream>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 
@@ -431,7 +432,9 @@ int main(int argc, char** argv) {
         require(refused_prod.start().code == cg::Plaza2ErrorCode::InvalidConfiguration,
                 "legacy configuration authority must reject PROD");
 
-        const auto check_environment = [&](std::string_view profile, bool opt_in, std::string_view expected) {
+        const auto check_environment = [&](std::string_view profile, bool opt_in, std::string_view expected,
+                                           std::initializer_list<std::string_view> fields = {},
+                                           std::string_view refusal = {}) {
             configure();
             control.set(fake::Option::FolRiskStreams, profile);
             auto config = environment_config;
@@ -453,13 +456,24 @@ int main(int argc, char** argv) {
                     require(!session.poll(false), "FOL environment fixture poll");
             };
             pump();
-            require(session.full_order_log_auxiliary_status().find(authority(expected)) != std::string::npos &&
+            const auto status = session.full_order_log_auxiliary_status();
+            require(status.find(authority(expected)) != std::string::npos &&
                         authority_events.back().find(authority(expected)) != std::string::npos,
                     "unexpected FOL environment authority for " + std::string(profile));
-            if (expected == "venue_row")
-                require(authority_events.back().find(R"("environment_id":2,"environment_name":"MXFOPREP")") !=
-                            std::string::npos,
-                        "journal must include the validated TEST row identity");
+            const auto contains_field = [](std::string_view json, std::string_view field) {
+                const auto pos = json.find(field);
+                if (pos == std::string_view::npos)
+                    return false;
+                const auto after = pos + field.size();
+                return after < json.size() && (json[after] == ',' || json[after] == '}');
+            };
+            for (const auto field : fields)
+                require(contains_field(status, field) && contains_field(authority_events.back(), field),
+                        "journal and status must include " + std::string(field) + " for " + std::string(profile));
+            if (!refusal.empty())
+                require(status.find(refusal) != std::string::npos &&
+                            authority_events.back().find(refusal) != std::string::npos,
+                        "journal and status must report the committed environment refusal for " + std::string(profile));
             if (expected == "none") {
                 auto add = tr::test_support::make_add_order();
                 add.isin_id = 1001;
@@ -495,9 +509,15 @@ int main(int argc, char** argv) {
         test::write_text_file(fixture.scheme_path,
                               test::build_vendor_like_runtime_scheme("SPECTRA9.12.0", "9.12", "TEST") +
                                   "[dbscheme:REFDATA]\ntable=spectra_environment\n");
-        check_environment("ready", true, "venue_row");
-        check_environment("no-environment", true, "none");
-        check_environment("wrong-environment", true, "none");
+        check_environment("ready", true, "venue_row",
+                          {R"("environment_id":2)", R"("environment_name":"MXFOPREP")", R"("environment_repl_rev":1)",
+                           R"("environment_life_num":7)"});
+        check_environment("t1-environment", true, "venue_row",
+                          {R"("environment_id":7)", R"("environment_name":"MXFOT1")", R"("environment_repl_rev":42)",
+                           R"("environment_life_num":131140477)"});
+        check_environment("no-environment", true, "none", {}, "committed snapshot is empty");
+        check_environment("two-environments", true, "none", {}, "conflicts with configured environment");
+        check_environment("wrong-environment", true, "none", {}, "conflicts with configured environment");
         if (argc == 3) {
             std::filesystem::copy_file(argv[2], fixture.scheme_path, std::filesystem::copy_options::overwrite_existing);
             check_environment("ready", false, "none");

@@ -275,14 +275,41 @@ void test_login_cod() {
 
 void test_environment_contract() {
     using cg::Plaza2Environment;
-    const Projection::Row test{.values = {{"environment_id", "2"}, {"environment_name", "MXFOPREP"}}};
-    const Projection::Row prod{.values = {{"environment_id", "1"}, {"environment_name", "MXFOPROD"}}};
-    const Projection::Row mixed{.values = {{"environment_id", "2"}, {"environment_name", "MXFOPROD"}}};
-    require(environment_matches(test, Plaza2Environment::Test) && environment_matches(prod, Plaza2Environment::Prod) &&
-                !environment_matches(prod, Plaza2Environment::Test) &&
-                !environment_matches(test, Plaza2Environment::Prod) &&
-                !environment_matches(mixed, Plaza2Environment::Test),
-            "environment identity must match both fields for the configured runtime environment");
+    RawRow environment("spectra_environment", 0);
+    environment.add("environment_id", "i4", 4);
+    environment.add("environment_name", "c8", 9);
+    constexpr std::array<std::uint8_t, 9> observed_t1_name{0x4d, 0x58, 0x46, 0x4f, 0x54, 0x31, 0, 0, 0};
+    environment.revision(1, 1);
+    environment.scalar("environment_id", std::int32_t{7});
+    environment.set("environment_name", std::as_bytes(std::span(observed_t1_name)));
+    Projection projection({{"spectra_environment", {{"environment_id", "i4"}, {"environment_name", "c8"}}}}, {}, {});
+    send(projection, {.kind = Kind::Open, .raw_tables = std::span(&environment.table, 1)});
+    send(projection, {.kind = Kind::TransactionBegin});
+    send(projection, environment.event());
+    send(projection, {.kind = Kind::TransactionCommit});
+    send(projection, {.kind = Kind::Online});
+    require(projection.rows().size() == 1, "observed T1 environment row must be committed");
+    const auto& t1 = projection.rows().begin()->second;
+    require(value(t1, "environment_name") == "MXFOT1" && environment_matches(t1, Plaza2Environment::Test) &&
+                !environment_matches(t1, Plaza2Environment::Prod),
+            "the observed c8 T1 row must decode to MXFOT1 and authorize only TEST");
+
+    const auto check = [](const char* id, const char* name, bool test, bool prod) {
+        const Projection::Row row{.values = {{"environment_id", id}, {"environment_name", name}}};
+        require(environment_matches(row, Plaza2Environment::Test) == test &&
+                    environment_matches(row, Plaza2Environment::Prod) == prod,
+                "environment identity must match an exact pair for the configured runtime environment");
+    };
+    check("2", "MXFOPREP", true, false);
+    check("1", "MXFOPROD", false, true);
+    check("7", "MXFOPREP", false, false);
+    check("2", "MXFOT1", false, false);
+    check("7", "MXFOPROD", false, false);
+    check("1", "MXFOT1", false, false);
+    check("2", "MXFOPROD", false, false);
+    check("1", "MXFOPREP", false, false);
+    check("8", "MXFOT1", false, false);
+    check("7", "UNKNOWN", false, false);
 }
 
 void test_empty_prohibition_snapshot() {
