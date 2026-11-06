@@ -1,6 +1,7 @@
 #include "moex/connector_host/dtc_read_only_server.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cerrno>
@@ -745,7 +746,15 @@ void manual_trading_reconnect(bool deferred) {
     h.got.clear();
     balance = DtcOwnBalance{.free_kopecks = 4321, .blocked_kopecks = 5679, .total_kopecks = 10000};
     query(601, 76);
-    const Read cash(h.first(600).payload);
+    const auto cash_reply = [&] {
+        return std::ranges::find_if(h.got, [](const DtcFrame& frame) {
+            return frame.message_type == 600 && number_or_zero(Read(frame.payload), 1) == 76;
+        });
+    };
+    await([&] { return cash_reply() != h.got.end(); });
+    const auto cash_frame = cash_reply();
+    check(cash_frame != h.got.end(), "balance request 76 gets a scoped reply");
+    const Read cash(cash_frame->payload);
     check(cash.n.at(1) == 76 && cash.d.at(2) == 100 && cash.d.at(3) == 43.21 && cash.d.at(7) == 56.79 &&
               cash.s.at(4) == "RUB" && cash.s.at(5) == "FAKE001" && cash.n.at(8) == 1 && cash.n.at(9) == 1 &&
               !cash.d.contains(6) && !cash.d.contains(12) && !cash.d.contains(13),
@@ -908,8 +917,17 @@ void manual_trading_reconnect(bool deferred) {
     dbl(robot_replace, 3, 123.46);
     num(robot_replace, 6, 1);
     h.send(packet(204, robot_replace));
-    h.pump(15);
-    check(moved == 1 && Read(h.first(301).payload).n[11] == 10, "robot-origin DTC Move refused");
+    const auto robot_rejection = [&] {
+        return std::ranges::find_if(h.got, [](const DtcFrame& frame) {
+            if (frame.message_type != 301)
+                return false;
+            const Read reply(frame.payload);
+            const auto client_id = reply.s.find(8);
+            return client_id != reply.s.end() && client_id->second == "robot-123" && number_or_zero(reply, 11) == 10;
+        });
+    };
+    await([&] { return robot_rejection() != h.got.end(); });
+    check(moved == 1 && robot_rejection() != h.got.end(), "robot-origin DTC Move refused");
     Bytes robot_cancel;
     txt(robot_cancel, 1, "9022");
     txt(robot_cancel, 2, "robot-123");

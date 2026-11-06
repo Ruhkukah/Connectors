@@ -266,9 +266,10 @@ int main() {
         Plaza2FullOrderLog book(ids, 1024, 256);
         FullOrderLogCaptureOptions o;
         o.directory = root / "good";
-        o.block_bytes = 4096;
-        o.queue_blocks = 32;
-        o.segment_bytes = 8192;
+        // Keep this functional fixture within the bounded queue even if CI delays the disk worker.
+        o.block_bytes = 8192;
+        o.queue_blocks = 64;
+        o.segment_bytes = 16384;
         o.max_bytes = 4 << 20;
         o.min_free_bytes = 0;
         o.flush_interval = std::chrono::milliseconds(1);
@@ -278,7 +279,9 @@ int main() {
         FullOrderLogCapture capture(o, ids, book);
         const auto send = [&](Plaza2ListenerEvent e) {
             e.stream_code = kFullOrderLogStreamCode;
-            require(!capture.on_plaza2_listener_event(e), "capture callback");
+            if (const auto error = capture.on_plaza2_listener_event(e); error)
+                throw std::runtime_error("capture callback kind=" + std::to_string(static_cast<unsigned>(e.kind)) +
+                                         " table=" + (e.raw_table ? e.raw_table->name : "none") + ": " + error.message);
         };
         send({.kind = Kind::Open, .raw_tables = heartbeat_schema});
         const auto selected = [&](const Row& r) {
@@ -291,9 +294,11 @@ int main() {
         // An excluded add is still recorded in full before book filtering.
         selected(row(schema[0], 2, 11, 1234567, 5, 1, 2, 0x2));
         require(!book.valid(), "snapshot hidden while recording");
-        std::this_thread::sleep_for(std::chrono::milliseconds(3));
-        capture.poll();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        const auto flush_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (capture.metrics().stored_bytes <= 32 && std::chrono::steady_clock::now() < flush_deadline) {
+            capture.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         require(capture.metrics().stored_bytes > 32, "quiet partial block flush reaches disk worker");
         send({.kind = Kind::Online});
         require(book.valid(), "snapshot commits at ONLINE");
@@ -312,10 +317,6 @@ int main() {
             send({.kind = Kind::TransactionBegin});
             selected(row(schema[2], 1, 11, 1234567, 3 + i % 2, 1, 10 + i));
             send({.kind = Kind::TransactionCommit});
-            if (i % 5 == 0) {
-                capture.poll();
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
         }
         send({.kind = Kind::Close});
         capture.finish();
