@@ -161,11 +161,23 @@ void erase_option(std::vector<std::string>& argv, std::string_view option) {
 }
 void check_environment_authority_cli(const std::string& executable, const test::RuntimeFixturePaths& fixture) {
     const auto flag = host::kFolConfigurationAuthorityOption;
-    std::vector<std::string_view> parsed_args{
-        "plaza2", "run", "--allow-orders", "--runtime-root", fixture.root.native(),
-        "--scheme-dir", fixture.scheme_dir.native(), "--config-dir", fixture.config_dir.native(),
-        "--env-settings-var", "MOEX_FOL_RUNNER_SETTINGS", "--broker-code-env", "MOEX_FOL_RUNNER_BROKER",
-        "--client-code-env", "MOEX_FOL_RUNNER_CLIENT", "--isin-id", "1001"};
+    std::vector<std::string_view> parsed_args{"plaza2",
+                                              "run",
+                                              "--allow-orders",
+                                              "--runtime-root",
+                                              fixture.root.native(),
+                                              "--scheme-dir",
+                                              fixture.scheme_dir.native(),
+                                              "--config-dir",
+                                              fixture.config_dir.native(),
+                                              "--env-settings-var",
+                                              "MOEX_FOL_RUNNER_SETTINGS",
+                                              "--broker-code-env",
+                                              "MOEX_FOL_RUNNER_BROKER",
+                                              "--client-code-env",
+                                              "MOEX_FOL_RUNNER_CLIENT",
+                                              "--isin-id",
+                                              "1001"};
     const auto configured = [&] {
         return host::parse_operator_arguments(parsed_args, true)
             .config.transport.host.full_order_log_legacy_configuration_authority;
@@ -181,8 +193,7 @@ void check_environment_authority_cli(const std::string& executable, const test::
         Process child(request, label);
         test::require(child.wait() == 2 && child.errors().find(reason) != std::string::npos,
                       "authority option did not fail closed in " + label + ": " + child.errors());
-        test::require(!fs::exists(label + ".ndjson") &&
-                          !fs::exists(fixture.config_dir / "fol-native-posts.log"),
+        test::require(!fs::exists(label + ".ndjson") && !fs::exists(fixture.config_dir / "fol-native-posts.log"),
                       "authority refusal reached the journal or native post path");
     };
     auto request = arguments(executable, fixture, "authority-offline.ndjson", "fol_authority");

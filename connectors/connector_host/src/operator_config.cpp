@@ -142,8 +142,8 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args,
     out.command = args[1];
     std::map<std::string, std::string> values;
     std::set<std::string> flags;
-    const std::set<std::string_view> flag_names{"--json", "--allow-orders", "--read-only-market-data",
-                                                "--public-deals", kFolConfigurationAuthorityOption};
+    const std::set<std::string_view> flag_names{"--json", "--allow-orders", "--read-only-market-data", "--public-deals",
+                                                kFolConfigurationAuthorityOption};
     const std::set<std::string_view> value_names{"--runtime-root",
                                                  "--scheme-dir",
                                                  "--config-dir",
@@ -183,9 +183,8 @@ OperatorRequest parse_operator_arguments(std::span<const std::string_view> args,
     };
     const auto env = get("--environment", "test");
     const bool configuration_authority = flags.contains(std::string(kFolConfigurationAuthorityOption));
-    if (configuration_authority &&
-        (!allow_fol_configuration_authority || out.command != "run" || env != "test" ||
-         !flags.contains("--allow-orders") || flags.contains("--read-only-market-data")))
+    if (configuration_authority && (!allow_fol_configuration_authority || out.command != "run" || env != "test" ||
+                                    !flags.contains("--allow-orders") || flags.contains("--read-only-market-data")))
         throw std::invalid_argument("--environment-authority=configuration requires the live TEST FOL writer");
     const auto required = [&](const char* key) {
         auto value = get(key);

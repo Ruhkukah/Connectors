@@ -1262,8 +1262,8 @@ struct CgateSession::Impl {
         if (!requires_environment_authority())
             return;
         auto current = environment_authority(true);
-        if (config.read_only_market_data && !auxiliary_source("spectra_environment") &&
-            connection_was_active && observed_connection == Active && refdata_current(true))
+        if (config.read_only_market_data && !auxiliary_source("spectra_environment") && connection_was_active &&
+            observed_connection == Active && refdata_current(true))
             current.refusal = "spectra_environment not declared by client scheme";
         if (reported_environment_authority == current)
             return;
