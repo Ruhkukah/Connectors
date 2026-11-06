@@ -28,6 +28,25 @@ constexpr std::uint32_t Closed = 0, Error = 1, Opening = 2, Active = 3, Unsuppor
 Plaza2Error invalid(std::string message) {
     return {.code = Plaza2ErrorCode::InvalidConfiguration, .message = std::move(message)};
 }
+bool client_scheme_has_spectra_environment(const std::filesystem::path& path) {
+    std::ifstream scheme(path);
+    const auto trim = [](std::string_view text) {
+        const auto first = text.find_first_not_of(" \t\r");
+        return first == text.npos ? std::string_view{} : text.substr(first, text.find_last_not_of(" \t\r") - first + 1);
+    };
+    bool refdata{};
+    std::string line;
+    while (std::getline(scheme, line)) {
+        const auto text = trim(std::string_view(line).substr(0, line.find(';')));
+        if (text.starts_with('['))
+            refdata = text == "[dbscheme:REFDATA]";
+        const auto equal = text.find('=');
+        if (refdata && equal != text.npos && trim(text.substr(0, equal)) == "table" &&
+            trim(text.substr(equal + 1)) == "spectra_environment")
+            return true;
+    }
+    return false;
+}
 void replace(std::string& value, std::string_view from, std::string_view to) {
     std::size_t at = 0;
     while ((at = value.find(from, at)) != std::string::npos) {
@@ -438,8 +457,6 @@ struct CgateSession::Impl {
     std::optional<std::uint32_t> observed_connection, observed_publisher;
     explicit Impl(CgateSessionConfig c)
         : config(std::move(c)), book({}, config.market_data_isin_ids), rate(config.publisher_messages_per_second) {
-        if (config.full_order_log_advisory)
-            configure_auxiliary();
         replies.penalty = [this](std::uint32_t ms) {
             if (config.publisher_rate_owner == PublisherRateOwner::Session)
                 rate.penalize(now_ms(), ms);
@@ -754,6 +771,8 @@ struct CgateSession::Impl {
             app_name = settings.substr(app + 9, settings.find(';', app + 9) - (app + 9));
         if (auto error = connection.create(env, settings); error)
             return error;
+        if (config.full_order_log_advisory)
+            configure_auxiliary(client_scheme_has_spectra_environment(probe.layout.scheme_path));
         initialized = true;
         recovery.operation = Plaza2SessionOperation::Starting;
         ++recovery.generation;
@@ -766,8 +785,9 @@ struct CgateSession::Impl {
         }
         return {};
     }
-    void configure_auxiliary() {
+    void configure_auxiliary(bool environment_supported) {
         using fol_auxiliary::Table;
+        auxiliary.clear();
         const auto add = [&](std::string_view name, std::string_view url, bool match, std::vector<Table> tables,
                              std::string account = {}) {
             auxiliary.push_back(std::unique_ptr<Auxiliary>(new Auxiliary{
@@ -805,8 +825,12 @@ struct CgateSession::Impl {
             {{"curr_online", {{"rate_id", "i4"}, {"value", "d16.5"}, {"moment", "t"}}}});
         add("index", "p2repl://RTS_INDEX_REPL;tables=rts_index", false,
             {{"rts_index", {{"name", "c25"}, {"value_highprec", "d18.6"}, {"moment", "t"}}}});
-        add("spectra_environment", "p2repl://FORTS_REFDATA_REPL;tables=spectra_environment", false,
-            {{"spectra_environment", {{"environment_id", "i4"}, {"environment_name", "c8"}}}});
+        if (environment_supported)
+            add("spectra_environment", "p2repl://FORTS_REFDATA_REPL;tables=spectra_environment", false,
+                {{"spectra_environment", {{"environment_id", "i4"}, {"environment_name", "c8"}}}});
+        else
+            log("full_order_log_advisory_unavailable",
+                R"({"source":"spectra_environment","error":"client REFDATA scheme does not advertise the table"})");
         if (!config.full_order_log_login.empty())
             add("cod", "p2repl://FORTS_REFDATA_REPL;tables=user", false,
                 {{"user", {{"login", "c20"}, {"sma_flags", "i4"}, {"start_date", "t"}, {"end_date", "t"}}, "login"}},
@@ -1183,16 +1207,12 @@ struct CgateSession::Impl {
         return CgateFullOrderLogBalance{*free, *blocked, *total};
     }
     std::string_view environment_refusal() const noexcept {
+        if (!config.full_order_log_advisory &&
+            !(config.mode == CgateSessionMode::Live && config.allow_orders && config.full_order_log_authority))
+            return {};
         const auto* environment = auxiliary_source("spectra_environment");
-        if (!environment)
-            return {};
-        const auto release = std::string_view(probe.layout.version_markers.spectra_release);
-        const auto current = auxiliary_current(environment);
-        if (!current || environment->data.rows().empty()) {
-            if (fol_auxiliary::environment_row_required(release))
-                return "REFDATA Spectra environment lacks current snapshot authority";
-            return {};
-        }
+        if (!auxiliary_current(environment) || environment->data.rows().empty())
+            return "REFDATA Spectra environment lacks current snapshot authority";
         const auto& rows = environment->data.rows();
         const auto& row = rows.begin()->second;
         if (rows.size() != 1 || !fol_auxiliary::environment_matches(row, config.runtime.environment))
@@ -1228,6 +1248,9 @@ struct CgateSession::Impl {
                           ",\"account_risk_refusal\":" + (risk_refusal.empty() ? "null" : json_quote(risk_refusal));
         if (config.full_order_log_partitioned)
             out += std::string(",\"matching_current\":") + (matching_current && refdata_current() ? "true" : "false");
+        if (config.full_order_log_advisory && !auxiliary_source("spectra_environment"))
+            out +=
+                R"(,"spectra_environment":{"online":false,"stale":true,"life_num":0,"rows":[],"supported_by_client_scheme":false})";
         const auto session = projection.current_session_id();
         for (const auto& source : auxiliary) {
             if (source->name == "cod")

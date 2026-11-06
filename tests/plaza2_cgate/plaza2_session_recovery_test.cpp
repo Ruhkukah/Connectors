@@ -71,8 +71,6 @@ void spread_leg_direct_post_regression(CgateSessionConfig config, const test::fa
 void fol_account_guard_regression(CgateSessionConfig config, const test::fake::Control& fake) {
     namespace f = test::fake;
     const auto schemes = test::make_temp_directory("fol-account-guards");
-    test::write_text_file(schemes / "forts_scheme.ini",
-                          test::build_vendor_like_runtime_scheme("SPECTRA9.12.0", "9.12", "TEST"));
     config.runtime.scheme_dir = schemes;
     config.full_order_log_advisory = true;
     config.full_order_log_login = "risk-login";
@@ -94,14 +92,22 @@ void fol_account_guard_regression(CgateSessionConfig config, const test::fake::C
     const auto del = command(test_support::make_del_order());
     const auto bulk = command(test_support::make_del_user_orders());
     for (const auto profile : {"ready", "cod-enabled", "other-login", "two-logins", "null-start", "no-environment",
-                               "wrong-environment", "prohibited", "low-balance"}) {
+                               "wrong-environment", "prohibited", "low-balance", "legacy", "modern-without-table"}) {
         f::Scenario scenario;
         scenario.options[static_cast<std::size_t>(f::Option::FolRiskStreams)] = profile;
         fake.configure(scenario);
         const std::string_view state = profile;
+        const bool environment_in_scheme = state != "legacy" && state != "modern-without-table";
+        auto scheme = test::build_vendor_like_runtime_scheme(state == "legacy" ? "SPECTRA9.9.0" : "SPECTRA9.12.0",
+                                                             "test", "TEST");
+        scheme += environment_in_scheme ? "[dbscheme:REFDATA]\r\n table = spectra_environment ; advisory\r\n"
+                                        : "[dbscheme:REFDATA]\ntable=session\n"
+                                          "[dbscheme:OTHER]\ntable=spectra_environment\n";
+        test::write_text_file(schemes / "forts_scheme.ini", scheme);
         auto profile_config = config;
         if (state == "low-balance")
             profile_config.full_order_log_min_free_kopecks = 200'000;
+        const auto previous_environment_opens = fake.opens(f::kFolRiskEnvironment);
         CgateSession session(profile_config);
         require(!session.start(), "FOL account guard starts");
         const auto pump = [&] {
@@ -117,6 +123,12 @@ void fol_account_guard_regression(CgateSessionConfig config, const test::fake::C
                 "PART must remain current through 31 quiet seconds");
 
         const auto status = session.full_order_log_auxiliary_status();
+        require((fake.listener_handles(f::kFolRiskEnvironment) != 0) == environment_in_scheme &&
+                    (fake.opens(f::kFolRiskEnvironment) > previous_environment_opens) == environment_in_scheme,
+                "FOL environment subscription must follow the selected REFDATA scheme table list");
+        if (!environment_in_scheme)
+            require(status.find("\"supported_by_client_scheme\":false") != std::string::npos,
+                    "omitted environment subscription must be visible in status");
         const auto cod = state == "cod-enabled"                                                     ? "enabled"
                          : state == "other-login" || state == "two-logins" || state == "null-start" ? "unknown"
                                                                                                     : "disabled";
@@ -129,6 +141,11 @@ void fol_account_guard_regression(CgateSessionConfig config, const test::fake::C
         require(add_result.post_invoked == (state == "ready") && move_result.post_invoked == (state == "ready"),
                 "only complete matching login/environment and account risk permit Add/Move: " + std::string(state) +
                     " " + add_result.validation_error.message + " " + move_result.validation_error.message);
+        if (!environment_in_scheme)
+            require(add_result.validation_error.message ==
+                            "REFDATA Spectra environment lacks current snapshot authority" &&
+                        move_result.validation_error.message == add_result.validation_error.message,
+                    "a legacy or incomplete client scheme must not grant entry authority");
         require(del_result.post_invoked && bulk_result.post_invoked,
                 "COD, environment, PART and prohibition guards must never block native cancels");
         if (state == "ready") {
@@ -142,6 +159,21 @@ void fol_account_guard_regression(CgateSessionConfig config, const test::fake::C
             require(session.full_order_log_balance().has_value(), "fresh PART snapshot must restore authority");
         }
         require(!session.stop(), "FOL account guard stops");
+        if (state == "ready") {
+            test::write_text_file(schemes / "forts_scheme.ini",
+                                  test::build_vendor_like_runtime_scheme("SPECTRA9.9.0", "test", "TEST"));
+            fake.configure(scenario);
+            const auto before_restart = fake.opens(f::kFolRiskEnvironment);
+            require(!session.start(), "FOL session restarts with the newly resolved legacy scheme");
+            pump();
+            require(fake.listener_handles(f::kFolRiskEnvironment) == 0 &&
+                        fake.opens(f::kFolRiskEnvironment) == before_restart &&
+                        session.post_command(add, 407).validation_error.message ==
+                            "REFDATA Spectra environment lacks current snapshot authority" &&
+                        session.post_command(del, 408).post_invoked,
+                    "legacy restart must drop the old environment listener and witness without blocking cancels");
+            require(!session.stop(), "restarted FOL session stops");
+        }
     }
     fake.configure({});
     test::remove_tree(schemes);

@@ -379,24 +379,6 @@ inline std::int64_t integer_value(std::string_view text) {
 
 // An unrecognized runtime scheme may be newer. Require the environment row
 // unless the version explicitly predates its introduction in SPECTRA 9.12.
-inline bool environment_row_required(std::string_view release) noexcept {
-    constexpr std::string_view prefix = "SPECTRA";
-    if (!release.starts_with(prefix))
-        return true;
-    release.remove_prefix(prefix.size());
-    const auto major_end = release.find('.');
-    if (major_end == std::string_view::npos)
-        return true;
-    const auto major_token = release.substr(0, major_end);
-    release.remove_prefix(major_end + 1);
-    const auto minor_token = release.substr(0, release.find('.'));
-    if (minor_token.empty() || minor_token.find_first_not_of("0123456789") != std::string_view::npos)
-        return true;
-    const auto major = integer_value(major_token);
-    const auto minor = integer_value(minor_token);
-    return major <= 0 || major > 9 || (major == 9 && minor >= 12);
-}
-
 inline bool environment_matches(const Projection::Row& row, cg::Plaza2Environment expected) {
     const auto id = value(row, "environment_id");
     const auto name = value(row, "environment_name");

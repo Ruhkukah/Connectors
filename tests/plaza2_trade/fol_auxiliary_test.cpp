@@ -275,10 +275,6 @@ void test_login_cod() {
 
 void test_environment_contract() {
     using cg::Plaza2Environment;
-    require(!environment_row_required("SPECTRA9.9.0") && environment_row_required("SPECTRA9.12.0") &&
-                environment_row_required("SPECTRA10.3.0") && environment_row_required("SPECTRA9.unknown") &&
-                environment_row_required(""),
-            "the environment witness is required from 9.12 and for unrecognized schemes");
     const Projection::Row test{.values = {{"environment_id", "2"}, {"environment_name", "MXFOPREP"}}};
     const Projection::Row prod{.values = {{"environment_id", "1"}, {"environment_name", "MXFOPROD"}}};
     const Projection::Row mixed{.values = {{"environment_id", "2"}, {"environment_name", "MXFOPROD"}}};
