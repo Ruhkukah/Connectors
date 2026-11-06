@@ -1,5 +1,6 @@
 #include "moex/connector_host/trading_host.hpp"
 #include "moex/plaza2/cgate/plaza2_field_read_audit.hpp"
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1392,6 +1393,13 @@ std::string CgateTradingHost::status() const {
         const auto* instrument = data.find_instrument(isin);
         const auto ref_life = data.refdata_lifenum();
         const auto terms = ref_life && sess ? data.find_future_session_terms(isin, sess, *ref_life) : std::nullopt;
+        std::string lot_volume_fields;
+        if (terms && !config_.session.full_order_log_stream.settings.empty()) {
+            // This is the exact d16.8 lot volume used by FOL entry readiness.
+            lot_volume_fields = ",\"lot_volume_units\":" +
+                                (terms->lot_volume_units ? std::to_string(*terms->lot_volume_units) : "null") +
+                                ",\"lot_volume_scale\":" + std::to_string(cg::kPlaza2LotVolumeScale);
+        }
         const auto fills = orders_->pending_fill_reservations(isin);
         const auto book = session_.aggr20_projector().snapshot_for_isin(isin);
         const bool book_valid = aggr.valid && book && instrument && instrument->current_session_member;
@@ -1406,7 +1414,7 @@ std::string CgateTradingHost::status() const {
                          ",\"reference_price_scaled\":" + decimal(terms->settlement_price) + ",\"min_step_scaled\":" +
                          decimal(terms->min_step) + ",\"lower_price_scaled\":" + decimal(terms->bounds.lower) +
                          ",\"upper_price_scaled\":" + decimal(terms->bounds.upper) +
-                         ",\"interval_valid\":" + boolean(terms->bounds.interval_valid) + "}"
+                         ",\"interval_valid\":" + boolean(terms->bounds.interval_valid) + lot_volume_fields + "}"
                    : "null") +
             ",\"pending_fill_reservations\":{\"buy_quantity\":" + std::to_string(fills.buy_quantity) +
             ",\"sell_quantity\":" + std::to_string(fills.sell_quantity) +

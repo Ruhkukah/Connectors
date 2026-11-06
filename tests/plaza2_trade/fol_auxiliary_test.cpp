@@ -204,7 +204,8 @@ void test_projection() {
             "LifeNum change withdraws committed rows and rolls back the pending transaction");
     send(projection, open);
     send(projection, {.kind = Kind::Online});
-    require(projection.rows().empty(), "fresh empty snapshot cannot inherit rolled-back data");
+    require(projection.rows().empty() && projection.life() == 0,
+            "fresh empty snapshot cannot inherit rolled-back data or the rejected LifeNum");
     projection.on_plaza2_listener_error({.code = cg::Plaza2ErrorCode::RuntimeCallFailed});
     require(!projection.online() && projection.rows().empty(), "listener error clears projection authority");
 }
@@ -283,16 +284,39 @@ void test_environment_contract() {
     environment.scalar("environment_id", std::int32_t{7});
     environment.set("environment_name", std::as_bytes(std::span(observed_t1_name)));
     Projection projection({{"spectra_environment", {{"environment_id", "i4"}, {"environment_name", "c8"}}}}, {}, {});
-    send(projection, {.kind = Kind::Open, .raw_tables = std::span(&environment.table, 1)});
+    const auto open = Event{.kind = Kind::Open, .raw_tables = std::span(&environment.table, 1)};
+    send(projection, {.kind = Kind::LifeNum, .unsigned_value = 131140477});
+    send(projection, open);
     send(projection, {.kind = Kind::TransactionBegin});
     send(projection, environment.event());
     send(projection, {.kind = Kind::TransactionCommit});
     send(projection, {.kind = Kind::Online});
-    require(projection.rows().size() == 1, "observed T1 environment row must be committed");
+    require(projection.rows().size() == 1 && projection.life() == 131140477,
+            "committed T1 environment must retain the LifeNum announced before OPEN");
     const auto& t1 = projection.rows().begin()->second;
     require(value(t1, "environment_name") == "MXFOT1" && environment_matches(t1, Plaza2Environment::Test) &&
                 !environment_matches(t1, Plaza2Environment::Prod),
             "the observed c8 T1 row must decode to MXFOT1 and authorize only TEST");
+
+    send(projection, open);
+    require(projection.life() == 0 && !projection.online() && projection.rows().empty(),
+            "reopening a bound listener cannot carry its previous generation");
+    send(projection, {.kind = Kind::LifeNum, .unsigned_value = 131140478});
+    send(projection, {.kind = Kind::Close});
+    send(projection, open);
+    require(projection.life() == 0, "CLOSE clears generation evidence before the next OPEN");
+    send(projection, {.kind = Kind::Close});
+    send(projection, {.kind = Kind::LifeNum, .unsigned_value = 131140479});
+    projection.on_plaza2_listener_error({.code = cg::Plaza2ErrorCode::RuntimeCallFailed});
+    send(projection, open);
+    require(projection.life() == 0, "listener error clears an announced but unopened generation");
+    send(projection, {.kind = Kind::Close});
+    send(projection, {.kind = Kind::LifeNum, .unsigned_value = 131140480});
+    const auto bad_open = projection.on_plaza2_listener_event({.kind = Kind::Open});
+    require(bad_open.code == cg::Plaza2ErrorCode::IncompatibleScheme && projection.life() == 0,
+            "failed schema binding clears the announced generation");
+    send(projection, open);
+    require(projection.life() == 0, "successful OPEN cannot inherit a failed OPEN's generation");
 
     const auto check = [](const char* id, const char* name, bool test, bool prod) {
         const Projection::Row row{.values = {{"environment_id", id}, {"environment_name", name}}};

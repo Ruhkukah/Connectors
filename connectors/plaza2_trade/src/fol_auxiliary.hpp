@@ -119,10 +119,14 @@ class Projection final : public cg::Plaza2ListenerEventHandler {
     cg::Plaza2Error on_plaza2_listener_event(const Event& event) noexcept override {
         try {
             switch (event.kind) {
-            case Kind::Open:
+            case Kind::Open: {
+                // CGate can announce the new listener generation before OPEN.
+                const auto announced_life = bindings_.empty() ? life_ : 0;
                 reset();
                 bind(event.raw_tables);
+                life_ = announced_life;
                 break;
+            }
             case Kind::Close:
                 reset();
                 break;

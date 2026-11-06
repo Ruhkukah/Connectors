@@ -49,7 +49,9 @@ void test_fol_outages(const std::string& executable, const test::RuntimeFixtureP
     const fs::path log{"outages.ndjson"};
     const auto native = fixture.config_dir / "fol-native-posts.log";
     Process owner(arguments(executable, fixture, log, "fol_outages"), "outages-owner");
-    wait_status(owner, log, writer_ready);
+    const auto ready = wait_status(owner, log, writer_ready);
+    test::require(ready.find("\"lot_volume_units\":100000000,\"lot_volume_scale\":100000000}") != std::string::npos,
+                  "ready FOL status omitted the exact committed lot volume and its scale");
     require_accepted(executable, log, "place resting 1001 buy 1 102500 day", "outages-add");
     wait_working(owner, log, 1);
     const auto assert_resting = [&](std::string_view status) {

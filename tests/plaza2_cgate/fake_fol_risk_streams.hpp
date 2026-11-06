@@ -1,4 +1,12 @@
 // Included within the fake runtime implementation to share its wire fixtures.
+constexpr std::uint32_t kT1FolEnvironmentLifeNum = 131140477u;
+
+bool is_t1_fol_environment(const FakeListener& listener) {
+    const auto* profile = option(Option::FolRiskStreams);
+    return listener.stream_code == fixture::kFolRiskEnvironment && profile &&
+           std::string_view(profile) == "t1-environment";
+}
+
 bool is_fol_risk_stream(StreamCode code) {
     return code == fixture::kFolRiskPart || code == fixture::kFolRiskProhibition || code == fixture::kFolRiskUser ||
            code == fixture::kFolRiskEnvironment;
@@ -94,10 +102,12 @@ std::uint32_t emit_fol_risk_snapshot(FakeListener& listener) {
                               .rev = revision};
         return listener.callback(listener.connection, &listener, &event, listener.callback_data);
     };
-    const bool t1_environment = listener.stream_code == fixture::kFolRiskEnvironment && profile == "t1-environment";
-    CgDataLifeNum life{.life_number = t1_environment ? 131140477u : 7u};
-    if (const auto result = emit_simple_message(listener, kCgMsgP2replLifenum, &life, sizeof(life)); result)
-        return result;
+    const bool t1_environment = is_t1_fol_environment(listener);
+    if (!t1_environment) {
+        CgDataLifeNum life{.life_number = 7u};
+        if (const auto result = emit_simple_message(listener, kCgMsgP2replLifenum, &life, sizeof(life)); result)
+            return result;
+    }
     bool row = true, two = false;
     if (listener.stream_code == fixture::kFolRiskPart) {
         text("client_code", "CLIENT1");

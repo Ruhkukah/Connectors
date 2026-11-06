@@ -512,6 +512,7 @@ int main(int argc, char** argv) {
         check_environment("ready", true, "venue_row",
                           {R"("environment_id":2)", R"("environment_name":"MXFOPREP")", R"("environment_repl_rev":1)",
                            R"("environment_life_num":7)"});
+        // T1 delivers LifeNum before OPEN and does not repeat it during the snapshot.
         check_environment("t1-environment", true, "venue_row",
                           {R"("environment_id":7)", R"("environment_name":"MXFOT1")", R"("environment_repl_rev":42)",
                            R"("environment_life_num":131140477)"});
