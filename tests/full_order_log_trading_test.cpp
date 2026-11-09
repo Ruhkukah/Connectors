@@ -533,7 +533,7 @@ int main(int argc, char** argv) {
                           {R"("environment_id":7)", R"("environment_name":"MXFOT1")", R"("environment_repl_rev":42)",
                            R"("environment_life_num":131140477)"});
         check_environment("t1-environment-zero-life", true, "none", {}, "lacks positive revision or LifeNum");
-        check_environment("t1-environment-zero-revision", true, "none");
+        check_environment("t1-environment-zero-revision", true, "none", {}, "lacks current snapshot authority");
         check_environment("cp1251-status", true, "none", {}, "conflicts with configured environment");
         check_environment("no-environment", true, "none", {}, "committed snapshot is empty");
         check_environment("two-environments", true, "none", {}, "conflicts with configured environment");
