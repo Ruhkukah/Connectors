@@ -68,6 +68,12 @@ enum class Option : std::uint32_t {
     ForceTradeTerminal,
     FreshPosAnchor,
     FullFill,
+    FullOrderLogRefdata,
+    FullOrderLogSnapshotNoTransactions,
+    FullOrderLogConsumesInfo,
+    FullOrderLogSnapshotShortRow,
+    FullOrderLogUnframedOnlineRow,
+    FullOrderLogMultiMatching,
     IdentityConflict,
     ListenerOpenNoService,
     ListenerOpenResult,
@@ -146,9 +152,16 @@ enum class Option : std::uint32_t {
     WrongPositionAccountType,
     WrongSchemeOverride,
     ZeroPosition,
+    PublisherLayoutOffsetMismatch,
+    ReplyLayoutTypeMismatch,
+    FolRiskStreams,
     Count
 };
 // Scenario controls are local to one explicitly loaded fake runtime, never process environment.
+inline constexpr auto kFolRiskPart = static_cast<generated::StreamCode>(0xF0111001u);
+inline constexpr auto kFolRiskProhibition = static_cast<generated::StreamCode>(0xF0111002u);
+inline constexpr auto kFolRiskUser = static_cast<generated::StreamCode>(0xF0111003u);
+inline constexpr auto kFolRiskEnvironment = static_cast<generated::StreamCode>(0xF0111004u);
 struct Scenario {
     bool continuous_input{false};
     bool suppress_auto_replies{false};
@@ -160,6 +173,8 @@ struct Scenario {
     std::uint32_t trade_server_lifenum{0};
     std::uint32_t listener_create_result{0}, publisher_create_result{0};
     bool spectra912_refdata_schema{false};
+    std::int32_t refdata_legacy_lot_volume{1};
+    std::string refdata_xlot_volume{"1"};
     generated::StreamCode unrecognized_schema_stream{};
     generated::FieldCode mutated_schema_field{};
     generated::TableCode omitted_schema_table{};
@@ -186,7 +201,8 @@ enum class EventKind : std::uint8_t {
     ClearDeleted,
     Close,
     Reply,
-    ConnectionError
+    ConnectionError,
+    ListenerError
 };
 struct Event {
     EventKind kind{EventKind::Row};
@@ -222,6 +238,14 @@ class Control {
     void configure(const Scenario& scenario) const {
         call<void (*)(const Scenario*)>("moex_fake_scenario")(&scenario);
     }
+    std::string connection_settings() const {
+        std::string result;
+        call<void (*)(std::string*)>("moex_fake_connection_settings")(&result);
+        return result;
+    }
+    void configure_refdata_count(std::uint64_t count) const {
+        call<void (*)(std::uint64_t)>("moex_fake_refdata_count")(count);
+    }
     void set(Option option, std::string_view value = "1") const {
         const std::string owned(value);
         call<void (*)(Option, const char*)>("moex_fake_option")(option, owned.c_str());
@@ -256,6 +280,16 @@ class Control {
     }
     std::uint64_t listener_handles(generated::StreamCode stream) const {
         return call<std::uint64_t (*)(generated::StreamCode)>("moex_fake_listener_handles")(stream);
+    }
+    std::string listener_open_settings(generated::StreamCode stream) const {
+        std::string result;
+        call<void (*)(generated::StreamCode, std::string*)>("moex_fake_listener_open_settings")(stream, &result);
+        return result;
+    }
+    std::string listener_settings(generated::StreamCode stream) const {
+        std::string result;
+        call<void (*)(generated::StreamCode, std::string*)>("moex_fake_listener_settings")(stream, &result);
+        return result;
     }
     std::string trade_open_settings() const {
         std::string result;

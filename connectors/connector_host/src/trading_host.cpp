@@ -1,5 +1,6 @@
 #include "moex/connector_host/trading_host.hpp"
 #include "moex/plaza2/cgate/plaza2_field_read_audit.hpp"
+#include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,14 +18,17 @@ std::string_view stream_name(gen::StreamCode code) {
     // The descriptor is a depth template; this product opens AGGR20.
     if (code == gen::StreamCode::kFortsAggrRepl)
         return "FORTS_AGGR20_REPL";
+    if (code == cg::kFullOrderLogStreamCode)
+        return "FORTS_ORDLOG_REPL";
     const auto* descriptor = gen::FindStreamByCode(code);
     return descriptor ? descriptor->stream_name : code == cg::kNoStreamCode ? "p2mqreply" : "unknown";
 }
 std::string masked_settings(std::string_view settings) {
     // CGate URLs use semicolon-separated settings. Preserve operational
     // parameters explicitly; credentials and unrecognized values stay masked.
-    constexpr std::array public_keys{"app_name", "timeout", "name",    "category", "ref",
-                                     "scheme",   "mode",    "lifenum", "log",      "ini"};
+    constexpr std::array public_keys{"app_name", "timeout",       "name",           "category", "ref",
+                                     "scheme",   "mode",          "lifenum",        "log",      "ini",
+                                     "snapshot", "online.scheme", "snapshot.scheme"};
     std::string result;
     while (!settings.empty()) {
         const auto end = settings.find(';');
@@ -35,7 +39,8 @@ std::string masked_settings(std::string_view settings) {
         const auto protocol = part.find("://");
         if (protocol != std::string_view::npos) {
             const auto scheme = part.substr(0, protocol);
-            if (scheme == "p2tcp" || scheme == "p2repl" || scheme == "p2mq" || scheme == "p2mqreply") {
+            if (scheme == "p2tcp" || scheme == "p2repl" || scheme == "p2mq" || scheme == "p2mqreply" ||
+                scheme == "p2ordbook") {
                 const auto authority = part.substr(protocol + 3);
                 const auto at = authority.find('@');
                 result += part.substr(0, protocol + 3);
@@ -147,6 +152,15 @@ std::string error_fields(const cg::Plaza2Error& error) {
            ",\"runtime_code\":" + std::to_string(error.runtime_code) + ",\"message\":" + json_string(error.message) +
            "}";
 }
+tr::FullOrderLogTradingAuthority full_order_log_authority(const tr::CgateSessionConfig& config,
+                                                          std::int32_t isin) noexcept {
+    try {
+        if (config.full_order_log_authority)
+            return config.full_order_log_authority(isin);
+    } catch (...) {
+    }
+    return {};
+}
 std::string transport_fields(const tr::CgateSession& session, const tr::CgateSessionConfig& config) {
     const auto health = session.runtime_health();
     const auto& recovery = session.recovery_status();
@@ -163,11 +177,16 @@ std::string transport_fields(const tr::CgateSession& session, const tr::CgateSes
             std::find_if(streams.begin(), streams.end(), [&](const auto& row) { return row.stream_code == code; });
         const bool aggr = code == gen::StreamCode::kFortsAggrRepl;
         const bool reply = code == cg::kNoStreamCode;
+        const bool full = code == cg::kFullOrderLogStreamCode;
+        const bool full_complete = full && !config.market_data_isin_ids.empty() &&
+                                   full_order_log_authority(config, config.market_data_isin_ids.front()).valid;
         const bool online = aggr    ? session.aggr_online()
                             : reply ? state == 3
+                            : full  ? full_complete
                                     : projected != streams.end() && projected->online;
         const bool complete = aggr    ? session.aggr_snapshot_complete()
                               : reply ? state == 3
+                              : full  ? full_complete
                                       : projected != streams.end() && projected->snapshot_complete;
         result += "{\"stream\":" + json_string(stream_name(code)) + ",\"native\":" + state_fields(state) +
                   ",\"online\":" + (online ? "true" : "false") +
@@ -189,6 +208,8 @@ std::string transport_fields(const tr::CgateSession& session, const tr::CgateSes
         listener(cg::kNoStreamCode, health.reply);
     if (!config.aggr20_stream.settings.empty())
         listener(config.aggr20_stream.stream_code, health.aggr);
+    if (!config.full_order_log_stream.settings.empty())
+        listener(config.full_order_log_stream.stream_code, health.full_order_log);
     if (!config.public_deals_stream.settings.empty())
         listener(config.public_deals_stream.stream_code, health.public_deals);
     return result + "],\"recovery\":{\"operation\":" + json_string(operation_name(recovery.operation)) +
@@ -289,6 +310,16 @@ TradingHostConfig checked_config(TradingHostConfig config) {
 }
 } // namespace
 void validate_trading_host_config(const TradingHostConfig& config) {
+    if (config.session.full_order_log_cancel_only &&
+        (config.session.runtime.environment != cg::Plaza2Environment::Test || !config.session.allow_orders ||
+         config.session.read_only_market_data || !config.session.full_order_log_stream.settings.empty() ||
+         config.session.full_order_log_handler || config.session.full_order_log_authority ||
+         !config.session.aggr20_stream.settings.empty() || !config.session.public_deals_stream.settings.empty()))
+        throw std::invalid_argument("FullOrderLog cancel-only recovery requires TEST orders and no market-data source");
+    if (!config.session.full_order_log_stream.settings.empty() && !config.session.read_only_market_data &&
+        (!config.session.allow_orders || config.session.runtime.environment != cg::Plaza2Environment::Test ||
+         !config.session.full_order_log_authority))
+        throw std::invalid_argument("writable FullOrderLog requires TEST, allow_orders and committed book authority");
     if (config.isin_ids.empty() ||
         std::any_of(config.isin_ids.begin(), config.isin_ids.end(), [](auto id) { return id <= 0; }))
         throw std::invalid_argument("at least one positive trading instrument is required");
@@ -321,9 +352,12 @@ void validate_trading_host_config(const TradingHostConfig& config) {
 }
 CgateTradingHost::CgateTradingHost(TradingHostConfig config)
     : config_(checked_config(std::move(config))), owner_(std::this_thread::get_id()),
-      journal_(config_.journal_path, identity_path(config_)), session_(session_config()) {
+      journal_(config_.journal_path, identity_path(config_), 8 * 1024 * 1024, config_.async_dtc_persistence),
+      session_(session_config()) {
     auto orders = config_.orders;
     orders.measure_add_path = config_.measure_timings;
+    if (config_.async_dtc_persistence)
+        orders.ids_reserved = [this](auto ext, auto user) { return journal_.ids_reserved(ext, user); };
     const auto reservations = journal_.reservations();
     orders.next_ext_id = std::max({orders.next_ext_id, orders.ext_id_begin, reservations.next_ext_id});
     orders.next_user_id = std::max(orders.next_user_id, reservations.next_user_id);
@@ -452,7 +486,7 @@ void CgateTradingHost::assert_owner() const {
 }
 tr::CgateSessionConfig CgateTradingHost::session_config() {
     auto result = config_.session;
-    result.collect_poll_metrics = config_.measure_timings;
+    result.collect_poll_metrics = config_.measure_timings || config_.session.collect_poll_metrics;
     result.collect_post_metrics = config_.measure_timings || config_.measure_command_latency;
     result.publisher_rate_owner = tr::PublisherRateOwner::External;
     result.event_log = [this](auto kind, auto fields) { log_event(kind, fields); };
@@ -518,6 +552,9 @@ void CgateTradingHost::observe_link(const tr::Plaza2TransportHealth& health) {
 }
 void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) noexcept {
     try {
+        if (event.stream_code == cg::kFullOrderLogStreamCode && config_.session.full_order_log_handler &&
+            !config_.session.full_order_log_handler->should_log_listener_event(event))
+            return;
         if (config_.measure_timings && event.stream_code == gen::StreamCode::kFortsTradeRepl) {
             if (event.kind == cg::Plaza2ListenerEventKind::TransactionBegin ||
                 event.kind == cg::Plaza2ListenerEventKind::Open || event.kind == cg::Plaza2ListenerEventKind::Close ||
@@ -609,7 +646,7 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
         }
         const bool replication = event.stream_code != cg::kNoStreamCode;
         if (replication && event.kind == cg::Plaza2ListenerEventKind::StreamData &&
-            !journal_replication_row(event, config_))
+            event.stream_code != cg::kFullOrderLogStreamCode && !journal_replication_row(event, config_))
             return;
         if (event.stream_code == plaza2::generated::StreamCode::kFortsAggrRepl) {
             // Book traffic and its transaction/replay boundaries are not order
@@ -627,8 +664,10 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
         }
         const auto* table = gen::FindTableByCode(event.table_code);
         std::string fields =
-            "{\"stream\":" + json_string(stream_name(event.stream_code)) +
-            ",\"table\":" + json_string(table ? table->table_name : std::string_view{}) +
+            "{\"stream\":" + json_string(stream_name(event.stream_code)) + ",\"table\":" +
+            json_string(event.raw_table ? event.raw_table->name
+                        : table         ? table->table_name
+                                        : std::string_view{}) +
             ",\"stream_code\":" + std::to_string(static_cast<std::uint32_t>(event.stream_code)) +
             ",\"table_code\":" + std::to_string(static_cast<std::uint32_t>(event.table_code)) +
             ",\"name\":" + json_string(event.message_name) + ",\"message_id\":" + std::to_string(event.message_id) +
@@ -639,6 +678,9 @@ void CgateTradingHost::log_listener_event(const cg::Plaza2ListenerEvent& event) 
             ",\"text\":" + json_string(event.text_value);
         if (event.kind == cg::Plaza2ListenerEventKind::Close)
             fields += ",\"close_reason\":" + std::to_string(event.close_reason);
+        if (event.kind == cg::Plaza2ListenerEventKind::Close && event.stream_code == cg::kFullOrderLogStreamCode &&
+            event.close_reason == 0xA006)
+            fields += ",\"close_reason_hex\":\"0xA006\",\"close_reason_name\":\"REPL:CHANNEL_DISCONNECT_ON_TIMEOUT\"";
         if (!replication)
             fields += ",\"payload_hex\":" + json_string(tr::bytes_to_hex(event.raw_payload));
         fields += ",\"fields\":[";
@@ -748,6 +790,8 @@ cg::Plaza2Error CgateTradingHost::start() {
             session.aggr20_stream.open_settings);
     add_url(stream_name(session.public_deals_stream.stream_code), session.public_deals_stream.settings,
             session.public_deals_stream.open_settings);
+    add_url(stream_name(session.full_order_log_stream.stream_code), session.full_order_log_stream.settings,
+            session.full_order_log_stream.open_settings);
     add_url("publisher", session.publisher_settings, session.publisher_open_settings);
     add_url("p2mqreply", session.p2mqreply_settings, session.p2mqreply_open_settings);
     auto router = masked_settings(session.connection_settings.substr(0, session.connection_settings.find(';')));
@@ -810,6 +854,7 @@ cg::Plaza2Error CgateTradingHost::poll() {
             user_book_online = stream.online && stream.snapshot_complete;
     const auto changes = session_.take_private_row_changes();
     reconcile_reload_ |= changes.regular_trade_history_reloaded;
+    dtc_fill_history_gap_ |= dtc_snapshot_generation_ != 0 && changes.regular_trade_history_truncated;
     if (changes.regular_trade_history_truncated)
         orders_->invalidate_execution_baselines();
     for (const auto& event : session_.take_reply_events()) {
@@ -862,12 +907,14 @@ cg::Plaza2Error CgateTradingHost::poll() {
                 reconcile_reload_ = false;
             }
             rebuilding_ = false;
+            ++dtc_snapshot_generation_;
         }
     } else {
         orders_->observe_orders(changes.orders);
         orders_->observe_trades(changes.trades);
     }
-    // Empty TRADE commits also establish the post-186 reconciliation boundary.
+    // Deliver every commit sequence; an empty/unrelated commit alone is not
+    // scoped post-186 evidence and must not release cancellation fallbacks.
     // Apply their rows first so individual fallbacks see only surviving orders.
     orders_->observe_trade_commit(trade_commit_sequence);
     if (!rebuilding_)
@@ -979,6 +1026,8 @@ cg::Plaza2Error CgateTradingHost::stop() {
 }
 std::string CgateTradingHost::place(OrderRequest request, std::int64_t socket_receipt_steady_ns) {
     assert_owner();
+    if (config_.session.full_order_log_cancel_only)
+        return "FullOrderLog cancel-only recovery refuses Add";
     immediate_socket_receipt_ns_ = socket_receipt_steady_ns;
     if ((config_.measure_timings || config_.measure_command_latency) && orders_->queued() == 0)
         immediate_place_timing_ = {{request.client_order_id, std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -989,7 +1038,9 @@ std::string CgateTradingHost::place(OrderRequest request, std::int64_t socket_re
         return "storage failure; cancel-only mode blocks Add";
     }
     std::string error;
-    if (request.type == tr::Plaza2TradeOrderType::Ioc && !order_entry_ready(session_, request.isin_id))
+    if (!session_.full_order_log_entry_ready(request.isin_id))
+        error = "FullOrderLog Add requires a live stream and valid committed two-sided current-session book";
+    else if (request.type == tr::Plaza2TradeOrderType::Ioc && !order_entry_ready(session_, request.isin_id))
         error = "IOC requires continuous trading; opening-auction IOC is prohibited";
     else
         error = orders_->place(std::move(request));
@@ -1005,14 +1056,18 @@ std::string CgateTradingHost::cancel(std::string_view key) {
         dispatch_commands();
     return error;
 }
-std::string CgateTradingHost::move(std::string_view key, std::string price, std::int32_t quantity) {
+std::string CgateTradingHost::move(std::string_view key, std::string price, std::int32_t quantity, bool dtc_origin) {
     assert_owner();
+    if (config_.session.full_order_log_cancel_only)
+        return "FullOrderLog cancel-only recovery refuses Move";
     if (!log_error_.empty())
         return "storage failure; cancel-only mode blocks Move";
     const auto order = orders_->orders().find(std::string(key));
+    if (order != orders_->orders().end() && !session_.full_order_log_entry_ready(order->second.request.isin_id))
+        return "FullOrderLog Move requires a live stream and valid committed two-sided current-session book";
     if (order != orders_->orders().end() && !order_entry_ready(session_, order->second.request.isin_id))
         return "Move requires continuous trading; opening-auction Move is prohibited";
-    auto error = orders_->move(key, std::move(price), quantity);
+    auto error = orders_->move(key, std::move(price), quantity, dtc_origin);
     if (error.empty())
         dispatch_commands();
     return error;
@@ -1036,6 +1091,66 @@ std::string CgateTradingHost::cancel_all(std::int32_t isin) {
     if (isin > 0)
         dispatch_commands();
     return error;
+}
+DtcAddPreparation CgateTradingHost::prepare_dtc_add(OrderRequest request) {
+    assert_owner();
+    if (!config_.async_dtc_persistence || !dtc_entry_ready(request.isin_id))
+        return {.error = "DTC entry is fenced"};
+    return orders_->prepare_dtc_add(std::move(request));
+}
+std::string CgateTradingHost::finish_dtc_add(std::int32_t ext_id, bool persisted) {
+    assert_owner();
+    if (persisted && (config_.isin_ids.size() != 1 || !dtc_entry_ready(config_.isin_ids.front()))) {
+        orders_->fence_dtc_entry();
+        return "DTC entry was fenced during persistence";
+    }
+    auto error = orders_->finish_dtc_add(ext_id, persisted);
+    if (error.empty())
+        dispatch_commands();
+    return error;
+}
+void CgateTradingHost::fence_dtc_entry() {
+    assert_owner();
+    orders_->fence_dtc_entry();
+}
+void CgateTradingHost::set_dtc_cancel_alert(std::string error) {
+    assert_owner();
+    dtc_cancel_alert_ = std::move(error);
+}
+void CgateTradingHost::set_dtc_identity_status(bool failed, std::size_t quarantined) {
+    assert_owner();
+    if (failed && !dtc_identity_failed_)
+        orders_->fence_dtc_entry();
+    dtc_identity_failed_ |= failed;
+    dtc_identity_quarantined_ = quarantined;
+}
+bool CgateTradingHost::dtc_snapshot_ready() const {
+    assert_owner();
+    const auto& data = session_.private_state();
+    const auto health = session_.runtime_health();
+    return cancellation_snapshot_ready() && session_.trade_replay_anchor_ready() && health.private_active &&
+           !data.connector_health().transaction_open && log_error_.empty();
+}
+bool CgateTradingHost::dtc_fill_history_current() const {
+    return !dtc_fill_history_gap_ && dtc_snapshot_ready();
+}
+std::optional<plaza2_trade::CgateFullOrderLogBalance> CgateTradingHost::dtc_balance() const {
+    assert_owner();
+    return session_.full_order_log_balance();
+}
+ConnectorHostMarketDataSnapshot CgateTradingHost::dtc_market_data(std::int32_t isin) const {
+    assert_owner();
+    return project_connector_market_data(session_, isin, true, utc_seconds(), !log_error_.empty());
+}
+bool CgateTradingHost::dtc_entry_ready(std::int32_t isin) const {
+    assert_owner();
+    return dtc_snapshot_ready() && !dtc_identity_failed_ && !shutdown_cancellation_requested_ &&
+           session_.full_order_log_entry_ready(isin) && order_entry_ready(session_, isin) &&
+           std::none_of(orders_->orders().begin(), orders_->orders().end(), [&](const auto& entry) {
+               const auto& order = entry.second;
+               return order.request.isin_id == isin &&
+                      (order.state == OrderState::Unknown || order.operator_action_required || order.add_unconfirmed);
+           });
 }
 bool CgateTradingHost::cancellation_snapshot_ready() const {
     const auto streams = session_.private_state().stream_health();
@@ -1225,8 +1340,9 @@ std::string CgateTradingHost::status() const {
                          ",\"cgate_key_check_failed\":" + boolean(session_.recovery_status().key_check_failed) +
                          ",\"sess_id\":" + std::to_string(sess) + ",\"log_error\":" + json_string(log_error_) +
                          ",\"journal_failed\":" + boolean(journal_failed_) +
-                         ",\"cancel_only\":" + boolean(!log_error_.empty()) +
-                         ",\"operator_action_required\":" + boolean(orders_->operator_action_required()) +
+                         ",\"cancel_only\":" + boolean(!log_error_.empty()) + ",\"operator_action_required\":" +
+                         boolean(orders_->operator_action_required() || !dtc_cancel_alert_.empty() ||
+                                 dtc_identity_failed_ || dtc_identity_quarantined_ != 0) +
                          ",\"transport\":" + transport_fields(session_, config_.session) +
                          ",\"configuration\":{\"allow_orders\":" + boolean(config_.session.allow_orders) +
                          ",\"sole_instance\":" + boolean(config_.orders.sole_instance) +
@@ -1236,6 +1352,16 @@ std::string CgateTradingHost::status() const {
                          ",\"rate\":" + std::to_string(config_.orders.max_commands_per_second) +
                          ",\"measure_timings\":" + boolean(config_.measure_timings) +
                          ",\"risk\":" + configured_risk_fields(config_) + "}";
+    if (!config_.session.full_order_log_stream.settings.empty())
+        result += ",\"market_data_source\":\"full_order_log\"";
+    if (config_.session.full_order_log_advisory)
+        result += ",\"fol_auxiliary\":" + session_.full_order_log_auxiliary_status();
+    if (config_.async_dtc_persistence)
+        result += ",\"dtc_cancel_alert\":" + json_string(dtc_cancel_alert_) +
+                  ",\"dtc_identity_failed\":" + boolean(dtc_identity_failed_) +
+                  ",\"dtc_identity_quarantined_records\":" + std::to_string(dtc_identity_quarantined_);
+    if (config_.session.full_order_log_cancel_only)
+        result += ",\"execution_mode\":\"full_order_log_cancel_only\"";
     const auto anchor = session_.trade_replay_anchor_used();
     const auto life = data.stream_lifenum(gen::StreamCode::kFortsTradeRepl);
     result += ",\"trade_replay\":{\"anchor_ready\":" + std::string(boolean(session_.trade_replay_anchor_ready())) +
@@ -1267,37 +1393,69 @@ std::string CgateTradingHost::status() const {
         const auto* instrument = data.find_instrument(isin);
         const auto ref_life = data.refdata_lifenum();
         const auto terms = ref_life && sess ? data.find_future_session_terms(isin, sess, *ref_life) : std::nullopt;
+        std::string lot_volume_fields;
+        if (terms && !config_.session.full_order_log_stream.settings.empty()) {
+            // This is the exact d16.8 lot volume used by FOL entry readiness.
+            lot_volume_fields = ",\"lot_volume_units\":" +
+                                (terms->lot_volume_units ? std::to_string(*terms->lot_volume_units) : "null") +
+                                ",\"lot_volume_scale\":" + std::to_string(cg::kPlaza2LotVolumeScale);
+        }
         const auto fills = orders_->pending_fill_reservations(isin);
         const auto book = session_.aggr20_projector().snapshot_for_isin(isin);
         const bool book_valid = aggr.valid && book && instrument && instrument->current_session_member;
         result +=
             "{\"isin_id\":" + std::to_string(isin) +
             ",\"symbol\":" + (instrument ? json_string(instrument->isin) : "null") + ",\"order_entry_ready\":" +
-            boolean(!rebuilding_ && log_error_.empty() && order_entry_ready(session_, isin)) + ",\"session_terms\":" +
+            boolean(!rebuilding_ && log_error_.empty() && order_entry_ready(session_, isin) &&
+                    session_.full_order_log_entry_ready(isin)) +
+            ",\"session_terms\":" +
             (terms ? "{\"sess_id\":" + std::to_string(terms->sess_id) +
                          ",\"refdata_lifenum\":" + std::to_string(terms->source.lifenum) +
                          ",\"reference_price_scaled\":" + decimal(terms->settlement_price) + ",\"min_step_scaled\":" +
                          decimal(terms->min_step) + ",\"lower_price_scaled\":" + decimal(terms->bounds.lower) +
                          ",\"upper_price_scaled\":" + decimal(terms->bounds.upper) +
-                         ",\"interval_valid\":" + boolean(terms->bounds.interval_valid) + "}"
+                         ",\"interval_valid\":" + boolean(terms->bounds.interval_valid) + lot_volume_fields + "}"
                    : "null") +
             ",\"pending_fill_reservations\":{\"buy_quantity\":" + std::to_string(fills.buy_quantity) +
             ",\"sell_quantity\":" + std::to_string(fills.sell_quantity) +
             ",\"buy_overflow\":" + boolean(fills.buy_overflow) + ",\"sell_overflow\":" + boolean(fills.sell_overflow) +
             ",\"proof_valid\":" + boolean(fills.proof_valid) +
             ",\"cached_proof_dirty\":" + boolean(fills.cached_proof_dirty) + ",\"cached_position_proof\":" +
-            (fills.cached_position_proof ? proof_fields(*fills.cached_position_proof) : "null") +
-            "},\"book\":{\"valid\":" + boolean(book_valid) +
-            ",\"stream_last_callback_utc_ns\":" + std::to_string(last_aggr_receipt_utc_ns_) +
-            ",\"best_bid\":" + (book_valid ? level_fields(book->top_bid) : "null") +
-            ",\"best_ask\":" + (book_valid ? level_fields(book->top_ask) : "null");
-        if (book_valid)
-            result += ",\"source_snapshot_version\":" + std::to_string(book->source_snapshot_version) +
-                      ",\"last_repl_rev\":" + std::to_string(book->last_repl_rev) + ",\"book_commit_monotonic_ns\":" +
-                      std::to_string(
-                          std::chrono::duration_cast<std::chrono::nanoseconds>(book->committed_at.time_since_epoch())
-                              .count()) +
-                      ",\"exchange_moment_ns\":" + std::to_string(book->exchange_moment_ns);
+            (fills.cached_position_proof ? proof_fields(*fills.cached_position_proof) : "null") + "},\"book\":{";
+        if (!config_.session.full_order_log_stream.settings.empty()) {
+            const auto authority = full_order_log_authority(config_.session, isin);
+            const bool ready = session_.full_order_log_entry_ready(isin);
+            const auto level = [&](auto price, auto quantity) {
+                return ready ? "{\"price_scaled\":" + std::to_string(price) +
+                                   ",\"quantity\":" + std::to_string(quantity) + "}"
+                             : "null";
+            };
+            result += "\"source\":\"full_order_log\",\"valid\":" + std::string(boolean(ready)) +
+                      ",\"source_session_id\":" + std::to_string(authority.session_id) +
+                      ",\"stream_epoch\":" + std::to_string(authority.epoch) +
+                      ",\"source_snapshot_version\":" + std::to_string(authority.revision) +
+                      ",\"crossed\":" + boolean(authority.crossed) +
+                      ",\"best_bid\":" + level(authority.best_bid, authority.best_bid_quantity) +
+                      ",\"best_ask\":" + level(authority.best_ask, authority.best_ask_quantity) +
+                      ",\"book_commit_monotonic_ns\":" +
+                      std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         authority.committed_at.time_since_epoch())
+                                         .count()) +
+                      ",\"exchange_moment_ns\":" + std::to_string(authority.exchange_moment_ns);
+        } else {
+            result += "\"valid\":" + std::string(boolean(book_valid)) +
+                      ",\"stream_last_callback_utc_ns\":" + std::to_string(last_aggr_receipt_utc_ns_) +
+                      ",\"best_bid\":" + (book_valid ? level_fields(book->top_bid) : "null") +
+                      ",\"best_ask\":" + (book_valid ? level_fields(book->top_ask) : "null");
+            if (book_valid)
+                result +=
+                    ",\"source_snapshot_version\":" + std::to_string(book->source_snapshot_version) +
+                    ",\"last_repl_rev\":" + std::to_string(book->last_repl_rev) + ",\"book_commit_monotonic_ns\":" +
+                    std::to_string(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(book->committed_at.time_since_epoch())
+                            .count()) +
+                    ",\"exchange_moment_ns\":" + std::to_string(book->exchange_moment_ns);
+        }
         result += "}}";
     }
     result += "],\"positions\":[";

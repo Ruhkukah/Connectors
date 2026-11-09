@@ -33,6 +33,16 @@ struct CgateStreamConfig {
     std::string open_settings;
 };
 
+// Borrowed committed public-book authority, evaluated on the CGate owner thread.
+// Private account, session, risk and durable-ID proofs remain independent.
+struct FullOrderLogTradingAuthority {
+    std::int32_t session_id{};
+    std::uint64_t epoch{}, revision{}, exchange_moment_ns{};
+    std::int64_t best_bid{}, best_ask{}, best_bid_quantity{}, best_ask_quantity{};
+    std::chrono::steady_clock::time_point committed_at{};
+    bool valid{}, crossed{};
+};
+
 // POS.info selects user_deal/heartbeat replay. Completed USERORDERBOOK.info is a
 // reconstruction barrier; orders_log replays the full current-life history.
 struct Plaza2TradeReplayAnchor {
@@ -68,6 +78,26 @@ struct CgateSessionConfig {
     // committed current REFDATA/SESSIONSTATE, never from the AGGR bootstrap pin.
     CgateStreamConfig public_deals_stream;
     std::int64_t public_deals_target_isin_id{0};
+    // An externally owned consumer runs on this session's CGate owner thread.
+    CgateStreamConfig full_order_log_stream;
+    plaza2::cgate::Plaza2ListenerEventHandler* full_order_log_handler{nullptr};
+    // Optional FOL-only public OI consumer; null preserves the certified trading listener set.
+    plaza2::cgate::Plaza2ListenerEventHandler* full_order_log_oi_handler{nullptr};
+    // Required only for explicit TEST order entry alongside the composite feed.
+    std::function<FullOrderLogTradingAuthority(std::int32_t)> full_order_log_authority;
+    // Empty uses system_clock; injectable for offline future-clock tolerance tests.
+    std::function<std::uint64_t()> full_order_log_utc_now_ns;
+    // Immutable TEST recovery without market-data listeners; never Add/Move.
+    bool full_order_log_cancel_only{false};
+    // FOL uses one committed matching across public data and private recovery.
+    bool full_order_log_partitioned{false};
+    bool validate_order_message_layouts{false};
+    bool full_order_log_advisory{false};
+    // Explicit TEST writer policy for the pinned legacy REFDATA scheme.
+    bool full_order_log_legacy_configuration_authority{false};
+    std::string full_order_log_login, full_order_log_account;
+    std::optional<std::int64_t> full_order_log_min_free_kopecks;
+    bool full_order_log_check_prohibitions{};
     // Optional exact AGGR20 sys_events session identity. Zero accepts a
     // non-zero current session id and is suitable only before refdata
     // negotiation has supplied the target session.
@@ -140,7 +170,7 @@ struct CgatePollMetrics {
 };
 
 struct Plaza2TransportHealth {
-    std::uint32_t connection{0}, publisher{0}, reply{0}, aggr{0}, public_deals{0};
+    std::uint32_t connection{0}, publisher{0}, reply{0}, aggr{0}, public_deals{0}, full_order_log{0};
     std::array<std::uint32_t, 8> private_states{};
     std::array<plaza2::generated::StreamCode, 8> private_streams{};
     std::size_t private_count{0};
@@ -178,6 +208,10 @@ struct Plaza2RecoveryStatus {
     Plaza2TransportHealth health;
 };
 
+struct CgateFullOrderLogBalance {
+    std::int64_t free_kopecks{}, blocked_kopecks{}, total_kopecks{};
+};
+
 class CgateSession final {
   public:
     explicit CgateSession(CgateSessionConfig config);
@@ -204,6 +238,13 @@ class CgateSession final {
     [[nodiscard]] const plaza2::cgate::Plaza2Aggr20BookProjector& aggr20_projector() const noexcept;
     [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;
+    [[nodiscard]] std::optional<std::int8_t> full_order_log_matching_id() const noexcept;
+    [[nodiscard]] std::uint64_t market_data_metadata_revision() const noexcept;
+    [[nodiscard]] std::string full_order_log_auxiliary_status() const;
+    [[nodiscard]] std::optional<CgateFullOrderLogBalance> full_order_log_balance() const noexcept;
+    // Freshness follows successful FOL stream callbacks (30s), not quiet-ISIN age.
+    // Exchange timestamps may lead UTC by at most one second.
+    [[nodiscard]] bool full_order_log_entry_ready(std::int64_t isin_id) const noexcept;
     [[nodiscard]] bool aggr_online() const noexcept;
     [[nodiscard]] bool aggr_snapshot_complete() const noexcept;
     [[nodiscard]] bool aggr_session_data_ready() const noexcept;

@@ -18,6 +18,102 @@ namespace {
 
 constexpr std::size_t kReplyMessageLength = 256; // CGate c255 includes its terminating byte.
 
+// Packed command and reply layouts shared by the 9.9 and 9.12 vendor schemes.
+using plaza2::cgate::Plaza2MessageFieldLayout;
+using plaza2::cgate::Plaza2MessageLayout;
+
+constexpr Plaza2MessageFieldLayout kAddOrderFields[] = {
+    {"broker_code", "c4", 0, 5},
+    {"isin_id", "i4", 8, 4},
+    {"client_code", "c3", 12, 4},
+    {"dir", "i4", 16, 4},
+    {"type", "i4", 20, 4},
+    {"amount", "i4", 24, 4},
+    {"price", "c17", 28, 18},
+    {"comment", "c20", 46, 21},
+    {"broker_to", "c20", 67, 21},
+    {"ext_id", "i4", 88, 4},
+    {"is_check_limit", "i4", 92, 4},
+    {"date_exp", "c8", 96, 9},
+    {"dont_check_money", "i4", 108, 4},
+    {"match_ref", "c10", 112, 11},
+    {"ncc_request", "i1", 123, 1},
+    {"compliance_id", "c1", 124, 2},
+};
+
+constexpr Plaza2MessageFieldLayout kDelOrderFields[] = {
+    {"broker_code", "c4", 0, 5},  {"order_id", "i8", 8, 8}, {"ncc_request", "i1", 16, 1},
+    {"client_code", "c3", 17, 4}, {"isin_id", "i4", 24, 4},
+};
+
+constexpr Plaza2MessageFieldLayout kMoveOrderFields[] = {
+    {"broker_code", "c4", 0, 5},  {"regime", "i4", 8, 4},          {"order_id1", "i8", 12, 8},
+    {"amount1", "i4", 20, 4},     {"price1", "c17", 24, 18},       {"ext_id1", "i4", 44, 4},
+    {"order_id2", "i8", 48, 8},   {"amount2", "i4", 56, 4},        {"price2", "c17", 60, 18},
+    {"ext_id2", "i4", 80, 4},     {"is_check_limit", "i4", 84, 4}, {"ncc_request", "i1", 88, 1},
+    {"client_code", "c3", 89, 4}, {"isin_id", "i4", 96, 4},        {"compliance_id", "c1", 100, 2},
+};
+
+constexpr Plaza2MessageFieldLayout kDelUserOrdersFields[] = {
+    {"broker_code", "c4", 0, 5},
+    {"buy_sell", "i4", 8, 4},
+    {"non_system", "i4", 12, 4},
+    {"code", "c3", 16, 4},
+    {"base_contract_code", "c25", 20, 26},
+    {"ext_id", "i4", 48, 4},
+    {"isin_id", "i4", 52, 4},
+    {"instrument_mask", "i1", 56, 1},
+};
+
+constexpr Plaza2MessageFieldLayout kFORTS_MSG176Fields[] = {
+    {"code", "i4", 0, 4},
+    {"message", "c255", 4, 256},
+    {"order_id1", "i8", 260, 8},
+    {"order_id2", "i8", 268, 8},
+};
+
+constexpr Plaza2MessageFieldLayout kFORTS_MSG177Fields[] = {
+    {"code", "i4", 0, 4},
+    {"message", "c255", 4, 256},
+    {"amount", "i4", 260, 4},
+};
+
+constexpr Plaza2MessageFieldLayout kFORTS_MSG179Fields[] = {
+    {"code", "i4", 0, 4},
+    {"message", "c255", 4, 256},
+    {"order_id", "i8", 260, 8},
+};
+
+constexpr Plaza2MessageFieldLayout kFORTS_MSG186Fields[] = {
+    {"code", "i4", 0, 4},
+    {"message", "c255", 4, 256},
+    {"num_orders", "i4", 260, 4},
+};
+
+constexpr Plaza2MessageFieldLayout kFORTS_MSG99Fields[] = {
+    {"queue_size", "i4", 0, 4},
+    {"penalty_remain", "i4", 4, 4},
+    {"message", "c128", 8, 129},
+};
+
+constexpr Plaza2MessageFieldLayout kFORTS_MSG100Fields[] = {
+    {"code", "i4", 0, 4},
+    {"message", "c255", 4, 256},
+};
+
+constexpr Plaza2MessageLayout kTradeRequests[] = {
+    {"AddOrder", static_cast<std::uint32_t>(Plaza2TradeCommandKind::AddOrder), 128, kAddOrderFields},
+    {"DelOrder", static_cast<std::uint32_t>(Plaza2TradeCommandKind::DelOrder), 28, kDelOrderFields},
+    {"MoveOrder", static_cast<std::uint32_t>(Plaza2TradeCommandKind::MoveOrder), 104, kMoveOrderFields},
+    {"DelUserOrders", static_cast<std::uint32_t>(Plaza2TradeCommandKind::DelUserOrders), 60, kDelUserOrdersFields},
+};
+
+constexpr Plaza2MessageLayout kTradeReplies[] = {
+    {"FORTS_MSG176", 176, 276, kFORTS_MSG176Fields}, {"FORTS_MSG177", 177, 264, kFORTS_MSG177Fields},
+    {"FORTS_MSG179", 179, 268, kFORTS_MSG179Fields}, {"FORTS_MSG186", 186, 264, kFORTS_MSG186Fields},
+    {"FORTS_MSG99", 99, 140, kFORTS_MSG99Fields},    {"FORTS_MSG100", 100, 260, kFORTS_MSG100Fields},
+};
+
 void align_payload(std::vector<std::byte>& out, std::size_t alignment) {
     out.resize((out.size() + alignment - 1) / alignment * alignment, std::byte{0});
 }
@@ -530,6 +626,14 @@ Plaza2TradeEncodedCommand Plaza2TradeCodec::encode(const Plaza2TradeCommandReque
         request);
     align_payload(encoded.payload, 4);
     return encoded;
+}
+
+std::span<const plaza2::cgate::Plaza2MessageLayout> trade_request_layouts() noexcept {
+    return kTradeRequests;
+}
+
+std::span<const plaza2::cgate::Plaza2MessageLayout> trade_reply_layouts() noexcept {
+    return kTradeReplies;
 }
 
 std::string command_fields_json(const Plaza2TradeEncodedCommand& command) {

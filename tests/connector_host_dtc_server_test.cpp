@@ -1,6 +1,7 @@
 #include "moex/connector_host/dtc_read_only_server.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cerrno>
@@ -44,6 +45,14 @@ void txt(Bytes& b, unsigned f, const std::string& s) {
     vint(b, s.size());
     b.insert(b.end(), s.begin(), s.end());
 }
+void fixed64(Bytes& b, unsigned f, std::uint64_t bits) {
+    vint(b, f * 8 + 1);
+    for (unsigned i = 0; i < 8; ++i)
+        b.push_back(static_cast<std::uint8_t>(bits >> (i * 8)));
+}
+void dbl(Bytes& b, unsigned f, double value) {
+    fixed64(b, f, std::bit_cast<std::uint64_t>(value));
+}
 Bytes packet(unsigned type, Bytes p) {
     const auto n = p.size() + 4;
     Bytes b{static_cast<std::uint8_t>(n), static_cast<std::uint8_t>(n >> 8), static_cast<std::uint8_t>(type),
@@ -57,6 +66,7 @@ struct Read {
     std::map<unsigned, std::uint64_t> n;
     std::map<unsigned, std::string> s;
     std::map<unsigned, float> f;
+    std::map<unsigned, double> d;
     explicit Read(const Bytes& b) {
         std::size_t pos = 0;
         auto var = [&]() {
@@ -78,6 +88,14 @@ struct Read {
             case 0:
                 n[key] = var();
                 break;
+            case 1: {
+                check(pos + 8 <= b.size(), "outgoing double bounds");
+                std::uint64_t bits = 0;
+                for (unsigned i = 0; i < 8; ++i)
+                    bits |= std::uint64_t(b[pos++]) << (i * 8);
+                d[key] = std::bit_cast<double>(bits);
+                break;
+            }
             case 2: {
                 auto len = var();
                 check(len <= b.size() - pos, "outgoing string bounds");
@@ -108,6 +126,8 @@ std::uint64_t number_or_zero(const Read& message, unsigned field) {
 struct Replay : DtcMarketDataSource {
     DtcMarketDataSnapshot state;
     bool security_definitions{true};
+    bool incremental{false};
+    std::vector<DtcMarketDataLevel> changes;
     bool optimistic_capabilities{false};
     unsigned failure_mode{0};
     Replay() {
@@ -140,6 +160,18 @@ struct Replay : DtcMarketDataSource {
         if (failure_mode == 2)
             throw 42;
         return state;
+    }
+    bool incremental_depth() const noexcept override {
+        return incremental;
+    }
+    std::span<const DtcMarketDataLevel> depth_changes() const noexcept override {
+        return changes;
+    }
+    DtcMarketDataSnapshot status_snapshot() const override {
+        auto out = snapshot();
+        if (incremental)
+            out.levels.clear();
+        return out;
     }
     DtcReadOnlyCapabilities capabilities() const noexcept override {
         return {.market_data = false,
@@ -282,7 +314,7 @@ struct Harness {
         return got.front();
     }
     void logon(bool expect_security_definitions = true, std::string_view username = {}, std::string_view password = {},
-               bool expect_success = true) {
+               bool expect_success = true, bool expect_trading = false) {
         // Literal official binary negotiation, deliberately fragmented.
         const Bytes handshake{16, 0, 6, 0, 8, 0, 0, 0, 4, 0, 0, 0, 'D', 'T', 'C', 0};
         send(Bytes(handshake.begin(), handshake.begin() + 3));
@@ -313,8 +345,8 @@ struct Harness {
                   reply.n[15] == 1,
               "v8 read-only capability logon");
         for (unsigned f : {8U, 9U, 10U, 17U, 19U, 20U})
-            check(reply.n[f] == 0, "no trading or trade tape capability");
-        if (source_mode == DtcSourceMode::LiveTest)
+            check(reply.n[f] == (expect_trading && (f == 8 || f == 10)), "explicit trading capabilities");
+        if (source_mode == DtcSourceMode::LiveTest && !expect_trading)
             check(reply.s[3] == "Read-only live TEST; trading disabled" && reply.s[6] == "MOEX live TEST DTC",
                   "live TEST logon identity is not replay text");
     }
@@ -325,7 +357,7 @@ struct Harness {
         txt(p, 3, std::string(kDtcMoexSpectraExchange));
         return packet(506, p);
     }
-    Bytes depth(unsigned action = 1, unsigned id = 0) {
+    Bytes depth(unsigned action = 1, unsigned id = 0, unsigned levels = 20) {
         if (id == 0)
             id = server.symbol_id() == 0 ? 7 : server.symbol_id();
         Bytes p;
@@ -333,7 +365,7 @@ struct Harness {
         num(p, 2, id);
         txt(p, 3, source.state.symbol);
         txt(p, 4, std::string(kDtcMoexSpectraExchange));
-        num(p, 5, 20);
+        num(p, 5, levels);
         return packet(102, p);
     }
     void subscribe() {
@@ -577,6 +609,397 @@ void live_test_metadata_and_auth() {
     correct.source.state.currency_value_per_increment = "2.5";
     correct.logon(true, "local-user", "local-password");
     check(correct.count(2) == 1, "dedicated local DTC credentials permit valid logon");
+}
+void manual_trading_reconnect(bool deferred) {
+    using moex::connector_host::OrderState;
+    using moex::plaza2_trade::Plaza2TradeSide;
+    auto c = config();
+    c.idle_timeout = std::chrono::milliseconds(30);
+    c.write_timeout = std::chrono::milliseconds(150);
+    c.max_queued_bytes = 8192;
+    c.source_mode = DtcSourceMode::LiveTest;
+    c.require_local_auth = true;
+    c.local_username = "kairos";
+    c.local_password = "private-fixture";
+    DtcTradingSnapshot snapshot{.position = 0, .orders_current = true, .fills_current = true};
+    unsigned submitted{}, moved{}, cancelled{}, lost{}, reconciled{};
+    std::vector<DtcOwnFill> fills;
+    std::optional<DtcOwnBalance> balance;
+    c.trading = DtcTradingHooks{
+        .account = "FAKE001",
+        .snapshot = [&] { return snapshot; },
+        .fills = [&] { return std::optional{fills}; },
+        .balance = [&] { return balance; },
+        .place =
+            [&](std::string id, Plaza2TradeSide side, bool ioc, std::string price, std::int32_t qty, bool automated) {
+                if (std::any_of(snapshot.orders.begin(), snapshot.orders.end(),
+                                [&](const auto& order) { return order.client_id == id; }))
+                    return std::string("duplicate ClientOrderID");
+                ++submitted;
+                snapshot.orders.push_back({.client_id = std::move(id),
+                                           .server_id = automated ? "9022" : "9021",
+                                           .native_id = automated ? "1833" : "1832",
+                                           .price = std::move(price),
+                                           .state = OrderState::PendingNew,
+                                           .side = side,
+                                           .ioc = ioc,
+                                           .quantity = qty,
+                                           .remaining = qty,
+                                           .fill_baseline_known = true,
+                                           .dtc_owned = true,
+                                           .automated = automated});
+                return std::string{};
+            },
+        .move =
+            [&](std::string_view key, std::string price, std::int32_t qty) {
+                check(key == "9021" && price == "123.46000" && qty == 2, "DTC preserves total on price-only Move");
+                ++moved;
+                snapshot.orders.front().state = OrderState::PendingReplace;
+                return std::string{};
+            },
+        .cancel =
+            [&](std::string_view key) {
+                check(key == "9021" || key == "9022", "DTC cancellation uses stable server identity");
+                ++cancelled;
+                return std::string{};
+            },
+        .disconnected = [&] { ++lost; },
+        .reconciled = [&] { ++reconciled; }};
+    std::array<std::optional<DtcTradeCommand>, 2> deferred_commands;
+    bool hold_add = false;
+    if (deferred) {
+        auto place = std::move(c.trading->place);
+        auto move = std::move(c.trading->move);
+        auto cancel = std::move(c.trading->cancel);
+        c.trading->submit = [&](DtcTradeCommand command) {
+            auto& pending = deferred_commands[command.kind == DtcTradeCommand::Kind::Cancel];
+            if (pending)
+                return false;
+            pending = std::move(command);
+            return true;
+        };
+        c.trading->take_result = [&, place = std::move(place), move = std::move(move),
+                                  cancel = std::move(cancel)](bool cancellation) -> std::optional<std::string> {
+            if (!cancellation && hold_add)
+                return std::nullopt;
+            auto command = std::exchange(deferred_commands[cancellation], std::nullopt);
+            if (!command)
+                return std::nullopt;
+            if (command->client_id == "stalled-add")
+                return "simulated persistence timeout";
+            switch (command->kind) {
+            case DtcTradeCommand::Kind::Add:
+                return place(std::move(command->client_id), command->side, command->ioc, std::move(command->price),
+                             command->quantity, command->automated);
+            case DtcTradeCommand::Kind::Move:
+                return move(command->server_id, std::move(command->price), command->quantity);
+            case DtcTradeCommand::Kind::Cancel:
+                return cancel(command->server_id);
+            }
+            return "unexpected DTC command";
+        };
+    }
+    Harness h(std::move(c));
+    mark_live_refdata_proven(h.source);
+    const auto await = [&](const auto& ready) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (!ready() && !h.eof && std::chrono::steady_clock::now() < deadline)
+            h.pump(1);
+    };
+    const auto logon = [&] {
+        h.logon(true, "kairos", "private-fixture", true, true);
+        h.send(h.definition_request());
+        await([&] { return h.count(507) != 0; });
+        check(h.count(507) == 1, "authenticated endpoint resolves current security definition");
+        h.got.clear();
+    };
+    const auto query = [&](unsigned type, unsigned id) {
+        Bytes request;
+        num(request, 1, id);
+        h.send(packet(type, request));
+        h.pump(15);
+    };
+    const auto add = [&](unsigned automated, std::string id = "abc-123") {
+        Bytes request;
+        txt(request, 1, h.source.state.symbol);
+        txt(request, 2, std::string(kDtcMoexSpectraExchange));
+        txt(request, 3, "FAKE001");
+        txt(request, 4, std::move(id));
+        num(request, 5, 2);
+        num(request, 6, 1);
+        dbl(request, 7, 123.45);
+        dbl(request, 9, 2);
+        num(request, 10, 1);
+        num(request, 12, automated);
+        h.send(packet(208, request));
+        h.pump(15);
+    };
+    logon();
+    add(false);
+    check(submitted == 0 && Read(h.first(301).payload).n[11] == 8, "submit waits for fresh private snapshots");
+    h.got.clear();
+    query(400, 71);
+    check(Read(h.first(401).payload).s[3] == "FAKE001", "authenticated account discovery");
+    query(601, 75);
+    check(Read(h.first(602).payload).n[1] == 75 && h.count(600) == 0,
+          "unavailable PART balance is rejected without publishing zero");
+    h.got.clear();
+    balance = DtcOwnBalance{.free_kopecks = 4321, .blocked_kopecks = 5679, .total_kopecks = 10000};
+    query(601, 76);
+    const auto cash_reply = [&] {
+        return std::ranges::find_if(h.got, [](const DtcFrame& frame) {
+            return frame.message_type == 600 && number_or_zero(Read(frame.payload), 1) == 76;
+        });
+    };
+    await([&] { return cash_reply() != h.got.end(); });
+    const auto cash_frame = cash_reply();
+    check(cash_frame != h.got.end(), "balance request 76 gets a scoped reply");
+    const Read cash(cash_frame->payload);
+    check(cash.n.at(1) == 76 && cash.d.at(2) == 100 && cash.d.at(3) == 43.21 && cash.d.at(7) == 56.79 &&
+              cash.s.at(4) == "RUB" && cash.s.at(5) == "FAKE001" && cash.n.at(8) == 1 && cash.n.at(9) == 1 &&
+              !cash.d.contains(6) && !cash.d.contains(12) && !cash.d.contains(13),
+          "PART cash/free/blocked amounts map without equity or P/L synthesis");
+    h.got.clear();
+    balance = DtcOwnBalance{};
+    h.pump(280);
+    const Read zero(h.first(600).payload);
+    check(zero.n.at(11) == 1 && zero.d.at(2) == 0 && !zero.n.contains(10),
+          "a fresh zero balance is sent as an unsolicited real balance");
+    h.got.clear();
+    balance.reset();
+    Bytes wrong_balance;
+    num(wrong_balance, 1, 77);
+    txt(wrong_balance, 2, "FAKE002");
+    h.send(packet(601, wrong_balance));
+    h.pump(15);
+    check(Read(h.first(602).payload).s.at(2) == "invalid trade account", "unrelated account cannot request balance");
+    query(300, 72);
+    check(Read(h.first(301).payload).n[28] == 1, "verified empty order snapshot");
+    query(305, 73);
+    check(Read(h.first(306).payload).n[10] == 1 && reconciled == 1, "empty position arms authenticated endpoint");
+    query(303, 74);
+    check(Read(h.first(308).payload).n.at(1) == 74, "historical fills requires an explicit range");
+    h.got.clear();
+    Bytes dated_fills;
+    num(dated_fills, 1, 78);
+    num(dated_fills, 3, 1);
+    fixed64(dated_fills, 5, 1800000000);
+    h.send(packet(303, dated_fills));
+    h.pump(15);
+    check(Read(h.first(308).payload).n.at(1) == 78 && !h.eof && h.count(5) == 0,
+          "unsupported fixed64 fill date receives a scoped reject without disconnecting");
+    Bytes current_fills;
+    num(current_fills, 1, 79);
+    num(current_fills, 3, 1);
+    h.send(packet(303, current_fills));
+    h.pump(15);
+    check(Read(h.first(304).payload).n[14] == 1, "verified empty current fill history");
+    snapshot.position = 1;
+    h.got.clear();
+    h.pump(80);
+    check(Read(h.first(306).payload).d.at(6) == 1, "unsolicited position reflects committed exposure");
+    snapshot.position = 0;
+    h.got.clear();
+    h.pump(80);
+    const Read flattened(h.first(306).payload);
+    check(flattened.n.at(11) == 1 && flattened.n.at(10) == 0 && flattened.d.at(6) == 0,
+          "unsolicited flat update clears the symbol without NoPositions");
+    h.got.clear();
+    add(2);
+    check(submitted == 0 && Read(h.first(301).payload).n[11] == 8, "non-boolean automation flag refused");
+    h.got.clear();
+    add(false);
+    check(submitted == 1 && Read(h.first(301).payload).n[10] == 2, "submission ack remains pending");
+    snapshot.orders.front().state = OrderState::PartFilled;
+    snapshot.orders.front().filled = 1;
+    snapshot.orders.front().remaining = 1;
+    fills.push_back({.server_id = "9021",
+                     .native_id = "1832",
+                     .execution_id = "321:77:1",
+                     .price = "123.45",
+                     .timestamp_seconds = 1800000000,
+                     .quantity = 1,
+                     .exchange_time_ns = 1'800'000'000'123'000'000,
+                     .side = Plaza2TradeSide::Buy});
+    h.got.clear();
+    h.pump(80);
+    auto fill = Read(h.first(301).payload);
+    check(fill.n[11] == 5 && fill.d[19] == 1 && fill.d[24] == 1 && fill.s[25] == "321:77:1" &&
+              std::bit_cast<std::uint64_t>(fill.d.at(23)) == 1'800'000'000'123,
+          "committed partial fill carries stable execution identity and milliseconds");
+    h.got.clear();
+    Bytes history;
+    num(history, 1, 80);
+    num(history, 3, 1);
+    h.send(packet(303, history));
+    h.pump(15);
+    check(std::bit_cast<std::uint64_t>(Read(h.first(304).payload).d.at(9)) == 1'800'000'000,
+          "historical fill retains the protocol's seconds unit");
+    h.got.clear();
+    Bytes replace;
+    txt(replace, 1, "9021");
+    txt(replace, 2, "abc-123");
+    dbl(replace, 3, 123.46);
+    h.send(packet(204, replace));
+    h.pump(15);
+    check(moved == 0 && Read(h.first(301).payload).n.at(11) == 10,
+          "present replacement price without Price1IsSet is rejected");
+    h.got.clear();
+    Bytes no_change;
+    txt(no_change, 1, "9021");
+    txt(no_change, 2, "abc-123");
+    num(no_change, 6, 1);
+    txt(no_change, 13, "123.45000");
+    h.send(packet(204, no_change));
+    h.pump(15);
+    check(moved == 0 && Read(h.first(301).payload).n.at(11) == 10,
+          "identical prices with different textual precision are a no-op");
+    h.got.clear();
+    num(replace, 6, 1);
+    h.send(packet(204, replace));
+    h.pump(15);
+    check(moved == 1, "price-only Move reaches owner");
+    snapshot.orders.front().native_id = "9405";
+    snapshot.orders.front().state = OrderState::PartFilled;
+    h.send(packet(5, {}));
+    h.pump(5);
+    check(lost == 1, "DTC disconnect fences owner dispatch");
+    h.connect();
+    logon();
+    query(300, 82);
+    const Read restored(h.first(301).payload);
+    check(restored.s.at(7) == "9021" && restored.s.at(9) == "9405", "Move alias stable across reconnect");
+    query(305, 83);
+    h.got.clear();
+    add(false);
+    const Read duplicate(h.first(301).payload);
+    check(submitted == 1 && duplicate.n.at(11) == 3 && duplicate.n.at(10) == 10 && duplicate.s.at(7) == "9021" &&
+              duplicate.s.at(27) == "duplicate ClientOrderID; no new order",
+          "duplicate ClientOrderID reports the existing order on reconnect");
+    Bytes cancel;
+    txt(cancel, 1, "9021");
+    txt(cancel, 2, "abc-123");
+    Bytes wrong;
+    txt(wrong, 1, "9021");
+    txt(wrong, 2, "other-client-id");
+    txt(wrong, 3, "FAKE002");
+    h.got.clear();
+    h.send(packet(203, wrong));
+    await([&] { return h.count(301) != 0; });
+    check(cancelled == 0 && Read(h.first(301).payload).n.at(11) == 9,
+          "an unrelated account or client ID cannot cancel");
+    if (deferred) {
+        hold_add = true;
+        add(0, "stalled-add");
+        await([&] { return deferred_commands[0].has_value(); });
+        check(deferred_commands[0] && submitted == 1, "the fixture holds the in-flight Add");
+    }
+    h.got.clear();
+    h.send(packet(203, cancel));
+    await([&] { return cancelled == 1 && h.count(301) != 0; });
+    check(cancelled == 1 && (!deferred || deferred_commands[0]) && Read(h.first(301).payload).n.at(11) == 3,
+          "individual cancellation bypasses a stalled Add on the same connection");
+    if (deferred) {
+        h.got.clear();
+        hold_add = false;
+        await([&] { return !deferred_commands[0] && h.count(301) != 0; });
+        check(Read(h.first(301).payload).n.at(11) == 8, "stalled Add rejects only after the Cancel completes");
+    }
+    h.got.clear();
+    add(true, "robot-123");
+    check(submitted == 2 && snapshot.orders.back().automated && Read(h.first(301).payload).n[10] == 2,
+          "authenticated Add propagates explicit automation provenance");
+    snapshot.orders.back().state = OrderState::Working;
+    h.got.clear();
+    Bytes robot_replace;
+    txt(robot_replace, 1, "9022");
+    txt(robot_replace, 2, "robot-123");
+    dbl(robot_replace, 3, 123.46);
+    num(robot_replace, 6, 1);
+    h.send(packet(204, robot_replace));
+    const auto robot_rejection = [&] {
+        return std::ranges::find_if(h.got, [](const DtcFrame& frame) {
+            if (frame.message_type != 301)
+                return false;
+            const Read reply(frame.payload);
+            const auto client_id = reply.s.find(8);
+            return client_id != reply.s.end() && client_id->second == "robot-123" && number_or_zero(reply, 11) == 10;
+        });
+    };
+    await([&] { return robot_rejection() != h.got.end(); });
+    check(moved == 1 && robot_rejection() != h.got.end(), "robot-origin DTC Move refused");
+    Bytes robot_cancel;
+    txt(robot_cancel, 1, "9022");
+    txt(robot_cancel, 2, "robot-123");
+    h.send(packet(203, robot_cancel));
+    await([&] { return cancelled == 2; });
+    check(cancelled == 2, "robot-origin DTC Del stays available");
+    h.source.incremental = true;
+    h.source.state.full_order_log = true;
+    h.got.clear();
+    h.subscribe();
+    check(h.count(145) == 2, "trading endpoint subscribed to depth before producer backlog");
+    h.got.clear();
+    h.source.state.source_snapshot_version += 20;
+    h.server.resync_market();
+    await([&] { return h.count(145) >= 2; });
+    check(h.count(145) == 2 && Read(h.first(145).payload).n.at(13) == h.source.state.source_snapshot_version &&
+              h.count(5) == 0 && !h.eof && lost == 1,
+          "producer overflow replaces depth without closing authenticated trading connection");
+    h.got.clear();
+    h.source.state.source_snapshot_version += 5;
+    await([&] { return h.count(145) >= 2; });
+    check(h.count(145) == 2 && Read(h.first(145).payload).n.at(13) == h.source.state.source_snapshot_version &&
+              h.count(5) == 0 && !h.eof,
+          "coalesced committed versions also resnapshot without dropping trading");
+    h.got.clear();
+    snapshot.orders_current = false;
+    snapshot.position.reset();
+    h.pump(80);
+    add(0, "transient-reject");
+    check(submitted == 2 && Read(h.first(301).payload).n.at(11) == 8 && h.count(5) == 0 && !h.eof,
+          "transient private transaction fences Add without losing DTC session");
+    snapshot.orders_current = true;
+    snapshot.position = 0;
+    ++snapshot.generation;
+    h.got.clear();
+    h.pump(80);
+    check(h.count(5) == 1 && Read(h.first(5).payload).n.at(2) == 0 && h.eof && lost == 2,
+          "new private generation permits reconnect and reports logged-on loss");
+    h.connect();
+    logon();
+    check(::shutdown(h.fd, SHUT_WR) == 0, "test client write-side EOF");
+    await([&] { return h.eof; });
+    check(h.eof && lost == 3, "authenticated transport EOF arms loss notification");
+    h.connect();
+    logon();
+    h.send({2, 0, 1, 0});
+    await([&] { return h.eof; });
+    check(h.eof && lost == 4, "malformed wire frame arms authenticated loss notification");
+    h.connect();
+    logon();
+    Bytes accounts;
+    const auto one_query = packet(400, {});
+    // Exceed one production-sized write without exceeding the output queue.
+    for (unsigned i = 0; i < 300; ++i)
+        accounts.insert(accounts.end(), one_query.begin(), one_query.end());
+    h.send(accounts);
+    for (unsigned i = 0; i < 100 && h.server.queued_bytes() == 0; ++i) {
+        h.server.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(h.server.queued_bytes() > 0, "write-timeout fixture queued an unsent response");
+    std::this_thread::sleep_for(std::chrono::milliseconds(180));
+    await([&] { return h.eof; });
+    check(h.eof && lost == 5, "write timeout arms authenticated loss notification");
+    h.connect();
+    logon();
+    accounts.clear();
+    for (unsigned i = 0; i < 800; ++i)
+        accounts.insert(accounts.end(), one_query.begin(), one_query.end());
+    h.send(accounts);
+    await([&] { return h.eof; });
+    check(h.eof && lost == 6, "wire backpressure arms authenticated loss notification");
 }
 void live_test_late_refdata_after_logon() {
     auto c = config();
@@ -856,6 +1279,12 @@ void float32_wire_representability() {
         check(ordinary_tick.available() && ordinary_tick.definition->min_price_increment == 0.01F,
               "supported fractional tick remains a positive DTC float32 increment");
 
+        source.state.contract_size = "0.00000001";
+        const auto fractional_lot = validate_dtc_security_definition(source.state, DtcSourceMode::LiveTest);
+        check(fractional_lot.available() && fractional_lot.definition->contract_size == 0.00000001F &&
+                  fractional_lot.definition->contract_size_source == "0.00000001",
+              "fractional lot volume is displayed and preserves exact source units");
+
         source.state.contract_size = "16777217";
         const auto lossy_lot_volume = validate_dtc_security_definition(source.state, DtcSourceMode::LiveTest);
         check(!lossy_lot_volume.available() &&
@@ -932,6 +1361,204 @@ void bounds() {
         ++h.source.state.source_snapshot_version;
         h.pump();
         check(h.count(145) == 3, "multiple levels sorted per side");
+    }
+}
+void full_order_log_committed_depth() {
+    auto c = config();
+    c.max_depth_levels = 64;
+    Harness h(c);
+    h.source.incremental = h.source.state.full_order_log = true;
+    h.source.state.levels.clear();
+    for (unsigned i = 0; i < 32; ++i) {
+        h.source.state.levels.push_back(
+            {.price_scaled = 1000000 - static_cast<std::int64_t>(i) * 10000, .volume = 5, .side = DtcDepthSide::Bid});
+        h.source.state.levels.push_back(
+            {.price_scaled = 2000000 + static_cast<std::int64_t>(i) * 10000, .volume = 7, .side = DtcDepthSide::Ask});
+    }
+    h.logon();
+    auto request = h.definition_request();
+    const auto depth = h.depth(1, 0, 0);
+    request.insert(request.end(), depth.begin(), depth.end());
+    h.send(request);
+    h.pump();
+    check(h.count(145) == 64, "FullOrderLog serves more than AGGR20 levels on both sides");
+    const Read first(h.first(145).payload);
+    check(first.n.at(15) == 64 && !first.n.contains(19) && !first.n.contains(20),
+          "FullOrderLog snapshot has no fabricated per-level CGate identities");
+    h.got.clear();
+    h.source.changes = {{.price_scaled = 1000000, .volume = 11, .side = DtcDepthSide::Bid, .depth_level = 1},
+                        {.price_scaled = 2000000, .volume = 0, .side = DtcDepthSide::Ask, .depth_level = 1}};
+    ++h.source.state.source_snapshot_version;
+    h.source.state.committed_at = std::chrono::steady_clock::now();
+    h.server.publish_depth_commit();
+    check(h.server.queued_bytes() > 0 && h.server.last_commit_to_queue_ns() > 0,
+          "TN_COMMIT queues the actual frame before returning to the owner");
+    h.pump();
+    check(h.count(140) == 2 && h.count(145) == 0, "committed sparse changes emit incremental frames");
+    std::vector<Read> rows;
+    for (const auto& frame : h.got)
+        if (frame.message_type == 140)
+            rows.emplace_back(frame.payload);
+    check(rows[0].f.at(3) == 10 && rows[0].f.at(4) == 11 && rows[0].n.at(5) == 1 && rows[0].n.at(6) == 1 &&
+              rows[0].n.at(8) == 3 && rows[0].n.at(9) == 1 && rows[0].n.at(13) == 73 && rows[0].n.at(14) == 2 &&
+              rows[0].n.at(15) == 10,
+          "DTC140 uses official fields and shared commit metadata");
+    check(rows[1].f.at(3) == 20 && rows[1].f.at(4) == 0 && rows[1].n.at(5) == 2 && rows[1].n.at(6) == 2 &&
+              rows[1].n.at(8) == 1 && rows[1].n.at(14) == 2,
+          "zero quantity deletes the price level and closes the atomic batch");
+    h.got.clear();
+    h.server.publish_depth_commit();
+    h.pump(2);
+    check(h.count(140) == 0, "same commit cannot publish twice");
+    h.source.changes.clear();
+    ++h.source.state.source_snapshot_version;
+    h.server.publish_depth_commit();
+    h.pump(2);
+    check(h.count(140) == 0, "deeper unchanged positions advance the source without a wire batch");
+    ++h.source.state.source_snapshot_version;
+    h.server.publish_depth_commit();
+    ++h.source.state.source_snapshot_version;
+    h.source.changes = {{.price_scaled = 1000000, .volume = 12, .side = DtcDepthSide::Bid, .depth_level = 1}};
+    h.server.publish_depth_commit();
+    h.pump(5);
+    check(h.count(140) == 1 && Read(h.first(140).payload).n.at(14) == 3,
+          "source revision jumps preserve consecutive DTC batch sequence");
+    h.got.clear();
+    h.source.state.source_snapshot_version += 2;
+    h.server.publish_depth_commit();
+    h.pump(5);
+    check(h.eof && h.count(140) == 0 && Read(h.first(5).payload).n.at(2) == 0,
+          "missed owner commit fences lost positional updates and permits a fresh snapshot");
+    h.connect();
+    h.logon();
+    auto fresh = h.definition_request();
+    const auto full = h.depth(1, 0, 0);
+    fresh.insert(fresh.end(), full.begin(), full.end());
+    h.send(fresh);
+    h.pump();
+    check(h.count(145) == 64 && Read(h.first(145).payload).n.at(12) == 1,
+          "missed commit recovery starts a new connection with a complete snapshot");
+    {
+        Harness limited(c);
+        limited.source.incremental = limited.source.state.full_order_log = true;
+        limited.logon();
+        limited.subscribe();
+        check(limited.count(121) == 0 && limited.count(145) == 2,
+              "finite client depth remains compatible with existing Kairos subscriptions");
+        limited.got.clear();
+        limited.send(limited.depth(1, 0, 0));
+        limited.pump();
+        check(limited.count(145) == 2, "full-depth request remains available after partial-depth rejection");
+    }
+    {
+        Harness empty(c);
+        empty.source.incremental = empty.source.state.full_order_log = true;
+        empty.source.state.levels.clear();
+        empty.source.state.empty_book = true;
+        empty.source.state.source_snapshot_version = 1;
+        empty.logon();
+        empty.subscribe();
+        check(empty.count(507) == 1 && empty.count(145) == 0 && !empty.eof && empty.count(5) == 0,
+              "initial empty full book stays subscribed without an invented quote");
+        const auto control = Read(empty.first(700).payload).s.at(1);
+        check(control.find("\"source_kind\":\"full_order_log\"") != std::string::npos &&
+                  control.find("\"book_state\":\"empty\"") != std::string::npos &&
+                  control.find("\"depth_snapshot\":{\"empty\":true,\"dtc_batch_sequence\":1") != std::string::npos &&
+                  control.find("\"level_count\":0") != std::string::npos,
+              "700 explicitly marks a completed empty snapshot with no quote row");
+        empty.got.clear();
+        empty.source.state.empty_book = false;
+        empty.source.state.source_snapshot_version = 2;
+        empty.source.changes = {{.price_scaled = 1000000,
+                                 .volume = 3,
+                                 .side = DtcDepthSide::Bid,
+                                 .exchange_moment_ns = 1759651234567890123ULL,
+                                 .depth_level = 1}};
+        empty.server.publish_depth_commit();
+        empty.pump();
+        check(empty.count(140) == 1 && empty.count(145) == 0 && !empty.eof,
+              "first nonempty commit follows the empty snapshot as a normal incremental batch");
+        const auto row = Read(empty.first(140).payload);
+        check(row.n.at(2) == 1759651234567ULL && row.n.at(14) == 2 && row.n.at(15) == 2,
+              "DTC increments preserve exchange milliseconds and consecutive batch metadata");
+    }
+    {
+        Harness crossed(c);
+        crossed.source.incremental = crossed.source.state.full_order_log = true;
+        crossed.logon();
+        crossed.subscribe();
+        crossed.got.clear();
+        crossed.source.state.crossed_book = true;
+        crossed.source.state.market_data_display_allowed = crossed.source.state.book_snapshot_current = false;
+        crossed.server.publish_depth_commit();
+        crossed.pump(5);
+        check(crossed.eof && crossed.count(140) == 0 && Read(crossed.first(5).payload).n.at(2) == 0 &&
+                  Read(crossed.first(700).payload).s.at(1).find("\"book_state\":\"crossed\"") != std::string::npos,
+              "crossed source withdraws authority without publishing invalid prices");
+        crossed.source.state.crossed_book = false;
+        crossed.source.state.market_data_display_allowed = crossed.source.state.book_snapshot_current = true;
+        crossed.connect();
+        crossed.logon();
+        crossed.subscribe();
+        check(crossed.count(145) == 2, "uncrossing permits a fresh valid snapshot");
+    }
+    {
+        Harness startup(c);
+        startup.source.incremental = startup.source.state.full_order_log = true;
+        startup.source.state.book_snapshot_current = startup.source.state.market_data_display_allowed = false;
+        startup.logon();
+        startup.subscribe();
+        check(startup.eof && startup.count(145) == 0 && Read(startup.first(5).payload).n.at(2) == 0,
+              "full-book startup with ready definition but pending ONLINE permits reconnect");
+        startup.source.state.book_snapshot_current = startup.source.state.market_data_display_allowed = true;
+        startup.connect();
+        startup.logon();
+        startup.subscribe();
+        check(startup.count(507) == 1 && startup.count(145) == 2,
+              "ONLINE commit after startup permits a fresh definition and snapshot");
+    }
+    {
+        Harness recovery(c);
+        recovery.source.incremental = recovery.source.state.full_order_log = true;
+        recovery.logon();
+        recovery.subscribe();
+        check(recovery.count(145) == 2, "full-depth client starts before listener recovery");
+        recovery.got.clear();
+        recovery.source.state.book_snapshot_current = recovery.source.state.market_data_display_allowed = false;
+        ++recovery.source.state.stream_epoch;
+        ++recovery.source.state.market_data_authority_epoch;
+        recovery.server.publish_depth_commit(); // runner invokes this synchronously on invalidation
+        recovery.pump(5);
+        check(recovery.eof && recovery.count(140) == 0 && recovery.count(700) == 1 && recovery.count(116) == 1 &&
+                  Read(recovery.first(5).payload).n.at(2) == 0 && Read(recovery.first(116).payload).n.at(2) == 1,
+              "recoverable listener invalidation withdraws authority and permits DTC reconnect");
+        recovery.source.state.book_snapshot_current = recovery.source.state.market_data_display_allowed = true;
+        recovery.source.state.source_snapshot_version = 1;
+        recovery.connect();
+        recovery.logon();
+        recovery.subscribe();
+        check(recovery.count(145) == 2 && Read(recovery.first(145).payload).n.at(11) == 74,
+              "healthy composite recovery establishes a fresh DTC snapshot and stream epoch");
+    }
+    {
+        auto bounded = c;
+        bounded.max_queued_bytes = 2048;
+        Harness overflow(bounded);
+        overflow.source.incremental = overflow.source.state.full_order_log = true;
+        overflow.logon();
+        auto request = overflow.definition_request();
+        const auto depth = overflow.depth(1, 0, 0);
+        request.insert(request.end(), depth.begin(), depth.end());
+        overflow.send(request);
+        overflow.pump();
+        check(overflow.count(145) == 2, "bounded full-depth client starts healthy");
+        overflow.got.clear();
+        overflow.source.changes.assign(
+            100, {.price_scaled = 1000000, .volume = 2, .side = DtcDepthSide::Bid, .depth_level = 1});
+        ++overflow.source.state.source_snapshot_version;
+        overflow.server.publish_depth_commit();
+        overflow.pump(5);
+        check(overflow.eof && overflow.count(140) == 0, "oversized commit closes without a partial incremental batch");
     }
 }
 void throwing_source() {
@@ -1083,6 +1710,8 @@ int main(int argc, char** argv) {
     }
     replay_roundtrip();
     live_test_metadata_and_auth();
+    manual_trading_reconnect(false);
+    manual_trading_reconnect(true);
     live_test_late_refdata_after_logon();
     revoke_and_reconnect();
     definition_revocation();
@@ -1090,6 +1719,7 @@ int main(int argc, char** argv) {
     rejects();
     float32_wire_representability();
     bounds();
+    full_order_log_committed_depth();
     throwing_source();
     std::cout << "DTC loopback E2E: negotiation, definitions, UTF-8, authority, signed depth, replay, revocation, "
                  "rejection and bounds passed\n";

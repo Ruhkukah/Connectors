@@ -21,6 +21,7 @@
 #include "single_operator_alert_regression.hpp"
 #include "early_add_row_regression.hpp"
 #include "late_cancel_reply_regression.hpp"
+#include "mass_cancel_scoped_trade_regression.hpp"
 
 #include <array>
 #include <cstring>
@@ -232,6 +233,48 @@ void ambiguity() {
             "ambiguous Add was resent");
     manager.on_reply(999999, {.msgid = 179, .order_id = 999}, OrderManager::Clock::time_point{});
     require(manager.orders().at("uncertain").state == OrderState::Cancelled, "unknown reply altered order state");
+}
+void recovered_unknown_execution_baseline() {
+    Fixture f;
+    f.config.ext_id_begin = 100;
+    f.config.ext_id_end = 200;
+    f.config.ext_id_range_configured = true;
+    auto manager = f.manager();
+    ManagedOrder seed;
+    seed.request = request("old-process", 5);
+    seed.ext_id = 150;
+    auto snapshot = row(seed, 9911, 3, 1);
+    snapshot.from_trade_repl = false;
+    snapshot.from_user_book = true;
+    snapshot.private_amount = 5;
+    snapshot.private_amount_rest = 3;
+    snapshot.private_action = 1;
+    observe(manager, snapshot, true);
+    const std::string key = "recovered:100:9911";
+    require(manager.orders().at(key).instance_owned && !manager.orders().at(key).execution_baseline_known &&
+                manager.orders().at(key).executed == 0 && manager.orders().at(key).remaining == 3,
+            "reconstruction invented historical executions or lost actual resting quantity");
+    require(manager.move(key, "101", 5).find("fill baseline") != std::string::npos,
+            "Move must refuse an unknown lifetime execution baseline");
+    fill(manager, 9911, 99101, 1);
+    fill(manager, 9911, 99101, 1);
+    require(manager.orders().at(key).executed == 1 && !manager.orders().at(key).execution_baseline_known,
+            "actual user_deal must be credited exactly once despite unknown historical baseline");
+    f.ready = false;
+    manager.set_kill_switch(true);
+    require(manager.cancel(key).empty(), "unknown execution baseline or kill switch blocked risk-reducing cancel");
+    f.poll(manager, 0);
+    require(f.sent.size() == 1 && f.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder,
+            "recovered cancellation did not reach publisher without market-entry readiness");
+    manager.on_reply(f.sent.back().id, {.msgid = 177, .amount = 2}, OrderManager::Clock::time_point{});
+    auto terminal = row(seed, 9911, 0, 0);
+    observe(manager, terminal);
+    require(manager.orders().at(key).state == OrderState::Cancelled && manager.orders().at(key).remaining == 0,
+            "replication did not confirm recovered cancellation");
+    fill(manager, 9911, 99102, 1);
+    fill(manager, 9911, 99102, 1);
+    require(manager.orders().at(key).executed == 2 && manager.orders().at(key).state == OrderState::Cancelled,
+            "late actual fills after cancellation were blocked or double counted");
 }
 void day_and_restart() {
     Fixture f;
@@ -482,8 +525,12 @@ void mass_cancel_priority_and_reconciliation() {
     require(empty_commit.sent.size() == 1, "reply186 reused a commit already present in the same owner poll");
     empty.observe_trade_commit(8);
     empty_commit.poll(empty, 1001);
+    require(empty_commit.sent.size() == 1, "empty TRADE commit released an unrefreshed surviving per-ID fallback");
+    working.trade_repl_commit_sequence = 9;
+    observe(empty, working);
+    empty_commit.poll(empty, 1002);
     require(empty_commit.sent.size() == 2 && empty_commit.sent.back().kind == tr::Plaza2TradeCommandKind::DelOrder,
-            "empty TRADE commit did not release a surviving per-ID fallback");
+            "postbarrier scoped TRADE row did not release a surviving per-ID fallback");
 }
 
 void operator_action_alerts_clear_only_at_terminal() {
@@ -800,6 +847,8 @@ void mass_cancel_supersedes_delayed_flood_replies() {
             "replacement mass cancel retained the superseded native correlation");
     replaced.on_reply(new_mass.id, {.msgid = 186, .num_orders = 1}, OrderManager::Clock::time_point{}, 1);
     replaced.observe_trade_commit(2);
+    live.trade_repl_commit_sequence = 3;
+    observe(replaced, live);
     replacement.poll(replaced, 1999);
     require(replacement.sent.size() == 2, "superseded mass99 lost its global flood penalty");
     replacement.poll(replaced, 2000);
@@ -947,6 +996,120 @@ void uncertain_cancels_preserve_identity_and_budget() {
             "authoritative bulk terminal row did not stop retries");
 }
 
+void native_timeout_and_system_reply_outcomes() {
+    using Kind = tr::Plaza2TradeCommandKind;
+    const auto time = [](int ms) { return OrderManager::Clock::time_point{} + std::chrono::milliseconds(ms); };
+    for (const bool system_error : {false, true}) {
+        const auto fail = [&](OrderManager& manager, std::uint32_t id, int ms) {
+            if (system_error)
+                manager.on_reply(id, {.msgid = 100, .code = -17, .message = "system error"}, time(ms));
+            else
+                manager.on_timeout(id, time(ms));
+        };
+        const auto place = [](Fixture& fixture, OrderManager& manager) {
+            require(manager.place(request("reply-outcome")).empty(), "reply outcome fixture Add refused");
+            fixture.poll(manager, 0);
+            require(fixture.sent.size() == 1 && fixture.sent.back().kind == Kind::AddOrder,
+                    "reply outcome fixture failed to post Add");
+        };
+        const auto working = [&](Fixture& fixture, OrderManager& manager) {
+            place(fixture, manager);
+            manager.on_reply(fixture.sent.back().id, {.msgid = 179, .order_id = 81001}, time(0));
+        };
+        {
+            Fixture fixture;
+            auto manager = fixture.manager();
+            place(fixture, manager);
+            const auto add = fixture.sent.back();
+            fail(manager, add.id, 100);
+            fixture.poll(manager, 101);
+            require(fixture.sent.size() == 2 && fixture.sent.back().kind == Kind::DelUserOrders &&
+                        wire<official_cgate99::DelUserOrders>(fixture.sent.back()).ext_id ==
+                            wire<official_cgate99::AddOrder>(add).ext_id &&
+                        manager.orders().at("reply-outcome").state == OrderState::Unknown,
+                    "uncertain Add was resent or recovery lost its external identity");
+        }
+        {
+            Fixture fixture;
+            auto manager = fixture.manager();
+            working(fixture, manager);
+            require(manager.move("reply-outcome", "101", 2).empty(), "reply outcome fixture Move refused");
+            fixture.poll(manager, 1);
+            require(fixture.sent.size() == 2 && fixture.sent.back().kind == Kind::MoveOrder,
+                    "reply outcome fixture failed to post Move");
+            fail(manager, fixture.sent.back().id, 100);
+            fixture.poll(manager, 5000);
+            const auto& order = manager.orders().at("reply-outcome");
+            require(fixture.sent.size() == 2 && order.order_id == 81001 && order.state == OrderState::Unknown &&
+                        !order.cancel_requested,
+                    "uncertain Move was resent or implicitly cancelled instead of retaining correlation");
+        }
+        {
+            Fixture fixture;
+            auto manager = fixture.manager();
+            working(fixture, manager);
+            require(manager.cancel("reply-outcome").empty(), "reply outcome fixture Del refused");
+            fixture.poll(manager, 1);
+            const auto cancel = fixture.sent.back();
+            require(fixture.sent.size() == 2 && cancel.kind == Kind::DelOrder,
+                    "reply outcome fixture failed to post known-ID Del");
+            fail(manager, cancel.id, 100);
+            fixture.poll(manager, 1099);
+            require(fixture.sent.size() == 2, "known-ID Del ignored the retry delay");
+            fixture.poll(manager, 1100);
+            require(fixture.sent.size() == 3 && fixture.sent.back().kind == Kind::DelOrder &&
+                        fixture.sent.back().id != cancel.id && fixture.sent.back().payload == cancel.payload,
+                    "known-ID Del did not retry using the same wire target and a fresh correlation ID");
+            observe(manager, row(manager.orders().at("reply-outcome"), 81001, 0, 0));
+            manager.on_reply(fixture.sent.back().id, {.msgid = 177, .code = 14}, time(1101));
+            fixture.poll(manager, 5000);
+            require(fixture.sent.size() == 3 && manager.orders().at("reply-outcome").state == OrderState::Cancelled &&
+                        !manager.cancellations_pending(),
+                    "late order-not-found reply retried a replicated terminal cancellation");
+        }
+        {
+            Fixture fixture;
+            fixture.config.sole_instance = true;
+            auto manager = fixture.manager();
+            require(manager.cancel_all(42).empty(), "reply outcome fixture DelUserOrders refused");
+            fixture.poll(manager, 0);
+            require(fixture.sent.size() == 1 && fixture.sent.back().kind == Kind::DelUserOrders,
+                    "reply outcome fixture failed to post DelUserOrders");
+            for (int attempt = 1; attempt <= 3; ++attempt) {
+                const auto current = fixture.sent.back();
+                fail(manager, current.id, attempt * 1100 - 1000);
+                fixture.poll(manager, attempt * 1100);
+                if (attempt < 3)
+                    require(fixture.sent.size() == static_cast<std::size_t>(attempt + 1) &&
+                                fixture.sent.back().kind == Kind::DelUserOrders &&
+                                fixture.sent.back().id != current.id && fixture.sent.back().payload == current.payload,
+                            "uncertain DelUserOrders lost its bounded scope or failed to retry");
+            }
+            require(fixture.sent.size() == 3 && manager.operator_action_required(),
+                    "DelUserOrders exceeded its three uncertain outcomes or hid operator action");
+        }
+    }
+}
+
+void add_flood_rejects_original_and_pauses_next_command() {
+    Fixture fixture;
+    auto manager = fixture.manager();
+    require(manager.place(request("flooded-add")).empty(), "Add flood fixture refused");
+    fixture.poll(manager, 0);
+    manager.on_reply(fixture.sent.at(0).id, {.msgid = 99, .penalty_remain = 2000}, OrderManager::Clock::time_point{});
+    require(manager.orders().at("flooded-add").state == OrderState::Rejected,
+            "Add flood did not resolve the original as rejected");
+    require(manager.place(request("after-add-flood")).empty(), "independent Add after flood was refused");
+    fixture.poll(manager, 1999);
+    require(fixture.sent.size() == 1, "Add flood did not pause the publisher for penalty_remain");
+    fixture.poll(manager, 2000);
+    require(fixture.sent.size() == 2 && fixture.sent.back().id != fixture.sent.front().id &&
+                manager.orders().at("flooded-add").state == OrderState::Rejected &&
+                wire<official_cgate99::AddOrder>(fixture.sent.back()).ext_id ==
+                    manager.orders().at("after-add-flood").ext_id,
+            "Add flood retried the rejected order or failed to release the next command");
+}
+
 void cancel_during_move() {
     Fixture f;
     auto manager = f.manager();
@@ -1037,7 +1200,7 @@ void confirmed_add_without_reply() {
                             [](auto command) { return command.kind == tr::Plaza2TradeCommandKind::DelOrder; }),
             "official179 did not preserve the ambiguous Add's cancellation intent");
 }
-void cancelled_order_during_move() {
+void terminal_orders_survive_late_command_rejections() {
     Fixture f;
     auto manager = f.manager();
     require(manager.place(request("cancelled-before-move")).empty(), "queued cancelled Add refused");
@@ -1049,18 +1212,32 @@ void cancelled_order_during_move() {
     require(manager.orders().at("cancelled-before-move").state == OrderState::Cancelled && f.sent.size() == 1,
             "queued Move survived authoritative cancellation");
 
-    Fixture posted;
-    auto other = posted.manager();
-    require(other.place(request("cancelled-with-move")).empty(), "posted cancelled Add refused");
-    posted.poll(other, 0);
-    other.on_reply(posted.sent.front().id, {.msgid = 179, .order_id = 1002}, OrderManager::Clock::time_point{});
-    require(other.move("cancelled-with-move", "101", 2).empty(), "posted cancelled Move refused");
-    posted.poll(other, 1000);
-    observe(other, row(other.orders().at("cancelled-with-move"), 1002, 0, 0));
-    other.on_reply(posted.sent.back().id, {.msgid = 176, .code = 17, .message = "order already removed"},
-                   OrderManager::Clock::time_point{} + std::chrono::milliseconds(1001));
-    require(other.orders().at("cancelled-with-move").state == OrderState::Cancelled,
-            "rejected Move resurrected an authoritatively cancelled order");
+    for (const bool moving : {false, true})
+        for (const bool filled : {false, true}) {
+            Fixture posted;
+            auto other = posted.manager();
+            const auto* key = "terminal-race";
+            require(other.place(request(key)).empty(), "terminal race seed Add refused");
+            posted.poll(other, 0);
+            other.on_reply(posted.sent.front().id, {.msgid = 179, .order_id = 1002}, OrderManager::Clock::time_point{});
+            require((moving ? other.move(key, "101", 2) : other.cancel(key)).empty(), "terminal race request refused");
+            posted.poll(other, 1000);
+            const auto kind = moving ? tr::Plaza2TradeCommandKind::MoveOrder : tr::Plaza2TradeCommandKind::DelOrder;
+            require(posted.sent.size() == 2 && posted.sent.back().kind == kind,
+                    "terminal race fixture omitted the in-flight command");
+            if (filled)
+                fill(other, 1002, 1, 3);
+            observe(other, row(other.orders().at(key), 1002, 0, filled ? 2 : 0));
+            other.on_reply(posted.sent.back().id,
+                           {.msgid = moving ? 176 : 177, .code = moving ? 50 : 14, .message = "order not found"},
+                           OrderManager::Clock::time_point{} + std::chrono::milliseconds(1001));
+            posted.poll(other, 5000);
+            const auto& order = other.orders().at(key);
+            require(posted.sent.size() == 2 && order.order_id == 1002 && order.remaining == 0 &&
+                        order.state == (filled ? OrderState::Filled : OrderState::Cancelled) &&
+                        order.executed == (filled ? 3 : 0),
+                    "late not-found reply retried or changed an authoritatively terminal order");
+        }
 }
 void flood_does_not_exhaust_cancel_budget() {
     for (const bool recovery : {false, true}) {
@@ -1251,6 +1428,68 @@ void ext_identity_and_relist() {
                          [](const auto& line) { return line.find("\"state\":\"Cancelled\"") != std::string::npos; }),
             "transactional relist published an intermediate terminal state");
 }
+void dtc_fence_preserves_cli_and_native_orders() {
+    Fixture f;
+    bool ids_reserved{};
+    f.config.ids_reserved = [&](auto, auto) { return ids_reserved; };
+    auto manager = f.manager();
+    auto dtc = request("dtc:a");
+    dtc.dtc_origin = true;
+    require(manager.place(request("cli-wait")) == "command IDs are awaiting durable reservation",
+            "operator Add used a misleading DTC-only persistence refusal");
+    require(manager.place(dtc) != "" && !manager.prepare_dtc_add(dtc).error.empty(),
+            "DTC accepted without durable command IDs");
+    ids_reserved = true;
+    auto prepared = manager.prepare_dtc_add(dtc);
+    require(prepared.error.empty() && prepared.ext_id > 0, "DTC Add was not prepared");
+    f.poll(manager, 0);
+    require(f.sent.empty() && manager.orders().empty(), "DTC Add reached dispatch before persistence");
+    manager.fence_dtc_entry();
+    require(!manager.finish_dtc_add(prepared.ext_id, true).empty(), "late completion rearmed fenced DTC Add");
+    dtc.client_order_id = "dtc:failed";
+    prepared = manager.prepare_dtc_add(dtc);
+    require(prepared.error.empty() && !manager.finish_dtc_add(prepared.ext_id, false).empty(),
+            "DTC Add accepted after persistence failure");
+    dtc.client_order_id = "dtc:risk";
+    prepared = manager.prepare_dtc_add(dtc);
+    manager.set_kill_switch(true);
+    require(prepared.error.empty() && !manager.finish_dtc_add(prepared.ext_id, true).empty(),
+            "DTC Add skipped current risk check after persistence");
+    manager.set_kill_switch(false);
+    dtc.client_order_id = "dtc:a";
+    prepared = manager.prepare_dtc_add(dtc);
+    require(prepared.error.empty() && manager.finish_dtc_add(prepared.ext_id, true).empty(),
+            "DTC Add did not queue after persistence");
+    require(manager.place(request("cli")).empty(), "CLI Add refused");
+    manager.fence_dtc_entry();
+    f.poll(manager, 0);
+    require(f.sent.size() == 1 && manager.orders().at("dtc:a").state == OrderState::Cancelled,
+            "disconnect failed to fence queued DTC Add independently of CLI");
+    require(!manager.prepare_dtc_add(dtc).error.empty(), "unsent DTC identity was released for reuse");
+    dtc.client_order_id = "dtc:b";
+    prepared = manager.prepare_dtc_add(dtc);
+    require(prepared.error.empty() && manager.finish_dtc_add(prepared.ext_id, true).empty(), "second DTC Add refused");
+    f.poll(manager, 1000);
+    manager.on_reply(f.sent.back().id, {.msgid = 179, .order_id = 1501},
+                     OrderManager::Clock::time_point{} + std::chrono::milliseconds(1000));
+    require(manager.move("dtc:b", "101", 3, true).empty(), "DTC Move refused");
+    manager.fence_dtc_entry();
+    f.poll(manager, 2000);
+    const auto& order = manager.orders().at("dtc:b");
+    require(f.sent.size() == 2 && order.state == OrderState::Working && order.order_id == 1501 &&
+                order.request.price == "100",
+            "disconnect lost or moved a posted native order");
+    dtc.client_order_id = "dtc:robot";
+    dtc.automated = true;
+    prepared = manager.prepare_dtc_add(dtc);
+    require(prepared.error.empty() && manager.finish_dtc_add(prepared.ext_id, true).empty(),
+            "automated Add was not admitted after durable preparation");
+    f.poll(manager, 3000);
+    require(f.sent.size() == 3 && wire<official_cgate99::AddOrder>(f.sent[1]).compliance_id[0] == 'M' &&
+                wire<official_cgate99::AddOrder>(f.sent[2]).compliance_id[0] == 'R',
+            "DTC Add used the wrong native compliance classification");
+}
+
 void move_fill_accounting() {
     Fixture f;
     auto manager = f.manager();
@@ -1606,8 +1845,13 @@ void cached_risk_move_races() {
     superseded.on_reply(flood.sent.back().id, {.msgid = 186, .num_orders = 0},
                         OrderManager::Clock::time_point{} + std::chrono::milliseconds(1002));
     superseded.observe_trade_commit(1);
+    require(!superseded.place(request("working-bulk-still-gated", 3)).empty(),
+            "empty commit treated acknowledged bulk as completed");
+    auto bulk_terminal = row(superseded.orders().at("first"), 1001, 0, 0);
+    bulk_terminal.trade_repl_commit_sequence = 2;
+    observe(superseded, bulk_terminal);
     require(superseded.place(request("fits-after-flood", 3)).empty(),
-            "superseded Move99 did not release rejected replacement exposure");
+            "terminal bulk scope retained rejected replacement exposure or entry gate");
 
     Fixture rejected;
     rejected.config.risk.max_notional_scaled = 60'000'000;
@@ -2160,26 +2404,31 @@ int main() {
         burst();
         cancels();
         ambiguity();
+        recovered_unknown_execution_baseline();
         day_and_restart();
         reconstruction_prefers_matching_trade_evidence();
         risk();
         cancel_races_and_identity();
         mass_cancel_priority_and_reconciliation();
+        mass_cancel_scoped_trade_regression<Fixture>();
         operator_action_alerts_clear_only_at_terminal();
         rejected_mass_cancel_falls_back_to_each_known_id();
         accepted_mass_cancel_waits_for_trade_without_resending();
         mass_cancel_supersedes_delayed_flood_replies();
         cancel_all_and_move_failures();
         uncertain_cancels_preserve_identity_and_budget();
+        native_timeout_and_system_reply_outcomes();
         moex::connector_host::transport_retry_warning_regression<Fixture>();
         cancel_during_move();
         replication_during_move();
         confirmed_add_without_reply();
-        cancelled_order_during_move();
+        terminal_orders_survive_late_command_rejections();
         flood_does_not_exhaust_cancel_budget();
+        add_flood_rejects_original_and_pauses_next_command();
         recovery_bounds_and_wire();
         ext_identity_and_relist();
         move_fill_accounting();
+        dtc_fence_preserves_cli_and_native_orders();
         deferred_fill_identity();
         eligible_commands_and_logging();
         aggregate_risk();

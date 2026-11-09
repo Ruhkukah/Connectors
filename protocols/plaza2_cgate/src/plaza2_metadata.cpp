@@ -473,7 +473,39 @@ const TableDescriptor* FindTableByCode(TableCode table_code) {
     return nullptr;
 }
 
+const FieldDescriptor* ExtendedLotVolumeField(TableCode table_code) noexcept {
+    static constexpr FieldDescriptor session{FieldCode::kFortsRefdataReplFutSessContentsXlotVolume,
+                                             "xlot_volume",
+                                             "d16.8",
+                                             ValueClass::kDecimal,
+                                             10,
+                                             16,
+                                             8,
+                                             false};
+    static constexpr FieldDescriptor instrument{FieldCode::kFortsRefdataReplFutInstrumentsXlotVolume,
+                                                "xlot_volume",
+                                                "d16.8",
+                                                ValueClass::kDecimal,
+                                                10,
+                                                16,
+                                                8,
+                                                false};
+    switch (table_code) {
+    case TableCode::kFortsRefdataReplFutSessContents:
+        return &session;
+    case TableCode::kFortsRefdataReplFutInstruments:
+        return &instrument;
+    default:
+        return nullptr;
+    }
+}
+
 const FieldDescriptor* FindFieldByCode(FieldCode field_code) {
+    for (const auto table : {TableCode::kFortsRefdataReplFutSessContents, TableCode::kFortsRefdataReplFutInstruments}) {
+        const auto* field = ExtendedLotVolumeField(table);
+        if (field->field_code == field_code)
+            return field;
+    }
     for (const auto& descriptor : kFieldDescriptors) {
         if (descriptor.field_code == field_code) {
             return &descriptor;
@@ -490,7 +522,19 @@ std::span<const TableDescriptor> TablesForStream(StreamCode stream_code) {
     return std::span<const TableDescriptor>(kTableDescriptors.data() + stream->first_table_index, stream->table_count);
 }
 
-std::span<const FieldDescriptor> FieldsForTable(TableCode table_code) {
+std::span<const FieldDescriptor> FieldsForTable(TableCode table_code, bool include_matching) {
+    // Matching is an optional read-only projection, not a trading entry requirement.
+    using enum FieldCode;
+    using enum ValueClass;
+    static constexpr std::array<FieldDescriptor, 5> matching{{
+        {kFortsRefdataReplInstr2matchingMapReplId, "replID", "i8", kSignedInteger, 8, 0, 0, true},
+        {kFortsRefdataReplInstr2matchingMapReplRev, "replRev", "i8", kSignedInteger, 8, 0, 0, true},
+        {kFortsRefdataReplInstr2matchingMapReplAct, "replAct", "i8", kSignedInteger, 8, 0, 0, true},
+        {kFortsRefdataReplInstr2matchingMapBaseContractId, "base_contract_id", "i4", kSignedInteger, 4, 0, 0, false},
+        {kFortsRefdataReplInstr2matchingMapMatchingId, "matching_id", "i1", kSignedInteger, 1, 0, 0, false},
+    }};
+    if (include_matching && table_code == TableCode::kFortsRefdataReplInstr2matchingMap)
+        return matching;
     const auto* table = FindTableByCode(table_code);
     if (table == nullptr) {
         return {};

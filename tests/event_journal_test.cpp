@@ -1,5 +1,6 @@
 #include "moex/connector_host/event_journal.hpp"
 #include "command_input.hpp"
+#include "full_order_log_dtc_identity.hpp"
 #include "journal_write_failure.hpp"
 #include "journal_id_block_regression.hpp"
 #include "journal_async_regression.hpp"
@@ -17,6 +18,71 @@ void require(bool condition, const char* text) {
     if (!condition)
         throw std::runtime_error(text);
 }
+void dtc_durable_reservations(const std::filesystem::path& root) {
+    const auto log = root / "dtc-events.ndjson";
+    const auto state = root / "dtc.state";
+    {
+        EventJournal journal(log, state, 1024 * 1024, true);
+        require(!journal.ids_reserved(2001, 2200), "unpersisted identity is reserved");
+        journal.append("reservation", "{\"next_ext_id\":2002,\"next_user_id\":2201}");
+        journal.flush();
+        require(journal.ids_reserved(2001, 2200), "worker did not persist both identity ceilings");
+    }
+    {
+        EventJournal reopened(log, state, 1024 * 1024, true);
+        require(reopened.reservations().next_ext_id > 2001 && reopened.reservations().next_user_id > 2200,
+                "restart can reuse a DTC command ID");
+    }
+
+    TradingHostConfig config;
+    config.identity_state_path = state;
+    config.isin_ids = {1001};
+    config.orders.broker_code = "FAKE";
+    config.orders.client_code = "001";
+    config.orders.login_from = "fixture";
+    config.orders.ext_id_begin = 100;
+    config.orders.ext_id_end = 200;
+    const auto ledger = std::filesystem::path(state.string() + ".dtc");
+    std::filesystem::create_directory(ledger);
+    ::chmod(ledger.c_str(), 0700);
+    const auto foreign = ledger / "foreign";
+    std::ofstream(foreign) << "50\n1002\nFAKE001\nfixture\nM\n";
+    ::chmod(foreign.c_str(), 0600);
+    {
+        FullOrderLogDtcIdentity identities(config);
+        identities.start();
+        require(identities.contains("foreign") && !identities.by_ext(50), "foreign ID was lost or adopted");
+        require(!identities.submit("dtc:foreign", 101, false).empty(), "foreign client ID was reused");
+        require(identities.submit("dtc:local", 101, true).empty(), "could not queue identity persistence");
+        require(!identities.submit("dtc:second", 102, false).empty(), "identity persistence queue is unbounded");
+        std::optional<FullOrderLogDtcIdentity::Result> saved;
+        for (auto n = 0; n < 2000 && !saved; ++n) {
+            saved = identities.take();
+            if (!saved)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        require(saved && saved->persisted && saved->ext_id == 101 && identities.by_ext(101)->automated,
+                "identity worker did not persist and publish the reservation");
+    }
+    {
+        FullOrderLogDtcIdentity identities(config);
+        identities.start();
+        require(identities.contains("local") && identities.by_ext(101) && identities.by_ext(101)->automated,
+                "restart lost the DTC automation and stable identity");
+        require(!identities.submit("dtc:local", 102, false).empty(), "restart let duplicate DTC Add reserve again");
+    }
+    const auto corrupt = ledger / "corrupt";
+    std::ofstream(corrupt) << "partial";
+    ::chmod(corrupt.c_str(), 0600);
+    bool refused = false;
+    try {
+        FullOrderLogDtcIdentity identities(config);
+        identities.start();
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    require(refused, "malformed on-disk DTC identity was not fenced");
+}
 int main() {
     const auto root = std::filesystem::temp_directory_path() / ("moex-journal-" + std::to_string(getpid()));
     try {
@@ -26,6 +92,7 @@ int main() {
         moex::connector_host::test::journal_id_block_regression(root);
         moex::connector_host::test::journal_write_failure_regression(root);
         moex::connector_host::test::journal_async_regression(root);
+        dtc_durable_reservations(root);
         const auto path = root / "events.ndjson";
         {
             const auto buffered_path = root / "buffered.ndjson";

@@ -9,6 +9,7 @@
 #include "moex/plaza2/cgate/plaza2_metadata.hpp"
 
 #include <fstream>
+#include <initializer_list>
 #include "moex/plaza2/cgate/plaza2_fixed_point.hpp"
 #include <algorithm>
 #include <array>
@@ -20,8 +21,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <map>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -71,11 +74,36 @@ using fixture::Option;
 using FakeValueKind = fixture::FieldKind;
 using FakeFieldValue = fixture::Field;
 fixture::Scenario scenario;
+// Explicit INI opt-in for a separately exec'd fake FOL runner; never enabled by environment.
+std::string fol_runner_profile;
+std::filesystem::path fol_runner_posts, fol_runner_control, fol_runner_dtc_ledger;
+std::chrono::steady_clock::time_point fol_runner_next_activity{};
+bool fol_runner_wrong_session{};
+struct FolRunnerOrder {
+    std::int64_t id{20003}, ext_id{100};
+    std::string price{"102500"};
+    std::int32_t dir{1}, amount{1};
+    bool present{}, cancelled{}, filled{};
+    std::uint64_t revision{};
+};
+std::array<FolRunnerOrder, 10> fol_runner_orders;
+auto& fol_runner_order = fol_runner_orders[0];
+std::int64_t fol_runner_reply_id{20003};
+std::int64_t fol_matrix_next_id{};
+std::int32_t fol_matrix_cancelled_count{};
+enum class MatrixBulk { Idle, ReplyPending, Yield };
+MatrixBulk fol_matrix_bulk{};
+bool fol_matrix_profile() {
+    return fol_runner_profile == "matrix" || fol_runner_profile == "matrix-five" ||
+           fol_runner_profile == "matrix-dtc" || fol_runner_profile == "matrix-dtc-recovery";
+}
 std::deque<fixture::Event> queued_events;
 std::vector<fixture::PostedCommand> posted_commands;
 std::unordered_map<StreamCode, std::uint64_t> listener_opens;
-std::string last_trade_open_settings;
-std::uint64_t process_calls{};
+std::string last_trade_open_settings, last_connection_settings;
+std::unordered_map<StreamCode, std::string> last_listener_open_settings, last_listener_settings;
+constexpr StreamCode kFullOrderLogStreamCode = static_cast<StreamCode>(0xF0110001u);
+std::uint64_t process_calls{}, full_refdata_count{1};
 std::uint32_t last_process_timeout{};
 std::int64_t last_post_started_steady_ns{};
 const char* option(Option option) {
@@ -176,6 +204,7 @@ struct FakePublisher {
     std::uint32_t state{kStateClosed};
     FakeConnection* connection{nullptr};
     std::string settings;
+    std::unique_ptr<OwnedScheme> scheme;
 };
 
 struct FakePublisherMessage {
@@ -231,21 +260,25 @@ std::string copy_c_string(const char* value, std::size_t size) {
     return std::string(value, count);
 }
 
-std::optional<moex::plaza2::public_wire::Bcd16_5> encode_d16_5(std::string_view text) {
-    const auto scaled = moex::plaza2::cgate::parse_fixed_point(text, moex::plaza2::cgate::kPlaza2D16_5FractionalDigits,
-                                                               true, moex::plaza2::cgate::kPlaza2D16_5DecimalPrecision);
+template <unsigned FractionalDigits>
+std::optional<std::array<std::uint8_t, 10 + FractionalDigits % 2>> encode_decimal(std::string_view text) {
+    const auto scaled = moex::plaza2::cgate::parse_fixed_point(text, FractionalDigits, true, 16);
     if (!scaled.has_value())
         return std::nullopt;
 
     const auto magnitude =
         *scaled < 0 ? static_cast<std::uint64_t>(-(*scaled + 1)) + 1U : static_cast<std::uint64_t>(*scaled);
-    auto encoded = moex::plaza2::public_wire::Bcd16_5{5, 16};
-    auto base100 = magnitude * 10U;
+    std::array<std::uint8_t, 10 + FractionalDigits % 2> encoded{FractionalDigits, 16};
+    auto base100 = magnitude * (FractionalDigits % 2 == 0 ? 1U : 10U);
     for (std::size_t index = encoded.size(); index-- > 2;)
         encoded[index] = static_cast<std::uint8_t>(base100 % 100U), base100 /= 100U;
     if (*scaled < 0)
         encoded[2] |= 0x80U;
     return encoded;
+}
+
+auto encode_d16_5(std::string_view text) {
+    return encode_decimal<5>(text);
 }
 
 std::optional<std::string> format_d16_5(const moex::plaza2::public_wire::Bcd16_5& bytes) {
@@ -332,14 +365,17 @@ std::vector<std::byte> make_trade_reply(std::string_view message_name) {
     std::memcpy(payload.data() + 4, message.data(), std::min<std::size_t>(message.size(), 254));
     if (add) {
         const auto* id_text = option(Option::PubReplyOrderId);
-        const auto order_id = id_text == nullptr ? std::int64_t{20003} : std::strtoll(id_text, nullptr, 10);
+        const auto order_id = id_text == nullptr
+                                  ? (fol_runner_profile.empty() ? std::int64_t{20003} : fol_runner_reply_id)
+                                  : std::strtoll(id_text, nullptr, 10);
         write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message), order_id);
     } else if (move) {
-        write_reply_scalar(payload, offsetof(official_cgate99::FORTS_MSG176, order_id1), std::int64_t{20004});
+        const auto id = fol_matrix_profile() ? fol_runner_reply_id : std::int64_t{20004};
+        write_reply_scalar(payload, offsetof(official_cgate99::FORTS_MSG176, order_id1), id);
         write_reply_scalar(payload, offsetof(official_cgate99::FORTS_MSG176, order_id2), std::int64_t{20005});
     } else {
-        write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message),
-                           static_cast<std::int32_t>(recovery ? 1 : 0));
+        const auto count = fol_matrix_profile() ? fol_matrix_cancelled_count : recovery ? 1 : 0;
+        write_reply_scalar(payload, 4 + sizeof(official_cgate99::FORTS_MSG179::message), count);
     }
     return payload;
 }
@@ -554,7 +590,10 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .signed_value = 2},
                         {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsLotVolume,
                          .kind = SignedInteger,
-                         .signed_value = 1},
+                         .signed_value = scenario.refdata_legacy_lot_volume},
+                        {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsXlotVolume,
+                         .kind = Text,
+                         .text = scenario.refdata_xlot_volume},
                         {.field_code = FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId,
                          .kind = SignedInteger,
                          .signed_value = 4},
@@ -614,7 +653,10 @@ std::vector<FakeMessageScript> base_script_for_stream(StreamCode stream_code) {
                          .text = "10000"},
                         {.field_code = FieldCode::kFortsRefdataReplFutSessContentsLotVolume,
                          .kind = SignedInteger,
-                         .signed_value = 1},
+                         .signed_value = scenario.refdata_legacy_lot_volume},
+                        {.field_code = FieldCode::kFortsRefdataReplFutSessContentsXlotVolume,
+                         .kind = Text,
+                         .text = scenario.refdata_xlot_volume},
                         {.field_code = FieldCode::kFortsRefdataReplFutSessContentsTradeModeId,
                          .kind = SignedInteger,
                          .signed_value = 4},
@@ -1038,8 +1080,132 @@ bool persistent_order_session() {
     return fake_flag(Option::PersistentOrderSession);
 }
 
+std::uint64_t fol_runner_moment_ns() {
+    const auto now =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    return static_cast<std::uint64_t>(
+        now - ((fol_runner_profile == "stale" || fol_runner_profile == "quiet") ? 31'000'000'000LL : 0));
+}
+
 std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
     auto script = base_script_for_stream(stream_code);
+    if (stream_code == kFullOrderLogStreamCode) {
+        using enum FieldCode;
+        using enum FakeValueKind;
+        script = {{.table_code = TableCode::kFortsTradeReplOrdersLog}};
+        const auto session = scenario.session_id         ? scenario.session_id
+                             : option(Option::SessionId) ? std::strtoll(option(Option::SessionId), nullptr, 10)
+                                                         : 321;
+        for (std::int64_t side = 1; side <= 2; ++side)
+            script.push_back(
+                {.table_code = TableCode::kFortsUserorderbookReplOrders,
+                 .rev = 20 + side,
+                 .fields = {
+                     {.field_code = kFortsUserorderbookReplOrdersReplId, .signed_value = 9000 + side},
+                     {.field_code = kFortsUserorderbookReplOrdersReplRev, .signed_value = 20 + side},
+                     {.field_code = kFortsUserorderbookReplOrdersPublicOrderId, .signed_value = 9000 + side},
+                     {.field_code = kFortsUserorderbookReplOrdersIsinId, .signed_value = 1001},
+                     {.field_code = kFortsUserorderbookReplOrdersSessId,
+                      .signed_value = session - static_cast<int>(fol_runner_wrong_session)},
+                     {.field_code = kFortsUserorderbookReplOrdersPublicAmountRest, .signed_value = side == 1 ? 7 : 9},
+                     {.field_code = kFortsUserorderbookReplOrdersDir, .signed_value = side},
+                     {.field_code = kFortsUserorderbookReplOrdersPrice,
+                      .kind = Text,
+                      .text = side == 1 ? (fol_runner_profile == "invalid" ? "102700" : "102500") : "102600"}}});
+        if (!fol_runner_profile.empty())
+            for (auto& row : script)
+                if (row.table_code == TableCode::kFortsUserorderbookReplOrders)
+                    row.fields.push_back({.field_code = kFortsUserorderbookReplOrdersMomentNs,
+                                          .kind = UnsignedInteger,
+                                          .unsigned_value = fol_runner_moment_ns()});
+        script.push_back({.table_code = TableCode::kFortsUserorderbookReplInfo,
+                          .rev = 22,
+                          .fields = {{.field_code = kFortsUserorderbookReplInfoTradesRev, .signed_value = 22},
+                                     {.field_code = kFortsUserorderbookReplInfoTradesLifenum, .signed_value = 7},
+                                     {.field_code = kFortsUserorderbookReplInfoPublicationState, .signed_value = 1}}});
+        return script;
+    }
+    if (stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::FullOrderLogRefdata)) {
+        using enum FieldCode;
+        using enum FakeValueKind;
+        for (auto& row : script)
+            if (row.table_code == TableCode::kFortsRefdataReplInstr2matchingMap) {
+                row.fields.push_back({.field_code = kFortsRefdataReplInstr2matchingMapReplId, .signed_value = 3});
+                row.fields.push_back({.field_code = kFortsRefdataReplInstr2matchingMapReplRev, .signed_value = 3});
+            }
+        script.push_back(
+            {.table_code = TableCode::kFortsRefdataReplFutVcb,
+             .rev = 4,
+             .fields = {{.field_code = kFortsRefdataReplFutVcbReplId, .signed_value = 4},
+                        {.field_code = kFortsRefdataReplFutVcbReplRev, .signed_value = 4},
+                        {.field_code = kFortsRefdataReplFutVcbBaseContractId, .signed_value = 500},
+                        {.field_code = kFortsRefdataReplFutVcbBaseContractCode, .kind = Text, .text = "RTS"},
+                        {.field_code = kFortsRefdataReplFutVcbCurr, .kind = Text, .text = "RUB"},
+                        {.field_code = kFortsRefdataReplFutVcbBoardMd, .kind = Text, .text = "RFUD"}}});
+    }
+    if (stream_code == StreamCode::kFortsRefdataRepl &&
+        (fol_runner_profile == "deals-wire" || fol_runner_profile == "matrix-dtc" ||
+         fol_runner_profile == "matrix-dtc-recovery")) {
+        using enum FieldCode;
+        using enum TableCode;
+        const auto now = static_cast<std::uint64_t>(std::time(nullptr));
+        for (auto& row : script) {
+            if (row.table_code == kFortsRefdataReplSession && fol_runner_profile == "deals-wire") {
+                find_field(row, kFortsRefdataReplSessionBegin)->unsigned_value = now - 60;
+                find_field(row, kFortsRefdataReplSessionEnd)->unsigned_value = now + 3600;
+            }
+            if (row.table_code == kFortsRefdataReplFutInstruments)
+                row.fields.push_back({.field_code = kFortsRefdataReplFutInstrumentsStepPriceCurr,
+                                      .kind = FakeValueKind::Text,
+                                      .text = "12.5"});
+            if (row.table_code == kFortsRefdataReplFutSessContents)
+                row.fields.push_back({.field_code = kFortsRefdataReplFutSessContentsStepPriceCurr,
+                                      .kind = FakeValueKind::Text,
+                                      .text = "12.5"});
+        }
+    }
+    if (stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::FullOrderLogRefdata) &&
+        full_refdata_count > 1) {
+        const auto first = *std::find_if(script.begin(), script.end(), [](const auto& row) {
+            return row.table_code == TableCode::kFortsRefdataReplFutSessContents;
+        });
+        for (std::uint64_t i = 1; i < full_refdata_count; ++i) {
+            auto row = first;
+            row.rev += i;
+            find_field(row, FieldCode::kFortsRefdataReplFutSessContentsReplId)->signed_value = 100000 + i;
+            find_field(row, FieldCode::kFortsRefdataReplFutSessContentsReplRev)->signed_value = row.rev;
+            find_field(row, FieldCode::kFortsRefdataReplFutSessContentsIsinId)->signed_value = 1001 + i;
+            script.push_back(std::move(row));
+        }
+    }
+    if (stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::FullOrderLogMultiMatching)) {
+        using enum FieldCode;
+        using enum FakeValueKind;
+        auto second = *std::find_if(script.begin(), script.end(), [](const auto& row) {
+            return row.table_code == TableCode::kFortsRefdataReplFutSessContents;
+        });
+        find_field(second, kFortsRefdataReplFutSessContentsReplId)->signed_value = 3102;
+        find_field(second, kFortsRefdataReplFutSessContentsIsinId)->signed_value = 2002;
+        find_field(second, kFortsRefdataReplFutSessContentsBaseContractCode)->text = "MX";
+        script.push_back(std::move(second));
+        script.push_back(
+            {.table_code = TableCode::kFortsRefdataReplFutVcb,
+             .rev = 5,
+             .fields = {{.field_code = kFortsRefdataReplFutVcbReplId, .signed_value = 5},
+                        {.field_code = kFortsRefdataReplFutVcbReplRev, .signed_value = 5},
+                        {.field_code = kFortsRefdataReplFutVcbBaseContractId, .signed_value = 501},
+                        {.field_code = kFortsRefdataReplFutVcbBaseContractCode, .kind = Text, .text = "MX"},
+                        {.field_code = kFortsRefdataReplFutVcbCurr, .kind = Text, .text = "RUB"},
+                        {.field_code = kFortsRefdataReplFutVcbBoardMd, .kind = Text, .text = "RFUD"}}});
+        script.push_back(
+            {.table_code = TableCode::kFortsRefdataReplInstr2matchingMap,
+             .rev = 5,
+             .fields = {{.field_code = kFortsRefdataReplInstr2matchingMapReplId, .signed_value = 5},
+                        {.field_code = kFortsRefdataReplInstr2matchingMapReplRev, .signed_value = 5},
+                        {.field_code = kFortsRefdataReplInstr2matchingMapBaseContractId, .signed_value = 501},
+                        {.field_code = kFortsRefdataReplInstr2matchingMapMatchingId, .signed_value = 4}}});
+    }
     if (stream_code == StreamCode::kFortsRefdataRepl) {
         script.push_back({.table_code = TableCode::kFortsRefdataReplSysMessages,
                           .rev = 24,
@@ -1525,11 +1691,118 @@ std::vector<FakeMessageScript> script_for_stream(StreamCode stream_code) {
         for (auto& message : script)
             if (auto* field = find_field(message, FieldCode::kFortsAggrReplSysEventsSessId))
                 --field->signed_value;
+    if (!fol_runner_profile.empty() &&
+        (stream_code == StreamCode::kFortsTradeRepl || stream_code == StreamCode::kFortsUserorderbookRepl)) {
+        const auto table = stream_code == StreamCode::kFortsTradeRepl ? kFortsTradeReplOrdersLog
+                                                                      : kFortsUserorderbookReplOrdersCurrentday;
+        std::erase_if(script, [&](const auto& row) { return row.table_code == table; });
+        for (const auto& fol_runner_order : fol_runner_orders) {
+            if (!fol_runner_order.present)
+                continue;
+            const auto base = base_script_for_stream(stream_code);
+            auto row = *std::ranges::find_if(base, [&](const auto& value) { return value.table_code == table; });
+            row.rev += static_cast<std::int64_t>(fol_runner_order.revision);
+            for (auto& field : row.fields) {
+                if (const auto* d = FindFieldByCode(field.field_code); d && d->field_name == "replID")
+                    field.signed_value = fol_runner_order.id;
+                switch (field.field_code) {
+                case kFortsTradeReplOrdersLogPublicOrderId:
+                case kFortsUserorderbookReplOrdersCurrentdayPublicOrderId:
+                    field.signed_value = fol_runner_order.id - 10000;
+                    break;
+                case kFortsTradeReplOrdersLogPrivateOrderId:
+                case kFortsUserorderbookReplOrdersCurrentdayPrivateOrderId:
+                    field.signed_value = fol_runner_order.id;
+                    break;
+                case kFortsTradeReplOrdersLogExtId:
+                case kFortsUserorderbookReplOrdersCurrentdayExtId:
+                    field.signed_value = fol_runner_order.ext_id;
+                    break;
+                case kFortsTradeReplOrdersLogClientCode:
+                case kFortsUserorderbookReplOrdersCurrentdayClientCode:
+                    field.text = "BRK1C01";
+                    break;
+                case kFortsTradeReplOrdersLogLoginFrom:
+                case kFortsUserorderbookReplOrdersCurrentdayLoginFrom:
+                    field.text = "fol-offline-owner";
+                    break;
+                case kFortsTradeReplOrdersLogPrice:
+                case kFortsUserorderbookReplOrdersCurrentdayPrice:
+                    field.text = fol_runner_order.price;
+                    break;
+                case kFortsTradeReplOrdersLogPublicAmount:
+                case kFortsTradeReplOrdersLogPrivateAmount:
+                case kFortsUserorderbookReplOrdersCurrentdayPublicAmount:
+                case kFortsUserorderbookReplOrdersCurrentdayPrivateAmount:
+                    field.signed_value = fol_runner_order.amount;
+                    break;
+                case kFortsTradeReplOrdersLogDir:
+                case kFortsUserorderbookReplOrdersCurrentdayDir:
+                    field.signed_value = fol_runner_order.dir;
+                    break;
+                case kFortsTradeReplOrdersLogPublicAmountRest:
+                case kFortsTradeReplOrdersLogPrivateAmountRest:
+                case kFortsUserorderbookReplOrdersCurrentdayPublicAmountRest:
+                case kFortsUserorderbookReplOrdersCurrentdayPrivateAmountRest:
+                    field.signed_value =
+                        fol_runner_order.cancelled || fol_runner_order.filled ? 0 : fol_runner_order.amount;
+                    break;
+                case kFortsTradeReplOrdersLogPublicAction:
+                case kFortsTradeReplOrdersLogPrivateAction:
+                case kFortsUserorderbookReplOrdersCurrentdayPublicAction:
+                case kFortsUserorderbookReplOrdersCurrentdayPrivateAction:
+                    field.signed_value = fol_runner_order.filled ? 2 : fol_runner_order.cancelled ? 0 : 1;
+                    break;
+                case kFortsTradeReplOrdersLogIdDeal:
+                    field.signed_value = 0;
+                    break;
+                case kFortsTradeReplOrdersLogMoment:
+                case kFortsUserorderbookReplOrdersCurrentdayMoment:
+                    field.signed_value += static_cast<std::int64_t>(fol_runner_order.revision);
+                    break;
+                default:
+                    break;
+                }
+            }
+            script.push_back(std::move(row));
+            if (fol_runner_profile == "matrix-dtc" && stream_code == StreamCode::kFortsTradeRepl &&
+                fol_runner_order.filled) {
+                auto deal = *std::ranges::find_if(
+                    base, [](const auto& value) { return value.table_code == kFortsTradeReplUserDeal; });
+                deal.rev = 10000 + static_cast<std::int64_t>(fol_runner_order.revision);
+                find_field(deal, kFortsTradeReplUserDealIdDeal)->signed_value = 90000 + fol_runner_order.ext_id;
+                find_field(deal, kFortsTradeReplUserDealXamount)->signed_value = fol_runner_order.amount;
+                find_field(deal, kFortsTradeReplUserDealPrice)->text = fol_runner_order.price;
+                find_field(deal, kFortsTradeReplUserDealPublicOrderIdBuy)->signed_value = fol_runner_order.id - 10000;
+                find_field(deal, kFortsTradeReplUserDealPrivateOrderIdBuy)->signed_value = fol_runner_order.id;
+                find_field(deal, kFortsTradeReplUserDealPrivateOrderIdSell)->signed_value = 0;
+                find_field(deal, kFortsTradeReplUserDealCodeBuy)->text = "BRK1C01";
+                find_field(deal, kFortsTradeReplUserDealLoginBuy)->text = "fol-offline-owner";
+                const auto seconds = std::time(nullptr);
+                find_field(deal, kFortsTradeReplUserDealMoment)->signed_value = seconds;
+                find_field(deal, kFortsTradeReplUserDealMomentNs)->unsigned_value =
+                    static_cast<std::uint64_t>(seconds) * 1'000'000'000 + 123'000'000;
+                deal.fields.push_back({.field_code = kFortsTradeReplUserDealExtIdBuy,
+                                       .kind = FakeValueKind::SignedInteger,
+                                       .signed_value = fol_runner_order.ext_id});
+                script.push_back(std::move(deal));
+            }
+        }
+    }
     std::erase_if(script, [](const auto& row) { return row.table_code == scenario.omitted_schema_table; });
     return script;
 }
 
+bool raw_ordlog(std::string_view settings) {
+    return settings.starts_with("p2repl://FORTS_ORDLOG_REPL_MATCH") && settings.ends_with(";tables=orders_log");
+}
+
 StreamCode stream_code_from_settings(std::string_view settings) {
+    if (raw_ordlog(settings))
+        return kFullOrderLogStreamCode;
+    if (settings.starts_with("p2ordbook://FORTS_ORDLOG_REPL") &&
+        settings.find(";snapshot=FORTS_ORDBOOK_REPL") != std::string_view::npos)
+        return kFullOrderLogStreamCode;
     if (settings.find(std::string_view{"FORTS_AGGR5_REPL"}) != std::string_view::npos ||
         settings.find(std::string_view{"FORTS_AGGR20_REPL"}) != std::string_view::npos ||
         settings.find(std::string_view{"FORTS_AGGR50_REPL"}) != std::string_view::npos) {
@@ -1570,10 +1843,19 @@ make_clear_deleted_payload(std::uint32_t table_idx, std::int64_t table_rev, std:
 }
 
 std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMessageScript>& script,
-                                                       std::vector<MessagePlan>* plans) {
+                                                       std::vector<MessagePlan>* plans, bool native_widths = false) {
     auto scheme = std::make_unique<OwnedScheme>();
     plans->clear();
     auto schema_messages = script;
+    if (native_widths) {
+        std::vector<TableCode> seen;
+        std::erase_if(schema_messages, [&](const auto& row) {
+            if (std::find(seen.begin(), seen.end(), row.table_code) != seen.end())
+                return true;
+            seen.push_back(row.table_code);
+            return false;
+        });
+    }
     if (!script.empty()) {
         const auto* first = FindTableByCode(script.front().table_code);
         for (const auto& table : TablesForStream(static_cast<StreamCode>(first->stream_id)))
@@ -1606,10 +1888,14 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
         plan.message_name = message->name;
 
         std::size_t offset = 0;
-        const bool spectra912 = scenario.spectra912_refdata_schema &&
-                                message_script.table_code == TableCode::kFortsRefdataReplFutSessContents;
-        const auto server_fields = spectra912 ? moex::plaza2::test::spectra912_future_session_schema()
-                                              : moex::plaza2::test::server_schema_fields(message_script.table_code);
+        const bool spectra912_session = scenario.spectra912_refdata_schema &&
+                                        message_script.table_code == TableCode::kFortsRefdataReplFutSessContents;
+        const bool spectra912_instruments = scenario.spectra912_refdata_schema &&
+                                            message_script.table_code == TableCode::kFortsRefdataReplFutInstruments;
+        const auto server_fields = spectra912_session ? moex::plaza2::test::spectra912_future_session_schema()
+                                   : spectra912_instruments
+                                       ? moex::plaza2::test::spectra912_future_instruments_schema()
+                                       : moex::plaza2::test::server_schema_fields(message_script.table_code);
         for (const auto& descriptor : server_fields) {
             const auto* field = &descriptor;
             if (field == nullptr) {
@@ -1640,7 +1926,8 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             const bool captured = field->native_offset != std::numeric_limits<std::size_t>::max();
             owned_field->desc.size =
                 captured ? field->storage_size_bytes : size_for_value_class(field->value_class, field->type_token);
-            if (message_script.table_code == TableCode::kFortsDealsReplDeal && field->storage_size_bytes != 0)
+            if ((native_widths || message_script.table_code == TableCode::kFortsDealsReplDeal) &&
+                field->storage_size_bytes != 0)
                 owned_field->desc.size = field->storage_size_bytes;
             if (message_script.table_code == TableCode::kFortsDealsReplDeal &&
                 field->field_code == FieldCode::kFortsDealsReplDealMomentNs && fake_flag(Option::DealsBadScheme))
@@ -1661,8 +1948,11 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
             message->fields.push_back(std::move(owned_field));
         }
 
-        offset = std::max(offset, spectra912 ? moex::plaza2::test::kSpectra912FutureSessionRowSize
-                                             : moex::plaza2::test::server_schema_row_size(message_script.table_code));
+        const auto native_size = spectra912_session ? moex::plaza2::test::kSpectra912FutureSessionRowSize
+                                 : spectra912_instruments
+                                     ? moex::plaza2::test::kSpectra912FutureInstrumentsRowSize
+                                     : moex::plaza2::test::server_schema_row_size(message_script.table_code);
+        offset = std::max(offset, native_size);
         if (fake_flag(Option::SchemeExtraTable)) {
             auto field = std::make_unique<OwnedField>();
             field->name = "future_field";
@@ -1707,6 +1997,53 @@ std::unique_ptr<OwnedScheme> build_scheme_for_messages(const std::vector<FakeMes
     return scheme;
 }
 
+// The fake reads the same client INIs that CGate receives. Selection is not
+// inferred from the expected URL: changing a file changes the negotiated schema.
+using ClientTables = std::map<std::string, std::vector<std::pair<std::string, std::string>>>;
+bool read_client_schema(std::string_view settings, std::string_view key, std::string_view group,
+                        std::vector<std::string>& names, ClientTables& tables) {
+    const auto prefix = ";" + std::string(key) + "=|FILE|";
+    const auto begin = settings.find(prefix);
+    if (begin == std::string_view::npos || settings.find(prefix, begin + 1) != std::string_view::npos)
+        return false;
+    const auto value = settings.substr(begin + prefix.size());
+    const auto separator = value.find('|');
+    if (separator == std::string_view::npos || value.substr(separator + 1, value.find(';') - separator - 1) != group)
+        return false;
+    std::ifstream input(std::string(value.substr(0, separator)));
+    if (!input)
+        return false;
+    bool selected = false, found = false;
+    const auto initial_size = names.size();
+    std::string line, table_name;
+    while (std::getline(input, line)) {
+        const auto first = line.find_first_not_of(" \t\r");
+        if (first == std::string::npos)
+            continue;
+        line = line.substr(first, line.find_last_not_of(" \t\r") - first + 1);
+        if (line.starts_with('[')) {
+            selected = line == "[dbscheme:" + std::string(group) + "]";
+            found = found || selected;
+            const auto table_prefix = "[table:" + std::string(group) + ":";
+            table_name = line.starts_with(table_prefix) && line.ends_with(']')
+                             ? line.substr(table_prefix.size(), line.size() - table_prefix.size() - 1)
+                             : "";
+        } else if (selected && line.starts_with("table=")) {
+            auto name = line.substr(6);
+            if (name.empty() || std::find(names.begin(), names.end(), name) != names.end())
+                return false;
+            names.push_back(std::move(name));
+        } else if (!table_name.empty() && line.starts_with("field=")) {
+            const auto comma = line.find(',');
+            if (comma == std::string::npos)
+                return false;
+            tables[table_name].emplace_back(line.substr(6, comma - 6),
+                                            line.substr(comma + 1, line.find(',', comma + 1) - comma - 1));
+        }
+    }
+    return input.eof() && found && names.size() > initial_size;
+}
+
 // Model the vendor tables= contract rather than exposing every fixture table.
 // Schema indices are negotiated again after filtering; product decoders must
 // use this descriptor's indices, not generated/full-server table ordinals.
@@ -1725,19 +2062,30 @@ bool filter_listener_tables(FakeListener& listener) {
             break;
         parameters.remove_prefix(end + 1);
     }
-    if (!requested)
+    std::vector<std::string> client_tables;
+    ClientTables client_fields;
+    if (listener.stream_code == kFullOrderLogStreamCode && !raw_ordlog(listener.settings)) {
+        if (requested ||
+            !read_client_schema(listener.settings, "online.scheme", "ORDLOG", client_tables, client_fields) ||
+            !read_client_schema(listener.settings, "snapshot.scheme", "OrdBook", client_tables, client_fields))
+            return false;
+        listener.tables_filtered = true;
+    } else if (!requested)
         return true;
-    if (requested->empty() || listener.settings.find(";scheme=") != std::string::npos)
+    if (requested && (requested->empty() || listener.settings.find(";scheme=") != std::string::npos))
         return false;
     listener.tables_filtered = true;
     std::vector<std::string_view> names;
-    auto remaining = *requested;
-    while (true) {
+    for (const auto& name : client_tables)
+        names.push_back(name);
+    auto remaining = requested.value_or("");
+    while (requested) {
         const auto end = remaining.find(',');
         const auto name = remaining.substr(0, end);
         if (name.empty() || std::find(names.begin(), names.end(), name) != names.end() ||
-            std::none_of(TablesForStream(listener.stream_code).begin(), TablesForStream(listener.stream_code).end(),
-                         [&](const auto& table) { return table.table_name == name; }))
+            (!(raw_ordlog(listener.settings) && name == "orders_log") &&
+             std::none_of(TablesForStream(listener.stream_code).begin(), TablesForStream(listener.stream_code).end(),
+                          [&](const auto& table) { return table.table_name == name; })))
             return false;
         names.push_back(name);
         if (end == std::string_view::npos)
@@ -1749,8 +2097,42 @@ bool filter_listener_tables(FakeListener& listener) {
     };
     std::erase_if(listener.scheme->messages, [&](const auto& message) { return !selected(message->name); });
     std::erase_if(listener.message_plans, [&](const auto& plan) { return !selected(plan.message_name); });
+    if (!client_tables.empty())
+        std::ranges::sort(listener.scheme->messages, {}, [&](const auto& message) {
+            return std::find(names.begin(), names.end(), message->name) - names.begin();
+        });
     for (std::size_t index = 0; index < listener.scheme->messages.size(); ++index) {
         auto& message = listener.scheme->messages[index];
+        if (!client_tables.empty()) {
+            const auto fields = client_fields.find(message->name);
+            if (fields == client_fields.end() || fields->second.empty())
+                return false;
+            std::erase_if(message->fields, [&](const auto& field) {
+                const auto* original = FindFieldByCode(static_cast<FieldCode>(field->desc.id));
+                const auto declared = std::ranges::find_if(fields->second, [&](const auto& entry) {
+                    return entry.first == (original ? original->field_name : field->name);
+                });
+                if (declared == fields->second.end())
+                    return true;
+                if (static_cast<FieldCode>(field->desc.id) != scenario.mutated_schema_field) {
+                    field->type_token = declared->second;
+                    field->desc.type = field->type_token.data();
+                }
+                return false;
+            });
+            for (std::size_t i = 0; i < message->fields.size(); ++i)
+                message->fields[i]->desc.next =
+                    i + 1 < message->fields.size() ? &message->fields[i + 1]->desc : nullptr;
+            message->desc.num_fields = message->fields.size();
+            message->desc.fields = message->fields.empty() ? nullptr : &message->fields.front()->desc;
+            for (auto& plan : listener.message_plans)
+                if (plan.message_name == message->name)
+                    std::erase_if(plan.fields, [&](const auto& field) {
+                        return std::ranges::none_of(message->fields, [&](const auto& kept) {
+                            return kept->desc.id == static_cast<std::uint32_t>(field.field_code);
+                        });
+                    });
+        }
         message->desc.next =
             index + 1 < listener.scheme->messages.size() ? &listener.scheme->messages[index + 1]->desc : nullptr;
         for (auto& plan : listener.message_plans)
@@ -1784,11 +2166,16 @@ void write_field_value(std::vector<std::byte>& buffer, const FieldPlan& plan, co
     case ValueClass::kFixedString:
     case ValueClass::kDecimal:
     case ValueClass::kFloatingPoint: {
-        if (plan.type_token == "d16.5") {
-            std::memset(dest, 0, plan.size);
-            if (const auto encoded = encode_d16_5(value.text); encoded.has_value() && plan.size == encoded->size()) {
-                std::memcpy(dest, encoded->data(), encoded->size());
-            }
+        if (plan.type_token == "d16.5" || plan.type_token == "d16.8") {
+            const auto write_decimal = [&](const auto& encoded) {
+                std::memset(dest, 0, plan.size);
+                if (encoded && plan.size == encoded->size())
+                    std::memcpy(dest, encoded->data(), encoded->size());
+            };
+            if (plan.type_token == "d16.5")
+                write_decimal(encode_d16_5(value.text));
+            else
+                write_decimal(encode_decimal<8>(value.text));
             break;
         }
         std::memset(dest, 0, plan.size);
@@ -1814,7 +2201,7 @@ std::vector<std::byte> encode_message_payload(const MessagePlan& plan, const Fak
     std::memset(buffer.data(), 0, buffer.size());
     // Unscripted decimals still carry a valid vendor BCD zero value.
     for (const auto& field : plan.fields)
-        if (field.type_token == "d16.5")
+        if (field.type_token == "d16.5" || field.type_token == "d16.8")
             write_field_value(buffer, field, {.text = "0"});
 
     for (const auto& scripted_field : message.fields) {
@@ -1868,6 +2255,10 @@ std::uint32_t emit_stream_message(FakeListener& listener, const FakeMessageScrip
         .nulls = nullptr,
         .user_id = 0,
     };
+    if (listener.stream_code == kFullOrderLogStreamCode &&
+        message.table_code == TableCode::kFortsUserorderbookReplOrders &&
+        (fake_flag(Option::FullOrderLogSnapshotShortRow) || fol_runner_profile == "short-snapshot"))
+        --stream_data.data_size;
     return listener.callback(listener.connection, &listener, &stream_data, listener.callback_data);
 }
 
@@ -1887,7 +2278,11 @@ std::uint32_t emit_reply_message(FakeListener& listener, const FakeReply& reply)
     return listener.callback(listener.connection, &listener, &message, listener.callback_data);
 }
 
+#include "fake_fol_risk_streams.hpp"
+
 std::uint32_t emit_script(FakeListener& listener) {
+    if (is_fol_risk_stream(listener.stream_code))
+        return emit_fol_risk_snapshot(listener);
     const auto script = script_for_stream(listener.stream_code);
     if (fake_flag(Option::SchemeExtraTable) && !listener.tables_filtered) {
         std::byte byte{};
@@ -1935,7 +2330,10 @@ std::uint32_t emit_script(FakeListener& listener) {
         }
     }
 
-    if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk) {
+    const bool unframed = listener.stream_code == kFullOrderLogStreamCode &&
+                          (fake_flag(Option::FullOrderLogSnapshotNoTransactions) || fol_runner_profile == "unframed" ||
+                           fol_runner_profile == "short-snapshot" || fol_runner_profile == "unframed-online");
+    if (const auto result = unframed ? kCgErrOk : emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk) {
         return result;
     }
     if (emit_clear_deleted_inside_transaction() && !listener.message_plans.empty()) {
@@ -1948,6 +2346,9 @@ std::uint32_t emit_script(FakeListener& listener) {
         }
     }
     for (const auto& message : script) {
+        if (listener.stream_code == kFullOrderLogStreamCode && fake_flag(Option::FullOrderLogConsumesInfo) &&
+            message.table_code == TableCode::kFortsUserorderbookReplInfo)
+            continue; // The real composite uses info for binding without delivering an application row.
         if (fake_flag(Option::UserorderbookPeriodicRefresh) &&
             (message.table_code == TableCode::kFortsUserorderbookReplOrders ||
              message.table_code == TableCode::kFortsUserorderbookReplMultilegOrders)) {
@@ -1978,13 +2379,24 @@ std::uint32_t emit_script(FakeListener& listener) {
         (listener.stream_code == StreamCode::kFortsSessionstateRepl &&
          fake_flag(Option::SessionstatePauseBeforeCommit)))
         return kCgErrOk;
-    if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk) {
+    if (const auto result = unframed ? kCgErrOk : emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk) {
         return result;
     }
     if (listener.stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::RefdataPauseBeforeOnline))
         return kCgErrOk;
     if (const auto result = emit_simple_message(listener, kCgMsgP2replOnline); result != kCgErrOk) {
         return result;
+    }
+    if (listener.stream_code == kFullOrderLogStreamCode &&
+        (fake_flag(Option::FullOrderLogUnframedOnlineRow) || fol_runner_profile == "unframed-online")) {
+        if (const auto result = emit_stream_message(listener, script.front()); result != kCgErrOk)
+            return result;
+    }
+    if (listener.stream_code == kFullOrderLogStreamCode && !unframed) {
+        if (const auto result = emit_simple_message(listener, kCgMsgTnBegin); result != kCgErrOk)
+            return result;
+        if (const auto result = emit_simple_message(listener, kCgMsgTnCommit); result != kCgErrOk)
+            return result;
     }
     if (listener.stream_code == StreamCode::kFortsDealsRepl) {
         // The snapshot trade above is historical. Only these later committed
@@ -2065,6 +2477,9 @@ void detach_listener(FakeConnection* connection, FakeListener* listener) {
 
 } // namespace
 
+#include <chrono>
+#include "full_order_log_replay.hpp"
+
 extern "C" {
 const char* cg_err_getstr(std::uint32_t code) {
     return code ? "fake exact runtime error" : "OK";
@@ -2081,12 +2496,72 @@ const char* moex_fake_cgate_runtime_v1() {
     return "moex_fake_cgate_runtime_v1";
 }
 
+std::uint32_t configure_fol_runner_fixture(std::string_view settings) {
+    fol_runner_profile.clear();
+    fol_runner_posts.clear();
+    fol_runner_control.clear();
+    fol_runner_dtc_ledger.clear();
+    fol_runner_wrong_session = false;
+    const auto begin = settings.find("ini=");
+    if (begin == std::string_view::npos)
+        return kCgErrOk;
+    const auto value = settings.substr(begin + 4);
+    const std::filesystem::path ini(value.substr(0, value.find(';')));
+    std::ifstream input(ini);
+    std::string line, profile;
+    bool section{};
+    while (std::getline(input, line)) {
+        if (line.starts_with('['))
+            section = line == "[moex-fake-fol-runner]";
+        else if (section && line.starts_with("profile="))
+            profile = line.substr(8);
+        else if (section && line.starts_with("dtc-ledger="))
+            fol_runner_dtc_ledger = line.substr(11);
+    }
+    if (profile.empty())
+        return kCgErrOk;
+    if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" && profile != "invalid" &&
+        profile != "recovery" && profile != "deals-wire" && profile != "unframed" && profile != "short-snapshot" &&
+        profile != "unframed-online" && profile != "matrix" && profile != "matrix-five" && profile != "matrix-dtc" &&
+        profile != "matrix-dtc-recovery")
+        return kCgErrInvalidArgument;
+    scenario = {};
+    scenario.spectra912_refdata_schema = true;
+    scenario.zero_position = true;
+    scenario.client_code = "BRK1C01";
+    scenario.suppress_initial_orders = true;
+    scenario.simulate_idle_wait = true;
+    scenario.options[static_cast<std::size_t>(Option::FullOrderLogRefdata)] = "1";
+    fol_runner_profile = profile;
+    fol_runner_posts = ini.parent_path() / "fol-native-posts.log";
+    fol_runner_control = ini.parent_path() / "fol-control";
+    fol_runner_orders = {};
+    fol_runner_orders[1].id = 20006;
+    fol_runner_orders[1].ext_id = 101;
+    fol_runner_reply_id = 20003;
+    fol_matrix_next_id = 20003;
+    fol_matrix_cancelled_count = 0;
+    fol_matrix_bulk = MatrixBulk::Idle;
+    fol_runner_order.present = profile == "recovery";
+    if (profile == "matrix-dtc-recovery") {
+        fol_runner_order = {.id = 20007, .ext_id = 102, .price = "102250", .present = true, .revision = 2};
+        fol_matrix_next_id = 20008;
+    }
+    if (profile == "matrix-five")
+        for (std::int32_t i = 0; i < 5; ++i)
+            fol_runner_orders[i] = {.id = fol_matrix_next_id++, .ext_id = 100 + i, .present = true, .revision = 1};
+    fol_runner_next_activity = {};
+    return kCgErrOk;
+}
+
 std::uint32_t cg_env_open(const char* settings) {
     if (const auto result = configured_result(Option::EnvOpenResult); result != kCgErrOk)
         return result;
     if (settings == nullptr || *settings == '\0') {
         return kCgErrInvalidArgument;
     }
+    if (const auto result = configure_fol_runner_fixture(settings); result != kCgErrOk)
+        return result;
     g_env_open = true;
     ++g_env_open_count;
     return kCgErrOk;
@@ -2109,6 +2584,7 @@ std::uint32_t cg_conn_new(const char* settings, void** connptr) {
     }
     auto* connection = new FakeConnection{};
     connection->settings = settings;
+    last_connection_settings = settings;
     g_cancel_after_cleanup = false;
     g_persistent_order_epoch = 0;
     ++g_conn_new_count;
@@ -2136,6 +2612,16 @@ std::uint32_t cg_conn_open(void* conn, const char*) {
         return result;
     if (!g_env_open || conn == nullptr) {
         return !g_env_open ? kCgErrIncorrectState : kCgErrInvalidArgument;
+    }
+    if (fake_flag(Option::ConnectionOpenFail) && !fol_runner_profile.empty()) {
+        std::ifstream control(fol_runner_control);
+        std::string action;
+        // The session does not call cg_conn_process while its connection is down.
+        if (std::getline(control, action) && action == "router-up") {
+            clear_option(Option::ConnectionOpenFail);
+            clear_option(Option::ConnectionError);
+            std::filesystem::remove(fol_runner_control);
+        }
     }
     auto* connection = static_cast<FakeConnection*>(conn);
     if (fake_flag(Option::ConnectionOpenFail)) {
@@ -2177,6 +2663,110 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
     }
     ++process_calls;
     auto* connection = static_cast<FakeConnection*>(conn);
+    if (fol_matrix_bulk == MatrixBulk::Yield) {
+        fol_matrix_bulk = MatrixBulk::Idle;
+        return kCgErrTimeout;
+    }
+    if (!fol_runner_profile.empty()) {
+        std::ifstream control(fol_runner_control);
+        std::string profile;
+        if (std::getline(control, profile) && profile == "capture-fail") {
+            // Explicit offline fixture injection: an oversized capture control record.
+            // Private channels continue normally so the real writer can cancel-drain.
+            std::filesystem::remove(fol_runner_control);
+            const std::string oversized(2 * 1024 * 1024, 'x');
+            for (auto* listener : connection->listeners)
+                if (listener && listener->stream_code == kFullOrderLogStreamCode)
+                    return emit_simple_message(*listener, kCgMsgP2replReplState, const_cast<char*>(oversized.c_str()),
+                                               oversized.size() + 1);
+        }
+        if (fol_runner_profile == "deals-wire" && (profile == "deal-stage" || profile == "deal-commit")) {
+            std::filesystem::remove(fol_runner_control);
+            for (auto* listener : connection->listeners) {
+                if (!listener || listener->stream_code != StreamCode::kFortsDealsRepl)
+                    continue;
+                if (profile == "deal-commit")
+                    return emit_simple_message(*listener, kCgMsgTnCommit);
+                auto row = script_for_stream(StreamCode::kFortsDealsRepl).front();
+                row.rev = 100;
+                find_field(row, FieldCode::kFortsDealsReplDealReplId)->signed_value = 100;
+                find_field(row, FieldCode::kFortsDealsReplDealReplRev)->signed_value = 100;
+                find_field(row, FieldCode::kFortsDealsReplDealIdDeal)->signed_value = 9100;
+                find_field(row, FieldCode::kFortsDealsReplDealXpos)->signed_value = 124;
+                find_field(row, FieldCode::kFortsDealsReplDealXstatusBuy)->signed_value = 0x20000000000LL;
+                find_field(row, FieldCode::kFortsDealsReplDealXstatusSell)->signed_value = 0x40000000000LL;
+                if (const auto error = emit_simple_message(*listener, kCgMsgTnBegin))
+                    return error;
+                return emit_stream_message(*listener, row);
+            }
+            return kCgErrIncorrectState;
+        }
+        const auto set_fault = [&](Option option, bool enabled) {
+            if (enabled)
+                scenario.options[static_cast<std::size_t>(option)] = "1";
+            else
+                clear_option(option);
+        };
+        if (profile == "router-down" || profile == "router-up") {
+            set_fault(Option::ConnectionOpenFail, profile == "router-down");
+            set_fault(Option::ConnectionError, profile == "router-down");
+            std::filesystem::remove(fol_runner_control);
+            profile.clear();
+        } else if (profile == "publisher-down" || profile == "publisher-up") {
+            set_fault(Option::PublisherError, profile == "publisher-down");
+            std::filesystem::remove(fol_runner_control);
+            profile.clear();
+        }
+        if (profile == "fol-lifenum" || profile == "fol-clear" || profile == "trade-begin") {
+            std::filesystem::remove(fol_runner_control);
+            if (profile == "fol-lifenum")
+                queued_events.push_back(
+                    {.kind = fixture::EventKind::LifeNum, .stream_code = kFullOrderLogStreamCode, .value = 8});
+            else if (profile == "fol-clear")
+                queued_events.push_back({.kind = fixture::EventKind::ClearDeleted,
+                                         .stream_code = kFullOrderLogStreamCode,
+                                         .table_code = TableCode::kFortsUserorderbookReplOrders,
+                                         .revision = std::numeric_limits<std::int64_t>::max()});
+            else
+                queued_events.push_back(
+                    {.kind = fixture::EventKind::Begin, .stream_code = StreamCode::kFortsTradeRepl});
+            profile.clear();
+        }
+        if (profile == "fol-pause" || profile == "fol-resume" || profile == "fol-wrong-session" ||
+            profile == "fol-current-session") {
+            std::filesystem::remove(fol_runner_control);
+            if (profile == "fol-resume") {
+                clear_option(Option::ListenerOpenNoService);
+                profile.clear();
+            } else {
+                fol_runner_wrong_session = profile == "fol-wrong-session";
+                if (profile == "fol-pause")
+                    scenario.options[static_cast<std::size_t>(Option::ListenerOpenNoService)] = "p2ordbook://";
+                for (auto* listener : connection->listeners)
+                    if (listener && listener->stream_code == kFullOrderLogStreamCode &&
+                        listener->state == kStateActive) {
+                        listener->state = kStateError;
+                        std::uint32_t reason = profile == "fol-pause" ? 0xA006 : 0;
+                        return emit_simple_message(*listener, kCgMsgClose, &reason, sizeof reason);
+                    }
+                return kCgErrOk;
+            }
+        }
+        if (!profile.empty() && profile != fol_runner_profile) {
+            if (profile != "fresh" && profile != "stale" && profile != "quiet" && profile != "dead" &&
+                profile != "invalid")
+                return kCgErrInvalidArgument;
+            fol_runner_profile = profile;
+            if (profile == "dead")
+                return kCgErrOk; // Leave its published snapshot/ONLINE identity intact; emit no more FOL events.
+            for (auto* listener : connection->listeners)
+                if (listener && listener->stream_code == kFullOrderLogStreamCode) {
+                    // A real generation change is required: snapshot-table rows are not online deltas.
+                    listener->state = kStateError;
+                    return emit_simple_message(*listener, kCgMsgClose);
+                }
+        }
+    }
     if (fake_flag(Option::ConnHoldOpening) || fake_flag(Option::ConnToOpening)) {
         connection->state = kStateOpening;
         return kCgErrTimeout;
@@ -2606,6 +3196,8 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
             connection->next_session_prepublished = true;
         return kCgErrOk;
     }
+    if (full_order_log_replay.remaining)
+        return full_order_log_replay.emit(*connection);
     if (!queued_events.empty()) {
         const auto& event = queued_events.front();
         if (event.kind == fixture::EventKind::ConnectionError) {
@@ -2635,8 +3227,15 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
                                                      .timed_out = owned.timed_out});
             case fixture::EventKind::Begin:
                 return emit_simple_message(listener, kCgMsgTnBegin);
-            case fixture::EventKind::Commit:
-                return emit_simple_message(listener, kCgMsgTnCommit);
+            case fixture::EventKind::Commit: {
+                const auto result = emit_simple_message(listener, kCgMsgTnCommit);
+                if (result || !owned.value || !raw_ordlog(listener.settings))
+                    return result;
+                // Model a transport close in the same owner poll as the final commit.
+                listener.state = kStateClosed;
+                auto reason = static_cast<std::uint32_t>(owned.value);
+                return emit_simple_message(listener, kCgMsgClose, &reason, sizeof(reason));
+            }
             case fixture::EventKind::Online:
                 return emit_simple_message(listener, kCgMsgP2replOnline);
             case fixture::EventKind::Close: {
@@ -2656,6 +3255,9 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
                                                        owned.flags);
                 return emit_simple_message(listener, kCgMsgP2replClearDeleted, data.data(), data.size());
             }
+            case fixture::EventKind::ListenerError:
+                listener.state = kStateError;
+                return kCgErrOk;
             case fixture::EventKind::ConnectionError:
                 break;
             }
@@ -2688,6 +3290,22 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
     }
     if (connection->script_emitted && connection->pending_replies.empty()) {
         if (!pending_new_listener) {
+            if ((fol_runner_profile == "quiet" || fol_runner_profile == "dead") &&
+                std::chrono::steady_clock::now() >= fol_runner_next_activity) {
+                fol_runner_next_activity = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+                const auto code = fol_runner_profile == "quiet" ? kFullOrderLogStreamCode : StreamCode::kFortsTradeRepl;
+                for (auto* listener : connection->listeners)
+                    if (listener && listener->state == kStateActive && listener->stream_code == code) {
+                        if (const auto error = emit_simple_message(*listener, kCgMsgTnBegin); error != kCgErrOk)
+                            return error;
+                        if (code == kFullOrderLogStreamCode)
+                            if (const auto error =
+                                    emit_stream_message(*listener, {.table_code = TableCode::kFortsTradeReplSysEvents});
+                                error != kCgErrOk)
+                                return error;
+                        return emit_simple_message(*listener, kCgMsgTnCommit);
+                    }
+            }
             if (scenario.simulate_idle_wait && timeout_ms)
                 std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
             return kCgErrTimeout;
@@ -2793,6 +3411,15 @@ std::uint32_t cg_conn_process(void* conn, std::uint32_t timeout_ms, void*) {
         return kCgErrTimeout;
     }
 
+    if (fol_matrix_bulk == MatrixBulk::ReplyPending) {
+        // The owner drains several CGate calls per poll. Yield after 186 so
+        // private cancellation rows commit after its reply watermark.
+        fol_matrix_bulk = MatrixBulk::Yield;
+        for (auto* listener : connection->listeners)
+            if (listener && (listener->stream_code == StreamCode::kFortsTradeRepl ||
+                             listener->stream_code == StreamCode::kFortsUserorderbookRepl))
+                listener->script_emitted = false;
+    }
     connection->pending_replies.clear();
     connection->script_emitted = true;
     return kCgErrOk;
@@ -2842,14 +3469,24 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
         *lsnptr = listener;
         return kCgErrOk;
     }
+    if (fake_flag(Option::FolRiskStreams) && configure_fol_risk_stream(*listener)) {
+        connection->listeners.push_back(listener);
+        ++listener_handles[listener->stream_code];
+        last_listener_settings[listener->stream_code] = listener->settings;
+        *lsnptr = listener;
+        return kCgErrOk;
+    }
     listener->stream_code = stream_code_from_settings(listener->settings);
-    if (FindStreamByCode(listener->stream_code) == nullptr) {
+    if (listener->stream_code != kFullOrderLogStreamCode && FindStreamByCode(listener->stream_code) == nullptr) {
         delete listener;
         return kCgErrInvalidArgument;
     }
 
     const auto script = script_for_stream(listener->stream_code);
-    listener->scheme = build_scheme_for_messages(script, &listener->message_plans);
+    listener->scheme = build_scheme_for_messages(
+        script, &listener->message_plans,
+        listener->stream_code == kFullOrderLogStreamCode ||
+            (listener->stream_code == StreamCode::kFortsRefdataRepl && fake_flag(Option::FullOrderLogRefdata)));
     if (!listener->scheme) {
         delete listener;
         return kCgErrIncorrectState;
@@ -2875,6 +3512,7 @@ std::uint32_t cg_lsn_new(void* conn, const char* settings, CgListenerCallback ca
 
     connection->listeners.push_back(listener);
     ++listener_handles[listener->stream_code];
+    last_listener_settings[listener->stream_code] = listener->settings;
     *lsnptr = listener;
     return kCgErrOk;
 }
@@ -2892,6 +3530,95 @@ std::uint32_t cg_lsn_destroy(void* listener) {
     detach_listener(typed->connection, typed);
     delete typed;
     return kCgErrOk;
+}
+
+struct FakeLayoutField {
+    const char* name;
+    const char* type;
+    std::size_t offset;
+    std::size_t size;
+};
+
+static void add_fake_message_layout(OwnedScheme& scheme, std::string_view name, std::uint32_t id, std::size_t size,
+                                    std::initializer_list<FakeLayoutField> fields) {
+    auto message = std::make_unique<OwnedMessage>();
+    message->name = name;
+    message->desc.name = message->name.data();
+    message->desc.id = id;
+    message->desc.size = size;
+    message->desc.align = 4;
+    for (const auto& field : fields) {
+        auto owned = std::make_unique<OwnedField>();
+        owned->name = field.name;
+        owned->type_token = field.type;
+        owned->desc.name = owned->name.data();
+        owned->desc.type = owned->type_token.data();
+        owned->desc.offset = field.offset;
+        owned->desc.size = field.size;
+        if (!message->fields.empty())
+            message->fields.back()->desc.next = &owned->desc;
+        message->fields.push_back(std::move(owned));
+    }
+    message->desc.fields = &message->fields.front()->desc;
+    message->desc.num_fields = message->fields.size();
+    if (!scheme.messages.empty())
+        scheme.messages.back()->desc.next = &message->desc;
+    scheme.messages.push_back(std::move(message));
+    scheme.desc.messages = &scheme.messages.front()->desc;
+    scheme.desc.num_messages = scheme.messages.size();
+    scheme.desc.scheme_type = 1;
+}
+
+static std::unique_ptr<OwnedScheme> fake_trading_scheme(bool reply) {
+    auto scheme = std::make_unique<OwnedScheme>();
+#define FAKE_FIELD(message, field, token)                                                                              \
+    FakeLayoutField {                                                                                                  \
+        #field, token, offsetof(official_cgate99::message, field), sizeof(official_cgate99::message::field)            \
+    }
+#define FAKE_LAYOUT(message, ...)                                                                                      \
+    add_fake_message_layout(*scheme, #message, official_cgate99::message##_msgid, sizeof(official_cgate99::message),   \
+                            {__VA_ARGS__})
+    if (reply) {
+        FAKE_LAYOUT(FORTS_MSG176, FAKE_FIELD(FORTS_MSG176, code, "i4"), FAKE_FIELD(FORTS_MSG176, message, "c255"),
+                    FAKE_FIELD(FORTS_MSG176, order_id1, "i8"), FAKE_FIELD(FORTS_MSG176, order_id2, "i8"));
+        FAKE_LAYOUT(FORTS_MSG177, FAKE_FIELD(FORTS_MSG177, code, "i4"), FAKE_FIELD(FORTS_MSG177, message, "c255"),
+                    FAKE_FIELD(FORTS_MSG177, amount, "i4"));
+        FAKE_LAYOUT(FORTS_MSG179, FAKE_FIELD(FORTS_MSG179, code, "i4"), FAKE_FIELD(FORTS_MSG179, message, "c255"),
+                    FAKE_FIELD(FORTS_MSG179, order_id, "i8"));
+        FAKE_LAYOUT(FORTS_MSG186, FAKE_FIELD(FORTS_MSG186, code, "i4"), FAKE_FIELD(FORTS_MSG186, message, "c255"),
+                    FAKE_FIELD(FORTS_MSG186, num_orders, "i4"));
+        FAKE_LAYOUT(FORTS_MSG99, FAKE_FIELD(FORTS_MSG99, queue_size, "i4"),
+                    FAKE_FIELD(FORTS_MSG99, penalty_remain, "i4"), FAKE_FIELD(FORTS_MSG99, message, "c128"));
+        FAKE_LAYOUT(FORTS_MSG100, FAKE_FIELD(FORTS_MSG100, code, "i4"), FAKE_FIELD(FORTS_MSG100, message, "c255"));
+    } else {
+        FAKE_LAYOUT(AddOrder, FAKE_FIELD(AddOrder, broker_code, "c4"), FAKE_FIELD(AddOrder, isin_id, "i4"),
+                    FAKE_FIELD(AddOrder, client_code, "c3"), FAKE_FIELD(AddOrder, dir, "i4"),
+                    FAKE_FIELD(AddOrder, type, "i4"), FAKE_FIELD(AddOrder, amount, "i4"),
+                    FAKE_FIELD(AddOrder, price, "c17"), FAKE_FIELD(AddOrder, comment, "c20"),
+                    FAKE_FIELD(AddOrder, broker_to, "c20"), FAKE_FIELD(AddOrder, ext_id, "i4"),
+                    FAKE_FIELD(AddOrder, is_check_limit, "i4"), FAKE_FIELD(AddOrder, date_exp, "c8"),
+                    FAKE_FIELD(AddOrder, dont_check_money, "i4"), FAKE_FIELD(AddOrder, match_ref, "c10"),
+                    FAKE_FIELD(AddOrder, ncc_request, "i1"), FAKE_FIELD(AddOrder, compliance_id, "c1"));
+        FAKE_LAYOUT(DelOrder, FAKE_FIELD(DelOrder, broker_code, "c4"), FAKE_FIELD(DelOrder, order_id, "i8"),
+                    FAKE_FIELD(DelOrder, ncc_request, "i1"), FAKE_FIELD(DelOrder, client_code, "c3"),
+                    FAKE_FIELD(DelOrder, isin_id, "i4"));
+        FAKE_LAYOUT(MoveOrder, FAKE_FIELD(MoveOrder, broker_code, "c4"), FAKE_FIELD(MoveOrder, regime, "i4"),
+                    FAKE_FIELD(MoveOrder, order_id1, "i8"), FAKE_FIELD(MoveOrder, amount1, "i4"),
+                    FAKE_FIELD(MoveOrder, price1, "c17"), FAKE_FIELD(MoveOrder, ext_id1, "i4"),
+                    FAKE_FIELD(MoveOrder, order_id2, "i8"), FAKE_FIELD(MoveOrder, amount2, "i4"),
+                    FAKE_FIELD(MoveOrder, price2, "c17"), FAKE_FIELD(MoveOrder, ext_id2, "i4"),
+                    FAKE_FIELD(MoveOrder, is_check_limit, "i4"), FAKE_FIELD(MoveOrder, ncc_request, "i1"),
+                    FAKE_FIELD(MoveOrder, client_code, "c3"), FAKE_FIELD(MoveOrder, isin_id, "i4"),
+                    FAKE_FIELD(MoveOrder, compliance_id, "c1"));
+        FAKE_LAYOUT(DelUserOrders, FAKE_FIELD(DelUserOrders, broker_code, "c4"),
+                    FAKE_FIELD(DelUserOrders, buy_sell, "i4"), FAKE_FIELD(DelUserOrders, non_system, "i4"),
+                    FAKE_FIELD(DelUserOrders, code, "c3"), FAKE_FIELD(DelUserOrders, base_contract_code, "c25"),
+                    FAKE_FIELD(DelUserOrders, ext_id, "i4"), FAKE_FIELD(DelUserOrders, isin_id, "i4"),
+                    FAKE_FIELD(DelUserOrders, instrument_mask, "i1"));
+    }
+#undef FAKE_LAYOUT
+#undef FAKE_FIELD
+    return scheme;
 }
 
 std::uint32_t cg_lsn_open(void* listener, const char* settings) {
@@ -2930,6 +3657,7 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
             break;
         parameters.remove_prefix(end + 1);
     }
+    last_listener_open_settings[typed->stream_code] = typed->open_settings;
     if (typed->stream_code == StreamCode::kFortsTradeRepl)
         last_trade_open_settings = typed->open_settings;
     if (typed->stream_code == StreamCode::kFortsSessionstateRepl ||
@@ -2994,13 +3722,32 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
         return kCgErrOk;
     }
     typed->state = kStateActive;
+    if (typed->reply_listener) {
+        typed->scheme = fake_trading_scheme(true);
+        if (fake_flag(Option::ReplyLayoutTypeMismatch)) {
+            auto& field = *typed->scheme->messages.front()->fields.front();
+            field.type_token = "u4";
+            field.desc.type = field.type_token.data();
+        }
+    }
     if (typed->stream_code == StreamCode::kFortsDealsRepl && fake_flag(Option::DealsLifeNumBeforeOpen)) {
         CgDataLifeNum life{.life_number = fake_flag(Option::FreshPosAnchor) ? 8u : 7u, .flags = 0};
         if (const auto result = emit_simple_message(*typed, kCgMsgP2replLifenum, &life, sizeof(life));
             result != kCgErrOk)
             return result;
     }
-    if (typed->stream_code == StreamCode::kFortsTradeRepl) {
+    if (is_t1_fol_environment(*typed) &&
+        std::string_view(option(Option::FolRiskStreams)) != "t1-environment-zero-life") {
+        CgDataLifeNum life{.life_number = kT1FolEnvironmentLifeNum};
+        if (const auto result = emit_simple_message(*typed, kCgMsgP2replLifenum, &life, sizeof(life));
+            result != kCgErrOk)
+            return result;
+    }
+    const bool recovery = raw_ordlog(typed->settings);
+    // Raw recovery tests drive explicitly committed rows and close boundaries.
+    if (recovery)
+        typed->script_emitted = true;
+    if (typed->stream_code == StreamCode::kFortsTradeRepl || recovery) {
         const auto server =
             scenario.trade_server_lifenum ? scenario.trade_server_lifenum : typed->connection->trade_lifenum;
         std::optional<std::uint32_t> requested;
@@ -3084,7 +3831,11 @@ std::uint32_t cg_pub_open(void* publisher, const char* settings) {
     if (publisher == nullptr) {
         return kCgErrInvalidArgument;
     }
-    static_cast<FakePublisher*>(publisher)->state = kStateActive;
+    auto* typed = static_cast<FakePublisher*>(publisher);
+    typed->state = kStateActive;
+    typed->scheme = fake_trading_scheme(false);
+    if (fake_flag(Option::PublisherLayoutOffsetMismatch))
+        ++typed->scheme->messages.front()->fields.front()->desc.offset;
     return kCgErrOk;
 }
 
@@ -3117,6 +3868,16 @@ std::uint32_t cg_pub_getstate(void* publisher, std::uint32_t* state) {
     return kCgErrOk;
 }
 
+std::uint32_t cg_pub_getscheme(void* publisher, void** schemeptr) {
+    if (publisher == nullptr || schemeptr == nullptr)
+        return kCgErrInvalidArgument;
+    auto* typed = static_cast<FakePublisher*>(publisher);
+    if (typed->state != kStateActive || !typed->scheme)
+        return kCgErrIncorrectState;
+    *schemeptr = &typed->scheme->desc;
+    return kCgErrOk;
+}
+
 std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void** msgptr) {
     ++g_pub_msgnew_calls;
     if (publisher == nullptr || id == nullptr || msgptr == nullptr) {
@@ -3139,6 +3900,111 @@ std::uint32_t cg_pub_msgnew(void* publisher, std::uint32_t, const void* id, void
     return kCgErrOk;
 }
 
+static bool fol_dtc_ledger_has(const official_cgate99::AddOrder& wire) {
+    const auto expected = std::to_string(wire.ext_id) + '\n' + std::to_string(wire.isin_id) +
+                          "\nBRK1C01\nfol-offline-owner\n" + wire.compliance_id[0] + '\n';
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(fol_runner_dtc_ledger, error)) {
+        if (entry.path().filename().string().starts_with('.') || !entry.is_regular_file())
+            continue;
+        std::ifstream record(entry.path());
+        if (std::string(std::istreambuf_iterator<char>(record), {}) == expected)
+            return true;
+    }
+    return false;
+}
+
+static bool fol_matrix_apply(std::string_view name, const CgMsgData& posted, std::ostream& details, bool reject_del) {
+    const auto text = [](const auto& field) { return std::string(field, strnlen(field, sizeof(field))); };
+    const auto decode = [&](auto& wire) {
+        if (!posted.data || posted.data_size != sizeof(wire))
+            return false;
+        std::memcpy(&wire, posted.data, sizeof(wire));
+        return text(wire.broker_code) == "BRK1";
+    };
+    const auto working = [](const auto& order) { return order.present && !order.cancelled && !order.filled; };
+    fol_matrix_cancelled_count = 0;
+    if (name == "AddOrder") {
+        official_cgate99::AddOrder wire{};
+        if (!decode(wire) || wire.isin_id != 1001 || text(wire.client_code) != "C01" || wire.dir < 1 || wire.dir > 2 ||
+            wire.type < 1 || wire.type > 2 || wire.amount != 1 || wire.ext_id < 100 || wire.ext_id >= 110)
+            return false;
+        if (!fol_runner_dtc_ledger.empty()) {
+            // Observe the final record at cg_pub_post, before any order or post log mutation.
+            const auto recorded = fol_dtc_ledger_has(wire);
+            details << " ledger_before_post=" << recorded;
+            if (!recorded)
+                return false;
+        }
+        auto& order = fol_runner_orders[wire.ext_id - 100];
+        if (order.present)
+            return false;
+        const auto price = text(wire.price);
+        order = {.id = fol_matrix_next_id++,
+                 .ext_id = wire.ext_id,
+                 .price = price,
+                 .dir = wire.dir,
+                 .amount = wire.amount,
+                 .present = true,
+                 .cancelled = wire.type == 2,
+                 .filled = price == "103000",
+                 .revision = 1};
+        fol_runner_reply_id = order.id;
+        details << " dir=" << wire.dir << " type=" << wire.type << " price=" << price << " id=" << order.id;
+        return true;
+    }
+    if (name == "MoveOrder") {
+        official_cgate99::MoveOrder wire{};
+        if (!decode(wire) || wire.isin_id != 1001 || text(wire.client_code) != "C01" || wire.regime != 3 ||
+            wire.amount1 != 1 || wire.order_id2 != 0)
+            return false;
+        const auto order = std::ranges::find_if(fol_runner_orders, [&](const auto& entry) {
+            return working(entry) && entry.id == wire.order_id1 && entry.ext_id == wire.ext_id1;
+        });
+        if (order == fol_runner_orders.end())
+            return false;
+        order->id = fol_matrix_next_id++;
+        order->price = text(wire.price1);
+        ++order->revision;
+        fol_runner_reply_id = order->id;
+        details << " target=" << wire.order_id1 << " price=" << order->price << " id=" << order->id;
+        return true;
+    }
+    if (name == "DelOrder") {
+        official_cgate99::DelOrder wire{};
+        if (!decode(wire) || wire.isin_id != 1001 || text(wire.client_code) != "C01")
+            return false;
+        const auto order =
+            std::ranges::find_if(fol_runner_orders, [&](const auto& e) { return working(e) && e.id == wire.order_id; });
+        if (order == fol_runner_orders.end())
+            return false;
+        details << " target=" << wire.order_id;
+        if (reject_del) {
+            details << " fixture_cancel_rejected=1";
+            return true;
+        }
+        order->cancelled = true;
+        ++order->revision;
+        fol_matrix_cancelled_count = 1;
+        return true;
+    }
+    if (name == "DelUserOrders") {
+        official_cgate99::DelUserOrders wire{};
+        if (!decode(wire) || wire.isin_id != 1001 || text(wire.code) != "C01" || wire.buy_sell != 3 ||
+            wire.instrument_mask != 1 || wire.ext_id != 0)
+            return false;
+        for (auto& order : fol_runner_orders)
+            if (working(order)) {
+                order.cancelled = true;
+                ++order.revision;
+                ++fol_matrix_cancelled_count;
+            }
+        details << " isin=" << wire.isin_id << " ext_id=" << wire.ext_id << " cancelled=" << fol_matrix_cancelled_count;
+        return true;
+    }
+    return false;
+}
+
 std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
     last_post_started_steady_ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -3149,9 +4015,71 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
     if (publisher == nullptr || message == nullptr) {
         return kCgErrInvalidArgument;
     }
-    const auto result = configured_result(Option::PubPostResult);
+    auto result = configured_result(Option::PubPostResult);
     const auto* posted = static_cast<CgMsgData*>(message);
     const auto* bytes = static_cast<const std::byte*>(posted->data);
+    bool reject_fixture_del = false;
+    if (!fol_runner_profile.empty()) {
+        const std::string_view name = posted->msg_name ? posted->msg_name : "";
+        const auto text = [](const auto& field) { return std::string(field, strnlen(field, sizeof(field))); };
+        bool valid{};
+        std::ostringstream details;
+        if (fol_matrix_profile()) {
+            reject_fixture_del =
+                name == "DelOrder" && std::filesystem::exists(fol_runner_control.parent_path() / "fol-hold-del");
+            valid = fol_matrix_apply(name, *posted, details, reject_fixture_del);
+            details << " post_ns=" << last_post_started_steady_ns;
+        } else if (name == "AddOrder" && bytes && posted->data_size == sizeof(official_cgate99::AddOrder)) {
+            official_cgate99::AddOrder wire{};
+            std::memcpy(&wire, bytes, sizeof(wire));
+            auto& fol_runner_order = fol_runner_orders[wire.ext_id == 101 ? 1 : 0];
+            valid = !fol_runner_order.present && wire.isin_id == 1001 && wire.dir == 1 && wire.amount == 1 &&
+                    text(wire.price) == "102500" && (wire.ext_id == 100 || wire.ext_id == 101) &&
+                    text(wire.broker_code) == "BRK1" && text(wire.client_code) == "C01";
+            if (valid) {
+                fol_runner_order.present = true;
+                fol_runner_order.ext_id = wire.ext_id;
+                fol_runner_reply_id = fol_runner_order.id;
+                ++fol_runner_order.revision;
+            }
+        } else if (name == "MoveOrder" && bytes && posted->data_size == sizeof(official_cgate99::MoveOrder)) {
+            official_cgate99::MoveOrder wire{};
+            std::memcpy(&wire, bytes, sizeof(wire));
+            valid = fol_runner_order.present && !fol_runner_order.cancelled && wire.order_id1 == 20003 &&
+                    wire.amount1 == 1 && wire.regime == 3 && text(wire.price1) == "102000" && wire.ext_id1 == 100;
+            if (valid) {
+                fol_runner_order.id = 20004;
+                fol_runner_order.price = "102000";
+            }
+        } else if (name == "DelOrder" && bytes && posted->data_size == sizeof(official_cgate99::DelOrder)) {
+            official_cgate99::DelOrder wire{};
+            std::memcpy(&wire, bytes, sizeof(wire));
+            for (auto& order : fol_runner_orders)
+                if (order.present && wire.order_id == order.id) {
+                    valid = true;
+                    order.cancelled = true;
+                    ++order.revision;
+                }
+        }
+        std::ofstream journal(fol_runner_posts, std::ios::app);
+        journal << name << " wire_valid=" << valid << " bytes=" << posted->data_size << details.str() << '\n';
+        journal.flush();
+        if (!valid || !journal)
+            result = kCgErrInvalidArgument;
+        else {
+            if (!fol_matrix_profile())
+                ++fol_runner_order.revision;
+            if (fol_matrix_profile() && name == "DelUserOrders") {
+                fol_matrix_bulk = MatrixBulk::ReplyPending;
+            } else {
+                auto* connection = static_cast<FakePublisher*>(publisher)->connection;
+                for (auto* listener : connection->listeners)
+                    if (listener && (listener->stream_code == StreamCode::kFortsTradeRepl ||
+                                     listener->stream_code == StreamCode::kFortsUserorderbookRepl))
+                        listener->script_emitted = false;
+            }
+        }
+    }
     posted_commands.push_back(
         {.name = posted->msg_name ? posted->msg_name : "",
          .user_id = posted->user_id,
@@ -3204,6 +4132,8 @@ std::uint32_t cg_pub_post(void* publisher, void* message, std::uint32_t flags) {
             }
         }
         auto reply_payload = make_trade_reply(message_name);
+        if (reject_fixture_del)
+            write_reply_scalar(reply_payload, 0, std::int32_t{99});
         if (reply_message_id == 99) {
             reply_payload.assign(140, std::byte{});
             write_reply_scalar(reply_payload, 0, std::int32_t{30});
@@ -3287,6 +4217,20 @@ std::uint32_t cg_getstr(const char* type, const void* data, char* buffer, std::s
         if (!formatted.has_value())
             return kCgErrInvalidArgument;
         text = *formatted;
+    } else if (type && std::string_view(type) == "d16.8") {
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        if (bytes[0] != 8 || bytes[1] != 16)
+            return kCgErrInvalidArgument;
+        std::uint64_t units{};
+        for (std::size_t i = 2; i < 10; ++i) {
+            const auto pair = i == 2 ? (bytes[i] & 0x7FU) : bytes[i];
+            if (pair > 99)
+                return kCgErrInvalidArgument;
+            units = units * 100 + pair;
+        }
+        const auto scale = moex::plaza2::cgate::kPlaza2LotVolumeScale;
+        text = (bytes[2] & 0x80U ? "-" : "") + std::to_string(units / scale) + "." +
+               std::to_string(scale + units % scale).substr(1);
     } else if (type &&
                (std::string_view(type) == "i8" || std::string_view(type) == "i4" || std::string_view(type) == "i1")) {
         if (std::string_view(type) == "i8") {
@@ -3340,10 +4284,27 @@ extern "C" std::uint64_t moex_fake_connection_new_count() {
 
 extern "C" void moex_fake_scenario(const fixture::Scenario* value) {
     scenario = value ? *value : fixture::Scenario{};
+    full_refdata_count = 1;
+}
+extern "C" void moex_fake_refdata_count(std::uint64_t count) {
+    full_refdata_count = std::clamp<std::uint64_t>(count, 1, 100000);
 }
 extern "C" void moex_fake_option(Option key, const char* value) {
     scenario.options[static_cast<std::size_t>(key)] = value ? value : "";
 }
+extern "C" void moex_fake_connection_settings(std::string* out) {
+    if (out)
+        *out = last_connection_settings;
+}
+extern "C" void moex_fake_listener_open_settings(StreamCode stream, std::string* out) {
+    if (out)
+        *out = last_listener_open_settings[stream];
+}
+extern "C" void moex_fake_listener_settings(StreamCode stream, std::string* out) {
+    if (out)
+        *out = last_listener_settings[stream];
+}
+
 extern "C" void moex_fake_enqueue(const fixture::Event* value) {
     if (value)
         queued_events.push_back(*value);

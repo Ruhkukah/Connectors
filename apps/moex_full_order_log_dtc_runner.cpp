@@ -1,0 +1,272 @@
+#include "full_order_log_dtc_loop.hpp"
+#include "full_order_log_operator.hpp"
+#include "full_order_log_capture_options.hpp"
+#include "full_order_log_refdata_tap.hpp"
+#include "full_order_log_router_lock.hpp"
+#include "moex/connector_host/operator_config.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_deals.hpp"
+#include <atomic>
+#include <charconv>
+#include <csignal>
+#include <iostream>
+#include <map>
+#include <algorithm>
+#include <cctype>
+
+namespace {
+namespace dtc = moex::connector_host::dtc;
+namespace cg = moex::plaza2::cgate;
+std::atomic_bool stop_requested{};
+void stop_signal(int) {
+    stop_requested.store(true, std::memory_order_relaxed);
+}
+template <class T = std::uint32_t> T integer(std::string_view value) {
+    T result{};
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !result)
+        throw std::invalid_argument("expected positive integer");
+    return result;
+}
+std::string router_endpoint(std::string_view address) {
+    auto [endpoint, port] = moex::connector_host::router_address(address);
+    std::ranges::transform(endpoint, endpoint.begin(), [](unsigned char c) { return std::tolower(c); });
+    if (endpoint == "localhost" || endpoint == "localhost." || endpoint == "[::1]" || endpoint == "::1" ||
+        endpoint.starts_with("127."))
+        endpoint = "loopback";
+    return endpoint + ':' + std::to_string(port);
+}
+} // namespace
+int main(int argc, char** argv) {
+    try {
+        if (argc >= 3 && std::string_view(argv[1]) == "plaza2" &&
+            (std::string_view(argv[2]) == "run" || std::string_view(argv[2]) == "cmd"))
+            return moex::connector_host::full_order_log_operator(argc, argv, router_endpoint);
+        if (argc == 2 && std::string_view(argv[1]) == "--help") {
+            std::cout << "moex_full_order_log_dtc_runner plaza2 qualify [read-only runtime options]\n"
+                         "  --dtc-port N (default 11300, consecutive loopback ports for configured ISINs)\n"
+                         "  --live --trading-instance-id NAME (MOEX/broker entitlement is the owner responsibility)\n"
+                         "  --router HOST:PORT (default 127.0.0.1:4102; separate order-log router/login)\n"
+                         "  --trading-router HOST:PORT (default 127.0.0.1:4101; must differ from --router)\n"
+                         "  --offline-fake --run-ms N (offline tests; no live authorization inferred)\n"
+                         "  --dtc-depth N (default 20; up to 20000 per side; NumLevels=0 uses that cap)\n"
+                         "  --capture-dir NEW_DIR [--capture-max-bytes N] [--capture-min-free-bytes N]\n"
+                         "  Lossless selected FOL rows; defaults: 4GiB budget, 10GiB free-space reserve.\n"
+                         "  Offline export: moex_fol_archive export-dbn CAPTURE_DIR NEW_OUTPUT.dbn\n"
+                         "  --open-interest: OI and live DTC trades from one FORTS_DEALS_REPL_MATCH<n>;tables=deal "
+                         "(default off).\n"
+                         "Qualify DTC is read-only.\n"
+                         "plaza2 run --live|--offline-fake --allow-orders [operator/risk options]\n"
+                         "  TEST-only ORDLOG account: private reconciliation and orders on the FOL connection.\n"
+                         "  Explicit measured --clock-offset-us and all operator risk/identity options required.\n"
+                         "  Limits: quantity/position <=2, open orders/rate <=5.\n"
+                         "  Optional DTC: --dtc-trading-port N --dtc-trading-secret-file PATH (mode 0600).\n"
+                         "  DTC supports manual and automated Add; replace only on manual orders.\n"
+                         "  --dtc-keep-orders-on-disconnect: disable the default ten-second DTC order cancellation.\n"
+                         "  Optional account gates: --min-free-money-rub RUB --check-account-prohibitions.\n"
+                         "  --environment-authority=configuration: live TEST writer, pinned legacy scheme only.\n"
+                         "  --cancel-only: private-state recovery, no FOL/AGGR; Add/Move always refused.\n"
+                         "plaza2 cmd --command-socket PATH \"COMMAND\" (FOL endpoint only)\n"
+                      << moex::connector_host::operator_help();
+            return 0;
+        }
+        moex::connector_host::FullOrderLogCaptureFlags capture_flags;
+        bool offline = false, live = false;
+        std::string trading_instance, trading_router = "127.0.0.1:4101";
+        std::uint32_t base_port = 11300, run_ms = 0, depth_levels = 20;
+        const std::map<std::string_view, std::uint32_t*> numeric_options{
+            {"--dtc-port", &base_port}, {"--dtc-depth", &depth_levels}, {"--run-ms", &run_ms}};
+        std::vector<std::string_view> arguments;
+        for (int i = 1; i < argc; ++i) {
+            const std::string_view key = argv[i];
+            if (capture_flags.consume(key, i, argc, argv))
+                continue;
+            if (key == "--offline-fake")
+                offline = true;
+            else if (key == "--live")
+                live = true;
+            else if (key == "--trading-instance-id" || key == "--trading-router" || numeric_options.contains(key)) {
+                if (++i == argc)
+                    throw std::invalid_argument("missing runner option value");
+                if (key == "--trading-instance-id")
+                    trading_instance = argv[i];
+                else if (key == "--trading-router")
+                    trading_router = argv[i];
+                else
+                    *numeric_options.at(key) = integer(argv[i]);
+            } else
+                arguments.push_back(key);
+        }
+        capture_flags.validate();
+        if (offline == live)
+            throw std::invalid_argument("select --live or --offline-fake");
+        if (live && trading_instance.empty())
+            throw std::invalid_argument("--live requires the trading process --trading-instance-id");
+        for (const auto& [key, value] :
+             {std::pair{"--router", "127.0.0.1:4102"}, std::pair{"--instance-id", "moex_full_order_log"}})
+            if (std::ranges::find(arguments, key) == arguments.end())
+                arguments.insert(arguments.end(), {key, value});
+        arguments.push_back("--read-only-market-data");
+        auto request = moex::connector_host::parse_operator_arguments(arguments);
+        if (request.config.transport.host.runtime.environment != cg::Plaza2Environment::Test)
+            throw std::invalid_argument("FullOrderLog runner is TEST-only");
+        const auto& connection = request.config.transport.host.connection_settings;
+        if (router_endpoint(connection.substr(8, connection.find(';') - 8)) == router_endpoint(trading_router))
+            throw std::invalid_argument("order-log and trading router addresses must differ");
+        const auto app_name = connection.substr(connection.find(";app_name=") + 10);
+        if (app_name.substr(0, app_name.find(';')) == (trading_instance.empty() ? "moex_connector" : trading_instance))
+            throw std::invalid_argument("order-log and trading instance IDs must differ");
+        if (request.command != "qualify")
+            throw std::invalid_argument("FullOrderLog runner requires plaza2 qualify");
+        if (request.config.isin_ids.size() > 64 || depth_levels > 20000 || base_port > UINT16_MAX ||
+            request.config.isin_ids.size() - 1 > UINT16_MAX - base_port)
+            throw std::invalid_argument("invalid bounded ISIN universe or DTC port range");
+        std::optional<moex::connector_host::FullOrderLogRouterLock> router_lock;
+        if (!offline)
+            router_lock.emplace(connection);
+        std::vector<std::int32_t> ids(request.config.isin_ids.begin(), request.config.isin_ids.end());
+        cg::Plaza2FullOrderLog book(ids);
+        std::unique_ptr<cg::FullOrderLogCapture> capture;
+        if (!capture_flags.options.directory.empty())
+            capture = std::make_unique<cg::FullOrderLogCapture>(capture_flags.options, ids, book);
+        moex::connector_host::FullOrderLogRefdataTap refdata(ids);
+        cg::FullOrderLogOpenInterest open_interest(ids);
+        std::unique_ptr<cg::FullOrderLogDeals> deals;
+        if (capture_flags.open_interest)
+            deals = std::make_unique<cg::FullOrderLogDeals>(ids);
+        open_interest.before_event = [&](const auto& e) {
+            if (capture)
+                if (const auto error = capture->record(e); error)
+                    return error;
+            return deals ? deals->on_event(e) : cg::Plaza2Error{};
+        };
+        open_interest.before_error = [&](const auto& e) {
+            if (deals)
+                deals->on_error(e);
+            if (capture)
+                capture->record_error(moex::plaza2::generated::StreamCode::kFortsDealsRepl, e);
+        };
+        auto& transport = request.config.transport.host;
+        transport.full_order_log_partitioned = true;
+        transport.full_order_log_advisory = !offline;
+        transport.full_order_log_oi_handler = capture_flags.open_interest ? &open_interest : nullptr;
+        transport.mode =
+            offline ? moex::plaza2_trade::CgateSessionMode::OfflineFake : moex::plaza2_trade::CgateSessionMode::Live;
+        transport.aggr20_stream = {};
+        transport.public_deals_stream = {};
+        transport.process_timeout_ms = 1;
+        transport.collect_poll_metrics = true; // This separate read-only process only.
+        transport.full_order_log_stream = {.stream_code = cg::kFullOrderLogStreamCode,
+                                           .settings =
+                                               cg::full_order_log_listener_settings(transport.runtime.scheme_dir)};
+        transport.full_order_log_handler =
+            capture ? static_cast<cg::Plaza2ListenerEventHandler*>(capture.get()) : &book;
+        transport.event_log = [](std::string_view event, std::string_view detail) {
+            std::cerr << event << ' ' << detail << '\n';
+        };
+        transport.listener_event_log = [&](const cg::Plaza2ListenerEvent& event) {
+            if (event.stream_code == cg::kFullOrderLogStreamCode && book.should_log_listener_event(event))
+                moex::connector_host::log_full_order_log_listener_event(std::cerr, event);
+            if (capture)
+                refdata.on_event(event);
+        };
+        moex::connector_host::ConnectorHost host(std::move(request.config));
+        moex::connector_host::FullOrderLogDtcLoop loop(
+            host, book,
+            {.port = static_cast<std::uint16_t>(base_port),
+             .source_mode = offline ? dtc::DtcSourceMode::Replay : dtc::DtcSourceMode::LiveTest,
+             .max_queued_bytes = 4 * 1024 * 1024,
+             .max_depth_levels = depth_levels});
+        if (capture)
+            loop.on_metadata = [&](const auto& snapshot) { capture->record_refdata(refdata.value(snapshot)); };
+        if (deals)
+            for (std::size_t i = 0; i < ids.size(); ++i)
+                loop.source(i).set_public_deals_reader([&, isin = book.instruments()[i]](auto after, auto session) {
+                    return deals->snapshot(isin, after, session);
+                });
+        bool first_valid_commit = false;
+        loop.on_queued_commit = [&] {
+            if (!first_valid_commit) {
+                first_valid_commit = true;
+                std::cout << "book_valid=1 first_valid_commit=1\n" << std::flush;
+            }
+        };
+        book.on_crossed = [](std::int32_t isin, bool crossed) {
+            std::cerr << "FullOrderLog crossed isin=" << isin << " crossed=" << crossed << '\n';
+        };
+        std::signal(SIGINT, stop_signal);
+        std::signal(SIGTERM, stop_signal);
+        int result{};
+        try {
+            loop.start();
+            for (std::size_t i = 0; i < ids.size(); ++i)
+                std::cout << "isin=" << book.instruments()[i] << " dtc_port=" << loop.server(i).port()
+                          << " symbol_id=" << i + 1 << " source_mode=" << (offline ? "offline_fake" : "live_test")
+                          << '\n';
+            std::cout << "book_memory_bytes=" << book.memory_bytes()
+                      << " max_queue_bytes_per_isin=4194304 dtc_depth_per_side=" << depth_levels << '\n'
+                      << std::flush;
+            const auto start = std::chrono::steady_clock::now();
+            auto rate_at = start;
+            std::uint64_t rows_at = book.metrics().rows_total;
+            const auto report = [&] {
+                const auto now = std::chrono::steady_clock::now();
+                const auto metrics = book.metrics();
+                const auto life = book.committed_log_lifenum();
+                const auto elapsed = std::chrono::duration<double>(now - rate_at).count();
+                const auto& native = loop.metrics;
+                std::cout << "metrics_interval_seconds=" << elapsed << " callbacks=" << native.callbacks
+                          << " callbacks_per_second=" << (elapsed > 0 ? native.callbacks / elapsed : 0)
+                          << " full_order_log_attributed_callbacks=" << native.full_order_log_attributed_callbacks
+                          << " unattributed_callbacks=" << native.unattributed_callbacks
+                          << " cg_conn_process_calls=" << native.process_calls
+                          << " cg_conn_process_loop_max_ns=" << native.cg_conn_process_loop_max_ns
+                          << " rows_per_second=" << (elapsed > 0 ? (metrics.rows_total - rows_at) / elapsed : 0)
+                          << " info_life_available=" << life.has_value() << " info_trades_lifenum=" << life.value_or(0)
+                          << " book_valid=" << book.valid() << " rows_total=" << metrics.rows_total
+                          << " ignored_executions=" << metrics.ignored_executions
+                          << " excluded_adds=" << metrics.excluded_adds << " lag_samples=" << metrics.lag_samples
+                          << " lag_last_ns=" << metrics.lag_last_ns << " lag_max_ns=" << metrics.lag_max_ns
+                          << " clear_deleted_events=" << metrics.clear_deleted_events
+                          << " clear_deleted_erased=" << metrics.clear_deleted_erased
+                          << " lag_sum_ns=" << metrics.lag_sum_ns
+                          << " crossed_transitions=" << metrics.crossed_transitions
+                          << " metadata_refreshes=" << loop.metadata_refreshes << " polls=" << loop.polls << '\n'
+                          << std::flush;
+                if (capture_flags.open_interest)
+                    moex::connector_host::report_full_order_log_open_interest(open_interest, ids);
+                rate_at = now;
+                rows_at = metrics.rows_total;
+                loop.metrics.reset_interval();
+            };
+            while (!stop_requested.load(std::memory_order_relaxed) &&
+                   (!run_ms || std::chrono::steady_clock::now() - start < std::chrono::milliseconds(run_ms))) {
+                loop.poll();
+                if (capture)
+                    capture->poll();
+                if (std::chrono::steady_clock::now() - rate_at >=
+                    moex::connector_host::FullOrderLogDtcMetrics::report_interval)
+                    report();
+            }
+            report();
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << '\n';
+            result = 2;
+        }
+        try {
+            loop.stop();
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << '\n';
+            result = 2;
+        }
+        if (capture) {
+            capture->finish(result ? cg::FullOrderLogCaptureEndStatus::HostNonzero
+                                   : cg::FullOrderLogCaptureEndStatus::Clean,
+                            result);
+            moex::connector_host::report_full_order_log_capture(*capture);
+        }
+        return result;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 2;
+    }
+}
