@@ -3736,7 +3736,8 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
             result != kCgErrOk)
             return result;
     }
-    if (is_t1_fol_environment(*typed)) {
+    if (is_t1_fol_environment(*typed) &&
+        std::string_view(option(Option::FolRiskStreams)) != "t1-environment-zero-life") {
         CgDataLifeNum life{.life_number = kT1FolEnvironmentLifeNum};
         if (const auto result = emit_simple_message(*typed, kCgMsgP2replLifenum, &life, sizeof(life));
             result != kCgErrOk)

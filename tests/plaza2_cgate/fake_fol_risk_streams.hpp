@@ -4,7 +4,7 @@ constexpr std::uint32_t kT1FolEnvironmentLifeNum = 131140477u;
 bool is_t1_fol_environment(const FakeListener& listener) {
     const auto* profile = option(Option::FolRiskStreams);
     return listener.stream_code == fixture::kFolRiskEnvironment && profile &&
-           std::string_view(profile) == "t1-environment";
+           std::string_view(profile).starts_with("t1-environment");
 }
 
 bool is_fol_risk_stream(StreamCode code) {
@@ -123,7 +123,10 @@ std::uint32_t emit_fol_risk_snapshot(FakeListener& listener) {
         two = profile == "two-environments";
         const bool wrong = profile == "wrong-environment";
         number("environment_id", std::int32_t{t1_environment ? 7 : wrong ? 1 : 2});
-        text("environment_name", t1_environment ? "MXFOT1" : wrong ? "MXFOPROD" : "MXFOPREP");
+        text("environment_name", profile == "cp1251-status" ? "\xcf\xf0\xe8\xe2\xe5\xf2"
+                                 : t1_environment           ? "MXFOT1"
+                                 : wrong                    ? "MXFOPROD"
+                                                            : "MXFOPREP");
     } else {
         two = profile == "two-logins";
         text("login", profile == "other-login" ? "other-login" : "risk-login");
@@ -132,7 +135,10 @@ std::uint32_t emit_fol_risk_snapshot(FakeListener& listener) {
             number("start_date", CgTime{.year = 2000, .month = 1, .day = 1});
     }
     if (row)
-        if (const auto result = emit(1, t1_environment ? 42 : 1); result)
+        if (const auto result = emit(1, profile == "t1-environment-zero-revision" ? 0
+                                        : t1_environment                          ? 42
+                                                                                  : 1);
+            result)
             return result;
     if (two)
         if (const auto result = emit(2, 2); result)

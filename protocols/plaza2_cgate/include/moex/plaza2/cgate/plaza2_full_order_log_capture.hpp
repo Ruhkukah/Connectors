@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
 
@@ -17,6 +18,8 @@ struct FullOrderLogCaptureOptions {
     std::chrono::milliseconds flush_interval{200}, sync_interval{1000};
     std::uint64_t segment_bytes{32ULL << 20};
     std::optional<FullOrderLogRecoveryCursor> recovery_cursor;
+    // Optional startup synchronization for deterministic recorder fault tests.
+    std::function<void()> before_worker_drain;
 };
 struct FullOrderLogCaptureMetrics {
     std::uint64_t records{}, filtered{}, logical_bytes{}, stored_bytes{}, syncs{}, sync_max_ns{}, queue_peak{};

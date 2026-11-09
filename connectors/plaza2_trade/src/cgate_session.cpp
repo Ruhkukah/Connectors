@@ -1,3 +1,4 @@
+#include "moex/plaza2/cgate/plaza2_text.hpp"
 #include "moex/plaza2_trade/cgate_session.hpp"
 #include "fol_auxiliary.hpp"
 #include "moex/plaza2/cgate/plaza2_replication_tables.hpp"
@@ -90,27 +91,7 @@ std::optional<std::string> secret(const cg::Plaza2CredentialConfig& config) {
     return value;
 }
 std::string json_quote(std::string_view value) {
-    std::string out = "\"";
-    for (char c : value) {
-        if (c == '\\' || c == '\"')
-            out += '\\';
-        if (c == '\n') {
-            out += "\\n";
-            continue;
-        }
-        if (c == '\r') {
-            out += "\\r";
-            continue;
-        }
-        if (c == '\t') {
-            out += "\\t";
-            continue;
-        }
-        if (static_cast<unsigned char>(c) < 32)
-            continue;
-        out += c;
-    }
-    return out + '\"';
+    return cg::text::json_quote_utf8(value);
 }
 std::uint64_t ns(std::chrono::steady_clock::time_point value) {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(value.time_since_epoch()).count();
@@ -1274,6 +1255,8 @@ struct CgateSession::Impl {
         const auto& row = rows.begin()->second;
         if (rows.size() != 1 || !fol_auxiliary::environment_matches(row, config.runtime.environment))
             return {.refusal = "REFDATA Spectra environment conflicts with configured environment"};
+        if (row.revision <= 0 || environment->data.life() == 0)
+            return {.refusal = "REFDATA Spectra environment lacks positive revision or LifeNum"};
         EnvironmentAuthority authority{.name = "venue_row",
                                        .environment_id = integer_value(value(row, "environment_id")),
                                        .revision = row.revision,
@@ -1385,7 +1368,7 @@ struct CgateSession::Impl {
                     first = false;
                     out += "{\"table\":" + json_quote(table) + ",\"revision\":" + std::to_string(row.revision);
                     for (const auto& [field, field_value] : row.values)
-                        out += "," + json_quote(field) + ":" + json_quote(field_value);
+                        out += "," + json_quote(field) + ":" + json_quote(cg::text::windows1251_to_utf8(field_value));
                     if (source->name == "common") {
                         const auto current = value(row, "settlement_price");
                         const auto legacy = value(row, "settlement_price_open");

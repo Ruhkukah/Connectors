@@ -4,6 +4,7 @@
 #include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 #include <filesystem>
+#include <latch>
 #include <fstream>
 #include <iostream>
 #include <thread>
@@ -398,13 +399,14 @@ int main() {
                 fs::resize_file(segments.back(), fs::file_size(segments.back()) - 1);
             else {
                 std::fstream file(segments.front(), std::ios::in | std::ios::out | std::ios::binary);
-                constexpr std::streamoff first_chunk_checksum = 32 + 8; // File header and chunk length fields.
-                file.seekg(first_chunk_checksum);
+                constexpr std::streamoff first_compressed_byte = 32 + 32; // File header and first chunk header.
+                file.seekg(first_compressed_byte);
                 const int byte = file.get();
-                require(byte != std::char_traits<char>::eof(), "read first chunk checksum for corruption");
-                file.seekp(first_chunk_checksum);
+                require(byte != std::char_traits<char>::eof(), "read first compressed payload byte");
+                file.seekp(first_compressed_byte);
                 file.put(static_cast<char>(byte ^ 1));
-                require(file.good(), "corrupt first chunk checksum");
+                file.seekg(first_compressed_byte);
+                require(file.get() == (byte ^ 1), "verify compressed payload changed");
             }
             require(refused([&] { replay_full_order_log_capture(dest); }), "damaged capture rejected");
             require(refused([&] { export_full_order_log_dbn(dest, root / (std::string(mode) + ".dbn")); }) &&
@@ -544,6 +546,27 @@ int main() {
             require(refused([&] { FullOrderLogCapture c(bad, ids, b); }), "disk reserve refused before host start");
         }
 
+        {
+            auto small = o;
+            small.directory = root / "queue-overflow";
+            small.queue_blocks = 2;
+            small.block_bytes = 4096;
+            std::latch allow_drain(1);
+            small.before_worker_drain = [&] { allow_drain.wait(); };
+            Plaza2FullOrderLog downstream(ids);
+            FullOrderLogCapture capture(small, ids, downstream);
+            Plaza2Error error;
+            for (unsigned n = 0; n < 200 && !error; ++n)
+                error = capture.record({.kind = Kind::TransactionBegin, .stream_code = kFullOrderLogStreamCode});
+            allow_drain.count_down();
+            require(error.code == Plaza2ErrorCode::CallbackFailed &&
+                        error.message == "FullOrderLog capture queue full" && capture.metrics().failed &&
+                        capture.needs_fresh_snapshot(),
+                    "queue overflow must fail closed with its specific error");
+            require(refused([&] { capture.finish(); }), "overflowed capture cannot finish cleanly");
+            require(refused([&] { replay_full_order_log_capture(small.directory); }),
+                    "strict replay refuses the overflowed capture");
+        }
         // Exercise final partial-block publication while the worker is starting/idle.
         for (unsigned trial = 0; trial < 100; ++trial) {
             auto small = o;

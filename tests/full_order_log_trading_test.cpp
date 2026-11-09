@@ -469,6 +469,10 @@ int main(int argc, char** argv) {
             };
             pump();
             const auto status = session.full_order_log_auxiliary_status();
+            if (profile == "cp1251-status")
+                require(status.find(R"("environment_name":"Привет")") != std::string::npos &&
+                            status.find("\xcf\xf0\xe8\xe2\xe5\xf2") == std::string::npos,
+                        "FOL status must serialize CP1251 text as UTF-8");
             require(status.find(authority(expected)) != std::string::npos &&
                         authority_events.back().find(authority(expected)) != std::string::npos,
                     "unexpected FOL environment authority for " + std::string(profile));
@@ -528,6 +532,9 @@ int main(int argc, char** argv) {
         check_environment("t1-environment", true, "venue_row",
                           {R"("environment_id":7)", R"("environment_name":"MXFOT1")", R"("environment_repl_rev":42)",
                            R"("environment_life_num":131140477)"});
+        check_environment("t1-environment-zero-life", true, "none", {}, "lacks positive revision or LifeNum");
+        check_environment("t1-environment-zero-revision", true, "none");
+        check_environment("cp1251-status", true, "none", {}, "conflicts with configured environment");
         check_environment("no-environment", true, "none", {}, "committed snapshot is empty");
         check_environment("two-environments", true, "none", {}, "conflicts with configured environment");
         check_environment("wrong-environment", true, "none", {}, "conflicts with configured environment");

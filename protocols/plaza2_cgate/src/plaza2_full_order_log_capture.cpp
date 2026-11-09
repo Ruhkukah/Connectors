@@ -259,6 +259,8 @@ struct FullOrderLogCapture::Impl {
             require(context, "FullOrderLog capture Zstd allocation failed");
             std::vector<std::byte> compressed(ZSTD_compressBound(options.block_bytes));
             open_segment();
+            if (options.before_worker_drain)
+                options.before_worker_drain();
             auto synced_at = mono_ns();
             for (;;) {
                 const auto t = tail.load(std::memory_order_relaxed);
