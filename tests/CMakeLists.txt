@@ -118,3 +118,18 @@ moex_test(plaza2_private_state_transaction_perf_test plaza2_cgate/plaza2_private
     moex_plaza2_cgate_bridge)
 target_compile_definitions(plaza2_private_state_transaction_perf_test PRIVATE
     MOEX_RELEASE_PERFORMANCE_ACCEPTANCE=$<CONFIG:Release>)
+
+foreach(name IN ITEMS fast_decoder_test fast_market_stream_test)
+    moex_test(${name} fast_spectra/${name}.cpp moex_fast_spectra)
+    set_tests_properties(${name} PROPERTIES LABELS "unit;fast;sanitizer")
+endforeach()
+add_executable(fast_decode_benchmark fast_spectra/fast_decode_benchmark.cpp)
+target_link_libraries(fast_decode_benchmark PRIVATE moex_fast_spectra)
+# The locked templates live in the ignored spec-lock cache; check the generated decoder when they are present.
+set(MOEX_FAST_TEMPLATES "${MOEX_SOURCE_ROOT}/spec-lock/test/fast/FAST_9.0/cache/templates.xml")
+if(EXISTS "${MOEX_FAST_TEMPLATES}")
+    add_test(NAME fast_generated_decoder_current COMMAND "${Python3_EXECUTABLE}"
+        "${MOEX_SOURCE_ROOT}/protocols/fast_spectra/tools/generate_fast_messages.py" "${MOEX_FAST_TEMPLATES}"
+        "${MOEX_SOURCE_ROOT}/protocols/fast_spectra/generated/fast_spectra_messages.hpp" --check)
+    set_tests_properties(fast_generated_decoder_current PROPERTIES LABELS "unit;fast")
+endif()

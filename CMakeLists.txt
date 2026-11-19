@@ -33,6 +33,7 @@ set(MOEX_TEST_OUTPUT_DIR "${MOEX_BUILD_ROOT}/test-output")
 file(MAKE_DIRECTORY "${MOEX_APPS_BUILD_DIR}" "${MOEX_TEST_OUTPUT_DIR}")
 
 add_subdirectory(protocols/plaza2_cgate)
+add_subdirectory(protocols/fast_spectra)
 add_subdirectory(connectors/plaza2_trade)
 add_subdirectory(connectors/connector_host)
 if(MOEX_BUILD_APPS)

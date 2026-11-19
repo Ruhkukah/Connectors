@@ -17,3 +17,6 @@ moex_add_app(moex_connector_host_dtc_runner moex_connector_host_dtc_runner.cpp m
 
 # Read-only discovery for TEST qualification; its parser refuses publisher/order profiles.
 moex_add_app(moex_qualification_resolver moex_qualification_resolver.cpp moex_connector_host)
+
+# Read-only FAST multicast market data; independent of CGate.
+moex_add_app(moex_fast_md_runner moex_fast_md_runner.cpp moex_fast_spectra)
