@@ -7,7 +7,14 @@
 // needs_snapshot() is true, from the snapshot A/B pair. It arbitrates A/B by
 // the preamble sequence number, rides out short reordering, and after a real
 // loss rebuilds each instrument from the snapshot feed while queueing the
-// incrementals that arrived meanwhile.
+// incremental entries that arrived meanwhile.
+//
+// Production snapshot cycles last from half a minute (trades) to several
+// minutes (deep books), and every snapshot in a cycle carries the cycle's
+// starting LastMsgSeqNumProcessed. So the queue holds single entries of
+// still-unsynced instruments only, instruments are released in batches as
+// their snapshots arrive, and when memory runs short the oldest entries go
+// first: the affected instruments simply wait for a later cycle.
 //
 // Idempotence is by MsgSeqNum: a snapshot covers everything up to its
 // LastMsgSeqNumProcessed, and queued packets beyond it are replayed. RptSeq is
@@ -30,14 +37,14 @@ namespace moex::fast {
 struct StreamConfig {
     std::uint32_t reorder_window{64};             // packets held while waiting for a missing one; rounded to 2^n
     std::uint64_t reorder_timeout_ns{2'000'000};  // how long to wait before declaring the packet lost
-    std::size_t recovery_queue_bytes{std::size_t{32} << 20};
+    std::size_t recovery_queue_bytes{std::size_t{64} << 20}; // entries of unsynced instruments
     std::size_t expected_instruments{2048};
 };
 
 struct StreamStats {
     std::uint64_t packets{}, duplicates{}, reordered{}, gaps{}, malformed{}, unknown_templates{};
     std::uint64_t instrument_gaps{}, unkeyed_entries{}, sequence_resets{};
-    std::uint64_t queued{}, queue_overflows{}, replayed{};
+    std::uint64_t queued{}, queue_dropped{}, replayed{}, replay_passes{};
     std::uint64_t snapshot_packets{}, snapshot_resyncs{}, snapshots_applied{}, snapshots_too_old{}, empty_adopted{};
 };
 
@@ -133,10 +140,17 @@ template <class Sink> class MarketStream {
         }
         ++stats_.snapshot_packets;
         const std::uint32_t seq = read_preamble(data);
+        // Sequence numbers restart every cycle, so they alone cannot tell the other
+        // feed's copy of a packet from a different cycle's packet with the same number.
+        std::uint64_t fingerprint = 0xCBF29CE484222325ull ^ size;
+        for (std::size_t i = kPreambleSize, end = std::min<std::size_t>(size, 40); i < end; ++i)
+            fingerprint = (fingerprint ^ data[i]) * 0x100000001B3ull;
+        Seen& seen = snapshot_seen_[seq % kSnapshotSeen];
         if (seq != snapshot_expected_) {
-            // Either the other feed's copy or a real discontinuity. A/B copies
-            // never accumulate a run, so a short run is enough to tell them apart.
-            if (snapshot_expected_ != 0 && ++snapshot_miss_run_ < kSnapshotMissRun)
+            if (snapshot_expected_ != 0 && seen.seq == seq && seen.fingerprint == fingerprint)
+                return; // the other feed's copy
+            // Ahead of us: the missing packet may still come from the other feed.
+            if (seq > snapshot_expected_ && snapshot_expected_ != 0 && ++snapshot_miss_run_ < kSnapshotMissRun)
                 return;
             ++stats_.snapshot_resyncs;
             cycle_clean_ = false;
@@ -145,6 +159,7 @@ template <class Sink> class MarketStream {
         }
         snapshot_miss_run_ = 0;
         snapshot_expected_ = seq + 1;
+        seen = {seq, fingerprint};
         Reader r{data + kPreambleSize, data + size};
         switch (read_template_id(r)) {
         case DefaultSnapshotMessage::kTemplateId:
@@ -222,8 +237,19 @@ template <class Sink> class MarketStream {
         std::uint32_t seq{};
         std::uint32_t size{};
     };
+    struct Record { // followed by the entry's wire bytes
+        std::uint32_t seq;
+        std::uint32_t slot;
+        std::uint64_t sending_time;
+        std::uint32_t size;
+    };
+    struct Seen {
+        std::uint32_t seq{};
+        std::uint64_t fingerprint{};
+    };
     static constexpr std::uint32_t kSnapshotMissRun = 8;
-    static constexpr std::size_t kQueueHeader = 8;
+    static constexpr std::uint32_t kSnapshotSeen = 64;
+    static constexpr std::size_t kReplayBatch = 64;
 
     std::uint8_t* slot_data(std::uint32_t seq) noexcept {
         return slot_bytes_.data() + std::size_t{seq & (window_ - 1)} * kMaxPacket;
@@ -232,8 +258,7 @@ template <class Sink> class MarketStream {
     void deliver(const std::uint8_t* data, std::size_t size, std::uint32_t seq) noexcept {
         ++stats_.packets;
         expected_ = seq + 1;
-        if (process(data, size, seq))
-            enqueue(data, size, seq);
+        process(data, size, seq);
     }
 
     void drain(std::uint64_t now_ns) noexcept {
@@ -281,25 +306,25 @@ template <class Sink> class MarketStream {
         deliver(data, size, seq);
     }
 
-    // Returns true when the packet touches an unsynced instrument and must be kept for replay.
-    bool process(const std::uint8_t* data, std::size_t size, std::uint32_t seq) noexcept {
+    void process(const std::uint8_t* data, std::size_t size, std::uint32_t seq) noexcept {
         Reader r{data + kPreambleSize, data + size};
         switch (read_template_id(r)) {
         case DefaultIncrementalRefreshMessage::kTemplateId:
-            return process_incremental(r, seq);
+            process_incremental(r, seq);
+            return;
         case Heartbeat::kTemplateId:
             // Whether a heartbeat consumes a sequence number is not specified;
             // hold position and let the next data packet decide.
             heartbeat_seq_ = seq;
             expected_ = seq;
-            return false;
+            return;
         case SequenceReset::kTemplateId: {
             SequenceReset reset;
             if (decode(r, reset))
                 sequence_reset(reset.NewSeqNo);
             else
                 ++stats_.malformed;
-            return false;
+            return;
         }
         case TradingSessionStatus::kTemplateId: {
             TradingSessionStatus status;
@@ -307,57 +332,77 @@ template <class Sink> class MarketStream {
                 sink_.on_session_status(std::as_const(status));
             else
                 ++stats_.malformed;
-            return false;
+            return;
         }
         default:
             ++stats_.unknown_templates;
-            return false;
         }
     }
 
-    bool process_incremental(Reader& r, std::uint32_t seq) noexcept {
+    void process_incremental(Reader& r, std::uint32_t seq) noexcept {
         DefaultIncrementalRefreshMessage message;
-        bool keep = false;
         const bool ok = decode(r, message, [&](const auto& m, const auto& e) {
             if (!e.SecurityID.present) {
                 ++stats_.unkeyed_entries;
                 return;
             }
             const std::uint32_t slot = find_or_add(e.SecurityID.value);
-            Instrument& inst = instruments_[slot];
-            if (inst.state >= State::Stale) {
-                keep = true;
+            const auto size = static_cast<std::size_t>(r.p - r.mark);
+            // Making room can release instruments, so it happens before their state is looked at.
+            if (queue_end_ + sizeof(Record) + size > queue_.size() && !make_room(sizeof(Record) + size)) {
+                mark_all_stale(seq + 1); // the queue cannot hold even one entry
                 return;
             }
-            // A snapshot can be ahead of our position in the incremental feed, so
-            // packets it already covers are skipped live as well as in replay. In
-            // replay only instruments restored by that replay still owe anything.
-            if (seq <= inst.applied_seq || (replaying_ && inst.replay_id != replay_id_))
-                return;
-            if (inst.state == State::Adopt) {
-                inst.state = State::Synced;
-            } else if (e.RptSeq - inst.rpt_seq > 1) {
-                ++stats_.instrument_gaps;
-                inst.state = State::Stale;
-                inst.from_seq = replaying_ ? expected_ : seq;
-                if (!needs_snapshot())
-                    snapshot_expected_ = 0; // rejoin the snapshot feed mid-cycle
-                ++stale_;
-                sink_.on_instrument_state(slot, false);
-                keep = true;
-                return;
-            }
-            inst.rpt_seq = e.RptSeq;
-            sink_.on_incremental(slot, m, e);
+            // Empty Book states the whole book, so an unsynced instrument needs no snapshot to resume.
+            if (instruments_[slot].state >= State::Stale && e.MDEntryType.front() == 'J')
+                resume_empty(slot, seq, e.RptSeq);
+            // Unsynced, or just gone stale on this entry: keep it for after the snapshot.
+            if (instruments_[slot].state >= State::Stale || !apply(slot, seq, m, e))
+                enqueue(seq, slot, m.SendingTime, r.mark, size);
         });
         if (!ok) {
             ++stats_.malformed;
-            mark_all_stale(replaying_ ? expected_ : seq + 1);
-            return false;
+            mark_all_stale(seq + 1);
+            return;
         }
         if (!message.LastFragment.present || message.LastFragment.value != 0)
             sink_.on_batch_end();
-        return keep;
+    }
+
+    void resume_empty(std::uint32_t slot, std::uint32_t seq, std::uint32_t rpt_seq) noexcept {
+        Instrument& inst = instruments_[slot];
+        --(inst.state == State::Stale ? stale_ : pending_);
+        inst.state = State::Synced;
+        inst.rpt_seq = rpt_seq;
+        inst.applied_seq = seq - 1; // its queued entries all predate this packet and are discarded by the next pass
+        inst.replay_id = 0;
+        ++stats_.empty_adopted;
+        sink_.on_book_clear(slot);
+        sink_.on_instrument_state(slot, true);
+    }
+
+    // Applies one entry to a synced instrument. Returns false if its RptSeq shows a gap.
+    bool apply(std::uint32_t slot, std::uint32_t seq, const DefaultIncrementalRefreshMessage& m,
+               const DefaultIncrementalRefreshMessage::MDEntries& e) noexcept {
+        Instrument& inst = instruments_[slot];
+        // A snapshot can be ahead of our position in the incremental feed.
+        if (seq <= inst.applied_seq)
+            return true;
+        if (inst.state == State::Adopt) {
+            inst.state = State::Synced;
+        } else if (e.RptSeq - inst.rpt_seq > 1) {
+            ++stats_.instrument_gaps;
+            if (!needs_snapshot())
+                snapshot_expected_ = 0; // rejoin the snapshot feed mid-cycle
+            inst.state = State::Stale;
+            inst.from_seq = replaying_ ? expected_ : seq;
+            ++stale_;
+            sink_.on_instrument_state(slot, false);
+            return false;
+        }
+        inst.rpt_seq = e.RptSeq;
+        sink_.on_incremental(slot, m, e);
+        return true;
     }
 
     void process_snapshot(Reader& r) noexcept {
@@ -384,9 +429,12 @@ template <class Sink> class MarketStream {
                 use = fragment_use_;
                 return;
             }
+            // Later snapshots never reach further back, so queued entries this one already covers are dead weight.
+            if (pending_ == 0)
+                trim_queue(m.LastMsgSeqNumProcessed);
             if (inst.state != State::Stale)
                 return;
-            use = std::uint64_t{m.LastMsgSeqNumProcessed} + 1 >= inst.from_seq;
+            use = std::uint64_t{m.LastMsgSeqNumProcessed} + 1 >= std::max(inst.from_seq, queue_floor_);
             if (use)
                 sink_.on_book_clear(slot);
             else
@@ -424,6 +472,8 @@ template <class Sink> class MarketStream {
             --stale_;
             ++pending_;
             ++stats_.snapshots_applied;
+            if (pending_ >= kReplayBatch)
+                replay(); // release instruments as the cycle goes rather than all at its end
         }
     }
 
@@ -457,8 +507,11 @@ template <class Sink> class MarketStream {
         fragment_resync_ = false;
     }
 
+    // Releases every instrument whose snapshot has arrived: applies its queued
+    // entries beyond the snapshot and drops them, keeping those of instruments still waiting.
     void replay() noexcept {
         ++replay_id_;
+        ++stats_.replay_passes;
         for (std::uint32_t slot = 0; slot < instruments_.size(); ++slot) {
             Instrument& inst = instruments_[slot];
             if (inst.state < State::Pending)
@@ -470,37 +523,79 @@ template <class Sink> class MarketStream {
         pending_ = 0;
         replaying_ = true;
         replay_aborted_ = false;
-        const std::size_t end = queue_size_;
-        std::size_t read = 0, write = 0;
+        const std::size_t end = queue_end_;
+        std::size_t read = queue_head_, write = 0;
+        DefaultIncrementalRefreshMessage message{};
+        message.NoMDEntries = 1;
+        bool applied = false;
         while (read < end && !replay_aborted_) {
-            std::uint32_t seq, size;
-            std::memcpy(&seq, queue_.data() + read, 4);
-            std::memcpy(&size, queue_.data() + read + 4, 4);
-            const std::size_t record = kQueueHeader + size;
-            ++stats_.replayed;
-            if (process(queue_.data() + read + kQueueHeader, size, seq)) {
-                std::memmove(queue_.data() + write, queue_.data() + read, record);
-                write += record;
+            Record record;
+            std::memcpy(&record, queue_.data() + read, sizeof(record));
+            const std::size_t length = sizeof(record) + record.size;
+            const Instrument& inst = instruments_[record.slot];
+            if (inst.state >= State::Stale) {
+                std::memmove(queue_.data() + write, queue_.data() + read, length);
+                write += length;
+            } else if (inst.replay_id == replay_id_) {
+                Reader r{queue_.data() + read + sizeof(record), queue_.data() + read + length};
+                DefaultIncrementalRefreshMessage::MDEntries entry;
+                if (decode(r, entry)) {
+                    message.MsgSeqNum = record.seq;
+                    message.SendingTime = record.sending_time;
+                    apply(record.slot, record.seq, message, entry);
+                    applied = true;
+                    ++stats_.replayed;
+                }
             }
-            read += record;
+            read += length;
         }
         replaying_ = false;
-        if (!replay_aborted_)
-            queue_size_ = write;
+        if (!replay_aborted_) {
+            queue_head_ = 0;
+            queue_end_ = write;
+        }
+        if (applied)
+            sink_.on_batch_end();
     }
 
-    void enqueue(const std::uint8_t* data, std::size_t size, std::uint32_t seq) noexcept {
-        if (queue_size_ + kQueueHeader + size > queue_.size()) {
-            ++stats_.queue_overflows;
-            mark_all_stale(seq + 1);
-            return;
-        }
-        const auto length = static_cast<std::uint32_t>(size);
-        std::memcpy(queue_.data() + queue_size_, &seq, 4);
-        std::memcpy(queue_.data() + queue_size_ + 4, &length, 4);
-        std::memcpy(queue_.data() + queue_size_ + kQueueHeader, data, size);
-        queue_size_ += kQueueHeader + size;
+    void enqueue(std::uint32_t seq, std::uint32_t slot, std::uint64_t sending_time, const std::uint8_t* data,
+                 std::size_t size) noexcept {
+        const Record record{seq, slot, sending_time, static_cast<std::uint32_t>(size)};
+        std::memcpy(queue_.data() + queue_end_, &record, sizeof(record));
+        std::memcpy(queue_.data() + queue_end_ + sizeof(record), data, size);
+        queue_end_ += sizeof(record) + size;
         ++stats_.queued;
+    }
+
+    bool make_room(std::size_t length) noexcept {
+        if (pending_)
+            replay();
+        // Still short: give up the oldest half. Instruments that needed it wait for a later cycle.
+        std::size_t head = queue_head_;
+        while (head < queue_end_ && (queue_end_ - head > queue_.size() / 2 || queue_end_ - head + length > queue_.size())) {
+            Record record;
+            std::memcpy(&record, queue_.data() + head, sizeof(record));
+            head += sizeof(record) + record.size;
+            queue_floor_ = record.seq + 1;
+            ++stats_.queue_dropped;
+        }
+        std::memmove(queue_.data(), queue_.data() + head, queue_end_ - head);
+        queue_end_ -= head;
+        queue_head_ = 0;
+        return queue_end_ + length <= queue_.size();
+    }
+
+    // Drops queued entries from packets up to and including seq.
+    void trim_queue(std::uint32_t seq) noexcept {
+        while (queue_head_ < queue_end_) {
+            Record record;
+            std::memcpy(&record, queue_.data() + queue_head_, sizeof(record));
+            if (record.seq > seq)
+                break;
+            queue_head_ += sizeof(record) + record.size;
+        }
+        if (queue_head_ == queue_end_)
+            queue_head_ = queue_end_ = 0;
     }
 
     // Nothing before from_seq can be trusted: every instrument needs a snapshot that reaches it.
@@ -511,7 +606,8 @@ template <class Sink> class MarketStream {
         }
         stale_ = instruments_.size();
         pending_ = 0;
-        queue_size_ = 0;
+        queue_head_ = queue_end_ = 0;
+        queue_floor_ = 0;
         replay_aborted_ = true;
         epoch_from_ = from_seq;
         covered_ = false;
@@ -530,7 +626,8 @@ template <class Sink> class MarketStream {
             inst.rpt_seq = inst.applied_seq = 0;
         }
         stale_ = pending_ = 0;
-        queue_size_ = 0;
+        queue_head_ = queue_end_ = 0;
+        queue_floor_ = 0;
         covered_ = true; // numbering restarts, so everything from here on is observed
         fragment_active_ = false;
         sink_.on_sequence_reset();
@@ -603,9 +700,11 @@ template <class Sink> class MarketStream {
     std::uint32_t epoch_from_{}; // first MsgSeqNum held since the last loss
     bool covered_{};             // a complete snapshot cycle has been reconciled since then
 
-    // Recovery queue: [seq][size][packet] records.
+    // Recovery queue: Record-prefixed entries in MsgSeqNum order, live in [queue_head_, queue_end_).
     std::vector<std::uint8_t> queue_;
-    std::size_t queue_size_{};
+    std::size_t queue_head_{};
+    std::size_t queue_end_{};
+    std::uint32_t queue_floor_{}; // entries of packets before this were dropped under memory pressure
     std::uint32_t replay_id_{};
     bool replaying_{};
     bool replay_aborted_{};
@@ -613,6 +712,7 @@ template <class Sink> class MarketStream {
     // Snapshot feed.
     std::uint32_t snapshot_expected_{};
     std::uint32_t snapshot_miss_run_{};
+    Seen snapshot_seen_[kSnapshotSeen]{}; // recently processed snapshot packets
     std::uint32_t cycle_id_{1};
     std::uint32_t cycle_min_processed_{UINT32_MAX};
     bool cycle_clean_{};

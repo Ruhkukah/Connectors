@@ -7,6 +7,14 @@
 #include <string_view>
 #include <utility>
 
+// Entry decoders are large; left to its own judgement the compiler stops inlining them
+// into the message loop and the hot path slows down about threefold.
+#if defined(__GNUC__) || defined(__clang__)
+#define MOEX_FAST_INLINE [[gnu::always_inline]] inline
+#else
+#define MOEX_FAST_INLINE inline
+#endif
+
 namespace moex::fast {
 
 // SHA-256 of the templates.xml this decoder was generated from.
@@ -52,6 +60,36 @@ struct DefaultIncrementalRefreshMessage {
     std::uint32_t NoMDEntries; // 268
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, DefaultIncrementalRefreshMessage::MDEntries& e) noexcept {
+    e.MDUpdateAction = read_u32(r);
+    e.MDEntryType = read_ascii(r);
+    e.SecurityID = read_opt_u64(r);
+    e.Symbol = read_opt_ascii(r);
+    e.SecurityGroup = read_opt_ascii(r);
+    e.ExchangeTradingSessionID = read_opt_u32(r);
+    e.RptSeq = read_u32(r);
+    e.MarketDepth = read_opt_u32(r);
+    e.MDPriceLevel = read_opt_u32(r);
+    e.MDEntryID = read_opt_i64(r);
+    e.MDEntryPx = read_opt_decimal(r);
+    e.MDEntrySize = read_opt_i64(r);
+    e.MDEntryDate = read_opt_u32(r);
+    e.MDEntryTime = read_u64(r);
+    e.NumberOfOrders = read_opt_i32(r);
+    e.MDEntryTradeType = read_opt_ascii(r);
+    e.TrdType = read_opt_i32(r);
+    e.LastPx = read_opt_decimal(r);
+    e.MDFlags = read_opt_i32(r);
+    e.Currency = read_opt_ascii(r);
+    e.Revision = read_opt_u64(r);
+    e.OrderSide = read_opt_ascii(r);
+    e.MDEntrySyntheticSize = read_opt_i64(r);
+    e.OpenInterest = read_opt_i64(r);
+    e.IndexCrossRate = read_opt_decimal(r);
+    e.TradingSessionSubID = read_opt_ascii(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, DefaultIncrementalRefreshMessage& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -60,33 +98,8 @@ inline bool decode(Reader& r, DefaultIncrementalRefreshMessage& m, Handler&& on_
     m.NoMDEntries = read_length(r);
     for (std::uint32_t i = 0; i < m.NoMDEntries; ++i) {
         DefaultIncrementalRefreshMessage::MDEntries e;
-        e.MDUpdateAction = read_u32(r);
-        e.MDEntryType = read_ascii(r);
-        e.SecurityID = read_opt_u64(r);
-        e.Symbol = read_opt_ascii(r);
-        e.SecurityGroup = read_opt_ascii(r);
-        e.ExchangeTradingSessionID = read_opt_u32(r);
-        e.RptSeq = read_u32(r);
-        e.MarketDepth = read_opt_u32(r);
-        e.MDPriceLevel = read_opt_u32(r);
-        e.MDEntryID = read_opt_i64(r);
-        e.MDEntryPx = read_opt_decimal(r);
-        e.MDEntrySize = read_opt_i64(r);
-        e.MDEntryDate = read_opt_u32(r);
-        e.MDEntryTime = read_u64(r);
-        e.NumberOfOrders = read_opt_i32(r);
-        e.MDEntryTradeType = read_opt_ascii(r);
-        e.TrdType = read_opt_i32(r);
-        e.LastPx = read_opt_decimal(r);
-        e.MDFlags = read_opt_i32(r);
-        e.Currency = read_opt_ascii(r);
-        e.Revision = read_opt_u64(r);
-        e.OrderSide = read_opt_ascii(r);
-        e.MDEntrySyntheticSize = read_opt_i64(r);
-        e.OpenInterest = read_opt_i64(r);
-        e.IndexCrossRate = read_opt_decimal(r);
-        e.TradingSessionSubID = read_opt_ascii(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -131,6 +144,28 @@ struct DefaultSnapshotMessage {
     std::uint32_t NoMDEntries; // 268
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, DefaultSnapshotMessage::MDEntries& e) noexcept {
+    e.MDEntryType = read_ascii(r);
+    e.ExchangeTradingSessionID = read_opt_u32(r);
+    e.MDEntryID = read_opt_i64(r);
+    e.MarketDepth = read_opt_u32(r);
+    e.MDEntryPx = read_opt_decimal(r);
+    e.MDEntryDate = read_opt_u32(r);
+    e.MDEntryTime = read_u64(r);
+    e.MDEntrySize = read_opt_i64(r);
+    e.MDPriceLevel = read_opt_u32(r);
+    e.NumberOfOrders = read_opt_i32(r);
+    e.MDEntryTradeType = read_opt_ascii(r);
+    e.TrdType = read_opt_i32(r);
+    e.MDFlags = read_opt_i32(r);
+    e.Currency = read_opt_ascii(r);
+    e.OrderSide = read_opt_ascii(r);
+    e.MDEntrySyntheticSize = read_opt_i64(r);
+    e.IndexCrossRate = read_opt_decimal(r);
+    e.TradingSessionSubID = read_opt_ascii(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, DefaultSnapshotMessage& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -145,25 +180,8 @@ inline bool decode(Reader& r, DefaultSnapshotMessage& m, Handler&& on_entry) noe
     m.NoMDEntries = read_length(r);
     for (std::uint32_t i = 0; i < m.NoMDEntries; ++i) {
         DefaultSnapshotMessage::MDEntries e;
-        e.MDEntryType = read_ascii(r);
-        e.ExchangeTradingSessionID = read_opt_u32(r);
-        e.MDEntryID = read_opt_i64(r);
-        e.MarketDepth = read_opt_u32(r);
-        e.MDEntryPx = read_opt_decimal(r);
-        e.MDEntryDate = read_opt_u32(r);
-        e.MDEntryTime = read_u64(r);
-        e.MDEntrySize = read_opt_i64(r);
-        e.MDPriceLevel = read_opt_u32(r);
-        e.NumberOfOrders = read_opt_i32(r);
-        e.MDEntryTradeType = read_opt_ascii(r);
-        e.TrdType = read_opt_i32(r);
-        e.MDFlags = read_opt_i32(r);
-        e.Currency = read_opt_ascii(r);
-        e.OrderSide = read_opt_ascii(r);
-        e.MDEntrySyntheticSize = read_opt_i64(r);
-        e.IndexCrossRate = read_opt_decimal(r);
-        e.TradingSessionSubID = read_opt_ascii(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -263,6 +281,41 @@ struct SecurityDefinition {
     Opt<Decimal> ClearingSettlPrice; // 2528
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, SecurityDefinition::MDFeedTypes& e) noexcept {
+    e.MDFeedType = read_ascii(r);
+    e.MarketDepth = read_opt_u32(r);
+    e.MDBookType = read_opt_u32(r);
+    return r.ok;
+}
+
+MOEX_FAST_INLINE bool decode(Reader& r, SecurityDefinition::Underlyings& e) noexcept {
+    e.UnderlyingSymbol = read_ascii(r);
+    e.UnderlyingBoard = read_opt_ascii(r);
+    e.UnderlyingSecurityID = read_opt_u64(r);
+    e.UnderlyingFutureID = read_opt_u64(r);
+    return r.ok;
+}
+
+MOEX_FAST_INLINE bool decode(Reader& r, SecurityDefinition::InstrumentLegs& e) noexcept {
+    e.LegSymbol = read_ascii(r);
+    e.LegSecurityID = read_u64(r);
+    e.LegRatioQty = read_decimal(r);
+    return r.ok;
+}
+
+MOEX_FAST_INLINE bool decode(Reader& r, SecurityDefinition::InstrumentAttributes& e) noexcept {
+    e.InstrAttribType = read_i32(r);
+    e.InstrAttribValue = read_ascii(r);
+    return r.ok;
+}
+
+MOEX_FAST_INLINE bool decode(Reader& r, SecurityDefinition::EvntGrp& e) noexcept {
+    e.EventType = read_i32(r);
+    e.EventDate = read_u32(r);
+    e.EventTime = read_u64(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, SecurityDefinition& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -286,21 +339,16 @@ inline bool decode(Reader& r, SecurityDefinition& m, Handler&& on_entry) noexcep
     m.NoMDFeedTypes = read_length(r);
     for (std::uint32_t i = 0; i < m.NoMDFeedTypes; ++i) {
         SecurityDefinition::MDFeedTypes e;
-        e.MDFeedType = read_ascii(r);
-        e.MarketDepth = read_opt_u32(r);
-        e.MDBookType = read_opt_u32(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
     m.NoUnderlyings = read_opt_length(r);
     for (std::uint32_t i = 0; i < m.NoUnderlyings.value; ++i) {
         SecurityDefinition::Underlyings e;
-        e.UnderlyingSymbol = read_ascii(r);
-        e.UnderlyingBoard = read_opt_ascii(r);
-        e.UnderlyingSecurityID = read_opt_u64(r);
-        e.UnderlyingFutureID = read_opt_u64(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -317,19 +365,16 @@ inline bool decode(Reader& r, SecurityDefinition& m, Handler&& on_entry) noexcep
     m.NoLegs = read_opt_length(r);
     for (std::uint32_t i = 0; i < m.NoLegs.value; ++i) {
         SecurityDefinition::InstrumentLegs e;
-        e.LegSymbol = read_ascii(r);
-        e.LegSecurityID = read_u64(r);
-        e.LegRatioQty = read_decimal(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
     m.NoInstrAttrib = read_opt_length(r);
     for (std::uint32_t i = 0; i < m.NoInstrAttrib.value; ++i) {
         SecurityDefinition::InstrumentAttributes e;
-        e.InstrAttribType = read_i32(r);
-        e.InstrAttribValue = read_ascii(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -338,10 +383,8 @@ inline bool decode(Reader& r, SecurityDefinition& m, Handler&& on_entry) noexcep
     m.NoEvents = read_opt_length(r);
     for (std::uint32_t i = 0; i < m.NoEvents.value; ++i) {
         SecurityDefinition::EvntGrp e;
-        e.EventType = read_i32(r);
-        e.EventDate = read_u32(r);
-        e.EventTime = read_u64(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -448,6 +491,12 @@ struct SecurityMassStatus {
     std::uint32_t NoRelatedSym; // 146
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, SecurityMassStatus::SecMassStatGrp& e) noexcept {
+    e.SecurityID = read_u64(r);
+    e.SecurityTradingStatus = read_u32(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, SecurityMassStatus& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -456,9 +505,8 @@ inline bool decode(Reader& r, SecurityMassStatus& m, Handler&& on_entry) noexcep
     m.NoRelatedSym = read_length(r);
     for (std::uint32_t i = 0; i < m.NoRelatedSym; ++i) {
         SecurityMassStatus::SecMassStatGrp e;
-        e.SecurityID = read_u64(r);
-        e.SecurityTradingStatus = read_u32(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -585,6 +633,11 @@ struct DiscreteAuction {
     Opt<std::int64_t> TradePeriodID; // 20066
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, DiscreteAuction::Underlyings& e) noexcept {
+    e.UnderlyingSymbol = read_ascii(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, DiscreteAuction& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -599,8 +652,8 @@ inline bool decode(Reader& r, DiscreteAuction& m, Handler&& on_entry) noexcept {
     m.NoUnderlyings = read_opt_length(r);
     for (std::uint32_t i = 0; i < m.NoUnderlyings.value; ++i) {
         DiscreteAuction::Underlyings e;
-        e.UnderlyingSymbol = read_ascii(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -629,6 +682,11 @@ struct News {
     std::uint32_t NoLinesOfText; // 33
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, News::NewsText& e) noexcept {
+    e.Text = read_bytes(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, News& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -643,8 +701,8 @@ inline bool decode(Reader& r, News& m, Handler&& on_entry) noexcept {
     m.NoLinesOfText = read_length(r);
     for (std::uint32_t i = 0; i < m.NoLinesOfText; ++i) {
         News::NewsText e;
-        e.Text = read_bytes(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -681,6 +739,26 @@ struct OrdersLogMessage {
     std::uint32_t NoMDEntries; // 268
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, OrdersLogMessage::MDEntries& e) noexcept {
+    e.MDUpdateAction = read_u32(r);
+    e.MDEntryType = read_ascii(r);
+    e.MDEntryID = read_opt_i64(r);
+    e.SecurityID = read_opt_u64(r);
+    e.RptSeq = read_opt_u32(r);
+    e.MDEntryDate = read_opt_u32(r);
+    e.MDEntryTime = read_u64(r);
+    e.MDEntryPx = read_opt_decimal(r);
+    e.MDEntrySize = read_opt_i64(r);
+    e.LastPx = read_opt_decimal(r);
+    e.LastQty = read_opt_i64(r);
+    e.TradeID = read_opt_i64(r);
+    e.ExchangeTradingSessionID = read_opt_u32(r);
+    e.MDFlags = read_opt_i64(r);
+    e.MDFlags2 = read_opt_i64(r);
+    e.Revision = read_opt_u64(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, OrdersLogMessage& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -689,23 +767,8 @@ inline bool decode(Reader& r, OrdersLogMessage& m, Handler&& on_entry) noexcept 
     m.NoMDEntries = read_length(r);
     for (std::uint32_t i = 0; i < m.NoMDEntries; ++i) {
         OrdersLogMessage::MDEntries e;
-        e.MDUpdateAction = read_u32(r);
-        e.MDEntryType = read_ascii(r);
-        e.MDEntryID = read_opt_i64(r);
-        e.SecurityID = read_opt_u64(r);
-        e.RptSeq = read_opt_u32(r);
-        e.MDEntryDate = read_opt_u32(r);
-        e.MDEntryTime = read_u64(r);
-        e.MDEntryPx = read_opt_decimal(r);
-        e.MDEntrySize = read_opt_i64(r);
-        e.LastPx = read_opt_decimal(r);
-        e.LastQty = read_opt_i64(r);
-        e.TradeID = read_opt_i64(r);
-        e.ExchangeTradingSessionID = read_opt_u32(r);
-        e.MDFlags = read_opt_i64(r);
-        e.MDFlags2 = read_opt_i64(r);
-        e.Revision = read_opt_u64(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -740,6 +803,19 @@ struct BookMessage {
     std::uint32_t NoMDEntries; // 268
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, BookMessage::MDEntries& e) noexcept {
+    e.MDEntryType = read_ascii(r);
+    e.MDEntryID = read_opt_i64(r);
+    e.MDEntryDate = read_opt_u32(r);
+    e.MDEntryTime = read_u64(r);
+    e.MDEntryPx = read_opt_decimal(r);
+    e.MDEntrySize = read_opt_i64(r);
+    e.TradeID = read_opt_i64(r);
+    e.MDFlags = read_opt_i64(r);
+    e.MDFlags2 = read_opt_i64(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, BookMessage& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -753,16 +829,8 @@ inline bool decode(Reader& r, BookMessage& m, Handler&& on_entry) noexcept {
     m.NoMDEntries = read_length(r);
     for (std::uint32_t i = 0; i < m.NoMDEntries; ++i) {
         BookMessage::MDEntries e;
-        e.MDEntryType = read_ascii(r);
-        e.MDEntryID = read_opt_i64(r);
-        e.MDEntryDate = read_opt_u32(r);
-        e.MDEntryTime = read_u64(r);
-        e.MDEntryPx = read_opt_decimal(r);
-        e.MDEntrySize = read_opt_i64(r);
-        e.TradeID = read_opt_i64(r);
-        e.MDFlags = read_opt_i64(r);
-        e.MDFlags2 = read_opt_i64(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -798,6 +866,26 @@ struct OtcMonitorIncrementalRefreshMessage {
     std::uint32_t NoMDEntries; // 268
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, OtcMonitorIncrementalRefreshMessage::MDEntries& e) noexcept {
+    e.MDUpdateAction = read_u32(r);
+    e.MDEntryType = read_ascii(r);
+    e.Symbol = read_ascii(r);
+    e.SecurityGroup = read_ascii(r);
+    e.RptSeq = read_u32(r);
+    e.MDEntryID = read_i64(r);
+    e.MDEntryPx = read_ascii(r);
+    e.MDEntrySize = read_i64(r);
+    e.MDEntryDate = read_opt_u32(r);
+    e.MDEntryTime = read_u64(r);
+    e.Currency = read_ascii(r);
+    e.Revision = read_opt_u64(r);
+    e.OrderSide = read_ascii(r);
+    e.SettlCurrency = read_ascii(r);
+    e.CFICode = read_ascii(r);
+    e.TradeVolume = read_ascii(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, OtcMonitorIncrementalRefreshMessage& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -806,23 +894,8 @@ inline bool decode(Reader& r, OtcMonitorIncrementalRefreshMessage& m, Handler&& 
     m.NoMDEntries = read_length(r);
     for (std::uint32_t i = 0; i < m.NoMDEntries; ++i) {
         OtcMonitorIncrementalRefreshMessage::MDEntries e;
-        e.MDUpdateAction = read_u32(r);
-        e.MDEntryType = read_ascii(r);
-        e.Symbol = read_ascii(r);
-        e.SecurityGroup = read_ascii(r);
-        e.RptSeq = read_u32(r);
-        e.MDEntryID = read_i64(r);
-        e.MDEntryPx = read_ascii(r);
-        e.MDEntrySize = read_i64(r);
-        e.MDEntryDate = read_opt_u32(r);
-        e.MDEntryTime = read_u64(r);
-        e.Currency = read_ascii(r);
-        e.Revision = read_opt_u64(r);
-        e.OrderSide = read_ascii(r);
-        e.SettlCurrency = read_ascii(r);
-        e.CFICode = read_ascii(r);
-        e.TradeVolume = read_ascii(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -859,6 +932,22 @@ struct OtcMonitorSnapshotMessage {
     std::uint32_t NoMDEntries; // 268
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, OtcMonitorSnapshotMessage::MDEntries& e) noexcept {
+    e.MDUpdateAction = read_u32(r);
+    e.MDEntryType = read_ascii(r);
+    e.MDEntryID = read_i64(r);
+    e.MDEntryPx = read_ascii(r);
+    e.MDEntryDate = read_opt_u32(r);
+    e.MDEntryTime = read_u64(r);
+    e.MDEntrySize = read_i64(r);
+    e.Currency = read_ascii(r);
+    e.OrderSide = read_ascii(r);
+    e.SettlCurrency = read_ascii(r);
+    e.CFICode = read_ascii(r);
+    e.TradeVolume = read_ascii(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, OtcMonitorSnapshotMessage& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -872,19 +961,8 @@ inline bool decode(Reader& r, OtcMonitorSnapshotMessage& m, Handler&& on_entry) 
     m.NoMDEntries = read_length(r);
     for (std::uint32_t i = 0; i < m.NoMDEntries; ++i) {
         OtcMonitorSnapshotMessage::MDEntries e;
-        e.MDUpdateAction = read_u32(r);
-        e.MDEntryType = read_ascii(r);
-        e.MDEntryID = read_i64(r);
-        e.MDEntryPx = read_ascii(r);
-        e.MDEntryDate = read_opt_u32(r);
-        e.MDEntryTime = read_u64(r);
-        e.MDEntrySize = read_i64(r);
-        e.Currency = read_ascii(r);
-        e.OrderSide = read_ascii(r);
-        e.SettlCurrency = read_ascii(r);
-        e.CFICode = read_ascii(r);
-        e.TradeVolume = read_ascii(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
@@ -924,6 +1002,19 @@ struct OtcMonitorSecurityDefinition {
     Ascii InList; // 20052
 };
 
+MOEX_FAST_INLINE bool decode(Reader& r, OtcMonitorSecurityDefinition::MDFeedTypes& e) noexcept {
+    e.MDFeedType = read_ascii(r);
+    e.MarketDepth = read_opt_u32(r);
+    e.MDBookType = read_opt_u32(r);
+    return r.ok;
+}
+
+MOEX_FAST_INLINE bool decode(Reader& r, OtcMonitorSecurityDefinition::InstrumentAttributes& e) noexcept {
+    e.InstrAttribType = read_i32(r);
+    e.InstrAttribValue = read_bytes(r);
+    return r.ok;
+}
+
 template <class Handler>
 inline bool decode(Reader& r, OtcMonitorSecurityDefinition& m, Handler&& on_entry) noexcept {
     m.MsgSeqNum = read_u32(r);
@@ -939,19 +1030,16 @@ inline bool decode(Reader& r, OtcMonitorSecurityDefinition& m, Handler&& on_entr
     m.NoMDFeedTypes = read_length(r);
     for (std::uint32_t i = 0; i < m.NoMDFeedTypes; ++i) {
         OtcMonitorSecurityDefinition::MDFeedTypes e;
-        e.MDFeedType = read_ascii(r);
-        e.MarketDepth = read_opt_u32(r);
-        e.MDBookType = read_opt_u32(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
     m.NoInstrAttrib = read_length(r);
     for (std::uint32_t i = 0; i < m.NoInstrAttrib; ++i) {
         OtcMonitorSecurityDefinition::InstrumentAttributes e;
-        e.InstrAttribType = read_i32(r);
-        e.InstrAttribValue = read_bytes(r);
-        if (!r.ok)
+        r.mark = r.p;
+        if (!decode(r, e))
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }

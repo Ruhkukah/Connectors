@@ -3,7 +3,10 @@
 // Aggregated order book for the FO-BOOK-N / SPOT-BOOK-N streams. The gate
 // addresses levels by position (MDPriceLevel, 1-based): New inserts and shifts
 // deeper levels down, Delete removes and shifts them up, Change overwrites.
-// Levels pushed beyond Depth fall off without a message, as the spec requires.
+// Levels pushed beyond the stream's depth fall off without a message, so the
+// book must be cut at exactly that depth: it is taken from each entry's
+// MarketDepth, or from set_depth() when the entry carries none. Depth is only
+// the storage capacity.
 
 #include "fast_spectra_messages.hpp"
 
@@ -32,6 +35,9 @@ template <std::size_t Depth> class AggregateBook {
     void clear() noexcept {
         bids_.count = asks_.count = 0;
     }
+    void set_depth(std::uint32_t depth) noexcept {
+        depth_ = depth < Depth ? depth : static_cast<std::uint32_t>(Depth);
+    }
 
     // Returns false for entries that are not book levels (trades, statistics).
     bool apply(const DefaultIncrementalRefreshMessage::MDEntries& e) noexcept {
@@ -44,17 +50,19 @@ template <std::size_t Depth> class AggregateBook {
             return false;
         Side& side = type == '0' ? bids_ : asks_;
         const std::uint32_t level = e.MDPriceLevel.value_or(0);
-        if (level == 0 || level > Depth)
+        const std::uint32_t stated = e.MarketDepth.value_or(depth_);
+        const std::uint32_t depth = stated != 0 && stated < Depth ? stated : static_cast<std::uint32_t>(Depth);
+        if (level == 0 || level > depth)
             return true;
         const std::uint32_t index = level - 1;
         switch (e.MDUpdateAction) {
         case 0: { // New
             const std::uint32_t at = index < side.count ? index : side.count;
-            const std::uint32_t last = side.count < Depth ? side.count : Depth - 1;
+            const std::uint32_t last = side.count < depth ? side.count : depth - 1;
             for (std::uint32_t i = last; i > at; --i)
                 side.levels[i] = side.levels[i - 1];
             side.levels[at] = {e.MDEntryPx.value, e.MDEntrySize.value_or(0)};
-            if (side.count < Depth)
+            if (side.count < depth)
                 ++side.count;
             break;
         }
@@ -103,6 +111,7 @@ template <std::size_t Depth> class AggregateBook {
   private:
     Side bids_;
     Side asks_;
+    std::uint32_t depth_{static_cast<std::uint32_t>(Depth)};
 };
 
 } // namespace moex::fast

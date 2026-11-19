@@ -20,6 +20,7 @@ struct Reader {
     const std::uint8_t* p{};
     const std::uint8_t* end{};
     bool ok{true};
+    const std::uint8_t* mark{}; // start of the sequence entry being decoded
 
     [[nodiscard]] std::size_t remaining() const noexcept {
         return static_cast<std::size_t>(end - p);

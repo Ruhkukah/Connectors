@@ -125,6 +125,9 @@ foreach(name IN ITEMS fast_decoder_test fast_market_stream_test)
 endforeach()
 add_executable(fast_decode_benchmark fast_spectra/fast_decode_benchmark.cpp)
 target_link_libraries(fast_decode_benchmark PRIVATE moex_fast_spectra)
+# Replays a packet capture through the connector and audits the books against the capture's own snapshots.
+add_executable(fast_pcap_replay fast_spectra/fast_pcap_replay.cpp)
+target_link_libraries(fast_pcap_replay PRIVATE moex_fast_spectra)
 # The locked templates live in the ignored spec-lock cache; check the generated decoder when they are present.
 set(MOEX_FAST_TEMPLATES "${MOEX_SOURCE_ROOT}/spec-lock/test/fast/templatesT1/cache/templates.xml")
 if(EXISTS "${MOEX_FAST_TEMPLATES}")

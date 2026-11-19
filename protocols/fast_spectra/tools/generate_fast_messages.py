@@ -109,6 +109,15 @@ def emit_struct(struct, indent, template_id=None):
 def emit_decoder(struct):
     has_sequences = bool(struct.nested)
     lines = []
+    # Entries are self-delimiting, so each group gets a standalone decoder; a
+    # consumer can keep an entry's bytes (Reader::mark .. Reader::p) and decode them later.
+    for entry in struct.nested:
+        lines.append(f"MOEX_FAST_INLINE bool decode(Reader& r, {struct.name}::{entry.name}& e) noexcept {{")
+        for _, name, reader in entry.steps:
+            lines.append(f"    e.{name} = {reader}(r);")
+        lines.append("    return r.ok;")
+        lines.append("}")
+        lines.append("")
     if has_sequences:
         lines.append("template <class Handler>")
         lines.append(f"inline bool decode(Reader& r, {struct.name}& m, Handler&& on_entry) noexcept {{")
@@ -127,9 +136,8 @@ def emit_decoder(struct):
             bound = f"m.{count}"
         lines.append(f"    for (std::uint32_t i = 0; i < {bound}; ++i) {{")
         lines.append(f"        {struct.name}::{entry.name} e;")
-        for _, name, reader in entry.steps:
-            lines.append(f"        e.{name} = {reader}(r);")
-        lines.append("        if (!r.ok)")
+        lines.append("        r.mark = r.p;")
+        lines.append("        if (!decode(r, e))")
         lines.append("            return false;")
         lines.append("        on_entry(std::as_const(m), std::as_const(e));")
         lines.append("    }")
@@ -156,6 +164,14 @@ def generate(source_bytes):
         "#include <cstdint>",
         "#include <string_view>",
         "#include <utility>",
+        "",
+        "// Entry decoders are large; left to its own judgement the compiler stops inlining them",
+        "// into the message loop and the hot path slows down about threefold.",
+        "#if defined(__GNUC__) || defined(__clang__)",
+        "#define MOEX_FAST_INLINE [[gnu::always_inline]] inline",
+        "#else",
+        "#define MOEX_FAST_INLINE inline",
+        "#endif",
         "",
         "namespace moex::fast {",
         "",

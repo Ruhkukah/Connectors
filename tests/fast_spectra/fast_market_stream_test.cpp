@@ -244,6 +244,28 @@ void sequence_reset_and_heartbeats() {
     REQUIRE(stream.stats().malformed == 2 && sink.all_stale == 1 && stream.needs_snapshot());
 }
 
+// An Empty Book entry is a complete statement of the book, so it ends the wait for a snapshot.
+void empty_book_resumes_without_snapshot() {
+    BookSink sink;
+    Stream stream(sink);
+    feed(stream, fast_test::incremental(30, {bid(1, 1, 7, 1, 100, 1), bid(1, 2, 4, 1, 200, 1)}));
+    REQUIRE(stream.unsynced() == 2);
+    IncrementalEntry empty;
+    empty.type = 'J';
+    empty.security_id = 1;
+    empty.rpt_seq = 8;
+    feed(stream, fast_test::incremental(31, {empty, bid(0, 1, 9, 1, 150, 2), bid(1, 2, 5, 1, 201, 1)}));
+    REQUIRE(stream.synced(sink.slot_of(1)) && !stream.synced(sink.slot_of(2)) && stream.unsynced() == 1);
+    REQUIRE(best_bid(sink, 1) == 150 && sink.books[sink.slot_of(1)].bids().count == 1);
+    // A snapshot older than the Empty Book must not be replayed over it, and the stale queue entry is dropped.
+    snap(stream, fast_test::sequence_reset(9, 1));
+    snap(stream, fast_test::snapshot(1, 2, 5, 31, {{'0', 1, Dec{201, 0}, 1}}));
+    snap(stream, fast_test::sequence_reset(2, 1));
+    REQUIRE(stream.unsynced() == 0 && best_bid(sink, 1) == 150 && best_bid(sink, 2) == 201);
+    feed(stream, fast_test::incremental(32, {bid(1, 1, 10, 1, 151, 2)}));
+    REQUIRE(best_bid(sink, 1) == 151 && stream.stats().instrument_gaps == 0);
+}
+
 void recovery_queue_overflow() {
     BookSink sink;
     StreamConfig config;
@@ -251,7 +273,7 @@ void recovery_queue_overflow() {
     Stream stream(sink, config);
     for (std::uint32_t seq = 1; seq <= 40; ++seq)
         feed(stream, fast_test::incremental(seq, {bid(1, 1, seq, 1, 100 + seq, 1)}));
-    REQUIRE(stream.stats().queue_overflows > 0 && stream.unsynced() == 1);
+    REQUIRE(stream.stats().queue_dropped > 0 && stream.unsynced() == 1);
     // Whatever survived the overflow still leads to a consistent book.
     snap(stream, fast_test::snapshot(1, 1, 40, 40, {{'0', 1, Dec{140, 0}, 1}}));
     snap(stream, fast_test::sequence_reset(2, 1));
@@ -261,7 +283,9 @@ void recovery_queue_overflow() {
 }
 
 // Reference model: random book activity pushed through a lossy, duplicating,
-// reordering A/B channel with periodic snapshot cycles. Whenever the stream
+// reordering A/B channel with snapshot cycles shaped like production's: a cycle
+// is generated at one instant (every message carries that LastMsgSeqNumProcessed)
+// and then trickles out while incrementals keep flowing. Whenever the stream
 // calls an instrument synced, its book must equal the truth as of the last
 // packet the stream has consumed.
 struct Truth {
@@ -307,6 +331,7 @@ void randomized_lossy_channel(std::uint64_t seed) {
     std::uint64_t now = 0;
     std::uint32_t snapshot_seq = 1;
     std::deque<Bytes> delayed;
+    std::deque<Bytes> cycle; // snapshot messages generated but not yet sent
 
     const auto verify = [&] {
         for (std::uint32_t slot = 0; slot < sink.ids.size(); ++slot) {
@@ -398,9 +423,15 @@ void randomized_lossy_channel(std::uint64_t seed) {
         stream.on_timer(now);
         verify();
 
-        if (seq % 40 != 0)
+        if (!cycle.empty()) {
+            send_snapshot(cycle.front(), lossy);
+            cycle.pop_front();
+            verify();
             continue;
-        // One snapshot cycle; books that are empty are simply not sent.
+        }
+        if (seq % 8 != 0)
+            continue;
+        // Generate the next cycle as of this packet; books that are empty are simply not sent.
         for (std::size_t index = 0; index < kInstruments; ++index) {
             const Truth::Instrument& inst = truth.instruments[index];
             std::vector<SnapshotEntry> levels;
@@ -412,17 +443,18 @@ void randomized_lossy_channel(std::uint64_t seed) {
                 continue;
             if (levels.size() > 2 && next(2) == 0) {
                 const auto middle = levels.begin() + static_cast<std::ptrdiff_t>(levels.size() / 2);
-                send_snapshot(fast_test::snapshot(snapshot_seq++, index + 1, inst.rpt_seq, seq, {levels.begin(), middle}, 0),
-                              lossy);
-                send_snapshot(fast_test::snapshot(snapshot_seq++, index + 1, inst.rpt_seq, seq, {middle, levels.end()}, 1),
-                              lossy);
+                cycle.push_back(
+                    fast_test::snapshot(snapshot_seq++, index + 1, inst.rpt_seq, seq, {levels.begin(), middle}, 0));
+                cycle.push_back(
+                    fast_test::snapshot(snapshot_seq++, index + 1, inst.rpt_seq, seq, {middle, levels.end()}, 1));
             } else {
-                send_snapshot(fast_test::snapshot(snapshot_seq++, index + 1, inst.rpt_seq, seq, levels), lossy);
+                // Books always flag their snapshots; trades and statistics leave the field out.
+                cycle.push_back(fast_test::snapshot(snapshot_seq++, index + 1, inst.rpt_seq, seq, levels,
+                                                    next(2) ? std::optional<std::uint64_t>{1} : std::nullopt));
             }
         }
-        send_snapshot(fast_test::sequence_reset(snapshot_seq, 1), lossy);
+        cycle.push_back(fast_test::sequence_reset(snapshot_seq, 1));
         snapshot_seq = 1;
-        verify();
     }
     REQUIRE(stream.stats().gaps > 0 && stream.stats().snapshots_applied > 0 && stream.stats().replayed > 0);
     REQUIRE(stream.unsynced() == 0 && !stream.needs_snapshot() && stream.next_sequence() == kPackets + 1);
@@ -443,6 +475,7 @@ int main(int argc, char** argv) {
         far_jump_and_instrument_gap();
         fragmented_snapshots();
         sequence_reset_and_heartbeats();
+        empty_book_resumes_without_snapshot();
         recovery_queue_overflow();
         const std::uint64_t seeds = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 200;
         for (std::uint64_t seed = 1; seed <= seeds; ++seed)
