@@ -108,6 +108,7 @@ int main(int argc, char** argv) {
 
     UdpReceiver receiver;
     std::vector<bool> is_snapshot;
+    std::vector<std::uint64_t> datagrams; // raw receipt per socket, before any sequencing or decoding
     for (auto& [snapshot, endpoint] : endpoints) {
         endpoint.interface = interface;
         if (receiver.add(endpoint) < 0) {
@@ -115,6 +116,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         is_snapshot.push_back(snapshot);
+        datagrams.push_back(0);
     }
 
     std::signal(SIGINT, on_signal);
@@ -126,6 +128,7 @@ int main(int argc, char** argv) {
     bool snapshots_joined = true;
     while (!stop_requested.load(std::memory_order_relaxed)) {
         receiver.poll(spin ? 0 : 1, [&](int index, const std::uint8_t* data, std::size_t size) {
+            ++datagrams[static_cast<std::size_t>(index)];
             if (is_snapshot[static_cast<std::size_t>(index)])
                 stream.on_snapshot(data, size);
             else
@@ -152,6 +155,11 @@ int main(int argc, char** argv) {
                     static_cast<unsigned long long>(stats.snapshots_applied),
                     static_cast<unsigned long long>(sink.book_updates), static_cast<unsigned long long>(sink.trades),
                     snapshots_joined ? "joined" : "left");
+        std::printf("  datagrams");
+        for (std::size_t index = 0; index < datagrams.size(); ++index)
+            std::printf(" %s:%u=%llu", endpoints[index].second.group.c_str(), endpoints[index].second.port,
+                        static_cast<unsigned long long>(datagrams[index]));
+        std::printf("\n");
         for (std::uint32_t slot = 0; watch_id && slot < stream.instruments(); ++slot) {
             if (stream.security_id(slot) != watch_id)
                 continue;
