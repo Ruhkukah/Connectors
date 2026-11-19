@@ -2304,8 +2304,10 @@ std::uint32_t emit_script(FakeListener& listener) {
     }
 
     CgDataLifeNum lifenum{
-        .life_number = (fake_flag(Option::FreshPosAnchor) || (listener.stream_code == StreamCode::kFortsRefdataRepl &&
-                                                              fake_flag(Option::RefdataOnlyNewGeneration)))
+        .life_number = listener.stream_code == StreamCode::kFortsDealsRepl && scenario.deals_server_lifenum
+                           ? scenario.deals_server_lifenum
+                       : (fake_flag(Option::FreshPosAnchor) || (listener.stream_code == StreamCode::kFortsRefdataRepl &&
+                                                                fake_flag(Option::RefdataOnlyNewGeneration)))
                            ? 8u
                            : 7u,
         .flags = 0,

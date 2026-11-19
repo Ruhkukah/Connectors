@@ -11,7 +11,8 @@
 using namespace moex::plaza2;
 using namespace moex::plaza2_trade;
 namespace f = test::fake;
-static void anchored_deals(CgateSessionConfig config, f::Control& fake, f::Scenario scenario, bool explicit_lifenum) {
+static void anchored_deals(CgateSessionConfig config, f::Control& fake, f::Scenario scenario, bool explicit_lifenum,
+                           bool before_open = true) {
     using K = cgate::Plaza2ListenerEventKind;
     const std::array<std::int32_t, 1> ids{1001};
     cgate::Plaza2FullOrderLog book(ids, 1024, 256);
@@ -44,9 +45,10 @@ static void anchored_deals(CgateSessionConfig config, f::Control& fake, f::Scena
                           "derived LifeNum provenance must be explicit");
         }
     };
-    scenario.omit_anchored_deals_lifenum = true;
+    scenario.omit_anchored_deals_lifenum = !explicit_lifenum || before_open;
     scenario.deals_server_lifenum = explicit_lifenum ? 9 : 0;
-    scenario.options[static_cast<std::size_t>(f::Option::DealsLifeNumBeforeOpen)] = explicit_lifenum ? "1" : "";
+    scenario.options[static_cast<std::size_t>(f::Option::DealsLifeNumBeforeOpen)] =
+        explicit_lifenum && before_open ? "1" : "";
     fake.configure(scenario);
     CgateSession session(config);
     test::require(!session.start(), "anchored DEALS start");
@@ -59,10 +61,12 @@ static void anchored_deals(CgateSessionConfig config, f::Control& fake, f::Scena
     const auto snapshot = deals.snapshot(1001);
     test::require(snapshot.online && snapshot.valid && snapshot.lifenum == expected && oi.online(),
                   "anchored DEALS without native LifeNum must reach ONLINE with its confirmed epoch");
+    const auto life = std::find(events.begin(), events.end(), K::LifeNum);
+    const auto open = std::find(events.begin(), events.end(), K::Open);
     test::require(!lives.empty() && lives.front() == expected &&
-                      std::find(events.begin(), events.end(), K::LifeNum) <
-                          std::find(events.begin(), events.end(), K::Open),
-                  "confirmed LifeNum must reach the capture/trade chain before OPEN and rows");
+                      life < std::find(events.begin(), events.end(), K::StreamData) &&
+                      ((explicit_lifenum && before_open) ? life < open : open < life),
+                  "native epoch takes precedence before or after OPEN; omitted epoch precedes rows");
     test::require(derived == (explicit_lifenum ? 0u : 1u),
                   "server LifeNum takes precedence; derive only the omitted notification");
     const auto settings = fake.listener_open_settings(generated::StreamCode::kFortsDealsRepl);
@@ -85,6 +89,22 @@ static void anchored_deals(CgateSessionConfig config, f::Control& fake, f::Scena
             {.kind = f::EventKind::LifeNum, .stream_code = generated::StreamCode::kFortsDealsRepl, .value = 9});
         pump();
         test::require(!deals.snapshot(1001).valid, "a later different LifeNum still requires a fresh snapshot");
+    } else if (!before_open) {
+        const auto opens = fake.opens(generated::StreamCode::kFortsDealsRepl);
+        fake.enqueue(
+            {.kind = f::EventKind::LifeNum, .stream_code = generated::StreamCode::kFortsDealsRepl, .value = 10});
+        pump();
+        test::require(!deals.snapshot(1001).valid && !oi.online(),
+                      "a later contradictory epoch remains hidden until reopen");
+        now += std::chrono::seconds(2);
+        pump();
+        const auto recovered = deals.snapshot(1001);
+        test::require(recovered.online && recovered.valid && recovered.lifenum == 9 && oi.online() && derived == 0 &&
+                          fake.opens(generated::StreamCode::kFortsDealsRepl) == opens + 1,
+                      "reopen accepts native post-OPEN epoch instead of looping on the older POS anchor");
+        pump();
+        test::require(fake.opens(generated::StreamCode::kFortsDealsRepl) == opens + 1,
+                      "recovered DEALS listener must stay open");
     }
     test::require(!session.stop(), "anchored DEALS stop");
 }
@@ -155,6 +175,7 @@ int main(int argc, char** argv) {
         }
         anchored_deals(c, fake, scenario, false);
         anchored_deals(c, fake, scenario, true);
+        anchored_deals(c, fake, scenario, true, false);
         test::remove_tree(root);
         std::cout << "FOL-only OI routing and null-handler isolation passed\n";
         return 0;

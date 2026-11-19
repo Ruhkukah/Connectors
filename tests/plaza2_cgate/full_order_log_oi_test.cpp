@@ -76,9 +76,10 @@ static void test_anchored_deals_capture(const fs::path& root) {
         require(!oi.on_plaza2_listener_event(e), "anchored DEALS capture event");
     };
     // With an explicit resume LifeNum, T0 omits its LifeNum notification.
-    // The session adapter's validated anchor must travel through capture too.
-    send(event(K::LifeNum, 7));
+    // The session adapter supplies an omitted epoch after OPEN, before rows,
+    // so a native post-OPEN LifeNum has the opportunity to take precedence.
     send({.kind = K::Open, .raw_tables = std::span(&t, 1)});
+    send(event(K::LifeNum, 7));
     send(row(1).event());
     send(event(K::Online));
     require(oi.online() && trades.snapshot(11, 0, 321).online, "anchored snapshot becomes current at ONLINE");

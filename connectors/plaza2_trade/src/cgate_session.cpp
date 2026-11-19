@@ -386,12 +386,12 @@ struct CgateSession::Impl {
         Impl& owner;
         std::uint64_t requested_lifenum{};
         std::int64_t requested_revision{};
-        bool explicit_lifenum{};
+        bool lifenum_delivered{};
         explicit AnchoredDealsEvents(Impl& value) : owner(value) {}
         void opening(std::uint64_t life, std::int64_t revision) {
             requested_lifenum = life;
             requested_revision = revision;
-            explicit_lifenum = false;
+            lifenum_delivered = false;
         }
         bool wants_raw_replication(std::string_view table) const noexcept override {
             return owner.config.full_order_log_oi_handler->wants_raw_replication(table);
@@ -405,11 +405,12 @@ struct CgateSession::Impl {
         Plaza2Error on_plaza2_listener_event(const cg::Plaza2ListenerEvent& event) override {
             auto& target = *owner.config.full_order_log_oi_handler;
             if (event.kind == cg::Plaza2ListenerEventKind::LifeNum)
-                explicit_lifenum = true;
-            if (event.kind == cg::Plaza2ListenerEventKind::Open && !explicit_lifenum && requested_lifenum) {
-                // As on anchored private TRADE, OPEN confirms a current requested
-                // LifeNum even when CGate omits its notification. Record this
-                // derived marker through the normal FOL OI/capture handler.
+                lifenum_delivered = true;
+            if ((event.kind == cg::Plaza2ListenerEventKind::StreamData ||
+                 event.kind == cg::Plaza2ListenerEventKind::Online) &&
+                !lifenum_delivered && requested_lifenum) {
+                // Let a native LifeNum arriving after OPEN take precedence.
+                // Seed an omitted epoch only before the first row or ONLINE.
                 owner.log("full_order_log_deals_anchor", "{\"lifenum\":" + std::to_string(requested_lifenum) +
                                                              ",\"rev_deal\":" + std::to_string(requested_revision) +
                                                              ",\"derived_initial_lifenum\":true}");
@@ -418,6 +419,7 @@ struct CgateSession::Impl {
                                                                         .unsigned_value = requested_lifenum});
                     error)
                     return error;
+                lifenum_delivered = true;
             }
             return target.on_plaza2_listener_event(event);
         }
