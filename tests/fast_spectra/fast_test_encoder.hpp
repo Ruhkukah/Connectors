@@ -143,6 +143,57 @@ inline Bytes snapshot(std::uint32_t seq, std::optional<std::uint64_t> security_i
     return e.out;
 }
 
+struct OrderEntry {
+    std::uint32_t action{};
+    char type{'0'};
+    std::optional<std::int64_t> id;
+    std::optional<std::uint64_t> security_id;
+    std::optional<std::uint64_t> rpt_seq;
+    std::optional<Dec> price;
+    std::optional<std::int64_t> size;
+    std::optional<std::uint64_t> session;
+    std::optional<std::int64_t> flags;
+    std::optional<Dec> last_price;
+    std::optional<std::int64_t> last_size;
+    std::optional<std::int64_t> trade_id;
+};
+
+// OrdersLogMessage (29).
+inline Bytes orders_log(std::uint32_t seq, const std::vector<OrderEntry>& entries, std::uint64_t last_fragment = 1) {
+    Encoder e;
+    e.header(seq, 29).u(last_fragment).u(entries.size());
+    for (const OrderEntry& entry : entries) {
+        const char type[1] = {entry.type};
+        e.u(entry.action).s({type, 1}).ni(entry.id).nu(entry.security_id).nu(entry.rpt_seq).nu({});
+        e.u(100000000000000ull).ndec(entry.price).ni(entry.size).ndec(entry.last_price).ni(entry.last_size);
+        e.ni(entry.trade_id).nu(entry.session).ni(entry.flags).ni({}).nu({});
+    }
+    return e.out;
+}
+
+struct BookOrder {
+    char type{'0'};
+    std::optional<std::int64_t> id;
+    std::optional<Dec> price;
+    std::optional<std::int64_t> size;
+    std::optional<std::int64_t> flags;
+};
+
+// BookMessage (30).
+inline Bytes book_message(std::uint32_t seq, std::uint64_t security_id, std::uint32_t rpt_seq,
+                          std::uint32_t last_processed, const std::vector<BookOrder>& orders,
+                          std::uint64_t last_fragment = 1, std::uint64_t route_first = 1, std::uint64_t session = 7000) {
+    Encoder e;
+    e.header(seq, 30).u(last_processed).nu(rpt_seq).u(last_fragment).u(route_first).u(session).nu(security_id);
+    e.u(orders.size());
+    for (const BookOrder& order : orders) {
+        const char type[1] = {order.type};
+        e.s({type, 1}).ni(order.id).nu({}).u(100000000000000ull).ndec(order.price).ni(order.size).ni({});
+        e.ni(order.flags).ni({});
+    }
+    return e.out;
+}
+
 inline Bytes heartbeat(std::uint32_t seq) {
     return Encoder{}.header(seq, 6).out;
 }

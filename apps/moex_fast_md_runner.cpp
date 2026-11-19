@@ -1,8 +1,10 @@
 // Read-only FAST market-data runner: joins one stream's incremental and snapshot
-// feeds, keeps aggregated books and reports feed health once a second.
+// feeds, keeps aggregated books (or, with --orders-log, a per-order book) and
+// reports feed health once a second.
 
 #include "moex/fast/fast_book.hpp"
 #include "moex/fast/fast_market_stream.hpp"
+#include "moex/fast/fast_order_book.hpp"
 #include "moex/fast/fast_udp.hpp"
 
 #include <atomic>
@@ -60,6 +62,7 @@ int usage() {
     std::fputs("usage: moex_fast_md_runner --incr-a GROUP:PORT[@SOURCE] [--incr-b ...]\n"
                "                           [--snap-a GROUP:PORT[@SOURCE]] [--snap-b ...]\n"
                "                           [--interface LOCAL_IP] [--security-id ID] [--seconds N] [--spin]\n"
+               "                           [--orders-log]   the feeds are ORDERS-LOG; keep a per-order book\n"
                "Addresses come from the feed's configuration.xml (<ip>, <port>, <src-ip>).\n",
                stderr);
     return 2;
@@ -73,11 +76,16 @@ int main(int argc, char** argv) {
     std::uint64_t watch_id = 0;
     long seconds = 0;
     bool spin = false;
+    bool orders_log = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
         const char* value = i + 1 < argc ? argv[i + 1] : nullptr;
         if (arg == "--spin") {
             spin = true;
+            continue;
+        }
+        if (arg == "--orders-log") {
+            orders_log = true;
             continue;
         }
         if (!value)
@@ -121,45 +129,76 @@ int main(int argc, char** argv) {
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
+    // One loop for both kinds of stream; `describe` prints what is specific to the sink.
+    const auto run = [&](auto& stream, auto&& describe) {
+        const std::uint64_t started = now_ns();
+        std::uint64_t next_report = started + 1'000'000'000ull;
+        bool snapshots_joined = true;
+        while (!stop_requested.load(std::memory_order_relaxed)) {
+            receiver.poll(spin ? 0 : 1, [&](int index, const std::uint8_t* data, std::size_t size) {
+                ++datagrams[static_cast<std::size_t>(index)];
+                if (is_snapshot[static_cast<std::size_t>(index)])
+                    stream.on_snapshot(data, size);
+                else
+                    stream.on_incremental(data, size, now_ns());
+            });
+            const std::uint64_t now = now_ns();
+            stream.on_timer(now);
+            // The snapshot feed is only worth its bandwidth while something is out of sync.
+            if (stream.needs_snapshot() != snapshots_joined && (stream.needs_snapshot() || stream.instruments() > 0)) {
+                snapshots_joined = stream.needs_snapshot();
+                for (std::size_t index = 0; index < is_snapshot.size(); ++index)
+                    if (is_snapshot[index] && !receiver.set_joined(static_cast<int>(index), snapshots_joined))
+                        std::fprintf(stderr, "%s\n", receiver.error().c_str());
+            }
+            if (now < next_report)
+                continue;
+            next_report += 1'000'000'000ull;
+            const StreamStats& stats = stream.stats();
+            std::printf("packets=%llu dup=%llu reordered=%llu gaps=%llu malformed=%llu unknown=%llu instruments=%zu "
+                        "unsynced=%zu snapshots=%llu snapshot_feed=%s\n",
+                        static_cast<unsigned long long>(stats.packets),
+                        static_cast<unsigned long long>(stats.duplicates),
+                        static_cast<unsigned long long>(stats.reordered), static_cast<unsigned long long>(stats.gaps),
+                        static_cast<unsigned long long>(stats.malformed),
+                        static_cast<unsigned long long>(stats.unknown_templates), stream.instruments(),
+                        stream.unsynced(), static_cast<unsigned long long>(stats.snapshots_applied),
+                        snapshots_joined ? "joined" : "left");
+            std::printf("  datagrams");
+            for (std::size_t index = 0; index < datagrams.size(); ++index)
+                std::printf(" %s:%u=%llu", endpoints[index].second.group.c_str(), endpoints[index].second.port,
+                            static_cast<unsigned long long>(datagrams[index]));
+            std::printf("\n");
+            describe();
+            std::fflush(stdout);
+            if (seconds > 0 && now - started >= static_cast<std::uint64_t>(seconds) * 1'000'000'000ull)
+                break;
+        }
+    };
+
+    if (orders_log) {
+        OrderBookSink sink;
+        OrdersLogStream<OrderBookSink> stream(sink);
+        run(stream, [&] {
+            const OrderBook::Stats& book = sink.book.stats();
+            std::printf("  orders active=%zu added=%llu changed=%llu deleted=%llu unknown_change=%llu "
+                        "unknown_delete=%llu\n",
+                        sink.book.size(), static_cast<unsigned long long>(book.added),
+                        static_cast<unsigned long long>(book.changed), static_cast<unsigned long long>(book.deleted),
+                        static_cast<unsigned long long>(book.unknown_change),
+                        static_cast<unsigned long long>(book.unknown_delete));
+            for (std::uint32_t slot = 0; watch_id && slot < stream.instruments(); ++slot)
+                if (stream.security_id(slot) == watch_id)
+                    std::printf("  %llu %s active orders %zu\n", static_cast<unsigned long long>(watch_id),
+                                stream.synced(slot) ? "synced" : "STALE", sink.book.count(slot));
+        });
+        return 0;
+    }
     Sink sink;
     MarketStream<Sink> stream(sink);
-    const std::uint64_t started = now_ns();
-    std::uint64_t next_report = started + 1'000'000'000ull;
-    bool snapshots_joined = true;
-    while (!stop_requested.load(std::memory_order_relaxed)) {
-        receiver.poll(spin ? 0 : 1, [&](int index, const std::uint8_t* data, std::size_t size) {
-            ++datagrams[static_cast<std::size_t>(index)];
-            if (is_snapshot[static_cast<std::size_t>(index)])
-                stream.on_snapshot(data, size);
-            else
-                stream.on_incremental(data, size, now_ns());
-        });
-        const std::uint64_t now = now_ns();
-        stream.on_timer(now);
-        // The snapshot feed is only worth its bandwidth while something is out of sync.
-        if (stream.needs_snapshot() != snapshots_joined && (stream.needs_snapshot() || stream.instruments() > 0)) {
-            snapshots_joined = stream.needs_snapshot();
-            for (std::size_t index = 0; index < is_snapshot.size(); ++index)
-                if (is_snapshot[index] && !receiver.set_joined(static_cast<int>(index), snapshots_joined))
-                    std::fprintf(stderr, "%s\n", receiver.error().c_str());
-        }
-        if (now < next_report)
-            continue;
-        next_report += 1'000'000'000ull;
-        const StreamStats& stats = stream.stats();
-        std::printf("packets=%llu dup=%llu reordered=%llu gaps=%llu malformed=%llu instruments=%zu unsynced=%zu "
-                    "snapshots=%llu book_updates=%llu trades=%llu snapshot_feed=%s\n",
-                    static_cast<unsigned long long>(stats.packets), static_cast<unsigned long long>(stats.duplicates),
-                    static_cast<unsigned long long>(stats.reordered), static_cast<unsigned long long>(stats.gaps),
-                    static_cast<unsigned long long>(stats.malformed), stream.instruments(), stream.unsynced(),
-                    static_cast<unsigned long long>(stats.snapshots_applied),
-                    static_cast<unsigned long long>(sink.book_updates), static_cast<unsigned long long>(sink.trades),
-                    snapshots_joined ? "joined" : "left");
-        std::printf("  datagrams");
-        for (std::size_t index = 0; index < datagrams.size(); ++index)
-            std::printf(" %s:%u=%llu", endpoints[index].second.group.c_str(), endpoints[index].second.port,
-                        static_cast<unsigned long long>(datagrams[index]));
-        std::printf("\n");
+    run(stream, [&] {
+        std::printf("  book_updates=%llu trades=%llu\n", static_cast<unsigned long long>(sink.book_updates),
+                    static_cast<unsigned long long>(sink.trades));
         for (std::uint32_t slot = 0; watch_id && slot < stream.instruments(); ++slot) {
             if (stream.security_id(slot) != watch_id)
                 continue;
@@ -170,9 +209,6 @@ int main(int argc, char** argv) {
                         bid ? static_cast<long long>(bid->size) : 0, ask ? ask->price.to_double() : 0.0,
                         ask ? static_cast<long long>(ask->size) : 0);
         }
-        std::fflush(stdout);
-        if (seconds > 0 && now - started >= static_cast<std::uint64_t>(seconds) * 1'000'000'000ull)
-            break;
-    }
+    });
     return 0;
 }

@@ -5,9 +5,12 @@
 //       survey: per destination group, packet counts, sequence range and template ids
 //   fast_pcap_replay <capture.pcap> --incr G:P [--incr G:P] [--snap G:P] [--snap G:P] [--depth N]
 //       replay one stream through MarketStream and report what it made of it
+//   fast_pcap_replay <capture.pcap> --orders-log 1 --incr G:P --snap G:P
+//       the same for ORDERS-LOG, maintaining the per-order book
 
 #include "moex/fast/fast_book.hpp"
 #include "moex/fast/fast_market_stream.hpp"
+#include "moex/fast/fast_order_book.hpp"
 #include "moex/fast/fast_udp.hpp"
 
 #include <arpa/inet.h>
@@ -220,6 +223,151 @@ struct ReplaySink : StreamSink {
     }
 };
 
+struct OrdersSink : OrderBookSink {
+    std::unordered_map<std::uint64_t, std::uint32_t> slots;
+    std::vector<std::uint32_t> last_seq, since_sync;
+    std::uint64_t entries{}, book_changes{}, trades{}, all_stale{}, resets{}, market_clears{};
+
+    void on_instrument(std::uint32_t slot, std::uint64_t id) {
+        slots[id] = slot;
+        last_seq.push_back(0);
+        since_sync.push_back(0);
+    }
+    void on_book_clear(std::uint32_t slot) noexcept {
+        OrderBookSink::on_book_clear(slot);
+        since_sync[slot] = 0;
+    }
+    void on_incremental(std::uint32_t slot, const Incremental& m, const Incremental::MDEntries& e) {
+        ++entries;
+        last_seq[slot] = m.MsgSeqNum;
+        ++since_sync[slot];
+        book_changes += book.apply(slot, e);
+        trades += e.TradeID.present;
+    }
+    void on_market_clear(std::uint32_t slot, const Incremental& m, const Incremental::MDEntries& e) noexcept {
+        OrderBookSink::on_market_clear(slot, m, e);
+        last_seq[slot] = m.MsgSeqNum;
+        ++market_clears;
+    }
+    void on_all_stale() noexcept {
+        ++all_stale;
+    }
+    void on_sequence_reset() noexcept {
+        OrderBookSink::on_sequence_reset();
+        ++resets;
+        for (auto& seq : last_seq)
+            seq = 0;
+    }
+};
+
+int replay_orders_log(const std::uint8_t* file, std::size_t size, const std::unordered_map<std::uint64_t, int>& roles) {
+    OrdersSink sink;
+    OrdersLogStream<OrdersSink> stream(sink);
+    std::uint64_t incremental = 0, snapshot = 0, first_ns = 0, last_ns = 0, first_synced_ns = 0;
+    std::size_t max_unsynced = 0, max_orders = 0;
+    // Audit: an exchange snapshot lists an instrument's active orders as of LastMsgSeqNumProcessed.
+    // Where our book was built from incrementals and is unchanged since then, the sets must match.
+    struct Expected {
+        Decimal price;
+        std::int64_t size;
+        bool bid;
+    };
+    std::unordered_map<std::int64_t, Expected> expected;
+    std::uint64_t expected_id = 0, audited = 0, audit_orders = 0, audit_mismatch = 0;
+    bool printed = false;
+    const auto audit = [&](const Datagram& d) {
+        Reader r{d.data + kPreambleSize, d.data + d.size};
+        if (read_template_id(r) != BookMessage::kTemplateId)
+            return;
+        BookMessage message;
+        bool first = true;
+        if (!decode(r, message, [&](const auto& m, const auto& e) {
+                if (first && (m.RouteFirst || m.SecurityID.value != expected_id))
+                    expected.clear();
+                first = false;
+                const char type = e.MDEntryType.front();
+                if ((type == '0' || type == '1') && e.MDEntryID.present && !(e.MDFlags.value_or(0) & OrderBook::kOtcFlag))
+                    expected[e.MDEntryID.value] = {e.MDEntryPx.value, e.MDEntrySize.value_or(0), type == '0'};
+            }) ||
+            !message.SecurityID.present)
+            return;
+        if (first && message.RouteFirst)
+            expected.clear();
+        expected_id = message.SecurityID.value;
+        const auto found = sink.slots.find(expected_id);
+        if (!message.LastFragment || found == sink.slots.end())
+            return;
+        const std::uint32_t slot = found->second;
+        if (!stream.synced(slot) || sink.since_sync[slot] == 0 || sink.last_seq[slot] > message.LastMsgSeqNumProcessed ||
+            stream.next_sequence() <= message.LastMsgSeqNumProcessed)
+            return;
+        ++audited;
+        audit_orders += expected.size();
+        bool same = sink.book.count(slot) == expected.size();
+        sink.book.for_each(slot, [&](const OrderBook::Order& o) {
+            const auto it = expected.find(o.id);
+            same = same && it != expected.end() && it->second.price == o.price && it->second.size == o.size &&
+                   it->second.bid == o.bid;
+        });
+        audit_mismatch += !same;
+        if (!same && !printed) {
+            printed = true;
+            std::printf("first audit mismatch: security %" PRIu64 " ours %zu orders, snapshot %zu, L=%u last_seq=%u\n",
+                        expected_id, sink.book.count(slot), expected.size(), message.LastMsgSeqNumProcessed,
+                        sink.last_seq[slot]);
+        }
+    };
+    if (!for_each_datagram(file, size, [&](const Datagram& d) {
+            const auto role = roles.find(std::uint64_t{d.destination} << 16 | d.port);
+            if (role == roles.end())
+                return;
+            if (!first_ns)
+                first_ns = d.time_ns;
+            last_ns = d.time_ns;
+            if (role->second == 1) {
+                ++incremental;
+                stream.on_incremental(d.data, d.size, d.time_ns);
+            } else {
+                ++snapshot;
+                audit(d);
+                stream.on_snapshot(d.data, d.size);
+            }
+            max_unsynced = std::max(max_unsynced, stream.unsynced());
+            max_orders = std::max(max_orders, sink.book.size());
+            if (!first_synced_ns && stream.instruments() && !stream.needs_snapshot())
+                first_synced_ns = d.time_ns;
+        }))
+        return 1;
+    const StreamStats& s = stream.stats();
+    const OrderBook::Stats& b = sink.book.stats();
+    std::printf("capture span %.1f s, incremental datagrams %" PRIu64 ", snapshot datagrams %" PRIu64 "\n",
+                double(last_ns - first_ns) / 1e9, incremental, snapshot);
+    std::printf("stream: packets=%" PRIu64 " gaps=%" PRIu64 " malformed=%" PRIu64 " unknown_templates=%" PRIu64
+                " instrument_gaps=%" PRIu64 " unkeyed_entries=%" PRIu64 " market_clears=%" PRIu64
+                " sequence_resets=%" PRIu64 "\n",
+                s.packets, s.gaps, s.malformed, s.unknown_templates, s.instrument_gaps, s.unkeyed_entries,
+                s.market_clears, s.sequence_resets);
+    std::printf("recovery: queued=%" PRIu64 " replayed=%" PRIu64 " queue_dropped=%" PRIu64 " replay_passes=%" PRIu64
+                " snapshots_applied=%" PRIu64 " too_old=%" PRIu64 " empty_adopted=%" PRIu64 " resyncs=%" PRIu64 "\n",
+                s.queued, s.replayed, s.queue_dropped, s.replay_passes, s.snapshots_applied, s.snapshots_too_old,
+                s.empty_adopted, s.snapshot_resyncs);
+    std::printf("instruments=%zu unsynced_at_end=%zu max_unsynced=%zu needs_snapshot_at_end=%d", stream.instruments(),
+                stream.unsynced(), max_unsynced, stream.needs_snapshot());
+    if (first_synced_ns)
+        std::printf(" fully_synced_after=%.2fs", double(first_synced_ns - first_ns) / 1e9);
+    std::printf("\nentries=%" PRIu64 " book_changes=%" PRIu64 " with_trade=%" PRIu64 " per_instrument_market_clears=%" PRIu64
+                "\n",
+                sink.entries, sink.book_changes, sink.trades, sink.market_clears);
+    std::printf("order book: active_at_end=%zu peak=%zu added=%" PRIu64 " changed=%" PRIu64 " deleted=%" PRIu64
+                " readded=%" PRIu64 " unknown_change=%" PRIu64 " unknown_delete=%" PRIu64 "\n",
+                sink.book.size(), max_orders, b.added, b.changed, b.deleted, b.readded, b.unknown_change,
+                b.unknown_delete);
+    std::printf("audit against exchange snapshots: instruments compared=%" PRIu64 " (orders %" PRIu64 "), mismatches=%" PRIu64
+                "\n",
+                audited, audit_orders, audit_mismatch);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -229,8 +377,13 @@ int main(int argc, char** argv) {
     }
     std::unordered_map<std::uint64_t, int> roles; // (ip << 16 | port) -> 1 incremental, 2 snapshot
     std::uint32_t depth = 50;
+    bool orders_log = false;
     for (int i = 2; i + 1 < argc; i += 2) {
         const std::string_view flag = argv[i];
+        if (flag == "--orders-log") {
+            orders_log = true;
+            continue;
+        }
         if (flag == "--depth") {
             depth = static_cast<std::uint32_t>(std::strtoul(argv[i + 1], nullptr, 10));
             continue;
@@ -259,6 +412,8 @@ int main(int argc, char** argv) {
     const auto* file = static_cast<const std::uint8_t*>(mapping);
     if (roles.empty())
         return survey(file, size);
+    if (orders_log)
+        return replay_orders_log(file, size, roles);
 
     ReplaySink sink;
     sink.depth = depth;

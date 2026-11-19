@@ -21,6 +21,9 @@
 // used only to detect per-instrument gaps, and both "+1 per entry" and
 // "repeated within one event" numbering are accepted.
 //
+// MarketStream<Sink> handles the aggregated streams; OrdersLogStream<Sink> is the
+// same machinery over the order-log templates (29/30).
+//
 // Single-threaded. The steady-state path performs no allocation; memory grows
 // only when an instrument is seen for the first time.
 
@@ -43,22 +46,63 @@ struct StreamConfig {
 
 struct StreamStats {
     std::uint64_t packets{}, duplicates{}, reordered{}, gaps{}, malformed{}, unknown_templates{};
-    std::uint64_t instrument_gaps{}, unkeyed_entries{}, sequence_resets{};
+    std::uint64_t instrument_gaps{}, unkeyed_entries{}, market_clears{}, sequence_resets{};
     std::uint64_t queued{}, queue_dropped{}, replayed{}, replay_passes{};
     std::uint64_t snapshot_packets{}, snapshot_resyncs{}, snapshots_applied{}, snapshots_too_old{}, empty_adopted{};
 };
 
-// Default no-op sink; derive and shadow what you need. `slot` is a dense,
-// stable per-stream instrument index, so a sink can keep its state in a vector.
-struct StreamSink {
+// Which templates a stream carries. The sequencing and recovery rules are the
+// same for the aggregated streams and the order log; only the messages differ.
+struct DefaultSchema { // FO-BOOK-*, FO-TRADES, SPOT-BOOK-*, SPOT-TRADES
     using Incremental = DefaultIncrementalRefreshMessage;
     using Snapshot = DefaultSnapshotMessage;
+    // A snapshot message known to begin an instrument's snapshot.
+    static bool starts_snapshot(const Snapshot& m) noexcept {
+        return !m.LastFragment.present;
+    }
+};
+struct OrdersLogSchema { // ORDERS-LOG: individual orders and trades
+    using Incremental = OrdersLogMessage;
+    using Snapshot = BookMessage;
+    static bool starts_snapshot(const Snapshot& m) noexcept {
+        return m.RouteFirst != 0;
+    }
+};
+
+namespace detail {
+// Fields that are mandatory in one schema and optional in the other.
+inline bool present(std::uint32_t) noexcept {
+    return true;
+}
+inline std::uint32_t value(std::uint32_t field) noexcept {
+    return field;
+}
+inline bool present(const Opt<std::uint32_t>& field) noexcept {
+    return field.present;
+}
+inline std::uint32_t value(const Opt<std::uint32_t>& field) noexcept {
+    return field.value;
+}
+template <class Message> bool last_fragment(const Message& m) noexcept {
+    return !present(m.LastFragment) || value(m.LastFragment) != 0;
+}
+} // namespace detail
+
+// Default no-op sink; derive and shadow what you need. `slot` is a dense,
+// stable per-stream instrument index, so a sink can keep its state in a vector.
+template <class Schema> struct BasicStreamSink {
+    using Incremental = typename Schema::Incremental;
+    using Snapshot = typename Schema::Snapshot;
 
     void on_instrument(std::uint32_t /*slot*/, std::uint64_t /*security_id*/) noexcept {}
     // Discard everything known about the instrument; snapshot entries or fresh incrementals follow.
     void on_book_clear(std::uint32_t /*slot*/) noexcept {}
-    void on_snapshot(std::uint32_t /*slot*/, const Snapshot&, const Snapshot::MDEntries&) noexcept {}
-    void on_incremental(std::uint32_t /*slot*/, const Incremental&, const Incremental::MDEntries&) noexcept {}
+    void on_snapshot(std::uint32_t /*slot*/, const Snapshot&, const typename Snapshot::MDEntries&) noexcept {}
+    void on_incremental(std::uint32_t /*slot*/, const Incremental&, const typename Incremental::MDEntries&) noexcept {}
+    // An Empty Book entry that names no instrument, delivered once per instrument it
+    // applies to: live for every synced instrument, later for each one as it resyncs.
+    // With ExchangeTradingSessionID set it removes that session's orders, otherwise all.
+    void on_market_clear(std::uint32_t /*slot*/, const Incremental&, const typename Incremental::MDEntries&) noexcept {}
     // false: the instrument's state is no longer trustworthy until true is reported again.
     void on_instrument_state(std::uint32_t /*slot*/, bool /*synced*/) noexcept {}
     // Packet loss: every instrument is untrusted until its own on_instrument_state(slot, true).
@@ -69,8 +113,14 @@ struct StreamSink {
     void on_batch_end() noexcept {}
     void on_session_status(const TradingSessionStatus&) noexcept {}
 };
+using StreamSink = BasicStreamSink<DefaultSchema>;
+using OrdersLogSink = BasicStreamSink<OrdersLogSchema>;
 
-template <class Sink> class MarketStream {
+template <class Sink, class Schema = DefaultSchema> class MarketStream {
+    using Incremental = typename Schema::Incremental;
+    using Snapshot = typename Schema::Snapshot;
+    using Entry = typename Incremental::MDEntries;
+
   public:
     static constexpr std::size_t kMaxPacket = 2048;
 
@@ -162,7 +212,7 @@ template <class Sink> class MarketStream {
         seen = {seq, fingerprint};
         Reader r{data + kPreambleSize, data + size};
         switch (read_template_id(r)) {
-        case DefaultSnapshotMessage::kTemplateId:
+        case Snapshot::kTemplateId:
             process_snapshot(r);
             break;
         case SequenceReset::kTemplateId: {
@@ -250,6 +300,7 @@ template <class Sink> class MarketStream {
     static constexpr std::uint32_t kSnapshotMissRun = 8;
     static constexpr std::uint32_t kSnapshotSeen = 64;
     static constexpr std::size_t kReplayBatch = 64;
+    static constexpr std::uint32_t kAllSlots = ~std::uint32_t{0};
 
     std::uint8_t* slot_data(std::uint32_t seq) noexcept {
         return slot_bytes_.data() + std::size_t{seq & (window_ - 1)} * kMaxPacket;
@@ -309,7 +360,7 @@ template <class Sink> class MarketStream {
     void process(const std::uint8_t* data, std::size_t size, std::uint32_t seq) noexcept {
         Reader r{data + kPreambleSize, data + size};
         switch (read_template_id(r)) {
-        case DefaultIncrementalRefreshMessage::kTemplateId:
+        case Incremental::kTemplateId:
             process_incremental(r, seq);
             return;
         case Heartbeat::kTemplateId:
@@ -340,10 +391,13 @@ template <class Sink> class MarketStream {
     }
 
     void process_incremental(Reader& r, std::uint32_t seq) noexcept {
-        DefaultIncrementalRefreshMessage message;
+        Incremental message;
         const bool ok = decode(r, message, [&](const auto& m, const auto& e) {
             if (!e.SecurityID.present) {
-                ++stats_.unkeyed_entries;
+                if (e.MDEntryType.front() == 'J')
+                    market_clear(seq, m, e, static_cast<std::size_t>(r.p - r.mark), r.mark);
+                else
+                    ++stats_.unkeyed_entries;
                 return;
             }
             const std::uint32_t slot = find_or_add(e.SecurityID.value);
@@ -355,7 +409,7 @@ template <class Sink> class MarketStream {
             }
             // Empty Book states the whole book, so an unsynced instrument needs no snapshot to resume.
             if (instruments_[slot].state >= State::Stale && e.MDEntryType.front() == 'J')
-                resume_empty(slot, seq, e.RptSeq);
+                resume_empty(slot, seq, detail::value(e.RptSeq));
             // Unsynced, or just gone stale on this entry: keep it for after the snapshot.
             if (instruments_[slot].state >= State::Stale || !apply(slot, seq, m, e))
                 enqueue(seq, slot, m.SendingTime, r.mark, size);
@@ -365,8 +419,25 @@ template <class Sink> class MarketStream {
             mark_all_stale(seq + 1);
             return;
         }
-        if (!message.LastFragment.present || message.LastFragment.value != 0)
+        if (detail::last_fragment(message))
             sink_.on_batch_end();
+    }
+
+    // Empty Book for the whole market or one trading session. Synced instruments take it
+    // now; the rest take it in order when their queued entries are replayed.
+    void market_clear(std::uint32_t seq, const Incremental& m, const Entry& e, std::size_t size,
+                      const std::uint8_t* data) noexcept {
+        ++stats_.market_clears;
+        for (std::uint32_t slot = 0; slot < instruments_.size(); ++slot)
+            if (instruments_[slot].state < State::Stale && seq > instruments_[slot].applied_seq)
+                sink_.on_market_clear(slot, m, e);
+        if (stale_ + pending_ == 0)
+            return;
+        if (queue_end_ + sizeof(Record) + size > queue_.size() && !make_room(sizeof(Record) + size)) {
+            mark_all_stale(seq + 1);
+            return;
+        }
+        enqueue(seq, kAllSlots, m.SendingTime, data, size);
     }
 
     void resume_empty(std::uint32_t slot, std::uint32_t seq, std::uint32_t rpt_seq) noexcept {
@@ -382,15 +453,15 @@ template <class Sink> class MarketStream {
     }
 
     // Applies one entry to a synced instrument. Returns false if its RptSeq shows a gap.
-    bool apply(std::uint32_t slot, std::uint32_t seq, const DefaultIncrementalRefreshMessage& m,
-               const DefaultIncrementalRefreshMessage::MDEntries& e) noexcept {
+    bool apply(std::uint32_t slot, std::uint32_t seq, const Incremental& m, const Entry& e) noexcept {
         Instrument& inst = instruments_[slot];
         // A snapshot can be ahead of our position in the incremental feed.
         if (seq <= inst.applied_seq)
             return true;
+        const std::uint32_t rpt_seq = detail::present(e.RptSeq) ? detail::value(e.RptSeq) : inst.rpt_seq;
         if (inst.state == State::Adopt) {
             inst.state = State::Synced;
-        } else if (e.RptSeq - inst.rpt_seq > 1) {
+        } else if (rpt_seq - inst.rpt_seq > 1) {
             ++stats_.instrument_gaps;
             if (!needs_snapshot())
                 snapshot_expected_ = 0; // rejoin the snapshot feed mid-cycle
@@ -400,20 +471,20 @@ template <class Sink> class MarketStream {
             sink_.on_instrument_state(slot, false);
             return false;
         }
-        inst.rpt_seq = e.RptSeq;
+        inst.rpt_seq = rpt_seq;
         sink_.on_incremental(slot, m, e);
         return true;
     }
 
     void process_snapshot(Reader& r) noexcept {
-        DefaultSnapshotMessage message;
+        Snapshot message;
         bool begun = false, skip = true, use = false;
         std::uint32_t slot = 0;
-        const auto begin = [&](const DefaultSnapshotMessage& m) {
+        const auto begin = [&](const Snapshot& m) {
             begun = true;
             if (fragment_resync_) {
-                // After a discontinuity only an unfragmented message is known to be whole.
-                if (m.LastFragment.present)
+                // After a discontinuity wait for a message known to begin an instrument's snapshot.
+                if (!Schema::starts_snapshot(m))
                     return;
                 fragment_resync_ = false;
             }
@@ -455,10 +526,10 @@ template <class Sink> class MarketStream {
         }
         if (!begun)
             begin(message);
-        const bool last = !message.LastFragment.present || message.LastFragment.value != 0;
+        const bool last = detail::last_fragment(message);
         if (skip) {
             if (last)
-                fragment_resync_ = false;
+                fragment_resync_ = false; // the next message starts another instrument
             return;
         }
         fragment_active_ = !last;
@@ -466,7 +537,7 @@ template <class Sink> class MarketStream {
         fragment_use_ = use;
         if (last && use) {
             Instrument& inst = instruments_[slot];
-            inst.rpt_seq = message.RptSeq;
+            inst.rpt_seq = detail::value(message.RptSeq);
             inst.applied_seq = message.LastMsgSeqNumProcessed;
             inst.state = State::Pending;
             --stale_;
@@ -525,20 +596,41 @@ template <class Sink> class MarketStream {
         replay_aborted_ = false;
         const std::size_t end = queue_end_;
         std::size_t read = queue_head_, write = 0;
-        DefaultIncrementalRefreshMessage message{};
+        Incremental message{};
         message.NoMDEntries = 1;
         bool applied = false;
         while (read < end && !replay_aborted_) {
             Record record;
             std::memcpy(&record, queue_.data() + read, sizeof(record));
             const std::size_t length = sizeof(record) + record.size;
+            if (record.slot == kAllSlots) {
+                Reader r{queue_.data() + read + sizeof(record), queue_.data() + read + length};
+                Entry entry;
+                if (decode(r, entry)) {
+                    message.MsgSeqNum = record.seq;
+                    message.SendingTime = record.sending_time;
+                    for (std::uint32_t slot = 0; slot < instruments_.size(); ++slot) {
+                        const Instrument& inst = instruments_[slot];
+                        if (inst.state < State::Stale && inst.replay_id == replay_id_ && record.seq > inst.applied_seq) {
+                            sink_.on_market_clear(slot, message, entry);
+                            applied = true;
+                        }
+                    }
+                }
+                if (stale_) { // instruments still waiting will need it too
+                    std::memmove(queue_.data() + write, queue_.data() + read, length);
+                    write += length;
+                }
+                read += length;
+                continue;
+            }
             const Instrument& inst = instruments_[record.slot];
             if (inst.state >= State::Stale) {
                 std::memmove(queue_.data() + write, queue_.data() + read, length);
                 write += length;
             } else if (inst.replay_id == replay_id_) {
                 Reader r{queue_.data() + read + sizeof(record), queue_.data() + read + length};
-                DefaultIncrementalRefreshMessage::MDEntries entry;
+                Entry entry;
                 if (decode(r, entry)) {
                     message.MsgSeqNum = record.seq;
                     message.SendingTime = record.sending_time;
@@ -722,5 +814,7 @@ template <class Sink> class MarketStream {
     bool fragment_use_{};
     std::uint32_t fragment_slot_{};
 };
+
+template <class Sink> using OrdersLogStream = MarketStream<Sink, OrdersLogSchema>;
 
 } // namespace moex::fast

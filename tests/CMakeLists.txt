@@ -119,7 +119,7 @@ moex_test(plaza2_private_state_transaction_perf_test plaza2_cgate/plaza2_private
 target_compile_definitions(plaza2_private_state_transaction_perf_test PRIVATE
     MOEX_RELEASE_PERFORMANCE_ACCEPTANCE=$<CONFIG:Release>)
 
-foreach(name IN ITEMS fast_decoder_test fast_market_stream_test)
+foreach(name IN ITEMS fast_decoder_test fast_market_stream_test fast_orders_log_test)
     moex_test(${name} fast_spectra/${name}.cpp moex_fast_spectra)
     set_tests_properties(${name} PROPERTIES LABELS "unit;fast;sanitizer")
 endforeach()
