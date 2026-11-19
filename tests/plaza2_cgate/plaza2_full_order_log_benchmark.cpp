@@ -15,6 +15,9 @@
 #include <netinet/tcp.h>
 #include <thread>
 #include <new>
+#include <map>
+#include <bit>
+#include <cerrno>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -67,6 +70,109 @@ void send_frame(int fd, unsigned type, Bytes p) {
     out.insert(out.end(), p.begin(), p.end());
     test::require(::send(fd, out.data(), out.size(), 0) == static_cast<ssize_t>(out.size()), "send frame");
 }
+struct ClientDepth {
+    using Key = std::pair<unsigned, unsigned>;
+    using Level = std::pair<float, float>;
+    std::map<Key, Level> levels, staged;
+    std::uint64_t epoch{}, batch{}, version{}, update_batches{}, snapshots{}, rejected{}, gaps{};
+    std::uint64_t active_batch{}, active_epoch{}, active_version{}, active_type{}, batch_rows{};
+    std::vector<std::uint64_t> delivered_versions;
+    std::uint64_t content_hash{1469598103934665603ULL};
+    static std::uint64_t integer(std::span<const std::uint8_t> bytes, std::size_t& pos) {
+        std::uint64_t out{};
+        for (unsigned shift = 0; shift < 64 && pos < bytes.size(); shift += 7) {
+            const auto b = bytes[pos++];
+            out |= static_cast<std::uint64_t>(b & 127) << shift;
+            if (!(b & 128))
+                return out;
+        }
+        throw std::runtime_error("invalid DTC protobuf integer");
+    }
+    void receive(unsigned type, std::span<const std::uint8_t> bytes) {
+        std::array<std::uint64_t, 32> numbers{};
+        std::array<float, 32> reals{};
+        for (std::size_t pos = 0; pos < bytes.size();) {
+            const auto key = integer(bytes, pos), field = key >> 3, wire = key & 7;
+            if (wire == 0) {
+                const auto value = integer(bytes, pos);
+                if (field < numbers.size())
+                    numbers[field] = value;
+            } else if (wire == 5) {
+                test::require(pos + 4 <= bytes.size(), "DTC fixed32 truncated");
+                if (field < reals.size())
+                    std::memcpy(&reals[field], bytes.data() + pos, 4);
+                pos += 4;
+            } else if (wire == 1) {
+                test::require(pos + 8 <= bytes.size(), "DTC fixed64 truncated");
+                pos += 8;
+            } else if (wire == 2) {
+                const auto size = integer(bytes, pos);
+                test::require(size <= bytes.size() - pos, "DTC string truncated");
+                pos += size;
+            } else
+                throw std::runtime_error("unsupported DTC protobuf wire type");
+        }
+        rejected += type == 5 || type == 103 || type == 121 || (type == 116 && numbers[2] == 1);
+        if (type != 140 && type != 145)
+            return;
+        const bool snapshot = type == 145;
+        const auto next_epoch = numbers[snapshot ? 11 : 13], next_batch = numbers[snapshot ? 12 : 14];
+        const auto next_version = numbers[snapshot ? 13 : 15], marker = numbers[snapshot ? 7 : 8];
+        const auto side = numbers[snapshot ? 6 : 5], level = numbers[snapshot ? 5 : 9];
+        test::require((side == 1 || side == 2) && level > 0, "DTC level identity invalid");
+        if (!batch_rows) {
+            test::require(marker == 1 || marker == 3, "DTC batch missing first marker");
+            staged = snapshot ? std::map<Key, Level>{} : levels;
+            active_batch = next_batch;
+            active_epoch = next_epoch;
+            active_version = next_version;
+            active_type = type;
+        } else
+            test::require(marker == 1 || marker == 2, "DTC batch marker invalid");
+        test::require(active_batch == next_batch && active_epoch == next_epoch && active_version == next_version &&
+                          active_type == type,
+                      "DTC batch fields changed before commit");
+        ++batch_rows;
+        const Key key{static_cast<unsigned>(side), static_cast<unsigned>(level)};
+        if (!snapshot && numbers[6] == 2)
+            staged.erase(key);
+        else {
+            test::require(snapshot || numbers[6] == 1, "DTC update action invalid");
+            staged[key] = {reals[snapshot ? 2 : 3], reals[snapshot ? 3 : 4]};
+        }
+        // Hash value/position/operation, excluding wall-clock source timestamps.
+        for (const auto value : {static_cast<std::uint64_t>(type), side, level, numbers[6],
+                                 static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(reals[snapshot ? 2 : 3])),
+                                 static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(reals[snapshot ? 3 : 4]))}) {
+            content_hash ^= value;
+            content_hash *= 1099511628211ULL;
+        }
+        if (marker == 1) {
+            gaps += batch && (next_epoch != epoch || next_batch != batch + 1);
+            levels.swap(staged);
+            epoch = next_epoch;
+            batch = next_batch;
+            version = next_version;
+            if (snapshot)
+                ++snapshots;
+            else {
+                ++update_batches;
+                delivered_versions.push_back(version);
+            }
+            batch_rows = 0;
+        }
+    }
+    bool equals(const dtc::DtcMarketDataSnapshot& snapshot) const {
+        std::map<Key, Level> expected;
+        std::array<unsigned, 3> positions{};
+        for (const auto& row : snapshot.levels) {
+            const auto side = static_cast<unsigned>(row.side);
+            expected[{side, ++positions[side]}] = {static_cast<float>(static_cast<double>(row.price_scaled) / 100000.0),
+                                                   static_cast<float>(row.volume)};
+        }
+        return levels == expected;
+    }
+};
 struct TimedBook : cg::Plaza2ListenerEventHandler {
     cg::Plaza2FullOrderLog& book;
     std::vector<std::uint64_t> rows;
@@ -104,7 +210,9 @@ void report(std::string_view key, std::vector<std::uint64_t>& data) {
 } // namespace
 int main(int argc, char** argv) {
     try {
-        test::require(argc == 2, "benchmark requires fake CGate library");
+        test::require(argc == 2 || argc == 3, "benchmark requires fake CGate library [depth]");
+        const std::size_t depth = argc == 3 ? std::stoul(argv[2]) : 20;
+        test::require(depth > 0 && depth <= 20000, "benchmark depth bound");
         const auto root = test::make_temp_directory("full-order-log-perf");
         struct Cleanup {
             std::filesystem::path root;
@@ -158,7 +266,20 @@ int main(int argc, char** argv) {
         auto& server = loop.server();
         std::vector<std::uint64_t> commits;
         commits.reserve(40000);
+        std::uint64_t measured_queue_peak{}, measured_commits{}, expected_update_rows{}, expected_version{};
+        std::vector<std::uint64_t> expected_versions;
+        expected_versions.reserve(40000);
         loop.on_queued_commit = [&] {
+            if (timed.measuring) {
+                ++measured_commits;
+                measured_queue_peak = std::max<std::uint64_t>(measured_queue_peak, server.queued_bytes());
+                const auto version = source.status_snapshot().source_snapshot_version;
+                if (version != expected_version && !source.depth_changes().empty()) {
+                    expected_update_rows += source.depth_changes().size();
+                    expected_versions.push_back(version);
+                }
+                expected_version = version;
+            }
             if (timed.measuring && server.last_commit_to_queue_ns())
                 commits.push_back(ns(timed.commit_start));
         };
@@ -197,7 +318,7 @@ int main(int argc, char** argv) {
         test::require(book.order_count() == 100000 + initial_count,
                       "retained universe: " + std::to_string(book.order_count()) +
                           " initial=" + std::to_string(initial_count));
-        source.configure_depth_limit(20000);
+        source.configure_depth_limit(depth);
         const auto snapshot_start = Clock::now();
         const auto snapshot = source.snapshot();
         const auto snapshot_ns = ns(snapshot_start);
@@ -221,14 +342,21 @@ int main(int argc, char** argv) {
         ::fcntl(fd, F_SETFL, O_NONBLOCK);
         const int no_delay = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &no_delay, sizeof(no_delay));
-        std::uint64_t wire_bytes{}, initial_rows{}, update_rows{}, rejected{};
+        std::uint64_t wire_bytes{}, initial_rows{}, update_rows{}, owner_pump_calls{}, client_apply_fences{};
+        ClientDepth client;
         std::array<std::uint64_t, 65536> messages{};
         Bytes pending;
         pending.reserve(131072);
-        auto pump = [&] {
-            loop.poll();
+        auto read_client = [&] {
             std::array<std::uint8_t, 65536> bytes{};
-            for (ssize_t received; (received = ::recv(fd, bytes.data(), bytes.size(), 0)) > 0;) {
+            for (;;) {
+                const auto received = ::recv(fd, bytes.data(), bytes.size(), 0);
+                test::require(received != 0, "DTC peer closed before complete delivery");
+                if (received < 0) {
+                    test::require(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR,
+                                  "DTC client receive failed");
+                    break;
+                }
                 wire_bytes += received;
                 pending.insert(pending.end(), bytes.begin(), bytes.begin() + received);
                 std::size_t offset = 0;
@@ -241,11 +369,45 @@ int main(int argc, char** argv) {
                     ++messages[type];
                     initial_rows += type == 145;
                     update_rows += type == 140;
-                    rejected += type == 121;
+                    if (type != 7)
+                        client.receive(type, std::span(pending).subspan(offset + 4, size - 4));
                     offset += size;
                 }
                 pending.erase(pending.begin(), pending.begin() + offset);
             }
+        };
+        auto socket_pump = [&] {
+            server.poll();
+            read_client();
+            test::require(server.has_client() && !client.rejected && server.last_error().empty(),
+                          "DTC client was rejected/disconnected: " + server.last_error());
+        };
+        auto pump = [&] {
+            loop.poll();
+            ++owner_pump_calls;
+            read_client();
+        };
+        auto drain = [&](bool initial = false) {
+            const auto until = Clock::now() + std::chrono::seconds(3);
+            while (server.queued_bytes() || !pending.empty() || client.batch_rows ||
+                   (initial
+                        ? client.snapshots != 1
+                        : update_rows != expected_update_rows || client.update_batches != expected_versions.size())) {
+                socket_pump();
+                test::require(Clock::now() < until, "DTC client did not fully apply queued commits");
+                std::this_thread::yield();
+            }
+            test::require(!client.rejected && !client.gaps && server.has_client() && server.last_error().empty(),
+                          "DTC rejected, sequence gap or disconnect");
+            if (!initial) {
+                ++client_apply_fences;
+                test::require(client.delivered_versions == expected_versions,
+                              "DTC client acknowledged a different commit/version sequence");
+            }
+            // DTC has no per-depth-batch wire ACK. This heartbeat keeps the peer live;
+            // the client application fence above is the delivery acknowledgement.
+            send_frame(fd, 3, {});
+            socket_pump();
         };
         auto await_message = [&](unsigned type) {
             const auto deadline = Clock::now() + std::chrono::seconds(3);
@@ -278,9 +440,12 @@ int main(int argc, char** argv) {
         num(p, 2, 1);
         txt(p, 3, metadata.symbol);
         txt(p, 4, dtc::kDtcMoexSpectraExchange);
+        num(p, 5, depth);
         send_frame(fd, 102, p);
         await_message(145);
-        test::require(server.has_client() && initial_rows && !rejected,
+        drain(true);
+        test::require(client.equals(source.snapshot()), "initial client book equals committed book");
+        test::require(server.has_client() && initial_rows && !client.rejected,
                       "actual DTC initial snapshot received without rejection");
         constexpr std::uint64_t count = 1000000;
         constexpr std::uint32_t batch = 32;
@@ -292,10 +457,14 @@ int main(int argc, char** argv) {
         const auto metrics_before = book.metrics();
         const auto refreshes_before = loop.metadata_refreshes;
         const auto polls_before = loop.polls;
+        expected_version = source.status_snapshot().source_snapshot_version;
         timed.measuring = true;
         const auto start = Clock::now();
-        while (replay_pending())
+        while (replay_pending()) {
             pump();
+            drain();
+        }
+        drain();
         const auto elapsed = ns(start);
         timed.measuring = false;
         set_allocation_window(nullptr);
@@ -303,7 +472,10 @@ int main(int argc, char** argv) {
                           book.metrics().rows_filtered - metrics_before.rows_filtered == count * 9 / 10,
                       "exact input and filter accounting");
         test::require(timed.rows.size() == count && server.has_client(), "complete sustained replay and DTC client");
-        test::require(update_rows && !rejected, "actual depth updates drained without subscription rejection");
+        test::require(update_rows == expected_update_rows && !client.rejected && !client.gaps &&
+                          client.update_batches == expected_versions.size() && !server.queued_bytes() &&
+                          pending.empty() && !client.batch_rows && client.equals(source.snapshot()),
+                      "all depth batches delivered, applied and final book equals committed source");
         test::require(!commits.empty(), "DTC frames actually queued on commit");
         rusage usage{};
         ::getrusage(RUSAGE_SELF, &usage);
@@ -325,8 +497,21 @@ int main(int argc, char** argv) {
         report("commit_to_dtc_queue", commits);
         std::cout << ",\"snapshot_ns\":" << snapshot_ns << ",\"snapshot_levels\":" << snapshot.levels.size()
                   << ",\"book_memory_bytes\":" << book.memory_bytes()
-                  << ",\"max_dtc_queue_bytes\":4194304,\"metadata_refreshes\":"
-                  << loop.metadata_refreshes - refreshes_before << ",\"owner_polls\":" << loop.polls - polls_before
+                  << ",\"configured_dtc_queue_cap_bytes\":4194304,\"measured_dtc_queue_peak_bytes\":"
+                  << measured_queue_peak << ",\"subscribed_depth\":" << depth
+                  << ",\"input_commits\":" << measured_commits << ",\"expected_update_rows\":" << expected_update_rows
+                  << ",\"update_batches\":" << client.update_batches
+                  << ",\"client_applied_batches\":" << client.delivered_versions.size()
+                  << ",\"expected_update_batches\":" << expected_versions.size()
+                  << ",\"last_dtc_batch_sequence\":" << client.batch << ",\"stream_epoch\":" << client.epoch
+                  << ",\"last_delivered_source_version\":" << client.version
+                  << ",\"final_source_version\":" << source.status_snapshot().source_snapshot_version
+                  << ",\"elapsed_ns_including_delivery\":" << elapsed
+                  << ",\"client_apply_fences\":" << client_apply_fences << ",\"client_rejects\":" << client.rejected
+                  << ",\"sequence_gaps\":" << client.gaps << ",\"resnapshots\":" << client.snapshots - 1
+                  << ",\"final_book_equal\":true,\"wire_content_hash_without_time\":" << client.content_hash
+                  << ",\"metadata_refreshes\":" << loop.metadata_refreshes - refreshes_before
+                  << ",\"owner_polls\":" << loop.polls - polls_before
                   << ",\"filtered_rows\":" << book.metrics().rows_filtered - metrics_before.rows_filtered
                   << ",\"max_rss_native\":" << usage.ru_maxrss << ",\"wire_bytes_drained\":" << wire_bytes
                   << ",\"initial_rows\":" << initial_rows << ",\"update_rows\":" << update_rows
