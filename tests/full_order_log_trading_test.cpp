@@ -5,7 +5,10 @@
 #include "plaza2_runtime_test_support.hpp"
 #include "plaza2_trade_test_support.hpp"
 #include "risk_limits_host_regression.hpp"
+#include "full_order_log_trading_dtc.hpp"
+#include "scope_exit.hpp"
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <fstream>
 #include <initializer_list>
@@ -19,6 +22,30 @@ namespace gen = moex::plaza2::generated;
 namespace test = moex::plaza2::test;
 namespace fake = test::fake;
 using test::require;
+
+namespace moex::connector_host {
+struct FolDtcPublicationTestAccess {
+    static void throw_publication(FullOrderLogTradingDtc& dtc, unsigned& calls, bool nonstandard) {
+        dtc.source_->set_public_deals_reader([&calls, nonstandard](auto, auto) -> cg::Plaza2PublicDealsSnapshot {
+            ++calls;
+            if (nonstandard)
+                throw 42;
+            throw std::runtime_error("offline publication failure");
+        });
+    }
+    static bool stopped(FullOrderLogTradingDtc& dtc) {
+        return !dtc.worker_.running() &&
+               dtc.identity_.submit("dtc:after-failure", 199, false) == "DTC identity persistence is unavailable";
+    }
+};
+} // namespace moex::connector_host
+namespace {
+std::atomic_uint publication_terms{};
+static_assert(std::atomic_uint::is_always_lock_free);
+void publication_term(int) {
+    publication_terms.fetch_add(1, std::memory_order_relaxed);
+}
+} // namespace
 
 int main(int argc, char** argv) {
     try {
@@ -129,6 +156,78 @@ int main(int argc, char** argv) {
         const auto place = [&](CgateTradingHost& host, std::string id) {
             return host.place({.client_order_id = std::move(id), .isin_id = 1001, .price = "102500", .quantity = 1});
         };
+        for (const bool invalidate : {false, true}) {
+            configure();
+            auto config = configuration(invalidate ? "publication-reset" : "publication-commit");
+            config.async_dtc_persistence = true;
+            config.orders.dtc_connection_current = [] { return true; };
+            CgateTradingHost host(config);
+            warm(host);
+            require(place(host, "publication-owned").empty(), "publication failure fixture working order");
+            pump(host, 2);
+            const auto pending = host.prepare_dtc_add({.client_order_id = "dtc:publication-pending",
+                                                       .isin_id = 1001,
+                                                       .price = "102500",
+                                                       .quantity = 1,
+                                                       .dtc_origin = true});
+            require(pending.error.empty(), "publication fixture pending durable Add: " + pending.error);
+            const auto secret = root / "publication.secret";
+            {
+                std::ofstream out(secret);
+                out << "offline-publication-fixture\n";
+            }
+            require(::chmod(secret.c_str(), 0600) == 0, "publication fixture secret permissions");
+            FullOrderLogTradingDtc dtc(config, 0, secret, true);
+            dtc.start(host, book, nullptr);
+            publication_terms = 0;
+            const auto old_term = std::signal(SIGTERM, publication_term);
+            ScopeExit restore_term([&] { std::signal(SIGTERM, old_term); });
+            unsigned calls{};
+            FolDtcPublicationTestAccess::throw_publication(dtc, calls, invalidate);
+            const auto epoch = book.epoch();
+            const auto opens = control.opens(cg::kFullOrderLogStreamCode);
+            if (invalidate)
+                book.reset(true);
+            else {
+                control.enqueue({.kind = fake::EventKind::Begin, .stream_code = cg::kFullOrderLogStreamCode});
+                control.enqueue({.kind = fake::EventKind::Commit, .stream_code = cg::kFullOrderLogStreamCode});
+                pump(host);
+                require(book.valid() && book.epoch() == epoch,
+                        "publication exception must not reset a healthy committed book");
+            }
+            for (unsigned n = 0; !publication_terms && n < 1000; ++n)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            require(dtc.failed(), "publication failure must latch");
+            require(FolDtcPublicationTestAccess::stopped(dtc), "publication failure must stop both workers");
+            require(publication_terms == 1, "publication failure must request exactly one normal SIGTERM");
+            bool kill_witness{};
+            for (unsigned n = 0; !kill_witness && n < 1000; ++n) {
+                std::ifstream journal(config.journal_path);
+                for (std::string line; std::getline(journal, line);)
+                    kill_witness |= line.find("\"event\":\"kill_switch\"") != std::string::npos &&
+                                    line.find("\"enabled\":true") != std::string::npos;
+                if (!kill_witness)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            require(kill_witness, "publication failure must journal kill on before normal shutdown");
+            if (!invalidate)
+                require(place(host, "publication-kill-check") == "kill switch enabled",
+                        "publication failure must engage kill even while the healthy book is still ready");
+            require(host.finish_dtc_add(pending.ext_id, false) == "DTC Add was fenced before venue dispatch",
+                    "publication failure must discard the prepared DTC Add before venue dispatch");
+            book.reset(true);
+            dtc.poll(book.revision(1001), book.epoch());
+            require(calls == 1 && publication_terms == 1 && control.opens(cg::kFullOrderLogStreamCode) == opens,
+                    "reset or owner poll after failure must not recurse, re-publish or reopen a healthy listener");
+            const auto posted = control.commands().size();
+            require(!place(host, "publication-blocked").empty() && host.cancel("publication-owned").empty() &&
+                        control.commands().size() == posted + 1 && control.commands().back().name == "DelOrder",
+                    "publication failure must refuse new entry and preserve owned cancellation");
+            pump(host, 2);
+            dtc.stop();
+            dtc.join();
+            require(!host.stop(), "publication failure fixture normal stop");
+        }
         for (const auto mode :
              {"invalid", "dead", "future-exchange", "crossed", "one-sided", "empty-quantity", "missing-epoch",
               "missing-revision", "session-mismatch", "exception", "MAX", "LifeNum", "channel-close"}) {

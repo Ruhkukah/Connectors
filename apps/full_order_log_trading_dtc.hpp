@@ -45,9 +45,9 @@ class FullOrderLogTradingDtc {
         // Queue every committed revision; the worker owns all socket work.
         // Sampling only once after cg_conn_process could skip several commits.
         book.on_commit = [this](const auto& committed) {
-            publish_market(committed.revision(isin_), committed.epoch(), committed.committed_at());
+            publish_committed_market(committed.revision(isin_), committed.epoch(), committed.committed_at());
         };
-        book.on_invalidate = [this] { publish_market(book_->revision(isin_), book_->epoch(), Clock::now()); };
+        book.on_invalidate = [this] { publish_committed_market(book_->revision(isin_), book_->epoch(), Clock::now()); };
     }
     void stop() noexcept {
         if (std::exchange(stopped_, true))
@@ -76,20 +76,7 @@ class FullOrderLogTradingDtc {
         try {
             poll_owner(version, epoch);
         } catch (...) {
-            failed_ = true;
-            worker_.request_stop();
-            identity_.request_stop();
-            try {
-                host_->fence_dtc_entry();
-            } catch (...) {
-            }
-            try {
-                host_->set_kill_switch(true);
-            } catch (...) {
-            }
-            std::cerr << "FOL DTC owner failure; entering normal SIGTERM cancel drain\n";
-            if (::kill(::getpid(), SIGTERM) != 0)
-                throw;
+            owner_failure();
         }
     }
     [[nodiscard]] bool failed() const noexcept {
@@ -102,6 +89,7 @@ class FullOrderLogTradingDtc {
     }
 
   private:
+    friend struct FolDtcPublicationTestAccess;
     using Clock = FullOrderLogDtcWorker::Clock;
     using Command = dtc::DtcTradeCommand;
     static constexpr std::size_t max_report_ = 4096;
@@ -133,6 +121,37 @@ class FullOrderLogTradingDtc {
     plaza2::cgate::Plaza2PublicDealsSnapshot deals_header_;
     bool market_initialized_{}, history_current_{}, failed_{}, stopped_{};
     std::tuple<std::size_t, std::int32_t, std::int64_t, std::int64_t> history_key_{};
+
+    void owner_failure() noexcept {
+        if (std::exchange(failed_, true))
+            return;
+        worker_.request_stop();
+        identity_.request_stop();
+        try {
+            host_->fence_dtc_entry();
+        } catch (...) {
+        }
+        try {
+            host_->set_kill_switch(true);
+        } catch (...) {
+        }
+        constexpr char message[] = "FOL DTC owner failure; entering normal SIGTERM cancel drain\n";
+        (void)::write(STDERR_FILENO, message, sizeof(message) - 1);
+        // Never throw back through the book's commit/reset callbacks.
+        if (::kill(::getpid(), SIGTERM) != 0) {
+            constexpr char error[] = "FOL DTC cannot request SIGTERM; entry remains fenced\n";
+            (void)::write(STDERR_FILENO, error, sizeof(error) - 1);
+        }
+    }
+    void publish_committed_market(std::uint64_t version, std::uint64_t epoch, Clock::time_point now) noexcept {
+        if (failed_ || stopped_ || !host_)
+            return;
+        try {
+            publish_market(version, epoch, now);
+        } catch (...) {
+            owner_failure();
+        }
+    }
 
     void poll_owner(std::uint64_t version, std::uint64_t epoch) {
         if (failed_)
