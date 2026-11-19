@@ -101,7 +101,8 @@ static void test_anchored_deals_capture(const fs::path& root) {
         !missing.on_event(
             {.kind = K::Open, .stream_code = generated::StreamCode::kFortsDealsRepl, .raw_tables = std::span(&t, 1)}),
         "unseeded schema remains accepted");
-    auto unseeded_row = row(1).event();
+    auto unseeded = row(1);
+    auto unseeded_row = unseeded.event();
     unseeded_row.stream_code = generated::StreamCode::kFortsDealsRepl;
     require(static_cast<bool>(missing.on_event(unseeded_row)), "missing resume LifeNum still refuses a trade row");
     require(static_cast<bool>(zero.on_event(event(K::LifeNum, 0))), "zero resume LifeNum remains refused");
