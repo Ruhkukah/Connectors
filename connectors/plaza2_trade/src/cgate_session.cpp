@@ -382,6 +382,46 @@ struct CgateSession::Impl {
             return error;
         }
     } full_order_log_events{*this};
+    struct AnchoredDealsEvents final : cg::Plaza2ListenerEventHandler {
+        Impl& owner;
+        std::uint64_t requested_lifenum{};
+        std::int64_t requested_revision{};
+        bool explicit_lifenum{};
+        explicit AnchoredDealsEvents(Impl& value) : owner(value) {}
+        void opening(std::uint64_t life, std::int64_t revision) {
+            requested_lifenum = life;
+            requested_revision = revision;
+            explicit_lifenum = false;
+        }
+        bool wants_raw_replication(std::string_view table) const noexcept override {
+            return owner.config.full_order_log_oi_handler->wants_raw_replication(table);
+        }
+        bool should_log_listener_event(const cg::Plaza2ListenerEvent& event) const noexcept override {
+            return owner.config.full_order_log_oi_handler->should_log_listener_event(event);
+        }
+        void on_plaza2_listener_error(const Plaza2Error& error) noexcept override {
+            owner.config.full_order_log_oi_handler->on_plaza2_listener_error(error);
+        }
+        Plaza2Error on_plaza2_listener_event(const cg::Plaza2ListenerEvent& event) override {
+            auto& target = *owner.config.full_order_log_oi_handler;
+            if (event.kind == cg::Plaza2ListenerEventKind::LifeNum)
+                explicit_lifenum = true;
+            if (event.kind == cg::Plaza2ListenerEventKind::Open && !explicit_lifenum && requested_lifenum) {
+                // As on anchored private TRADE, OPEN confirms a current requested
+                // LifeNum even when CGate omits its notification. Record this
+                // derived marker through the normal FOL OI/capture handler.
+                owner.log("full_order_log_deals_anchor", "{\"lifenum\":" + std::to_string(requested_lifenum) +
+                                                             ",\"rev_deal\":" + std::to_string(requested_revision) +
+                                                             ",\"derived_initial_lifenum\":true}");
+                if (const auto error = target.on_plaza2_listener_event({.kind = cg::Plaza2ListenerEventKind::LifeNum,
+                                                                        .stream_code = event.stream_code,
+                                                                        .unsigned_value = requested_lifenum});
+                    error)
+                    return error;
+            }
+            return target.on_plaza2_listener_event(event);
+        }
+    } anchored_deals_events{*this};
     struct Listener {
         CgateStreamConfig config;
         cg::Plaza2Listener object;
@@ -1061,14 +1101,13 @@ struct CgateSession::Impl {
     }
     void ensure_matching_deals() {
         if (!config.full_order_log_partitioned || !config.full_order_log_oi_handler || !matching_current ||
-            now() < fol_deals_retry || std::ranges::any_of(listeners, [&](const auto& l) {
-                return l.handler == config.full_order_log_oi_handler;
-            }))
+            now() < fol_deals_retry ||
+            std::ranges::any_of(listeners, [&](const auto& l) { return l.handler == &anchored_deals_events; }))
             return;
         const auto code = StreamCode::kFortsDealsRepl;
         if (const auto error =
                 add_listener({code, match_service(cg::required_replication_listener_settings(code), *matching_id), {}},
-                             *config.full_order_log_oi_handler);
+                             anchored_deals_events);
             error) {
             fol_deals_retry = now() + config.recovery_retry_interval;
             log("full_order_log_advisory_unavailable",
@@ -1684,13 +1723,15 @@ struct CgateSession::Impl {
             auto settings = render(listener.config.open_settings);
             if (config.full_order_log_partitioned && deferred_trade &&
                 listener.config.stream_code == StreamCode::kFortsDealsRepl &&
-                listener.handler == config.full_order_log_oi_handler) {
+                listener.handler == &anchored_deals_events) {
                 const auto* pos = pos_anchor_health();
                 if (!pos)
                     return;
                 // Only deal is subscribed, so no heartbeat revision is requested.
                 settings = "mode=snapshot+online;lifenum=" + std::to_string(pos->last_trades_lifenum) +
                            ";rev.deal=" + std::to_string(pos->last_trades_rev);
+                anchored_deals_events.opening(static_cast<std::uint64_t>(pos->last_trades_lifenum),
+                                              pos->last_trades_rev);
             }
             const auto e = listener.object.open(settings);
             operation("listener", "open", e, listener.config.stream_code);

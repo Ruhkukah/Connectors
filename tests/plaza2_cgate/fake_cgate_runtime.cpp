@@ -2315,7 +2315,9 @@ std::uint32_t emit_script(FakeListener& listener) {
     // from cg_lsn_open, before OPEN. A second notification here would hide a
     // bridge that discarded or reset the pending value during OPEN.
     if (listener.stream_code != StreamCode::kFortsTradeRepl &&
-        !(listener.stream_code == StreamCode::kFortsDealsRepl && fake_flag(Option::DealsLifeNumBeforeOpen)))
+        !(listener.stream_code == StreamCode::kFortsDealsRepl &&
+          (fake_flag(Option::DealsLifeNumBeforeOpen) ||
+           (scenario.omit_anchored_deals_lifenum && listener.open_settings.find("lifenum=") != std::string::npos))))
         if (const auto result = emit_simple_message(listener, kCgMsgP2replLifenum, &lifenum, sizeof(lifenum));
             result != kCgErrOk)
             return result;
@@ -3731,7 +3733,9 @@ std::uint32_t cg_lsn_open(void* listener, const char* settings) {
         }
     }
     if (typed->stream_code == StreamCode::kFortsDealsRepl && fake_flag(Option::DealsLifeNumBeforeOpen)) {
-        CgDataLifeNum life{.life_number = fake_flag(Option::FreshPosAnchor) ? 8u : 7u, .flags = 0};
+        CgDataLifeNum life{.life_number = scenario.deals_server_lifenum ? scenario.deals_server_lifenum
+                                                                        : (fake_flag(Option::FreshPosAnchor) ? 8u : 7u),
+                           .flags = 0};
         if (const auto result = emit_simple_message(*typed, kCgMsgP2replLifenum, &life, sizeof(life));
             result != kCgErrOk)
             return result;

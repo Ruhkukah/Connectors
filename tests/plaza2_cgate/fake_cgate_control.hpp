@@ -171,6 +171,9 @@ struct Scenario {
     bool simulate_idle_wait{false};
     // Zero follows the fake server's POS epoch; a positive value models an independent TRADE rollover.
     std::uint32_t trade_server_lifenum{0};
+    // Native anchored DEALS can confirm the requested current epoch by OPEN alone.
+    bool omit_anchored_deals_lifenum{false};
+    std::uint32_t deals_server_lifenum{0};
     std::uint32_t listener_create_result{0}, publisher_create_result{0};
     bool spectra912_refdata_schema{false};
     std::int32_t refdata_legacy_lot_volume{1};

@@ -34,8 +34,7 @@ static Row deal(const Plaza2RawTableBinding& t, std::int64_t rev, std::int64_t o
     r.set("moment_ns", std::uint64_t{1700000000000000000ULL} + rev);
     return r;
 }
-static void test_trade_export(const fs::path& root) {
-    const std::array<std::int32_t, 1> ids{11};
+static Plaza2RawTableBinding trade_schema() {
     auto t = deal_schema();
     t.fields.insert(t.fields.end(), {{"xamount", "i8", 56, 8, 8},
                                      {"price", "d16.5", 64, 11, 9},
@@ -44,6 +43,95 @@ static void test_trade_export(const fs::path& root) {
                                      {"xstatus_buy", "i8", 88, 8, 12},
                                      {"xstatus_sell", "i8", 96, 8, 13}});
     t.row_size = 104;
+    return t;
+}
+static void test_anchored_deals_capture(const fs::path& root) {
+    const std::array<std::int32_t, 1> ids{11};
+    const auto t = trade_schema();
+    const auto row = [&](std::int64_t revision) {
+        auto r = deal(t, revision, 1000 + revision);
+        r.set("xamount", std::int64_t{3});
+        r.price(1234567);
+        r.set("moment", moex::plaza2::public_wire::Time{2023, 11, 15, 1, 13, 20, 0});
+        return r;
+    };
+    const auto event = [&](K kind, std::uint64_t life = 0) {
+        return Plaza2ListenerEvent{
+            .kind = kind, .stream_code = generated::StreamCode::kFortsDealsRepl, .unsigned_value = life};
+    };
+    Plaza2FullOrderLog book(ids);
+    FullOrderLogCaptureOptions options;
+    options.directory = root / "anchored-deals";
+    options.min_free_bytes = 0;
+    FullOrderLogCapture capture(options, ids, book);
+    FullOrderLogDeals trades(ids);
+    FullOrderLogOpenInterest oi(ids);
+    oi.before_event = [&](const auto& e) {
+        if (auto error = capture.record(e); error)
+            return error;
+        return trades.on_event(e);
+    };
+    const auto send = [&](Plaza2ListenerEvent e) {
+        e.stream_code = generated::StreamCode::kFortsDealsRepl;
+        require(!oi.on_plaza2_listener_event(e), "anchored DEALS capture event");
+    };
+    // With an explicit resume LifeNum, T0 omits its LifeNum notification.
+    // The session adapter's validated anchor must travel through capture too.
+    send(event(K::LifeNum, 7));
+    send({.kind = K::Open, .raw_tables = std::span(&t, 1)});
+    send(row(1).event());
+    send(event(K::Online));
+    require(oi.online() && trades.snapshot(11, 0, 321).online, "anchored snapshot becomes current at ONLINE");
+    send(event(K::TransactionBegin));
+    send(row(2).event());
+    send(event(K::TransactionCommit));
+    send(event(K::Close));
+    capture.finish();
+    const auto replay = replay_full_order_log_capture(options.directory);
+    require(!replay.truncated && replay.end_status == FullOrderLogCaptureEndStatus::Clean && replay.host_status == 0 &&
+                replay.listener_errors == 0 && replay.open_interest_updates == 2 && replay.deals_coverage.opens == 1 &&
+                replay.deals_coverage.onlines == 1 && replay.deals_coverage.life_notifications == 1,
+            "seeded resume remains strict-replay clean without a server LifeNum callback");
+    const auto exported = export_full_order_log_dbn(options.directory, root / "anchored-deals.dbn");
+    require(exported.trade_prints == 1 && exported.open_interest_updates == 2,
+            "captured anchor supports committed trade and OI export");
+
+    FullOrderLogDeals missing(ids), zero(ids), mismatch(ids);
+    require(
+        !missing.on_event(
+            {.kind = K::Open, .stream_code = generated::StreamCode::kFortsDealsRepl, .raw_tables = std::span(&t, 1)}),
+        "unseeded schema remains accepted");
+    auto unseeded_row = row(1).event();
+    unseeded_row.stream_code = generated::StreamCode::kFortsDealsRepl;
+    require(static_cast<bool>(missing.on_event(unseeded_row)), "missing resume LifeNum still refuses a trade row");
+    require(static_cast<bool>(zero.on_event(event(K::LifeNum, 0))), "zero resume LifeNum remains refused");
+    require(!mismatch.on_event(event(K::LifeNum, 7)) &&
+                !mismatch.on_event({.kind = K::Open,
+                                    .stream_code = generated::StreamCode::kFortsDealsRepl,
+                                    .raw_tables = std::span(&t, 1)}) &&
+                static_cast<bool>(mismatch.on_event(event(K::LifeNum, 8))),
+            "contradictory server LifeNum requires a fresh snapshot");
+
+    options.directory = root / "deals-listener-error";
+    FullOrderLogCapture failed(options, ids, book);
+    failed.record_error(generated::StreamCode::kFortsDealsRepl,
+                        {.code = Plaza2ErrorCode::DecodeFailed, .message = "missing DEALS resume LifeNum"});
+    failed.finish();
+    bool refused{};
+    try {
+        static_cast<void>(replay_full_order_log_capture(options.directory));
+    } catch (const std::exception&) {
+        refused = true;
+    }
+    const auto incomplete = replay_full_order_log_capture(options.directory, true);
+    require(refused && incomplete.truncated && incomplete.end_status == FullOrderLogCaptureEndStatus::Clean &&
+                incomplete.host_status == 0 && incomplete.listener_errors == 1 &&
+                incomplete.deals_coverage.listener_errors == 1 && incomplete.fol_coverage.listener_errors == 0,
+            "clean footer does not erase an anchored DEALS listener error");
+}
+static void test_trade_export(const fs::path& root) {
+    const std::array<std::int32_t, 1> ids{11};
+    auto t = trade_schema();
     auto print = [&](std::int64_t rev) {
         auto r = deal(t, rev, 1000 + rev);
         r.set("xamount", std::int64_t{3});
@@ -248,6 +336,7 @@ int main() {
         }
         require(values == observed, "DBN OI values remain signed 64-bit and causal");
         test_trade_export(root);
+        test_anchored_deals_capture(root);
         std::cout << "OI schema/64-bit/snapshot/commit/selection/interruption/mixed DBN checks passed at " << root
                   << '\n';
         return 0;
