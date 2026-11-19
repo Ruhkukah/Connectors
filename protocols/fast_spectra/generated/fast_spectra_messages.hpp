@@ -10,7 +10,7 @@
 namespace moex::fast {
 
 // SHA-256 of the templates.xml this decoder was generated from.
-inline constexpr std::string_view kTemplatesSha256 = "dbd50f1e0becc2b2ebd9dac8e4c6609ba1538566811b610cde9b6dd3e7f66a8e";
+inline constexpr std::string_view kTemplatesSha256 = "84facbf784676fd1a0442297f45db4d3bba11ae938618f082beabef62a782a3f";
 
 struct DefaultIncrementalRefreshMessage {
     static constexpr std::uint32_t kTemplateId = 31;
@@ -171,7 +171,7 @@ inline bool decode(Reader& r, DefaultSnapshotMessage& m, Handler&& on_entry) noe
 }
 
 struct SecurityDefinition {
-    static constexpr std::uint32_t kTemplateId = 40;
+    static constexpr std::uint32_t kTemplateId = 47;
     static constexpr std::string_view ApplVerID = "9"; // 1128
     static constexpr std::string_view MessageType = "d"; // 35
     static constexpr std::string_view SenderCompID = "MOEX"; // 49
@@ -237,8 +237,6 @@ struct SecurityDefinition {
     Opt<Decimal> UnderlyingQty; // 879
     Opt<Ascii> UnderlyingCurrency; // 318
     Opt<std::uint32_t> NoEvents; // 864
-    Opt<std::uint32_t> MaturityDate; // 541
-    Opt<std::uint32_t> MaturityTime; // 1079
     Opt<std::int64_t> Flags; // 20008
     Opt<Decimal> MinPriceIncrementAmountCurr; // 20040
     Opt<Decimal> SettlPriceOpen; // 20041
@@ -260,6 +258,9 @@ struct SecurityDefinition {
     Opt<std::int32_t> SectionID; // 20061
     Opt<std::int32_t> BaseContractID; // 20062
     Opt<std::int64_t> TradePeriodAccess; // 20065
+    Opt<Decimal> HighLimitPxWeekend; // 20071
+    Opt<Decimal> LowLimitPxWeekend; // 20072
+    Opt<Decimal> ClearingSettlPrice; // 2528
 };
 
 template <class Handler>
@@ -344,8 +345,6 @@ inline bool decode(Reader& r, SecurityDefinition& m, Handler&& on_entry) noexcep
             return false;
         on_entry(std::as_const(m), std::as_const(e));
     }
-    m.MaturityDate = read_opt_u32(r);
-    m.MaturityTime = read_opt_u32(r);
     m.Flags = read_opt_i64(r);
     m.MinPriceIncrementAmountCurr = read_opt_decimal(r);
     m.SettlPriceOpen = read_opt_decimal(r);
@@ -367,6 +366,9 @@ inline bool decode(Reader& r, SecurityDefinition& m, Handler&& on_entry) noexcep
     m.SectionID = read_opt_i32(r);
     m.BaseContractID = read_opt_i32(r);
     m.TradePeriodAccess = read_opt_i64(r);
+    m.HighLimitPxWeekend = read_opt_decimal(r);
+    m.LowLimitPxWeekend = read_opt_decimal(r);
+    m.ClearingSettlPrice = read_opt_decimal(r);
     return r.ok;
 }
 
@@ -395,7 +397,7 @@ inline bool decode(Reader& r, SecurityDefinitionUpdateReport& m) noexcept {
 }
 
 struct SecurityStatus {
-    static constexpr std::uint32_t kTemplateId = 5;
+    static constexpr std::uint32_t kTemplateId = 48;
     static constexpr std::string_view ApplVerID = "9"; // 1128
     static constexpr std::string_view MessageType = "f"; // 35
     static constexpr std::string_view SenderCompID = "MOEX"; // 49
@@ -410,6 +412,8 @@ struct SecurityStatus {
     Opt<Decimal> InitialMarginOnBuy; // 20002
     Opt<Decimal> InitialMarginOnSell; // 20000
     Opt<Decimal> InitialMarginSyntetic; // 20001
+    Opt<Decimal> HighLimitPxWeekend; // 20071
+    Opt<Decimal> LowLimitPxWeekend; // 20072
 };
 
 inline bool decode(Reader& r, SecurityStatus& m) noexcept {
@@ -423,6 +427,8 @@ inline bool decode(Reader& r, SecurityStatus& m) noexcept {
     m.InitialMarginOnBuy = read_opt_decimal(r);
     m.InitialMarginOnSell = read_opt_decimal(r);
     m.InitialMarginSyntetic = read_opt_decimal(r);
+    m.HighLimitPxWeekend = read_opt_decimal(r);
+    m.LowLimitPxWeekend = read_opt_decimal(r);
     return r.ok;
 }
 
@@ -991,8 +997,6 @@ inline bool decode(Reader& r, Logout& m) noexcept {
     switch (id) {
     case 4:
         return "SecurityDefinitionUpdateReport";
-    case 5:
-        return "SecurityStatus";
     case 6:
         return "Heartbeat";
     case 7:
@@ -1015,14 +1019,16 @@ inline bool decode(Reader& r, Logout& m) noexcept {
         return "OtcMonitorSecurityDefinition";
     case 37:
         return "SecurityMassStatus";
-    case 40:
-        return "SecurityDefinition";
     case 42:
         return "DiscreteAuction";
     case 45:
         return "SecurityGroupStatus";
     case 46:
         return "TradingSessionStatus";
+    case 47:
+        return "SecurityDefinition";
+    case 48:
+        return "SecurityStatus";
     case 1000:
         return "Logon";
     case 1001:

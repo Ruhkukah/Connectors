@@ -126,7 +126,7 @@ endforeach()
 add_executable(fast_decode_benchmark fast_spectra/fast_decode_benchmark.cpp)
 target_link_libraries(fast_decode_benchmark PRIVATE moex_fast_spectra)
 # The locked templates live in the ignored spec-lock cache; check the generated decoder when they are present.
-set(MOEX_FAST_TEMPLATES "${MOEX_SOURCE_ROOT}/spec-lock/test/fast/FAST_9.0/cache/templates.xml")
+set(MOEX_FAST_TEMPLATES "${MOEX_SOURCE_ROOT}/spec-lock/test/fast/templatesT1/cache/templates.xml")
 if(EXISTS "${MOEX_FAST_TEMPLATES}")
     add_test(NAME fast_generated_decoder_current COMMAND "${Python3_EXECUTABLE}"
         "${MOEX_SOURCE_ROOT}/protocols/fast_spectra/tools/generate_fast_messages.py" "${MOEX_FAST_TEMPLATES}"

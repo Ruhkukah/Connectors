@@ -214,7 +214,7 @@ void other_templates() {
         REQUIRE(auction.TradePeriodID.value == 8 && r4.p == r4.end);
     }
 
-    REQUIRE(template_name(31) == "DefaultIncrementalRefreshMessage" && template_name(40) == "SecurityDefinition");
+    REQUIRE(template_name(31) == "DefaultIncrementalRefreshMessage" && template_name(SecurityDefinition::kTemplateId) == "SecurityDefinition");
     REQUIRE(template_name(12345).empty() && kTemplatesSha256.size() == 64);
 }
 
@@ -228,7 +228,7 @@ void random_input() {
         state ^= state << 17;
         return state;
     };
-    static constexpr std::uint32_t kIds[] = {31, 32, 40, 4, 5, 37, 45, 6, 7, 46, 42, 9, 29, 30, 33, 34, 35, 1000, 1001};
+    static constexpr std::uint32_t kIds[] = {31, 32, 47, 4, 48, 37, 45, 6, 7, 46, 42, 9, 29, 30, 33, 34, 35, 1000, 1001};
     const auto ignore = [](const auto&, const auto&) {};
     std::uint64_t accepted = 0;
     for (int iteration = 0; iteration < 200000; ++iteration) {
