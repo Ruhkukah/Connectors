@@ -136,3 +136,16 @@ if(EXISTS "${MOEX_FAST_TEMPLATES}")
         "${MOEX_SOURCE_ROOT}/protocols/fast_spectra/generated/fast_spectra_messages.hpp" --check)
     set_tests_properties(fast_generated_decoder_current PROPERTIES LABELS "unit;fast")
 endif()
+
+moex_test(asts_stream_test fast_asts/asts_stream_test.cpp moex_fast_asts)
+set_tests_properties(asts_stream_test PROPERTIES LABELS "unit;fast;sanitizer")
+# Replays a packet capture through the ASTS connector and audits it against the capture's own snapshots.
+add_executable(asts_pcap_replay fast_asts/asts_pcap_replay.cpp)
+target_link_libraries(asts_pcap_replay PRIVATE moex_fast_asts)
+set(MOEX_ASTS_TEMPLATES "${MOEX_SOURCE_ROOT}/spec-lock/prod/fast_asts/cache/FIX50SP2-2025-Oct.xml")
+if(EXISTS "${MOEX_ASTS_TEMPLATES}")
+    add_test(NAME asts_generated_decoder_current COMMAND "${Python3_EXECUTABLE}"
+        "${MOEX_SOURCE_ROOT}/protocols/fast_asts/tools/generate_asts_messages.py" "${MOEX_ASTS_TEMPLATES}"
+        "${MOEX_SOURCE_ROOT}/protocols/fast_asts/generated/asts_messages.hpp" --check)
+    set_tests_properties(asts_generated_decoder_current PROPERTIES LABELS "unit;fast")
+endif()

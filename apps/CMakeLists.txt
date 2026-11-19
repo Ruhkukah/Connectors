@@ -20,3 +20,4 @@ moex_add_app(moex_qualification_resolver moex_qualification_resolver.cpp moex_co
 
 # Read-only FAST multicast market data; independent of CGate.
 moex_add_app(moex_fast_md_runner moex_fast_md_runner.cpp moex_fast_spectra)
+moex_add_app(moex_asts_md_runner moex_asts_md_runner.cpp moex_fast_asts)
