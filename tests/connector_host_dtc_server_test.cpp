@@ -130,6 +130,8 @@ struct Replay : DtcMarketDataSource {
     std::vector<DtcMarketDataLevel> changes;
     bool optimistic_capabilities{false};
     unsigned failure_mode{0};
+    bool borrow_status{false};
+    mutable unsigned full_snapshot_calls{}, status_copy_calls{}, status_borrow_calls{};
     Replay() {
         state.symbol = "ALRS-12.26";
         state.underlying_board = "RFUD";
@@ -155,6 +157,7 @@ struct Replay : DtcMarketDataSource {
             {.price_scaled = 0, .volume = 7, .side = DtcDepthSide::Ask, .source_row_id = 9002, .source_sequence = 55}};
     }
     DtcMarketDataSnapshot snapshot() const override {
+        ++full_snapshot_calls;
         if (failure_mode == 1)
             throw std::runtime_error("synthetic source failure");
         if (failure_mode == 2)
@@ -168,10 +171,15 @@ struct Replay : DtcMarketDataSource {
         return changes;
     }
     DtcMarketDataSnapshot status_snapshot() const override {
+        ++status_copy_calls;
         auto out = snapshot();
         if (incremental)
             out.levels.clear();
         return out;
+    }
+    const DtcMarketDataSnapshot* status_snapshot_view() const override {
+        ++status_borrow_calls;
+        return borrow_status ? &state : nullptr;
     }
     DtcReadOnlyCapabilities capabilities() const noexcept override {
         return {.market_data = false,
@@ -1363,6 +1371,49 @@ void bounds() {
         check(h.count(145) == 3, "multiple levels sorted per side");
     }
 }
+void full_order_log_borrowed_status() {
+    Harness h;
+    h.source.incremental = h.source.state.full_order_log = h.source.borrow_status = true;
+    h.source.state.definition_revision = 1;
+    h.logon();
+    h.subscribe();
+    h.got.clear();
+    const auto snapshots = h.source.full_snapshot_calls, copies = h.source.status_copy_calls;
+    for (unsigned n = 0; n < 100; ++n)
+        h.server.publish_depth_commit();
+    h.pump(2);
+    check(h.source.full_snapshot_calls == snapshots && h.source.status_copy_calls == copies && h.count(140) == 0,
+          "unchanged FOL revision borrows status without metadata/depth copies");
+    for (unsigned n = 0; n < 3; ++n) {
+        ++h.source.state.source_snapshot_version;
+        h.source.changes = {{.price_scaled = 1000000, .volume = 10 + n, .side = DtcDepthSide::Bid, .depth_level = 1}};
+        h.server.publish_depth_commit();
+    }
+    h.pump(3);
+    check(h.count(140) == 3 && h.count(145) == 0 && !h.eof,
+          "several native commits before socket polling remain incremental");
+    std::uint64_t sequence = 1, version = 9;
+    for (const auto& frame : h.got)
+        if (frame.message_type == 140) {
+            const Read row(frame.payload);
+            check(row.n.at(14) == ++sequence && row.n.at(15) == ++version && row.n.at(13) == 73 && row.n.at(8) == 1,
+                  "queued commits preserve atomic end markers and contiguous sequence/epoch");
+        }
+    h.got.clear();
+    ++h.source.state.definition_revision;
+    h.source.state.min_step = "0.02";
+    h.pump(3);
+    check(h.eof && h.count(5) == 1, "new metadata token revalidates and retires a stale definition");
+    Harness invalid;
+    invalid.source.incremental = invalid.source.state.full_order_log = invalid.source.borrow_status = true;
+    invalid.source.state.definition_revision = 1;
+    invalid.logon();
+    invalid.subscribe();
+    invalid.got.clear();
+    invalid.source.state.market_data_display_allowed = false;
+    invalid.pump(3);
+    check(invalid.eof && invalid.count(5) == 1, "same revision cannot hide an immediate loss of display authority");
+}
 void full_order_log_committed_depth() {
     auto c = config();
     c.max_depth_levels = 64;
@@ -1719,6 +1770,7 @@ int main(int argc, char** argv) {
     rejects();
     float32_wire_representability();
     bounds();
+    full_order_log_borrowed_status();
     full_order_log_committed_depth();
     throwing_source();
     std::cout << "DTC loopback E2E: negotiation, definitions, UTF-8, authority, signed depth, replay, revocation, "

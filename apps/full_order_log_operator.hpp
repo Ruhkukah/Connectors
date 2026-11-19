@@ -115,7 +115,11 @@ inline int full_order_log_operator(int argc, char** argv,
                   << " rows_per_second=" << (elapsed > 0 ? (m.rows_total - rows_at) / elapsed : 0)
                   << " book_valid=" << book->valid() << " rows_total=" << m.rows_total
                   << " lag_samples=" << m.lag_samples << " lag_last_ns=" << m.lag_last_ns
-                  << " lag_max_ns=" << m.lag_max_ns << " ignored_executions=" << m.ignored_executions
+                  << " lag_max_ns=" << m.lag_max_ns << " lag_sum_ns=" << m.lag_sum_ns
+                  << " snapshot_age_samples=" << m.snapshot_age_samples
+                  << " snapshot_age_last_ns=" << m.snapshot_age_last_ns
+                  << " snapshot_age_max_ns=" << m.snapshot_age_max_ns
+                  << " snapshot_age_sum_ns=" << m.snapshot_age_sum_ns << " ignored_executions=" << m.ignored_executions
                   << " clear_deleted_events=" << m.clear_deleted_events
                   << " clear_deleted_erased=" << m.clear_deleted_erased << '\n'
                   << std::flush;

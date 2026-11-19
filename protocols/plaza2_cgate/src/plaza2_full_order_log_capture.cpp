@@ -16,6 +16,12 @@
 namespace moex::plaza2::cgate {
 using namespace capture_format;
 struct FullOrderLogCapture::Impl {
+    struct Identity {
+        const Plaza2RawTableBinding* original{};
+        std::size_t index{}, offset{}, null_index{};
+        std::string_view name;
+        bool usable{};
+    };
     struct Block {
         std::vector<std::byte> bytes;
         std::uint64_t count{}, first{};
@@ -24,6 +30,8 @@ struct FullOrderLogCapture::Impl {
     Plaza2ListenerEventHandler& downstream;
     std::vector<std::int32_t> isins;
     std::vector<Block> queue;
+    std::array<Identity, 2> fol_identity{};
+    std::array<Identity, 1> deals_identity{};
     std::atomic<std::uint64_t> head{}, tail{}, stored{}, budget_used{}, syncs{}, sync_max{};
     std::atomic_bool closing{}, failed{};
     std::mutex error_mutex;
@@ -35,6 +43,54 @@ struct FullOrderLogCapture::Impl {
     int directory_fd{-1}, fd{-1}, stop_fd{-1};
     std::uint64_t segment{}, segment_size{};
     bool finished{};
+    void bind_identities(const Plaza2ListenerEvent& event) {
+        const auto cache = event.stream_code == kFullOrderLogStreamCode ? std::span<Identity>(fol_identity)
+                                                                        : std::span<Identity>(deals_identity);
+        std::fill(cache.begin(), cache.end(), Identity{});
+        for (const auto& table : event.raw_tables) {
+            const auto name = table.name == "orders"       ? std::string_view("orders")
+                              : table.name == "orders_log" ? std::string_view("orders_log")
+                              : table.name == "deal"       ? std::string_view("deal")
+                                                           : std::string_view{};
+            if (name.empty() || (name == "deal") == (event.stream_code == kFullOrderLogStreamCode))
+                continue;
+            auto& identity = cache[name == "orders_log" ? 1 : 0];
+            identity = {.original = &table, .index = table.index, .name = name};
+            const auto field = std::find_if(table.fields.begin(), table.fields.end(),
+                                            [](const auto& value) { return value.name == "isin_id"; });
+            if (field != table.fields.end() && field->type_token == "i4" && field->size == 4 &&
+                field->offset <= table.row_size && 4 <= table.row_size - field->offset) {
+                identity.offset = field->offset;
+                identity.null_index = field->index;
+                identity.usable = true;
+            }
+        }
+    }
+    bool selected(const Plaza2ListenerEvent& event) const {
+        const auto cache = event.stream_code == kFullOrderLogStreamCode ? std::span<const Identity>(fol_identity)
+                                                                        : std::span<const Identity>(deals_identity);
+        const Identity* identity{};
+        for (const auto& candidate : cache)
+            if (candidate.original && event.table_index == candidate.index && event.raw_table == candidate.original) {
+                identity = &candidate;
+                break;
+            }
+        if (!identity && event.raw_table)
+            for (const auto& candidate : cache)
+                if (candidate.original && event.table_index == candidate.index &&
+                    event.raw_table->name == candidate.name) {
+                    identity = &candidate;
+                    break;
+                }
+        // Missing/truncated/null identities remain evidence for the downstream validator.
+        if (!identity || !identity->usable || identity->offset > event.raw_payload.size() ||
+            4 > event.raw_payload.size() - identity->offset ||
+            (!event.raw_nulls.empty() &&
+             (identity->null_index >= event.raw_nulls.size() || event.raw_nulls[identity->null_index])))
+            return true;
+        const auto isin = load<std::int32_t>(event.raw_payload, identity->offset);
+        return std::binary_search(isins.begin(), isins.end(), isin);
+    }
     Impl(FullOrderLogCaptureOptions o, std::span<const std::int32_t> ids, Plaza2ListenerEventHandler& d)
         : options(std::move(o)), downstream(d), isins(ids.begin(), ids.end()) {
         require(!isins.empty() && isins.size() <= 64, "capture requires 1..64 selected instruments");
@@ -329,20 +385,9 @@ Plaza2Error FullOrderLogCapture::record(const Plaza2ListenerEvent& e) {
         require(e.stream_code == kFullOrderLogStreamCode || e.stream_code == generated::StreamCode::kFortsDealsRepl,
                 "capture accepts only public FOL/DEALS streams");
         ++p.source_sequence;
-        bool selected = true;
-        if (e.kind == Plaza2ListenerEventKind::StreamData && e.raw_table &&
-            (e.raw_table->name == "orders" || e.raw_table->name == "orders_log" || e.raw_table->name == "deal")) {
-            const auto& fields = e.raw_table->fields;
-            const auto f =
-                std::find_if(fields.begin(), fields.end(), [](const auto& v) { return v.name == "isin_id"; });
-            // Malformed identity rows are retained as evidence and left to the book validator.
-            if (f != fields.end() && f->size == 4 && f->offset <= e.raw_payload.size() &&
-                4 <= e.raw_payload.size() - f->offset &&
-                (e.raw_nulls.empty() || (f->index < e.raw_nulls.size() && !e.raw_nulls[f->index]))) {
-                const auto id = load<std::int32_t>(e.raw_payload, f->offset);
-                selected = std::binary_search(p.isins.begin(), p.isins.end(), id);
-            }
-        }
+        if (e.kind == Plaza2ListenerEventKind::Open || e.kind == Plaza2ListenerEventKind::Close)
+            p.bind_identities(e);
+        const bool selected = e.kind != Plaza2ListenerEventKind::StreamData || p.selected(e);
         if (selected) {
             std::vector<std::byte> schema;
             if (e.kind == Plaza2ListenerEventKind::Open)

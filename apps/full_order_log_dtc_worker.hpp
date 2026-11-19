@@ -129,6 +129,9 @@ class FullOrderLogDtcWorker {
             status.levels.clear();
             return status;
         }
+        [[nodiscard]] const dtc::DtcMarketDataSnapshot* status_snapshot_view() const override {
+            return &snapshot_;
+        }
         [[nodiscard]] dtc::DtcReadOnlyCapabilities capabilities() const noexcept override {
             return {.market_data = deals_enabled_, .market_depth = true, .security_definitions = true};
         }
@@ -178,8 +181,11 @@ class FullOrderLogDtcWorker {
             std::array<bool, 2> command_in_flight{};
             std::unique_ptr<const Private> state = std::make_unique<Private>();
             const auto refresh_private = [&] {
-                if (auto pending = private_.take())
+                if (auto pending = private_.take()) {
                     state = std::move(pending);
+                    return true;
+                }
+                return false;
             };
             dtc::DtcTradingHooks hooks;
             hooks.account = std::move(account);
@@ -218,6 +224,7 @@ class FullOrderLogDtcWorker {
                                                    .source_mode = dtc::DtcSourceMode::LiveTest,
                                                    .symbol_id = 1,
                                                    .max_queued_bytes = 1024 * 1024,
+                                                   .max_write_bytes_per_poll = 256 * 1024,
                                                    .require_local_auth = true,
                                                    .local_username = "kairos",
                                                    .local_password = std::move(secret),
@@ -232,6 +239,7 @@ class FullOrderLogDtcWorker {
             std::uint64_t generation{};
             std::optional<Market> future_market;
             while (running_.load(std::memory_order_acquire)) {
+                bool advanced = false;
                 const auto newest = market_generation_.load(std::memory_order_acquire);
                 if (generation < newest) {
                     if (auto reset = market_reset_.take()) {
@@ -239,6 +247,7 @@ class FullOrderLogDtcWorker {
                         source.clear();
                         source.update(std::move(*reset));
                         server.resync_market();
+                        advanced = true;
                     }
                 }
                 for (std::size_t count = 0; count < 32; ++count) {
@@ -255,10 +264,15 @@ class FullOrderLogDtcWorker {
                         continue;
                     source.update(std::move(*market));
                     server.publish_depth_commit();
+                    advanced = true;
                 }
-                refresh_private();
+                advanced |= refresh_private();
+                const auto queued = server.queued_bytes();
                 server.poll();
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                if (advanced || server.queued_bytes() < queued)
+                    std::this_thread::yield();
+                else
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             server.stop();
         } catch (...) {

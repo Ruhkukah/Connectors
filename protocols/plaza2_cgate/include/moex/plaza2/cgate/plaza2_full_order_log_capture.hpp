@@ -27,6 +27,9 @@ struct FullOrderLogCaptureMetrics {
 };
 // Owner-thread wrapper: copies complete selected raw rows before book admission.
 // Only the worker compresses/writes/syncs; poll() also flushes quiet partial blocks.
+// Recording is required once enabled: a full bounded queue (32 MiB by default)
+// fails closed, invalidates the book and triggers the host's kill/cancel drain.
+// It never drops rows or silently falls back to an unrecorded trading session.
 class FullOrderLogCapture final : public Plaza2ListenerEventHandler {
   public:
     FullOrderLogCapture(FullOrderLogCaptureOptions options, std::span<const std::int32_t> isins,

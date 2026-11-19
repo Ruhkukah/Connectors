@@ -474,9 +474,8 @@ static void review_semantics() {
     h.add(99, 11, 100000, 2, 2, 21, 0);
     h.commit();
     const auto counters = h.book.metrics();
-    require(h.book.valid() && counters.excluded_ids == 4 && counters.excluded_evictions == 2 &&
-                counters.ignored_executions == 2 && counters.excluded_executions == 1,
-            "excluded IDs are bounded and unknown executions are counted without recovery");
+    require(h.book.valid() && counters.excluded_adds == 6 && counters.ignored_executions == 2,
+            "excluded adds and unknown executions are counted per row without retaining ID history or reopening");
     h.begin();
     h.apply(row(h.schema[0], 2, 11, 200000, 10, 1, 30));
     h.commit();
@@ -625,6 +624,80 @@ static void publication_lag() {
                 metrics.lag_last_ns >= publication_finished_ns - exchange_ns,
             "exchange-to-commit lag includes publication and its delayed crossed callback");
 }
+static void snapshot_age_and_touched_instruments() {
+    const auto utc_now_ns = [] {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    };
+    for (const bool framed : {false, true}) {
+        Harness h;
+        if (framed)
+            h.begin();
+        auto snapshot = row(h.schema[0], 1, 11, 100000, 2);
+        snapshot.set("moment_ns", utc_now_ns() - 60000000000ULL);
+        h.apply(snapshot);
+        if (framed)
+            h.commit();
+        h.online();
+        if (framed) {
+            h.begin();
+            h.commit();
+        }
+        auto metrics = h.book.metrics();
+        const auto initial = h.book.committed_instruments();
+        require(h.book.valid() && metrics.lag_samples == 0 && metrics.snapshot_age_samples == 1 &&
+                    metrics.snapshot_age_last_ns >= 60000000000ULL && initial.size() == 2 && initial[0] == 11 &&
+                    initial[1] == 22,
+                "initial publication includes empty instruments and reports old snapshot age separately from live lag");
+        h.begin();
+        auto execution = row(h.schema[2], 1, 11, 100000, 1, 2, 2);
+        execution.set("moment_ns", utc_now_ns() - 2000000ULL);
+        h.apply(execution);
+        h.commit();
+        metrics = h.book.metrics();
+        require(metrics.lag_samples == 1 && metrics.lag_last_ns >= 2000000ULL &&
+                    metrics.lag_max_ns < metrics.snapshot_age_last_ns && metrics.snapshot_age_samples == 1 &&
+                    h.book.committed_instruments().size() == 1 && h.book.committed_instruments()[0] == 11,
+                "live commit reports only touched instrument and does not inherit the snapshot age");
+        h.begin();
+        h.add(1, 11, 100000, 1, 2, 3);
+        h.commit();
+        require(h.book.committed_instruments().size() == 1 && h.book.committed_instruments()[0] == 11,
+                "same-quantity order update remains in the committed instrument view");
+        h.begin();
+        h.commit();
+        require(h.book.committed_instruments().empty(), "quiet transaction does not rescan or publish every book");
+        h.clear(2, 4);
+        h.begin();
+        h.commit();
+        require(h.book.committed_instruments().size() == 1 && h.book.committed_instruments()[0] == 11 &&
+                    h.book.levels(11, true).empty(),
+                "revision clear schedules its affected instrument even without an exchange moment");
+        h.book.reset();
+        require(h.book.committed_instruments().size() == 2 && !h.book.valid(),
+                "invalidation view includes every configured book");
+    }
+}
+static void cached_table_bindings() {
+    Harness h;
+    auto schema = tables();
+    for (auto& table : schema)
+        table.index += 17; // Preserve support for sparse vendor table indices.
+    require(!h.book.on_plaza2_listener_event({.kind = Kind::Open, .raw_tables = schema}), "sparse schema opens");
+    const auto equivalent = schema; // Archive/replay adapters need not retain the OPEN descriptor address.
+    h.apply(row(equivalent[0], 1, 11, 100000, 4));
+    h.online();
+    require(h.book.valid() && h.book.order_count() == 1, "equivalent descriptor uses the cached table kind");
+    auto spoof = equivalent[2];
+    spoof.name = "unknown";
+    h.begin();
+    require(
+        h.book.on_plaza2_listener_event(row(spoof, 1, 11, 100000, 3, 2).event()).message.find("unknown table index") !=
+                std::string::npos &&
+            !h.book.valid(),
+        "cached classification still refuses an unknown table name at a known index");
+}
 static void unframed_snapshot_diagnostics() {
     using namespace full_order_log_test;
     using Kind = Plaza2ListenerEventKind;
@@ -766,6 +839,8 @@ int main() {
         review_semantics();
         life_time_and_cross();
         publication_lag();
+        snapshot_age_and_touched_instruments();
+        cached_table_bindings();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
         return 1;

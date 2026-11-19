@@ -30,9 +30,12 @@ inline std::string full_order_log_listener_settings(const std::filesystem::path&
 }
 
 struct FullOrderLogMetrics {
-    std::uint64_t rows_total{}, rows_filtered{}, excluded_adds{}, excluded_ids{}, excluded_evictions{};
-    std::uint64_t ignored_executions{}, excluded_executions{}, retired_rows_ignored{};
+    // Excluded adds and all unknown-order executions are counted per row. No
+    // excluded-ID history is retained merely to subdivide these diagnostics.
+    std::uint64_t rows_total{}, rows_filtered{}, excluded_adds{}, ignored_executions{}, retired_rows_ignored{};
     std::uint64_t life_events{}, crossed_transitions{}, lag_samples{}, lag_last_ns{}, lag_max_ns{}, lag_sum_ns{};
+    // Age of the initial/recovered snapshot's newest order is not live-feed lag.
+    std::uint64_t snapshot_age_samples{}, snapshot_age_last_ns{}, snapshot_age_max_ns{}, snapshot_age_sum_ns{};
     std::uint64_t exchange_ahead_of_clock{}, clear_deleted_events{}, clear_deleted_erased{};
 };
 struct FullOrderLogOrder {
@@ -71,6 +74,9 @@ class Plaza2FullOrderLog final : public Plaza2ListenerEventHandler {
     [[nodiscard]] std::uint64_t revision(std::int32_t isin) const noexcept;
     [[nodiscard]] Clock::time_point committed_at() const noexcept;
     [[nodiscard]] std::span<const std::int32_t> instruments() const noexcept;
+    // Owner-thread commit/invalidation callback view; expires at the next event.
+    // Initial publication/reset includes every configured instrument, even empty ones.
+    [[nodiscard]] std::span<const std::int32_t> committed_instruments() const noexcept;
     [[nodiscard]] const LevelMap& levels(std::int32_t isin, bool bid) const;
     [[nodiscard]] std::size_t memory_bytes() const noexcept;
     [[nodiscard]] std::size_t order_count() const noexcept;

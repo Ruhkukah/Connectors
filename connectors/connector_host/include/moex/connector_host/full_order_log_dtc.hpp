@@ -21,6 +21,7 @@ class DtcFullOrderLogSource final : public DtcMarketDataSource {
     void committed(); // before server.publish_depth_commit(), on the CGate owner
     [[nodiscard]] DtcMarketDataSnapshot snapshot() const override;
     [[nodiscard]] DtcMarketDataSnapshot status_snapshot() const override;
+    [[nodiscard]] const DtcMarketDataSnapshot* status_snapshot_view() const override;
     [[nodiscard]] DtcReadOnlyCapabilities capabilities() const noexcept override {
         return {.market_data = bool(public_deals_reader_), .market_depth = true, .security_definitions = true};
     }
@@ -34,7 +35,8 @@ class DtcFullOrderLogSource final : public DtcMarketDataSource {
   private:
     const plaza2::cgate::Plaza2FullOrderLog& book_;
     std::int32_t isin_;
-    DtcMarketDataSnapshot metadata_;
+    mutable DtcMarketDataSnapshot metadata_;
+    std::uint64_t definition_revision_{};
     PublicDealsReader public_deals_reader_;
     std::vector<DtcMarketDataLevel> changes_;
     using Level = std::pair<std::int64_t, std::int64_t>;

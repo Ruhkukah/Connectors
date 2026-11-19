@@ -232,8 +232,14 @@ struct FakeSource final : DtcMarketDataSource {
     }
 
     DtcMarketDataSnapshot snapshot() const override {
+        ++snapshot_calls;
         return state;
     }
+    const DtcMarketDataSnapshot* status_snapshot_view() const override {
+        return borrow_status ? &state : nullptr;
+    }
+    bool borrow_status{false};
+    mutable std::uint64_t snapshot_calls{};
 
     DtcReadOnlyCapabilities capabilities() const noexcept override {
         return {.market_data = publisher,
@@ -745,6 +751,26 @@ void test_overflow_epoch_and_invalid_deals() {
 }
 
 void test_trade_only_revalidates_definition_and_keeps_depth_independent() {
+    {
+        Harness h;
+        h.source.borrow_status = h.source.state.full_order_log = true;
+        h.source.state.definition_revision = 1;
+        h.logon();
+        h.definition();
+        h.trade_request();
+        const auto snapshots = h.source.snapshot_calls;
+        append_deal(h.source, make_deal(h.source, 1));
+        h.pump();
+        require(h.count(107) == 1 && h.source.snapshot_calls == snapshots,
+                "FOL trade subscription and publication validate borrowed metadata without rebuilding depth");
+        ++h.source.state.definition_revision;
+        ++h.source.state.session_id;
+        const auto rejects = h.count(103);
+        h.pump();
+        h.require_market_data_reject(rejects);
+        require(!h.server.has_public_deals_subscription(),
+                "borrowed metadata still retires a trade subscription on session redefinition");
+    }
     {
         Harness h;
         h.logon();

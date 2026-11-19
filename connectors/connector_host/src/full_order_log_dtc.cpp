@@ -19,7 +19,10 @@ plaza2::cgate::Plaza2PublicDealsSnapshot DtcFullOrderLogSource::public_deals(std
     return public_deals_reader_(after_sequence, metadata_.session_id);
 }
 void DtcFullOrderLogSource::update_metadata(DtcMarketDataSnapshot metadata) {
+    if (definition_revision_ == UINT64_MAX)
+        throw std::overflow_error("FullOrderLog DTC definition revision exhausted");
     metadata.levels.clear();
+    metadata.definition_revision = ++definition_revision_;
     metadata.isin_id = isin_;
     metadata.full_order_log = true;
     metadata.order_entry_allowed = false;
@@ -79,7 +82,10 @@ void DtcFullOrderLogSource::committed() {
     published_key_ = key;
 }
 DtcMarketDataSnapshot DtcFullOrderLogSource::status_snapshot() const {
-    auto out = metadata_;
+    return *status_snapshot_view();
+}
+const DtcMarketDataSnapshot* DtcFullOrderLogSource::status_snapshot_view() const {
+    auto& out = metadata_;
     out.stream_epoch = out.market_data_authority_epoch = book_.epoch();
     out.source_snapshot_version = out.snapshot_watermark = book_.revision(isin_);
     out.committed_at = book_.committed_at();
@@ -99,10 +105,10 @@ DtcMarketDataSnapshot DtcFullOrderLogSource::status_snapshot() const {
     out.source_consistent = out.target_authoritative = out.valid = out.market_data_display_allowed;
     out.source_snapshot_hash = 0;
     out.session_ready_witness_kind = SessionReadyWitnessKind::None;
-    return out;
+    return &out;
 }
 DtcMarketDataSnapshot DtcFullOrderLogSource::snapshot() const {
-    auto out = status_snapshot();
+    auto out = *status_snapshot_view();
     for (const bool bid : {true, false}) {
         std::vector<Level> rows;
         load_top(bid, rows);

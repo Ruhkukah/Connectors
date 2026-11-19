@@ -6,6 +6,7 @@
 #include <memory>
 #include <ostream>
 #include <tuple>
+#include <unordered_map>
 
 namespace moex::connector_host {
 // Counts all native callback types serviced during measured owner polls. Storage is fixed;
@@ -56,7 +57,9 @@ class FullOrderLogDtcLoop {
                         dtc::DtcReadOnlyServerConfig config)
         : host_(host), book_(book) {
         const auto base_port = config.port;
+        source_index_.reserve(book.instruments().size());
         for (const auto isin : book.instruments()) {
+            source_index_.emplace(isin, sources_.size());
             sources_.push_back(std::make_unique<dtc::DtcFullOrderLogSource>(book, isin, dtc::DtcMarketDataSnapshot{},
                                                                             config.max_depth_levels * 2));
             config.port = base_port ? base_port + servers_.size() : 0;
@@ -65,14 +68,13 @@ class FullOrderLogDtcLoop {
         }
         book_.on_commit = [&](const auto&) {
             refresh_metadata();
-            for (std::size_t i = 0; i < sources_.size(); ++i) {
+            for (const auto isin : book_.committed_instruments()) {
+                const auto i = source_index_.at(isin);
                 sources_[i]->committed();
                 servers_[i]->publish_depth_commit();
             }
             if (on_queued_commit)
                 on_queued_commit();
-            for (auto& server : servers_)
-                server->poll();
         };
         book_.on_invalidate = [&] {
             refresh_metadata();
@@ -98,7 +100,7 @@ class FullOrderLogDtcLoop {
         if (error)
             throw std::runtime_error(error.message);
         ++polls;
-        refresh_metadata();
+        refresh_metadata(true);
         for (auto& server : servers_)
             server->poll();
     }
@@ -124,10 +126,13 @@ class FullOrderLogDtcLoop {
     plaza2::cgate::Plaza2FullOrderLog& book_;
     std::vector<std::unique_ptr<dtc::DtcFullOrderLogSource>> sources_;
     std::vector<std::unique_ptr<dtc::DtcReadOnlyServer>> servers_;
+    std::unordered_map<std::int32_t, std::size_t> source_index_;
     std::tuple<std::uint64_t, std::uint64_t, bool> metadata_key_{UINT64_MAX, UINT64_MAX, false};
     std::chrono::steady_clock::time_point refresh_at_{};
-    void refresh_metadata() {
+    void refresh_metadata(bool periodic = false) {
         const auto key = std::tuple{host_.market_data_metadata_revision(), book_.epoch(), book_.valid()};
+        if (key == metadata_key_ && !periodic)
+            return;
         const auto now = std::chrono::steady_clock::now();
         if (key == metadata_key_ && now < refresh_at_)
             return;

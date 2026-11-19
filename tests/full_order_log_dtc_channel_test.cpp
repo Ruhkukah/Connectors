@@ -17,6 +17,18 @@ struct FolDtcWorkerStressAccess {
     static auto private_snapshot(FullOrderLogDtcWorker& worker) {
         return worker.private_.take();
     }
+    static void borrowed_worker_status() {
+        FullOrderLogDtcWorker::Source source(false);
+        FullOrderLogDtcWorker::Market market;
+        market.snapshot.source_snapshot_version = 8;
+        market.snapshot.definition_revision = 3;
+        market.snapshot.levels.resize(40);
+        source.update(std::move(market));
+        const auto* first = source.status_snapshot_view();
+        if (!first || first != source.status_snapshot_view() || first->source_snapshot_version != 8 ||
+            first->definition_revision != 3 || first->levels.size() != 40)
+            throw std::runtime_error("worker status must borrow its immutable frame without copying depth");
+    }
 };
 } // namespace moex::connector_host
 
@@ -162,6 +174,7 @@ int main() {
         ring_capacity();
         ring_concurrency();
         generation_on_overflow();
+        Access::borrowed_worker_status();
         private_concurrency();
         return 0;
     } catch (const std::exception& error) {

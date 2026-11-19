@@ -41,10 +41,22 @@ class FullOrderLogTradingDtc {
             source_->set_public_deals_reader(
                 [deals, isin = isin_](auto after, auto session) { return deals->snapshot(isin, after, session); });
         worker_.start(port_, std::move(secret_), account_, deals != nullptr);
+        book_ = &book;
+        // Queue every committed revision; the worker owns all socket work.
+        // Sampling only once after cg_conn_process could skip several commits.
+        book.on_commit = [this](const auto& committed) {
+            publish_market(committed.revision(isin_), committed.epoch(), committed.committed_at());
+        };
+        book.on_invalidate = [this] { publish_market(book_->revision(isin_), book_->epoch(), Clock::now()); };
     }
     void stop() noexcept {
         if (std::exchange(stopped_, true))
             return;
+        if (book_) {
+            book_->on_commit = {};
+            book_->on_invalidate = {};
+            book_ = nullptr;
+        }
         worker_.request_stop();
         identity_.request_stop();
         if (host_)
@@ -109,6 +121,7 @@ class FullOrderLogTradingDtc {
     FullOrderLogDtcIdentity identity_;
     FullOrderLogDtcWorker worker_;
     CgateTradingHost* host_{};
+    plaza2::cgate::Plaza2FullOrderLog* book_{};
     std::unique_ptr<dtc::DtcFullOrderLogSource> source_;
     std::optional<PendingAdd> pending_add_;
     std::optional<std::int32_t> expired_identity_;

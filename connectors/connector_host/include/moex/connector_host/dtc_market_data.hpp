@@ -132,6 +132,9 @@ struct DtcMarketDataSnapshot {
     bool empty_book{false}, crossed_book{false};
     std::chrono::steady_clock::time_point committed_at{};
     std::uint64_t connector_generation{0};
+    // Nonzero only for sources which advance this whenever definition metadata
+    // or its provenance/currentness changes. Allows bounded FOL validation caching.
+    std::uint64_t definition_revision{0};
     std::uint64_t market_data_authority_epoch{0};
     std::uint64_t stream_epoch{0};
     // Assigned by the future ConnectorHost-owned DTC server, not by CGate or
@@ -285,6 +288,11 @@ class DtcMarketDataSource {
     // Sparse committed depth sources avoid copying the universe on each poll.
     [[nodiscard]] virtual DtcMarketDataSnapshot status_snapshot() const {
         return snapshot();
+    }
+    // Optional owner-thread borrow, valid until the next source operation.
+    // No consumer may retain it; the default preserves existing source behavior.
+    [[nodiscard]] virtual const DtcMarketDataSnapshot* status_snapshot_view() const {
+        return nullptr;
     }
     [[nodiscard]] virtual bool incremental_depth() const noexcept {
         return false;

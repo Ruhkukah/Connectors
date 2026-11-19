@@ -48,7 +48,8 @@ struct DtcReadOnlyServerConfig {
     std::uint32_t symbol_id{0};
     std::size_t max_frame_bytes{4096};
     std::size_t max_queued_bytes{65536};
-    // Hard ceiling is 4096; injectable for deterministic backpressure tests.
+    // Read-only ceiling remains 4096. The isolated authenticated trading worker
+    // may drain up to 256 KiB; both paths retain a fixed per-poll bound.
     std::size_t max_write_bytes_per_poll{4096};
     std::size_t max_depth_levels{20}; // per side; FullOrderLog may opt into up to 20000
     std::chrono::milliseconds idle_timeout{30000};

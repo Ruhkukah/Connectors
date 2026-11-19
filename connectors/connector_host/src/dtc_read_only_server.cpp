@@ -249,6 +249,19 @@ bool exact_dtc_quantity(std::int64_t quantity, float& wire_quantity) noexcept {
         return false;
     return static_cast<std::int64_t>(wire_quantity) == quantity;
 }
+struct StatusSnapshot {
+    DtcMarketDataSnapshot owned;
+    const DtcMarketDataSnapshot* value;
+    explicit StatusSnapshot(const DtcMarketDataSource& source) : value(source.status_snapshot_view()) {
+        if (!value) {
+            owned = source.status_snapshot();
+            value = &owned;
+        }
+    }
+    const DtcMarketDataSnapshot& get() const noexcept {
+        return *value;
+    }
+};
 } // namespace
 
 struct DtcReadOnlyServer::Impl {
@@ -278,6 +291,9 @@ struct DtcReadOnlyServer::Impl {
     std::int64_t isin{};
     unsigned witness{};
     std::optional<DtcSecurityDefinitionSnapshot> accepted_definition;
+    mutable DtcSecurityDefinitionValidation definition_cache;
+    mutable std::uint64_t definition_cache_revision{};
+    std::uint64_t publication_definition_revision{};
     DtcWireLogonCapabilities last_wire_logon_capabilities;
     DtcWireLogonCapabilities pending_wire_logon_capabilities;
     std::size_t pending_logon_response_end{};
@@ -292,8 +308,8 @@ struct DtcReadOnlyServer::Impl {
         : source(s), config(std::move(c)), decoder(config.max_frame_bytes) {
         if (config.max_frame_bytes < 16 || config.max_frame_bytes > UINT16_MAX || config.max_queued_bytes < 64 ||
             config.max_queued_bytes > 16 * 1024 * 1024 || config.max_write_bytes_per_poll == 0 ||
-            config.max_write_bytes_per_poll > 4096 || config.max_depth_levels == 0 || config.max_depth_levels > 20000 ||
-            config.idle_timeout.count() <= 0 || config.write_timeout.count() <= 0)
+            config.max_write_bytes_per_poll > (config.trading ? 256 * 1024u : 4096u) || config.max_depth_levels == 0 ||
+            config.max_depth_levels > 20000 || config.idle_timeout.count() <= 0 || config.write_timeout.count() <= 0)
             throw std::invalid_argument("invalid DTC server bounds");
         if (config.require_local_auth && (config.local_username.empty() || config.local_password.empty() ||
                                           config.local_username.size() > kMaxLocalCredentialBytes ||
@@ -441,24 +457,35 @@ struct DtcReadOnlyServer::Impl {
         if (queue(5, p))
             closing = true;
     }
+    static bool usable_flags(const DtcMarketDataSnapshot& s) {
+        return s.market_data_display_allowed && s.transport_active && s.aggr_online && s.snapshot_complete &&
+               s.book_snapshot_current;
+    }
     bool usable(const DtcMarketDataSnapshot& s) const {
         // source_consistent is the online synchronization proof, deliberately
         // false for corroborated late joins. Display permission is separate.
-        return s.market_data_display_allowed && s.transport_active && s.aggr_online && s.snapshot_complete &&
-               s.book_snapshot_current && definition_validation(s).available();
+        return usable_flags(s) && definition_validation(s).available();
     }
     std::string source_error(std::string_view detail) const {
         return "source_mode=" + std::string(dtc_source_mode_name(config.source_mode)) + ": " + std::string(detail);
     }
-    DtcSecurityDefinitionValidation definition_validation(const DtcMarketDataSnapshot& s) const {
-        if (!source.capabilities().security_definitions)
-            return {.definition = std::nullopt, .reason = "source does not support DTC security definitions"};
+    const DtcSecurityDefinitionValidation& definition_validation(const DtcMarketDataSnapshot& s) const {
+        if (!source.capabilities().security_definitions) {
+            definition_cache_revision = 0;
+            definition_cache = {.definition = std::nullopt,
+                                .reason = "source does not support DTC security definitions"};
+            return definition_cache;
+        }
+        if (s.full_order_log && s.definition_revision && s.definition_revision == definition_cache_revision)
+            return definition_cache;
         const DtcReplayDefinitionTerms replay_terms{.currency = config.currency,
                                                     .description = config.description,
                                                     .contract_size = config.contract_size,
                                                     .currency_value_per_increment =
                                                         config.currency_value_per_increment};
-        return validate_dtc_security_definition(s, config.source_mode, replay_terms);
+        definition_cache = validate_dtc_security_definition(s, config.source_mode, replay_terms);
+        definition_cache_revision = s.full_order_log ? s.definition_revision : 0;
+        return definition_cache;
     }
     void status(const DtcMarketDataSnapshot& s) {
         Bytes p;
@@ -616,18 +643,28 @@ struct DtcReadOnlyServer::Impl {
         epoch = s.stream_epoch;
         authority_epoch = s.market_data_authority_epoch;
         witness = witness_number(s.session_ready_witness_kind);
+        publication_definition_revision = s.definition_revision;
     }
     void publish_depth_commit() {
         commit_to_queue_ns = 0;
         if (client < 0 || !logged_on || closing || !depth_subscribed || !source.incremental_depth() ||
             market_resync_pending)
             return;
-        const auto s = source.status_snapshot();
+        const StatusSnapshot status(source);
+        const auto& s = status.get();
+        if (s.full_order_log && s.definition_revision && accepted_definition && usable_flags(s) &&
+            s.source_snapshot_version == version && s.stream_epoch == epoch &&
+            s.market_data_authority_epoch == authority_epoch &&
+            witness_number(s.session_ready_witness_kind) == witness &&
+            s.definition_revision == publication_definition_revision)
+            return;
         if (!usable(s) || !accepted_definition || definition_validation(s).definition != accepted_definition ||
-            s.market_data_authority_epoch != authority_epoch || s.stream_epoch != epoch) {
+            s.market_data_authority_epoch != authority_epoch || s.stream_epoch != epoch ||
+            witness_number(s.session_ready_witness_kind) != witness) {
             reject("source authority or metadata changed; fresh session required", &s);
             return;
         }
+        publication_definition_revision = s.definition_revision;
         if (s.source_snapshot_version == version)
             return;
         if (version == UINT64_MAX || s.source_snapshot_version != version + 1) {
@@ -752,14 +789,15 @@ struct DtcReadOnlyServer::Impl {
             return;
         }
 
-        DtcMarketDataSnapshot current;
+        std::optional<StatusSnapshot> current_status;
         try {
-            current = source.snapshot();
+            current_status.emplace(source);
         } catch (...) {
             retire_public_deals("current target metadata unavailable; redefine the subscription");
             return;
         }
-        const auto current_definition = definition_validation(current);
+        const auto& current = current_status->get();
+        const auto& current_definition = definition_validation(current);
         if (!definition || !accepted_definition || !current_definition.definition ||
             current_definition.definition != accepted_definition || current.symbol != symbol ||
             current.underlying_board != underlying_board || current.min_step != tick || current.isin_id != isin ||
@@ -880,7 +918,8 @@ struct DtcReadOnlyServer::Impl {
     bool trade_definition_current() const {
         if (!accepted_definition)
             return false;
-        const auto current = definition_validation(source.status_snapshot());
+        const StatusSnapshot status(source);
+        const auto& current = definition_validation(status.get());
         return current.definition && current.definition->definition_version == accepted_definition->definition_version;
     }
     std::string trade_symbol() const {
@@ -1399,7 +1438,7 @@ struct DtcReadOnlyServer::Impl {
             return;
         if (f.message_type == 506) {
             auto s = source.snapshot();
-            const auto validated = definition_validation(s);
+            const auto& validated = definition_validation(s);
             Bytes reply;
             integer(reply, 1, p.number(1));
             if (!validated.definition || !definitions_capability_advertised ||
@@ -1468,8 +1507,9 @@ struct DtcReadOnlyServer::Impl {
                                    "invalid or unsupported public trade subscription");
                 return;
             }
-            const auto current = source.snapshot();
-            const auto validated = definition_validation(current);
+            const StatusSnapshot current_status(source);
+            const auto& current = current_status.get();
+            const auto& validated = definition_validation(current);
             if (!definition || !accepted_definition || !validated.definition ||
                 validated.definition != accepted_definition || current.symbol != symbol ||
                 current.underlying_board != underlying_board || current.min_step != tick || current.isin_id != isin ||
@@ -1600,18 +1640,19 @@ struct DtcReadOnlyServer::Impl {
             if (logged_on && !closing && (market_resync_pending || trades_resync_pending))
                 poll_market_resync();
             if (logged_on && !closing && depth_subscribed && !market_resync_pending) {
-                auto s = source.status_snapshot();
-                if (!usable(s) || s.symbol != symbol || s.underlying_board != underlying_board || s.min_step != tick ||
-                    s.isin_id != isin || !accepted_definition ||
-                    definition_validation(s).definition != accepted_definition ||
-                    s.market_data_authority_epoch != authority_epoch ||
-                    witness_number(s.session_ready_witness_kind) != witness) {
-                    reject("source authority or metadata changed; fresh session required", &s);
-                } else if (s.source_snapshot_version != version || s.stream_epoch != epoch) {
-                    if (source.incremental_depth())
-                        publish_depth_commit();
-                    else
+                if (source.incremental_depth()) {
+                    publish_depth_commit();
+                } else {
+                    const auto s = source.status_snapshot();
+                    if (!usable(s) || s.symbol != symbol || s.underlying_board != underlying_board ||
+                        s.min_step != tick || s.isin_id != isin || !accepted_definition ||
+                        definition_validation(s).definition != accepted_definition ||
+                        s.market_data_authority_epoch != authority_epoch ||
+                        witness_number(s.session_ready_witness_kind) != witness) {
+                        reject("source authority or metadata changed; fresh session required", &s);
+                    } else if (s.source_snapshot_version != version || s.stream_epoch != epoch) {
                         snapshot(s);
+                    }
                 }
             }
             if (client >= 0 && logged_on && !closing && trade_subscribed && !trades_resync_pending)

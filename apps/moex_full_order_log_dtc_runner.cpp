@@ -229,6 +229,10 @@ int main(int argc, char** argv) {
                           << " clear_deleted_events=" << metrics.clear_deleted_events
                           << " clear_deleted_erased=" << metrics.clear_deleted_erased
                           << " lag_sum_ns=" << metrics.lag_sum_ns
+                          << " snapshot_age_samples=" << metrics.snapshot_age_samples
+                          << " snapshot_age_last_ns=" << metrics.snapshot_age_last_ns
+                          << " snapshot_age_max_ns=" << metrics.snapshot_age_max_ns
+                          << " snapshot_age_sum_ns=" << metrics.snapshot_age_sum_ns
                           << " crossed_transitions=" << metrics.crossed_transitions
                           << " metadata_refreshes=" << loop.metadata_refreshes << " polls=" << loop.polls << '\n'
                           << std::flush;

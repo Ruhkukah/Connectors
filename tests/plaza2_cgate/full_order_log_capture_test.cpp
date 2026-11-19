@@ -25,6 +25,73 @@ static auto bytes(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     return std::vector<char>(std::istreambuf_iterator<char>(f), {});
 }
+static void test_cached_capture_identity(const fs::path& root, FullOrderLogCaptureOptions options) {
+    const std::array<std::int32_t, 1> ids{11};
+    Plaza2FullOrderLog downstream(ids);
+    options.directory = root / "identity-cache";
+    FullOrderLogCapture capture(options, ids, downstream);
+    const auto record = [&](Plaza2ListenerEvent event) {
+        require(!capture.record(event), "cached identity recording");
+    };
+    auto schema = tables();
+    const auto open = [&] {
+        record({.kind = Kind::Open, .stream_code = kFullOrderLogStreamCode, .raw_tables = schema});
+    };
+    open();
+    record(row(schema[0], 1, 11, 100000, 1).event());
+    record(row(schema[0], 2, 22, 100000, 1).event());
+    const auto equivalent = schema;
+    record(row(equivalent[0], 3, 11, 100000, 1).event());
+    record({.kind = Kind::Close, .stream_code = kFullOrderLogStreamCode});
+    // A new OPEN may move both the identity bytes and its null-map bit.
+    std::swap(schema[0].fields[4].offset, schema[0].fields[10].offset);
+    std::swap(schema[0].fields[4].index, schema[0].fields[10].index);
+    open();
+    record(row(schema[0], 4, 11, 100000, 1).event());
+    record(row(schema[0], 5, 22, 100000, 1).event());
+    auto null_identity = row(schema[0], 6, 22, 100000, 1);
+    null_identity.nulls[null_identity.field("isin_id").index] = 1;
+    record(null_identity.event());
+    auto truncated = row(schema[0], 7, 22, 100000, 1);
+    auto short_event = truncated.event();
+    short_event.raw_payload = short_event.raw_payload.first(16);
+    record(short_event);
+    const std::array deals_schema{
+        Plaza2RawTableBinding{.name = "deal",
+                              .fields = {{.name = "isin_id", .type_token = "i4", .offset = 0, .size = 4, .index = 0}},
+                              .index = 0,
+                              .row_size = 4}};
+    record({.kind = Kind::Open,
+            .stream_code = moex::plaza2::generated::StreamCode::kFortsDealsRepl,
+            .raw_tables = deals_schema});
+    for (const std::int32_t isin : {11, 22}) {
+        Row deal(deals_schema[0]);
+        deal.set("isin_id", isin);
+        auto event = deal.event();
+        event.stream_code = moex::plaza2::generated::StreamCode::kFortsDealsRepl;
+        record(event);
+    }
+    record(row(schema[0], 8, 11, 100000, 1).event()); // DEALS OPEN must not overwrite FOL offsets.
+    record({.kind = Kind::Close, .stream_code = moex::plaza2::generated::StreamCode::kFortsDealsRepl});
+    record({.kind = Kind::Close, .stream_code = kFullOrderLogStreamCode});
+    capture.finish();
+    std::size_t fol_rows{}, deal_rows{}, malformed{};
+    read_full_order_log_capture(options.directory, [&](const auto& record) {
+        const auto& event = record.event;
+        if (event.kind != Kind::StreamData)
+            return;
+        if (event.stream_code == kFullOrderLogStreamCode) {
+            ++fol_rows;
+            if (event.raw_payload.size() == 16 ||
+                (!event.raw_nulls.empty() && event.raw_nulls[event.raw_table->fields[10].index]))
+                ++malformed;
+        } else
+            ++deal_rows;
+    });
+    require(
+        capture.metrics().filtered == 3 && fol_rows == 6 && deal_rows == 1 && malformed == 2,
+        "OPEN-cached identity filters selected instruments across reopens/streams and preserves malformed evidence");
+}
 static void test_backfill(const fs::path& root, FullOrderLogCaptureOptions options) {
     const auto schema = tables();
     const std::array<std::int32_t, 1> ids{11};
@@ -349,6 +416,7 @@ int main() {
                 "legacy capture exports without an invented sidecar");
         test_refdata_join(root, o);
         test_backfill(root, o);
+        test_cached_capture_identity(root, o);
         auto data = bytes(dbn);
         require(data.size() > 128 && std::string_view(data.data(), 4) == std::string_view("DBN\3", 4) &&
                     (data.size() - 128) % 56 == 0,

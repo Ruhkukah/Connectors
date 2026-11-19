@@ -18,6 +18,11 @@ int main() {
         metadata.transport_active = metadata.refdata_metadata_current = true;
         DtcFullOrderLogSource source(h.book, 11, metadata, 32);
         source.configure_depth_limit(2);
+        const auto* borrowed = source.status_snapshot_view();
+        const auto definition_revision = borrowed->definition_revision;
+        require(borrowed && borrowed->levels.empty() && definition_revision > 0 &&
+                    source.status_snapshot_view() == borrowed,
+                "owner-thread status borrow retains metadata without copying depth");
         h.book.on_commit = [&](const auto&) { source.committed(); };
         auto snapshot = source.snapshot();
         require(snapshot.levels.size() == 4 && snapshot.levels[0].price_scaled == 10000000 &&
@@ -33,6 +38,11 @@ int main() {
         require(source.snapshot().levels[0].price_scaled == 10000000, "pending rows are invisible to DTC");
         h.commit();
         auto updates = source.depth_changes();
+        require(source.status_snapshot_view()->definition_revision == definition_revision,
+                "price commits preserve the cached definition identity");
+        source.update_metadata(metadata);
+        require(source.status_snapshot_view()->definition_revision > definition_revision,
+                "metadata replacement advances the definition validation token");
         require(source.status_snapshot().exchange_moment_ns == 1759651234567890123ULL &&
                     source.snapshot().levels[0].exchange_moment_ns == 1759651234567890123ULL &&
                     updates[0].exchange_moment_ns == 1759651234567890123ULL,
