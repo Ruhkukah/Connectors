@@ -624,6 +624,42 @@ static void publication_lag() {
                 metrics.lag_last_ns >= publication_finished_ns - exchange_ns,
             "exchange-to-commit lag includes publication and its delayed crossed callback");
 }
+static void lag_maximum_attribution() {
+    const auto utc = [] {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    };
+    Harness h;
+    h.apply(row(h.schema[0], 1, 11, 100000, 3));
+    h.online();
+    const auto apply = [&](std::int64_t id, std::int32_t isin, std::uint64_t moment, std::int8_t action,
+                           std::int64_t revision) {
+        h.begin();
+        auto update = row(h.schema[2], id, isin, 100000, 2, action, revision);
+        update.set("moment_ns", moment);
+        h.apply(update);
+        h.commit();
+    };
+    apply(1, 11, utc() - 2000000, 2, 2);
+    const auto first = h.book.metrics();
+    require(first.lag_max_isin_id == 11 && first.lag_max_observed_utc_ns > 0,
+            "first live maximum has an instrument and UTC observation");
+    const auto slow_moment = utc() - 2000000000;
+    apply(2, 22, slow_moment, 1, 3);
+    const auto maximum = h.book.metrics();
+    require(maximum.lag_max_ns > first.lag_max_ns && maximum.lag_max_isin_id == 22 &&
+                maximum.lag_max_exchange_moment_ns == slow_moment &&
+                maximum.lag_max_observed_utc_ns - slow_moment == maximum.lag_max_ns,
+            "a later maximum is correlated to its exact exchange timestamp and instrument");
+    apply(1, 11, utc() - 1000000, 2, 4);
+    const auto later = h.book.metrics();
+    require(later.lag_last_ns < maximum.lag_max_ns && later.lag_max_ns == maximum.lag_max_ns &&
+                later.lag_max_isin_id == maximum.lag_max_isin_id &&
+                later.lag_max_exchange_moment_ns == maximum.lag_max_exchange_moment_ns &&
+                later.lag_max_observed_utc_ns == maximum.lag_max_observed_utc_ns,
+            "a newer low-lag sample does not replace the diagnostic maximum's identity");
+}
 static void snapshot_age_and_touched_instruments() {
     const auto utc_now_ns = [] {
         return static_cast<std::uint64_t>(
@@ -647,12 +683,14 @@ static void snapshot_age_and_touched_instruments() {
         auto metrics = h.book.metrics();
         const auto initial = h.book.committed_instruments();
         require(h.book.valid() && metrics.lag_samples == 0 && metrics.snapshot_age_samples == 1 &&
-                    metrics.snapshot_age_last_ns >= 60000000000ULL && initial.size() == 2 && initial[0] == 11 &&
-                    initial[1] == 22,
+                    metrics.lag_max_observed_utc_ns == 0 && metrics.lag_max_exchange_moment_ns == 0 &&
+                    metrics.lag_max_isin_id == 0 && metrics.snapshot_age_last_ns >= 60000000000ULL &&
+                    initial.size() == 2 && initial[0] == 11 && initial[1] == 22,
                 "initial publication includes empty instruments and reports old snapshot age separately from live lag");
         h.begin();
         auto execution = row(h.schema[2], 1, 11, 100000, 1, 2, 2);
-        execution.set("moment_ns", utc_now_ns() - 2000000ULL);
+        const auto exchange_moment = utc_now_ns() - 2000000ULL;
+        execution.set("moment_ns", exchange_moment);
         h.apply(execution);
         h.commit();
         metrics = h.book.metrics();
@@ -660,6 +698,10 @@ static void snapshot_age_and_touched_instruments() {
                     metrics.lag_max_ns < metrics.snapshot_age_last_ns && metrics.snapshot_age_samples == 1 &&
                     h.book.committed_instruments().size() == 1 && h.book.committed_instruments()[0] == 11,
                 "live commit reports only touched instrument and does not inherit the snapshot age");
+        require(metrics.lag_max_observed_utc_ns >= exchange_moment &&
+                    metrics.lag_max_observed_utc_ns - metrics.lag_max_exchange_moment_ns == metrics.lag_max_ns &&
+                    metrics.lag_max_exchange_moment_ns == exchange_moment && metrics.lag_max_isin_id == 11,
+                "live lag maximum retains its exact source, UTC observation and instrument");
         h.begin();
         h.add(1, 11, 100000, 1, 2, 3);
         h.commit();
@@ -839,6 +881,7 @@ int main() {
         review_semantics();
         life_time_and_cross();
         publication_lag();
+        lag_maximum_attribution();
         snapshot_age_and_touched_instruments();
         cached_table_bindings();
     } catch (const std::exception& e) {

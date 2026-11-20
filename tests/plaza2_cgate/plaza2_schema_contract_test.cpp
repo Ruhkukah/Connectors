@@ -18,6 +18,79 @@ struct IgnoreRows final : Plaza2ListenerEventHandler {
     }
 };
 
+static void require_full_order_log_layout_coverage() {
+    using enum generated::TableCode;
+    std::vector<Plaza2RawTableBinding> tables;
+    for (const auto code : {kFortsRefdataReplSession, kFortsRefdataReplFutInstruments, kFortsRefdataReplFutSessContents,
+                            kFortsRefdataReplFutVcb, kFortsRefdataReplInstr2matchingMap,
+                            kFortsSessionstateReplSessionState, kFortsInstrumentstateReplInstrumentState}) {
+        const auto* descriptor = generated::FindTableByCode(code);
+        auto& table = tables.emplace_back();
+        table.name = descriptor->table_name;
+        for (const auto& field : test::server_schema_fields(code))
+            table.fields.push_back(
+                {.name = std::string(field.field_name), .type_token = std::string(field.type_token)});
+        require(full_order_log_definition_table_layout_known(table), "captured 9.9 complete layout must be known");
+        auto unknown = table;
+        unknown.fields.push_back({.name = "unknown_new_term", .type_token = "i4"});
+        require(!full_order_log_definition_table_layout_known(unknown),
+                "unknown added native column must disable exception");
+        unknown = table;
+        unknown.fields.back().type_token = "unknown_type";
+        require(!full_order_log_definition_table_layout_known(unknown), "unknown native type must disable exception");
+        unknown = table;
+        unknown.fields.pop_back();
+        require(!full_order_log_definition_table_layout_known(unknown), "missing native column must disable exception");
+        std::reverse(table.fields.begin(), table.fields.end());
+        require(full_order_log_definition_table_layout_known(table),
+                "column order is negotiated, not semantic identity");
+    }
+    Plaza2RawTableBinding modern{.name = "fut_sess_contents"};
+    for (const auto& field : test::spectra912_future_session_schema())
+        modern.fields.push_back({.name = std::string(field.field_name), .type_token = std::string(field.type_token)});
+    require(full_order_log_definition_table_layout_known(modern), "reviewed full 9.12 future-session layout is known");
+    private_state::Plaza2PrivateStateProjector projector;
+    Plaza2PrivateStateBridge bridge(projector);
+    const std::array streams{generated::StreamCode::kFortsRefdataRepl, generated::StreamCode::kFortsSessionstateRepl,
+                             generated::StreamCode::kFortsInstrumentstateRepl};
+    require(!bridge.reset(streams) && !bridge.begin_run(), "coverage bridge reset");
+    bridge.require_full_order_log_refdata(true);
+    require(!bridge.full_order_log_definition_layout_known(), "no layout knowledge before OPEN");
+    for (const auto stream : streams)
+        require(!bridge.on_plaza2_listener_event(
+                    {.kind = Plaza2ListenerEventKind::Open, .stream_code = stream, .raw_tables = tables}),
+                "known layout OPEN");
+    require(bridge.full_order_log_definition_layout_known(), "all current negotiated definition layouts known");
+    require(!bridge.on_plaza2_listener_event(
+                {.kind = Plaza2ListenerEventKind::TransactionBegin, .stream_code = streams[0]}),
+            "coverage transaction begin");
+    std::vector<Plaza2DecodedFieldValue> fields;
+    for (const auto& field : generated::FieldsForTable(kFortsRefdataReplSession))
+        fields.push_back({.field_code = field.field_code, .kind = Plaza2DecodedValueKind::SignedInteger});
+    fields.back().kind = Plaza2DecodedValueKind::None;
+    require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                              .stream_code = streams[0],
+                                              .table_code = kFortsRefdataReplSession,
+                                              .fields = fields}),
+            "missing row value does not change existing projection contract");
+    require(!bridge.full_order_log_definition_layout_known(), "null/unrecorded session field disables exception");
+    for (const auto stream : streams)
+        require(!bridge.on_plaza2_listener_event(
+                    {.kind = Plaza2ListenerEventKind::Open, .stream_code = stream, .raw_tables = tables}),
+                "restore known layout");
+    fields.clear();
+    for (const auto& field : generated::FieldsForTable(kFortsRefdataReplFutSessContents))
+        fields.push_back({.field_code = field.field_code, .kind = Plaza2DecodedValueKind::SignedInteger});
+    require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                              .stream_code = streams[0],
+                                              .table_code = kFortsRefdataReplFutSessContents,
+                                              .fields = fields,
+                                              .raw_table = &modern}),
+            "retain normal projection of missing optional xlot");
+    require(!bridge.full_order_log_definition_layout_known(),
+            "null negotiated fractional lot cannot be hidden by legacy integer fallback");
+}
+
 // Exercise the negotiated CG_MSG_OPEN descriptor and real row-byte decoder before
 // projecting the committed terms. 9.12 changes offsets as well as removing a field.
 struct RefdataProjection final : Plaza2ListenerEventHandler {
@@ -257,6 +330,7 @@ static void require_filtered_subscriptions(Plaza2Connection& connection, const t
 int main(int argc, char** argv) {
     try {
         require(argc == 2, "fake runtime path required");
+        require_full_order_log_layout_coverage();
         const auto captured_fields = require_captured_schema_subset();
         const auto legacy = test::server_schema_fields(generated::TableCode::kFortsRefdataReplFutSessContents);
         const auto updated = test::spectra912_future_session_schema();

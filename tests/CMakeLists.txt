@@ -2,6 +2,8 @@ find_package(Threads REQUIRED)
 
 add_test(NAME reconstruct_orders_test COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/reconstruct_orders_test.py" "${MOEX_SOURCE_ROOT}/scripts/reconstruct_orders.py")
+add_test(NAME dtc_order_test_client COMMAND "${Python3_EXECUTABLE}" -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_dtc_order_test_client.py")
 
 add_library(plaza2_runtime_test_support STATIC plaza2_cgate/plaza2_runtime_test_support.cpp)
 target_link_libraries(plaza2_runtime_test_support PUBLIC moex_plaza2_cgate_runtime)
@@ -75,6 +77,7 @@ foreach(name IN ITEMS connector_host_dtc_protocol_test connector_host_dtc_server
     set_tests_properties(${name} PROPERTIES LABELS "dtc;read-only;sanitizer")
 endforeach()
 moex_runtime_test(connector_host_dtc_public_deals_test connector_host_dtc_public_deals_test.cpp moex_connector_host)
+target_link_libraries(connector_host_dtc_server_test PRIVATE moex_full_order_log_capture)
 set_tests_properties(connector_host_dtc_public_deals_test PROPERTIES LABELS "dtc;read-only;integration;sanitizer")
 add_executable(plaza2_text_test plaza2_cgate/plaza2_text_test.cpp)
 target_link_libraries(plaza2_text_test PRIVATE moex_plaza2_cgate_aggr20_md)

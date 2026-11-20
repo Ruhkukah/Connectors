@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <functional>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <limits>
@@ -618,6 +619,7 @@ void live_test_metadata_and_auth() {
     correct.logon(true, "local-user", "local-password");
     check(correct.count(2) == 1, "dedicated local DTC credentials permit valid logon");
 }
+void complete_fol_identity(Replay& source);
 void manual_trading_reconnect(bool deferred) {
     using moex::connector_host::OrderState;
     using moex::plaza2_trade::Plaza2TradeSide;
@@ -942,8 +944,7 @@ void manual_trading_reconnect(bool deferred) {
     h.send(packet(203, robot_cancel));
     await([&] { return cancelled == 2; });
     check(cancelled == 2, "robot-origin DTC Del stays available");
-    h.source.incremental = true;
-    h.source.state.full_order_log = true;
+    complete_fol_identity(h.source);
     h.got.clear();
     h.subscribe();
     check(h.count(145) == 2, "trading endpoint subscribed to depth before producer backlog");
@@ -960,13 +961,24 @@ void manual_trading_reconnect(bool deferred) {
     check(h.count(145) == 2 && Read(h.first(145).payload).n.at(13) == h.source.state.source_snapshot_version &&
               h.count(5) == 0 && !h.eof,
           "coalesced committed versions also resnapshot without dropping trading");
+    const auto reconciled_before_revision = reconciled;
+    h.got.clear();
+    ++h.source.state.session_provenance.repl_rev;
+    ++h.source.state.definition_revision;
+    h.pump(5);
+    check(h.count(700) == 1 && h.count(5) == 0 && !h.eof && reconciled == reconciled_before_revision &&
+              submitted == 2 && moved == 1 && cancelled == 2,
+          "ready trading provenance acknowledgement does not repeat reconciliation or call an order hook");
     h.got.clear();
     snapshot.orders_current = false;
     snapshot.position.reset();
+    ++h.source.state.session_provenance.repl_rev;
+    ++h.source.state.definition_revision;
     h.pump(80);
     add(0, "transient-reject");
-    check(submitted == 2 && Read(h.first(301).payload).n.at(11) == 8 && h.count(5) == 0 && !h.eof,
-          "transient private transaction fences Add without losing DTC session");
+    check(submitted == 2 && Read(h.first(301).payload).n.at(11) == 8 && h.count(5) == 0 && !h.eof &&
+              h.count(700) == 1 && reconciled == reconciled_before_revision,
+          "provenance acknowledgement cannot reopen private entry fence or repeat owner reconciliation");
     snapshot.orders_current = true;
     snapshot.position = 0;
     ++snapshot.generation;
@@ -1414,6 +1426,291 @@ void full_order_log_borrowed_status() {
     invalid.pump(3);
     check(invalid.eof && invalid.count(5) == 1, "same revision cannot hide an immediate loss of display authority");
 }
+moex::plaza2::cgate::FullOrderLogDefinitionIdentity& edit_fol_identity(DtcMarketDataSnapshot& s) {
+    auto identity = std::make_shared<moex::plaza2::cgate::FullOrderLogDefinitionIdentity>(
+        s.full_order_log_definition_identity ? *s.full_order_log_definition_identity
+                                             : moex::plaza2::cgate::FullOrderLogDefinitionIdentity{});
+    s.full_order_log_definition_identity = identity;
+    return *identity;
+}
+void complete_fol_identity(Replay& source) {
+    // Synthetic fully recorded terms; this is not reconstructed native evidence.
+    mark_live_refdata_proven(source);
+    auto& s = source.state;
+    s.full_order_log = source.incremental = source.borrow_status = true;
+    s.definition_revision = 1;
+    auto& identity = edit_fol_identity(s);
+    identity.complete = true;
+    identity.matching_id = 1;
+    identity.session_status_lifenum = 21;
+    identity.instrument_status_lifenum = 22;
+    auto& instrument = identity.instrument.emplace();
+    instrument.isin_id = static_cast<std::int32_t>(s.isin_id);
+    instrument.sess_id = s.session_id;
+    instrument.kind = moex::plaza2::private_state::InstrumentKind::kFuture;
+    instrument.isin = s.symbol;
+    instrument.short_isin = "ALZ6";
+    instrument.name = s.description;
+    instrument.min_step = s.min_step;
+    instrument.roundto = 2;
+    instrument.lot_volume = 10;
+    instrument.lot_volume_units = 1000000000;
+    instrument.has_current_status = instrument.current_status_refdata_bound = true;
+    instrument.current_status = 1;
+    instrument.definition_source_provenance = s.definition_source_provenance;
+    instrument.future_vcb_provenance = s.future_vcb_provenance;
+    auto& terms = instrument.future_session_terms.emplace();
+    terms.isin_id = instrument.isin_id;
+    terms.sess_id = s.session_id;
+    terms.settlement_price = moex::plaza2::private_state::SessionDecimal{1000000};
+    terms.raw_limit_up = terms.raw_limit_down = moex::plaza2::private_state::SessionDecimal{100000};
+    terms.min_step = moex::plaza2::private_state::SessionDecimal{1000};
+    terms.lot_volume_units = instrument.lot_volume_units;
+    terms.source = s.future_sess_contents_provenance;
+    identity.session.emplace().sess_id = s.session_id;
+    identity.session->has_current_status = true;
+    identity.session->current_status = 1;
+}
+void full_order_log_provenance_policy() {
+    auto c = config();
+    c.source_mode = DtcSourceMode::LiveTest;
+    Harness h(c);
+    complete_fol_identity(h.source);
+    h.logon();
+    h.subscribe();
+    check(h.count(507) == 1 && h.count(145) == 2 && !h.eof, "complete synthetic FOL terms subscribe");
+    h.got.clear();
+    ++h.source.state.definition_revision;
+    ++h.source.state.session_provenance.repl_rev;
+    h.pump(3);
+    check(h.count(700) == 1 && h.count(701) == 1 && h.count(5) == 0 && h.count(145) == 0 && !h.eof,
+          "provenance-only revision emits one authority and one log without logout or resnapshot");
+    const Read revision(h.first(700).payload);
+    check(revision.s.at(1).find("\"definition_revision\":2") != std::string::npos &&
+              revision.s.at(1).find("\"stream_epoch\":73") != std::string::npos &&
+              Read(h.first(701).payload).s.at(3).find("session_repl_rev=76->77") != std::string::npos,
+          "authority bumps metadata revision and provenance log identifies source revisions");
+    h.got.clear();
+    ++h.source.state.source_snapshot_version;
+    h.source.changes = {{.price_scaled = 1000000, .volume = 17, .side = DtcDepthSide::Bid, .depth_level = 1}};
+    h.server.publish_depth_commit();
+    h.pump(4);
+    const Read next(h.first(140).payload);
+    check(h.count(140) == 1 && next.n.at(13) == 73 && next.n.at(14) == 2 && next.n.at(15) == 10 && next.n.at(8) == 1 &&
+              next.f.at(4) == 17 && h.count(700) == 0 && !h.eof,
+          "provenance acknowledgement preserves the next atomic batch, epoch and final level quantity");
+    h.got.clear();
+    h.pump(3);
+    check(h.count(700) == 0 && h.count(140) == 0, "unchanged metadata is acknowledged exactly once");
+
+    using Change = std::function<void(DtcMarketDataSnapshot&)>;
+    std::vector<Change> changes;
+#define FOL_CHANGE(expression) changes.emplace_back([](DtcMarketDataSnapshot& s) { expression; })
+#define INSTRUMENT_CHANGE(expression) FOL_CHANGE(auto& i = *edit_fol_identity(s).instrument; expression)
+#define SESSION_CHANGE(expression) FOL_CHANGE(auto& t = *edit_fol_identity(s).session; expression)
+    FOL_CHANGE(s.symbol += "x");
+    FOL_CHANGE(s.underlying_board += "x");
+    FOL_CHANGE(s.min_step = "0.02");
+    FOL_CHANGE(s.description += "x");
+    FOL_CHANGE(s.currency = "USD");
+    FOL_CHANGE(s.contract_size = "20");
+    FOL_CHANGE(s.currency_value_per_increment = "3");
+    FOL_CHANGE(++s.isin_id);
+    FOL_CHANGE(++s.session_id);
+    FOL_CHANGE(s.future_vcb_base_contract_code += "x");
+    FOL_CHANGE(++s.future_vcb_base_contract_id);
+    FOL_CHANGE(edit_fol_identity(s).complete = false);
+    FOL_CHANGE(edit_fol_identity(s).instrument.reset());
+    FOL_CHANGE(edit_fol_identity(s).session.reset());
+    FOL_CHANGE(++edit_fol_identity(s).matching_id);
+    FOL_CHANGE(++edit_fol_identity(s).session_status_lifenum);
+    FOL_CHANGE(++edit_fol_identity(s).instrument_status_lifenum);
+    FOL_CHANGE(edit_fol_identity(s).session_status_lifenum = 0);
+    FOL_CHANGE(edit_fol_identity(s).instrument_status_lifenum = 0);
+    INSTRUMENT_CHANGE(++i.isin_id);
+    INSTRUMENT_CHANGE(++i.sess_id);
+    INSTRUMENT_CHANGE(i.kind = moex::plaza2::private_state::InstrumentKind::kOption);
+    INSTRUMENT_CHANGE(i.isin += "x");
+    INSTRUMENT_CHANGE(i.short_isin += "x");
+    INSTRUMENT_CHANGE(i.name += "x");
+    INSTRUMENT_CHANGE(i.base_contract_code += "x");
+    INSTRUMENT_CHANGE(++i.base_contract_id);
+    INSTRUMENT_CHANGE(i.future_vcb_join_status = moex::plaza2::private_state::FutureVcbJoinStatus::Resolved);
+    INSTRUMENT_CHANGE(i.future_vcb_currency += "x");
+    INSTRUMENT_CHANGE(i.future_vcb_board_md += "x");
+    INSTRUMENT_CHANGE(++i.fut_isin_id);
+    INSTRUMENT_CHANGE(++i.option_series_id);
+    INSTRUMENT_CHANGE(++i.inst_term);
+    INSTRUMENT_CHANGE(++i.roundto);
+    INSTRUMENT_CHANGE(++i.lot_volume);
+    INSTRUMENT_CHANGE(++*i.lot_volume_units);
+    INSTRUMENT_CHANGE(++i.trade_mode_id);
+    INSTRUMENT_CHANGE(++i.state);
+    INSTRUMENT_CHANGE(i.current_session_member = true);
+    INSTRUMENT_CHANGE(++i.current_session_state);
+    INSTRUMENT_CHANGE(i.has_current_status = false);
+    INSTRUMENT_CHANGE(++i.current_status);
+    INSTRUMENT_CHANGE(i.current_status_refdata_bound = false);
+    INSTRUMENT_CHANGE(++i.current_status_session_epoch);
+    INSTRUMENT_CHANGE(++i.signs);
+    INSTRUMENT_CHANGE(i.put = true);
+    INSTRUMENT_CHANGE(i.is_spread = true);
+    INSTRUMENT_CHANGE(i.min_step = "0.02");
+    INSTRUMENT_CHANGE(i.step_price += "1");
+    INSTRUMENT_CHANGE(i.step_price_curr += "1");
+    INSTRUMENT_CHANGE(i.settlement_price += "1");
+    INSTRUMENT_CHANGE(i.strike += "1");
+    INSTRUMENT_CHANGE(++i.last_trade_date);
+    INSTRUMENT_CHANGE(++i.group_mask);
+    INSTRUMENT_CHANGE(++i.trade_period_access);
+    INSTRUMENT_CHANGE(i.legs.push_back({1, 1, 1}));
+    INSTRUMENT_CHANGE(i.future_session_terms.reset());
+    INSTRUMENT_CHANGE(++i.future_session_terms->isin_id);
+    INSTRUMENT_CHANGE(++i.future_session_terms->sess_id);
+    INSTRUMENT_CHANGE(++i.future_session_terms->settlement_price->units);
+    INSTRUMENT_CHANGE(++i.future_session_terms->raw_limit_up->units);
+    INSTRUMENT_CHANGE(++i.future_session_terms->raw_limit_down->units);
+    INSTRUMENT_CHANGE(++i.future_session_terms->min_step->units);
+    INSTRUMENT_CHANGE(++*i.future_session_terms->lot_volume_units);
+    INSTRUMENT_CHANGE(++i.future_session_terms->repl_id);
+    INSTRUMENT_CHANGE(i.future_session_terms->bounds.lower = moex::plaza2::private_state::SessionDecimal{1});
+    INSTRUMENT_CHANGE(i.future_session_terms->bounds.upper = moex::plaza2::private_state::SessionDecimal{2});
+    INSTRUMENT_CHANGE(i.future_session_terms->bounds.formula_confirmed = false);
+    INSTRUMENT_CHANGE(i.future_session_terms->bounds.interval_valid = true);
+    SESSION_CHANGE(++t.sess_id);
+    SESSION_CHANGE(++t.begin);
+    SESSION_CHANGE(++t.end);
+    SESSION_CHANGE(++t.state);
+    SESSION_CHANGE(t.has_current_status = false);
+    SESSION_CHANGE(++t.current_status);
+    SESSION_CHANGE(t.eve_on = true);
+    SESSION_CHANGE(++t.eve_begin);
+    SESSION_CHANGE(++t.eve_end);
+    SESSION_CHANGE(t.mon_on = true);
+    SESSION_CHANGE(++t.mon_begin);
+    SESSION_CHANGE(++t.mon_end);
+    SESSION_CHANGE(++t.settl_sess_begin);
+    SESSION_CHANGE(++t.clr_sess_begin);
+    SESSION_CHANGE(++t.settl_price_calc_time);
+    SESSION_CHANGE(++t.settl_sess_t1_begin);
+    SESSION_CHANGE(++t.margin_call_fix_schedule);
+    FOL_CHANGE(++s.stream_epoch);
+    FOL_CHANGE(++s.market_data_authority_epoch);
+    FOL_CHANGE(s.market_data_display_allowed = false);
+    using Provenance = moex::plaza2::private_state::SourceRowProvenance;
+    using SourceField = std::function<Provenance&(DtcMarketDataSnapshot&)>;
+    const std::array<SourceField, 8> sources{
+        [](auto& s) -> Provenance& { return s.definition_source_provenance; },
+        [](auto& s) -> Provenance& { return s.future_instruments_provenance; },
+        [](auto& s) -> Provenance& { return s.future_sess_contents_provenance; },
+        [](auto& s) -> Provenance& { return s.session_provenance; },
+        [](auto& s) -> Provenance& { return s.future_vcb_provenance; },
+        [](auto& s) -> Provenance& { return edit_fol_identity(s).instrument->definition_source_provenance; },
+        [](auto& s) -> Provenance& { return edit_fol_identity(s).instrument->future_vcb_provenance; },
+        [](auto& s) -> Provenance& { return edit_fol_identity(s).instrument->future_session_terms->source; }};
+    for (std::size_t source_index = 0; source_index < sources.size(); ++source_index) {
+        const auto& source = sources[source_index];
+        changes.emplace_back([source](auto& s) { ++source(s).lifenum; });
+        changes.emplace_back([source](auto& s) { source(s).present = false; });
+        changes.emplace_back([source](auto& s) { source(s).repl_rev = 0; });
+        changes.emplace_back([source](auto& s) { source(s).table_code = moex::plaza2::projection::kNoTableCode; });
+        changes.emplace_back([source](auto& s) { source(s).stream_code = moex::plaza2::projection::kNoStreamCode; });
+        Harness revision_only(c);
+        complete_fol_identity(revision_only.source);
+        revision_only.logon();
+        revision_only.subscribe();
+        revision_only.got.clear();
+        ++source(revision_only.source.state).repl_rev;
+        ++revision_only.source.state.definition_revision;
+        revision_only.pump(3);
+        if (source_index == 3)
+            check(revision_only.count(700) == 1 && revision_only.count(5) == 0 && !revision_only.eof,
+                  "fully recorded session-row revision alone retains FOL session");
+        else
+            check(revision_only.count(5) == 1 && revision_only.eof,
+                  "partly recorded vendor instrument/VCB table revisions remain strict");
+    }
+#undef SESSION_CHANGE
+#undef INSTRUMENT_CHANGE
+#undef FOL_CHANGE
+    for (const auto& change : changes) {
+        Harness changed(c);
+        complete_fol_identity(changed.source);
+        changed.logon();
+        changed.subscribe();
+        changed.got.clear();
+        ++changed.source.state.definition_revision;
+        ++changed.source.state.session_provenance.repl_rev;
+        change(changed.source.state);
+        changed.pump(3);
+        check(changed.count(5) == 1 && changed.eof,
+              "each visible/complete instrument/session/authority term change still logs off");
+    }
+    for (const bool fol : {false, true}) {
+        Harness legacy(c);
+        complete_fol_identity(legacy.source);
+        legacy.source.state.full_order_log = fol;
+        legacy.source.state.full_order_log_definition_identity = {}; // actual V1 reader's unavailable proof
+        legacy.logon();
+        legacy.subscribe();
+        legacy.got.clear();
+        ++legacy.source.state.definition_revision;
+        ++legacy.source.state.session_provenance.repl_rev;
+        legacy.pump(3);
+        check(legacy.count(5) == 1 && legacy.eof,
+              "AGGR and unrecorded legacy FOL metadata retain strict revision-change logout");
+    }
+}
+int replay_legacy_refdata(const char* path) {
+    std::ifstream file(path, std::ios::binary);
+    const std::string contents{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    check(file.eof() || file.good(), "read captured REFDATA companion");
+    check(contents.starts_with("MOEXFOL_REFDATA_V1\n"), "historical replay requires the actual V1 companion");
+    const auto rows = moex::plaza2::cgate::parse_full_order_log_refdata(contents);
+    const auto first = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.available && row.isin_id > 0 && !row.isin.empty() && !row.min_step.empty();
+    });
+    check(first != rows.end(), "captured metadata has an available instrument");
+    Harness h; // Explicit synthetic replay economics/depth, never filled into captured terms.
+    h.source.state.full_order_log = h.source.incremental = h.source.borrow_status = true;
+    const auto apply = [&](const auto& row) {
+        auto& s = h.source.state;
+        s.isin_id = row.isin_id;
+        s.symbol = row.isin;
+        s.min_step = row.min_step;
+        s.session_id = row.sess_id;
+        s.definition_source_provenance = row.instrument_source;
+        s.session_provenance = row.session_source;
+        s.full_order_log_definition_identity.reset(); // V1 cannot prove complete terms.
+        ++s.definition_revision;
+    };
+    apply(*first);
+    h.logon();
+    h.subscribe();
+    check(h.count(507) == 1 && h.count(145) != 0 && !h.eof, "historical metadata replay starts local DTC session");
+    const auto initial_revision = first->session_source.repl_rev;
+    std::size_t updates{};
+    for (auto row = std::next(first); row != rows.end(); ++row) {
+        if (!row->available || row->isin_id != first->isin_id)
+            continue;
+        h.got.clear();
+        apply(*row);
+        ++updates;
+        h.pump(3);
+        if (h.eof) {
+            check(h.count(5) == 1, "unrecorded historical terms force explicit DTC logout");
+            std::cout << "{\"captured_metadata_rows_applied\":" << updates + 1
+                      << ",\"initial_session_repl_rev\":" << initial_revision
+                      << ",\"logout_session_repl_rev\":" << row->session_source.repl_rev
+                      << ",\"logout_after_capture_sequence\":" << row->effective_after_sequence
+                      << ",\"complete_terms_recorded\":false,\"strict_logout\":true,"
+                         "\"synthetic_display_bindings\":true,\"full_book_replay\":false}\n";
+            return 0;
+        }
+    }
+    check(false, "historical sequence did not exercise a strict metadata logout");
+    return 2;
+}
 void full_order_log_committed_depth() {
     auto c = config();
     c.max_depth_levels = 64;
@@ -1740,6 +2037,8 @@ int serve_live507_revocation_fixture() {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 3 && std::string_view(argv[1]) == "--replay-legacy-refdata")
+        return replay_legacy_refdata(argv[2]);
     if (argc == 2 && std::string(argv[1]) == "--serve-fixture")
         return serve_fixture();
     if (argc == 4 && std::string(argv[1]) == "--serve-live507-fixture") {
@@ -1771,6 +2070,7 @@ int main(int argc, char** argv) {
     float32_wire_representability();
     bounds();
     full_order_log_borrowed_status();
+    full_order_log_provenance_policy();
     full_order_log_committed_depth();
     throwing_source();
     std::cout << "DTC loopback E2E: negotiation, definitions, UTF-8, authority, signed depth, replay, revocation, "

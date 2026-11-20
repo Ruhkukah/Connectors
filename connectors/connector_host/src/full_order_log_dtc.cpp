@@ -26,6 +26,9 @@ void DtcFullOrderLogSource::update_metadata(DtcMarketDataSnapshot metadata) {
     metadata.isin_id = isin_;
     metadata.full_order_log = true;
     metadata.order_entry_allowed = false;
+    if (metadata.full_order_log_definition_identity && metadata_.full_order_log_definition_identity &&
+        *metadata.full_order_log_definition_identity == *metadata_.full_order_log_definition_identity)
+        metadata.full_order_log_definition_identity = metadata_.full_order_log_definition_identity;
     metadata_ = std::move(metadata);
 }
 void DtcFullOrderLogSource::load_top(bool bid, std::vector<Level>& into) const {

@@ -77,6 +77,10 @@ class FullOrderLogRefdataTap {
         value.sess_id = snapshot.target_session_id;
         value.instrument_source = instrument;
         value.session_source = session;
+        value.future_instruments_source = snapshot.future_instruments_provenance;
+        value.future_sess_contents_source = snapshot.future_sess_contents_provenance;
+        value.future_vcb_source = snapshot.future_vcb_provenance;
+        value.definition_identity = snapshot.full_order_log_definition_identity;
         return value;
     }
 

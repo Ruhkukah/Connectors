@@ -16,6 +16,8 @@ int main() {
         h.commit();
         DtcMarketDataSnapshot metadata;
         metadata.transport_active = metadata.refdata_metadata_current = true;
+        metadata.full_order_log_definition_identity =
+            std::make_shared<const moex::plaza2::cgate::FullOrderLogDefinitionIdentity>();
         DtcFullOrderLogSource source(h.book, 11, metadata, 32);
         source.configure_depth_limit(2);
         const auto* borrowed = source.status_snapshot_view();
@@ -43,6 +45,13 @@ int main() {
         source.update_metadata(metadata);
         require(source.status_snapshot_view()->definition_revision > definition_revision,
                 "metadata replacement advances the definition validation token");
+        auto refreshed = metadata;
+        refreshed.full_order_log_definition_identity =
+            std::make_shared<const moex::plaza2::cgate::FullOrderLogDefinitionIdentity>();
+        source.update_metadata(refreshed);
+        require(source.status_snapshot_view()->full_order_log_definition_identity ==
+                    metadata.full_order_log_definition_identity,
+                "unchanged refreshed terms retain one immutable identity across writer frames");
         require(source.status_snapshot().exchange_moment_ns == 1759651234567890123ULL &&
                     source.snapshot().levels[0].exchange_moment_ns == 1759651234567890123ULL &&
                     updates[0].exchange_moment_ns == 1759651234567890123ULL,

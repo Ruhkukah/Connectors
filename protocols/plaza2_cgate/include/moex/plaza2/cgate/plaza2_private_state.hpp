@@ -130,12 +130,14 @@ struct TradingSessionSnapshot {
     std::int64_t settl_price_calc_time{0};
     std::int64_t settl_sess_t1_begin{0};
     std::int64_t margin_call_fix_schedule{0};
+    bool operator==(const TradingSessionSnapshot&) const = default;
 };
 
 struct InstrumentLegSnapshot {
     std::int32_t leg_isin_id{0};
     std::int32_t qty_ratio{0};
     std::int8_t leg_order_no{0};
+    bool operator==(const InstrumentLegSnapshot&) const = default;
 };
 
 enum class FutureVcbJoinStatus : std::uint8_t {
@@ -213,6 +215,7 @@ struct InstrumentSnapshot {
     std::vector<InstrumentLegSnapshot> legs;
     // Coherent fut_sess_contents row; never populated from fut_instruments.
     std::optional<FutureSessionTerms> future_session_terms;
+    bool operator==(const InstrumentSnapshot&) const = default;
 };
 
 // PLAZA II REFDATA defines signs 0x100 as a composite instrument and 0x10000

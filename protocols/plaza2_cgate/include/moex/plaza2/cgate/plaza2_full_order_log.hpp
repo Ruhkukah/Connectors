@@ -34,6 +34,9 @@ struct FullOrderLogMetrics {
     // excluded-ID history is retained merely to subdivide these diagnostics.
     std::uint64_t rows_total{}, rows_filtered{}, excluded_adds{}, ignored_executions{}, retired_rows_ignored{};
     std::uint64_t life_events{}, crossed_transitions{}, lag_samples{}, lag_last_ns{}, lag_max_ns{}, lag_sum_ns{};
+    // First sample establishing the current live-lag maximum; never snapshot age.
+    std::uint64_t lag_max_observed_utc_ns{}, lag_max_exchange_moment_ns{};
+    std::int32_t lag_max_isin_id{};
     // Age of the initial/recovered snapshot's newest order is not live-feed lag.
     std::uint64_t snapshot_age_samples{}, snapshot_age_last_ns{}, snapshot_age_max_ns{}, snapshot_age_sum_ns{};
     std::uint64_t exchange_ahead_of_clock{}, clear_deleted_events{}, clear_deleted_erased{};

@@ -239,6 +239,7 @@ class CgateSession final {
     [[nodiscard]] plaza2::cgate::Plaza2PublicDealsSnapshot
     public_deals_snapshot(std::uint64_t after_sequence = 0) const;
     [[nodiscard]] std::optional<std::int8_t> full_order_log_matching_id() const noexcept;
+    [[nodiscard]] bool full_order_log_definition_layout_known() const noexcept;
     [[nodiscard]] std::uint64_t market_data_metadata_revision() const noexcept;
     [[nodiscard]] std::string full_order_log_auxiliary_status() const;
     [[nodiscard]] std::optional<CgateFullOrderLogBalance> full_order_log_balance() const noexcept;

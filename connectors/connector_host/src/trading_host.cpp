@@ -490,7 +490,13 @@ tr::CgateSessionConfig CgateTradingHost::session_config() {
     result.collect_post_metrics = config_.measure_timings || config_.measure_command_latency;
     result.publisher_rate_owner = tr::PublisherRateOwner::External;
     result.event_log = [this](auto kind, auto fields) { log_event(kind, fields); };
-    result.listener_event_log = [this](const auto& event) { log_listener_event(event); };
+    result.listener_event_log = [this](const auto& event) {
+        log_listener_event(event);
+        // Only the separate FOL writer supplies this observer (capture's
+        // REFDATA tap). Preserve the certified AGGR callback behavior.
+        if (config_.session.full_order_log_handler && config_.session.listener_event_log)
+            config_.session.listener_event_log(event);
+    };
     return result;
 }
 void CgateTradingHost::log_event(std::string_view kind, std::string_view fields) noexcept {

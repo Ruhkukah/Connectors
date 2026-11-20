@@ -5,6 +5,7 @@
 #include <csignal>
 #include "full_order_log_dtc_loop.hpp"
 #include "full_order_log_router_lock.hpp"
+#include "full_order_log_refdata_tap.hpp"
 #include "full_order_log_trading_dtc.hpp"
 #include "operator_program.hpp"
 #include "moex/connector_host/full_order_log_trading.hpp"
@@ -97,6 +98,9 @@ inline int full_order_log_operator(int argc, char** argv,
     std::optional<FullOrderLogRouterLock> router_lock;
     std::unique_ptr<plaza2::cgate::Plaza2FullOrderLog> book;
     std::unique_ptr<plaza2::cgate::FullOrderLogCapture> capture;
+    std::unique_ptr<FullOrderLogRefdataTap> refdata;
+    std::tuple<std::uint64_t, std::uint64_t, bool> capture_metadata_key{UINT64_MAX, UINT64_MAX, false};
+    std::chrono::steady_clock::time_point capture_metadata_at{};
     std::unique_ptr<plaza2::cgate::FullOrderLogOpenInterest> open_interest;
     std::unique_ptr<plaza2::cgate::FullOrderLogDeals> dtc_deals;
     std::unique_ptr<FullOrderLogTradingDtc> dtc_trading;
@@ -116,7 +120,9 @@ inline int full_order_log_operator(int argc, char** argv,
                   << " book_valid=" << book->valid() << " rows_total=" << m.rows_total
                   << " lag_samples=" << m.lag_samples << " lag_last_ns=" << m.lag_last_ns
                   << " lag_max_ns=" << m.lag_max_ns << " lag_sum_ns=" << m.lag_sum_ns
-                  << " snapshot_age_samples=" << m.snapshot_age_samples
+                  << " lag_max_observed_utc_ns=" << m.lag_max_observed_utc_ns
+                  << " lag_max_exchange_moment_ns=" << m.lag_max_exchange_moment_ns
+                  << " lag_max_isin_id=" << m.lag_max_isin_id << " snapshot_age_samples=" << m.snapshot_age_samples
                   << " snapshot_age_last_ns=" << m.snapshot_age_last_ns
                   << " snapshot_age_max_ns=" << m.snapshot_age_max_ns
                   << " snapshot_age_sum_ns=" << m.snapshot_age_sum_ns << " ignored_executions=" << m.ignored_executions
@@ -195,8 +201,16 @@ inline int full_order_log_operator(int argc, char** argv,
         session.collect_poll_metrics = true;
         session.full_order_log_stream = {.stream_code = cg::kFullOrderLogStreamCode,
                                          .settings = cg::full_order_log_listener_settings(session.runtime.scheme_dir)};
-        if (!capture_flags.options.directory.empty())
+        if (!capture_flags.options.directory.empty()) {
             capture = std::make_unique<cg::FullOrderLogCapture>(capture_flags.options, config.isin_ids, *book);
+            refdata = std::make_unique<FullOrderLogRefdataTap>(book->instruments());
+            const auto previous = session.listener_event_log;
+            session.listener_event_log = [&, previous](const auto& event) {
+                if (previous)
+                    previous(event);
+                refdata->on_event(event);
+            };
+        }
         session.full_order_log_handler =
             capture ? static_cast<cg::Plaza2ListenerEventHandler*>(capture.get()) : book.get();
         if (capture_flags.open_interest) {
@@ -243,6 +257,14 @@ inline int full_order_log_operator(int argc, char** argv,
             return;
         if (capture && !capture_stop_requested) {
             try {
+                const auto key = std::tuple{host.dtc_private_state().metadata_revision(), book->epoch(), book->valid()};
+                const auto now = std::chrono::steady_clock::now();
+                if (key != capture_metadata_key || now >= capture_metadata_at) {
+                    capture_metadata_key = key;
+                    capture_metadata_at = now + std::chrono::seconds(1);
+                    for (const auto isin : book->instruments())
+                        capture->record_refdata(refdata->value(host.dtc_market_data(isin)));
+                }
                 capture->poll();
             } catch (const std::exception& e) {
                 capture_stop_requested = true;
@@ -272,6 +294,16 @@ inline int full_order_log_operator(int argc, char** argv,
         result = 3;
     report();
     if (capture) {
+        if (!capture_stop_requested)
+            try {
+                // operator_program has stopped the host; make the metadata
+                // withdrawal explicit rather than leaving a final live join.
+                for (const auto isin : book->instruments())
+                    capture->record_refdata({.isin_id = isin});
+            } catch (const std::exception& e) {
+                capture_stop_requested = true;
+                std::cerr << "capture metadata finalization failed: " << e.what() << '\n';
+            }
         try {
             capture->finish(capture_stop_requested ? plaza2::cgate::FullOrderLogCaptureEndStatus::CaptureFailed
                             : result               ? plaza2::cgate::FullOrderLogCaptureEndStatus::HostNonzero

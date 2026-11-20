@@ -471,6 +471,11 @@ struct Plaza2FullOrderLog::Impl {
                 auto& sum = snapshot_commit ? metrics.snapshot_age_sum_ns : metrics.lag_sum_ns;
                 ++samples;
                 last = age;
+                if (!snapshot_commit && (samples == 1 || age > max)) {
+                    metrics.lag_max_observed_utc_ns = utc;
+                    metrics.lag_max_exchange_moment_ns = b.moment;
+                    metrics.lag_max_isin_id = isins[index];
+                }
                 max = std::max(max, age);
                 sum += std::min(age, UINT64_MAX - sum);
             }

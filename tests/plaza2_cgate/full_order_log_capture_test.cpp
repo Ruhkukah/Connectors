@@ -25,6 +25,130 @@ static auto bytes(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     return std::vector<char>(std::istreambuf_iterator<char>(f), {});
 }
+static void test_complete_refdata_terms() {
+    namespace ps = moex::plaza2::private_state;
+    namespace g = moex::plaza2::generated;
+    FullOrderLogRefdataRow row;
+    row.isin_id = 11;
+    row.available = true;
+    row.isin = "TEST-11";
+    row.short_code = "T11";
+    row.min_step = "0.00100";
+    row.decimals = 3;
+    row.sess_id = 321;
+    row.instrument_source = {g::StreamCode::kFortsRefdataRepl, g::TableCode::kFortsRefdataReplFutSessContents, 2, 7,
+                             true};
+    row.session_source = {g::StreamCode::kFortsRefdataRepl, g::TableCode::kFortsRefdataReplSession, 3, 7, true};
+    row.future_instruments_source = {g::StreamCode::kFortsRefdataRepl, g::TableCode::kFortsRefdataReplFutInstruments, 4,
+                                     7, true};
+    row.future_sess_contents_source = row.instrument_source;
+    row.future_vcb_source = {g::StreamCode::kFortsRefdataRepl, g::TableCode::kFortsRefdataReplFutVcb, 5, 7, true};
+    row.effective_after_sequence = 1;
+    row.effective_utc_ns = 2;
+    row.effective_monotonic_ns = 3;
+    auto& identity = row.definition_identity;
+    identity.matching_id = 1;
+    identity.session_status_lifenum = 7;
+    identity.instrument_status_lifenum = 8;
+    identity.complete = true;
+    identity.instrument = ps::InstrumentSnapshot{
+        .isin_id = 11,
+        .sess_id = 321,
+        .kind = ps::InstrumentKind::kFuture,
+        .isin = row.isin,
+        .short_isin = row.short_code,
+        .name = std::string("raw\tname\0bytes", 14),
+        .base_contract_code = "TEST",
+        .base_contract_id = 17,
+        .future_vcb_join_status = ps::FutureVcbJoinStatus::Resolved,
+        .future_vcb_currency = "RUB",
+        .future_vcb_board_md = "CETS",
+        .future_vcb_provenance = row.future_vcb_source,
+        .definition_source_provenance = row.instrument_source,
+        .fut_isin_id = 19,
+        .option_series_id = 20,
+        .inst_term = 21,
+        .roundto = 3,
+        .lot_volume = 22,
+        .lot_volume_units = 2200000000,
+        .trade_mode_id = 23,
+        .state = 24,
+        .current_session_member = true,
+        .current_session_state = 25,
+        .has_current_status = true,
+        .current_status = 26,
+        .current_status_refdata_bound = true,
+        .current_status_session_epoch = 27,
+        .signs = 28,
+        .put = true,
+        .is_spread = true,
+        .min_step = "0.00100",
+        .step_price = "1.00000",
+        .step_price_curr = "1.00000",
+        .settlement_price = "12.00000",
+        .strike = "13.00000",
+        .last_trade_date = 29,
+        .group_mask = 30,
+        .trade_period_access = 31,
+        .legs = {{32, 33, 1}},
+        .future_session_terms = ps::FutureSessionTerms{.isin_id = 11,
+                                                       .sess_id = 321,
+                                                       .settlement_price = ps::SessionDecimal{1200000},
+                                                       .raw_limit_up = ps::SessionDecimal{200000},
+                                                       .raw_limit_down = ps::SessionDecimal{100000},
+                                                       .min_step = ps::SessionDecimal{100},
+                                                       .lot_volume_units = 2200000000,
+                                                       .repl_id = 34,
+                                                       .source = row.future_sess_contents_source,
+                                                       .bounds = {.lower = ps::SessionDecimal{1100000},
+                                                                  .upper = ps::SessionDecimal{1400000},
+                                                                  .formula_confirmed = true,
+                                                                  .interval_valid = true}}};
+    identity.session = ps::TradingSessionSnapshot{.sess_id = 321,
+                                                  .begin = 1,
+                                                  .end = 2,
+                                                  .state = 3,
+                                                  .has_current_status = true,
+                                                  .current_status = 4,
+                                                  .eve_on = true,
+                                                  .eve_begin = 5,
+                                                  .eve_end = 6,
+                                                  .mon_on = true,
+                                                  .mon_begin = 7,
+                                                  .mon_end = 8,
+                                                  .settl_sess_begin = 9,
+                                                  .clr_sess_begin = 10,
+                                                  .settl_price_calc_time = 11,
+                                                  .settl_sess_t1_begin = 12,
+                                                  .margin_call_fix_schedule = 13};
+    const auto encoded = serialize_full_order_log_refdata_row(row);
+    const auto decoded = parse_full_order_log_refdata(std::string(kFullOrderLogRefdataHeader) + encoded);
+    require(decoded.size() == 1 && static_cast<const FullOrderLogRefdataValue&>(decoded[0]) == row,
+            "V2 preserves every projected instrument/session term, optional, source and exact raw string byte");
+    auto malformed = encoded;
+    malformed.erase(malformed.size() - 2, 1);
+    require(refused([&] { (void)parse_full_order_log_refdata(std::string(kFullOrderLogRefdataHeader) + malformed); }),
+            "V2 refuses a truncated complete-terms payload");
+    const auto last = encoded.rfind('\t');
+    const auto legacy =
+        parse_full_order_log_refdata(std::string(kFullOrderLogRefdataHeaderV1) + encoded.substr(0, last) + '\n');
+    require(legacy.size() == 1 && legacy[0].available && !legacy[0].definition_identity.complete &&
+                !legacy[0].definition_identity.instrument && !legacy[0].definition_identity.session &&
+                legacy[0].session_source == row.session_source,
+            "V1 remains readable with original identity, but omitted complete terms are never invented");
+    auto unknown = row;
+    unknown.definition_identity.complete = false;
+    unknown.definition_identity.instrument->future_session_terms->lot_volume_units.reset();
+    const auto missing = parse_full_order_log_refdata(std::string(kFullOrderLogRefdataHeader) +
+                                                      serialize_full_order_log_refdata_row(unknown));
+    require(!missing[0].definition_identity.complete &&
+                !missing[0].definition_identity.instrument->future_session_terms->lot_volume_units,
+            "unknown order-relevant terms survive the companion as unknown");
+    auto false_claim = serialize_full_order_log_refdata_row(unknown);
+    false_claim[false_claim.size() - 2] = '1'; // Fixed payload's final complete marker: 00 -> 01.
+    require(refused([&] { (void)parse_full_order_log_refdata(std::string(kFullOrderLogRefdataHeader) + false_claim); }),
+            "missing required terms cannot be relabelled complete in a V2 sidecar");
+}
 static void test_cached_capture_identity(const fs::path& root, FullOrderLogCaptureOptions options) {
     const std::array<std::int32_t, 1> ids{11};
     Plaza2FullOrderLog downstream(ids);
@@ -271,6 +395,12 @@ static void test_refdata_join(const fs::path& root, FullOrderLogCaptureOptions o
     emit({.kind = Kind::TransactionBegin});
     emit(row(schema[2], 1, 11, 1234565, 3, 1, 3).event());
     emit({.kind = Kind::TransactionCommit});
+    emit({.kind = Kind::TransactionBegin});
+    emit(row(schema[2], 3, 11, 1234565, 3, 1, 4).event());
+    emit({.kind = Kind::TransactionCommit});
+    emit({.kind = Kind::TransactionBegin});
+    emit(row(schema[2], 3, 11, 1234565, 0, 0, 5).event());
+    emit({.kind = Kind::TransactionCommit});
     emit({.kind = Kind::Close});
     capture.finish();
 
@@ -295,7 +425,7 @@ static void test_refdata_join(const fs::path& root, FullOrderLogCaptureOptions o
             "export companion carries exact source sidecar and causal DBN boundaries");
     const std::array<std::uint32_t, 3> effective_after{0, 6, 6};
     const auto data = bytes(dbn);
-    std::size_t unjoined{}, joined{};
+    std::size_t unjoined{}, joined{}, live_add{}, live_cancel{};
     for (std::size_t at = 128; at < data.size(); at += 56) {
         require(data.size() - at >= 56 && data[at] == 14, "join fixture record framing");
         std::uint32_t instrument{}, sequence{};
@@ -310,12 +440,20 @@ static void test_refdata_join(const fs::path& root, FullOrderLogCaptureOptions o
                         metadata->instrument_source.present,
                     "DBN instrument joins the effective instrument and session provenance");
             ++joined;
+            std::uint64_t order_id{};
+            std::memcpy(&order_id, data.data() + at + 16, sizeof order_id);
+            if (order_id == 3 && !(static_cast<unsigned char>(data[at + 36]) & 32)) {
+                live_add += data[at + 38] == 'A';
+                live_cancel += data[at + 38] == 'C';
+            }
         } else {
             require(instrument == 22 && sequence <= 6, "only startup rows can lack current REFDATA in this fixture");
             ++unjoined;
         }
     }
     require(joined > 0 && unjoined == report.refdata_unjoined_records, "as-of join never fills the earlier prefix");
+    require(live_add == 1 && live_cancel == 1,
+            "V2 sidecar joins the committed live Add and Cancel exactly once, not only snapshot rows");
     const auto tampered = root / "refdata-tampered";
     fs::copy(options.directory, tampered, fs::copy_options::recursive);
     std::ofstream(tampered / kFullOrderLogRefdataFilename, std::ios::app) << "tamper\n";
@@ -326,6 +464,7 @@ static void test_refdata_join(const fs::path& root, FullOrderLogCaptureOptions o
 }
 int main() {
     try {
+        test_complete_refdata_terms();
         const auto root = fs::temp_directory_path() / ("fol_capture_" + std::to_string(::getpid()));
         require(fs::create_directory(root), "unique capture test root");
         const auto schema = tables();

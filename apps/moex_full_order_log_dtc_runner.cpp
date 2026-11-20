@@ -226,6 +226,9 @@ int main(int argc, char** argv) {
                           << " ignored_executions=" << metrics.ignored_executions
                           << " excluded_adds=" << metrics.excluded_adds << " lag_samples=" << metrics.lag_samples
                           << " lag_last_ns=" << metrics.lag_last_ns << " lag_max_ns=" << metrics.lag_max_ns
+                          << " lag_max_observed_utc_ns=" << metrics.lag_max_observed_utc_ns
+                          << " lag_max_exchange_moment_ns=" << metrics.lag_max_exchange_moment_ns
+                          << " lag_max_isin_id=" << metrics.lag_max_isin_id
                           << " clear_deleted_events=" << metrics.clear_deleted_events
                           << " clear_deleted_erased=" << metrics.clear_deleted_erased
                           << " lag_sum_ns=" << metrics.lag_sum_ns

@@ -98,6 +98,46 @@ std::uint64_t definition_fingerprint(const DtcSecurityDefinitionSnapshot& defini
 
 } // namespace
 
+bool full_order_log_provenance_only_change(const DtcSecurityDefinitionSnapshot& before,
+                                           const DtcSecurityDefinitionSnapshot& after) {
+    const auto complete = [](const auto& value) {
+        const auto& identity = value.full_order_log_definition_identity;
+        const auto known = [&](const auto& p) {
+            return p.present && p.lifenum > 0 && p.repl_rev > 0 &&
+                   p.stream_code == plaza2::generated::StreamCode::kFortsRefdataRepl &&
+                   p.table_code != plaza2::projection::kNoTableCode && p.lifenum == value.session_provenance.lifenum;
+        };
+        return identity.complete && identity.instrument && identity.session && identity.matching_id > 0 &&
+               identity.session_status_lifenum > 0 && identity.instrument_status_lifenum > 0 &&
+               identity.instrument->kind == plaza2::private_state::InstrumentKind::kFuture &&
+               identity.instrument->has_current_status && identity.instrument->current_status_refdata_bound &&
+               identity.session->has_current_status && identity.instrument->future_session_terms &&
+               identity.instrument->future_session_terms->settlement_price &&
+               identity.instrument->future_session_terms->raw_limit_up &&
+               identity.instrument->future_session_terms->raw_limit_down &&
+               identity.instrument->future_session_terms->min_step &&
+               identity.instrument->future_session_terms->lot_volume_units &&
+               known(value.definition_source_provenance) && known(value.future_instruments_provenance) &&
+               known(value.future_sess_contents_provenance) && known(value.session_provenance) &&
+               known(value.future_vcb_provenance) && known(identity.instrument->definition_source_provenance) &&
+               known(identity.instrument->future_vcb_provenance) &&
+               known(identity.instrument->future_session_terms->source);
+    };
+    if (!complete(before) || !complete(after))
+        return false;
+    auto old_terms = before, new_terms = after;
+    const auto normalize = [](DtcSecurityDefinitionSnapshot& value) {
+        value.definition_version = 0;
+        // All session columns are retained. Instrument/VCB tables contain
+        // other vendor columns not captured by the projected model, so their
+        // revisions deliberately retain the original strict comparison.
+        value.session_provenance.repl_rev = 0;
+    };
+    normalize(old_terms);
+    normalize(new_terms);
+    return old_terms == new_terms;
+}
+
 DtcFrameDecoder::DtcFrameDecoder(std::size_t max_frame_size)
     : max_frame_size_(std::clamp(max_frame_size, kDtcFrameHeaderSize, kDtcMaxFrameSize)) {
     buffer_.reserve(max_frame_size_);
@@ -205,6 +245,10 @@ ConnectorHostDtcMarketDataSource::public_deals(std::uint64_t after_sequence) con
 
 DtcMarketDataSnapshot make_dtc_market_data_snapshot(const ConnectorHostMarketDataSnapshot& market_data) {
     DtcMarketDataSnapshot out;
+    if (market_data.full_order_log_definition_identity.instrument ||
+        market_data.full_order_log_definition_identity.session)
+        out.full_order_log_definition_identity = std::make_shared<const plaza2::cgate::FullOrderLogDefinitionIdentity>(
+            market_data.full_order_log_definition_identity);
     out.connector_generation = market_data.connector_generation;
     out.market_data_authority_epoch = market_data.market_data_authority_epoch;
     out.stream_epoch = market_data.stream_epoch;
@@ -319,6 +363,8 @@ DtcSecurityDefinitionValidation validate_dtc_security_definition(const DtcMarket
         return unavailable("raw underlying ASTS SECBOARD metadata is empty, oversized, or invalid UTF-8");
 
     DtcSecurityDefinitionSnapshot definition;
+    if (snapshot.full_order_log && snapshot.full_order_log_definition_identity)
+        definition.full_order_log_definition_identity = *snapshot.full_order_log_definition_identity;
     definition.symbol = snapshot.symbol;
     definition.exchange = std::string(kDtcMoexSpectraExchange);
     definition.underlying_board = snapshot.underlying_board;

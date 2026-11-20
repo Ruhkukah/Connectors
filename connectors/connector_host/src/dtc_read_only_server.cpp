@@ -291,6 +291,8 @@ struct DtcReadOnlyServer::Impl {
     std::int64_t isin{};
     unsigned witness{};
     std::optional<DtcSecurityDefinitionSnapshot> accepted_definition;
+    std::uint64_t definition_stream_epoch{}, definition_authority_epoch{};
+    unsigned definition_witness{};
     mutable DtcSecurityDefinitionValidation definition_cache;
     mutable std::uint64_t definition_cache_revision{};
     std::uint64_t publication_definition_revision{};
@@ -350,6 +352,7 @@ struct DtcReadOnlyServer::Impl {
         pending_definition_response_end = 0;
         pending_definition_response = false;
         accepted_definition.reset();
+        definition_stream_epoch = definition_authority_epoch = definition_witness = 0;
         symbol_id = config.symbol_id;
         trade_symbol_id = 0;
         batch = version = epoch = authority_epoch = 0;
@@ -521,7 +524,7 @@ struct DtcReadOnlyServer::Impl {
                      : !s.market_data_display_allowed ? "unavailable"
                      : empty_batch || s.empty_book    ? "empty"
                                                       : "nonempty") +
-                    "\"";
+                    "\",\"definition_revision\":" + std::to_string(s.definition_revision);
         if (empty_batch)
             json += ",\"depth_snapshot\":{\"empty\":true,\"dtc_batch_sequence\":" + std::to_string(empty_batch) +
                     ",\"source_snapshot_version\":" + std::to_string(s.source_snapshot_version) +
@@ -530,6 +533,34 @@ struct DtcReadOnlyServer::Impl {
         str(p, 1, json + "}");
         integer(p, 2, 0);
         return queue(kDtcSourceAuthorityMessage, p);
+    }
+    bool definition_matches(const DtcMarketDataSnapshot& s) {
+        const auto& current = definition_validation(s).definition;
+        if (!accepted_definition || !current)
+            return false;
+        if (s.full_order_log &&
+            (s.stream_epoch != definition_stream_epoch || s.market_data_authority_epoch != definition_authority_epoch ||
+             witness_number(s.session_ready_witness_kind) != definition_witness))
+            return false;
+        if (current == accepted_definition)
+            return true;
+        if (!s.full_order_log || !s.definition_revision || !usable_flags(s) ||
+            !full_order_log_provenance_only_change(*accepted_definition, *current))
+            return false;
+        // Metadata acknowledgement only. Do not touch private reconciliation,
+        // trading fences, stream epoch, trade cursor or depth/batch sequences.
+        if (!authority(s))
+            return false;
+        Bytes provenance;
+        str(provenance, 3,
+            "FullOrderLog REFDATA provenance changed; terms unchanged; definition_revision=" +
+                std::to_string(s.definition_revision) +
+                ";session_repl_rev=" + std::to_string(accepted_definition->session_provenance.repl_rev) + "->" +
+                std::to_string(current->session_provenance.repl_rev));
+        if (!queue(701, provenance))
+            return false;
+        accepted_definition = *current;
+        return true;
     }
     void snapshot(const DtcMarketDataSnapshot& s) {
         if (!usable(s)) {
@@ -540,7 +571,7 @@ struct DtcReadOnlyServer::Impl {
             return;
         }
         if (s.symbol != symbol || s.underlying_board != underlying_board || s.min_step != tick || s.isin_id != isin ||
-            !accepted_definition || definition_validation(s).definition != accepted_definition) {
+            !definition_matches(s)) {
             reject("source metadata changed; fresh definition required");
             return;
         }
@@ -658,9 +689,8 @@ struct DtcReadOnlyServer::Impl {
             witness_number(s.session_ready_witness_kind) == witness &&
             s.definition_revision == publication_definition_revision)
             return;
-        if (!usable(s) || !accepted_definition || definition_validation(s).definition != accepted_definition ||
-            s.market_data_authority_epoch != authority_epoch || s.stream_epoch != epoch ||
-            witness_number(s.session_ready_witness_kind) != witness) {
+        if (!usable(s) || !definition_matches(s) || s.market_data_authority_epoch != authority_epoch ||
+            s.stream_epoch != epoch || witness_number(s.session_ready_witness_kind) != witness) {
             reject("source authority or metadata changed; fresh session required", &s);
             return;
         }
@@ -748,8 +778,7 @@ struct DtcReadOnlyServer::Impl {
         if (!market_resync_pending || !depth_subscribed || client < 0)
             return;
         auto current = source.snapshot();
-        if (usable(current) && accepted_definition &&
-            definition_validation(current).definition == accepted_definition) {
+        if (usable(current) && definition_matches(current)) {
             market_resync_pending = false;
             snapshot(current);
         } else if (!market_unavailable_notified) {
@@ -797,9 +826,7 @@ struct DtcReadOnlyServer::Impl {
             return;
         }
         const auto& current = current_status->get();
-        const auto& current_definition = definition_validation(current);
-        if (!definition || !accepted_definition || !current_definition.definition ||
-            current_definition.definition != accepted_definition || current.symbol != symbol ||
+        if (!definition || !definition_matches(current) || current.symbol != symbol ||
             current.underlying_board != underlying_board || current.min_step != tick || current.isin_id != isin ||
             current.session_id != accepted_definition->session_id ||
             current.isin_id != accepted_definition->security_identifier) {
@@ -915,10 +942,12 @@ struct DtcReadOnlyServer::Impl {
                 delivered_fills.insert(fill.execution_id);
         config.trading->reconciled();
     }
-    bool trade_definition_current() const {
+    bool trade_definition_current() {
         if (!accepted_definition)
             return false;
         const StatusSnapshot status(source);
+        if (status.get().full_order_log)
+            return definition_matches(status.get());
         const auto& current = definition_validation(status.get());
         return current.definition && current.definition->definition_version == accepted_definition->definition_version;
     }
@@ -1480,6 +1509,9 @@ struct DtcReadOnlyServer::Impl {
             if (queue(507, reply)) {
                 definition = true;
                 accepted_definition = resolved;
+                definition_stream_epoch = s.stream_epoch;
+                definition_authority_epoch = s.market_data_authority_epoch;
+                definition_witness = witness_number(s.session_ready_witness_kind);
                 symbol = resolved.symbol;
                 exchange = resolved.exchange;
                 underlying_board = resolved.underlying_board;
@@ -1510,8 +1542,7 @@ struct DtcReadOnlyServer::Impl {
             const StatusSnapshot current_status(source);
             const auto& current = current_status.get();
             const auto& validated = definition_validation(current);
-            if (!definition || !accepted_definition || !validated.definition ||
-                validated.definition != accepted_definition || current.symbol != symbol ||
+            if (!definition || !validated.definition || !definition_matches(current) || current.symbol != symbol ||
                 current.underlying_board != underlying_board || current.min_step != tick || current.isin_id != isin ||
                 p.text(3) != symbol || p.text(4) != exchange) {
                 market_data_reject(static_cast<std::uint32_t>(id), "target or current security definition mismatch");
@@ -1646,7 +1677,8 @@ struct DtcReadOnlyServer::Impl {
                     const auto s = source.status_snapshot();
                     if (!usable(s) || s.symbol != symbol || s.underlying_board != underlying_board ||
                         s.min_step != tick || s.isin_id != isin || !accepted_definition ||
-                        definition_validation(s).definition != accepted_definition ||
+                        (s.full_order_log ? !definition_matches(s)
+                                          : definition_validation(s).definition != accepted_definition) ||
                         s.market_data_authority_epoch != authority_epoch ||
                         witness_number(s.session_ready_witness_kind) != witness) {
                         reject("source authority or metadata changed; fresh session required", &s);

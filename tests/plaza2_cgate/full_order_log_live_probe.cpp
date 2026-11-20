@@ -182,10 +182,13 @@ int main(int argc, char** argv) {
                 std::cout << "{\"kind\":\"metrics\",\"rows_total\":" << m.rows_total
                           << ",\"rows_per_second\":" << (elapsed > 0 ? (m.rows_total - previous_rows) / elapsed : 0)
                           << ",\"lag_samples\":" << m.lag_samples << ",\"lag_last_ns\":" << m.lag_last_ns
-                          << ",\"lag_max_ns\":" << m.lag_max_ns << ",\"valid\":" << (book.valid() ? "true" : "false")
-                          << ",\"matched\":" << window.matched << ",\"mismatched\":" << window.mismatched
-                          << ",\"p9_events\":" << composite.p9_events << ",\"p9_erased\":" << composite.p9_erased
-                          << "}\n"
+                          << ",\"lag_max_ns\":" << m.lag_max_ns
+                          << ",\"lag_max_observed_utc_ns\":" << m.lag_max_observed_utc_ns
+                          << ",\"lag_max_exchange_moment_ns\":" << m.lag_max_exchange_moment_ns
+                          << ",\"lag_max_isin_id\":" << m.lag_max_isin_id
+                          << ",\"valid\":" << (book.valid() ? "true" : "false") << ",\"matched\":" << window.matched
+                          << ",\"mismatched\":" << window.mismatched << ",\"p9_events\":" << composite.p9_events
+                          << ",\"p9_erased\":" << composite.p9_erased << "}\n"
                           << std::flush;
                 previous = now;
                 previous_rows = m.rows_total;

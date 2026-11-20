@@ -1,5 +1,6 @@
 #include "plaza2_runtime_test_support.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_capture.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
 #include "command_socket.hpp"
 #include "scope_exit.hpp"
 #include "dtc_test_wire.hpp"
@@ -386,6 +387,22 @@ int main(int argc, char** argv) {
             command(executable, log, "quit", "capture-quit");
             test::require(owner.wait() == 0, "recorder writer did not drain: " + owner.errors());
             const auto replay = moex::plaza2::cgate::replay_full_order_log_capture(capture);
+            const auto metadata = moex::plaza2::cgate::parse_full_order_log_refdata(
+                contents(capture / moex::plaza2::cgate::kFullOrderLogRefdataFilename));
+            const auto available = std::ranges::find_if(metadata, [](const auto& row) { return row.available; });
+            test::require(available != metadata.end() && available->isin_id == 1001 &&
+                              available->short_code == "RIH6" && available->session_source.present &&
+                              available->future_instruments_source.present &&
+                              available->future_sess_contents_source.present && !metadata.back().available,
+                          "actual writer records committed instrument/session terms and final withdrawal");
+            const auto dbn = root / "writer-capture.dbn";
+            const auto exported = moex::plaza2::cgate::export_full_order_log_dbn(capture, dbn);
+            test::require(
+                replay.refdata_sha256.size() == 64 && replay.refdata_sha256 == exported.refdata_sha256 &&
+                    exported.dbn_sha256.size() == 64 && exported.refdata_unjoined_records == 0 &&
+                    available->effective_after_sequence == 1 && fs::is_regular_file(dbn.string() + ".refdata.json") &&
+                    contents(dbn.string() + ".refdata.json").find("\"dbn_instrument_ids\":[1001]") != std::string::npos,
+                "writer strict replay/export pins same-capture REFDATA companion and numeric DBN join");
             test::require(replay.valid_commits > 0 && replay.open_interest_updates > 0 &&
                               owner.output().find("capture_failed=0") != std::string::npos,
                           "actual writer recording/replay failed");

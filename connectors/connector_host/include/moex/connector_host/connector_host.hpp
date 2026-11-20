@@ -1,6 +1,7 @@
 #pragma once
 
 #include "moex/plaza2_trade/cgate_session.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -81,6 +82,8 @@ struct ConnectorHostMarketDataLevel {
 // copies private account/order state and never reads the global AGGR
 // qualification book for a target decision.
 struct ConnectorHostMarketDataSnapshot {
+    // Complete FOL definition/session terms, absent for the unchanged AGGR path.
+    plaza2::cgate::FullOrderLogDefinitionIdentity full_order_log_definition_identity;
     std::uint64_t connector_generation{0};
     std::uint64_t market_data_authority_epoch{0};
     std::uint64_t stream_epoch{0};

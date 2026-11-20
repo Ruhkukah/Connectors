@@ -4,6 +4,7 @@
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
 
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <span>
 #include <string>
@@ -11,6 +12,10 @@
 #include <vector>
 
 namespace moex::plaza2::cgate {
+
+// Exact reviewed 9.9/9.12 column inventory. Unknown columns disable only
+// the FOL provenance exception; they do not relax runtime validation.
+[[nodiscard]] bool full_order_log_definition_table_layout_known(const Plaza2RawTableBinding& table);
 
 // Shared adapter from CGate listener callbacks to the private-state projector.
 // Both live read-side sessions and the TEST pre-send transport use this bridge
@@ -21,6 +26,7 @@ class Plaza2PrivateStateBridge final : public Plaza2ListenerEventHandler {
 
     [[nodiscard]] Plaza2Error reset(std::span<const generated::StreamCode> streams);
     void require_full_order_log_refdata(bool required);
+    [[nodiscard]] bool full_order_log_definition_layout_known() const noexcept;
     [[nodiscard]] Plaza2Error begin_run();
     [[nodiscard]] Plaza2Error end_run();
     // Local reset before a fresh status snapshot; no fabricated exchange event.
@@ -77,6 +83,7 @@ class Plaza2PrivateStateBridge final : public Plaza2ListenerEventHandler {
     std::string last_resync_reason_;
     std::string callback_error_;
     bool require_matching_{};
+    std::array<bool, 3> definition_layout_known_{};
 };
 
 } // namespace moex::plaza2::cgate

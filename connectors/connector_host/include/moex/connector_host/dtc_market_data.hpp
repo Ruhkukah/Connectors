@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -128,6 +129,9 @@ struct DtcMarketDataLevel {
 };
 
 struct DtcMarketDataSnapshot {
+    // Immutable metadata shared across writer frames, never a per-commit
+    // deep copy of instrument/session strings.
+    std::shared_ptr<const plaza2::cgate::FullOrderLogDefinitionIdentity> full_order_log_definition_identity;
     bool full_order_log{false};
     bool empty_book{false}, crossed_book{false};
     std::chrono::steady_clock::time_point committed_at{};
@@ -224,6 +228,7 @@ struct DtcReplayDefinitionTerms {
 // the semantic 507 terms to their REFDATA source generation and deliberately
 // excludes AGGR price/book versions.
 struct DtcSecurityDefinitionSnapshot {
+    plaza2::cgate::FullOrderLogDefinitionIdentity full_order_log_definition_identity;
     std::string symbol;
     std::string exchange;
     std::string underlying_board;
@@ -264,6 +269,12 @@ struct DtcSecurityDefinitionValidation {
 [[nodiscard]] DtcSecurityDefinitionValidation
 validate_dtc_security_definition(const DtcMarketDataSnapshot& snapshot, DtcSourceMode source_mode,
                                  const DtcReplayDefinitionTerms& replay_terms = {});
+
+// FOL only: complete captured terms must match exactly. Only the fully
+// recorded session row's revision may differ; all other table revisions,
+// LifeNum, session/status/terms and source identities remain strict.
+[[nodiscard]] bool full_order_log_provenance_only_change(const DtcSecurityDefinitionSnapshot& before,
+                                                         const DtcSecurityDefinitionSnapshot& after);
 
 // Value conversion shared by the live owner-thread adapter and replay tests.
 [[nodiscard]] DtcMarketDataSnapshot make_dtc_market_data_snapshot(const ConnectorHostMarketDataSnapshot& market_data);

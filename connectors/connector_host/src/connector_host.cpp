@@ -312,6 +312,37 @@ ConnectorHostMarketDataSnapshot project_connector_market_data(const plaza2_trade
     out.session_provenance =
         data.session_source_provenance(plaza2::generated::TableCode::kFortsRefdataReplSession, out.target_session_id)
             .value_or(ps::SourceRowProvenance{});
+    if (full_order_log) {
+        auto& identity = out.full_order_log_definition_identity;
+        if (target)
+            identity.instrument = *target;
+        if (const auto* session = data.find_session(out.target_session_id))
+            identity.session = *session;
+        identity.matching_id = host.full_order_log_matching_id().value_or(0);
+        identity.session_status_lifenum = data.stream_lifenum(StreamCode::kFortsSessionstateRepl).value_or(0);
+        identity.instrument_status_lifenum = data.stream_lifenum(StreamCode::kFortsInstrumentstateRepl).value_or(0);
+        const auto known_source = [](const ps::SourceRowProvenance& source) {
+            return source.present && source.repl_rev > 0 && source.lifenum > 0;
+        };
+        const auto* terms = target && target->future_session_terms ? &*target->future_session_terms : nullptr;
+        // A default/partly projected row cannot authorize the revision-only
+        // exception. Missing terms retain the existing strict disconnect rule.
+        identity.complete =
+            host.full_order_log_definition_layout_known() && target && identity.session && identity.matching_id > 0 &&
+            identity.session_status_lifenum > 0 && identity.instrument_status_lifenum > 0 &&
+            target->has_current_status && target->current_status_refdata_bound &&
+            identity.session->has_current_status && terms && terms->settlement_price && terms->raw_limit_up &&
+            terms->raw_limit_down && terms->min_step && terms->lot_volume_units && known_source(terms->source) &&
+            known_source(out.definition_source_provenance) && known_source(out.future_instruments_provenance) &&
+            known_source(out.future_sess_contents_provenance) && known_source(out.session_provenance) &&
+            known_source(out.future_vcb_provenance) && terms->isin_id == out.target_isin_id &&
+            terms->sess_id == out.target_session_id && target->sess_id == out.target_session_id &&
+            terms->source.lifenum == out.session_provenance.lifenum &&
+            out.definition_source_provenance.lifenum == out.session_provenance.lifenum &&
+            out.future_instruments_provenance.lifenum == out.session_provenance.lifenum &&
+            out.future_sess_contents_provenance.lifenum == out.session_provenance.lifenum &&
+            out.future_vcb_provenance.lifenum == out.session_provenance.lifenum;
+    }
     const bool healthy = host.started() && !failed && health.valid && health.connection == 3;
     const bool identity_current = out.target_session_id > 0 && target_instrument_refdata_current &&
                                   online_stream(data, health, StreamCode::kFortsRefdataRepl) &&

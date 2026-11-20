@@ -2213,6 +2213,9 @@ bool CgateSession::full_order_log_entry_ready(std::int64_t isin_id) const noexce
 std::optional<std::int8_t> CgateSession::full_order_log_matching_id() const noexcept {
     return impl_->matching_id;
 }
+bool CgateSession::full_order_log_definition_layout_known() const noexcept {
+    return impl_->bridge.full_order_log_definition_layout_known();
+}
 bool CgateSession::aggr_online() const noexcept {
     return impl_->aggr.online();
 }

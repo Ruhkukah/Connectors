@@ -156,6 +156,58 @@ int main(int argc, char** argv) {
         const auto place = [&](CgateTradingHost& host, std::string id) {
             return host.place({.client_order_id = std::move(id), .isin_id = 1001, .price = "102500", .quantity = 1});
         };
+        configure();
+        {
+            auto config = configuration("refdata-observer");
+            std::size_t refdata_events{};
+            config.session.listener_event_log = [&](const auto& event) {
+                if (event.stream_code == gen::StreamCode::kFortsRefdataRepl)
+                    ++refdata_events;
+            };
+            CgateTradingHost host(config);
+            warm(host);
+            require(refdata_events > 0, "FOL writer must retain the configured REFDATA capture observer");
+            require(!host.stop(), "FOL observer stop");
+        }
+        configure();
+        {
+            auto config = configuration("refdata-observer-failure");
+            bool failed{};
+            config.session.listener_event_log = [&](const auto& event) {
+                if (event.stream_code == gen::StreamCode::kFortsRefdataRepl) {
+                    failed = true;
+                    throw std::runtime_error("offline REFDATA capture observer failure");
+                }
+            };
+            const auto posts = control.commands().size();
+            CgateTradingHost host(config);
+            const auto started = host.start();
+            cg::Plaza2Error error = started;
+            for (int i = 0; i < 30 && !error; ++i)
+                error = host.poll();
+            std::ifstream journal(config.journal_path);
+            const std::string recorded((std::istreambuf_iterator<char>(journal)), {});
+            require(
+                failed && !place(host, "observer-must-refuse").empty() &&
+                    recorded.find("offline REFDATA capture observer failure") != std::string::npos &&
+                    control.commands().size() == posts,
+                "capture observer failure must reach listener recovery and prevent posting, not disappear as logging");
+            (void)host.stop();
+        }
+        configure();
+        {
+            auto config = configuration("non-fol-observer-unchanged");
+            config.session.full_order_log_stream = {};
+            config.session.full_order_log_handler = nullptr;
+            config.session.full_order_log_authority = {};
+            std::size_t calls{};
+            config.session.listener_event_log = [&](const auto&) { ++calls; };
+            CgateTradingHost host(config);
+            require(!host.start(), "non-FOL observer baseline start");
+            pump(host, 30);
+            require(calls == 0, "AGGR/non-FOL callback behavior must remain unchanged");
+            require(!host.stop(), "non-FOL observer baseline stop");
+        }
         for (const bool invalidate : {false, true}) {
             configure();
             auto config = configuration(invalidate ? "publication-reset" : "publication-commit");
