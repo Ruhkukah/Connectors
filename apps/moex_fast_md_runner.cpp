@@ -164,6 +164,16 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(stats.unknown_templates), stream.instruments(),
                         stream.unsynced(), static_cast<unsigned long long>(stats.snapshots_applied),
                         snapshots_joined ? "joined" : "left");
+            std::printf("  recovery: too_old=%llu resyncs=%llu empty=%llu queued=%llu replayed=%llu dropped=%llu "
+                        "instrument_gaps=%llu market_clears=%llu sequence_resets=%llu next_seq=%u\n",
+                        static_cast<unsigned long long>(stats.snapshots_too_old),
+                        static_cast<unsigned long long>(stats.snapshot_resyncs),
+                        static_cast<unsigned long long>(stats.empty_adopted),
+                        static_cast<unsigned long long>(stats.queued), static_cast<unsigned long long>(stats.replayed),
+                        static_cast<unsigned long long>(stats.queue_dropped),
+                        static_cast<unsigned long long>(stats.instrument_gaps),
+                        static_cast<unsigned long long>(stats.market_clears),
+                        static_cast<unsigned long long>(stats.sequence_resets), stream.next_sequence());
             std::printf("  datagrams");
             for (std::size_t index = 0; index < datagrams.size(); ++index)
                 std::printf(" %s:%u=%llu", endpoints[index].second.group.c_str(), endpoints[index].second.port,
