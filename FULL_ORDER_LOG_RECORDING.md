@@ -126,3 +126,11 @@ the first committed sample establishing the current live-lag maximum. A smaller 
 sample leaves that identity intact. Initial/recovered snapshot age is counted separately
 and never supplies the live-lag maximum timestamp. These diagnostics do not change
 admission, book publication or the clock-tolerance gate.
+
+Session schedule fields use the projector's integer UTC seconds. The FOL
+provenance-only exception therefore also requires proof that each native schedule
+value is exactly representable at that precision (or is the native all-zero
+sentinel), and that `eve_on`/`mon_on` are exactly0 or1. Fractional timestamps,
+missing precision proof or unsupported boolean values retain strict disconnects;
+they are not silently treated as unchanged. This does not alter raw FOL capture
+or the existing projector used by AGGR.

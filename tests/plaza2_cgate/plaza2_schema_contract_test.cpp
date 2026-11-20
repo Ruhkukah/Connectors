@@ -89,6 +89,61 @@ static void require_full_order_log_layout_coverage() {
             "retain normal projection of missing optional xlot");
     require(!bridge.full_order_log_definition_layout_known(),
             "null negotiated fractional lot cannot be hidden by legacy integer fallback");
+    const std::array<std::byte, 10> empty_time{};
+    for (const auto nanoseconds : {1000000000ULL, 1001000000ULL, 0ULL}) {
+        for (const auto stream : streams)
+            require(!bridge.on_plaza2_listener_event(
+                        {.kind = Plaza2ListenerEventKind::Open, .stream_code = stream, .raw_tables = tables}),
+                    "restore timestamp coverage layout");
+        fields.clear();
+        for (const auto& field : generated::FieldsForTable(kFortsRefdataReplSession)) {
+            auto& decoded = fields.emplace_back();
+            decoded.field_code = field.field_code;
+            decoded.kind = Plaza2DecodedValueKind::SignedInteger;
+            if (field.value_class == generated::ValueClass::kTimestamp) {
+                decoded.kind = Plaza2DecodedValueKind::Timestamp;
+                decoded.raw_value = empty_time;
+            }
+            if (field.field_name == "begin") {
+                decoded.unsigned_value = 1;
+                decoded.timestamp_ns = nanoseconds;
+            }
+        }
+        require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                                  .stream_code = streams[0],
+                                                  .table_code = kFortsRefdataReplSession,
+                                                  .fields = fields}),
+                "retain normal timestamp projection");
+        require(bridge.full_order_log_definition_layout_known() == (nanoseconds == 1000000000ULL),
+                "fractional or unproven timestamp precision disables session revision exception");
+    }
+    for (const auto flag : {"eve_on", "mon_on"})
+        for (const auto boolean : {0, 1, 2, -1}) {
+            for (const auto stream : streams)
+                require(!bridge.on_plaza2_listener_event(
+                            {.kind = Plaza2ListenerEventKind::Open, .stream_code = stream, .raw_tables = tables}),
+                        "restore boolean coverage layout");
+            fields.clear();
+            for (const auto& field : generated::FieldsForTable(kFortsRefdataReplSession)) {
+                auto& decoded = fields.emplace_back();
+                decoded.field_code = field.field_code;
+                decoded.kind = Plaza2DecodedValueKind::SignedInteger;
+                if (field.value_class == generated::ValueClass::kTimestamp) {
+                    decoded.kind = Plaza2DecodedValueKind::Timestamp;
+                    decoded.unsigned_value = 1;
+                    decoded.timestamp_ns = 1000000000ULL;
+                }
+                if (field.field_name == flag)
+                    decoded.signed_value = boolean;
+            }
+            require(!bridge.on_plaza2_listener_event({.kind = Plaza2ListenerEventKind::StreamData,
+                                                      .stream_code = streams[0],
+                                                      .table_code = kFortsRefdataReplSession,
+                                                      .fields = fields}),
+                    "retain normal boolean projection");
+            require(bridge.full_order_log_definition_layout_known() == (boolean == 0 || boolean == 1),
+                    "unknown boolean encoding cannot collapse into unchanged projected session terms");
+        }
 }
 
 // Exercise the negotiated CG_MSG_OPEN descriptor and real row-byte decoder before

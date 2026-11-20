@@ -337,6 +337,21 @@ Plaza2Error Plaza2PrivateStateBridge::handle_stream_data(const Plaza2ListenerEve
                     if (!present(field.field_code) &&
                         !(extended && field.field_name == "lot_volume" && present(extended->field_code)))
                         definition_layout_known_[static_cast<std::size_t>(definition_stream)] = false;
+                if (descriptor->table_name == "session" && std::ranges::any_of(event.fields, [](const auto& field) {
+                        if (field.field_code == generated::FieldCode::kFortsRefdataReplSessionEveOn ||
+                            field.field_code == generated::FieldCode::kFortsRefdataReplSessionMonOn)
+                            return field.kind != Plaza2DecodedValueKind::SignedInteger || field.signed_value < 0 ||
+                                   field.signed_value > 1;
+                        // The captured session model stores whole seconds. A
+                        // fraction or missing precision proof must stay strict.
+                        return field.kind == Plaza2DecodedValueKind::Timestamp &&
+                               (field.timestamp_ns % 1000000000ULL ||
+                                field.timestamp_ns / 1000000000ULL != field.unsigned_value ||
+                                (!field.timestamp_ns &&
+                                 (field.raw_value.empty() ||
+                                  std::ranges::any_of(field.raw_value, [](std::byte b) { return b != std::byte{}; }))));
+                    }))
+                    definition_layout_known_[static_cast<std::size_t>(definition_stream)] = false;
                 if (extended && (!event.raw_table || (std::ranges::any_of(event.raw_table->fields,
                                                                           [&](const auto& field) {
                                                                               return field.name == extended->field_name;
