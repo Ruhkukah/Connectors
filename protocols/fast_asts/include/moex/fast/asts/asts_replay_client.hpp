@@ -84,6 +84,16 @@ class ReplayClient {
         return connections_;
     }
 
+    // What the gate's framing turned out to be, once the first frame has been read:
+    // 0 unknown, 1 little-endian, 2 big-endian length; and the bytes between the
+    // length and the FAST message (-1 unknown, 0, or 4 for a repeated sequence preamble).
+    [[nodiscard]] int length_order() const noexcept {
+        return length_order_;
+    }
+    [[nodiscard]] int message_offset() const noexcept {
+        return message_offset_;
+    }
+
     // FIX message with BeginString, BodyLength and CheckSum around the given body
     // ("35=A<SOH>49=...<SOH>"). Exposed for testing.
     [[nodiscard]] static std::string frame_fix(std::string_view body);
