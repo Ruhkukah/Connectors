@@ -169,7 +169,12 @@ using OrderMap = std::map<std::string, std::pair<char, std::pair<std::int64_t, s
 struct BookSink : StreamSink<X_OLR_CURR, W_OLS_CURR> {
     OrderBook book{64}; // small on purpose: growth is part of the test
     std::vector<std::string> names;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> losses;
     int all_stale{}, clears{}, rejected{};
+
+    void on_loss(std::uint32_t first, std::uint32_t last) {
+        losses.emplace_back(first, last);
+    }
 
     void on_instrument(std::uint32_t slot, std::string_view symbol, std::string_view board) {
         REQUIRE(slot == names.size());
@@ -403,7 +408,9 @@ void duplicates_reordering_and_garbage() {
 // cycles shaped like the gate's: generated at one instant, trickled out while
 // incrementals keep flowing, every instrument named. Whenever the stream calls an
 // instrument synced, its orders must equal the truth as of the RptSeq the stream reports.
-void randomized_lossy_channel(std::uint64_t seed) {
+// With TCP replay, each lost range is handed back a little later, or reported as
+// unobtainable, the way a replay request would end.
+void randomized_lossy_channel(std::uint64_t seed, bool with_replay) {
     std::uint64_t state = seed * 0x9E3779B97F4A7C15ull + 1;
     const auto next = [&](std::uint64_t bound) {
         state ^= state << 13;
@@ -419,6 +426,7 @@ void randomized_lossy_channel(std::uint64_t seed) {
         OrderMap orders;
         std::int32_t rpt_seq{};
         std::vector<OrderMap> history{OrderMap{}}; // state after each RptSeq
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> published; // packet seq -> RptSeq after it
     };
     std::vector<Truth> truth(kInstruments);
     BookSink sink;
@@ -426,7 +434,14 @@ void randomized_lossy_channel(std::uint64_t seed) {
     config.reorder_window = 16;
     config.reorder_timeout_ns = 800;
     config.replay_interval_ns = 300;
+    config.tcp_replay = with_replay;
     TestStream stream(sink, config);
+    std::map<std::uint32_t, Bytes> sent; // what a replay request can return
+    struct Request {
+        std::uint32_t first, last, due;
+    };
+    std::vector<Request> requests;
+    std::size_t losses_seen = 0;
     std::uint64_t now = 0;
     std::uint32_t snapshot_seq = 1, next_order_id = 1;
     std::deque<Bytes> delayed, cycle;
@@ -440,10 +455,20 @@ void randomized_lossy_channel(std::uint64_t seed) {
                 std::find_if(std::begin(kSymbols), std::end(kSymbols), [&](const char* s) { return symbol == s; }) -
                 std::begin(kSymbols));
             const std::uint32_t rpt_seq = stream.rpt_seq(slot);
-            if (index >= kInstruments || rpt_seq >= truth[index].history.size() ||
+            // Being in sync means holding everything published up to the stream's position,
+            // not merely a state that was right at some earlier point.
+            std::uint32_t owed = 0;
+            if (index < kInstruments)
+                for (auto it = truth[index].published.rbegin(); it != truth[index].published.rend(); ++it)
+                    if (it->first < stream.next_sequence()) {
+                        owed = it->second;
+                        break;
+                    }
+            if (index >= kInstruments || rpt_seq < owed || rpt_seq >= truth[index].history.size() ||
                 sink.orders(slot) != truth[index].history[rpt_seq])
-                throw std::runtime_error("order mismatch: seed " + std::to_string(seed) + " " + symbol + " RptSeq " +
-                                         std::to_string(rpt_seq));
+                throw std::runtime_error("order mismatch: seed " + std::to_string(seed) + (with_replay ? " (replay) " : " ") +
+                                         symbol + " holds RptSeq " + std::to_string(rpt_seq) + ", owes " +
+                                         std::to_string(owed) + " at packet " + std::to_string(stream.next_sequence() - 1));
         }
     };
     const auto send_incremental = [&](const Bytes& packet, bool lossy) {
@@ -510,14 +535,33 @@ void randomized_lossy_channel(std::uint64_t seed) {
                     }
                 }
                 inst.history.push_back(inst.orders);
+                inst.published.emplace_back(seq, static_cast<std::uint32_t>(inst.rpt_seq));
                 entries.push_back(entry);
             }
-            send_incremental(asts_test::orders(seq, entries), lossy);
+            sent[seq] = asts_test::orders(seq, entries);
         } else {
-            send_incremental(asts_test::heartbeat(seq), lossy);
+            sent[seq] = asts_test::heartbeat(seq);
         }
+        send_incremental(sent[seq], lossy);
         stream.on_timer(now);
         verify();
+        for (; losses_seen < sink.losses.size(); ++losses_seen)
+            requests.push_back({sink.losses[losses_seen].first, sink.losses[losses_seen].second,
+                                seq + static_cast<std::uint32_t>(next(30))});
+        for (std::size_t i = 0; i < requests.size();) {
+            if (requests[i].due > seq && seq != kPackets) {
+                ++i;
+                continue;
+            }
+            const bool ok = next(5) != 0;
+            for (std::uint32_t lost = requests[i].first; ok && lost <= requests[i].last; ++lost) {
+                stream.on_recovered(sent[lost].data() + kPreambleSize, sent[lost].size() - kPreambleSize);
+                verify();
+            }
+            stream.replay_finished(requests[i].first, requests[i].last, ok);
+            verify();
+            requests.erase(requests.begin() + static_cast<std::ptrdiff_t>(i));
+        }
 
         if (cycle.empty()) {
             // A whole cycle as of this instant: every instrument, empty ones as Empty Book.
@@ -548,7 +592,9 @@ void randomized_lossy_channel(std::uint64_t seed) {
     }
     const StreamStats& stats = stream.stats();
     REQUIRE(stats.losses > 0 && stats.snapshots_applied > 0 && stats.replayed > 0 && stats.malformed == 0);
-    REQUIRE(stats.resumed_without_snapshot > 0 && stats.confirmed_by_snapshot > 0 && sink.rejected == 0);
+    REQUIRE(stats.resumed_without_snapshot > 0 && sink.rejected == 0);
+    REQUIRE(with_replay ? stats.recovered_packets > 0 && stats.confirmed_by_replay > 0 && stats.replay_ranges_failed > 0
+                        : stats.confirmed_by_snapshot > 0 && sink.losses.empty());
     REQUIRE(stream.unsynced() == 0 && !stream.needs_snapshot() && stream.instruments() == kInstruments);
     for (std::uint32_t slot = 0; slot < stream.instruments(); ++slot) {
         const std::string symbol(stream.symbol(slot));
@@ -571,9 +617,11 @@ int main(int argc, char** argv) {
         loss_confirms_or_rebuilds();
         fragmented_snapshots();
         duplicates_reordering_and_garbage();
-        const std::uint64_t seeds = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 40;
-        for (std::uint64_t seed = 1; seed <= seeds; ++seed)
-            randomized_lossy_channel(seed);
+        const std::uint64_t seeds = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 25;
+        for (std::uint64_t seed = 1; seed <= seeds; ++seed) {
+            randomized_lossy_channel(seed, false);
+            randomized_lossy_channel(seed, true);
+        }
     } catch (const std::exception& error) {
         std::cerr << "asts_stream_test failed: " << error.what() << '\n';
         return 1;

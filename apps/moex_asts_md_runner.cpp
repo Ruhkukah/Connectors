@@ -3,12 +3,14 @@
 // book and reports feed health once a second.
 
 #include "moex/fast/asts/asts_order_book.hpp"
+#include "moex/fast/asts/asts_replay_client.hpp"
 #include "moex/fast/asts/asts_stream.hpp"
 #include "moex/fast/fast_udp.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <deque>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +39,9 @@ std::uint64_t now_ns() {
 struct Options {
     std::vector<std::pair<bool, UdpEndpoint>> endpoints; // snapshot?, endpoint
     std::string interface, symbol, board;
+    UdpEndpoint replay; // the channel's TCP replay address; empty group disables replay
+    std::string channel;
+    long replay_budget{20}; // requests this run may make; the gate caps connections per day
     long seconds{};
     bool spin{};
 };
@@ -44,6 +49,11 @@ struct Options {
 template <class Incremental, class Snapshot, bool Orders> struct Sink : StreamSink<Incremental, Snapshot> {
     OrderBook book;
     std::uint64_t updates{}, trades{}, rejected{};
+    std::deque<std::pair<std::uint32_t, std::uint32_t>> losses; // ranges waiting for a replay request
+
+    void on_loss(std::uint32_t first, std::uint32_t last) {
+        losses.emplace_back(first, last);
+    }
 
     void on_clear(std::uint32_t slot) {
         if constexpr (Orders)
@@ -77,7 +87,15 @@ template <class Incremental, class Snapshot, bool Orders> int run(const Options&
         datagrams.push_back(0);
     }
     Sink<Incremental, Snapshot, Orders> sink;
-    Stream<Incremental, Snapshot, Sink<Incremental, Snapshot, Orders>> stream(sink);
+    StreamConfig stream_config;
+    stream_config.tcp_replay = !options.replay.group.empty();
+    Stream<Incremental, Snapshot, Sink<Incremental, Snapshot, Orders>> stream(sink, stream_config);
+    ReplayConfig replay_config;
+    replay_config.host = options.replay.group;
+    replay_config.port = options.replay.port;
+    ReplayClient replay(replay_config);
+    long replay_budget = options.replay_budget;
+    std::uint64_t replays_done = 0, replays_failed = 0;
     const std::uint64_t started = now_ns();
     std::uint64_t next_report = started + 1'000'000'000ull;
     bool snapshots_joined = true;
@@ -91,6 +109,30 @@ template <class Incremental, class Snapshot, bool Orders> int run(const Options&
         });
         const std::uint64_t now = now_ns();
         stream.on_timer(now);
+        // One replay request at a time; a range that cannot be fetched is left to the snapshots.
+        if (replay.busy()) {
+            const auto state = replay.poll(now, [&](std::uint32_t, const std::uint8_t* data, std::size_t size) {
+                stream.on_recovered(data, size);
+            });
+            if (state == ReplayClient::State::Done || state == ReplayClient::State::Failed) {
+                const bool ok = state == ReplayClient::State::Done;
+                ++(ok ? replays_done : replays_failed);
+                std::printf("replay %u..%u: %s%s\n", replay.first_seq(), replay.last_seq(),
+                            ok ? "recovered" : "failed: ", ok ? "" : replay.error().c_str());
+                stream.replay_finished(replay.first_seq(), replay.last_seq(), ok);
+            }
+        } else if (!sink.losses.empty()) {
+            const auto [first, last] = sink.losses.front();
+            sink.losses.pop_front();
+            if (replay_budget > 0 && replay.start(options.channel, first, last, now)) {
+                --replay_budget;
+            } else {
+                ++replays_failed;
+                std::printf("replay %u..%u: not requested: %s\n", first, last,
+                            replay_budget > 0 ? replay.error().c_str() : "request budget for this run is spent");
+                stream.replay_finished(first, last, false);
+            }
+        }
         // The snapshot feed is only worth its bandwidth while something is out of sync.
         if (stream.needs_snapshot() != snapshots_joined && (stream.needs_snapshot() || stream.instruments() > 0)) {
             snapshots_joined = stream.needs_snapshot();
@@ -103,14 +145,17 @@ template <class Incremental, class Snapshot, bool Orders> int run(const Options&
         next_report += 1'000'000'000ull;
         const StreamStats& stats = stream.stats();
         std::printf("packets=%llu dup=%llu losses=%llu malformed=%llu instruments=%zu unsynced=%zu rebuilt=%llu "
-                    "confirmed=%llu orders=%zu updates=%llu trades=%llu rejected=%llu snapshot_feed=%s\n",
+                    "confirmed=%llu orders=%zu updates=%llu trades=%llu rejected=%llu replays=%llu/%llu "
+                    "snapshot_feed=%s\n",
                     static_cast<unsigned long long>(stats.packets),
                     static_cast<unsigned long long>(stream.arbiter().duplicates),
                     static_cast<unsigned long long>(stats.losses), static_cast<unsigned long long>(stats.malformed),
                     stream.instruments(), stream.unsynced(), static_cast<unsigned long long>(stats.snapshots_applied),
-                    static_cast<unsigned long long>(stats.confirmed_by_snapshot), sink.book.orders(),
+                    static_cast<unsigned long long>(stats.confirmed_by_snapshot + stats.confirmed_by_replay),
+                    sink.book.orders(),
                     static_cast<unsigned long long>(sink.updates), static_cast<unsigned long long>(sink.trades),
-                    static_cast<unsigned long long>(sink.rejected), snapshots_joined ? "joined" : "left");
+                    static_cast<unsigned long long>(sink.rejected), static_cast<unsigned long long>(replays_done),
+                    static_cast<unsigned long long>(replays_done + replays_failed), snapshots_joined ? "joined" : "left");
         std::printf("  datagrams");
         for (std::size_t index = 0; index < datagrams.size(); ++index)
             std::printf(" %s:%u=%llu", options.endpoints[index].second.group.c_str(),
@@ -143,7 +188,10 @@ int usage() {
                "                           --incr-a GROUP:PORT[@SOURCE] [--incr-b ...]\n"
                "                           [--snap-a GROUP:PORT[@SOURCE]] [--snap-b ...]\n"
                "                           [--interface LOCAL_IP] [--symbol SYMBOL --board BOARD] [--seconds N] [--spin]\n"
-               "Addresses come from the ASTS configuration file: OLR/OLS for orders, TLR/TLS for trades.\n",
+               "                           [--replay HOST:PORT [--replay-budget N]]\n"
+               "Addresses come from the ASTS configuration file: OLR/OLS for orders, TLR/TLS for trades.\n"
+               "--replay enables TCP replay of lost packets from the channel's H connection (off by default);\n"
+               "the gate limits requests per day, so each run makes at most --replay-budget of them (default 20).\n",
                stderr);
     return 2;
 }
@@ -169,6 +217,13 @@ int main(int argc, char** argv) {
                 return 2;
             }
             options.endpoints.emplace_back(arg.substr(2, 4) == "snap", endpoint);
+        } else if (arg == "--replay") {
+            if (!parse_endpoint(value, options.replay)) {
+                std::fprintf(stderr, "bad replay address: %s\n", value);
+                return 2;
+            }
+        } else if (arg == "--replay-budget") {
+            options.replay_budget = std::strtol(value, nullptr, 10);
         } else if (arg == "--market") {
             market = value;
         } else if (arg == "--kind") {
@@ -190,6 +245,7 @@ int main(int argc, char** argv) {
         have_incremental |= !endpoint.first;
     if (!have_incremental)
         return usage();
+    options.channel = kind == "trades" ? "TLR" : "OLR";
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
     if (market == "curr" && kind == "orders")

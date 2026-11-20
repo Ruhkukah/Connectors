@@ -28,8 +28,9 @@ class SequenceArbiter {
     }
 
     // deliver(data, size, seq) is called for every packet, in sequence.
-    // lost(next_seq, restarted) is called first whenever packets before next_seq
-    // are gone for good; restarted means the gate began numbering again.
+    // lost(first_missing, next_seq, restarted) is called first whenever the packets
+    // from first_missing up to next_seq - 1 are gone for good; restarted means the
+    // gate began numbering again, in which case the range means nothing.
     template <class Deliver, class Lost>
     void push(const std::uint8_t* data, std::size_t size, std::uint64_t now_ns, Deliver&& deliver, Lost&& lost) {
         const std::uint32_t seq = read_preamble(data);
@@ -78,8 +79,9 @@ class SequenceArbiter {
             }
         }
         ++gaps;
+        const std::uint32_t first_missing = expected_;
         expected_ = next;
-        lost(next, false);
+        lost(first_missing, next, false);
         drain(now_ns, deliver);
     }
 
@@ -112,8 +114,9 @@ class SequenceArbiter {
         ++gaps;
         behind_run_ = 0;
         clear();
+        const std::uint32_t first_missing = expected_;
         expected_ = seq + 1;
-        lost(seq, restarted);
+        lost(first_missing, seq, restarted);
         deliver(data, size, seq);
     }
     template <class Deliver> void drain(std::uint64_t now_ns, Deliver&& deliver) {

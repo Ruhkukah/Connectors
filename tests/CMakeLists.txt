@@ -137,8 +137,10 @@ if(EXISTS "${MOEX_FAST_TEMPLATES}")
     set_tests_properties(fast_generated_decoder_current PROPERTIES LABELS "unit;fast")
 endif()
 
-moex_test(asts_stream_test fast_asts/asts_stream_test.cpp moex_fast_asts)
-set_tests_properties(asts_stream_test PROPERTIES LABELS "unit;fast;sanitizer")
+foreach(name IN ITEMS asts_stream_test asts_replay_test)
+    moex_test(${name} fast_asts/${name}.cpp moex_fast_asts Threads::Threads)
+    set_tests_properties(${name} PROPERTIES LABELS "unit;fast;sanitizer")
+endforeach()
 # Replays a packet capture through the ASTS connector and audits it against the capture's own snapshots.
 add_executable(asts_pcap_replay fast_asts/asts_pcap_replay.cpp)
 target_link_libraries(asts_pcap_replay PRIVATE moex_fast_asts)

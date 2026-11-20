@@ -20,6 +20,12 @@
 //    nothing and resumes at once; a quiet one is confirmed by a snapshot from a
 //    later cycle showing the same RptSeq. Only instruments that really lost
 //    entries are rebuilt.
+//  - With StreamConfig::tcp_replay the sink is told which packets were lost
+//    (on_loss) so the caller can fetch them over TCP replay and hand them back
+//    through on_recovered / replay_finished. Once the range is back, all
+//    instruments are whole again without waiting for snapshots. Replay repairs
+//    one outage at a time: if the request fails, or another loss arrives
+//    before it completes, the instruments involved fall back to snapshots.
 //  - Snapshot cycles restart at sequence number 1, fragments of one instrument
 //    run from RouteFirst to LastFragment, and empty instruments are still sent
 //    (as an Empty Book entry), so a complete cycle names every instrument.
@@ -45,6 +51,7 @@ struct StreamConfig {
     std::uint64_t reorder_timeout_ns{2'000'000}; // how long to wait before declaring the packet lost
     std::size_t recovery_queue_bytes{std::size_t{32} << 20};
     std::uint64_t replay_interval_ns{5'000'000}; // on_timer releases restored instruments at most this often
+    bool tcp_replay{}; // report lost ranges through Sink::on_loss and accept them back
     std::size_t expected_instruments{4096};
 };
 
@@ -54,6 +61,7 @@ struct StreamStats {
     std::uint64_t queued{}, queue_dropped{}, replayed{}, replay_passes{};
     std::uint64_t snapshot_packets{}, snapshot_cycles{}, snapshot_resyncs{}, snapshots_applied{}, snapshots_too_old{};
     std::uint64_t resumed_without_snapshot{}, confirmed_by_snapshot{};
+    std::uint64_t recovered_packets{}, confirmed_by_replay{}, replay_ranges_failed{};
 };
 
 // Default no-op sink; derive and shadow what you need. `slot` is a dense,
@@ -73,6 +81,13 @@ template <class Incremental, class Snapshot> struct StreamSink {
     // Packet loss: every instrument is untrusted until its own on_instrument_state(slot, true).
     // Keep the data: most instruments are confirmed rather than rebuilt.
     void on_all_stale() noexcept {}
+    // With StreamConfig::tcp_replay: packets first_seq..last_seq were lost on both feeds.
+    // Fetch them (TCP replay), pass each to Stream::on_recovered, then call
+    // Stream::replay_finished; call it with ok = false if the range will not be fetched.
+    // A newer on_loss supersedes an unfinished one: finishing the older range is then a no-op.
+    // While a range is being recovered, on_incremental can arrive for an instrument
+    // still reported as not in sync; its on_instrument_state(slot, true) follows.
+    void on_loss(std::uint32_t /*first_seq*/, std::uint32_t /*last_seq*/) noexcept {}
     // End of an incremental message: everything it changed is now consistent.
     void on_batch_end() noexcept {}
     void on_session_status(const TradingSessionStatus&) noexcept {}
@@ -82,7 +97,8 @@ template <class Incremental, class Snapshot, class Sink> class Stream {
   public:
     explicit Stream(Sink& sink, StreamConfig config = {})
         : sink_(sink), arbiter_(config.reorder_window, config.reorder_timeout_ns),
-          replay_interval_ns_(config.replay_interval_ns), queue_(config.recovery_queue_bytes) {
+          replay_interval_ns_(config.replay_interval_ns), tcp_replay_(config.tcp_replay),
+          queue_(config.recovery_queue_bytes) {
         std::size_t buckets = 16;
         while (buckets < config.expected_instruments * 2)
             buckets <<= 1;
@@ -148,6 +164,43 @@ template <class Incremental, class Snapshot, class Sink> class Stream {
         default:
             break;
         }
+    }
+
+    // One packet of a lost range, fetched by TCP replay: the FAST message as the gate
+    // framed it, without the 4-byte sequence preamble. In sequence order.
+    void on_recovered(const std::uint8_t* message, std::size_t size) noexcept {
+        ++stats_.recovered_packets;
+        recovering_ = true;
+        process_message(message, message + size);
+        recovering_ = false;
+    }
+
+    // The range reported by the latest on_loss has been handed back in full (ok), or will not be.
+    void replay_finished(std::uint32_t first_seq, std::uint32_t last_seq, bool ok) noexcept {
+        if (!open_loss_ || open_first_ != first_seq || open_last_ != last_seq)
+            return; // superseded by a later loss
+        open_loss_ = false;
+        if (!ok) {
+            ++stats_.replay_ranges_failed;
+            return; // snapshots take it from here
+        }
+        // Nothing has been lost since, so the entries held since the loss follow on directly,
+        // and an instrument with nothing held and nothing recovered was never touched.
+        replay();
+        for (std::uint32_t slot = 0; slot < instruments_.size(); ++slot) {
+            Instrument& inst = instruments_[slot];
+            if (inst.state != State::Stale || !inst.intact || inst.barred || inst.first_rpt != 0)
+                continue;
+            inst.state = State::Synced;
+            --stale_;
+            ++stats_.confirmed_by_replay;
+            sink_.on_instrument_state(slot, true);
+        }
+    }
+
+    // True while the range reported by the latest on_loss is still outstanding.
+    [[nodiscard]] bool recovery_pending() const noexcept {
+        return open_loss_;
     }
 
     // Call periodically so a held-back packet is released and restored instruments are not kept waiting.
@@ -222,6 +275,7 @@ template <class Incremental, class Snapshot, class Sink> class Stream {
         std::uint32_t stale_cycle{}; // snapshot cycle during which it went stale
         State state{State::Stale};
         bool intact{}; // stale, but what the sink holds is exactly the state as of rpt_seq
+        bool barred{}; // carries a loss that replay will not make good; only an entry or a snapshot clears it
     };
     struct Seen {
         std::uint32_t seq{};
@@ -241,9 +295,13 @@ template <class Incremental, class Snapshot, class Sink> class Stream {
             enqueue(data, size, seq);
     }
 
-    // Returns true when the packet touches an unsynced instrument and must be kept for replay.
     bool process(const std::uint8_t* data, std::size_t size) noexcept {
-        Reader r{data + kPreambleSize, data + size};
+        return process_message(data + kPreambleSize, data + size);
+    }
+
+    // Returns true when the message touches an unsynced instrument and must be kept for replay.
+    bool process_message(const std::uint8_t* begin, const std::uint8_t* end) noexcept {
+        Reader r{begin, end};
         std::uint64_t pmap;
         switch (read_header(r, pmap)) {
         case Incremental::kTemplateId:
@@ -281,7 +339,19 @@ template <class Incremental, class Snapshot, class Sink> class Stream {
                 if (inst.state == State::Stale && inst.intact && rpt_seq <= inst.rpt_seq + 1) {
                     if (rpt_seq <= inst.rpt_seq)
                         return; // already reflected
+                    if (recovering_) {
+                        // A recovered entry extends what is held, but later entries may already be
+                        // queued behind it, so the instrument stays out of sync until they are run.
+                        inst.rpt_seq = rpt_seq;
+                        sink_.on_incremental(slot, m, e);
+                        return;
+                    }
                     // The very next entry: nothing was missed for this instrument.
+                } else if (recovering_) {
+                    // Cannot be placed: the instrument was already missing something older. It is
+                    // not kept, so replay cannot vouch for the instrument, which waits for a snapshot.
+                    inst.barred = true;
+                    return;
                 } else if (rpt_seq == 1 || entry_type(e) == 'J') {
                     // The day's first entry and Empty Book both state the instrument completely.
                     inst.rpt_seq = rpt_seq - 1;
@@ -304,6 +374,7 @@ template <class Incremental, class Snapshot, class Sink> class Stream {
                 ++stats_.instrument_gaps;
                 inst.state = State::Stale;
                 inst.intact = false;
+                inst.barred = false;
                 inst.first_rpt = rpt_seq;
                 inst.stale_cycle = cycle_id_;
                 if (!needs_snapshot())
@@ -315,7 +386,13 @@ template <class Incremental, class Snapshot, class Sink> class Stream {
         });
         if (!ok) {
             ++stats_.malformed;
-            mark_all_stale();
+            if (!recovering_) {
+                // What it carried is unknown and cannot be asked for by range.
+                open_loss_ = false;
+                mark_all_stale();
+                for (Instrument& inst : instruments_)
+                    inst.barred = true;
+            }
             return false;
         }
         sink_.on_batch_end();
@@ -474,10 +551,24 @@ template <class Incremental, class Snapshot, class Sink> class Stream {
         return queue_end_ + length <= queue_.size();
     }
 
+    void lost(std::uint32_t first_seq, std::uint32_t last_seq, bool restarted) noexcept {
+        mark_all_stale(restarted);
+        open_loss_ = tcp_replay_ && !restarted;
+        if (!open_loss_)
+            return;
+        open_first_ = first_seq;
+        open_last_ = last_seq;
+        sink_.on_loss(first_seq, last_seq);
+    }
+
     // Packets were lost: every instrument is suspect. After a restart of the gate's
     // numbering RptSeq starts over as well, so nothing held says anything about the new run.
     void mark_all_stale(bool restarted = false) noexcept {
         for (Instrument& inst : instruments_) {
+            // Replay can make this one loss good for an instrument that was whole until now.
+            // One still being restored has just lost what was queued for it as well, so only
+            // its own next entry or a snapshot can clear it.
+            inst.barred = inst.state != State::Synced;
             // A synced or restored instrument's data is still exact as of its RptSeq.
             inst.intact = !restarted && (inst.state != State::Stale || inst.intact);
             if (restarted)
@@ -574,9 +665,9 @@ template <class Incremental, class Snapshot, class Sink> class Stream {
     } deliver_{this};
     struct Lost {
         Stream* self;
-        void operator()(std::uint32_t /*next_seq*/, bool restarted) const noexcept {
+        void operator()(std::uint32_t first_missing, std::uint32_t next_seq, bool restarted) const noexcept {
             ++(restarted ? self->stats_.restarts : self->stats_.losses);
-            self->mark_all_stale(restarted);
+            self->lost(first_missing, next_seq - 1, restarted);
         }
     } lost_{this};
 
@@ -591,6 +682,12 @@ template <class Incremental, class Snapshot, class Sink> class Stream {
 
     std::uint64_t replay_interval_ns_{};
     std::uint64_t last_replay_ns_{};
+
+    // TCP replay: the one loss currently being made good.
+    std::uint32_t open_first_{}, open_last_{};
+    bool open_loss_{};
+    bool tcp_replay_{};
+    bool recovering_{}; // inside on_recovered
 
     // Recovery queue: Record-prefixed packets in arrival order, live in [queue_head_, queue_end_).
     std::vector<std::uint8_t> queue_;

@@ -3,10 +3,12 @@
 //   asts_pcap_replay <capture.pcap>
 //       survey: per destination group, packet counts, sequence range, template ids, undecodable packets
 //   asts_pcap_replay <capture.pcap> --market curr|fond --kind orders|trades --incr G:P --snap G:P
-//                    [--join-after SECONDS] [--drop-every N]
+//                    [--join-after SECONDS] [--drop-every N] [--replay-dropped PACKETS]
 //       replay one stream pair and audit the result against the capture's own snapshots.
 //       --join-after withholds the first seconds of incrementals (a late join);
-//       --drop-every discards every Nth incremental packet (forced loss).
+//       --drop-every discards every Nth incremental packet (forced loss);
+//       --replay-dropped hands each lost range back, as a TCP replay would, that many
+//       incremental packets after the loss was noticed.
 
 #include "moex/fast/asts/asts_order_book.hpp"
 #include "moex/fast/asts/asts_stream.hpp"
@@ -114,6 +116,7 @@ struct Options {
     std::unordered_map<std::uint64_t, int> roles; // (ip << 16 | port) -> 1 incremental, 2 snapshot
     double join_after{};
     std::uint64_t drop_every{};
+    std::uint64_t replay_after{}; // 0: no replay
 };
 
 // What the exchange's own snapshot says an instrument holds.
@@ -132,6 +135,11 @@ template <class Incremental, class Snapshot, bool Orders> struct ReplaySink : St
     std::vector<std::uint32_t> since_sync; // incrementals applied since the instrument was last rebuilt
     std::uint64_t incrementals{}, snapshot_entries{}, clears{}, all_stale{}, rejected{}, session_status{};
     std::map<std::string, std::uint64_t> kinds;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> losses;
+
+    void on_loss(std::uint32_t first, std::uint32_t last) {
+        losses.emplace_back(first, last);
+    }
 
     void on_instrument(std::uint32_t, std::string_view, std::string_view) {
         items.push_back(0);
@@ -175,7 +183,18 @@ template <class Incremental, class Snapshot, bool Orders> struct ReplaySink : St
 template <class Incremental, class Snapshot, bool Orders> int replay(const pcap::File& file, const Options& options) {
     using Sink = ReplaySink<Incremental, Snapshot, Orders>;
     Sink sink;
-    Stream<Incremental, Snapshot, Sink> stream(sink);
+    StreamConfig config;
+    config.tcp_replay = options.replay_after != 0;
+    Stream<Incremental, Snapshot, Sink> stream(sink, config);
+    // Stand-in for the gate's replay service: the packets this run withheld, by sequence number.
+    std::unordered_map<std::uint32_t, pcap::Datagram> withheld_packets;
+    struct Request {
+        std::uint32_t first, last;
+        std::uint64_t due;
+    };
+    std::vector<Request> requests;
+    std::size_t losses_seen = 0;
+    std::uint64_t ranges_recovered = 0, ranges_failed = 0;
     std::uint64_t incremental = 0, withheld = 0, dropped = 0, snapshot = 0, first_ns = 0, last_ns = 0, synced_ns = 0;
     std::size_t max_unsynced = 0;
 
@@ -257,10 +276,30 @@ template <class Incremental, class Snapshot, bool Orders> int replay(const pcap:
                 }
                 if (options.drop_every && ++incremental % options.drop_every == 0) {
                     ++dropped;
+                    withheld_packets[read_preamble(d.data)] = d;
                     return;
                 }
                 incremental += options.drop_every == 0;
                 stream.on_incremental(d.data, d.size, d.time_ns);
+                for (; losses_seen < sink.losses.size(); ++losses_seen)
+                    requests.push_back({sink.losses[losses_seen].first, sink.losses[losses_seen].second,
+                                        incremental + options.replay_after});
+                for (std::size_t i = 0; i < requests.size();) {
+                    if (requests[i].due > incremental) {
+                        ++i;
+                        continue;
+                    }
+                    // The capture itself has holes; only what this run withheld can be "replayed".
+                    bool ok = true;
+                    for (std::uint32_t seq = requests[i].first; ok && seq <= requests[i].last; ++seq)
+                        ok = withheld_packets.count(seq) != 0;
+                    for (std::uint32_t seq = requests[i].first; ok && seq <= requests[i].last; ++seq)
+                        stream.on_recovered(withheld_packets[seq].data + kPreambleSize,
+                                            withheld_packets[seq].size - kPreambleSize);
+                    stream.replay_finished(requests[i].first, requests[i].last, ok);
+                    ++(ok ? ranges_recovered : ranges_failed);
+                    requests.erase(requests.begin() + static_cast<std::ptrdiff_t>(i));
+                }
             } else {
                 ++snapshot;
                 audit(d);
@@ -287,6 +326,9 @@ template <class Incremental, class Snapshot, bool Orders> int replay(const pcap:
                 " resumed_without_snapshot=%" PRIu64 " confirmed_by_snapshot=%" PRIu64 "\n",
                 s.queued, s.replayed, s.replay_passes, s.queue_dropped, s.resumed_without_snapshot,
                 s.confirmed_by_snapshot);
+    std::printf("tcp replay: ranges recovered=%" PRIu64 " failed=%" PRIu64 " packets=%" PRIu64
+                " instruments confirmed=%" PRIu64 "\n",
+                ranges_recovered, ranges_failed, s.recovered_packets, s.confirmed_by_replay);
     std::printf("snapshots: packets=%" PRIu64 " cycles=%" PRIu64 " resyncs=%" PRIu64 " applied=%" PRIu64
                 " too_old=%" PRIu64 "\n",
                 s.snapshot_packets, s.snapshot_cycles, s.snapshot_resyncs, s.snapshots_applied, s.snapshots_too_old);
@@ -327,6 +369,8 @@ int main(int argc, char** argv) {
             options.join_after = std::strtod(argv[i + 1], nullptr);
         } else if (flag == "--drop-every") {
             options.drop_every = std::strtoull(argv[i + 1], nullptr, 10);
+        } else if (flag == "--replay-dropped") {
+            options.replay_after = std::strtoull(argv[i + 1], nullptr, 10);
         } else {
             UdpEndpoint endpoint;
             in_addr parsed{};
