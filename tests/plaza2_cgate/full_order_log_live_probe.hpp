@@ -167,9 +167,10 @@ inline std::uint64_t utc_ns(moex::plaza2::public_wire::Time t) {
 }
 inline std::string calendar(moex::plaza2::public_wire::Time t) {
     std::ostringstream text;
-    text << t.year << '-' << static_cast<unsigned>(t.month) << '-' << static_cast<unsigned>(t.day) << 'T'
-         << static_cast<unsigned>(t.hour) << ':' << static_cast<unsigned>(t.minute) << ':'
-         << static_cast<unsigned>(t.second) << '.' << t.msec;
+    text << std::setfill('0') << std::setw(4) << t.year << '-' << std::setw(2) << static_cast<unsigned>(t.month) << '-'
+         << std::setw(2) << static_cast<unsigned>(t.day) << 'T' << std::setw(2) << static_cast<unsigned>(t.hour) << ':'
+         << std::setw(2) << static_cast<unsigned>(t.minute) << ':' << std::setw(2) << static_cast<unsigned>(t.second)
+         << '.' << std::setw(3) << t.msec;
     return text.str();
 }
 class Observer final : public cg::Plaza2ListenerEventHandler {

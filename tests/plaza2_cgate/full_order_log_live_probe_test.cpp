@@ -154,6 +154,8 @@ int main() {
         }
         {
             constexpr std::uint64_t base = 1700000000000000000ULL;
+            expect(calendar(wire_time(base + 3000000ULL)) == "2023-11-15T01:13:20.003",
+                   "calendar diagnostics must preserve millisecond precision with leading zeroes");
             constexpr std::int64_t a = 2100000000000000001LL, b = 2100000000000000007LL;
             const OrderSet old{{a, {1, 100, 7, true}}}, current{{b, {1, 100, 7, true}}};
             const auto metadata = [&](std::uint64_t snapshot, std::uint64_t received) {
