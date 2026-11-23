@@ -8,7 +8,19 @@ namespace {
 void expect(bool value, const char* message) {
     full_order_log_probe::require(value, message);
 }
+moex::plaza2::public_wire::Time wire_time(std::uint64_t utc_ns) {
+    using namespace std::chrono;
+    const auto local = sys_time<nanoseconds>{nanoseconds(utc_ns)} + hours(3);
+    const auto date = floor<days>(local);
+    const year_month_day ymd{date};
+    const hh_mm_ss clock{floor<milliseconds>(local - date)};
+    return {static_cast<std::uint16_t>(int(ymd.year())),           static_cast<std::uint8_t>(unsigned(ymd.month())),
+            static_cast<std::uint8_t>(unsigned(ymd.day())),        static_cast<std::uint8_t>(clock.hours().count()),
+            static_cast<std::uint8_t>(clock.minutes().count()),    static_cast<std::uint8_t>(clock.seconds().count()),
+            static_cast<std::uint16_t>(clock.subseconds().count())};
+}
 struct Fixture {
+    std::uint64_t source_utc{1700000000000000000ULL};
     std::vector<Plaza2RawTableBinding> schema;
     std::array<std::int32_t, 1> ids{11};
     Window window{64};
@@ -17,6 +29,7 @@ struct Fixture {
     Observer composite{window, ids, &book, 100, nullptr, 512, &content},
         reference{window, ids, nullptr, 100, nullptr, 512, &content};
     Fixture() {
+        content.utc_clock = [&] { return source_utc; };
         content.resample = [&] { composite.sample_content(); };
         const auto base = tables();
         schema.assign(base.begin(), base.end());
@@ -50,13 +63,19 @@ struct Fixture {
     void info(Observer& o, std::int64_t revision, std::int64_t life) {
         Row r(schema[1]);
         r.set("publication_state", std::int8_t{1});
+        r.set("replRev", revision);
+        r.set("moment", wire_time(source_utc));
         r.set("trades_rev", revision);
         r.set("trades_lifenum", life);
         send(o, r.event());
     }
     void raw(std::int64_t revision, std::int64_t quantity, std::int64_t life = 7) {
+        source_utc += 3000000000ULL;
         begin(reference);
-        send(reference, row(schema[0], 101, 11, 10000000, quantity, 1, 50).event());
+        auto r = row(schema[0], 101, 11, 10000000, quantity, 1, 50);
+        r.set("moment_ns", source_utc - 1000000000ULL);
+        r.set("moment", wire_time(source_utc - 1000000000ULL));
+        send(reference, r.event());
         info(reference, revision, life);
         commit(reference);
     }
@@ -134,6 +153,267 @@ int main() {
                    "ONLINE completes composite without exposed info; exact comparison stays UNALIGNED");
         }
         {
+            constexpr std::uint64_t base = 1700000000000000000ULL;
+            constexpr std::int64_t a = 2100000000000000001LL, b = 2100000000000000007LL;
+            const OrderSet old{{a, {1, 100, 7, true}}}, current{{b, {1, 100, 7, true}}};
+            const auto metadata = [&](std::uint64_t snapshot, std::uint64_t received) {
+                return PublicationInfo{.provided = true,
+                                       .info_revision = 5,
+                                       .trades_revision = 20,
+                                       .log_life = 7,
+                                       .end_utc_ns = snapshot,
+                                       .max_order_moment_ns = snapshot - 1000000000ULL,
+                                       .received_utc_ns = received};
+            };
+            std::ostringstream trace;
+            ContentWindow stale(20, 64, &trace);
+            stale.utc_clock = [&] { return base; };
+            stale.change(11, a, {0, 10, 0, base - 5000000000ULL, base - 5000000000ULL, true});
+            stale.change(11, b, {1, 11, 1, base - 4000000000ULL, base - 4000000000ULL, true});
+            stale.record(11, current, 100);
+            stale.raw(11, old, 101, 102, metadata(base - 140000000000ULL, base));
+            stale.poll(123);
+            expect(stale.pre_connection == 1 && stale.different == 0 && stale.stale_hypothesis_proven == 1,
+                   "cached140s-old publication is not a current mismatch; every added/deleted ID proves chronology");
+            expect(trace.str().find("not_comparable_pre_connection_publication") != std::string::npos &&
+                       trace.str().find("proven_for_every_differing_id") != std::string::npos,
+                   "pre-connection classification and causal proof are separately recorded");
+            ContentWindow partial_trade(20, 64);
+            partial_trade.utc_clock = [&] { return base; };
+            partial_trade.change(11, a, {0, 10, 0, base - 5000000000ULL, base - 5000000000ULL, true});
+            partial_trade.change(11, b, {1, 11, 2, base - 4000000000ULL, base - 4000000000ULL, true});
+            partial_trade.change(11, b, {2, 12, 1, base - 3000000000ULL, base - 3000000000ULL, true});
+            partial_trade.record(11, current, 100);
+            partial_trade.raw(11, old, 101, 102, metadata(base - 140000000000ULL, base));
+            partial_trade.poll(123);
+            expect(partial_trade.stale_hypothesis_proven == 1 && !partial_trade.suspected_defects,
+                   "a partial trade after the retained Add preserves its proof of post-snapshot creation");
+            ContentWindow conflicting_delete(20, 64);
+            conflicting_delete.utc_clock = [&] { return base; };
+            conflicting_delete.change(11, a, {0, 10, 0, base - 5000000000ULL, base - 5000000000ULL, true});
+            conflicting_delete.change(11, b, {1, 11, 1, base - 4000000000ULL, base - 4000000000ULL, true});
+            conflicting_delete.change(11, b, {0, 12, 0, base - 3000000000ULL, base - 3000000000ULL, true});
+            conflicting_delete.record(11, current, 100);
+            conflicting_delete.raw(11, old, 101, 102, metadata(base - 140000000000ULL, base));
+            conflicting_delete.poll(123);
+            expect(conflicting_delete.suspected_defects == 1 && !conflicting_delete.stale_hypothesis_proven,
+                   "a later committed delete contradicts a composite state that still contains the ID");
+            ContentWindow uncertain_transition(20, 64);
+            uncertain_transition.utc_clock = [&] { return base; };
+            uncertain_transition.change(11, a, {0, 10, 0, base - 5000000000ULL, base - 5000000000ULL, true});
+            uncertain_transition.change(11, b, {1, 11, 1, base - 150000000000ULL, base - 150000000000ULL, true});
+            uncertain_transition.change(11, b, {1, 12, 1, 0, 0, false});
+            uncertain_transition.record(11, current, 100);
+            uncertain_transition.raw(11, old, 101, 102, metadata(base - 140000000000ULL, base));
+            uncertain_transition.poll(123);
+            expect(!uncertain_transition.stale_hypothesis_proven && !uncertain_transition.suspected_defects,
+                   "an unknown later transition cannot be ignored to claim either proof or contrary chronology");
+            // A later publication cannot reuse the initial exclusion, even with a regressed timestamp.
+            stale.raw(11, old, 200, 201, metadata(base - 140000000000ULL, base));
+            stale.poll(222);
+            expect(stale.different == 1 && stale.pre_connection == 1,
+                   "later mismatches never disappear behind an old/regressed publication time");
+            ContentWindow wrong(20, 64);
+            wrong.utc_clock = [&] { return base; };
+            wrong.change(11, a, {0, 10, 0, base - 150000000000ULL, base - 150000000000ULL, true});
+            wrong.change(11, b, {1, 11, 1, base - 4000000000ULL, base - 4000000000ULL, true});
+            wrong.record(11, current, 100);
+            wrong.raw(11, old, 101, 102, metadata(base - 140000000000ULL, base));
+            wrong.poll(123);
+            expect(wrong.suspected_defects == 1 && wrong.stale_hypothesis_proven == 0,
+                   "a missing ID deleted before the snapshot contradicts the proposed stale-snapshot explanation");
+            ContentWindow unknown(20, 64);
+            unknown.utc_clock = [&] { return base; };
+            unknown.record(11, current, 100);
+            unknown.raw(11, old, 101, 102, metadata(base - 140000000000ULL, base));
+            unknown.poll(123);
+            expect(unknown.pre_connection == 1 && unknown.stale_hypothesis_proven == 0,
+                   "publication predates history but absent lifecycle evidence cannot prove the hypothesis");
+            ContentWindow absent(20, 64);
+            absent.utc_clock = [&] { return base; };
+            absent.record(11, current, 100);
+            auto no_time = metadata(0, base);
+            no_time.max_order_moment_ns = 0;
+            absent.raw(11, old, 101, 102, no_time);
+            absent.poll(123);
+            expect(absent.unknown_publication == 1 && absent.pre_connection == 0 && absent.stale_hypothesis_proven == 0,
+                   "missing publication time is explicitly unknown, never assumed stale");
+            ContentWindow future(20, 64);
+            future.utc_clock = [&] { return base; };
+            future.record(11, current, 100);
+            future.raw(11, old, 101, 102, metadata(base + 5000000000ULL, base));
+            future.poll(123);
+            expect(future.unknown_publication == 1 && future.stale_hypothesis_proven == 0,
+                   "future/inconsistent timestamps cannot qualify a publication");
+            ContentWindow quiet(20, 64);
+            std::uint64_t now = base;
+            quiet.utc_clock = [&] { return now; };
+            quiet.record(11, current, 100);
+            for (int n = 0; n != 3; ++n) {
+                now = base + (n + 1) * 180000000000ULL;
+                auto info = metadata(now - 10000000ULL, now);
+                info.info_revision += n;
+                info.max_order_moment_ns = base - 100000000000ULL; // Quiet resting orders are old, info is fresh.
+                quiet.raw(11, current, 200 + n * 100, 201 + n * 100, info);
+            }
+            expect(quiet.fresh_equal == 3 && !quiet.fresh_check_pass(599) && quiet.fresh_check_pass(600),
+                   "three fresh quiet publications qualify only after10min, without requiring recent order activity");
+            quiet.retire();
+            expect(!quiet.fresh_check_pass(600) && quiet.fresh_counts.empty(),
+                   "retiring a generation invalidates old fresh-publication counts even with no pending observations");
+            quiet.record(11, current, 550);
+            expect(!quiet.fresh_check_pass(600), "a new composite alone cannot reuse earlier raw-publication proof");
+            for (int n = 0; n != 3; ++n) {
+                now = base + (n + 4) * 180000000000ULL;
+                auto info = metadata(now - 10000000ULL, now);
+                info.info_revision = 8 + n;
+                quiet.raw(11, current, 560 + n * 10, 561 + n * 10, info);
+            }
+            expect(quiet.fresh_check_pass(600), "three new fresh publications qualify the new generation");
+            quiet.raw(11, current, 600, 601, no_time);
+            expect(
+                quiet.unknown_later_publication == 1 && !quiet.fresh_check_pass(600),
+                "a later publication with unknown time still compares but cannot silently qualify among fresh equals");
+            ContentWindow multiple(20, 64);
+            multiple.utc_clock = [&] { return base; };
+            for (const auto isin : {11, 12, 13}) {
+                multiple.record(isin, current, 100);
+                multiple.raw(isin, current, 200, 201, metadata(base + 5000000000ULL, base + 5000000000ULL));
+            }
+            expect(multiple.fresh_equal == 3 && !multiple.fresh_check_pass(600),
+                   "one publication for each of three instruments is not three publications per instrument");
+            for (const auto duplicate_kind : {0, 1, 2}) {
+                ContentWindow repeated(20, 64);
+                repeated.utc_clock = [&] { return base; };
+                repeated.record(11, current, 100);
+                for (int n = 0; n != 3; ++n) {
+                    auto info =
+                        metadata(base + (duplicate_kind == 2 ? 10 + n : 10) * 1000000000ULL, base + 30000000000ULL);
+                    if (duplicate_kind == 1)
+                        info.info_revision += n; // Timestamp does not advance.
+                    repeated.raw(11, current, 200 + n * 100, 201 + n * 100, info);
+                }
+                expect(
+                    repeated.fresh_equal == 1 && repeated.matched == 3 && repeated.unknown_later_publication == 2 &&
+                        !repeated.fresh_check_pass(600),
+                    "duplicate identity, repeated time, or repeated revision never creates three fresh publications");
+            }
+            ContentWindow regressed(20, 64);
+            regressed.utc_clock = [&] { return base; };
+            regressed.record(11, current, 100);
+            regressed.raw(11, current, 200, 201, metadata(base + 10000000000ULL, base + 30000000000ULL));
+            auto earlier = metadata(base + 5000000000ULL, base + 30000000000ULL);
+            earlier.info_revision = 6;
+            regressed.raw(11, old, 300, 301, earlier);
+            regressed.poll(322);
+            expect(regressed.fresh_observations == 1 && regressed.different == 1 &&
+                       regressed.unknown_later_publication == 1 && !regressed.fresh_check_pass(600),
+                   "a later regressing snapshot remains a mismatch even when its time is after the first composite");
+            // Later committed events do not belong to the nearest earlier state, even within clock tolerance.
+            ContentWindow later(20, 64);
+            later.utc_clock = [&] { return base; };
+            later.record(11, current, 100);
+            later.change(11, a, {0, 10, 0, base - 5000000000ULL, base - 5000000000ULL, true});
+            later.change(11, b, {1, 11, 1, base - 4000000000ULL, base - 4000000000ULL, true});
+            later.raw(11, old, 101, 102, metadata(base - 140000000000ULL, base));
+            later.poll(123);
+            expect(later.stale_hypothesis_proven == 0 && later.suspected_defects == 0,
+                   "events assigned to a later unrecorded commit cannot prove or contradict the compared state");
+            ContentWindow evicted(20, 64, nullptr, 2);
+            evicted.utc_clock = [&] { return base; };
+            evicted.change(11, a, {0, 10, 0, base - 5000000000ULL, base - 5000000000ULL, true});
+            evicted.change(11, b, {1, 11, 1, base - 4000000000ULL, base - 4000000000ULL, true});
+            evicted.change(11, b, {1, 12, 1, base - 3000000000ULL, base - 3000000000ULL, true});
+            evicted.record(11, current, 100);
+            evicted.raw(11, old, 101, 102, metadata(base - 140000000000ULL, base));
+            evicted.poll(123);
+            expect(evicted.change_evictions == 1 && evicted.stale_hypothesis_proven == 0,
+                   "bounded lifecycle eviction explicitly prevents a causal proof");
+            ContentWindow fresh_bad(20, 64);
+            std::uint64_t received = base;
+            fresh_bad.utc_clock = [&] { return received; };
+            fresh_bad.record(11, current, 100);
+            received += 5000000000ULL;
+            fresh_bad.raw(11, old, 101, 102, metadata(received - 10000000ULL, received));
+            fresh_bad.poll(123);
+            expect(fresh_bad.different == 1 && fresh_bad.fresh_different == 1 && !fresh_bad.fresh_check_pass(600),
+                   "a genuinely fresh publication's mismatch remains a failure");
+            auto untrusted = metadata(base - 140000000000ULL, base);
+            untrusted.timestamp_consistent = false;
+            ContentWindow wrong_timezone(20, 64);
+            wrong_timezone.utc_clock = [&] { return base; };
+            wrong_timezone.record(11, current, 100);
+            wrong_timezone.raw(11, old, 101, 102, untrusted);
+            wrong_timezone.poll(123);
+            expect(wrong_timezone.unknown_publication == 1 && wrong_timezone.pre_connection == 0,
+                   "a raw calendar/UTC disagreement cannot establish stale or fresh authority");
+            wrong_timezone.raw(11, old, 200, 201, untrusted);
+            wrong_timezone.poll(222);
+            expect(wrong_timezone.different == 1, "later mismatches cannot be discarded for unknown time");
+            ContentWindow raw_first(20, 64);
+            raw_first.utc_clock = [&] { return base; };
+            raw_first.raw(11, old, 90, 91, metadata(base - 140000000000ULL, base));
+            raw_first.poll(120);
+            expect(raw_first.pending.size() == 1, "raw-before-composite bootstrap awaits a real first committed image");
+            raw_first.record(11, current, 121);
+            raw_first.poll(122);
+            expect(raw_first.pre_connection == 1, "first composite time is established after early raw data");
+        }
+        {
+            // Real T0 shape: unframed snapshot, framed log catch-up before ONLINE, then cached raw publication.
+            constexpr std::uint64_t now = 1700000000000000000ULL;
+            constexpr std::int64_t old_id = 2100000000000000001LL, new_id = 2100000000000000007LL;
+            const auto schema = tables();
+            const std::array<std::int32_t, 1> ids{11};
+            Window window;
+            ContentWindow content(20, 64);
+            content.utc_clock = [] { return now; };
+            Plaza2FullOrderLog book(ids);
+            Observer composite(window, ids, &book, 100, nullptr, 512, &content);
+            Observer reference(window, ids, nullptr, 100, nullptr, 512, &content);
+            content.resample = [&] { composite.sample_content(); };
+            const auto send = [&](Observer& target, const Plaza2ListenerEvent& event) {
+                const auto error = target.on_plaza2_listener_event(event);
+                expect(!error, error.message.c_str());
+            };
+            for (auto* target : {&composite, &reference})
+                send(*target, {.kind = Plaza2ListenerEventKind::Open, .raw_tables = schema});
+            send(composite, row(schema[0], old_id, 11, 100, 1).event());
+            send(composite, {.kind = Plaza2ListenerEventKind::TransactionBegin});
+            for (const auto id : {old_id, new_id}) {
+                auto log =
+                    row(schema[2], id, 11, 100, id == old_id ? 0 : 1, id == old_id ? 0 : 1, id == old_id ? 100 : 101);
+                const auto moment = now - (id == old_id ? 5000000000ULL : 4000000000ULL);
+                log.set("moment_ns", moment);
+                log.set("moment", wire_time(moment));
+                send(composite, log.event());
+            }
+            send(composite, {.kind = Plaza2ListenerEventKind::TransactionCommit});
+            expect(content.changes.empty() && !book.valid(), "pre-ONLINE catch-up stays hidden and untrusted");
+            send(composite, {.kind = Plaza2ListenerEventKind::Online});
+            expect(book.valid() && content.changes.size() == 2,
+                   "successful ONLINE commits all pre-ONLINE lifecycle evidence");
+            send(reference, {.kind = Plaza2ListenerEventKind::TransactionBegin});
+            auto order = row(schema[0], old_id, 11, 100, 1);
+            order.set("moment_ns", now - 150000000000ULL);
+            order.set("moment", wire_time(now - 150000000000ULL));
+            send(reference, order.event());
+            Row info(schema[1]);
+            info.set("publication_state", std::int8_t{1});
+            info.set("replRev", std::int64_t{500});
+            info.set("trades_rev", std::int64_t{20});
+            info.set("trades_lifenum", std::int64_t{7});
+            info.set("moment", wire_time(now - 140000000000ULL));
+            send(reference, info.event());
+            send(reference, {.kind = Plaza2ListenerEventKind::TransactionCommit});
+            content.poll(ContentWindow::now() + 21);
+            expect(
+                content.pre_connection == 1 && content.stale_hypothesis_proven == 1 && !content.different,
+                "actual pre-ONLINE add/delete catch-up proves every stale raw-set difference after its snapshot time");
+            send(composite, {.kind = Plaza2ListenerEventKind::Close});
+            expect(content.changes.empty(), "Close retires diagnostic lifecycle authority");
+        }
+        {
             ContentWindow w(20, 8);
             w.record(11, "before", 100);
             w.raw(11, "after", 105, 110);
@@ -192,9 +472,11 @@ int main() {
                        text.find("\"changed_orders\":1") != std::string::npos &&
                        text.find("\"composite_commits_in_window\":2") != std::string::npos,
                    "no-match must report symmetric differences against nearest state and only in-window commits");
-            for (auto secret_value : std::array<std::int64_t, 6>{a, b, c, d, 987654321099999LL, 123456789099999LL})
-                expect(text.find(std::to_string(secret_value)) == std::string::npos,
-                       "comparison diagnostics leaked an order ID or value");
+            for (auto id : {a, c, d})
+                expect(text.find("\"order_id\":\"" + std::to_string(id) + "\"") != std::string::npos,
+                       "every differing order ID must be retained losslessly above2^53");
+            expect(text.find(std::to_string(b)) == std::string::npos,
+                   "unchanged order IDs are not symmetric-difference evidence");
             diagnostics.raw(22, raw, 200, 205);
             diagnostics.poll(226);
             expect(trace.str().find("\"missing_orders\":null") != std::string::npos,

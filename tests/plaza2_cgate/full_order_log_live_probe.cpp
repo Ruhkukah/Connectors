@@ -36,9 +36,12 @@ int main(int argc, char** argv) {
                          "  plaza2 qualify [owner FullOrderLog runtime options; --router explicitly required]\n"
                          "No 4101 fallback. Matching must come from fresh committed REFDATA for all selected ISINs.\n"
                          "Creates composite and independent raw ORDBOOK listeners; no broker order APIs.\n"
-                         "Comparison requires identical native log life and committed orders_log cutover.\n"
-                         "ORDBOOK targets inside a CGate block, missed/evicted targets remain UNALIGNED.\n"
-                         "Bounded SHA256 state history; missing alignment/P9 remains INCONCLUSIVE.\n";
+                         "At least 600 seconds and 3 fresh publications per ISIN are required; cached startup data is "
+                         "not fresh.\n"
+                         "Content comparison keeps the 2000 ms arrival window; exact revisions/P9 remain unproven.\n"
+                         "Records raw info Snapshot time/revisions and full differing-ID lifecycle evidence.\n"
+                         "Only authoritative pre-connection first publication is excluded; later differences are never "
+                         "hidden.\n";
             return 0;
         }
         bool live = false, matching_set = false;
@@ -70,7 +73,7 @@ int main(int argc, char** argv) {
             }
         }
         require(live && matching_set && !router.empty() && !trading_router.empty() && !trading_instance.empty() &&
-                    matching <= 127 && seconds >= 1 && seconds <= 3600,
+                    matching <= 127 && seconds >= 600 && seconds <= 3600,
                 "explicit live/matching/FullLog and trading endpoints/instance and bounded duration are required");
         const auto port = [](std::string_view endpoint) {
             const auto colon = endpoint.rfind(':');
@@ -221,6 +224,19 @@ int main(int argc, char** argv) {
                   << ",\"content_different\":" << content.different << ",\"content_unresolved\":" << content.unresolved
                   << ",\"content_pending\":" << content.pending.size()
                   << ",\"content_history_evictions\":" << content.evictions
+                  << ",\"pre_connection_publications\":" << content.pre_connection
+                  << ",\"unknown_initial_publication_times\":" << content.unknown_publication
+                  << ",\"unknown_later_publication_times\":" << content.unknown_later_publication
+                  << ",\"stale_hypothesis_proven_observations\":" << content.stale_hypothesis_proven
+                  << ",\"possible_connector_defects\":" << content.suspected_defects
+                  << ",\"lifecycle_history_evictions\":" << content.change_evictions
+                  << ",\"fresh_publications\":" << content.fresh_observations
+                  << ",\"fresh_publications_equal\":" << content.fresh_equal
+                  << ",\"fresh_publications_different\":" << content.fresh_different
+                  << ",\"fresh_publications_unresolved\":" << content.fresh_unresolved
+                  << ",\"required_seconds\":600,\"required_fresh_publications\":3"
+                  << ",\"fresh_publications_check_pass\":"
+                  << (current && content.fresh_check_pass(elapsed) ? "true" : "false")
                   << ",\"arrival_tolerance_ms\":" << content.tolerance_ms
                   << ",\"comparison_scope\":\"order_id_remaining_sets_with_arrival_tolerance\",\"same_revision_"
                      "proven\":false,\"p9_qualified\":false,\"complete\":false"
@@ -228,7 +244,7 @@ int main(int argc, char** argv) {
         check(raw.close());
         check(full.close());
         check(connection.close());
-        return window.mismatched || content.different
+        return window.mismatched || content.different || content.suspected_defects
                    ? 4
                    : 3; // Observations cannot qualify absent exact post-clear proof and the required live run.
     } catch (const std::exception& e) {

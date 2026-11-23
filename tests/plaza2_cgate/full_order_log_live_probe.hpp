@@ -10,6 +10,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <ostream>
+#include <sstream>
 
 namespace full_order_log_probe {
 namespace cg = moex::plaza2::cgate;
@@ -150,15 +151,38 @@ template <class T> T read(const cg::Plaza2ListenerEvent& e, const cg::Plaza2RawF
             "truncated or null probe field");
     return moex::plaza2::public_wire::load<T>(e.raw_payload, f.offset);
 }
+// info.moment lacks a nanosecond peer. Preserve its calendar and establish the
+// Moscow-to-UTC conversion by requiring raw orders.moment to agree with explicit UTC moment_ns.
+inline std::uint64_t utc_ns(moex::plaza2::public_wire::Time t) {
+    using namespace std::chrono;
+    const auto date = year{t.year} / month{t.month} / day{t.day};
+    if (!date.ok() || t.year < 1970 || t.year > 2200 || t.hour >= 24 || t.minute >= 60 || t.second >= 60 ||
+        t.msec >= 1000)
+        return 0;
+    const auto value = duration_cast<nanoseconds>((sys_days{date} + hours{t.hour} + minutes{t.minute} +
+                                                   seconds{t.second} + milliseconds{t.msec} - hours{3})
+                                                      .time_since_epoch())
+                           .count();
+    return value > 0 ? static_cast<std::uint64_t>(value) : 0;
+}
+inline std::string calendar(moex::plaza2::public_wire::Time t) {
+    std::ostringstream text;
+    text << t.year << '-' << static_cast<unsigned>(t.month) << '-' << static_cast<unsigned>(t.day) << 'T'
+         << static_cast<unsigned>(t.hour) << ':' << static_cast<unsigned>(t.minute) << ':'
+         << static_cast<unsigned>(t.second) << '.' << t.msec;
+    return text.str();
+}
 class Observer final : public cg::Plaza2ListenerEventHandler {
     struct Order {
         std::int32_t isin;
         bool bid;
         std::int64_t price, quantity, revision, public_id;
         std::int32_t session;
+        std::uint64_t moment_ns{}, moment_t_ns{};
+        bool time_consistent{};
     };
     struct OrderBinding {
-        cg::Plaza2RawFieldBinding row, rev, act, isin, dir, price, rest, status, public_id, session;
+        cg::Plaza2RawFieldBinding row, rev, act, isin, dir, price, rest, status, public_id, session, moment, moment_ns;
     };
     Window& window_;
     ContentWindow* content_{};
@@ -168,7 +192,21 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     std::vector<std::int32_t> ids_;
     std::unordered_map<std::int64_t, Order> orders_;
     OrderBinding fields_;
-    cg::Plaza2RawFieldBinding publication_, info_rev_, info_life_, log_rev_, log_status_, log_act_;
+    cg::Plaza2RawFieldBinding publication_, info_rev_, info_life_, info_row_rev_, info_moment_, info_act_, log_rev_,
+        log_status_, log_act_, log_id_, log_isin_, log_action_, log_rest_, log_moment_, log_moment_ns_;
+    PublicationInfo publication_info_{.provided = true};
+    struct PendingChange {
+        std::int32_t isin;
+        std::int64_t id;
+        ContentWindow::Change event;
+    };
+    std::vector<PendingChange> changes_;
+    void publish_changes() {
+        if (content_)
+            for (const auto& c : changes_)
+                content_->change(c.isin, c.id, c.event);
+        changes_.clear();
+    }
     std::size_t order_index_{}, info_index_{}, log_index_{}, order_size_{}, info_size_{}, log_size_{}, order_capacity_;
     Key committed_{}, pending_{};
     bool transaction_{}, info_done_{}, have_info_{}, online_{}, fenced_{}, log_started_{}, progress_needed_{};
@@ -178,6 +216,8 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     std::uint64_t diagnostic_limit_, diagnostics_{}, generation_{};
     void retire_generation() {
         // Native table revisions may restart without a different log life; neither old peer may survive.
+        changes_.clear();
+        publication_info_ = {.provided = true};
         if (content_)
             content_->retire();
         window_.retire(0);
@@ -216,7 +256,9 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                            field(t, "public_amount_rest", "i8", 8),
                            field(t, "xstatus", "i8", 8),
                            field(t, "public_order_id", "i8", 8),
-                           field(t, "sess_id", "i4", 4)};
+                           field(t, "sess_id", "i4", 4),
+                           field(t, "moment", "t", 10),
+                           field(t, "moment_ns", "u8", 8)};
             } else if (book_ && t.name == "orders_log") {
                 log = true;
                 log_index_ = t.index;
@@ -224,6 +266,12 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 log_rev_ = field(t, "replRev", "i8", 8);
                 log_status_ = field(t, "xstatus", "i8", 8);
                 log_act_ = field(t, "replAct", "i8", 8);
+                log_id_ = field(t, "public_order_id", "i8", 8);
+                log_isin_ = field(t, "isin_id", "i4", 4);
+                log_action_ = field(t, "public_action", "i1", 1);
+                log_rest_ = field(t, "public_amount_rest", "i8", 8);
+                log_moment_ = field(t, "moment", "t", 10);
+                log_moment_ns_ = field(t, "moment_ns", "u8", 8);
             } else if (t.name == "info") {
                 info = true;
                 info_index_ = t.index;
@@ -231,6 +279,9 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 publication_ = field(t, "publication_state", "i1", 1);
                 info_rev_ = field(t, "trades_rev", "i8", 8);
                 info_life_ = field(t, "trades_lifenum", "i8", 8);
+                info_row_rev_ = field(t, "replRev", "i8", 8);
+                info_act_ = field(t, "replAct", "i8", 8);
+                info_moment_ = field(t, "moment", "t", 10);
             }
         }
         require(orders && info && (!book_ || log),
@@ -254,7 +305,20 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
             const auto publication = read<std::int8_t>(e, publication_);
             const auto rev = read<std::int64_t>(e, info_rev_), life = read<std::int64_t>(e, info_life_);
             require((publication == 0 || publication == 1) && rev >= 0 && life >= 0, "invalid probe snapshot info");
-            info_done_ = publication == 1;
+            info_done_ = publication == 1 && read<std::int64_t>(e, info_act_) == 0;
+            if (!book_ && !read<std::int64_t>(e, info_act_)) {
+                const auto time = read<moex::plaza2::public_wire::Time>(e, info_moment_);
+                publication_info_.info_revision = read<std::int64_t>(e, info_row_rev_);
+                publication_info_.trades_revision = rev;
+                publication_info_.log_life = static_cast<std::uint64_t>(life);
+                if (publication == 0) {
+                    publication_info_.begin_utc_ns = utc_ns(time);
+                    publication_info_.begin_calendar = calendar(time);
+                } else {
+                    publication_info_.end_utc_ns = utc_ns(time);
+                    publication_info_.end_calendar = calendar(time);
+                }
+            }
             if (info_done_ && book_ && log_started_) {
                 fenced_ = true; // Snapshot info cannot roll back/complete an already advancing online cutover.
                 return;
@@ -274,6 +338,18 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 require(e.table_index == log_index_, "probe orders_log index mismatch");
                 const auto revision = read<std::int64_t>(e, log_rev_);
                 require(revision > 0, "invalid native orders_log revision");
+                const auto isin = read<std::int32_t>(e, log_isin_);
+                if (content_ && !read<std::int64_t>(e, log_act_) &&
+                    std::binary_search(ids_.begin(), ids_.end(), isin)) {
+                    const auto id = read<std::int64_t>(e, log_id_);
+                    const auto ns = read<std::uint64_t>(e, log_moment_ns_);
+                    const auto time = utc_ns(read<moex::plaza2::public_wire::Time>(e, log_moment_));
+                    require(changes_.size() < order_capacity_, "bounded pending ORDLOG diagnostics exhausted");
+                    changes_.push_back({isin,
+                                        id,
+                                        {read<std::int8_t>(e, log_action_), revision, read<std::int64_t>(e, log_rest_),
+                                         ns, time, ns && time && ns / 1000000 == time / 1000000}});
+                }
                 // All rows advance this one table's cutover, including filtered instruments/statuses.
                 if (read<std::int64_t>(e, log_act_))
                     fenced_ = true; // Replication administration has no documented matching cutover.
@@ -313,7 +389,10 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
         const auto public_id = read<std::int64_t>(e, fields_.public_id);
         const auto session = read<std::int32_t>(e, fields_.session);
         require(public_id > 0 && session > 0, "invalid reference public order identity");
-        orders_.emplace(row, Order{isin, dir == 1, *price, qty, rev, public_id, session});
+        const auto ns = read<std::uint64_t>(e, fields_.moment_ns);
+        const auto time = utc_ns(read<moex::plaza2::public_wire::Time>(e, fields_.moment));
+        orders_.emplace(row, Order{isin, dir == 1, *price, qty, rev, public_id, session, ns, time,
+                                   ns && time && ns / 1000000 == time / 1000000});
     }
 
   public:
@@ -355,6 +434,8 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     void on_plaza2_listener_error(const cg::Plaza2Error& error) noexcept override {
         try {
             orders_.clear();
+            changes_.clear();
+            publication_info_ = {.provided = true};
             raw_begin_ = 0;
             transaction_ = info_done_ = have_info_ = online_ = fenced_ = log_started_ = false;
             unframed_snapshot_ = published_at_online_ = false;
@@ -378,6 +459,8 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 bind(e.raw_tables);
                 retire_generation();
                 orders_.clear();
+                changes_.clear();
+                publication_info_ = {.provided = true};
                 committed_ = {};
                 pending_ = {};
                 transaction_ = info_done_ = have_info_ = online_ = fenced_ = log_started_ = false;
@@ -389,6 +472,8 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 transaction_ = true;
                 if (!book_ && !raw_begin_)
                     raw_begin_ = ContentWindow::now();
+                if (book_ && online_)
+                    changes_.clear();
                 if (!book_ || online_) {
                     pending_ = committed_;
                     pending_lastrec_ = committed_lastrec_;
@@ -476,8 +561,11 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                     ++unanchored_commits;
                 published_at_online_ = false;
             }
-            if (content_ && book_ && (e.kind == Kind::Online || e.kind == Kind::TransactionCommit))
+            if (content_ && book_ && (e.kind == Kind::Online || e.kind == Kind::TransactionCommit)) {
+                if (online_ && book_->valid())
+                    publish_changes();
                 sample_content();
+            }
             if (content_ && !book_ && e.kind == Kind::TransactionCommit && have_info_ && info_done_) {
                 std::map<std::int32_t, OrderSet> sets;
                 for (auto isin : ids_)
@@ -487,12 +575,27 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                         sets.at(o.isin).emplace(o.public_id, std::tuple{o.quantity, o.price, o.session, o.bid}).second,
                         "duplicate reference public order ID");
                 const auto at = ContentWindow::now();
-                for (auto& [isin, orders] : sets)
-                    content_->raw(isin, std::move(orders), raw_begin_ ? raw_begin_ : at, at);
+                for (auto& [isin, orders] : sets) {
+                    auto metadata = publication_info_;
+                    metadata.received_utc_ns = content_->utc_clock();
+                    bool checked = false;
+                    for (const auto& [row, order] : orders_)
+                        if (order.isin == isin) {
+                            metadata.max_order_moment_ns = std::max(metadata.max_order_moment_ns, order.moment_ns);
+                            metadata.timestamp_consistent &= order.time_consistent;
+                            checked |= order.time_consistent;
+                        }
+                    // No valid peer UTC timestamp means info calendar timezone is not proved.
+                    metadata.timestamp_consistent &= checked;
+                    content_->raw(isin, std::move(orders), raw_begin_ ? raw_begin_ : at, at, metadata);
+                }
+                publication_info_ = {.provided = true};
                 raw_begin_ = 0;
             }
             if (e.kind == Kind::Close || (!book_ && e.kind == Kind::LifeNum)) {
                 orders_.clear();
+                changes_.clear();
+                publication_info_ = {.provided = true};
                 raw_begin_ = 0;
                 transaction_ = info_done_ = have_info_ = online_ = false;
                 unframed_snapshot_ = published_at_online_ = false;
