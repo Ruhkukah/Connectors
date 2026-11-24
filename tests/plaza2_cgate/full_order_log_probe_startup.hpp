@@ -197,6 +197,14 @@ class StartupComparison {
         if (!life || revision <= 0)
             return;
         const std::pair<std::uint64_t, std::int64_t> key{life, revision};
+        if (sealed_ && request_.first) {
+            if (output_)
+                *output_ << "{\"kind\":\"startup_later_request\",\"lifenum\":" << std::quoted(std::to_string(life))
+                         << ",\"revision\":" << std::quoted(std::to_string(revision))
+                         << ",\"startup_anchor_preserved\":true}\n"
+                         << std::flush;
+            return; // Later reconnects cannot rewrite or discard the initial publication evidence.
+        }
         if (request_.first && request_ != key)
             throw std::invalid_argument("conflicting native startup request");
         request_ = key;

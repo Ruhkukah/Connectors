@@ -249,6 +249,36 @@ int main() {
             }
         }
         {
+            const std::array<std::int32_t, 1> ids{11};
+            Plaza2FullOrderLog empty(ids);
+            std::ostringstream trace;
+            StartupComparison startup(ids, 8, &trace);
+            startup.request(7, 90);
+            bool refused = false;
+            try {
+                startup.request(7, 91);
+            } catch (const std::invalid_argument&) {
+                refused = true;
+            }
+            expect(refused, "a conflicting request before snapshot sealing remains fatal");
+            startup.capture(empty, "empty_test_snapshot");
+            startup.seal();
+            startup.request(8, 9007199254741001LL); // Raw publication has not arrived yet.
+            startup.raw(11, {}, {.provided = true, .trades_revision = 90, .log_life = 7});
+            expect(startup.complete(), "later native requests preserve the sealed initial anchor awaiting raw data");
+            startup.request(9, 9007199254741002LL); // Comparison already completed.
+            expect(startup.complete() && startup.matched == 1 && !startup.different &&
+                       trace.str().find("startup_later_request") != std::string::npos &&
+                       trace.str().find("9007199254741002") != std::string::npos,
+                   "post-startup reconnect is logged losslessly without ending the probe or discarding its evidence");
+            StartupComparison delayed(ids, 8);
+            delayed.capture(empty, "empty_test_snapshot");
+            delayed.seal();
+            delayed.raw(11, {}, {.provided = true, .trades_revision = 90, .log_life = 7});
+            delayed.request(7, 90);
+            expect(delayed.complete(), "the first native anchor may arrive after ONLINE and still settle startup");
+        }
+        {
             Fixture native;
             native.open(native.composite);
             for (const auto index : {0U, 1U})
