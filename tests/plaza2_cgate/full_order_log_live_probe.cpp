@@ -1,5 +1,6 @@
 // Explicitly invoked native read-only qualification tool; no publisher or order APIs.
 #include "full_order_log_live_probe.hpp"
+#include "full_order_log_probe_native_log.hpp"
 #include "full_order_log_router_lock.hpp"
 #include "moex/connector_host/operator_config.hpp"
 #include <atomic>
@@ -31,17 +32,19 @@ int main(int argc, char** argv) {
     std::vector<std::string> secret_values;
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--help") {
-            std::cout << "full_order_log_live_probe --live --matching-id N --seconds 1800\n"
-                         "  --trading-router HOST:PORT --trading-instance-id NAME\n"
-                         "  plaza2 qualify [owner FullOrderLog runtime options; --router explicitly required]\n"
-                         "No 4101 fallback. Matching must come from fresh committed REFDATA for all selected ISINs.\n"
-                         "Creates composite and independent raw ORDBOOK listeners; no broker order APIs.\n"
-                         "At least 600 seconds and 3 fresh publications per ISIN are required; cached startup data is "
-                         "not fresh.\n"
-                         "Content comparison keeps the 2000 ms arrival window; exact revisions/P9 remain unproven.\n"
-                         "Records raw info Snapshot time/revisions and full differing-ID lifecycle evidence.\n"
-                         "Only authoritative pre-connection first publication is excluded; later differences are never "
-                         "hidden.\n";
+            std::cout
+                << "full_order_log_live_probe --live --matching-id N --seconds 1800\n"
+                   "  --trading-router HOST:PORT --trading-instance-id NAME\n"
+                   "  plaza2 qualify [owner FullOrderLog runtime options; --router explicitly required]\n"
+                   "No 4101 fallback. Matching must come from fresh committed REFDATA for all selected ISINs.\n"
+                   "Creates composite and independent raw ORDBOOK listeners; no broker order APIs.\n"
+                   "At least 600 seconds and 3 fresh publications per ISIN are required; cached startup data is "
+                   "not fresh.\n"
+                   "Content comparison keeps the 2000 ms arrival window; exact revisions/P9 remain unproven.\n"
+                   "Records raw info Snapshot time/revisions and full differing-ID lifecycle evidence.\n"
+                   "Exact startup comparison uses staged orders before catch-up and the native request/info key.\n"
+                   "Only authoritative pre-connection first publication is excluded; later differences are never "
+                   "hidden.\n";
             return 0;
         }
         bool live = false, matching_set = false;
@@ -125,8 +128,23 @@ int main(int argc, char** argv) {
         cg::Plaza2FullOrderLog book(ids);
         Window window(4096, &std::cout);
         ContentWindow content(2000, 4096, &std::cout);
-        Observer composite(window, ids, &book, 200000, &std::cout, 512, &content),
-            reference(window, ids, nullptr, 200000, &std::cout, 512, &content);
+        StartupComparison startup(ids, 200000, &std::cout);
+        NativeCatchupLog native_log(native_log_path(config.runtime.env_open_settings, config.runtime.config_dir),
+                                    "FORTS_ORDLOG_REPL_MATCH" + std::to_string(matching), &std::cout);
+        native_log.on_request = [&](const NativeCatchupAnchor& anchor) {
+            require(anchor.revision <= INT64_MAX, "native ORDLOG request exceeds signed revision range");
+            startup.request(anchor.life, static_cast<std::int64_t>(anchor.revision));
+        };
+        auto next_log_poll = std::chrono::steady_clock::now();
+        const auto poll_native_log = [&] {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_log_poll) {
+                native_log.poll();
+                next_log_poll = now + std::chrono::milliseconds(100);
+            }
+        };
+        Observer composite(window, ids, &book, 200000, &std::cout, 512, &content, &startup),
+            reference(window, ids, nullptr, 200000, &std::cout, 512, &content, &startup);
         content.resample = [&] { composite.sample_content(); };
         const moex::connector_host::FullOrderLogRouterLock router_lock(config.connection_settings);
         cg::Plaza2Env env;
@@ -142,6 +160,7 @@ int main(int argc, char** argv) {
                 break;
             require(std::chrono::steady_clock::now() < ready_until, "FullOrderLog connection did not become active");
             check(connection.process(10));
+            poll_native_log();
         }
         const auto suffix = "_MATCH" + std::to_string(matching);
         cg::Plaza2Listener full, raw;
@@ -159,6 +178,7 @@ int main(int argc, char** argv) {
         while (!book.valid() || !window.raw_snapshots) {
             require(std::chrono::steady_clock::now() < bootstrap_until, "native comparison bootstrap did not complete");
             check(connection.process(1));
+            poll_native_log();
             check(full.last_callback_error());
             check(raw.last_callback_error());
         }
@@ -171,6 +191,7 @@ int main(int argc, char** argv) {
                   << std::flush;
         while (!stopped.load() && std::chrono::steady_clock::now() - start < std::chrono::seconds(seconds)) {
             check(connection.process(1));
+            poll_native_log();
             check(full.last_callback_error());
             check(raw.last_callback_error());
             check(full.state(state));
@@ -198,6 +219,8 @@ int main(int argc, char** argv) {
                 next = now + std::chrono::seconds(30);
             }
         }
+        native_log.finish();
+        startup.finish();
         const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         check(full.state(state));
         const bool composite_active = state == 3;
@@ -220,6 +243,11 @@ int main(int argc, char** argv) {
                   << ",\"connection_active\":" << (connection_active ? "true" : "false")
                   << ",\"duration_complete\":" << (elapsed >= seconds ? "true" : "false")
                   << ",\"current\":" << (current ? "true" : "false")
+                  << ",\"startup_snapshot_equal\":" << startup.matched
+                  << ",\"startup_snapshot_different\":" << startup.different
+                  << ",\"startup_snapshot_unavailable\":" << startup.unavailable
+                  << ",\"startup_snapshot_pending\":" << startup.pending()
+                  << ",\"startup_snapshot_check_pass\":" << (current && startup.complete() ? "true" : "false")
                   << ",\"content_observations\":" << content.observations << ",\"content_equal\":" << content.matched
                   << ",\"content_different\":" << content.different << ",\"content_unresolved\":" << content.unresolved
                   << ",\"content_pending\":" << content.pending.size()
@@ -244,7 +272,7 @@ int main(int argc, char** argv) {
         check(raw.close());
         check(full.close());
         check(connection.close());
-        return window.mismatched || content.different || content.suspected_defects
+        return window.mismatched || content.different || content.suspected_defects || startup.different
                    ? 4
                    : 3; // Observations cannot qualify absent exact post-clear proof and the required live run.
     } catch (const std::exception& e) {

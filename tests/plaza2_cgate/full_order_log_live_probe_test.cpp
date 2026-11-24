@@ -1,4 +1,5 @@
 #include "full_order_log_live_probe.hpp"
+#include "full_order_log_probe_native_log_test.hpp"
 #include "full_order_log_test_support.hpp"
 #include <iostream>
 #include <sstream>
@@ -95,6 +96,7 @@ struct Fixture {
 } // namespace
 int main() {
     try {
+        run_native_log_tests();
         const std::vector<std::string> secrets{"fake-key", "fake-key-long", "fake-credential", ""};
         const std::string context = "reference listener failed; probe interrupted";
         expect(redact_probe_error(context, secrets) == context, "non-secret failure context must remain visible");
@@ -103,6 +105,149 @@ int main() {
         expect(redacted == "key=[REDACTED] credential=[REDACTED]; [REDACTED]; cause=0xA006",
                "loaded fake secrets, repeats and overlapping values must be redacted without hiding the cause");
         expect(redact_probe_error(context, {}) == context, "no loaded secret must not suppress diagnostics");
+        {
+            enum Case {
+                Same,
+                MatchingInfo,
+                UnknownInfo,
+                ConflictingInfo,
+                ConflictingInfoBeforeRequest,
+                Mismatch,
+                RawFirst,
+                AbortBeforeCapture,
+                CompositeFirst,
+                MissingRequest,
+                DifferentPublication,
+                LateRows,
+                Interrupted,
+                Reset,
+                ResetThenOnline,
+                RawCloseThenOnline,
+                Empty
+            };
+            constexpr std::int64_t old_id = 2100000000000000101LL, new_id = 2100000000000000107LL;
+            constexpr std::uint64_t now = 1700000000000000000ULL;
+            for (const auto mode :
+                 {Same, MatchingInfo, UnknownInfo, ConflictingInfo, ConflictingInfoBeforeRequest, Mismatch, RawFirst,
+                  AbortBeforeCapture, CompositeFirst, MissingRequest, DifferentPublication, LateRows, Interrupted,
+                  Reset, ResetThenOnline, RawCloseThenOnline, Empty}) {
+                const auto schema = tables();
+                const std::array<std::int32_t, 1> ids{11};
+                Window window;
+                ContentWindow content;
+                Plaza2FullOrderLog book(ids);
+                std::ostringstream trace;
+                StartupComparison startup(ids, 100, &trace);
+                Observer composite(window, ids, &book, 100, &trace, 512, &content, &startup);
+                Observer reference(window, ids, nullptr, 100, &trace, 512, &content, &startup);
+                const auto send = [&](Observer& target, const Plaza2ListenerEvent& event) {
+                    const auto error = target.on_plaza2_listener_event(event);
+                    expect(!error, error.message.c_str());
+                };
+                const auto raw = [&] {
+                    send(reference, {.kind = Plaza2ListenerEventKind::TransactionBegin});
+                    if (mode != Empty) {
+                        auto order = row(schema[0], old_id, 11, 100, mode == Mismatch ? 4 : 3);
+                        order.set("moment_ns", now - 150000000000ULL);
+                        order.set("moment", wire_time(now - 150000000000ULL));
+                        send(reference, order.event());
+                    }
+                    Row info(schema[1]);
+                    info.set("publication_state", std::int8_t{1});
+                    info.set("replRev", std::int64_t{500});
+                    info.set("trades_rev", std::int64_t{mode == DifferentPublication ? 91 : 90});
+                    info.set("trades_lifenum", std::int64_t{7});
+                    info.set("moment", wire_time(now - 140000000000ULL));
+                    send(reference, info.event());
+                    send(reference, {.kind = Plaza2ListenerEventKind::TransactionCommit});
+                };
+                // The native request can be read before initial OPEN/LifeNum callbacks.
+                if (mode != MissingRequest && mode != ConflictingInfoBeforeRequest && mode != ResetThenOnline)
+                    startup.request(7, 90);
+                if (mode != CompositeFirst)
+                    send(reference, {.kind = Plaza2ListenerEventKind::Open, .raw_tables = schema});
+                if (mode == RawFirst || mode == AbortBeforeCapture)
+                    raw();
+                send(composite, {.kind = Plaza2ListenerEventKind::Open, .raw_tables = schema});
+                send(composite, {.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 7});
+                if (mode == AbortBeforeCapture)
+                    send(composite, {.kind = Plaza2ListenerEventKind::Open, .raw_tables = schema});
+                if (mode != Empty) {
+                    send(composite, row(schema[0], old_id, 11, 100, 3).event());
+                    if (mode == MatchingInfo || mode == UnknownInfo || mode == ConflictingInfo ||
+                        mode == ConflictingInfoBeforeRequest) {
+                        Row info(schema[1]);
+                        info.set("publication_state", std::int8_t{1});
+                        info.set("trades_rev", std::int64_t{mode == UnknownInfo ? 0 : mode == MatchingInfo ? 90 : 89});
+                        info.set("trades_lifenum", std::int64_t{7});
+                        send(composite, info.event());
+                        if (mode == ConflictingInfoBeforeRequest)
+                            startup.request(7, 90);
+                    }
+                    send(composite, {.kind = Plaza2ListenerEventKind::TransactionBegin});
+                    for (const auto id : {old_id, new_id}) {
+                        auto log = row(schema[2], id, 11, 100, id == old_id ? 0 : 2, id == old_id ? 0 : 1,
+                                       id == old_id ? 100 : 101);
+                        log.set("moment_ns", now - 1000000000ULL);
+                        log.set("moment", wire_time(now - 1000000000ULL));
+                        send(composite, log.event());
+                    }
+                    if (mode == LateRows)
+                        send(composite, row(schema[0], old_id + 1, 11, 100, 1).event());
+                    send(composite, {.kind = Plaza2ListenerEventKind::TransactionCommit});
+                }
+                expect(!book.valid() && startup.matched == 0,
+                       "pre-ONLINE staged inspection never publishes or qualifies");
+                if (mode == Interrupted)
+                    send(composite, {.kind = Plaza2ListenerEventKind::Close});
+                else if (mode == RawCloseThenOnline) {
+                    send(reference, {.kind = Plaza2ListenerEventKind::Close});
+                    send(composite, {.kind = Plaza2ListenerEventKind::Online});
+                    send(reference, {.kind = Plaza2ListenerEventKind::Open, .raw_tables = schema});
+                } else if (mode == Reset || mode == ResetThenOnline) {
+                    send(composite, {.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 8});
+                    if (mode == ResetThenOnline) {
+                        send(composite, {.kind = Plaza2ListenerEventKind::Online});
+                        startup.request(7, 90);
+                    }
+                } else
+                    send(composite, {.kind = Plaza2ListenerEventKind::Online});
+                if (mode == CompositeFirst) {
+                    send(reference, {.kind = Plaza2ListenerEventKind::Open, .raw_tables = schema});
+                    send(reference, {.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 7});
+                    send(reference, {.kind = Plaza2ListenerEventKind::ClearDeleted,
+                                     .signed_value = INT64_MAX,
+                                     .table_index = schema[0].index,
+                                     .raw_table = &schema[0]});
+                }
+                if (mode != RawFirst)
+                    raw();
+                startup.finish();
+                if (mode == Same || mode == MatchingInfo || mode == RawFirst || mode == CompositeFirst ||
+                    mode == Empty) {
+                    expect(startup.matched == 1 && !startup.different && startup.complete(),
+                           "same-publication raw snapshot matches actual pre-catch-up staged state");
+                    if (mode != Empty)
+                        expect(book.inspect_staged_order_for_replay(new_id)->remaining == 2,
+                               "live book caught up and differs from its frozen startup snapshot");
+                } else if (mode == Mismatch) {
+                    expect(startup.different == 1 && !startup.complete() &&
+                               trace.str().find("different_same_publication") != std::string::npos &&
+                               trace.str().find(std::to_string(old_id)) != std::string::npos,
+                           "anchored initial mismatch is a real failure with lossless differing identity");
+                    startup.reset();
+                    expect(startup.different == 1, "lifecycle reset must not erase an already observed failure");
+                } else
+                    expect(startup.unavailable == 1 && startup.matched == 0 && startup.different == 0 &&
+                               !startup.complete(),
+                           "unknown/different anchor, late snapshot rows and interruption stay not comparable");
+                if (mode == Same)
+                    expect(trace.str().find("\"catchup_end_revision\":\"101\"") != std::string::npos &&
+                               trace.str().find("\"pre_online_log_rows\":2") != std::string::npos &&
+                               trace.str().find("\"request_revision\":null") != std::string::npos,
+                           "actual delivered catch-up revision never pretends to be the hidden native request");
+            }
+        }
         {
             Fixture native;
             native.open(native.composite);

@@ -1,5 +1,6 @@
 #pragma once
 #include "full_order_log_content_comparison.hpp"
+#include "full_order_log_probe_startup.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
 #include "moex/plaza2/cgate/plaza2_decimal.hpp"
 #include <algorithm>
@@ -187,6 +188,31 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     };
     Window& window_;
     ContentWindow* content_{};
+    StartupComparison* startup_{};
+    std::uint64_t startup_cycle_{}, startup_log_rows_{};
+    std::int64_t startup_first_log_{}, startup_last_log_{};
+    Key startup_application_info_{};
+    bool startup_reported_{}, startup_info_seen_{}, startup_raw_seen_{};
+    void report_startup(const char* status) {
+        if (!book_ || !startup_ || !startup_cycle_ || startup_reported_)
+            return;
+        startup_reported_ = true;
+        if (output_)
+            *output_ << "{\"kind\":\"composite_startup_catchup\",\"cycle\":" << startup_cycle_
+                     << ",\"status\":" << std::quoted(status) << ",\"pre_online_log_rows\":" << startup_log_rows_
+                     << ",\"pre_online_log_seen\":" << (startup_log_rows_ ? "true" : "false")
+                     << ",\"application_info_available\":" << (startup_info_seen_ ? "true" : "false")
+                     << ",\"first_delivered_revision\":"
+                     << (startup_log_rows_ ? "\"" + std::to_string(startup_first_log_) + "\"" : "null")
+                     << ",\"catchup_end_revision\":"
+                     << (startup_log_rows_ ? "\"" + std::to_string(startup_last_log_) + "\"" : "null")
+                     << ",\"application_info_trades_revision\":"
+                     << (startup_info_seen_ ? "\"" + std::to_string(startup_application_info_.second) + "\"" : "null")
+                     << ",\"application_info_lifenum\":"
+                     << (startup_info_seen_ ? "\"" + std::to_string(startup_application_info_.first) + "\"" : "null")
+                     << ",\"request_revision\":null,\"request_revision_source\":\"separate_native_request_record\"}\n"
+                     << std::flush;
+    }
     cg::Plaza2FullOrderLog::Clock::time_point content_commit_{};
     std::int64_t raw_begin_{};
     cg::Plaza2FullOrderLog* book_;
@@ -320,6 +346,12 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                     publication_info_.end_calendar = calendar(time);
                 }
             }
+            if (book_ && !online_ && info_done_) {
+                startup_application_info_ = {static_cast<std::uint64_t>(life), rev};
+                startup_info_seen_ = true;
+                if (startup_)
+                    startup_->application_info(static_cast<std::uint64_t>(life), rev);
+            }
             if (info_done_ && book_ && log_started_) {
                 fenced_ = true; // Snapshot info cannot roll back/complete an already advancing online cutover.
                 return;
@@ -339,6 +371,12 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 require(e.table_index == log_index_, "probe orders_log index mismatch");
                 const auto revision = read<std::int64_t>(e, log_rev_);
                 require(revision > 0, "invalid native orders_log revision");
+                if (!online_) {
+                    if (!startup_log_rows_)
+                        startup_first_log_ = revision;
+                    ++startup_log_rows_;
+                    startup_last_log_ = std::max(startup_last_log_, revision);
+                }
                 const auto isin = read<std::int32_t>(e, log_isin_);
                 if (content_ && !read<std::int64_t>(e, log_act_) &&
                     std::binary_search(ids_.begin(), ids_.end(), isin)) {
@@ -400,9 +438,9 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     std::uint64_t p9_events{}, p9_erased{}, clear_events{}, unanchored_commits{};
     Observer(Window& window, std::span<const std::int32_t> ids, cg::Plaza2FullOrderLog* book = nullptr,
              std::size_t capacity = 200000, std::ostream* output = nullptr, std::uint64_t diagnostic_limit = 512,
-             ContentWindow* content = nullptr)
-        : window_(window), content_(content), book_(book), ids_(ids.begin(), ids.end()), order_capacity_(capacity),
-          output_(output), diagnostic_limit_(diagnostic_limit) {
+             ContentWindow* content = nullptr, StartupComparison* startup = nullptr)
+        : window_(window), content_(content), startup_(startup), book_(book), ids_(ids.begin(), ids.end()),
+          order_capacity_(capacity), output_(output), diagnostic_limit_(diagnostic_limit) {
         std::sort(ids_.begin(), ids_.end());
         require(!ids_.empty() && capacity > 0, "invalid probe universe or capacity");
         orders_.reserve(capacity);
@@ -434,6 +472,9 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
     }
     void on_plaza2_listener_error(const cg::Plaza2Error& error) noexcept override {
         try {
+            report_startup("listener_error_before_online");
+            if (startup_)
+                startup_->retire();
             orders_.clear();
             changes_.clear();
             publication_info_ = {.provided = true};
@@ -456,6 +497,16 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 progress_needed_ = true;
             }
             if (e.kind == Kind::Open) {
+                if (startup_)
+                    startup_->opened(book_ != nullptr);
+                startup_raw_seen_ = false;
+                if (book_) {
+                    ++startup_cycle_;
+                    startup_log_rows_ = 0;
+                    startup_first_log_ = startup_last_log_ = 0;
+                    startup_application_info_ = {};
+                    startup_reported_ = startup_info_seen_ = false;
+                }
                 raw_begin_ = 0;
                 bind(e.raw_tables);
                 retire_generation();
@@ -480,6 +531,19 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                     pending_lastrec_ = committed_lastrec_;
                     info_done_ = false;
                 }
+            }
+            if (startup_ && book_ && !online_) {
+                if (e.kind == Kind::StreamData && e.raw_table) {
+                    if (e.raw_table->name == "orders_log")
+                        startup_->capture(*book_, "before_first_orders_log");
+                    else if (e.raw_table->name == "orders" || e.raw_table->name == "info")
+                        startup_->saw_later_snapshot_row();
+                }
+                if (e.kind == Kind::ClearDeleted && e.raw_table &&
+                    (e.raw_table->name == "orders" || e.raw_table->name == "info"))
+                    startup_->saw_later_snapshot_row();
+                if (e.kind == Kind::Online)
+                    startup_->capture(*book_, "before_online_without_orders_log");
             }
             if (e.kind == Kind::StreamData)
                 data(e);
@@ -510,6 +574,8 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                             ++i;
                     }
                     if (e.signed_value == INT64_MAX) {
+                        if (startup_ && startup_raw_seen_)
+                            startup_->retire();
                         have_info_ = info_done_ = false;
                         committed_ = pending_ = {};
                         retire_generation();
@@ -526,6 +592,9 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                              << ",\"erased\":" << erased << "}\n"
                              << std::flush;
             }
+            if (startup_ && ((book_ && (e.kind == Kind::LifeNum || epoch != book_->epoch())) ||
+                             (!book_ && startup_raw_seen_ && e.kind == Kind::LifeNum)))
+                startup_->retire();
             if (book_ && (epoch != book_->epoch() || e.kind == Kind::LifeNum)) {
                 retire_generation();
                 have_info_ = online_ = fenced_ = log_started_ = false;
@@ -535,6 +604,10 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                 pending_ = {};
             }
             if (e.kind == Kind::Online) {
+                if (book_ && startup_) {
+                    startup_->seal();
+                    report_startup("ONLINE");
+                }
                 online_ = true;
                 if (book_ && book_->valid()) {
                     committed_ = pending_;
@@ -588,12 +661,19 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
                         }
                     // No valid peer UTC timestamp means info calendar timezone is not proved.
                     metadata.timestamp_consistent &= checked;
+                    if (startup_) {
+                        startup_->raw(isin, orders, metadata);
+                        startup_raw_seen_ = true;
+                    }
                     content_->raw(isin, std::move(orders), raw_begin_ ? raw_begin_ : at, at, metadata);
                 }
                 publication_info_ = {.provided = true};
                 raw_begin_ = 0;
             }
             if (e.kind == Kind::Close || (!book_ && e.kind == Kind::LifeNum)) {
+                report_startup("closed_before_online");
+                if (startup_ && e.kind == Kind::Close)
+                    startup_->retire();
                 orders_.clear();
                 changes_.clear();
                 publication_info_ = {.provided = true};
