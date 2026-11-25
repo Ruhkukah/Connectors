@@ -1,11 +1,12 @@
 #pragma once
 #include "full_order_log_content_comparison.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log.hpp"
+#include <limits>
 #include <set>
 
 namespace full_order_log_probe {
 // Diagnostic only: staged inspection is never published or used for entry admission.
-// Equality requires the same native ORDLOG request/info key, not arrival proximity.
+// A snapshot records the last processed revision; ORDLOG requests its exact successor.
 class StartupComparison {
     struct Raw {
         OrderSet orders;
@@ -20,6 +21,12 @@ class StartupComparison {
     std::pair<std::uint64_t, std::int64_t> request_{}, application_info_{};
     bool captured_{}, sealed_{}, usable_{true}, opened_[2]{};
     std::string boundary_;
+    static bool resumes_after(const std::pair<std::uint64_t, std::int64_t>& request,
+                              const std::pair<std::uint64_t, std::int64_t>& processed) {
+        return processed.first > 0 && processed.second > 0 &&
+               processed.second < std::numeric_limits<std::int64_t>::max() && request.first == processed.first &&
+               request.second == processed.second + 1;
+    }
     static void order(std::ostream& out, std::int64_t id, const OrderSet::mapped_type& value) {
         const auto [quantity, price, session, bid] = value;
         out << "{\"order_id\":" << std::quoted(std::to_string(id))
@@ -35,10 +42,9 @@ class StartupComparison {
             if (!finish && (!captured_ || !sealed_ || !request_.first || !request_.second || at == raw_.end()))
                 continue;
             const Raw* raw = at == raw_.end() ? nullptr : &at->second;
-            const bool anchored = raw && raw->info.provided && raw->info.log_life > 0 &&
-                                  raw->info.trades_revision > 0 && raw->info.log_life == request_.first &&
-                                  raw->info.trades_revision == request_.second &&
-                                  (!application_info_.first || application_info_ == request_);
+            const bool anchored = raw && raw->info.provided &&
+                                  resumes_after(request_, {raw->info.log_life, raw->info.trades_revision}) &&
+                                  (!application_info_.first || resumes_after(request_, application_info_));
             const bool comparable = captured_ && sealed_ && usable_ && anchored;
             const bool equal = comparable && snapshot_.at(isin) == raw->orders;
             matched += equal;
@@ -50,12 +56,12 @@ class StartupComparison {
                              : comparable ? "different_same_publication"
                                           : "not_comparable")
                          << "\",\"reason\":\""
-                         << (comparable                            ? "same_native_request_and_raw_info_key"
+                         << (comparable                            ? "native_request_follows_raw_trades_revision"
                              : !usable_                            ? "snapshot_boundary_invalid"
                              : !captured_ || !sealed_              ? "snapshot_boundary_unavailable"
                              : !raw                                ? "first_raw_unavailable"
                              : !request_.first || !request_.second ? "native_request_unavailable"
-                             : application_info_.first && application_info_ != request_
+                             : application_info_.first && !resumes_after(request_, application_info_)
                                  ? "application_info_conflicts_with_native_request"
                                  : "different_or_unknown_publication")
                          << "\",\"native_request_lifenum\":" << std::quoted(std::to_string(request_.first))
@@ -189,7 +195,7 @@ class StartupComparison {
             return;
         }
         const std::pair<std::uint64_t, std::int64_t> value{life, revision};
-        if (sealed_ && request_.first && value != request_)
+        if (sealed_ && request_.first && !resumes_after(request_, value))
             throw std::invalid_argument("late application info contradicts native startup request");
         application_info_ = value;
     }

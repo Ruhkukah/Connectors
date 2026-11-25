@@ -691,4 +691,8 @@ class Observer final : public cg::Plaza2ListenerEventHandler {
         }
     }
 };
+inline int comparison_exit_code(const Window& window, const ContentWindow& content, const StartupComparison& startup) {
+    // Content observations alone do not establish exact-revision/P9/R7 qualification.
+    return window.mismatched || content.different || content.suspected_defects || startup.different ? 4 : 3;
+}
 } // namespace full_order_log_probe

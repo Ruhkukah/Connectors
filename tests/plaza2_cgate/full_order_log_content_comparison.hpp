@@ -147,7 +147,7 @@ struct ContentWindow {
                 result.push_back({id, "extra"});
         return result;
     }
-    // 0=unproven, 1=every differing ID fits, 2=known contrary/changed-order evidence.
+    // 0=unproven, 1=every differing ID fits, 2=known contrary evidence.
     int hypothesis(const Publication& p, const State* state) const {
         if (!state || !state->image || !p.image || !p.info.end_utc_ns || change_evictions)
             return 0;
@@ -156,9 +156,37 @@ struct ContentWindow {
             return 0;
         bool unknown = false;
         for (const auto& difference : ids) {
-            if (std::string_view(difference.kind) == "changed")
-                return 2;
             const auto at = changes.find({p.isin, difference.id});
+            if (std::string_view(difference.kind) == "changed") {
+                const auto& [raw_remaining, raw_price, raw_session, raw_bid] = p.image->orders.at(difference.id);
+                const auto& [remaining, price, session, bid] = state->image->orders.at(difference.id);
+                if (price != raw_price || session != raw_session || bid != raw_bid || remaining >= raw_remaining)
+                    return 2;
+                const Change* last_fill = nullptr;
+                bool uncertain = false;
+                if (at != changes.end())
+                    for (const auto& event : at->second) {
+                        if (event.committed_sequence > state->committed_sequence)
+                            continue;
+                        if (!event.consistent || !event.moment_ns || event.revision <= 0) {
+                            uncertain = true;
+                            continue;
+                        }
+                        if (event.moment_ns < p.info.end_utc_ns + time_precision_ns) {
+                            uncertain |= event.moment_ns >= p.info.end_utc_ns;
+                            continue;
+                        }
+                        if (event.action != 2 || event.remaining <= 0)
+                            return 2;
+                        if (!last_fill || event.revision > last_fill->revision)
+                            last_fill = &event;
+                    }
+                if (!last_fill || uncertain)
+                    unknown = true;
+                else if (last_fill->remaining != remaining)
+                    return 2;
+                continue;
+            }
             const Change* last = nullptr;
             const Change* transition = nullptr;
             bool uncertain = false;
@@ -251,8 +279,23 @@ struct ContentWindow {
             if (comma)
                 *output << ',';
             comma = true;
+            const auto tuple = [&](const OrderSet& orders) {
+                const auto at = orders.find(d.id);
+                if (at == orders.end()) {
+                    *output << "null";
+                    return;
+                }
+                const auto& [remaining, price, session, bid] = at->second;
+                *output << "{\"remaining\":" << std::quoted(std::to_string(remaining))
+                        << ",\"price\":" << std::quoted(std::to_string(price)) << ",\"session_id\":" << session
+                        << ",\"bid\":" << (bid ? "true" : "false") << '}';
+            };
             *output << "{\"order_id\":" << std::quoted(std::to_string(d.id))
-                    << ",\"difference\":" << std::quoted(d.kind) << ",\"composite_ordlog_events\":[";
+                    << ",\"difference\":" << std::quoted(d.kind) << ",\"raw_order\":";
+            tuple(p.image->orders);
+            *output << ",\"composite_order\":";
+            tuple(state->image->orders);
+            *output << ",\"composite_ordlog_events\":[";
             bool event_comma = false;
             if (const auto at = changes.find({p.isin, d.id}); at != changes.end())
                 for (const auto& event : at->second) {

@@ -272,9 +272,7 @@ int main(int argc, char** argv) {
         check(raw.close());
         check(full.close());
         check(connection.close());
-        return window.mismatched || content.different || content.suspected_defects || startup.different
-                   ? 4
-                   : 3; // Observations cannot qualify absent exact post-clear proof and the required live run.
+        return comparison_exit_code(window, content, startup);
     } catch (const std::exception& e) {
         std::cerr << redact_probe_error(e.what(), secret_values) << '\n';
         return 2;

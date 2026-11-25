@@ -1,4 +1,5 @@
 #include "full_order_log_live_probe.hpp"
+#include "full_order_log_content_review_test.hpp"
 #include "full_order_log_probe_native_log_test.hpp"
 #include "full_order_log_test_support.hpp"
 #include <iostream>
@@ -97,6 +98,7 @@ struct Fixture {
 int main() {
     try {
         run_native_log_tests();
+        run_content_review_tests();
         const std::vector<std::string> secrets{"fake-key", "fake-key-long", "fake-credential", ""};
         const std::string context = "reference listener failed; probe interrupted";
         expect(redact_probe_error(context, secrets) == context, "non-secret failure context must remain visible");
@@ -163,7 +165,7 @@ int main() {
                 };
                 // The native request can be read before initial OPEN/LifeNum callbacks.
                 if (mode != MissingRequest && mode != ConflictingInfoBeforeRequest && mode != ResetThenOnline)
-                    startup.request(7, 90);
+                    startup.request(7, 91);
                 if (mode != CompositeFirst)
                     send(reference, {.kind = Plaza2ListenerEventKind::Open, .raw_tables = schema});
                 if (mode == RawFirst || mode == AbortBeforeCapture)
@@ -182,7 +184,7 @@ int main() {
                         info.set("trades_lifenum", std::int64_t{7});
                         send(composite, info.event());
                         if (mode == ConflictingInfoBeforeRequest)
-                            startup.request(7, 90);
+                            startup.request(7, 91);
                     }
                     send(composite, {.kind = Plaza2ListenerEventKind::TransactionBegin});
                     for (const auto id : {old_id, new_id}) {
@@ -208,7 +210,7 @@ int main() {
                     send(composite, {.kind = Plaza2ListenerEventKind::LifeNum, .unsigned_value = 8});
                     if (mode == ResetThenOnline) {
                         send(composite, {.kind = Plaza2ListenerEventKind::Online});
-                        startup.request(7, 90);
+                        startup.request(7, 91);
                     }
                 } else
                     send(composite, {.kind = Plaza2ListenerEventKind::Online});
@@ -249,14 +251,54 @@ int main() {
             }
         }
         {
+            // Real T0 semantics: trades_rev is last processed, native request is next.
+            struct AnchorCase {
+                std::int64_t raw, request;
+                std::uint64_t raw_life, request_life;
+                bool comparable;
+            };
+            const std::array<std::int32_t, 1> ids{11};
+            for (const auto test : {
+                     AnchorCase{90, 91, 7, 7, true},
+                     AnchorCase{90, 90, 7, 7, false},
+                     AnchorCase{90, 92, 7, 7, false},
+                     AnchorCase{90, 89, 7, 7, false},
+                     AnchorCase{90, 91, 8, 7, false},
+                     AnchorCase{90, 91, 0, 7, false},
+                     AnchorCase{90, 91, 7, 0, false},
+                     AnchorCase{0, 1, 7, 7, false},
+                     AnchorCase{-1, 1, 7, 7, false},
+                     AnchorCase{INT64_MAX, INT64_MAX, 7, 7, false},
+                     AnchorCase{INT64_MAX - 1, INT64_MAX, 7, 7, true},
+                 }) {
+                Plaza2FullOrderLog empty(ids);
+                std::ostringstream trace;
+                StartupComparison startup(ids, 8, &trace);
+                startup.request(test.request_life, test.request);
+                startup.capture(empty, "exact_successor_anchor");
+                startup.seal();
+                startup.raw(11, {}, {.provided = true, .trades_revision = test.raw, .log_life = test.raw_life});
+                startup.finish();
+                expect(startup.complete() == test.comparable && startup.matched == test.comparable &&
+                           startup.unavailable == !test.comparable && startup.different == 0,
+                       "only same-LifeNum exact successor anchors qualify; overflow or other relations stay unknown");
+                const auto recorded_request = test.request_life ? test.request : 0;
+                expect(trace.str().find("\"native_request_revision\":\"" + std::to_string(recorded_request) + "\"") !=
+                               std::string::npos &&
+                           trace.str().find("\"raw_info_trades_revision\":\"" + std::to_string(test.raw) + "\"") !=
+                               std::string::npos,
+                       "both actual revision values remain present in startup evidence");
+            }
+        }
+        {
             const std::array<std::int32_t, 1> ids{11};
             Plaza2FullOrderLog empty(ids);
             std::ostringstream trace;
             StartupComparison startup(ids, 8, &trace);
-            startup.request(7, 90);
+            startup.request(7, 91);
             bool refused = false;
             try {
-                startup.request(7, 91);
+                startup.request(7, 92);
             } catch (const std::invalid_argument&) {
                 refused = true;
             }
@@ -275,7 +317,7 @@ int main() {
             delayed.capture(empty, "empty_test_snapshot");
             delayed.seal();
             delayed.raw(11, {}, {.provided = true, .trades_revision = 90, .log_life = 7});
-            delayed.request(7, 90);
+            delayed.request(7, 91);
             expect(delayed.complete(), "the first native anchor may arrive after ONLINE and still settle startup");
         }
         {
