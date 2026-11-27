@@ -1,4 +1,5 @@
 #include "moex/plaza2/cgate/plaza2_runtime.hpp"
+#include "moex/plaza2_trade/plaza2_trade_codec.hpp"
 
 #include "plaza2_runtime_test_support.hpp"
 #include "fake_cgate_control.hpp"
@@ -199,6 +200,36 @@ int main(int argc, char** argv) {
         const auto reopen_error = connection.open({});
         require(reopen_error && reopen_error.code == Plaza2ErrorCode::AdapterState,
                 "reopening an active connection should translate to adapter-state error");
+
+        const auto request_layouts = moex::plaza2_trade::trade_request_layouts();
+        require(!publisher.validate_message_layouts(request_layouts),
+                "vendor publisher layouts must match all four fixed encoders");
+        require(!publisher.close(), "publisher close before layout change");
+        fake.set(moex::plaza2::test::fake::Option::PublisherLayoutOffsetMismatch, "1");
+        require(!publisher.open({}), "publisher reopen with same-size layout change");
+        const auto changed_layout = publisher.validate_message_layouts(request_layouts);
+        require(changed_layout.code == Plaza2ErrorCode::IncompatibleScheme &&
+                    changed_layout.message.find("AddOrder") != std::string::npos &&
+                    changed_layout.message.find("broker_code") != std::string::npos,
+                "publisher must reject a same-size field offset mismatch on reopen");
+        fake.clear(moex::plaza2::test::fake::Option::PublisherLayoutOffsetMismatch);
+
+        Plaza2Listener guarded_reply;
+        require(!guarded_reply.create(connection, kNoStreamCode, "p2mqreply://;ref=PUB", &reply_capture,
+                                      moex::plaza2_trade::trade_reply_layouts()),
+                "guarded reply listener creation must succeed");
+        require(!guarded_reply.message_layouts_validated(), "reply descriptor proof is absent before OPEN");
+        require(!guarded_reply.open({}) && guarded_reply.message_layouts_validated(),
+                "reply descriptor proof must include trade, flood and system replies");
+        require(!guarded_reply.close() && !guarded_reply.message_layouts_validated(),
+                "closing the reply listener must invalidate its descriptor proof");
+        fake.set(moex::plaza2::test::fake::Option::ReplyLayoutTypeMismatch, "1");
+        require(!guarded_reply.open({}) && !guarded_reply.message_layouts_validated() &&
+                    guarded_reply.last_callback_error().code == Plaza2ErrorCode::IncompatibleScheme &&
+                    guarded_reply.last_callback_error().message.find("FORTS_MSG176") != std::string::npos,
+                "reply descriptor type change must invalidate a reopened listener");
+        fake.clear(moex::plaza2::test::fake::Option::ReplyLayoutTypeMismatch);
+        require(!guarded_reply.close() && !guarded_reply.destroy(), "close guarded reply listener after rejection");
 
         require(!publisher.close(), "publisher close should succeed");
         require(!publisher.destroy(), "publisher destroy should succeed");

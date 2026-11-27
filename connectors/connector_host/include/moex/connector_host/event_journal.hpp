@@ -21,7 +21,7 @@ struct JournalReservation {
 class EventJournal {
   public:
     explicit EventJournal(const std::filesystem::path& path, const std::filesystem::path& state_path = {},
-                          std::size_t queue_bytes = 8 * 1024 * 1024);
+                          std::size_t queue_bytes = 8 * 1024 * 1024, bool async_reservations = false);
     ~EventJournal();
     EventJournal(const EventJournal&) = delete;
     EventJournal& operator=(const EventJournal&) = delete;
@@ -35,17 +35,20 @@ class EventJournal {
     [[nodiscard]] JournalReservation reservations() const noexcept {
         return reservations_;
     }
+    [[nodiscard]] bool identity_lock_held() const noexcept {
+        return state_lock_fd_ >= 0;
+    }
     // The checkpoint's exclusive ceiling is unchanged after a failed block
     // extension. Storage-failed cancellation may use only this durable range.
-    [[nodiscard]] bool user_id_reserved(std::uint32_t id) const noexcept {
-        return id != 0 && id < high_water_.next_user_id;
-    }
+    [[nodiscard]] bool user_id_reserved(std::uint32_t id) const;
+    [[nodiscard]] bool ids_reserved(std::int32_t ext, std::uint32_t user) const;
     [[nodiscard]] std::uint64_t recovery_read_bytes() const noexcept {
         return recovery_read_bytes_;
     }
 
   private:
     void extend_reservations(const JournalReservation& next);
+    void persist_reservations(JournalReservation reserved);
     void write_buffer();
     void sync_buffer();
     void writer_loop() noexcept;
@@ -56,10 +59,11 @@ class EventJournal {
     std::uint64_t device_{}, inode_{}, offset_{}, recovery_read_bytes_{};
     std::chrono::steady_clock::time_point last_sync_{};
     JournalReservation reservations_;
-    JournalReservation high_water_;
+    JournalReservation high_water_, requested_high_water_;
     std::string buffered_;
     bool dirty_{};
     const std::size_t queue_limit_;
+    const bool async_reservations_;
     struct Record {
         std::chrono::system_clock::time_point wall;
         std::string kind, fields;

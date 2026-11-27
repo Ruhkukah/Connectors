@@ -34,6 +34,8 @@ jobs:
             esac
             clang-format --dry-run --Werror "$source"
           done < <(git diff --name-only --diff-filter=ACMR -z "$base" HEAD -- '*.cpp' '*.hpp')
+      - name: Install Zstd development files
+        run: sudo apt-get update && sudo apt-get install -y libzstd-dev
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
@@ -53,7 +55,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install clang
-        run: sudo apt-get update && sudo apt-get install -y clang
+        run: sudo apt-get update && sudo apt-get install -y clang libzstd-dev
       - name: Configure
         env:
           CC: clang
@@ -74,3 +76,36 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -m unittest discover -s scripts/test_rehearsal -p 'test_*.py'
+
+  dtc-thread-sanitizer:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Ensure Zstd is installed
+        run: brew list --versions zstd >/dev/null || brew install zstd
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_PREFIX_PATH="$(brew --prefix zstd)"
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+      - name: Build
+        run: >-
+          cmake --build build-tsan --parallel 2 --target
+          connector_host_dtc_server_test event_journal_test order_manager_test
+          full_order_log_trading_runner_test full_order_log_dtc_channel_test
+          full_order_log_dtc_identity_test
+      - name: Test
+        env:
+          TSAN_OPTIONS: halt_on_error=1:exitcode=66
+          TMPDIR: /tmp
+        run: |
+          ctest --test-dir build-tsan --output-on-failure --no-tests=error \
+            -R '^(connector_host_dtc_server_test|event_journal_test|order_manager_test|full_order_log_writer_dtc_worker_test|full_order_log_dtc_channel_test|full_order_log_dtc_identity_test)$'

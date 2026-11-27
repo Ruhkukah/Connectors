@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -106,9 +107,9 @@ enum class DtcDepthSide : std::int32_t {
 };
 
 // The connector-side market-data contract is source-shaped, not a UI model.
-// It carries only the target AGGR20 state that is already owned by
-// ConnectorHost.  AGGR20 is depth, not a public trade tape; no trade events
-// are inferred here.
+// It carries committed AGGR20 or FullOrderLog depth owned by the source.
+// Aggregated FullOrderLog levels have no single source-row identity; no
+// trade events are inferred from either depth representation.
 struct DtcMarketDataLevel {
     std::int64_t price_scaled{0};
     std::int64_t volume{0};
@@ -122,12 +123,22 @@ struct DtcMarketDataLevel {
     std::uint64_t source_sequence{0};
     std::uint64_t exchange_moment_ns{0};
     std::string price;
+    std::uint32_t depth_level{0}; // optional positional DTC update index
 
     friend bool operator==(const DtcMarketDataLevel&, const DtcMarketDataLevel&) = default;
 };
 
 struct DtcMarketDataSnapshot {
+    // Immutable metadata shared across writer frames, never a per-commit
+    // deep copy of instrument/session strings.
+    std::shared_ptr<const plaza2::cgate::FullOrderLogDefinitionIdentity> full_order_log_definition_identity;
+    bool full_order_log{false};
+    bool empty_book{false}, crossed_book{false};
+    std::chrono::steady_clock::time_point committed_at{};
     std::uint64_t connector_generation{0};
+    // Nonzero only for sources which advance this whenever definition metadata
+    // or its provenance/currentness changes. Allows bounded FOL validation caching.
+    std::uint64_t definition_revision{0};
     std::uint64_t market_data_authority_epoch{0};
     std::uint64_t stream_epoch{0};
     // Assigned by the future ConnectorHost-owned DTC server, not by CGate or
@@ -217,6 +228,7 @@ struct DtcReplayDefinitionTerms {
 // the semantic 507 terms to their REFDATA source generation and deliberately
 // excludes AGGR price/book versions.
 struct DtcSecurityDefinitionSnapshot {
+    plaza2::cgate::FullOrderLogDefinitionIdentity full_order_log_definition_identity;
     std::string symbol;
     std::string exchange;
     std::string underlying_board;
@@ -258,6 +270,12 @@ struct DtcSecurityDefinitionValidation {
 validate_dtc_security_definition(const DtcMarketDataSnapshot& snapshot, DtcSourceMode source_mode,
                                  const DtcReplayDefinitionTerms& replay_terms = {});
 
+// FOL only: complete captured terms must match exactly. Only the fully
+// recorded session row's revision may differ; all other table revisions,
+// LifeNum, session/status/terms and source identities remain strict.
+[[nodiscard]] bool full_order_log_provenance_only_change(const DtcSecurityDefinitionSnapshot& before,
+                                                         const DtcSecurityDefinitionSnapshot& after);
+
 // Value conversion shared by the live owner-thread adapter and replay tests.
 [[nodiscard]] DtcMarketDataSnapshot make_dtc_market_data_snapshot(const ConnectorHostMarketDataSnapshot& market_data);
 
@@ -278,6 +296,22 @@ class DtcMarketDataSource {
     virtual ~DtcMarketDataSource() = default;
     [[nodiscard]] virtual DtcMarketDataSnapshot snapshot() const = 0;
     [[nodiscard]] virtual DtcReadOnlyCapabilities capabilities() const noexcept = 0;
+    // Sparse committed depth sources avoid copying the universe on each poll.
+    [[nodiscard]] virtual DtcMarketDataSnapshot status_snapshot() const {
+        return snapshot();
+    }
+    // Optional owner-thread borrow, valid until the next source operation.
+    // No consumer may retain it; the default preserves existing source behavior.
+    [[nodiscard]] virtual const DtcMarketDataSnapshot* status_snapshot_view() const {
+        return nullptr;
+    }
+    [[nodiscard]] virtual bool incremental_depth() const noexcept {
+        return false;
+    }
+    virtual void configure_depth_limit(std::size_t) {}
+    [[nodiscard]] virtual std::span<const DtcMarketDataLevel> depth_changes() const noexcept {
+        return {};
+    }
     // Public trades are a distinct committed event stream. Sources which do
     // not publish that stream remain depth-only by default.
     [[nodiscard]] virtual plaza2::cgate::Plaza2PublicDealsSnapshot

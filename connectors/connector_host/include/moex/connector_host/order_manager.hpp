@@ -36,6 +36,7 @@ struct OrderRequest {
     plaza2_trade::Plaza2TradeOrderType type{plaza2_trade::Plaza2TradeOrderType::Limit};
     std::string price, comment;
     std::int32_t quantity{};
+    bool dtc_origin{}, automated{};
 };
 
 struct ManagedOrder {
@@ -94,6 +95,13 @@ struct OrderManagerConfig {
     // Injectable only for offline assertions that disabled profiling never reads
     // a clock. An empty hook uses steady_clock.
     std::function<std::uint64_t()> stage_timing_now;
+    std::function<bool(std::int32_t, std::uint32_t)> ids_reserved;
+    std::function<bool()> dtc_connection_current;
+};
+
+struct DtcAddPreparation {
+    std::string error;
+    std::int32_t ext_id{};
 };
 
 struct AddPathTiming {
@@ -135,10 +143,14 @@ class OrderManager {
     OrderManager(OrderManagerConfig config, Send send, Ready ready, Terms terms, Log log = {}, Position position = {},
                  PositionAnchor position_anchor = {});
     [[nodiscard]] std::string place(OrderRequest request);
+    [[nodiscard]] DtcAddPreparation prepare_dtc_add(OrderRequest request);
+    [[nodiscard]] std::string finish_dtc_add(std::int32_t ext_id, bool persisted);
     [[nodiscard]] std::string cancel(std::string_view client_order_id);
-    [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity);
+    [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity,
+                                   bool dtc_origin = false);
     [[nodiscard]] std::string cancel_all(std::int32_t isin_id);
     void set_kill_switch(bool enabled);
+    void fence_dtc_entry();
     void poll(Clock::time_point now, std::int64_t utc_seconds);
     void on_reply(std::uint32_t user_id, const plaza2_trade::Plaza2TradeDecodedReply& reply, Clock::time_point now,
                   std::uint64_t trade_commit_sequence = 0);
@@ -179,14 +191,22 @@ class OrderManager {
         std::uint32_t user_id{};
         std::int64_t target_order_id{};
         std::int64_t sent_utc_seconds{};
-        bool acknowledged{}, transport_retry_warned{}, wait_for_trading{};
+        bool acknowledged{}, transport_retry_warned{}, wait_for_trading{}, dtc_origin{};
         std::uint32_t business_failures{}, uncertain_outcomes{};
         std::int32_t submitted_session{};
         AddPathTiming add_path;
     };
+    struct PendingDtcAdd {
+        OrderRequest request;
+        Command command;
+        std::int32_t ext_id{}, session{};
+    };
     struct BulkCancellation {
         std::uint64_t after_commit_sequence{};
-        bool awaiting_reply{true}, uncertain_exhausted{}, refused_session_closed{};
+        // Local committed TRADE observations after186 permit per-ID risk reduction,
+        // not a causal claim that the broad request completed or entry may resume.
+        std::set<std::pair<std::int32_t, std::int64_t>> post_reply_orders;
+        bool awaiting_reply{true}, uncertain_exhausted{}, refused_session_closed{}, fallbacks_enabled{};
     };
     // Diagnostic correlation only: replication may retire a posted cancel
     // before its reply. Never restore pending intent or alter risk from this.
@@ -270,9 +290,13 @@ class OrderManager {
     [[nodiscard]] Command encode(plaza2_trade::Plaza2TradeCommandRequest request, std::string key,
                                  AddPathTiming* timing = nullptr);
     [[nodiscard]] std::uint32_t reserve_user_id();
+    [[nodiscard]] std::string place_impl(OrderRequest request, std::int32_t* prepared_ext);
+    void queue_add(OrderRequest request, Command command, std::int32_t ext, std::int32_t session);
     [[nodiscard]] bool has_outstanding_command(std::string_view key, plaza2_trade::Plaza2TradeCommandKind kind) const;
     void recovery_cancel(ManagedOrder& order, bool explicit_retry = false);
     void discard_recovery_cancel(ManagedOrder& order);
+    [[nodiscard]] bool bulk_fallback_allowed(const ManagedOrder& order, std::int64_t target_id,
+                                             std::int32_t target_session) const;
     void enqueue_cancel(ManagedOrder& order, bool explicit_retry = false);
     void complete_timeout(Command command, Clock::time_point now);
     void retry_cancel(Command command, Clock::time_point now, bool business_rejection = false);
@@ -324,6 +348,7 @@ class OrderManager {
     std::map<std::pair<std::int32_t, std::int64_t>, plaza2::private_state::OwnTradeSnapshot> deferred_trades_;
     std::map<std::int32_t, BulkCancellation> bulk_cancellations_;
     std::uint64_t trade_commit_sequence_{};
+    std::optional<PendingDtcAdd> pending_dtc_add_;
     std::deque<Command> cancels_, adds_;
     std::unordered_map<std::uint32_t, Command> pending_;
     std::unordered_map<std::uint32_t, CompletedCancel> completed_cancels_;

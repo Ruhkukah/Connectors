@@ -1,0 +1,508 @@
+#include "plaza2_cgate/plaza2_runtime_test_support.hpp"
+#include "moex/plaza2/cgate/plaza2_text.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_capture.hpp"
+#include "moex/plaza2/cgate/plaza2_full_order_log_refdata.hpp"
+#include "scope_exit.hpp"
+#include "command_socket.hpp"
+#include "command_input.hpp"
+#include "dtc_test_wire.hpp"
+#include "moex/connector_host/dtc_market_data.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <csignal>
+#include <fcntl.h>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <poll.h>
+#include <netinet/in.h>
+#include <sstream>
+#include <string>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+
+#ifndef MOEX_SOURCE_GIT_SHA
+#define MOEX_SOURCE_GIT_SHA "unknown"
+#endif
+
+namespace {
+using namespace std::chrono_literals;
+namespace test = moex::plaza2::test;
+
+class Child {
+  public:
+    Child(const std::vector<std::string>& arguments, const std::filesystem::path& diagnostics, int input_fd = -1) {
+        int input[2]{-1, -1}, output[2];
+        test::require(::pipe(output) == 0, "stdout pipe failed");
+        if (input_fd < 0)
+            test::require(::pipe(input) == 0, "stdin pipe failed");
+        const auto error = ::open(diagnostics.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        test::require(error >= 0, "diagnostics file failed");
+        pid_ = ::fork();
+        test::require(pid_ >= 0, "fork failed");
+        if (pid_ == 0) {
+            std::signal(SIGPIPE, SIG_DFL);
+            std::signal(SIGHUP, SIG_DFL);
+            ::dup2(input_fd < 0 ? input[0] : input_fd, STDIN_FILENO);
+            ::dup2(output[1], STDOUT_FILENO);
+            ::dup2(error, STDERR_FILENO);
+            for (const auto fd : {input[0], input[1], output[0], output[1], error, input_fd})
+                if (fd > STDERR_FILENO)
+                    ::close(fd);
+            std::vector<char*> argv;
+            for (const auto& argument : arguments)
+                argv.push_back(const_cast<char*>(argument.c_str()));
+            argv.push_back(nullptr);
+            ::execv(argv[0], argv.data());
+            ::_exit(127);
+        }
+        if (input[0] >= 0)
+            ::close(input[0]);
+        ::close(output[1]);
+        ::close(error);
+        input_ = input[1];
+        output_ = output[0];
+        ::fcntl(output_, F_SETFL, O_NONBLOCK);
+        // A subsequent command-client exec must not keep the owner's input/output alive.
+        for (const auto fd : {input_, output_})
+            if (fd >= 0)
+                ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+    }
+    ~Child() {
+        close_input();
+        close_output();
+        if (alive()) {
+            ::kill(pid_, SIGTERM);
+            const auto deadline = std::chrono::steady_clock::now() + 3s;
+            while (alive() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(10ms);
+            if (alive()) {
+                ::kill(pid_, SIGKILL);
+                ::waitpid(pid_, &status_, 0);
+                reaped_ = true;
+            }
+        }
+    }
+    Child(const Child&) = delete;
+    Child& operator=(const Child&) = delete;
+    bool alive() {
+        if (!reaped_ && ::waitpid(pid_, &status_, WNOHANG) == pid_)
+            reaped_ = true;
+        return !reaped_;
+    }
+    void signal(int value) {
+        test::require(::kill(pid_, value) == 0, "signal failed");
+    }
+    void send(std::string_view line) {
+        test::require(input_ >= 0 && ::write(input_, line.data(), line.size()) == static_cast<ssize_t>(line.size()),
+                      "stdin command failed");
+    }
+    void close_input() {
+        if (input_ >= 0)
+            ::close(input_);
+        input_ = -1;
+    }
+    void close_output() {
+        if (output_ >= 0)
+            ::close(output_);
+        output_ = -1;
+    }
+    std::string line(std::chrono::milliseconds timeout = 3s) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (const auto end = pending_.find('\n'); end != std::string::npos) {
+                auto result = pending_.substr(0, end);
+                pending_.erase(0, end + 1);
+                return result;
+            }
+            pollfd fd{.fd = output_, .events = POLLIN};
+            if (::poll(&fd, 1, 20) > 0) {
+                char data[4096];
+                const auto size = ::read(output_, data, sizeof(data));
+                if (size > 0)
+                    pending_.append(data, static_cast<std::size_t>(size));
+            }
+            if (!alive() && pending_.empty())
+                break;
+        }
+        throw std::runtime_error("CLI response missing (wait status " + std::to_string(status_) + ", reaped " +
+                                 std::to_string(reaped_) + ")");
+    }
+    int wait() {
+        const auto deadline = std::chrono::steady_clock::now() + 15s;
+        while (alive() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(10ms);
+        test::require(!alive(), "CLI did not stop");
+        return WIFEXITED(status_) ? WEXITSTATUS(status_) : 128 + WTERMSIG(status_);
+    }
+
+  private:
+    pid_t pid_{};
+    int input_{-1}, output_{-1}, status_{};
+    bool reaped_{};
+    std::string pending_;
+};
+
+std::vector<std::string> run_arguments(const std::string& executable, const test::RuntimeFixturePaths& fixture,
+                                       const std::filesystem::path& log, std::string_view instance) {
+    return {executable,
+            "plaza2",
+            "run",
+            "--runtime-root",
+            fixture.root.string(),
+            "--scheme-dir",
+            fixture.scheme_dir.string(),
+            "--config-dir",
+            fixture.config_dir.string(),
+            "--library-path",
+            fixture.library_path.string(),
+            "--env-settings-var",
+            "MOEX_CLI_TEST_SETTINGS",
+            "--credentials-env",
+            "MOEX_CLI_TEST_CREDENTIALS",
+            "--software-key-env",
+            "MOEX_CLI_TEST_KEY",
+            "--broker-code-env",
+            "MOEX_CLI_TEST_BROKER",
+            "--client-code-env",
+            "MOEX_CLI_TEST_CLIENT",
+            "--login-env",
+            "MOEX_CLI_TEST_LOGIN",
+            "--ext-id-range",
+            "100:199",
+            "--max-commands-per-second",
+            "30",
+            "--isin-id",
+            "1001",
+            "--instance-id",
+            std::string(instance),
+            "--max-quantity",
+            "100",
+            "--max-open-orders",
+            "100",
+            "--max-notional",
+            "1001=100000000",
+            "--max-position",
+            "1001=100",
+            "--log",
+            log.string()};
+}
+void ready(Child& owner, const std::function<void()>& send) {
+    const auto deadline = std::chrono::steady_clock::now() + 15s;
+    do {
+        send();
+        if (owner.line(10s).find("\"reconstructing\":false") != std::string::npos)
+            return;
+    } while (std::chrono::steady_clock::now() < deadline);
+    throw std::runtime_error("CLI did not reconstruct its Live/fake snapshots");
+}
+std::string remote_command(const std::string& executable, const std::filesystem::path& log, std::string command) {
+    Child client({executable, "plaza2", "cmd", "--log", log.string(), std::move(command)},
+                 log.string() + ".client.err");
+    client.close_input();
+    const auto response = client.line();
+    test::require(client.wait() == (response.find("\"ok\":false") == std::string::npos ? 0 : 2),
+                  "command client exit status did not reflect its refusal");
+    return response;
+}
+
+void test_shared_deals_wire(std::vector<std::string> arguments, const test::RuntimeFixturePaths& fixture,
+                            const std::filesystem::path& root) {
+    using namespace dtc_test_wire;
+    namespace dtc = moex::connector_host::dtc;
+    // Run the actual qualifier and LiveTest 507 validation against the test
+    // driver's in-process fake CGate library. The only socket is DTC loopback.
+    std::erase(arguments, "--offline-fake");
+    const auto capture = root / "deals-wire-capture";
+    arguments.insert(arguments.end(),
+                     {"--live", "--trading-instance-id", "offline_isolation_trade", "--open-interest", "--capture-dir",
+                      capture.string(), "--capture-min-free-bytes", "0", "--run-ms", "12000"});
+    {
+        std::ofstream ini(fixture.config_dir / "t1.ini", std::ios::app);
+        ini << "\n[moex-fake-fol-runner]\nprofile=deals-wire\n";
+        require(ini.good(), "select the deterministic fake DEALS profile");
+    }
+    const auto diagnostics = root / "deals-wire.err";
+    Child md(arguments, diagnostics);
+    const auto receipt = md.line();
+    const auto port_start = receipt.find("dtc_port=");
+    require(port_start != std::string::npos, "actual FOL qualifier DTC startup receipt");
+    const auto port = std::stoi(receipt.substr(port_start + 9));
+    while (md.line().find("first_valid_commit=1") == std::string::npos) {
+    }
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    require(fd >= 0, "create Kairos-equivalent DTC client");
+    moex::connector_host::ScopeExit close_fd([&] { ::close(fd); });
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(static_cast<std::uint16_t>(port));
+    require(::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0,
+            "connect to actual qualifier on loopback");
+    const auto send = [&](unsigned type, const Bytes& body) {
+        const auto bytes = packet(type, body);
+        for (std::size_t i = 0; i < bytes.size();) {
+            const auto n = ::send(fd, bytes.data() + i, bytes.size() - i, 0);
+            require(n > 0, "write DTC request");
+            i += static_cast<std::size_t>(n);
+        }
+    };
+    dtc::DtcFrameDecoder decoder;
+    std::vector<dtc::DtcFrame> frames;
+    const auto count = [&](unsigned type) {
+        return std::count_if(frames.begin(), frames.end(), [&](const auto& f) { return f.message_type == type; });
+    };
+    const auto drain = [&](std::chrono::milliseconds timeout, unsigned until = 0) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline && (!until || !count(until))) {
+            pollfd poll_fd{.fd = fd, .events = POLLIN};
+            if (::poll(&poll_fd, 1, 10) <= 0)
+                continue;
+            std::array<std::uint8_t, 8192> buffer{};
+            const auto n = ::recv(fd, buffer.data(), buffer.size(), 0);
+            require(n > 0, "DTC disconnected before verification");
+            std::string error;
+            require(decoder.append(std::span(buffer.data(), static_cast<std::size_t>(n)), frames, error), error);
+        }
+    };
+    const auto wait_for = [&](unsigned type) {
+        drain(2s, type);
+        const auto found =
+            std::find_if(frames.begin(), frames.end(), [&](const auto& f) { return f.message_type == type; });
+        require(found != frames.end(), "missing DTC response type " + std::to_string(type));
+        return WireMessage(found->payload);
+    };
+    send(6, {8, 0, 0, 0, 4, 0, 0, 0, 'D', 'T', 'C', 0});
+    drain(2s, 7);
+    require(count(7) == 1, "DTC protobuf encoding negotiated");
+    Bytes request;
+    put_integer(request, 1, 8);
+    put_integer(request, 7, 10);
+    send(1, request);
+    const auto logon = wait_for(2);
+    require(logon.number(20) == 1 && logon.number(15) == 1 && logon.number(8) == 0,
+            "qualifier advertises trades and depth with no order entry");
+    request.clear();
+    put_integer(request, 1, 41);
+    put_text(request, 2, "RTS-6.26");
+    put_text(request, 3, "MOEX_SPECTRA");
+    send(506, request);
+    const auto definition = wait_for(507);
+    require(definition.number(35) == 321 && definition.number(33) == 1001,
+            "trade and depth use the same committed REFDATA instrument/session");
+    request.clear();
+    put_integer(request, 1, 1);
+    put_integer(request, 2, 1);
+    put_text(request, 3, "RTS-6.26");
+    put_text(request, 4, "MOEX_SPECTRA");
+    send(101, request);
+    put_integer(request, 5, 20);
+    send(102, request);
+    (void)wait_for(145);
+    drain(100ms);
+    require(count(103) == 0 && count(107) == 0 && count(145) > 0,
+            "Kairos-equivalent depth/trade subscription starts without replaying DEALS history");
+
+    const auto control = fixture.config_dir / "fol-control";
+    const auto inject = [&](std::string_view event) {
+        const auto pending = control.string() + ".next";
+        {
+            std::ofstream out(pending);
+            out << event << '\n';
+            require(out.good(), "write fake DEALS control");
+        }
+        std::filesystem::rename(pending, control);
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (std::filesystem::exists(control) && md.alive() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(2ms);
+        require(!std::filesystem::exists(control) && md.alive(), "qualifier consumed fake DEALS control");
+    };
+    inject("deal-stage");
+    drain(100ms);
+    require(count(107) == 0, "uncommitted DEALS row remains invisible");
+    inject("deal-commit");
+    const auto print = wait_for(107);
+    drain(100ms);
+    require(count(107) == 1 && print.string(8) == "9100" && print.number(16) == 321 && print.number(17) == 1001 &&
+                print.real64(3) == 102500.125 && print.real64(4) == 3.0,
+            "committed print crosses the actual DTC wire exactly once with its source identity, price and quantity");
+    md.signal(SIGTERM);
+    bool oi = false;
+    while (!oi) {
+        const auto line = md.line();
+        oi = line.find("oi_isin=1001 oi_online=1 oi_available=1 oi_quantity=124") != std::string::npos;
+    }
+    const auto status = md.wait();
+    if (status != 0) {
+        std::ifstream native(diagnostics);
+        const std::string trace{std::istreambuf_iterator<char>(native), std::istreambuf_iterator<char>()};
+        throw std::runtime_error("DEALS qualifier exit " + std::to_string(status) + ": " +
+                                 trace.substr(trace.size() > 2000 ? trace.size() - 2000 : 0));
+    }
+    namespace cg = moex::plaza2::cgate;
+    const auto archive = cg::replay_full_order_log_capture(capture);
+    require(archive.refdata_sha256.size() == 64, "strict replay validates the qualifier's pinned REFDATA sidecar");
+    std::ifstream refdata(capture / cg::kFullOrderLogRefdataFilename, std::ios::binary);
+    const std::string contents((std::istreambuf_iterator<char>(refdata)), {});
+    const auto rows = cg::parse_full_order_log_refdata(contents);
+    const auto observed = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.available; });
+    require(observed != rows.end() && observed->isin_id == 1001 && observed->isin == "RTS-6.26" &&
+                observed->short_code == "RIH6" && std::stod(observed->min_step) == 250 && observed->decimals == 2 &&
+                observed->sess_id == 321 && observed->effective_utc_ns > 0 && observed->effective_monotonic_ns > 0 &&
+                observed->instrument_source.present && observed->session_source.present,
+            "sidecar retains the selected instrument's observed committed REFDATA and source identities");
+    const auto dbn = root / "deals-wire.dbn";
+    const auto exported = cg::export_full_order_log_dbn(capture, dbn);
+    require(exported.trade_prints == 3, "export includes two committed prints before subscription and one after, got " +
+                                            std::to_string(exported.trade_prints));
+    require(exported.refdata_sha256 == archive.refdata_sha256 && exported.dbn_sha256.size() == 64 &&
+                std::filesystem::is_regular_file(dbn.string() + ".refdata.json"),
+            "export pins committed REFDATA from the same qualifier capture");
+}
+
+} // namespace
+int main(int argc, char** argv) {
+    try {
+        test::require(argc == 4, "trading runner, MD test runner and fake runtime required");
+        std::signal(SIGPIPE, SIG_IGN);
+        const auto root = test::make_temp_directory("full-order-log-isolation");
+        moex::connector_host::ScopeExit cleanup([&] { test::remove_tree(root); });
+        const auto fixture = test::materialize_runtime_fixture(
+            root / "runtime", std::filesystem::absolute(argv[3]), moex::plaza2::cgate::Plaza2Environment::Test,
+            test::build_vendor_like_runtime_scheme("9.9", "9.9", "TEST"));
+        const auto settings = "ini=" + (fixture.config_dir / "t1.ini").string() + ";key=00000000";
+        ::setenv("MOEX_CLI_TEST_SETTINGS", settings.c_str(), 1);
+        ::setenv("MOEX_CLI_TEST_CREDENTIALS", "fake", 1);
+        ::setenv("MOEX_CLI_TEST_KEY", "00000000", 1);
+        ::setenv("MOEX_CLI_TEST_BROKER", "BRK1", 1);
+        ::setenv("MOEX_CLI_TEST_CLIENT", "C01", 1);
+        ::setenv("MOEX_CLI_TEST_LOGIN", "offline-isolation", 1);
+        const auto log = root / "trading.ndjson";
+        auto trading_args =
+            run_arguments(std::filesystem::absolute(argv[1]).string(), fixture, log, "offline_isolation_trade");
+        Child trader(trading_args, root / "trading.err");
+        ready(trader, [&] { trader.send("status\n"); });
+        std::vector<std::string> md_args{std::filesystem::absolute(argv[2]).string(),
+                                         "plaza2",
+                                         "qualify",
+                                         "--runtime-root",
+                                         fixture.root.string(),
+                                         "--library-path",
+                                         fixture.library_path.string(),
+                                         "--scheme-dir",
+                                         fixture.scheme_dir.string(),
+                                         "--config-dir",
+                                         fixture.config_dir.string(),
+                                         "--env-settings-var",
+                                         "MOEX_CLI_TEST_SETTINGS",
+                                         "--software-key-env",
+                                         "MOEX_CLI_TEST_KEY",
+                                         "--isin-id",
+                                         "1001",
+                                         "--instance-id",
+                                         "offline_isolation_md",
+                                         "--offline-fake",
+                                         "--dtc-port",
+                                         "11398"};
+        const auto deals_wire_args = md_args;
+        auto prod_args = md_args;
+        prod_args.insert(prod_args.end(), {"--environment", "prod"});
+        Child prod_refused(prod_args, root / "prod-refused.err");
+        prod_refused.close_input();
+        test::require(prod_refused.wait() == 2, "internal FOL runner must refuse PROD before native startup");
+        std::ifstream prod_log(root / "prod-refused.err");
+        const std::string prod_diagnostic((std::istreambuf_iterator<char>(prod_log)), {});
+        test::require(prod_diagnostic.find("TEST") != std::string::npos,
+                      "PROD refusal must identify the TEST-only boundary");
+        Child md(md_args, root / "md.err");
+        test::require(md.line().find("dtc_port=") != std::string::npos, "actual MD process started");
+        const auto responsive = [&] {
+            const auto start = std::chrono::steady_clock::now();
+            trader.send("status\n");
+            const auto status = trader.line(std::chrono::seconds(2));
+            test::require(status.find("\"reconstructing\":false") != std::string::npos,
+                          "trader snapshot remains current");
+            test::require(std::chrono::steady_clock::now() - start < std::chrono::seconds(2),
+                          "trader stays responsive");
+        };
+        md.signal(SIGSTOP);
+        responsive();
+        md.signal(SIGKILL);
+        md.wait();
+        responsive();
+        trader.send("quit\n");
+        trader.close_input();
+        test::require(trader.wait() == 0, "trader stops normally");
+        // The production main requires explicit live mode before opening native CGate.
+        md_args.erase(std::find(md_args.begin(), md_args.end(), "--offline-fake"));
+        Child gated(md_args, root / "gate.err");
+        gated.close_input();
+        test::require(gated.wait() == 2, "live start is gated before any native CGate connection");
+        md_args.push_back("--live");
+        md_args.insert(md_args.end(), {"--trading-instance-id", "offline_isolation_md"});
+        Child same_id(md_args, root / "same-instance.err");
+        same_id.close_input();
+        test::require(same_id.wait() == 2, "same trading and MD instance IDs fail before native startup");
+        std::ifstream same_id_log(root / "same-instance.err");
+        const std::string refused((std::istreambuf_iterator<char>(same_id_log)), {});
+        test::require(refused.find("instance IDs must differ") != std::string::npos,
+                      "same-instance refusal must precede logging/runtime validation");
+        md_args.resize(md_args.size() - 3);
+        md_args.push_back("--offline-fake");
+        // Equivalent loopback spelling and a normalized port cannot bypass isolation.
+        for (const auto& endpoint : {"127.0.0.1:4101", "LOCALHOST:04101", "[::1]:4101"}) {
+            auto same_router_args = md_args;
+            same_router_args.insert(same_router_args.end(), {"--router", endpoint});
+            Child same_router(same_router_args, root / "same-router.err");
+            same_router.close_input();
+            test::require(same_router.wait() == 2, "same trading router refused before native startup");
+            std::ifstream router_log(root / "same-router.err");
+            const std::string router_refused((std::istreambuf_iterator<char>(router_log)), {});
+            test::require(router_refused.find("router addresses must differ") != std::string::npos,
+                          "router refusal must precede logging/runtime validation");
+        }
+        auto overridden_router_args = md_args;
+        overridden_router_args.insert(overridden_router_args.end(), {"--trading-router", "localhost:4102"});
+        Child overridden_router(overridden_router_args, root / "overridden-router.err");
+        overridden_router.close_input();
+        test::require(overridden_router.wait() == 2, "owner-specified trading router protects a nondefault port");
+        // A DTC bind failure after host startup must unwind cleanly.
+        const auto occupied_port = ::socket(AF_INET, SOCK_STREAM, 0);
+        test::require(occupied_port >= 0, "occupied port socket");
+        moex::connector_host::ScopeExit close_occupied([&] { ::close(occupied_port); });
+        test::require(::fcntl(occupied_port, F_SETFD, FD_CLOEXEC) == 0, "occupied port close-on-exec");
+        sockaddr_in occupied_address{};
+        occupied_address.sin_family = AF_INET;
+        occupied_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        test::require(::bind(occupied_port, reinterpret_cast<sockaddr*>(&occupied_address), sizeof(occupied_address)) ==
+                              0 &&
+                          ::listen(occupied_port, 1) == 0,
+                      "hold loopback listener");
+        socklen_t occupied_size = sizeof(occupied_address);
+        test::require(::getsockname(occupied_port, reinterpret_cast<sockaddr*>(&occupied_address), &occupied_size) == 0,
+                      "occupied port number");
+        auto bind_failure_args = md_args;
+        const auto port = std::find(bind_failure_args.begin(), bind_failure_args.end(), "--dtc-port");
+        *(port + 1) = std::to_string(ntohs(occupied_address.sin_port));
+        Child bind_failure(bind_failure_args, root / "bind-failure.err");
+        bind_failure.close_input();
+        test::require(bind_failure.wait() == 2, "DTC bind failure exits cleanly after native host startup");
+        const auto isin = std::find(md_args.begin(), md_args.end(), "--isin-id");
+        *(isin + 1) = "2147483648";
+        Child overflow(md_args, root / "overflow.err");
+        overflow.close_input();
+        test::require(overflow.wait() == 2, "native i4 ISIN overflow must be rejected");
+        test_shared_deals_wire(deals_wire_args, fixture, root);
+        std::cout << "FOL isolation and single-listener trades, depth and OI wire checks: PASS\n";
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << '\n';
+        return 1;
+    }
+}

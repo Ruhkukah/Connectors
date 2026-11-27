@@ -4,6 +4,7 @@
 #include "command_socket.hpp"
 #include "scope_exit.hpp"
 #include "shutdown_signals.hpp"
+#include "operator_program.hpp"
 
 #include <array>
 #include <charconv>
@@ -97,6 +98,7 @@ std::string command(moex::connector_host::CgateTradingHost& host, ShutdownReques
                 return refusal(host, line, "usage: quit [--force]", channel);
             const bool force = key == "--force";
             if (!force && !host.has_pending_cancellations() && host.has_working_orders()) {
+                host.set_kill_switch(true);
                 host.record_shutdown_drain("quit", false);
                 return refusal(host, line, "working orders remain; use quit --force", channel);
             }
@@ -164,7 +166,7 @@ std::string command(moex::connector_host::CgateTradingHost& host, ShutdownReques
     return error.empty() ? "{\"ok\":true,\"error\":\"\"}" : refusal(host, line, error, channel);
 }
 } // namespace
-int main(int argc, char** argv) {
+int moex::connector_host::operator_program(int argc, char** argv, const OperatorProgramHooks& hooks) {
     using namespace moex::connector_host;
     std::signal(SIGHUP, SIG_IGN);
     std::signal(SIGPIPE, SIG_IGN);
@@ -264,11 +266,15 @@ int main(int argc, char** argv) {
             if (arguments.size() != 3)
                 throw std::invalid_argument("usage: moexctl plaza2 cmd [--log FILE | "
                                             "--command-socket PATH] \"COMMAND\"");
+            if (hooks.verify_command_endpoint && arguments[2] == kFolConfigurationAuthorityOption)
+                throw std::invalid_argument("--environment-authority=configuration requires the live TEST FOL writer");
+            if (hooks.verify_command_endpoint)
+                hooks.verify_command_endpoint(socket_path);
             const auto response = send_command(socket_path, std::string(arguments[2]));
             std::cout << response << '\n' << std::flush;
             return response.find("\"ok\":false") == std::string::npos ? 0 : 2;
         }
-        const auto request = parse_operator_arguments(arguments);
+        const auto request = parse_operator_arguments(arguments, hooks.allow_fol_configuration_authority);
         if (request.help) {
             std::cout
                 << operator_help()
@@ -328,14 +334,28 @@ int main(int argc, char** argv) {
                     throw std::invalid_argument("isin id outside CGate i4 range");
                 config.isin_ids.push_back(static_cast<std::int32_t>(isin));
             }
+            if (hooks.configure)
+                hooks.configure(config);
             validate_trading_host_config(config);
             config.binary_sha256 = binary_sha256(argv[0]);
             const auto signal_isins = config.isin_ids;
             const bool allow_orders = config.session.allow_orders;
             CgateTradingHost host(std::move(config));
             ScopeExit report([&] { host.report_outstanding_orders(std::cerr); });
+            ScopeExit join_frontend([&] {
+                if (hooks.join_frontend)
+                    hooks.join_frontend();
+            });
             ScopeExit shutdown([&] { (void)host.stop(); });
-            CommandSocket socket(socket_path);
+            ScopeExit stop_frontend([&] {
+                if (hooks.before_stop)
+                    hooks.before_stop();
+            });
+            if (hooks.before_start)
+                hooks.before_start(host);
+            // Host construction already acquired the exclusive journal/state locks.
+            // A refused connection plus those locks proves the old same-state writer is gone.
+            CommandSocket socket(socket_path, host.identity_lock_held());
             if (const auto error = host.start()) {
                 std::cerr << error.message << '\n';
                 return 3;
@@ -363,9 +383,15 @@ int main(int argc, char** argv) {
                     std::cerr << error.message << '\n';
                     return 3;
                 }
+                if (hooks.after_poll)
+                    hooks.after_poll(host);
                 // A signal received during CGate polling is consumed before
                 // another operator command can enter the host.
                 signal_shutdown();
+                // A quit may still be refused. Keep the frontend cancellable
+                // while the kill switch fences entry until shutdown commits.
+                if (hooks.before_input)
+                    hooks.before_input(host);
                 socket.poll(
                     [&](std::string line, std::int64_t receipt) {
                         signal_shutdown();
@@ -430,6 +456,9 @@ int main(int argc, char** argv) {
                                host.shutdown_reconciliation_pending();
                 break;
             }
+            if (hooks.before_stop)
+                hooks.before_stop();
+            stop_frontend.release();
             const auto error = host.stop();
             shutdown.release();
             if (error) {

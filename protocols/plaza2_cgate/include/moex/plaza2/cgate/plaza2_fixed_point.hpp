@@ -100,6 +100,10 @@ inline constexpr unsigned kPlaza2D16_5DecimalPrecision = 16;
 inline constexpr unsigned kPlaza2D16_5FractionalDigits = 5;
 inline constexpr std::int64_t kPlaza2D16_5PriceScale = 100'000;
 
+// SPECTRA 9.12 xlot_volume uses d16.8 underlying units per native contract.
+inline constexpr unsigned kPlaza2LotVolumeFractionalDigits = 8;
+inline constexpr std::int64_t kPlaza2LotVolumeScale = 100'000'000;
+
 // Compatibility aliases retained for callers that name their source domain.
 // They must remain exact aliases of the generated d16.5 economic contract.
 inline constexpr unsigned kPlaza2SessionFractionalDigits = kPlaza2D16_5FractionalDigits;

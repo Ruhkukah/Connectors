@@ -1,0 +1,9 @@
+# Reconstructed execution baselines
+
+execution_baseline_known=false means the reconstructed order lacks a complete lifetime fill baseline. A remaining-quantity snapshot cannot prove how much was filled earlier, including fills on replaced/relisted ancestors. The flag must not be set true just because a Working row or successful cancel is observed. executed is the quantity supported by actual observed/credited user_deal evidence, not a promise of lifetime total when this flag is false.
+
+The flag blocks Move at admission and again at dispatch, including a previously queued Move invalidated by reconstruction. Move's requested total quantity depends on prior fills and cannot safely be derived from a partial baseline. Cancel is the supported alternative. It does not block a known owned order's Del, native cancel confirmation, private replay or actual user_deal accounting. Kill switch and loss of FOL market-entry readiness also leave risk-reducing cancellation available, subject to normal private reconciliation, identity and transport safeguards.
+
+Own fills are credited from validated user_deal rows, once per deal/session/side. They can arrive during recovery, after cancellation or before identity reconciliation (deferred until an exact owner is known). Remaining balance does not fabricate a fill. Position/risk proof is separate and remains mandatory for new entry; unknown historical executions do not authorize position flattening or permit ignoring account exposure.
+
+No production change is needed for this flag: it does not gate cancellation or actual fill credit. A focused regression reconstructs an owned partial resting order, proves Move refused, duplicate fills credited once, Del allowed with kill enabled and market-entry readiness absent, terminal replication accepted, and a late actual fill credited once without resurrecting the cancelled order.

@@ -2,6 +2,7 @@
 #include "moex/plaza2/cgate/plaza2_text.hpp"
 #include "moex/plaza2/cgate/cgate_logging.hpp"
 
+#include <optional>
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -129,9 +130,10 @@ void validate_cgate_logging(std::string_view settings, const std::filesystem::pa
 }
 
 EventJournal::EventJournal(const std::filesystem::path& path, const std::filesystem::path& state_path,
-                           std::size_t queue_bytes)
+                           std::size_t queue_bytes, bool async_reservations)
     : state_path_(state_path.empty() ? std::filesystem::path(path.string() + ".state") : state_path),
-      boundary_path_(state_path_.string() + ".journal"), queue_limit_(queue_bytes) {
+      boundary_path_(state_path_.string() + ".journal"), queue_limit_(queue_bytes),
+      async_reservations_(async_reservations) {
     if (queue_limit_ == 0)
         throw std::invalid_argument("interaction log queue must have positive capacity");
     if (!path.parent_path().empty())
@@ -238,7 +240,8 @@ void EventJournal::append(std::string_view kind, std::string_view fields) {
     flush_if_due();
     auto next = reservations_;
     update_reservations(next, fields);
-    extend_reservations(next);
+    if (!async_reservations_)
+        extend_reservations(next);
     // Capture the receive timestamp on the owner; formatting belongs to the
     // writer. The byte ceiling includes the worst-case escaped event name.
     Record record{std::chrono::system_clock::now(), std::string(kind), std::string(fields),
@@ -253,6 +256,18 @@ void EventJournal::append(std::string_view kind, std::string_view fields) {
         }
         const auto bytes = record.bytes;
         queue_.push_back(std::move(record));
+        if (async_reservations_) {
+            // Ask early enough that a busy writer can continue within the old
+            // durable ceiling while the journal thread syncs the next block.
+            constexpr std::uint64_t headroom = 64;
+            const auto block = reserve_block(next);
+            if (std::uint64_t(next.next_ext_id) + headroom >
+                std::uint64_t(std::max(high_water_.next_ext_id, requested_high_water_.next_ext_id)))
+                requested_high_water_.next_ext_id = block.next_ext_id;
+            if (std::uint64_t(next.next_user_id) + headroom >
+                std::max(high_water_.next_user_id, requested_high_water_.next_user_id))
+                requested_high_water_.next_user_id = block.next_user_id;
+        }
         pending_bytes_ += bytes;
         ++pending_records_;
     }
@@ -268,12 +283,24 @@ void EventJournal::extend_reservations(const JournalReservation& next) {
         reserved.next_user_id = block.next_user_id;
     if (reserved.next_ext_id == high_water_.next_ext_id && reserved.next_user_id == high_water_.next_user_id)
         return;
+    persist_reservations(reserved);
+    high_water_ = reserved;
+}
+bool EventJournal::user_id_reserved(std::uint32_t id) const {
+    return ids_reserved(0, id);
+}
+bool EventJournal::ids_reserved(std::int32_t ext, std::uint32_t user) const {
+    std::unique_lock lock(queue_mutex_, std::defer_lock);
+    if (async_reservations_)
+        lock.lock();
+    return ext >= 0 && ext < high_water_.next_ext_id && user != 0 && user < high_water_.next_user_id;
+}
+void EventJournal::persist_reservations(JournalReservation reserved) {
     // The ID checkpoint always uses the empty valid boundary. The writer's
     // separate checkpoint advances log recovery without replacing this ceiling.
     const auto record =
         checkpoint_record(device_, inode_, 0, reserved.next_ext_id, reserved.next_user_id, text_hash({}));
     write_checkpoint(state_path_, record + " " + std::to_string(text_hash(record)) + "\n");
-    high_water_ = reserved;
 }
 void EventJournal::write_buffer() {
     std::size_t written{};
@@ -338,11 +365,17 @@ void EventJournal::writer_loop() noexcept {
     for (;;) {
         std::uint64_t target{};
         bool sync{}, stop{}, recovery{};
+        std::optional<JournalReservation> checkpoint;
         {
             std::unique_lock lock(queue_mutex_);
+            const auto checkpoint_pending = [&] {
+                return async_reservations_ && (requested_high_water_.next_ext_id > high_water_.next_ext_id ||
+                                               requested_high_water_.next_user_id > high_water_.next_user_id);
+            };
             const auto ready = [&] {
                 return stopping_ || retry_requested_ ||
-                       (!io_failed_ && (!queue_.empty() || flush_requested_ > flush_completed_));
+                       (!io_failed_ &&
+                        (!queue_.empty() || flush_requested_ > flush_completed_ || checkpoint_pending()));
             };
             if (io_failed_)
                 queue_changed_.wait(lock, ready);
@@ -356,8 +389,16 @@ void EventJournal::writer_loop() noexcept {
                    std::chrono::steady_clock::now() - last_sync_ >= std::chrono::milliseconds(250);
             if (buffered_.empty() && records.empty())
                 records.swap(queue_);
+            if (checkpoint_pending())
+                checkpoint = JournalReservation{std::max(high_water_.next_ext_id, requested_high_water_.next_ext_id),
+                                                std::max(high_water_.next_user_id, requested_high_water_.next_user_id)};
         }
         try {
+            if (checkpoint) {
+                persist_reservations(*checkpoint);
+                std::lock_guard lock(queue_mutex_);
+                high_water_ = *checkpoint;
+            }
             while (!records.empty()) {
                 const auto& record = records.front();
                 buffered_ += "{\"utc\":" + json_string(stamp(record.wall, 0)) +

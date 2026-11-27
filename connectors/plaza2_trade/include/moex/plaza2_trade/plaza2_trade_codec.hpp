@@ -1,5 +1,6 @@
 #pragma once
 
+#include "moex/plaza2/cgate/plaza2_runtime.hpp"
 #include "moex/plaza2_trade/plaza2_trade_commands.hpp"
 #include "moex/plaza2_trade/plaza2_trade_replies.hpp"
 
@@ -50,6 +51,9 @@ class Plaza2TradeCodec {
     [[nodiscard]] Plaza2TradeDecodedReply decode_reply(std::int32_t msgid, std::span<const std::byte> payload,
                                                        Plaza2TradeValidationResult& validation) const;
 };
+
+[[nodiscard]] std::span<const plaza2::cgate::Plaza2MessageLayout> trade_request_layouts() noexcept;
+[[nodiscard]] std::span<const plaza2::cgate::Plaza2MessageLayout> trade_reply_layouts() noexcept;
 
 [[nodiscard]] std::string bytes_to_hex(std::span<const std::byte> bytes);
 // Format the actual wire values only after publication; encoding does no JSON work.

@@ -10,6 +10,7 @@
 
 namespace moex::connector_host {
 struct TradingHostConfig {
+    bool async_dtc_persistence{};
     plaza2_trade::CgateSessionConfig session;
     OrderManagerConfig orders;
     std::vector<std::int32_t> isin_ids;
@@ -34,7 +35,27 @@ class CgateTradingHost {
     [[nodiscard]] plaza2::cgate::Plaza2Error stop();
     [[nodiscard]] std::string place(OrderRequest request, std::int64_t socket_receipt_steady_ns = 0);
     [[nodiscard]] std::string cancel(std::string_view client_order_id);
-    [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity);
+    [[nodiscard]] std::string move(std::string_view client_order_id, std::string price, std::int32_t quantity,
+                                   bool dtc_origin = false);
+    [[nodiscard]] DtcAddPreparation prepare_dtc_add(OrderRequest request);
+    [[nodiscard]] std::string finish_dtc_add(std::int32_t ext_id, bool persisted);
+    void fence_dtc_entry();
+    void set_dtc_cancel_alert(std::string error);
+    void set_dtc_identity_status(bool failed, std::size_t quarantined);
+    [[nodiscard]] bool dtc_snapshot_ready() const;
+    [[nodiscard]] bool dtc_fill_history_current() const;
+    [[nodiscard]] std::optional<plaza2_trade::CgateFullOrderLogBalance> dtc_balance() const;
+    [[nodiscard]] std::uint64_t dtc_snapshot_generation() const noexcept {
+        return dtc_snapshot_generation_;
+    }
+    [[nodiscard]] bool dtc_entry_ready(std::int32_t isin) const;
+    [[nodiscard]] ConnectorHostMarketDataSnapshot dtc_market_data(std::int32_t isin) const;
+    [[nodiscard]] const auto& dtc_orders() const noexcept {
+        return orders_->orders();
+    }
+    [[nodiscard]] const auto& dtc_private_state() const noexcept {
+        return session_.private_state();
+    }
     [[nodiscard]] std::string cancel_all(std::int32_t isin_id);
     void request_shutdown_cancellation(std::int32_t isin_id);
     [[nodiscard]] bool shutdown_reconciliation_pending() const;
@@ -44,6 +65,12 @@ class CgateTradingHost {
     void record_operator_input(std::string_view line, std::string_view channel = "stdin");
     void record_local_refusal(std::string_view line, std::string_view error, std::string_view channel = "stdin");
     [[nodiscard]] std::string status() const;
+    [[nodiscard]] bool identity_lock_held() const noexcept {
+        return journal_.identity_lock_held();
+    }
+    [[nodiscard]] const plaza2_trade::CgatePollMetrics& last_poll_metrics() const noexcept {
+        return session_.last_poll_metrics();
+    }
     [[nodiscard]] bool has_pending_cancellations() const;
     [[nodiscard]] bool has_working_orders() const;
     void report_outstanding_orders(std::ostream& output) const;
@@ -68,13 +95,17 @@ class CgateTradingHost {
     plaza2_trade::CgateSession session_;
     std::unique_ptr<OrderManager> orders_;
     bool rebuilding_{true};
+    bool dtc_fill_history_gap_{};
+    std::uint64_t dtc_snapshot_generation_{};
     bool shutdown_cancellation_requested_{};
     std::vector<std::int32_t> shutdown_scopes_;
     bool reconcile_reload_{};
     bool stopped_{};
     bool link_was_active_{}, link_lost_{};
     plaza2::cgate::Plaza2Error stop_error_;
-    std::string log_error_;
+    std::string log_error_, dtc_cancel_alert_;
+    bool dtc_identity_failed_{};
+    std::size_t dtc_identity_quarantined_{};
     std::string identifier_reservation_;
     bool journal_failed_{};
     bool storage_recovery_requested_{};

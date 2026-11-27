@@ -184,6 +184,18 @@ struct Plaza2DecodedFieldValue {
     std::uint64_t timestamp_ns{0};
 };
 
+// OPEN-owned negotiated descriptors; callbacks borrow them until the next OPEN.
+struct Plaza2RawFieldBinding {
+    std::string name, type_token;
+    std::size_t offset{0}, size{0}, index{0};
+};
+struct Plaza2RawTableBinding {
+    std::string name;
+    std::vector<Plaza2RawFieldBinding> fields;
+    std::size_t index{0}, row_size{0};
+};
+inline constexpr generated::StreamCode kFullOrderLogStreamCode = static_cast<generated::StreamCode>(0xF0110001u);
+
 struct Plaza2ListenerEvent {
     Plaza2ListenerEventKind kind{Plaza2ListenerEventKind::Open};
     generated::StreamCode stream_code{kNoStreamCode};
@@ -200,14 +212,29 @@ struct Plaza2ListenerEvent {
     std::uint32_t close_reason{0};
     std::span<const std::uint8_t> raw_nulls{};
     std::size_t table_index{0};
+    std::span<const Plaza2RawTableBinding> raw_tables{};
+    const Plaza2RawTableBinding* raw_table{nullptr};
+    // Metadata only; native byte count, including control messages without a raw row span.
+    std::size_t native_data_size{0};
 };
 
 class Plaza2ListenerEventHandler {
   public:
     virtual ~Plaza2ListenerEventHandler() = default;
     virtual void on_plaza2_listener_error(const Plaza2Error&) noexcept {}
-    // Opt in only for an exact, completely qualified public wire scheme.
-    [[nodiscard]] virtual bool wants_raw_replication() const noexcept {
+    // Empty table name requests negotiated descriptors at OPEN; named tables
+    // request borrowed raw payloads. The consumer validates its named schema.
+    [[nodiscard]] virtual bool wants_raw_replication(std::string_view) const noexcept {
+        return false;
+    }
+    [[nodiscard]] virtual std::span<const generated::FieldDescriptor>
+    replication_fields(generated::TableCode table) const noexcept {
+        return generated::FieldsForTable(table);
+    }
+    [[nodiscard]] virtual bool should_log_listener_event(const Plaza2ListenerEvent&) const noexcept {
+        return true;
+    }
+    [[nodiscard]] virtual bool needs_fresh_snapshot() const noexcept {
         return false;
     }
     [[nodiscard]] virtual Plaza2Error on_plaza2_listener_event(const Plaza2ListenerEvent& event) = 0;
@@ -282,6 +309,20 @@ class Plaza2Connection {
     void* handle_{nullptr};
 };
 
+struct Plaza2MessageFieldLayout {
+    std::string_view name;
+    std::string_view type_token;
+    std::size_t offset;
+    std::size_t size;
+};
+
+struct Plaza2MessageLayout {
+    std::string_view name;
+    std::uint32_t id;
+    std::size_t size;
+    std::span<const Plaza2MessageFieldLayout> fields;
+};
+
 class Plaza2Listener {
   public:
     Plaza2Listener();
@@ -294,14 +335,17 @@ class Plaza2Listener {
     Plaza2Listener& operator=(const Plaza2Listener&) = delete;
 
     [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, std::string_view settings);
+    // The optional reply layout contract must outlive the listener.
     [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, generated::StreamCode stream_code,
-                                     std::string_view settings, Plaza2ListenerEventHandler* handler);
+                                     std::string_view settings, Plaza2ListenerEventHandler* handler,
+                                     std::span<const Plaza2MessageLayout> layouts = {});
     [[nodiscard]] Plaza2Error open(std::string_view settings);
     void clear_callback_error() noexcept;
     [[nodiscard]] Plaza2Error close();
     [[nodiscard]] Plaza2Error destroy();
     [[nodiscard]] Plaza2Error state(std::uint32_t& out_state) const;
     [[nodiscard]] bool is_created() const noexcept;
+    [[nodiscard]] bool message_layouts_validated() const noexcept;
     [[nodiscard]] const Plaza2Error& last_callback_error() const noexcept;
 
   private:
@@ -349,6 +393,7 @@ class Plaza2Publisher {
 
     [[nodiscard]] Plaza2Error create(Plaza2Connection& connection, std::string_view settings);
     [[nodiscard]] Plaza2Error open(std::string_view settings);
+    [[nodiscard]] Plaza2Error validate_message_layouts(std::span<const Plaza2MessageLayout> layouts) const;
     // Allocate/free only: no payload, ID, reply registration or exchange post.
     [[nodiscard]] Plaza2Error prewarm_by_message_name(std::string_view message_name);
     [[nodiscard]] Plaza2PublisherMessageResult

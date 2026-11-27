@@ -5,8 +5,8 @@
 // Official archive: https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/cgate_linux_amd64-9.12.0.2144.zip
 // Archive SHA-256: 73fb651459fdb1420f82f684e7c2fc3dbaa20dac085f9ff83fdc38fc35e16d61
 // SPECTRA9.12.0/refdata.ini SHA-256: c4b5cc21bfc4164b1e8c1802429389bc0e880f5afed7bfa2c5d12701b0ffe450
-// fut_sess_contents preserves vendor field order and CGate pack(4) offsets.
-// Other tables continue using the independently captured 9.9 fixture.
+// The two futures tables preserve vendor field order and CGate pack(4) offsets.
+// fut_instruments lists the consumed subset. Other tables use the captured 9.9 fixture.
 namespace moex::plaza2::test {
 inline std::span<const ServerSchemaField> spectra912_future_session_schema() {
     using generated::FieldCode;
@@ -31,7 +31,7 @@ inline std::span<const ServerSchemaField> spectra912_future_session_schema() {
         {static_cast<FieldCode>(0xB4D33B47u), "min_step", "d16.5", ValueClass::kDecimal, 11, 248},
         {static_cast<FieldCode>(0xEF807F2Cu), "step_price", "d16.5", ValueClass::kDecimal, 11, 259},
         {static_cast<FieldCode>(0xAF4230AEu), "lot_volume", "i4", ValueClass::kSignedInteger, 4, 272},
-        {static_cast<FieldCode>(0x00000000u), "xlot_volume", "d16.8", ValueClass::kDecimal, 10, 276},
+        {FieldCode::kFortsRefdataReplFutSessContentsXlotVolume, "xlot_volume", "d16.8", ValueClass::kDecimal, 10, 276},
         {static_cast<FieldCode>(0x0956CD32u), "last_trade_date", "t", ValueClass::kTimestamp, 10, 286},
         {static_cast<FieldCode>(0x5BD0E1CAu), "is_spread", "i1", ValueClass::kSignedInteger, 1, 296},
         {static_cast<FieldCode>(0x7A26E4FFu), "d_exp_start", "t", ValueClass::kTimestamp, 10, 298},
@@ -64,4 +64,41 @@ inline std::span<const ServerSchemaField> spectra912_future_session_schema() {
     return fields;
 }
 inline constexpr std::size_t kSpectra912FutureSessionRowSize = 516;
+
+inline std::span<const ServerSchemaField> spectra912_future_instruments_schema() {
+    using generated::FieldCode;
+    using generated::ValueClass;
+    static constexpr ServerSchemaField fields[] = {
+        {FieldCode::kFortsRefdataReplFutInstrumentsReplId, "replID", "i8", ValueClass::kSignedInteger, 8, 0},
+        {FieldCode::kFortsRefdataReplFutInstrumentsReplRev, "replRev", "i8", ValueClass::kSignedInteger, 8, 8},
+        {FieldCode::kFortsRefdataReplFutInstrumentsReplAct, "replAct", "i8", ValueClass::kSignedInteger, 8, 16},
+        {FieldCode::kFortsRefdataReplFutInstrumentsIsinId, "isin_id", "i4", ValueClass::kSignedInteger, 4, 24},
+        {FieldCode::kFortsRefdataReplFutInstrumentsShortIsin, "short_isin", "c25", ValueClass::kFixedString, 26, 28},
+        {FieldCode::kFortsRefdataReplFutInstrumentsIsin, "isin", "c25", ValueClass::kFixedString, 26, 54},
+        {FieldCode::kFortsRefdataReplFutInstrumentsName, "name", "c75", ValueClass::kFixedString, 76, 80},
+        {FieldCode::kFortsRefdataReplFutInstrumentsInstTerm, "inst_term", "i4", ValueClass::kSignedInteger, 4, 156},
+        {FieldCode::kFortsRefdataReplFutInstrumentsBaseContractCode, "base_contract_code", "c25",
+         ValueClass::kFixedString, 26, 160},
+        {FieldCode::kFortsRefdataReplFutInstrumentsSettlementPrice, "settlement_price", "d16.5", ValueClass::kDecimal,
+         11, 186},
+        {FieldCode::kFortsRefdataReplFutInstrumentsRoundto, "roundto", "i4", ValueClass::kSignedInteger, 4, 200},
+        {FieldCode::kFortsRefdataReplFutInstrumentsMinStep, "min_step", "d16.5", ValueClass::kDecimal, 11, 204},
+        {FieldCode::kFortsRefdataReplFutInstrumentsStepPrice, "step_price", "d16.5", ValueClass::kDecimal, 11, 215},
+        {FieldCode::kFortsRefdataReplFutInstrumentsLotVolume, "lot_volume", "i4", ValueClass::kSignedInteger, 4, 228},
+        {FieldCode::kFortsRefdataReplFutInstrumentsXlotVolume, "xlot_volume", "d16.8", ValueClass::kDecimal, 10, 232},
+        {FieldCode::kFortsRefdataReplFutInstrumentsLastTradeDate, "last_trade_date", "t", ValueClass::kTimestamp, 10,
+         242},
+        {FieldCode::kFortsRefdataReplFutInstrumentsIsSpread, "is_spread", "i1", ValueClass::kSignedInteger, 1, 252},
+        {FieldCode::kFortsRefdataReplFutInstrumentsSigns, "signs", "i4", ValueClass::kSignedInteger, 4, 272},
+        {FieldCode::kFortsRefdataReplFutInstrumentsStepPriceCurr, "step_price_curr", "d16.5", ValueClass::kDecimal, 11,
+         295},
+        {FieldCode::kFortsRefdataReplFutInstrumentsTradeModeId, "trade_mode_id", "i4", ValueClass::kSignedInteger, 4,
+         336},
+        {FieldCode::kFortsRefdataReplFutInstrumentsGroupMask, "group_mask", "i8", ValueClass::kSignedInteger, 8, 340},
+        {FieldCode::kFortsRefdataReplFutInstrumentsTradePeriodAccess, "trade_period_access", "i8",
+         ValueClass::kSignedInteger, 8, 348},
+    };
+    return fields;
+}
+inline constexpr std::size_t kSpectra912FutureInstrumentsRowSize = 356;
 } // namespace moex::plaza2::test

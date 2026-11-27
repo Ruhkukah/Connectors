@@ -1,0 +1,63 @@
+{
+  "source_kind": "official published TEST9.12 vendor schema; not a negotiated T0 capture",
+  "source_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/Scheme/9.12.0/forts_scheme.ini",
+  "source_sha256": "f600dbd66c631246d7b386371ce09447ab82c95d2967dfc3df1ceb25a7322c87",
+  "archive_url": "https://ftp.moex.com/pub/ClientsAPI/Spectra/CGate/test/cgate_linux_amd64-9.12.0.2144.zip",
+  "archive_sha256": "73fb651459fdb1420f82f684e7c2fc3dbaa20dac085f9ff83fdc38fc35e16d61",
+  "tool_sha256": "45accbf1f107b1ff455e5a8224c0f734abb6897dd54e05e9f25da9077d1cf1a5",
+  "native_connections": 0,
+  "outputs": [
+    {
+      "name": "online.ini",
+      "section": "ORDLOG",
+      "tables": [
+        "orders_log",
+        "heartbeat",
+        "sys_events"
+      ],
+      "command": [
+        "./schemetool",
+        "makesrc",
+        "--output-format",
+        "ini",
+        "--tables",
+        "orders_log,heartbeat,sys_events",
+        "--output",
+        "online.ini",
+        "forts_scheme.ini",
+        "ORDLOG"
+      ],
+      "sha256": "012943b1d16a3c7973daa0e6119befc37265bf7046b232a1885c84019204ec25",
+      "bytes": 957
+    },
+    {
+      "name": "snapshot.ini",
+      "section": "OrdBook",
+      "tables": [
+        "orders",
+        "info"
+      ],
+      "command": [
+        "./schemetool",
+        "makesrc",
+        "--output-format",
+        "ini",
+        "--tables",
+        "orders,info",
+        "--output",
+        "snapshot.ini",
+        "forts_scheme.ini",
+        "OrdBook"
+      ],
+      "sha256": "2479cfc9ca726a3303a9df88fa937a4c3f7c4e8f6743d4c81cdf6f3e6808ef44",
+      "bytes": 745
+    }
+  ],
+  "compatibility_projection": {
+    "source_kind": "SPECTRA9.9.0 vendor package cgate-test-9.9.1853",
+    "source_sha256": "7b93117ee435fd0cb2849b677fc32a9d581364b6ee9afeac9c6c002875400746",
+    "tool_sha256": "985b6710fc509637200fa7248b1082579af6f270f04f3f127b483e0eb854c4e1",
+    "online_sha256": "012943b1d16a3c7973daa0e6119befc37265bf7046b232a1885c84019204ec25",
+    "snapshot_sha256": "2479cfc9ca726a3303a9df88fa937a4c3f7c4e8f6743d4c81cdf6f3e6808ef44"
+  }
+}

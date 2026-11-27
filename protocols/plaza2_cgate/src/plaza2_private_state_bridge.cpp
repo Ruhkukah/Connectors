@@ -29,8 +29,49 @@ std::size_t stream_index(const EngineState& state, StreamCode stream_code) {
     }
     return state.streams.size();
 }
+int definition_stream_index(StreamCode stream) {
+    if (stream == StreamCode::kFortsRefdataRepl)
+        return 0;
+    if (stream == StreamCode::kFortsSessionstateRepl)
+        return 1;
+    return stream == StreamCode::kFortsInstrumentstateRepl ? 2 : -1;
+}
 
 } // namespace
+
+bool full_order_log_definition_table_layout_known(const Plaza2RawTableBinding& table) {
+    // SHA-256 of sorted "name,type\n" lines from the pinned 9.9/9.12
+    // forts_scheme.ini tables, plus the already-reviewed captured 9.9 server
+    // variants (old_step_price/sort_order). Offsets/order are independent.
+    struct Known {
+        std::string_view name, legacy, modern, captured;
+    };
+    static constexpr std::array inventories{
+        Known{"session", "49d221621e55bf59b958510b2711b478223dba24ef1c2098cbd94a6aa87c19dc", "", ""},
+        Known{"fut_instruments", "8dbced2e67cd3c0deb175896d2e52510c3c3205237360fcaa43220b6dd64a4c9",
+              "0e021149a1441a695f842171bf8ef54305ffd89b10eefb476b12964f8008c268",
+              "1bdf72c4790d1f6048174235b3b12df03348fbfe64a018cbda40c66b7c8bca67"},
+        Known{"fut_sess_contents", "8fbde6064863d289d953cd1f49dd14c7440d3c9932065fffe6b7180b03b55b82",
+              "5b41b7697735ac2a9f356cb8bd5d90f2215282c5e3e7d7042ae770ec0d47ac87",
+              "7800d069eba9924b14429050d2aaf00db89bed41066f61665e0c79d749b17f27"},
+        Known{"fut_vcb", "6ee883f581d81bc0eaf939c7137dd009d233d0d9cb5fe63488e6bb57540f747c", "", ""},
+        Known{"instr2matching_map", "a61ac2a7e7a905d7177f6ab030209ea0d603d84a9aeb1d6a168cda31025c5ce2", "", ""},
+        Known{"session_state", "7f19e596c7f5eee6bbca747bd55fb976afa289aa0da732a63276a6dcf5a519ee", "", ""},
+        Known{"instrument_state", "8053b2c9b743f6c9165759908b1d21e8f537500101699ee0645f290c7a1b7830", "", ""}};
+    const auto known = std::ranges::find_if(inventories, [&](const auto& value) { return value.name == table.name; });
+    if (known == inventories.end())
+        return false;
+    std::vector<std::string> fields;
+    fields.reserve(table.fields.size());
+    for (const auto& field : table.fields)
+        fields.push_back(field.name + "," + field.type_token + "\n");
+    std::ranges::sort(fields);
+    std::string canonical;
+    for (const auto& field : fields)
+        canonical += field;
+    const auto digest = plaza2_sha256_hex(canonical);
+    return digest == known->legacy || digest == known->modern || digest == known->captured;
+}
 
 Plaza2PrivateStateBridge::Plaza2PrivateStateBridge(private_state::Plaza2PrivateStateProjector& projector)
     : projector_(projector) {
@@ -57,6 +98,7 @@ Plaza2Error Plaza2PrivateStateBridge::reset(std::span<const StreamCode> streams)
     }
     last_resync_reason_.clear();
     callback_error_.clear();
+    definition_layout_known_.fill(false);
     return {};
 }
 
@@ -116,7 +158,43 @@ Plaza2Error Plaza2PrivateStateBridge::on_plaza2_listener_event(const Plaza2Liste
     }
 }
 
+void Plaza2PrivateStateBridge::require_full_order_log_refdata(bool required) {
+    require_matching_ = required;
+    projector_.enable_matching_map(required);
+}
+bool Plaza2PrivateStateBridge::full_order_log_definition_layout_known() const noexcept {
+    return require_matching_ && std::ranges::all_of(definition_layout_known_, [](bool known) { return known; });
+}
+
 Plaza2Error Plaza2PrivateStateBridge::handle_event(const Plaza2ListenerEvent& event) {
+    const auto definition_stream = require_matching_ ? definition_stream_index(event.stream_code) : -1;
+    if (require_matching_ && definition_stream >= 0) {
+        auto& known = definition_layout_known_[static_cast<std::size_t>(definition_stream)];
+        if (event.kind == Plaza2ListenerEventKind::Close)
+            known = false;
+        if (event.kind == Plaza2ListenerEventKind::Open) {
+            known = true;
+            const auto check = [&](std::string_view name) {
+                const auto table =
+                    std::ranges::find_if(event.raw_tables, [&](const auto& t) { return t.name == name; });
+                known &= table != event.raw_tables.end() && full_order_log_definition_table_layout_known(*table);
+            };
+            if (definition_stream == 0)
+                for (const auto name :
+                     {"session", "fut_instruments", "fut_sess_contents", "fut_vcb", "instr2matching_map"})
+                    check(name);
+            else
+                check(definition_stream == 1 ? "session_state" : "instrument_state");
+        }
+    }
+    if (require_matching_ && event.kind == Plaza2ListenerEventKind::Open &&
+        event.stream_code == StreamCode::kFortsRefdataRepl) {
+        for (const auto table : {"instr2matching_map", "fut_vcb"}) {
+            if (std::ranges::none_of(event.raw_tables, [=](const auto& t) { return t.name == table; }))
+                return {.code = Plaza2ErrorCode::IncompatibleScheme,
+                        .message = "FullOrderLog requires REFDATA." + std::string(table)};
+        }
+    }
     switch (event.kind) {
     case Plaza2ListenerEventKind::Open:
     case Plaza2ListenerEventKind::Timeout:
@@ -237,12 +315,67 @@ Plaza2Error Plaza2PrivateStateBridge::handle_stream_data(const Plaza2ListenerEve
     const auto index = stream_index(state_, event.stream_code);
     if (index >= transaction_open_.size() || !transaction_open_[index])
         return ordering_error("private STREAM_DATA outside its stream transaction");
+    const auto definition_stream = require_matching_ ? definition_stream_index(event.stream_code) : -1;
+    if (require_matching_ && definition_stream >= 0 &&
+        definition_layout_known_[static_cast<std::size_t>(definition_stream)]) {
+        const auto* descriptor = generated::FindTableByCode(event.table_code);
+        if (descriptor && (descriptor->table_name == "session" || descriptor->table_name == "fut_instruments" ||
+                           descriptor->table_name == "fut_sess_contents" || descriptor->table_name == "fut_vcb" ||
+                           descriptor->table_name == "session_state" || descriptor->table_name == "instrument_state")) {
+            const auto act = std::ranges::find_if(event.fields, [](const auto& field) {
+                const auto* f = generated::FindFieldByCode(field.field_code);
+                return f && f->field_name == "replAct";
+            });
+            if (act == event.fields.end() || act->signed_value == 0) {
+                const auto* extended = generated::ExtendedLotVolumeField(event.table_code);
+                const auto present = [&](generated::FieldCode code) {
+                    return std::ranges::any_of(event.fields, [&](const auto& field) {
+                        return field.field_code == code && field.kind != Plaza2DecodedValueKind::None;
+                    });
+                };
+                for (const auto& field : replication_fields(event.table_code))
+                    if (!present(field.field_code) &&
+                        !(extended && field.field_name == "lot_volume" && present(extended->field_code)))
+                        definition_layout_known_[static_cast<std::size_t>(definition_stream)] = false;
+                if (descriptor->table_name == "session" && std::ranges::any_of(event.fields, [](const auto& field) {
+                        if (field.field_code == generated::FieldCode::kFortsRefdataReplSessionEveOn ||
+                            field.field_code == generated::FieldCode::kFortsRefdataReplSessionMonOn)
+                            return field.kind != Plaza2DecodedValueKind::SignedInteger || field.signed_value < 0 ||
+                                   field.signed_value > 1;
+                        // The captured session model stores whole seconds. A
+                        // fraction or missing precision proof must stay strict.
+                        return field.kind == Plaza2DecodedValueKind::Timestamp &&
+                               (field.timestamp_ns % 1000000000ULL ||
+                                field.timestamp_ns / 1000000000ULL != field.unsigned_value ||
+                                (!field.timestamp_ns &&
+                                 (field.raw_value.empty() ||
+                                  std::ranges::any_of(field.raw_value, [](std::byte b) { return b != std::byte{}; }))));
+                    }))
+                    definition_layout_known_[static_cast<std::size_t>(definition_stream)] = false;
+                if (extended && (!event.raw_table || (std::ranges::any_of(event.raw_table->fields,
+                                                                          [&](const auto& field) {
+                                                                              return field.name == extended->field_name;
+                                                                          }) &&
+                                                      !present(extended->field_code))))
+                    definition_layout_known_[static_cast<std::size_t>(definition_stream)] = false;
+            }
+        }
+    }
     // Own every callback value until its listener transaction commits. Text
     // views are bound only during commit, after the owning strings stop moving.
     Operation operation{.event = {.kind = EventKind::kStreamData,
                                   .stream_code = event.stream_code,
                                   .table_code = event.table_code,
                                   .signed_value = event.signed_value}};
+    if (require_matching_ && event.table_code == generated::TableCode::kFortsRefdataReplInstr2matchingMap) {
+        const auto act = std::ranges::find_if(event.fields, [](const auto& f) {
+            return f.field_code == generated::FieldCode::kFortsRefdataReplInstr2matchingMapReplAct;
+        });
+        for (const auto& required : replication_fields(event.table_code))
+            if ((required.service_field || act == event.fields.end() || act->signed_value == 0) &&
+                std::ranges::none_of(event.fields, [&](const auto& f) { return f.field_code == required.field_code; }))
+                return ordering_error("matching row missing/null field: " + std::string(required.field_name));
+    }
     operation.fields.reserve(event.fields.size());
     for (const auto& field : event.fields) {
         OwnedField owned{.value = {.field_code = field.field_code}};

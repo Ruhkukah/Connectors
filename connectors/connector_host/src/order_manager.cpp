@@ -747,11 +747,27 @@ OrderManager::Command OrderManager::encode(tr::Plaza2TradeCommandRequest request
     return result;
 }
 std::string OrderManager::place(OrderRequest request) {
+    return place_impl(std::move(request), nullptr);
+}
+DtcAddPreparation OrderManager::prepare_dtc_add(OrderRequest request) {
+    if (pending_dtc_add_)
+        return {.error = "another DTC Add is awaiting persistence"};
+    DtcAddPreparation result;
+    result.error = place_impl(std::move(request), &result.ext_id);
+    return result;
+}
+std::string OrderManager::place_impl(OrderRequest request, std::int32_t* prepared_ext) {
+    if (request.dtc_origin != (prepared_ext != nullptr))
+        return "DTC Add requires durable preparation";
     AddPathTiming add_path;
     auto* timing = config_.measure_add_path ? &add_path : nullptr;
     const auto started = stage_now(timing);
     if (request.client_order_id.starts_with("recovered:"))
         return "client order id prefix recovered: is reserved for native recovery";
+    if (request.client_order_id.starts_with("dtc:") != request.dtc_origin)
+        return "dtc: client order IDs are reserved for authenticated DTC";
+    if (request.automated && !request.dtc_origin)
+        return "automated Add requires authenticated DTC";
     if (request.client_order_id.empty() || used_client_ids_.contains(request.client_order_id))
         return "client order id empty or already used";
     const auto risk_started = stage_now(timing);
@@ -762,6 +778,9 @@ std::string OrderManager::place(OrderRequest request) {
         return error;
     if (config_.next_ext_id > config_.ext_id_end)
         return "instance ext_id range exhausted";
+    if ((prepared_ext && !config_.ids_reserved) ||
+        (config_.ids_reserved && !config_.ids_reserved(config_.next_ext_id, config_.next_user_id)))
+        return "command IDs are awaiting durable reservation";
     const auto ext = config_.next_ext_id++;
     tr::AddOrderRequest add;
     add.broker_code = config_.broker_code;
@@ -774,21 +793,21 @@ std::string OrderManager::place(OrderRequest request) {
     add.comment = request.comment;
     add.ext_id = ext;
     add.is_check_limit = 0;
-    add.compliance_id = "M";
+    add.compliance_id = request.automated ? "R" : "M";
     try {
         auto command = encode(add, request.client_order_id, timing);
         const auto queue_started = stage_now(timing);
         const auto terms_before = add_path.session_terms_ns;
-        ManagedOrder order{.request = std::move(request), .ext_id = ext, .instance_owned = true};
-        order.sess_id = terms(order.request.isin_id, timing)->sess_id;
-        order.remaining = order.request.quantity;
-        const auto key = order.request.client_order_id;
-        orders_.emplace(key, std::move(order));
-        used_client_ids_.insert(key);
-        advance_session(orders_.at(key).sess_id);
-        ext_index_[ext] = key;
-        adds_.push_back(std::move(command));
-        changed(key);
+        const auto session = terms(request.isin_id, timing);
+        if (!session)
+            return "current session terms are unavailable";
+        if (prepared_ext) {
+            command.dtc_origin = true;
+            pending_dtc_add_.emplace(PendingDtcAdd{std::move(request), std::move(command), ext, session->sess_id});
+            *prepared_ext = ext;
+            return {};
+        }
+        queue_add(std::move(request), std::move(command), ext, session->sess_id);
         if (timing) {
             timing->queue_ns += stage_now(timing) - queue_started - (timing->session_terms_ns - terms_before);
             timing->manager_place_ns = stage_now(timing) - started;
@@ -798,6 +817,36 @@ std::string OrderManager::place(OrderRequest request) {
     } catch (const std::invalid_argument& error) {
         return error.what();
     }
+}
+std::string OrderManager::finish_dtc_add(std::int32_t ext_id, bool persisted) {
+    if (!pending_dtc_add_ || pending_dtc_add_->ext_id != ext_id)
+        return "DTC Add was fenced before venue dispatch";
+    auto pending = std::move(*pending_dtc_add_);
+    pending_dtc_add_.reset();
+    if (!persisted)
+        return "DTC identity could not be durably reserved";
+    const auto& request = pending.request;
+    if (used_client_ids_.contains(request.client_order_id))
+        return "client order id already used";
+    if (auto error = check_risk(request, 1); !error.empty())
+        return error;
+    const auto session = terms(request.isin_id, nullptr);
+    if (!session || session->sess_id != pending.session)
+        return "DTC Add session changed during persistence";
+    queue_add(std::move(pending.request), std::move(pending.command), ext_id, pending.session);
+    return {};
+}
+void OrderManager::queue_add(OrderRequest request, Command command, std::int32_t ext, std::int32_t session) {
+    ManagedOrder order{.request = std::move(request), .ext_id = ext, .instance_owned = true};
+    order.sess_id = session;
+    order.remaining = order.request.quantity;
+    const auto key = order.request.client_order_id;
+    orders_.emplace(key, std::move(order));
+    used_client_ids_.insert(key);
+    advance_session(session);
+    ext_index_[ext] = key;
+    adds_.push_back(std::move(command));
+    changed(key);
 }
 void OrderManager::discard_recovery_cancel(ManagedOrder& order) {
     order.absence_reply = false;
@@ -809,10 +858,18 @@ void OrderManager::discard_recovery_cancel(ManagedOrder& order) {
     std::erase_if(cancels_, recovery_for_ext);
     std::erase_if(pending_, [&](const auto& entry) { return recovery_for_ext(entry.second); });
 }
+bool OrderManager::bulk_fallback_allowed(const ManagedOrder& order, std::int64_t target_id,
+                                         std::int32_t target_session) const {
+    const auto bulk = bulk_cancellations_.find(order.request.isin_id);
+    if (bulk == bulk_cancellations_.end())
+        return true;
+    return (bulk->second.awaiting_reply && bulk->second.uncertain_exhausted) ||
+           (!bulk->second.awaiting_reply && bulk->second.fallbacks_enabled && target_id > 0 &&
+            bulk->second.post_reply_orders.contains({target_session, target_id}));
+}
 void OrderManager::enqueue_cancel(ManagedOrder& order, bool explicit_retry) {
     if ((order.operator_action_required && !explicit_retry) ||
-        (bulk_cancellations_.contains(order.request.isin_id) &&
-         !bulk_cancellations_.at(order.request.isin_id).uncertain_exhausted))
+        !bulk_fallback_allowed(order, order.order_id, order.sess_id))
         return;
     if (order.order_id <= 0) {
         recovery_cancel(order, explicit_retry);
@@ -887,7 +944,7 @@ std::string OrderManager::cancel(std::string_view client_id) {
         enqueue_cancel(order, true);
     return {};
 }
-std::string OrderManager::move(std::string_view client_id, std::string price, std::int32_t quantity) {
+std::string OrderManager::move(std::string_view client_id, std::string price, std::int32_t quantity, bool dtc_origin) {
     const auto found = orders_.find(std::string(client_id));
     if (found == orders_.end())
         return "unknown client order id";
@@ -920,6 +977,7 @@ std::string OrderManager::move(std::string_view client_id, std::string price, st
     request.is_check_limit = 0;
     request.compliance_id = "M";
     auto command = encode(request, found->first);
+    command.dtc_origin = dtc_origin;
     command.replacement_price = std::move(price);
     command.replacement_quantity = quantity;
     move_reservations_[found->first] = {
@@ -998,6 +1056,29 @@ std::string OrderManager::cancel_all(std::int32_t isin) {
 void OrderManager::set_kill_switch(bool enabled) {
     config_.risk.kill_switch = enabled;
     emit("kill_switch", enabled ? "{\"enabled\":true}" : "{\"enabled\":false}");
+}
+
+void OrderManager::fence_dtc_entry() {
+    pending_dtc_add_.reset();
+    for (auto queued = adds_.begin(); queued != adds_.end();) {
+        if (!queued->dtc_origin) {
+            ++queued;
+            continue;
+        }
+        const auto key = queued->key;
+        auto& order = orders_.at(key);
+        if (queued->encoded.command_kind == Kind::AddOrder) {
+            order.state = OrderState::Cancelled;
+            order.remaining = 0;
+        } else {
+            move_reservations_.erase(key);
+            if (order.state == OrderState::PendingReplace)
+                order.state = order.executed > 0 ? OrderState::PartFilled : OrderState::Working;
+        }
+        order.last_error = "DTC disconnected before venue dispatch";
+        queued = adds_.erase(queued);
+        changed(key);
+    }
 }
 
 void OrderManager::complete_timeout(Command command, Clock::time_point now) {
@@ -1103,7 +1184,7 @@ void OrderManager::retry_cancel(Command command, Clock::time_point now, bool bus
         return;
     if (found != orders_.end() && bulk_cancellations_.contains(found->second.request.isin_id) &&
         !(command.encoded.command_kind == Kind::DelOrder &&
-          bulk_cancellations_.at(found->second.request.isin_id).uncertain_exhausted))
+          bulk_fallback_allowed(found->second, command.target_order_id, command.submitted_session)))
         return; // The mass request superseded this outstanding individual cancel.
     if (command.encoded.command_kind == Kind::DelUserOrders && command.uncertain_outcomes >= kDuoUncertainOutcomeLimit)
         return; // Only a deliberate new cancellation can renew this bounded scope.
@@ -1257,6 +1338,10 @@ void OrderManager::poll(Clock::time_point now, std::int64_t utc_seconds) {
         throttled_ = false;
         if (logging_failed_ && add_or_move)
             break;
+        if (command.dtc_origin && config_.dtc_connection_current && !config_.dtc_connection_current()) {
+            fence_dtc_entry();
+            continue;
+        }
         if (timing)
             timing->dispatch_ns +=
                 stage_now(timing) - dispatch_started - selection_ready_ns - dispatch_risk_ns - dispatch_terms_ns;
@@ -1460,7 +1545,7 @@ void OrderManager::on_reply(std::uint32_t id, const tr::Plaza2TradeDecodedReply&
             (terminal(found->second.state) ||
              (bulk_cancellations_.contains(found->second.request.isin_id) &&
               !(command.encoded.command_kind == Kind::DelOrder &&
-                bulk_cancellations_.at(found->second.request.isin_id).uncertain_exhausted)) ||
+                bulk_fallback_allowed(found->second, command.target_order_id, command.submitted_session))) ||
              (command.encoded.command_kind == Kind::MoveOrder && found->second.cancel_requested))) {
             if (command.encoded.command_kind == Kind::MoveOrder) {
                 move_reservations_.erase(found->first);
@@ -1966,6 +2051,11 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
             changed(key);
         else
             refresh_exposure(key);
+        if (row.from_trade_repl && row.trade_repl_commit_sequence != UINT64_MAX)
+            if (const auto bulk = bulk_cancellations_.find(row.isin_id);
+                bulk != bulk_cancellations_.end() && !bulk->second.awaiting_reply &&
+                row.trade_repl_commit_sequence > bulk->second.after_commit_sequence)
+                bulk->second.post_reply_orders.emplace(row.sess_id, id);
         if (order.cancel_requested && !terminal(order.state))
             enqueue_cancel(order, relisted);
     }
@@ -1996,19 +2086,35 @@ void OrderManager::observe_orders(std::span<const plaza2::private_state::OwnOrde
 void OrderManager::observe_trade_commit(std::uint64_t sequence) {
     trade_commit_sequence_ = std::max(trade_commit_sequence_, sequence);
     std::vector<std::int32_t> reconciled;
-    for (const auto& [isin, bulk] : bulk_cancellations_)
-        if (!bulk.awaiting_reply && sequence > bulk.after_commit_sequence)
+    for (auto& [isin, bulk] : bulk_cancellations_) {
+        if (bulk.awaiting_reply || sequence <= bulk.after_commit_sequence)
+            continue;
+        bool surviving{}, proved = true;
+        for (const auto& [key, order] : orders_)
+            if (order.request.isin_id == isin && !terminal(order.state)) {
+                surviving = true;
+                proved &= order.order_id > 0 && bulk.post_reply_orders.contains({order.sess_id, order.order_id});
+            }
+        if (!surviving) {
             reconciled.push_back(isin);
+            continue;
+        }
+        if (!bulk.fallbacks_enabled && proved) {
+            bulk.fallbacks_enabled = true;
+            // Exact scoped working rows permit per-ID cancels only. Keep the
+            // entry gate until all logical orders have terminal native proof.
+            for (auto& [key, order] : orders_)
+                if (order.request.isin_id == isin && !terminal(order.state)) {
+                    order.cancel_requested = true;
+                    enqueue_cancel(order, true);
+                }
+        }
+    }
     for (const auto isin : reconciled) {
-        const bool exhausted = bulk_cancellations_.at(isin).uncertain_exhausted;
         bulk_cancellations_.erase(isin);
         std::erase_if(pending_, [&](const auto& entry) {
             return is_bulk_cancel(entry.second) && entry.second.encoded.isin_id == isin;
         });
-        for (auto& [key, order] : orders_)
-            if (order.request.isin_id == isin && order.cancel_requested && !terminal(order.state) &&
-                (!exhausted || order.order_id > 0))
-                enqueue_cancel(order, true);
     }
 }
 void OrderManager::replay_deferred_trades() {

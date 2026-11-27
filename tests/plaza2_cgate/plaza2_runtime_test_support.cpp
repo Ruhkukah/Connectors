@@ -102,6 +102,8 @@ RuntimeFixturePaths materialize_runtime_fixture(const std::filesystem::path& roo
 
     fixture.scheme_path = fixture.scheme_dir / "forts_scheme.ini";
     write_text_file(fixture.scheme_path, scheme_text);
+    std::filesystem::copy(std::filesystem::path(MOEX_SOURCE_ROOT) / "protocols/plaza2_cgate/schema/full_order_log",
+                          fixture.scheme_dir / "full_order_log", std::filesystem::copy_options::recursive);
 
     for (const auto name : moex::plaza2::cgate::Plaza2RuntimeProbe::expected_config_filenames(environment)) {
         write_text_file(fixture.config_dir / name,

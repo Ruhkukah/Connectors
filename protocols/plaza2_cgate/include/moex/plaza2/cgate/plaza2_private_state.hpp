@@ -104,6 +104,7 @@ struct FutureSessionTerms {
     std::optional<SessionDecimal> raw_limit_up;
     std::optional<SessionDecimal> raw_limit_down;
     std::optional<SessionDecimal> min_step;
+    std::optional<std::int64_t> lot_volume_units; // Exact d16.8 units per contract.
     std::int64_t repl_id{0};
     SourceRowProvenance source;
     FuturePriceBounds bounds;
@@ -129,12 +130,14 @@ struct TradingSessionSnapshot {
     std::int64_t settl_price_calc_time{0};
     std::int64_t settl_sess_t1_begin{0};
     std::int64_t margin_call_fix_schedule{0};
+    bool operator==(const TradingSessionSnapshot&) const = default;
 };
 
 struct InstrumentLegSnapshot {
     std::int32_t leg_isin_id{0};
     std::int32_t qty_ratio{0};
     std::int8_t leg_order_no{0};
+    bool operator==(const InstrumentLegSnapshot&) const = default;
 };
 
 enum class FutureVcbJoinStatus : std::uint8_t {
@@ -181,6 +184,7 @@ struct InstrumentSnapshot {
     std::int32_t inst_term{0};
     std::int32_t roundto{0};
     std::int32_t lot_volume{0};
+    std::optional<std::int64_t> lot_volume_units; // Exact d16.8 units per contract.
     std::int32_t trade_mode_id{0};
     std::int32_t state{0};
     bool current_session_member{false};
@@ -211,6 +215,7 @@ struct InstrumentSnapshot {
     std::vector<InstrumentLegSnapshot> legs;
     // Coherent fut_sess_contents row; never populated from fut_instruments.
     std::optional<FutureSessionTerms> future_session_terms;
+    bool operator==(const InstrumentSnapshot&) const = default;
 };
 
 // PLAZA II REFDATA defines signs 0x100 as a composite instrument and 0x10000
@@ -421,6 +426,9 @@ class Plaza2PrivateStateProjector final : public projection::CommitListener {
     [[nodiscard]] Plaza2PrivateStateProjector clone() const;
 
     void reset();
+    void enable_matching_map(bool enabled);
+    [[nodiscard]] std::uint64_t refdata_revision() const noexcept;
+    [[nodiscard]] std::uint64_t metadata_revision() const noexcept;
 
     [[nodiscard]] const ConnectorHealthSnapshot& connector_health() const;
     [[nodiscard]] const ResumeMarkersSnapshot& resume_markers() const;
