@@ -229,6 +229,60 @@ static void test_trade_export(const fs::path& root) {
     }
     require(sides == std::vector<char>{'B', 'N'}, "DBN side preserves verified aggressor and unknown");
 }
+static void test_metadata_gap_deals(const fs::path& root) {
+    const std::array<std::int32_t, 1> ids{11};
+    const auto t = trade_schema();
+    Plaza2FullOrderLog book(ids);
+    FullOrderLogCaptureOptions options;
+    options.directory = root / "metadata-gap-deals";
+    options.min_free_bytes = 0;
+    FullOrderLogCapture capture(options, ids, book);
+    FullOrderLogRefdataValue metadata{
+        .isin_id = 11,
+        .available = true,
+        .isin = "TEST-11",
+        .short_code = "T11",
+        .min_step = "0.00005",
+        .decimals = 5,
+        .sess_id = 321,
+        .instrument_source = {generated::StreamCode::kFortsRefdataRepl,
+                              generated::TableCode::kFortsRefdataReplFutSessContents, 100, 7, true},
+        .session_source = {generated::StreamCode::kFortsRefdataRepl, generated::TableCode::kFortsRefdataReplSession, 50,
+                           7, true},
+    };
+    const auto send = [&](Plaza2ListenerEvent e) {
+        e.stream_code = generated::StreamCode::kFortsDealsRepl;
+        require(!capture.record(e), "record public data metadata gap");
+    };
+    const auto transaction = [&](std::int64_t revision) {
+        send({.kind = K::TransactionBegin});
+        auto r = deal(t, revision, 1000 + revision);
+        r.set("xamount", std::int64_t{3});
+        r.price(1234567);
+        r.set("moment", moex::plaza2::public_wire::Time{2023, 11, 15, 1, 13, 20, 0});
+        send(r.event());
+        send({.kind = K::TransactionCommit});
+    };
+    capture.record_refdata(metadata);
+    send({.kind = K::Open, .raw_tables = std::span(&t, 1)});
+    send({.kind = K::LifeNum, .unsigned_value = 7});
+    send({.kind = K::Online});
+    transaction(1);
+    capture.record_refdata({.isin_id = 11});
+    transaction(2);
+    metadata.instrument_source.repl_rev = 101;
+    capture.record_refdata(metadata);
+    transaction(3);
+    send({.kind = K::Close});
+    capture.finish();
+    const auto report = export_full_order_log_dbn(options.directory, root / "metadata-gap-deals.dbn");
+    require(report.trade_prints == 2 && report.open_interest_updates == 2 &&
+                report.metadata_suppressed_trade_prints == 1 && report.metadata_suppressed_oi_updates == 1 &&
+                report.refdata_unjoined_records == 0,
+            "unavailable metadata gates trades and OI, restores future events only");
+    const auto replay = replay_full_order_log_capture(options.directory);
+    require(replay.open_interest_updates == 3, "lossless replay retains the omitted OI/trade row");
+}
 int main() {
     try {
         const std::array<std::int32_t, 1> ids{11};
@@ -339,6 +393,7 @@ int main() {
         require(values == observed, "DBN OI values remain signed 64-bit and causal");
         test_trade_export(root);
         test_anchored_deals_capture(root);
+        test_metadata_gap_deals(root);
         std::cout << "OI schema/64-bit/snapshot/commit/selection/interruption/mixed DBN checks passed at " << root
                   << '\n';
         return 0;

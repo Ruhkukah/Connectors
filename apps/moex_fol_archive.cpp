@@ -134,6 +134,16 @@ int main(int argc, char** argv) {
         if (!s.dbn_sha256.empty())
             std::cout << ",\"dbn_sha256\":\"" << s.dbn_sha256
                       << "\",\"refdata_unjoined_records\":" << s.refdata_unjoined_records;
+        if (exporting)
+            std::cout << ",\"metadata_market_records_complete\":"
+                      << (s.metadata_suppressed_book_records == 0 && s.metadata_suppressed_trade_prints == 0 &&
+                                  s.metadata_suppressed_oi_updates == 0
+                              ? "true"
+                              : "false")
+                      << ",\"metadata_gap_count\":" << s.metadata_gap_count
+                      << ",\"metadata_suppressed_book_records\":" << s.metadata_suppressed_book_records
+                      << ",\"metadata_suppressed_trade_prints\":" << s.metadata_suppressed_trade_prints
+                      << ",\"metadata_suppressed_oi_updates\":" << s.metadata_suppressed_oi_updates;
         std::cout << ",\"open_interest_updates\":" << s.open_interest_updates << ",\"stored_bytes\":" << s.stored_bytes
                   << ",\"truncated\":" << (s.truncated ? "true" : "false")
                   << ",\"last_good_sequence\":" << s.last_good_sequence

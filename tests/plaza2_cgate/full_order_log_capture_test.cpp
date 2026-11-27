@@ -413,17 +413,17 @@ static void test_refdata_join(const fs::path& root, FullOrderLogCaptureOptions o
                 rows[1].effective_after_sequence == rows[2].effective_after_sequence,
             "sidecar retains metadata revisions and sequence ties");
     require(report.refdata_sha256 == plaza2_sha256_hex(tsv) && report.dbn_sha256 == plaza2_sha256_file(dbn) &&
-                report.refdata_unjoined_records == 3,
-            "strict export pins DBN and capture sidecar and counts the uncovered prefix");
+                report.refdata_unjoined_records == 0 && report.metadata_suppressed_book_records == 3,
+            "strict export pins DBN and capture sidecar and withholds the uncovered prefix");
     const auto companion_bytes = bytes(dbn.string() + ".refdata.json");
     const std::string companion(companion_bytes.begin(), companion_bytes.end());
     require(companion.find("\"dbn_sha256\":\"" + report.dbn_sha256 + "\"") != std::string::npos &&
                 companion.find("\"capture_refdata_sha256\":\"" + report.refdata_sha256 + "\"") != std::string::npos &&
                 companion.find("\"dbn_instrument_ids\":[11,22]") != std::string::npos &&
-                companion.find("\"effective_after_dbn_sequence\":[0,6,6]") != std::string::npos &&
+                companion.find("\"effective_after_dbn_sequence\":[0,3,3]") != std::string::npos &&
                 companion.find("\"refdata_tsv\":" + text::json_quote_utf8(tsv)) != std::string::npos,
             "export companion carries exact source sidecar and causal DBN boundaries");
-    const std::array<std::uint32_t, 3> effective_after{0, 6, 6};
+    const std::array<std::uint32_t, 3> effective_after{0, 3, 3};
     const auto data = bytes(dbn);
     std::size_t unjoined{}, joined{}, live_add{}, live_cancel{};
     for (std::size_t at = 128; at < data.size(); at += 56) {
@@ -461,6 +461,91 @@ static void test_refdata_join(const fs::path& root, FullOrderLogCaptureOptions o
     require(refused([&] { export_full_order_log_dbn(tampered, bad_dbn, true); }) && !fs::exists(bad_dbn) &&
                 !fs::exists(bad_dbn.string() + ".refdata.json"),
             "even explicit incomplete recovery refuses a broken REFDATA pin before publication");
+}
+static void test_metadata_withdrawal(const fs::path& root, FullOrderLogCaptureOptions options) {
+    namespace g = moex::plaza2::generated;
+    for (const bool restore : {false, true}) {
+        options.directory = root / (restore ? "metadata-return" : "metadata-stays-absent");
+        const std::array<std::int32_t, 1> ids{11};
+        const auto schema = tables();
+        Plaza2FullOrderLog book(ids, 1024, 256);
+        FullOrderLogCapture capture(options, ids, book);
+        FullOrderLogRefdataValue metadata{
+            .isin_id = 11,
+            .available = true,
+            .isin = "TEST-11",
+            .short_code = "T11",
+            .min_step = "0.00005",
+            .decimals = 5,
+            .sess_id = 321,
+            .instrument_source = {g::StreamCode::kFortsRefdataRepl, g::TableCode::kFortsRefdataReplFutSessContents, 100,
+                                  7, true},
+            .session_source = {g::StreamCode::kFortsRefdataRepl, g::TableCode::kFortsRefdataReplSession, 50, 7, true},
+        };
+        capture.record_refdata(metadata);
+        const auto emit = [&](Plaza2ListenerEvent event) {
+            event.stream_code = kFullOrderLogStreamCode;
+            require(!capture.on_plaza2_listener_event(event), "metadata gap fixture");
+        };
+        emit({.kind = Kind::Open, .raw_tables = schema});
+        emit(row(schema[0], 1, 11, 1234565, 10).event());
+        emit({.kind = Kind::Online});
+        capture.record_refdata({.isin_id = 11});
+        for (std::int64_t i = 2; i <= 24; ++i) {
+            emit({.kind = Kind::TransactionBegin});
+            emit(row(schema[2], i, 11, 1234565, i, 1, i).event());
+            emit({.kind = Kind::TransactionCommit});
+        }
+        if (restore) {
+            metadata.min_step = "0.00010";
+            metadata.instrument_source.repl_rev = 101;
+            capture.record_refdata(metadata); // Changed terms must not be backdated into the gap.
+            emit({.kind = Kind::TransactionBegin});
+            emit({.kind = Kind::TransactionCommit});
+        }
+        emit({.kind = Kind::Close});
+        capture.finish();
+        const auto report =
+            export_full_order_log_dbn(options.directory, root / (restore ? "returned.dbn" : "absent.dbn"));
+        require(report.metadata_gap_count == 1 && report.metadata_suppressed_book_records == 23,
+                "exactly 23 committed gap changes retained in capture but withheld from DBN");
+        const auto tsv = bytes(options.directory / kFullOrderLogRefdataFilename);
+        const auto rows = parse_full_order_log_refdata(std::string(tsv.begin(), tsv.end()));
+        require(rows.size() == (restore ? 3 : 2) && !rows[1].available,
+                "withdrawal is not replaced or filled with future metadata");
+        const auto path = root / (restore ? "returned.dbn" : "absent.dbn");
+        const auto dbn = bytes(path);
+        std::size_t snapshots{}, resumed_orders{}, gap_changes{};
+        bool withdrawal_timestamp_checked{};
+        for (std::size_t at = 128; at < dbn.size(); at += 56) {
+            const auto action = dbn[at + 38];
+            const auto flags = static_cast<unsigned char>(dbn[at + 36]);
+            std::int64_t id{};
+            std::memcpy(&id, dbn.data() + at + 16, 8);
+            if (action == 'R' && (flags & 4) && snapshots == 1 && !withdrawal_timestamp_checked) {
+                std::uint64_t received{};
+                std::memcpy(&received, dbn.data() + at + 40, sizeof received);
+                require(received == rows[1].effective_utc_ns,
+                        "gap reset starts at metadata withdrawal, not the next capture callback");
+                withdrawal_timestamp_checked = true;
+            }
+            if (action == 'R' && (flags & 32))
+                ++snapshots;
+            if (action == 'A' && (flags & 32) && snapshots == 2)
+                ++resumed_orders;
+            if (id >= 2 && id <= 24 && !(flags & 32))
+                ++gap_changes;
+        }
+        require(withdrawal_timestamp_checked && gap_changes == 0 && snapshots == (restore ? 2 : 1) &&
+                    resumed_orders == (restore ? 24 : 0),
+                "resume only through complete committed snapshot, never partial hidden deltas");
+        std::size_t raw_gap_adds{};
+        read_full_order_log_capture(options.directory, [&](const auto& record) {
+            if (record.event.kind == Kind::StreamData && record.event.raw_table->name == "orders_log")
+                ++raw_gap_adds;
+        });
+        require(raw_gap_adds == 23, "lossless archive retains every original gap row");
+    }
 }
 int main() {
     try {
@@ -554,6 +639,7 @@ int main() {
         require(exported.refdata_sha256.empty() && !fs::exists(dbn.string() + ".refdata.json"),
                 "legacy capture exports without an invented sidecar");
         test_refdata_join(root, o);
+        test_metadata_withdrawal(root, o);
         test_backfill(root, o);
         test_cached_capture_identity(root, o);
         auto data = bytes(dbn);

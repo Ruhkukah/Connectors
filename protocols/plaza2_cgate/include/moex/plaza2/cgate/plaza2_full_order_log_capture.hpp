@@ -70,6 +70,8 @@ struct FullOrderLogArchiveSummary {
     std::uint64_t capture_identity{};
     std::uint64_t records{}, rows{}, commits{}, valid_commits{}, last_valid_order_count{}, stored_bytes{},
         open_interest_rows{}, open_interest_updates{}, listener_errors{}, last_good_sequence{};
+    std::uint64_t metadata_gap_count{}, metadata_suppressed_book_records{}, metadata_suppressed_trade_prints{},
+        metadata_suppressed_oi_updates{};     // Export only: lossless capture retains these rows.
     std::uint64_t trade_prints{};             // DBN export only.
     std::uint64_t refdata_unjoined_records{}; // DBN records before or between current REFDATA observations.
     FullOrderLogArchiveStreamCoverage fol_coverage, deals_coverage;

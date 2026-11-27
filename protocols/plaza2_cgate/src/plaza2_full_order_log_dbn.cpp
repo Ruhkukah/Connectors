@@ -6,6 +6,7 @@
 #include <set>
 #include <sys/stat.h>
 #include <unordered_map>
+#include <type_traits>
 #include <unistd.h>
 #include "moex/plaza2/cgate/plaza2_full_order_log_deals.hpp"
 #include "moex/plaza2/cgate/plaza2_full_order_log_oi.hpp"
@@ -154,6 +155,7 @@ struct RefdataJoin {
     std::vector<std::uint64_t> effective_after_dbn_sequence;
     std::set<std::int32_t> instruments, known;
     std::map<std::int32_t, bool> available;
+    std::map<std::int32_t, std::uint64_t> withdrawal_utc;
     std::size_t next{};
     std::uint64_t unjoined{};
 
@@ -162,9 +164,16 @@ struct RefdataJoin {
             const auto& row = rows[next++];
             effective_after_dbn_sequence.push_back(dbn_sequence);
             available[row.isin_id] = row.available;
+            if (!row.available)
+                withdrawal_utc[row.isin_id] = row.effective_utc_ns;
             if (row.available)
                 known.insert(row.isin_id);
         }
+    }
+
+    bool current(std::int32_t instrument) const {
+        const auto at = available.find(instrument);
+        return tsv.empty() || (at != available.end() && at->second);
     }
 
     void observe(std::uint32_t instrument) {
@@ -196,6 +205,17 @@ struct RefdataJoin {
                ",\"capture_last_good_sequence\":" + std::to_string(summary.last_good_sequence) +
                ",\"capture_refdata_sha256\":" + text::json_quote_utf8(summary.refdata_sha256) +
                ",\"dbn_instrument_ids\":[" + ids + "]" + ",\"effective_after_dbn_sequence\":[" + boundaries + "]" +
+               ",\"metadata_gap_policy\":\"market records withheld; resume book with committed snapshot; lossless "
+               "capture unchanged\"" +
+               ",\"metadata_market_records_complete\":" +
+               (summary.metadata_suppressed_book_records == 0 && summary.metadata_suppressed_trade_prints == 0 &&
+                        summary.metadata_suppressed_oi_updates == 0
+                    ? "true"
+                    : "false") +
+               ",\"metadata_gap_count\":" + std::to_string(summary.metadata_gap_count) +
+               ",\"metadata_suppressed_book_records\":" + std::to_string(summary.metadata_suppressed_book_records) +
+               ",\"metadata_suppressed_trade_prints\":" + std::to_string(summary.metadata_suppressed_trade_prints) +
+               ",\"metadata_suppressed_oi_updates\":" + std::to_string(summary.metadata_suppressed_oi_updates) +
                ",\"unjoined_dbn_records\":" + std::to_string(unjoined) +
                ",\"refdata_tsv\":" + text::json_quote_utf8(tsv) + "}\n";
     }
@@ -228,10 +248,36 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
     std::unordered_map<std::int64_t, FullOrderLogOrder> state;
     std::vector<Mbo> pending;
     bool initialized{}, committed{}, invalidated{};
-    std::uint64_t valid{}, last_count{}, sequence{};
-    const auto write_record = [&](const auto& record) {
+    std::uint64_t valid{}, last_count{}, sequence{}, metadata_gaps{}, suppressed_book{}, suppressed_trades{},
+        suppressed_oi{};
+    std::set<std::int32_t> metadata_waiting, published_books;
+    std::map<std::int32_t, bool> metadata_current;
+    const auto write_record = [&](auto record) {
+        const auto id = static_cast<std::int32_t>(record.instrument);
+        bool control = false;
+        if constexpr (std::is_same_v<decltype(record), Mbo>)
+            control = record.action == 'R' && (record.flags & 4) && refdata.known.contains(id);
+        if (!refdata.current(id) && !control) {
+            if constexpr (std::is_same_v<decltype(record), Mbo>) {
+                if (record.action == 'T')
+                    ++suppressed_trades;
+                else
+                    ++suppressed_book;
+            } else
+                ++suppressed_oi;
+            return false;
+        }
+        require(++sequence < UINT32_MAX, "DBN sequence exhausted; split export");
+        record.sequence = static_cast<std::uint32_t>(sequence);
+        if constexpr (std::is_same_v<decltype(record), Mbo>) {
+            if (record.action == 'R' && (record.flags & 4))
+                published_books.erase(id);
+            else if (record.action == 'R' && (record.flags & 32))
+                published_books.insert(id);
+        }
         refdata.observe(record.instrument);
         file.write(&record, sizeof record);
+        return true;
     };
     book.on_commit = [&](const auto& b) {
         committed = true;
@@ -250,8 +296,6 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
             last[pending[i].instrument] = i;
         for (std::size_t i = 0; i < pending.size(); ++i) {
             auto& m = pending[i];
-            require(++sequence < UINT32_MAX, "DBN sequence exhausted; split export");
-            m.sequence = sequence;
             m.recv = r.utc_ns;
             if (last[m.instrument] == i)
                 m.flags |= 128;
@@ -304,28 +348,44 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
     std::uint64_t oi_updates{}, trade_prints{};
     oi.on_update = [&](const auto& v) {
         require(v.quantity < INT64_MAX, "DBN OI quantity conflicts with undefined sentinel");
-        require(++sequence < UINT32_MAX, "DBN sequence exhausted; split export");
         OiStat stat;
         stat.instrument = v.isin;
         stat.event = v.moment_ns;
         stat.recv = current->utc_ns;
         stat.reference = v.moment_ns;
         stat.quantity = v.quantity;
-        stat.sequence = sequence;
-        write_record(stat);
-        ++oi_updates;
+        if (write_record(stat))
+            ++oi_updates;
     };
     deals.on_trade = [&](const auto& trade) {
         auto m = trade_mbo(trade, current->utc_ns);
-        require(++sequence < UINT32_MAX, "DBN sequence exhausted; split export");
-        m.sequence = static_cast<std::uint32_t>(sequence);
-        write_record(m);
-        ++trade_prints;
+        if (write_record(m))
+            ++trade_prints;
     };
     auto result = read_full_order_log_capture(
         directory,
         [&](const auto& r) {
             refdata.advance(r.sequence, sequence);
+            for (const auto isin : checked.isins) {
+                const bool available = refdata.current(isin);
+                if (!available) {
+                    metadata_waiting.insert(isin);
+                    if (metadata_current[isin])
+                        ++metadata_gaps;
+                    if (published_books.contains(isin)) {
+                        Mbo gap;
+                        gap.instrument = isin;
+                        gap.event = UINT64_MAX;
+                        gap.price = INT64_MAX;
+                        gap.action = 'R';
+                        gap.side = 'N';
+                        gap.recv = refdata.withdrawal_utc.at(isin);
+                        gap.flags = 4 | 128;
+                        write_record(gap);
+                    }
+                }
+                metadata_current[isin] = available;
+            }
             current = &r;
             last_record.utc_ns = r.utc_ns;
             if (r.event.stream_code == generated::StreamCode::kFortsDealsRepl) {
@@ -390,6 +450,37 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
                         pending.push_back(mbo(o, 'A', book.exchange_moment_ns(o.isin), r.utc_ns, 32));
                     });
                     initialized = true;
+                    for (const auto isin : checked.isins)
+                        if (refdata.current(isin))
+                            metadata_waiting.erase(isin);
+                } else {
+                    // Resume only at a committed point. Replace hidden deltas with a complete current book.
+                    for (auto it = metadata_waiting.begin(); it != metadata_waiting.end();) {
+                        const auto isin = *it;
+                        if (!refdata.current(isin)) {
+                            ++it;
+                            continue;
+                        }
+                        std::erase_if(pending,
+                                      [&](const auto& m) { return m.instrument == static_cast<std::uint32_t>(isin); });
+                        std::erase_if(state, [&](const auto& row) { return row.second.isin == isin; });
+                        Mbo snapshot;
+                        snapshot.instrument = isin;
+                        snapshot.event = UINT64_MAX;
+                        snapshot.price = INT64_MAX;
+                        snapshot.action = 'R';
+                        snapshot.side = 'N';
+                        snapshot.recv = r.utc_ns;
+                        snapshot.flags = 32;
+                        pending.push_back(snapshot);
+                        book.inspect_staged_orders_for_replay([&](const auto& o) {
+                            if (o.isin == isin) {
+                                state.insert_or_assign(o.id, o);
+                                pending.push_back(mbo(o, 'A', book.exchange_moment_ns(isin), r.utc_ns, 32));
+                            }
+                        });
+                        it = metadata_waiting.erase(it);
+                    }
                 }
                 flush(r);
             }
@@ -402,6 +493,10 @@ FullOrderLogArchiveSummary export_full_order_log_dbn(const std::filesystem::path
         flush(last_record);
     } else
         require(pending.empty(), "DBN archive ends with uncommitted book changes");
+    result.metadata_gap_count = metadata_gaps;
+    result.metadata_suppressed_book_records = suppressed_book;
+    result.metadata_suppressed_trade_prints = suppressed_trades;
+    result.metadata_suppressed_oi_updates = suppressed_oi;
     result.open_interest_updates = oi_updates;
     result.trade_prints = trade_prints;
     result.valid_commits = valid;

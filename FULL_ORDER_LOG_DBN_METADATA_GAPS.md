@@ -1,0 +1,9 @@
+# DBN export across unavailable metadata
+
+The lossless capture remains authoritative and retains every admitted raw row, including rows received while the metadata companion marks an instrument unavailable.
+
+A DBN market record requires metadata that is available at its causal archive position. The exporter does not reuse withdrawn terms or backdate a later definition. While metadata is unavailable, it withholds book changes, trade prints and open-interest updates for that instrument. If a book was published, an explicit bad-book reset withdraws it. Its receive timestamp is the metadata withdrawal's recorded effective UTC time, not the arrival time of the next capture callback. When metadata returns, the next committed book state is exported as a fresh snapshot; hidden intermediate changes are not replayed as current incremental data. Other instruments continue normally.
+
+The export report and hash-pinned DBN companion report `metadata_gap_count`, `metadata_suppressed_book_records`, `metadata_suppressed_trade_prints`, `metadata_suppressed_oi_updates` and `metadata_market_records_complete`. A false completeness flag means the derived DBN is not a complete event history. The original rows remain available in the capture; these counters do not repair the missing metadata or identify the transport problem that caused its withdrawal. A gap count can also include the final metadata withdrawal at shutdown, without additional withheld market records.
+
+DBN sequences remain contiguous over emitted records. Metadata effective boundaries remain causal. The existing strict checker is unchanged: unjoined market records fail, and only its existing explicit withdrawal-control reset exception remains. Legacy captures without a metadata companion retain their prior export behavior and do not acquire a research-readiness claim from this change.
